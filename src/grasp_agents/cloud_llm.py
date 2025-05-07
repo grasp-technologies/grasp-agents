@@ -15,7 +15,7 @@ from tenacity import (
 )
 from typing_extensions import TypedDict
 
-from grasp_data.data_retrieval.rate_limiter_chunked import (  # type: ignore
+from .data_retrieval.rate_limiter_chunked import (  # type: ignore
     RateLimiterC,
     limit_rate_chunked,
 )

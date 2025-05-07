@@ -21,6 +21,7 @@
             "source.fixAll": "explicit"
         }
     },
+    "pylint.enabled": false,
     "ruff.enable": true,
     "ruff.configuration": "ruff.toml",
     "ruff.organizeImports": true,

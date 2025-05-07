@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from openai._types import NOT_GIVEN  # noqa: PLC2701 # type: ignore[import]
 from pydantic import BaseModel
 
-from grasp_data.data_retrieval.rate_limiter_chunked import RateLimiterC
+from ..data_retrieval.rate_limiter_chunked import RateLimiterC
 
 from ..cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams

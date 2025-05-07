@@ -1,16 +1,52 @@
 import ast
+import asyncio
 import functools
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, create_model
 from pydantic.fields import FieldInfo
+from tqdm.autonotebook import tqdm
 
-from grasp_data.utils import read_contents_from_file  # type: ignore
+
+def read_contents_from_file(
+    file_path: str | Path,
+    binary_mode: bool = False,
+) -> str:
+    """Reads and returns contents of file"""
+    try:
+        if binary_mode:
+            with open(file_path, "rb") as file:
+                return file.read()
+        else:
+            with open(file_path) as file:
+                return file.read()
+    except FileNotFoundError:
+        print(f"File {file_path} not found.")
+        return ""
+
+
+async def asyncio_gather_with_pbar(
+    *corouts: Coroutine[Any, Any, Any],
+    no_tqdm: bool = False,
+    desc: str | None = None,
+) -> list[Any]:
+    pbar = tqdm(total=len(corouts), desc=desc, disable=no_tqdm)
+
+    async def run_and_update(coro: Coroutine[Any, Any, Any]) -> Any:
+        result = await coro
+        pbar.update(1)
+        return result
+
+    wrapped_tasks = [run_and_update(c) for c in corouts]
+    results = await asyncio.gather(*wrapped_tasks)
+    pbar.close()
+
+    return results
 
 
 def read_txt(file_path: str) -> str:

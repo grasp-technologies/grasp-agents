@@ -18,6 +18,8 @@
         ],
         "words": [
                 "AILLM",
+                "pbar",
+                "coro"
         ],
         "patterns": [
                 {
