@@ -5,7 +5,7 @@
                 ".vscode",
                 "venv/**",
                 "**/__pycache__/**",
-                "src/grasp_agents/examples/**/notebooks"
+                "examples/**/notebooks"
         ],
         "dictionaries": [
                 "python",
