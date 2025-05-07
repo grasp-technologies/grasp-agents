@@ -1,0 +1,29 @@
+{
+        "version": "0.2",
+        "language": "en",
+        "ignorePaths": [
+                ".vscode",
+                "venv/**",
+                "**/__pycache__/**",
+                "src/grasp_agents/examples/**/notebooks"
+        ],
+        "dictionaries": [
+                "python",
+                "softwareTerms"
+        ],
+        "ignoreWords": [
+                "pytest",
+                "numpy",
+                "pandas"
+        ],
+        "words": [
+                "grasp",
+        ],
+        "patterns": [
+                {
+                        "name": "ignoreHex",
+                        "pattern": "0x[0-9a-fA-F]+"
+                }
+        ],
+        "allowCompoundWords": true
+}
