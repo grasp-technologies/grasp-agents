@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import datetime
 import functools
 import json
 import re
@@ -47,6 +48,10 @@ async def asyncio_gather_with_pbar(
     pbar.close()
 
     return results
+
+
+def get_timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def read_txt(file_path: str) -> str:

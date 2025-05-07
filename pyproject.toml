@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11.4,<3.12"
 dependencies = [
     "httpx>=0.28.1",
+    "ipykernel>=6.29.5",
     "openai>=1.77.0",
     "pre-commit-uv>=4.1.4",
     "pydantic>=2.11.4",
