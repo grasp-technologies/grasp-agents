@@ -11,6 +11,7 @@ dependencies = [
     "tenacity>=9.1.2",
     "termcolor>=2.4.0,<3",
     "tqdm>=4.66.2,<5",
+    "dotenv>=0.9.9",
 ]
 
 [dependency-groups]
