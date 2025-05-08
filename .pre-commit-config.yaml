@@ -1,7 +1,7 @@
 fail_fast: true
 repos:
   - repo: https://github.com/streetsidesoftware/cspell-cli
-    rev: v8.17.3
+    rev: v9.0.1
     hooks:
       - id: cspell # Spell check changed files
       - id: cspell # Spell check the commit message
@@ -21,6 +21,16 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=500"]
         stages: [pre-commit, pre-push]
+
+  - repo: local
+    hooks:
+    - id: uv-compile
+      name: Update and stage requirements.txt
+      entry: bash -c 'uv pip compile pyproject.toml -o requirements.txt && git add requirements.txt'
+      language: system
+      pass_filenames: false
+      # files: ^pyproject\.toml$
+      stages: [pre-commit]
 
 default_language_version:
   python: python3.11
