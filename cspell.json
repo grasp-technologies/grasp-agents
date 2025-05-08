@@ -3,6 +3,7 @@
         "language": "en",
         "ignorePaths": [
                 ".vscode",
+                "pyproject.toml",
                 "venv/**",
                 "**/__pycache__/**",
                 "src/grasp_agents/examples/**/notebooks"
