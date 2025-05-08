@@ -16,8 +16,14 @@ dependencies = [
     "tqdm>=4.67.1",
 ]
 
-[tool.uv.sources]
-grasp_agents = { workspace = true }
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.uv.workspace]
-members = ["."]
+[tool.hatch.build.targets.sdist]
+include = ["src/grasp_agents"]
+exclude = ["src/grasp_agents/examples", "*.ipynb"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/grasp_agents"]
+exclude = ["src/grasp_agents/examples", "*.ipynb"]
