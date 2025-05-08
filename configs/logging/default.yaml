@@ -1,0 +1,51 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  simple:
+    format: '%(message)s'
+  detailed:
+    format: '%(name)s %(asctime)s %(levelname)s %(message)s'
+
+handlers:
+  fileHandler:
+    class: logging.FileHandler
+    level: DEBUG
+    formatter: detailed
+    mode: 'w'
+    filename: 'app.log'
+  consoleHandler:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: simple
+    stream: ext://sys.stdout
+
+root:
+  level: DEBUG
+  handlers: [fileHandler, consoleHandler]
+  # handlers: [fileHandler]
+
+loggers:
+  httpcore:
+    level: INFO
+    
+  httpx:
+    level: WARNING
+
+  aiomysql:
+    level: INFO
+
+  openai:
+    level: INFO
+  
+  chromadb:
+    level: INFO
+
+  urllib3:
+    level: INFO
+
+  pytubefix.helpers:
+    level: INFO
+
+  grasp_pytubefix.helpers:
+    level: INFO

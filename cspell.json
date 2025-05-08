@@ -4,6 +4,7 @@
         "ignorePaths": [
                 ".vscode",
                 "pyproject.toml",
+                "configs/**",
                 "venv/**",
                 "**/__pycache__/**",
                 "src/grasp_agents/examples/**/notebooks"
