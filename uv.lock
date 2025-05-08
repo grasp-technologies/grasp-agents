@@ -282,6 +282,7 @@ dev = [
     { name = "keyring" },
     { name = "keyrings-google-artifactregistry-auth" },
     { name = "pre-commit-uv" },
+    { name = "pyright" },
     { name = "ruff" },
     { name = "tk" },
     { name = "twine" },
@@ -308,6 +309,7 @@ dev = [
     { name = "keyring", specifier = ">=24.2.0,<25" },
     { name = "keyrings-google-artifactregistry-auth", specifier = ">=1.1.2,<2" },
     { name = "pre-commit-uv", specifier = ">=4.1.4" },
+    { name = "pyright", specifier = ">=1.1.400" },
     { name = "ruff", specifier = ">=0.11.8" },
     { name = "tk", specifier = ">=0.1.0,<0.2" },
     { name = "twine", specifier = ">=5.1.1,<6" },
@@ -884,6 +886,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7c/2d/c3338d48ea6cc0feb8446d8e6937e1408088a72a39937982cc6111d17f84/pygments-2.19.1.tar.gz", hash = "sha256:61c16d2a8576dc0649d9f39e089b5f02bcd27fba10d8fb4dcc28173f7a45151f", size = 4968581 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/0b/9fcc47d19c48b59121088dd6da2488a49d5f72dacf8262e2790a1d2c7d15/pygments-2.19.1-py3-none-any.whl", hash = "sha256:9ea1544ad55cecf4b8242fab6dd35a93bbce657034b0611ee383099054ab6d8c", size = 1225293 },
+]
+
+[[package]]
+name = "pyright"
+version = "1.1.400"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nodeenv" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/cb/c306618a02d0ee8aed5fb8d0fe0ecfed0dbf075f71468f03a30b5f4e1fe0/pyright-1.1.400.tar.gz", hash = "sha256:b8a3ba40481aa47ba08ffb3228e821d22f7d391f83609211335858bf05686bdb", size = 3846546 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/a5/5d285e4932cf149c90e3c425610c5efaea005475d5f96f1bfdb452956c62/pyright-1.1.400-py3-none-any.whl", hash = "sha256:c80d04f98b5a4358ad3a35e241dbf2a408eee33a40779df365644f8054d2517e", size = 5563460 },
 ]
 
 [[package]]

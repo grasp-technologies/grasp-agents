@@ -1,0 +1,35 @@
+{
+    "typeCheckingMode": "standard",
+    "exclude": [
+        ".bzr",
+        ".direnv",
+        ".eggs",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".nox",
+        ".pants.d",
+        ".pytype",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        "__pypackages__",
+        "_build",
+        "buck-out",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+    ],
+    "ignore": [
+        "src/grasp_agents/examples/notebooks"
+    ],
+    "extraPaths": [
+        ".",
+        "src",
+    ],
+    "autoSearchPaths": false,
+    "reportMissingTypeStubs": false,
+    "pythonVersion": "3.11"
+}

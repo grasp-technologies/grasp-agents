@@ -4,6 +4,7 @@
         "ignorePaths": [
                 ".vscode",
                 "pyproject.toml",
+                "pyrightconfig.json",
                 "configs/**",
                 "venv/**",
                 "**/__pycache__/**",
