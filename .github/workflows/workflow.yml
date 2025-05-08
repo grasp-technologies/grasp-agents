@@ -15,6 +15,7 @@ jobs:
       # Create this environment in the GitHub repository under Settings -> Environments
       name: grasp_pypi
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
