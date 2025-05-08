@@ -1,0 +1,28 @@
+name: Publish Grasp Agents
+
+on:
+  push:
+    tags:
+      # Publish on any tag starting with a `v`, e.g. v1.2.3
+      - v*
+
+jobs:
+  pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    # Environment and permissions trusted publishing.
+    environment:
+      # Create this environment in the GitHub repository under Settings -> Environments
+      name: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      # Check that basic features work and we didn't miss to include crucial files
+      # uv run --with <PACKAGE> --no-project -- python -c "import <PACKAGE>"
+      - name: Test run
+        run: uv run --with grasp_agents --no-project -- python -c "import grasp_agents"
+      - name: Finalize and publish
+        run: uv publish --trusted-publishing always
