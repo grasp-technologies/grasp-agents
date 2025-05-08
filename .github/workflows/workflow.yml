@@ -21,6 +21,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
 
+      # Restrict who can publish via tag
+      - name: Ensure authorized tag pusher
+        run: |
+          ALLOWED_USERS="edmtthws wolfflow oobidin sergekomarov shivakumarmahesh"
+          echo "Tag pushed by: ${{ github.actor }}"
+          if [[ ! " $ALLOWED_USERS " =~ " ${{ github.actor }} " ]]; then
+            echo "❌ Unauthorized tag pusher: ${{ github.actor }}"
+            echo "🧹 Deleting tag from remote..."
+            git push origin :refs/tags/${GITHUB_REF#refs/tags/}
+            exit 1
+          fi
+
       # Install dependencies
       - run: uv sync
       - run: uv build

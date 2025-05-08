@@ -1,7 +1,7 @@
 [project]
 name = "grasp_agents"
-version = "0.1.5"
-description = "Add your description here"
+version = "0.1.6"
+description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.11.4,<3.12"
 dependencies = [
@@ -19,13 +19,10 @@ dev = [
     "ipykernel>=6.19.1,<7",
     "ipywidgets>=8.0.4,<9",
     "widgetsnbextension>=4.0.5,<5",
-    "tk>=0.1.0,<0.2",
     "types-cachetools>=5.0.1,<6",
-    "keyring>=24.2.0,<25",
     "pydantic>=2",
     "pre-commit-uv>=4.1.4",
     "twine>=5.1.1,<6",
-    "keyrings-google-artifactregistry-auth>=1.1.2,<2",
     "ruff>=0.11.8",
     "pyright>=1.1.400",
 ]
