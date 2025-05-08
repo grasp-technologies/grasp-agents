@@ -20,6 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+
+      # Install dependencies
+      - run: uv sync
       - run: uv build
       # Check that basic features work and we didn't miss to include crucial files
       # uv run --with <PACKAGE> --no-project -- python -c "import <PACKAGE>"
