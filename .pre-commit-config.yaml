@@ -29,7 +29,7 @@ repos:
       entry: bash -c 'uv pip compile pyproject.toml -o requirements.txt && git add requirements.txt'
       language: system
       pass_filenames: false
-      # files: ^pyproject\.toml$
+      files: ^pyproject\.toml$
       stages: [pre-commit]
 
 default_language_version:
