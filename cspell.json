@@ -9,7 +9,8 @@
                 "configs/**",
                 "venv/**",
                 "**/__pycache__/**",
-                "src/grasp_agents/examples/**/notebooks"
+                "src/grasp_agents/examples/**/notebooks",
+                "README.md"
         ],
         "dictionaries": [
                 "python",
