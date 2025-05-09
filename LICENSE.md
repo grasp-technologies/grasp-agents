@@ -1,4 +1,4 @@
-Grasp Agents itself is [MIT](LICENSE)-licensed.
+Grasp Agents itself is [MIT](https://mit-license.org/)-licensed.
 
 Package production dependencies are licensed under the following terms:
 

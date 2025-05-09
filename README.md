@@ -7,7 +7,7 @@
 
 [![PyPI version](https://badge.fury.io/py/grasp_agents.svg)](https://badge.fury.io/py/grasp_agents)
 [![Python Versions](https://img.shields.io/pypi/pyversions/grasp_agents?style=flat-square)](https://pypi.org/project/grasp_agents/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](https://mit-license.org/)
 
 ## Overview
 
@@ -37,6 +37,8 @@ grasp-agents is a modular Python framework for building agentic AI pipelines and
 ## Quickstart & Installation Variants
 
 ### Option 1: UV Package Manager Project
+
+> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project.
 
 #### 1. Prerequisites
 
@@ -72,30 +74,71 @@ uv sync
 
 Create a file, e.g., `hello.py`:
 
-```python
-from grasp_agents.llm_agent import LLMAgent
-from grasp_agents.base_agent import BaseAgentConfig
+Ensure you have a `.env` file with your OpenAI and Google AI Studio API keys set
 
-agent = LLMAgent(
-    config=BaseAgentConfig(
-        model="gpt-4o-mini",
-        memory=None,  # or your memory implementation
-    )
+```
+OPENAI_API_KEY=your_openai_api_key
+GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
+```
+
+```python
+import asyncio
+from typing import Any
+
+from grasp_agents.llm_agent import LLMAgent
+from grasp_agents.openai.openai_llm import (
+    OpenAILLM,
+    OpenAILLMSettings,
+)
+from grasp_agents.typing.io import (
+    AgentPayload,
+)
+from grasp_agents.run_context import RunContextWrapper
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Response(AgentPayload):
+    response: str
+
+
+chatbot = LLMAgent[Any, Response, None](
+    agent_id="chatbot",
+    llm=OpenAILLM(
+        model_name="gpt-4o",
+        llm_settings=OpenAILLMSettings(),
+    ),
+    sys_prompt=None,
+    out_schema=Response,
 )
 
-response = agent.run("Hello, agent!")
-print(response)
+
+@chatbot.parse_output_handler
+def output_handler(conversation, ctx, **kwargs) -> Response:
+    return Response(response=conversation[-1].content)
+
+
+async def main():
+    ctx = RunContextWrapper(print_messages=True)
+    out = await chatbot.run("Hello, agent!", ctx=ctx)
+    print(out.payloads[0].response)
+
+
+asyncio.run(main())
 ```
 
 Run your script:
 
 ```bash
-python hello.py
+uv run hello.py
 ```
 
 ---
 
 ### Option 2: PIP-only (requirements.txt-based) Project
+
+> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/pip](src/grasp_agents/examples/demo/pip) folder. Feel free to copy and paste the code from there to a separate project.
 
 #### 1. Create Project Folder
 
@@ -155,10 +198,6 @@ python hello.py
 
 ---
 
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
-
 ## Development
 
 To develop and test the library locally, follow these steps:
@@ -181,10 +220,23 @@ source .venv/bin/activate
 uv sync
 ```
 
-### 3. Test Example
+### 3. Test Example for VS Code
 
-- Install the Jupyter Notebook extension for VS Code.
-- Open `src/grasp_agents/examples/notebooks/agents_demo.ipynb` in VS Code.
-- Ensure you have a `.env` file with your OpenAI and Google AI Studio API keys set (see `.env.example`).
+- Install the [Jupyter Notebook extension](https://marketplace.visualstudio.com/items/?itemName=ms-toolsai.jupyter).
+
+- Ensure you have a `.env` file with your OpenAI and Google AI Studio API keys set (see [.env.example](.env.example)).
+
+```
+OPENAI_API_KEY=your_openai_api_key
+GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
+```
+
+- Open [src/grasp_agents/examples/notebooks/agents_demo.ipynb](src/grasp_agents/examples/notebooks/agents_demo.ipynb).
 
 You're now ready to run and experiment with the example notebook.
+
+### 4. Recommended VS Code Extensions
+
+- [Ruff](https://marketplace.visualstudio.com/items/?itemName=charliermarsh.ruff) -- for formatting and code analysis
+- [Pylint](https://marketplace.visualstudio.com/items/?itemName=ms-python.pylint) -- for linting
+- [Pylance](https://marketplace.visualstudio.com/items/?itemName=ms-python.vscode-pylance) -- for type checking

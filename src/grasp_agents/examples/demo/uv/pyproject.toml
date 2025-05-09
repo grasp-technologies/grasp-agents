@@ -1,0 +1,10 @@
+[project]
+name = "test-lib"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11.4,<3.12"
+dependencies = ["dotenv>=0.9.9", "grasp-agents>=0.1.5", "pyyaml>=6.0.2"]
+
+[dependency-groups]
+dev = ["ruff>=0.11.8"]
