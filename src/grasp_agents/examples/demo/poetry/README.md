@@ -1,4 +1,4 @@
-# Grasp Agents Hello App (PIP only)
+# Grasp Agents Hello App (Poetry)
 
 ## Overview
 
@@ -18,6 +18,12 @@ pyenv install 3.11.9
 pyenv local 3.11.9
 ```
 
+### Make sure that Poetry Package manager is installed on your system. If you don't have it, install it using the following command:
+
+```bash
+curl -sSL https://install.python-poetry.org | python3 -
+```
+
 Then open new terminal and proceed to the next step.
 
 ### Create a Virtual Environment
@@ -28,9 +34,17 @@ Then open new terminal and proceed to the next step.
 
 `source .venv/bin/activate`
 
+### Make Poerty use Python from the virtual environment
+
+```bash
+poetry env use $(which python)
+```
+
 ### Install the Grasp Agents SDK
 
-`pip install -r requirements.txt`
+```bash
+poetry install
+```
 
 ### Environment Variables
 
@@ -43,5 +57,5 @@ OPENAI_API_KEY=your_openai_api_key
 ### Run the App
 
 ```bash
-python hello.py
+poetry run python hello.py
 ```

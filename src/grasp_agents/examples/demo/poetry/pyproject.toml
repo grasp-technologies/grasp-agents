@@ -1,0 +1,13 @@
+[tool.poetry]
+name = "grasp-hello-app"
+version = "0.1.0"
+description = ""
+authors = []
+
+[tool.poetry.dependencies]
+python = ">=3.11.4,<3.12"
+grasp-agents = ">=0.1.9"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -4,6 +4,8 @@ Package production dependencies are licensed under the following terms:
 
 | Name      | Version | License                                           | URL                                     |
 | --------- | ------- | ------------------------------------------------- | --------------------------------------- |
+| PyYAML    | 6.0.2   | MIT License                                       | https://pyyaml.org/                     |
+| dotenv    | 0.9.9   | BSD-3-Clause license                              | https://github.com/pedroburon/dotenv    |
 | httpx     | 0.28.1  | BSD License                                       | https://github.com/encode/httpx         |
 | openai    | 1.77.0  | Apache Software License                           | https://github.com/openai/openai-python |
 | tenacity  | 9.1.2   | Apache Software License                           | https://github.com/jd/tenacity          |

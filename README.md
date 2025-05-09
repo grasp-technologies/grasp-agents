@@ -1,7 +1,7 @@
-# grasp_agents
+# Grasp Agents
 
 <br/>
-<img src="./.assets/grasp.svg" alt="Grasp Agents" width="320" />
+<img src="./.assets/grasp.png" alt="Grasp Agents" width="320" />
 <br/>
 <br/>
 
@@ -11,7 +11,7 @@
 
 ## Overview
 
-grasp-agents is a modular Python framework for building agentic AI pipelines and applications. It provides reusable agent classes, message handling, LLM integration, memory, and orchestration utilities. The framework is designed for flexibility, composability, and clarity, enabling rapid prototyping and robust development of multi-agent systems.
+**Grasp Agents** is a modular Python framework for building agentic AI pipelines and applications. It provides reusable agent classes, message handling, LLM integration, memory, and orchestration utilities. The framework is designed for flexibility, composability, and clarity, enabling rapid prototyping and robust development of multi-agent systems.
 
 ## Features
 
@@ -166,15 +166,9 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-If you see `ModuleNotFoundError: No module named 'yaml'`, run:
-
-```bash
-pip install pyyaml
-```
-
 #### 4. Install Grasp Agents SDK
 
-If you have a `requirements.txt`:
+If you have a `requirements.txt` file:
 
 ```bash
 pip install -r requirements.txt
@@ -197,6 +191,72 @@ python hello.py
 ```
 
 ---
+
+### Option 3: Poetry-based Project
+
+> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/poetry](src/grasp_agents/examples/demo/poetry) folder. Feel free to copy and paste the code from there to a separate project.
+
+#### 1. Create Project Folder
+
+```bash
+mkdir my-test-poetry-app
+cd my-test-poetry-app
+```
+
+#### 2. Install Python 3.11.9 via pyenv
+
+```bash
+brew install pyenv
+pyenv install 3.11.9
+pyenv local 3.11.9
+```
+
+#### 3. Install Poetry Package Manager
+
+If you don't have Poetry, install it:
+
+```bash
+curl -sSL https://install.python-poetry.org | python3 -
+```
+
+Open a new terminal after installing Poetry.
+
+#### 4. Create and Activate a Virtual Environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+#### 5. Make Poetry Use the Virtual Environment's Python
+
+```bash
+poetry env use $(which python)
+```
+
+#### 6. Install the Grasp Agents SDK
+
+```bash
+poetry install
+```
+
+#### 7. Example Usage
+
+Create a file, e.g., `hello.py`, and use the same code as above.
+
+#### 8. Environment Variables
+
+Ensure you have a `.env` file with your OpenAI API key set:
+
+```
+OPENAI_API_KEY=your_openai_api_key
+```
+
+#### 9. Run the App
+
+```bash
+poetry run python hello.py
+```
 
 ## Development
 
