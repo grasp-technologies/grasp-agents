@@ -1,0 +1,56 @@
+name: 🐛 Bug Report
+description: Report an issue that should be fixed
+labels:
+  - bug
+  - needs triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for submitting a bug report. It helps make our Grasp Agents library better.
+
+        Make sure you are running the [latest](https://pypi.org/project/grasp_agents/) version.
+        The bug you are experiencing may already have been fixed.
+
+        Please try to include as much information as possible.
+
+  - type: input
+    attributes:
+      label: What version of grasp-agents do you use?
+      description: | 
+        Copy the part of:
+        * pyproject.toml that looks like this: `grasp-agents = "^0.0.0"` (uv, poetry)
+        * requirements.txt that looks like this: `grasp-agents==0.0.0` (pip)
+
+  - type: input
+    attributes:
+      label: What version of Python do you use?
+      description: |
+        Copy the output of `python --version` or `python3 --version`
+        If you are using a virtual environment, please provide the version of Python in that environment.
+        
+  - type: input
+    attributes:
+      label: What platform is your computer?
+      description: |
+        For MacOS and Linux: copy the output of `uname -mprs`
+        For Windows: copy the output of `"$([Environment]::OSVersion | ForEach-Object VersionString) $(if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" })"` in the PowerShell console
+
+  - type: textarea
+    attributes:
+      label: What steps can reproduce the bug?
+      description: Explain the bug and provide a code snippet that can reproduce it.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What is the expected behavior?
+      description: If possible, please provide text instead of a screenshot.
+  - type: textarea
+    attributes:
+      label: What do you see instead?
+      description: If possible, please provide text instead of a screenshot.
+  - type: textarea
+    attributes:
+      label: Additional information
+      description: Is there anything else you think we should know?
