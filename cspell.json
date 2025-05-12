@@ -19,7 +19,8 @@
         "ignoreWords": [
                 "pytest",
                 "numpy",
-                "pandas"
+                "pandas",
+                "pylance"
         ],
         "words": [
                 "AILLM",
