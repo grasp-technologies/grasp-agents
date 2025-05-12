@@ -1,7 +1,7 @@
 # Grasp Agents
 
 <br/>
-<img src="./.assets/grasp.png" alt="Grasp Agents" width="320" />
+<img src="./.assets/grasp.svg" alt="Grasp Agents" width="320" />
 <br/>
 <br/>
 
@@ -34,11 +34,11 @@
 - `configs/` — Configuration files
 - `data/` — Logs and datasets
 
-## Quickstart & Installation Variants
+## Quickstart & Installation Variants (UV Package manager)
 
 ### Option 1: UV Package Manager Project
 
-> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project.
+> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project. There are also [examples](src/grasp_agents/examples/demo/) for other package managers.
 
 #### 1. Prerequisites
 
@@ -134,130 +134,6 @@ Run your script:
 uv run hello.py
 ```
 
----
-
-### Option 2: PIP-only (requirements.txt-based) Project
-
-> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/pip](src/grasp_agents/examples/demo/pip) folder. Feel free to copy and paste the code from there to a separate project.
-
-#### 1. Create Project Folder
-
-```bash
-mkdir my-test-pip-app
-cd my-test-pip-app
-```
-
-#### 2. Install Python 3.11.9 (Recommended)
-
-If using [pyenv](https://github.com/pyenv/pyenv):
-
-```bash
-brew install pyenv
-pyenv install 3.11.9
-pyenv local 3.11.9
-```
-
-Open a new terminal after setting the Python version.
-
-#### 3. Create & Activate Virtual Environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-#### 4. Install Grasp Agents SDK
-
-If you have a `requirements.txt` file:
-
-```bash
-pip install -r requirements.txt
-```
-
-Or install directly:
-
-```bash
-pip install grasp-agents
-```
-
-#### 5. Example Usage
-
-Create a file, e.g., `hello.py`, and use the same code as above.
-
-#### 6. Run the App
-
-```bash
-python hello.py
-```
-
----
-
-### Option 3: Poetry-based Project
-
-> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/poetry](src/grasp_agents/examples/demo/poetry) folder. Feel free to copy and paste the code from there to a separate project.
-
-#### 1. Create Project Folder
-
-```bash
-mkdir my-test-poetry-app
-cd my-test-poetry-app
-```
-
-#### 2. Install Python 3.11.9 via pyenv
-
-```bash
-brew install pyenv
-pyenv install 3.11.9
-pyenv local 3.11.9
-```
-
-#### 3. Install Poetry Package Manager
-
-If you don't have Poetry, install it:
-
-```bash
-curl -sSL https://install.python-poetry.org | python3 -
-```
-
-Open a new terminal after installing Poetry.
-
-#### 4. Create and Activate a Virtual Environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-#### 5. Make Poetry Use the Virtual Environment's Python
-
-```bash
-poetry env use $(which python)
-```
-
-#### 6. Install the Grasp Agents SDK
-
-```bash
-poetry install
-```
-
-#### 7. Example Usage
-
-Create a file, e.g., `hello.py`, and use the same code as above.
-
-#### 8. Environment Variables
-
-Ensure you have a `.env` file with your OpenAI API key set:
-
-```
-OPENAI_API_KEY=your_openai_api_key
-```
-
-#### 9. Run the App
-
-```bash
-poetry run python hello.py
-```
-
 ## Development
 
 To develop and test the library locally, follow these steps:
@@ -300,3 +176,25 @@ You're now ready to run and experiment with the example notebook.
 - [Ruff](https://marketplace.visualstudio.com/items/?itemName=charliermarsh.ruff) -- for formatting and code analysis
 - [Pylint](https://marketplace.visualstudio.com/items/?itemName=ms-python.pylint) -- for linting
 - [Pylance](https://marketplace.visualstudio.com/items/?itemName=ms-python.vscode-pylance) -- for type checking
+
+### Releasing: Maintainers Only
+
+To release a new version of the package, follow these steps:
+
+1. Create a new branch for the release: `git checkout -b release-X.Y.Z`.
+
+2. Update the version in `pyproject.toml`.
+
+3. Commit the changes with a message like "Bump version to X.Y.Z". `git commit -m "Bump version to X.Y.Z"`.
+
+4. Make a pull request to the `master` branch.
+
+5. Once the pull request is approved and merged, checkout the `master` branch: `git checkout master`.
+
+6. Pull the latest changes: `git pull origin master`.
+
+7. Tag the release: `git tag vX.Y.Z`. Note that a tag name should be in the format `vX.Y.Z`.
+
+8. Push the tag to the remote repository: `git push --tags`.
+
+9. This will trigger the [release workflow](.github/workflows/workflow.yml), which will build and publish the package to PyPI.
