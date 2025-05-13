@@ -47,8 +47,6 @@
 
 ## Quickstart & Installation Variants (UV Package manager)
 
-### Option 1: UV Package Manager Project
-
 > **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project. There are also [examples](src/grasp_agents/examples/demo/) for other package managers.
 
 #### 1. Prerequisites
