@@ -16,13 +16,13 @@ from tenacity import (
 )
 from typing_extensions import TypedDict
 
-from .data_retrieval.rate_limiter_chunked import (  # type: ignore
-    RateLimiterC,
-    limit_rate_chunked,
-)
 from .http_client import AsyncHTTPClientParams, create_async_http_client
 from .llm import LLM, ConvertT, LLMSettings, SettingsT
 from .memory import MessageHistory
+from .rate_limiting.rate_limiter_chunked import (  # type: ignore
+    RateLimiterC,
+    limit_rate_chunked,
+)
 from .typing.completion import Completion, CompletionChunk
 from .typing.message import AssistantMessage, Conversation
 from .typing.tool import BaseTool, ToolChoice

@@ -13,28 +13,37 @@
 
 ## Overview
 
-**Grasp Agents** is a modular Python framework for building agentic AI pipelines and applications. It provides reusable agent classes, message handling, LLM integration, memory, and orchestration utilities. The framework is designed for flexibility, composability, and clarity, enabling rapid prototyping and robust development of multi-agent systems.
+**Grasp Agents** is a modular Python framework for building agentic AI pipelines and applications. It is meant to be minimalistic but functional, allowing for rapid experimentation while keeping full and granular low-level control over prompting, LLM handling, and inter-agent communication by avoiding excessive higher-level abstractions.
 
 ## Features
 
-- Modular agent base classes
-- Message and memory management
-- LLM and tool orchestration
-- Logging and usage tracking
-- Extensible architecture
+- Clean formulation of agents as generic entities over:
+    * I/O schemas
+    * Agent state
+    * Shared context
+- Transparent implementation of common agentic patterns:
+    * Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
+    * Workflows (static communication topology), including loops
+    * Agents-as-tools for task delegation
+    * Freeform A2A communication via in-process Actor model
+- Batch processing support outside of agentic loops
+- Simple logging and usage/cost tracking
 
 ## Project Structure
 
-- `src/grasp_agents/` — Core framework modules
-  - `base_agent.py`, `llm_agent.py`, `comm_agent.py`: Agent classes
-  - `agent_message.py`, `agent_message_pool.py`: Messaging
-  - `memory.py`: Memory management
-  - `cloud_llm.py`, `llm.py`: LLM integration
-  - `tool_orchestrator.py`: Tool orchestration
-  - `usage_tracker.py`, `grasp_logging.py`: Usage and logging
-  - `data_retrieval/`, `openai/`, `typing/`, `workflow/`: Extensions and utilities
-- `configs/` — Configuration files
-- `data/` — Logs and datasets
+- `base_agent.py`, `llm_agent.py`, `comm_agent.py`: Core agent class implementations.
+- `agent_message.py`, `agent_message_pool.py`: Messaging and message pool management.
+- `llm_agent_state.py`: State management for LLM agents.
+- `tool_orchestrator.py`: Orchestration of tools used by agents.
+- `prompt_builder.py`: Tools for constructing prompts.
+- `workflow/`: Modules for defining and managing agent workflows.
+- `cloud_llm.py`, `llm.py`: LLM integration and base LLM functionalities.
+- `openai/`: Modules specific to OpenAI API integration.    
+- `memory.py`: Memory management for agents (currently only message history).
+- `run_context.py`: Context management for agent runs.
+- `usage_tracker.py`: Tracking of API usage and costs.
+- `costs_dict.yaml`: Dictionary for cost tracking (update if needed).
+- `rate_limiting/`: Basic rate limiting tools.
 
 ## Quickstart & Installation Variants (UV Package manager)
 
@@ -72,8 +81,6 @@ uv sync
 
 #### 3. Example Usage
 
-Create a file, e.g., `hello.py`:
-
 Ensure you have a `.env` file with your OpenAI and Google AI Studio API keys set
 
 ```
@@ -81,48 +88,100 @@ OPENAI_API_KEY=your_openai_api_key
 GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
 ```
 
+Create a script, e.g., `problem_recommender.py`:
+
 ```python
-import asyncio
+import re
 from typing import Any
-
-from grasp_agents.llm_agent import LLMAgent
-from grasp_agents.openai.openai_llm import (
-    OpenAILLM,
-    OpenAILLMSettings,
-)
-from grasp_agents.typing.io import (
-    AgentPayload,
-)
-from grasp_agents.run_context import RunContextWrapper
-
+from pathlib import Path
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from grasp_agents.typing.tool import BaseTool
+from grasp_agents.typing.io import AgentPayload
+from grasp_agents.run_context import RunContextWrapper
+from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
+from grasp_agents.llm_agent import LLMAgent
+from grasp_agents.grasp_logging import setup_logging
+from grasp_agents.typing.message import Conversation
 
 load_dotenv()
 
-class Response(AgentPayload):
-    response: str
+
+# Configure the logger to output to the console and/or a file
+setup_logging(
+    logs_file_path="grasp_agents_demo.log",
+    logs_config_path=Path().cwd() / "configs/logging/default.yaml",
+)
+
+sys_prompt_react = """
+Your task is to suggest an exciting stats problem to a student. 
+Ask the student about their education, interests, and preferences, then suggest a problem tailored to them. 
+
+# Instructions
+* Ask questions one by one.
+* Provide your thinking before asking a question and after receiving a reply.
+* The problem must be enclosed in <PROBLEM> tags.
+"""
 
 
-chatbot = LLMAgent[Any, Response, None](
-    agent_id="chatbot",
+class TeacherQuestion(BaseModel):
+    question: str = Field(..., description="The question to ask the student.")
+
+StudentReply = str
+
+
+class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
+    name: str = "ask_student_tool"
+    description: str = "Ask the student a question and get their reply."
+    in_schema: type[TeacherQuestion] = TeacherQuestion
+    out_schema: type[StudentReply] = StudentReply
+
+    async def run(
+        self, inp: TeacherQuestion, ctx: RunContextWrapper[Any] | None = None
+    ) -> StudentReply:
+        return input(inp.question)
+
+
+class FinalResponse(AgentPayload):
+    problem: str
+
+
+teacher = LLMAgent[Any, FinalResponse, None](
+    agent_id="teacher",
     llm=OpenAILLM(
-        model_name="gpt-4o",
-        llm_settings=OpenAILLMSettings(),
+        model_name="gpt-4.1",
+        api_provider="openai",
+        llm_settings=OpenAILLMSettings(temperature=0.1),
     ),
-    sys_prompt=None,
-    out_schema=Response,
+    tools=[AskStudentTool()],
+    max_turns=20,
+    react_mode=True,
+    sys_prompt=sys_prompt_react,
+    out_schema=FinalResponse,
+    set_state_strategy="reset",
 )
 
 
-@chatbot.parse_output_handler
-def output_handler(conversation, ctx, **kwargs) -> Response:
-    return Response(response=conversation[-1].content)
+@teacher.tool_call_loop_exit_handler
+def exit_tool_call_loop(conversation: Conversation, ctx, **kwargs) -> None:
+    message_text = conversation[-1].content
+
+    return re.search(r"<PROBLEM>", message_text)
+
+
+@teacher.parse_output_handler
+def parse_output(conversation: Conversation, ctx, **kwargs) -> FinalResponse:
+    message_text = conversation[-1].content
+    matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message_text, re.DOTALL)
+
+    return FinalResponse(problem=matches[0])
 
 
 async def main():
     ctx = RunContextWrapper(print_messages=True)
-    out = await chatbot.run("Hello, agent!", ctx=ctx)
-    print(out.payloads[0].response)
+    out = await teacher.run(ctx=ctx)
+    print(out.payloads[0].problem)
+    print(ctx.usage_tracker.total_usage)
 
 
 asyncio.run(main())
@@ -131,5 +190,7 @@ asyncio.run(main())
 Run your script:
 
 ```bash
-uv run hello.py
+uv run problem_recommender.py
 ```
+
+You can find more examples in [src/grasp_agents/examples/notebooks/agents_demo.ipynb](src/grasp_agents/examples/notebooks/agents_demo.ipynb).
