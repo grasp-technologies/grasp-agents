@@ -3,14 +3,14 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any, Literal
 
-from openai import AsyncOpenAI
-from openai._types import NOT_GIVEN  # noqa: PLC2701 # type: ignore[import]
 from pydantic import BaseModel
 
-from ..data_retrieval.rate_limiter_chunked import RateLimiterC
+from openai import AsyncOpenAI
+from openai._types import NOT_GIVEN  # type: ignore[import]
 
 from ..cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams
+from ..rate_limiting.rate_limiter_chunked import RateLimiterC
 from ..typing.message import AssistantMessage, Conversation
 from ..typing.tool import BaseTool
 from . import (

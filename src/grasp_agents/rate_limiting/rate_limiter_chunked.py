@@ -3,16 +3,11 @@ import functools
 import logging
 from collections.abc import Callable, Coroutine
 from time import monotonic
-from typing import (
-    Any,
-    Generic,
-    overload,
-)
+from typing import Any, Generic, overload
 
 from tqdm.autonotebook import tqdm
 
 from ..utils import asyncio_gather_with_pbar
-
 from .types import (
     QueryP,
     QueryR,
@@ -54,9 +49,7 @@ class RateLimiterC(Generic[QueryT, QueryR]):
                 if now < self._state.next_request_time:
                     await asyncio.sleep(self._state.next_request_time - now)
                 self._state.next_request_time = monotonic() + 1.01 * 60.0 / self._rpm
-            result = await func_partial(inp)
-
-        return result
+            return await func_partial(inp)
 
     async def process_inputs(
         self,
