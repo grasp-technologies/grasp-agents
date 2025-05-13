@@ -6,12 +6,7 @@ from pydantic import BaseModel
 from ..typing.completion import Completion, CompletionChunk
 from ..typing.content import Content
 from ..typing.converters import Converters
-from ..typing.message import (
-    AssistantMessage,
-    SystemMessage,
-    ToolMessage,
-    UserMessage,
-)
+from ..typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
 from ..typing.tool import BaseTool, ToolChoice
 from . import (
     ChatCompletion,
@@ -19,7 +14,6 @@ from . import (
     ChatCompletionAsyncStream,  # type: ignore[import]
     ChatCompletionChunk,
     ChatCompletionContentPartParam,
-    # ChatCompletionDeveloperMessageParam,
     ChatCompletionMessage,
     ChatCompletionSystemMessageParam,
     ChatCompletionToolChoiceOptionParam,
@@ -110,7 +104,7 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def to_tool(
-        tool: BaseTool[BaseModel, BaseModel, Any], **kwargs: Any
+        tool: BaseTool[BaseModel, Any, Any], **kwargs: Any
     ) -> ChatCompletionToolParam:
         return to_api_tool(tool, **kwargs)
 

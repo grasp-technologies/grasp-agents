@@ -132,9 +132,6 @@ def to_api_system_message(
     message: SystemMessage,
 ) -> ChatCompletionSystemMessageParam:
     return ChatCompletionSystemMessageParam(role="system", content=message.content)
-    # return ChatCompletionSystemMessageParam(
-    #     role="system", content=message.content
-    # )
 
 
 def from_api_tool_message(
@@ -149,7 +146,5 @@ def from_api_tool_message(
 
 def to_api_tool_message(message: ToolMessage) -> ChatCompletionToolMessageParam:
     return ChatCompletionToolMessageParam(
-        role="tool",
-        content=message.content,
-        tool_call_id=message.tool_call_id,
+        role="tool", content=message.content, tool_call_id=message.tool_call_id
     )

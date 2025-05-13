@@ -68,5 +68,5 @@ class BaseAgent(ABC, Generic[OutT, StateT, CtxT]):
     @abstractmethod
     def as_tool(
         self, tool_name: str, tool_description: str, tool_strict: bool = True
-    ) -> BaseTool[BaseModel, BaseModel, CtxT]:
+    ) -> BaseTool[BaseModel, Any, CtxT]:
         pass

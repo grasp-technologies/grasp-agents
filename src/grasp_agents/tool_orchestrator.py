@@ -31,7 +31,7 @@ class ToolOrchestrator(Generic[CtxT]):
         self,
         agent_id: str,
         llm: LLM[LLMSettings, Converters],
-        tools: list[BaseTool[BaseModel, BaseModel, CtxT]] | None,
+        tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
         max_turns: int,
         react_mode: bool = False,
     ) -> None:
@@ -55,7 +55,7 @@ class ToolOrchestrator(Generic[CtxT]):
         return self._llm
 
     @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, BaseModel, CtxT]]:
+    def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
         return self._llm.tools or {}
 
     @property

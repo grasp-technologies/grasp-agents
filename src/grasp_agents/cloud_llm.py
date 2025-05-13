@@ -3,6 +3,7 @@ import logging
 import os
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Sequence
+from copy import deepcopy
 from typing import Any, Generic, Literal
 
 import httpx
@@ -19,7 +20,6 @@ from .data_retrieval.rate_limiter_chunked import (  # type: ignore
     RateLimiterC,
     limit_rate_chunked,
 )
-
 from .http_client import AsyncHTTPClientParams, create_async_http_client
 from .llm import LLM, ConvertT, LLMSettings, SettingsT
 from .memory import MessageHistory
@@ -38,7 +38,7 @@ class APIProviderInfo(TypedDict):
     name: APIProvider
     base_url: str
     api_key: str | None
-    struct_output_support: list[str]
+    struct_output_support: tuple[str, ...]
 
 
 PROVIDERS: dict[APIProvider, APIProviderInfo] = {
@@ -46,19 +46,19 @@ PROVIDERS: dict[APIProvider, APIProviderInfo] = {
         name="openai",
         base_url="https://api.openai.com/v1",
         api_key=os.getenv("OPENAI_API_KEY"),
-        struct_output_support=["*"],
+        struct_output_support=("*",),
     ),
     "openrouter": APIProviderInfo(
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         api_key=os.getenv("OPENROUTER_API_KEY"),
-        struct_output_support=[],
+        struct_output_support=(),
     ),
     "google_ai_studio": APIProviderInfo(
         name="google_ai_studio",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key=os.getenv("GOOGLE_AI_STUDIO_API_KEY"),
-        struct_output_support=["*"],
+        struct_output_support=("*",),
     ),
 }
 
@@ -92,6 +92,7 @@ class CloudLLMSettings(LLMSettings, total=False):
     temperature: float | None
     top_p: float | None
     seed: int | None
+    use_structured_outputs: bool
 
 
 class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
@@ -102,7 +103,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         converters: ConvertT,
         llm_settings: SettingsT | None = None,
         model_id: str | None = None,
-        tools: list[BaseTool[BaseModel, BaseModel, Any]] | None = None,
+        tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | None = None,
         # Connection settings
         api_provider: APIProvider = "openai",
@@ -135,13 +136,21 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         self._model_name = model_name
         self._api_provider: APIProvider = api_provider
 
-        patterns = PROVIDERS[api_provider]["struct_output_support"]
         self._struct_output_support: bool = any(
-            fnmatch.fnmatch(self._model_name, pat) for pat in patterns
+            fnmatch.fnmatch(self._model_name, pat)
+            for pat in PROVIDERS[api_provider]["struct_output_support"]
         )
         self._response_format_pyd: TypeAdapter[Any] | None = (
             TypeAdapter(self._response_format) if response_format else None
         )
+        if (
+            self._llm_settings.get("use_structured_outputs")
+            and not self._struct_output_support
+        ):
+            raise ValueError(
+                f"Model {api_provider}:{self._model_name} does "
+                "not support structured outputs."
+            )
 
         self._rate_limiter: RateLimiterC[Conversation, AssistantMessage] | None = (
             self._get_rate_limiter(
@@ -181,14 +190,17 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
     def _make_completion_kwargs(
         self, conversation: Conversation, tool_choice: ToolChoice | None = None
     ) -> dict[str, Any]:
-        api_llm_settings = self.llm_settings or {}
         api_messages = [self._converters.to_message(m) for m in conversation]
+
         api_tools = None
         api_tool_choice = None
         if self.tools:
             api_tools = [self._converters.to_tool(t) for t in self.tools.values()]
             if tool_choice is not None:
                 api_tool_choice = self._converters.to_tool_choice(tool_choice)
+
+        api_llm_settings = deepcopy(self.llm_settings or {})
+        api_llm_settings.pop("use_structured_outputs", None)
 
         return dict(
             api_messages=api_messages,
@@ -216,6 +228,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
+        api_response_format: type | None = None,
         **api_llm_settings: Any,
     ) -> Any:
         pass
@@ -242,7 +255,11 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
             conversation=conversation, tool_choice=tool_choice
         )
 
-        if self._response_format is None or not self._struct_output_support:
+        if (
+            self._response_format is None
+            or (not self._struct_output_support)
+            or (not self._llm_settings.get("use_structured_outputs"))
+        ):
             completion_kwargs.pop("api_response_format", None)
             api_completion = await self._get_completion(**completion_kwargs, **kwargs)
         else:
@@ -250,7 +267,23 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
                 **completion_kwargs, **kwargs
             )
 
-        return self._converters.from_completion(api_completion, model_id=self.model_id)
+        completion = self._converters.from_completion(
+            api_completion, model_id=self.model_id
+        )
+
+        for choice in completion.choices:
+            message = choice.message
+            if (
+                self._response_format_pyd is not None
+                and not self._llm_settings.get("use_structured_outputs")
+                and not message.tool_calls
+            ):
+                message_json = extract_json(
+                    message.content, return_none_on_failure=True
+                )
+                self._response_format_pyd.validate_python(message_json)
+
+        return completion
 
     async def generate_completion_stream(
         self,
@@ -271,6 +304,47 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
             api_completion_chunk_iterator, model_id=self.model_id
         )
 
+    async def _generate_completion_with_retry(
+        self,
+        conversation: Conversation,
+        *,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> Completion:
+        wrapped_func = retry(
+            wait=wait_random_exponential(min=1, max=8),
+            stop=stop_after_attempt(self.num_generation_retries + 1),
+            before=retry_before_callback,
+            retry_error_callback=retry_error_callback,
+        )(self.__class__.generate_completion)
+
+        return await wrapped_func(self, conversation, tool_choice=tool_choice, **kwargs)
+
+    @limit_rate_chunked  # type: ignore
+    async def _generate_completion_batch_with_retry_and_rate_lim(
+        self,
+        conversation: Conversation,
+        *,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> Completion:
+        return await self._generate_completion_with_retry(
+            conversation, tool_choice=tool_choice, **kwargs
+        )
+
+    async def generate_completion_batch(
+        self,
+        message_history: MessageHistory,
+        *,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> Sequence[Completion]:
+        return await self._generate_completion_batch_with_retry_and_rate_lim(
+            list(message_history.batched_conversations),  # type: ignore
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+
     async def generate_message(
         self,
         conversation: Conversation,
@@ -281,39 +355,8 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         completion = await self.generate_completion(
             conversation, tool_choice=tool_choice, **kwargs
         )
-        message = completion.choices[0].message
-        if self._response_format_pyd is not None and not self._struct_output_support:
-            self._response_format_pyd.validate_python(extract_json(message.content))
 
-        return message
-
-    async def _generate_message_with_retry(
-        self,
-        conversation: Conversation,
-        *,
-        tool_choice: ToolChoice | None = None,
-        **kwargs: Any,
-    ) -> AssistantMessage:
-        wrapped_func = retry(
-            wait=wait_random_exponential(min=1, max=8),
-            stop=stop_after_attempt(self.num_generation_retries + 1),
-            before=retry_before_callback,
-            retry_error_callback=retry_error_callback,
-        )(self.__class__.generate_message)
-
-        return await wrapped_func(self, conversation, tool_choice=tool_choice, **kwargs)
-
-    @limit_rate_chunked  # type: ignore
-    async def _generate_message_batch_with_retry_and_rate_lim(
-        self,
-        conversation: Conversation,
-        *,
-        tool_choice: ToolChoice | None = None,
-        **kwargs: Any,
-    ) -> AssistantMessage:
-        return await self._generate_message_with_retry(
-            conversation, tool_choice=tool_choice, **kwargs
-        )
+        return completion.choices[0].message
 
     async def generate_message_batch(
         self,
@@ -322,11 +365,11 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
     ) -> Sequence[AssistantMessage]:
-        return await self._generate_message_batch_with_retry_and_rate_lim(
-            list(message_history.batched_conversations),  # type: ignore
-            tool_choice=tool_choice,
-            **kwargs,
+        completion_batch = await self.generate_completion_batch(
+            message_history, tool_choice=tool_choice, **kwargs
         )
+
+        return [completion.choices[0].message for completion in completion_batch]
 
     def _get_rate_limiter(
         self,

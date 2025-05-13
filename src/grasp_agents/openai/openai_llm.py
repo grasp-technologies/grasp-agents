@@ -67,7 +67,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         model_name: str,
         model_id: str | None = None,
         llm_settings: OpenAILLMSettings | None = None,
-        tools: list[BaseTool[BaseModel, BaseModel, Any]] | None = None,
+        tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | None = None,
         # Connection settings
         api_provider: APIProvider = "openai",
@@ -113,8 +113,6 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             base_url=self._base_url,
             api_key=self._api_key,
             **async_openai_client_params_,
-            # timeout=10.0,
-            # max_retries=3,
         )
 
     async def _get_completion(

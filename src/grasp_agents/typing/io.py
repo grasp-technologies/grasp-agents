@@ -1,8 +1,6 @@
-from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
 
 from pydantic import BaseModel
-from pydantic.json_schema import SkipJsonSchema
 
 from .content import ImageData
 
@@ -10,8 +8,7 @@ AgentID: TypeAlias = str
 
 
 class AgentPayload(BaseModel):
-    # TODO: do we need conversation?
-    selected_recipient_ids: SkipJsonSchema[Sequence[AgentID] | None] = None
+    pass
 
 
 class AgentState(BaseModel):

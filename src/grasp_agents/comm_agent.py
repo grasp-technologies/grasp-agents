@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import Any, Generic, Protocol, TypeVar, cast, final
 
 from pydantic import BaseModel
+from pydantic.json_schema import SkipJsonSchema
 
 from .agent_message import AgentMessage
 from .agent_message_pool import AgentMessagePool
@@ -14,6 +15,11 @@ from .typing.tool import BaseTool
 
 logger = logging.getLogger(__name__)
 
+
+class DCommAgentPayload(AgentPayload):
+    selected_recipient_ids: SkipJsonSchema[Sequence[AgentID]]
+
+
 _EH_OutT = TypeVar("_EH_OutT", bound=AgentPayload, contravariant=True)  # noqa: PLC0105
 _EH_StateT = TypeVar("_EH_StateT", bound=AgentState, contravariant=True)  # noqa: PLC0105
 
@@ -22,7 +28,6 @@ class ExitHandler(Protocol[_EH_OutT, _EH_StateT, CtxT]):
     def __call__(
         self,
         output_message: AgentMessage[_EH_OutT, _EH_StateT],
-        agent_state: _EH_StateT,
         ctx: RunContextWrapper[CtxT] | None,
     ) -> bool: ...
 
@@ -38,13 +43,10 @@ class CommunicatingAgent(
         rcv_args_schema: type[InT] = AgentPayload,
         recipient_ids: Sequence[AgentID] | None = None,
         message_pool: AgentMessagePool[CtxT] | None = None,
-        dynamic_routing: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(agent_id=agent_id, out_schema=out_schema, **kwargs)
         self._message_pool = message_pool or AgentMessagePool()
-
-        self._dynamic_routing = dynamic_routing
 
         self._is_listening = False
         self._exit_impl: ExitHandler[OutT, StateT, CtxT] | None = None
@@ -55,10 +57,6 @@ class CommunicatingAgent(
     @property
     def rcv_args_schema(self) -> type[InT]:  # type: ignore[reportInvalidTypeVarUse]
         return self._rcv_args_schema
-
-    @property
-    def dynamic_routing(self) -> bool:
-        return self._dynamic_routing
 
     def _parse_output(
         self,
@@ -72,41 +70,36 @@ class CommunicatingAgent(
 
         return self._out_schema()
 
-    def _validate_dynamic_routing(self, payloads: Sequence[OutT]) -> Sequence[AgentID]:
-        assert all((p.selected_recipient_ids is not None) for p in payloads), (
-            "Dynamic routing is enabled, but some payloads have no recipient IDs"
+    def _validate_routing(self, payloads: Sequence[OutT]) -> Sequence[AgentID]:
+        if all(isinstance(p, DCommAgentPayload) for p in payloads):
+            payloads_ = cast("Sequence[DCommAgentPayload]", payloads)
+            selected_recipient_ids_per_payload = [
+                set(p.selected_recipient_ids or []) for p in payloads_
+            ]
+            assert all(
+                x == selected_recipient_ids_per_payload[0]
+                for x in selected_recipient_ids_per_payload
+            ), "All payloads must have the same recipient IDs for dynamic routing"
+
+            assert payloads_[0].selected_recipient_ids is not None
+            selected_recipient_ids = payloads_[0].selected_recipient_ids
+
+            assert all(rid in self.recipient_ids for rid in selected_recipient_ids), (
+                "Dynamic routing is enabled, but recipient IDs are not in "
+                "the allowed agent's recipient IDs"
+            )
+
+            return selected_recipient_ids
+
+        if all((not isinstance(p, DCommAgentPayload)) for p in payloads):
+            return self.recipient_ids
+
+        raise ValueError(
+            "All payloads must be either DCommAgentPayload or not DCommAgentPayload"
         )
-
-        selected_recipient_ids_per_payload = [
-            set(p.selected_recipient_ids or []) for p in payloads
-        ]
-        assert all(
-            x == selected_recipient_ids_per_payload[0]
-            for x in selected_recipient_ids_per_payload
-        ), "All payloads must have the same recipient IDs for dynamic routing"
-
-        assert payloads[0].selected_recipient_ids is not None
-        selected_recipient_ids = payloads[0].selected_recipient_ids
-
-        assert all(rid in self.recipient_ids for rid in selected_recipient_ids), (
-            "Dynamic routing is enabled, but recipient IDs are not in "
-            "the allowed agent's recipient IDs"
-        )
-
-        return selected_recipient_ids
-
-    def _validate_static_routing(self, payloads: Sequence[OutT]) -> Sequence[AgentID]:
-        assert all((p.selected_recipient_ids is None) for p in payloads), (
-            "Dynamic routing is not enabled, but some payloads have recipient IDs"
-        )
-
-        return self.recipient_ids
 
     async def post_message(self, message: AgentMessage[OutT, StateT]) -> None:
-        if self._dynamic_routing:
-            self._validate_dynamic_routing(message.payloads)
-        else:
-            self._validate_static_routing(message.payloads)
+        self._validate_routing(message.payloads)
 
         await self._message_pool.post(message)
 
@@ -144,9 +137,7 @@ class CommunicatingAgent(
         ctx: RunContextWrapper[CtxT] | None,
     ) -> bool:
         if self._exit_impl:
-            return self._exit_impl(
-                output_message=output_message, agent_state=self.state, ctx=ctx
-            )
+            return self._exit_impl(output_message=output_message, ctx=ctx)
 
         return False
 
@@ -190,28 +181,28 @@ class CommunicatingAgent(
 
     @final
     def as_tool(
-        self, tool_name: str, tool_description: str, tool_strict: bool = True
-    ) -> BaseTool[BaseModel, BaseModel, CtxT]:
-        # assert self.state.batch_size == 1, (
-        #     "Using agents as tools is only supported for batch size 1"
-        # )
-
+        self,
+        tool_name: str,
+        tool_description: str,
+        tool_strict: bool = True,
+    ) -> BaseTool[Any, Any, Any]:
         agent_instance = self
 
-        class AgentTool(BaseTool[BaseModel, BaseModel, Any]):
+        class AgentTool(BaseTool[Any, Any, Any]):
             name: str = tool_name
             description: str = tool_description
             in_schema: type[BaseModel] = agent_instance.rcv_args_schema
-            out_schema: type[BaseModel] = agent_instance.out_schema
+            out_schema: Any = agent_instance.out_schema
 
             strict: bool | None = tool_strict
 
             async def run(
                 self,
-                inp: BaseModel,
+                inp: InT,
                 ctx: RunContextWrapper[CtxT] | None = None,
             ) -> OutT:
                 rcv_args = agent_instance.rcv_args_schema.model_validate(inp)
+
                 rcv_message = AgentMessage(  # type: ignore[arg-type]
                     payloads=[rcv_args],
                     sender_id="<tool_user>",

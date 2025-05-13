@@ -12,6 +12,7 @@ dependencies = [
     "tqdm>=4.66.2,<5",
     "dotenv>=0.9.9",
     "pyyaml>=6.0.2",
+    "pydantic>=2",
 ]
 
 [dependency-groups]
@@ -22,7 +23,6 @@ dev = [
     "ipywidgets>=8.0.4,<9",
     "widgetsnbextension>=4.0.5,<5",
     "types-cachetools>=5.0.1,<6",
-    "pydantic>=2",
     "pre-commit-uv>=4.1.4",
     "twine>=5.1.1,<6",
     "ruff>=0.11.8",
