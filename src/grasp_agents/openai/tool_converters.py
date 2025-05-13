@@ -13,7 +13,7 @@ from . import (
 
 
 def to_api_tool(
-    tool: BaseTool[BaseModel, BaseModel, Any],
+    tool: BaseTool[BaseModel, Any, Any],
 ) -> ChatCompletionToolParam:
     return ChatCompletionToolParam(
         type="function",

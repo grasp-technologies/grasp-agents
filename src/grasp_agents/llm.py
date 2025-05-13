@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -32,7 +32,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         model_name: str | None = None,
         model_id: str | None = None,
         llm_settings: SettingsT | None = None,
-        tools: list[BaseTool[BaseModel, BaseModel, Any]] | None = None,
+        tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | None = None,
         **kwargs: Any,
     ) -> None:
@@ -41,9 +41,9 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         self._converters = converters
         self._model_id = model_id or str(uuid4())[:8]
         self._model_name = model_name
-        self._llm_settings = llm_settings
         self._tools = {t.name: t for t in tools} if tools else None
         self._response_format = response_format
+        self._llm_settings: SettingsT = llm_settings or cast("SettingsT", {})
 
     @property
     def model_id(self) -> str:
@@ -54,11 +54,11 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         return self._model_name
 
     @property
-    def llm_settings(self) -> SettingsT | None:
+    def llm_settings(self) -> SettingsT:
         return self._llm_settings
 
     @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, BaseModel, Any]] | None:
+    def tools(self) -> dict[str, BaseTool[BaseModel, Any, Any]] | None:
         return self._tools
 
     @property
@@ -66,7 +66,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         return self._response_format
 
     @tools.setter
-    def tools(self, tools: list[BaseTool[BaseModel, BaseModel, Any]] | None) -> None:
+    def tools(self, tools: list[BaseTool[BaseModel, Any, Any]] | None) -> None:
         self._tools = {t.name: t for t in tools} if tools else None
 
     def __repr__(self) -> str:

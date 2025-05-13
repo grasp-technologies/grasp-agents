@@ -1,0 +1,121 @@
+exclude = [
+  ".bzr",
+  ".direnv",
+  ".eggs",
+  ".git",
+  ".hg",
+  ".mypy_cache",
+  ".nox",
+  ".pants.d",
+  ".pytype",
+  ".ruff_cache",
+  ".svn",
+  ".tox",
+  ".venv",
+  "__pypackages__",
+  "_build",
+  "buck-out",
+  "build",
+  "dist",
+  "node_modules",
+  "venv",
+]
+
+line-length = 88
+fix = true
+
+[format]
+# Use `\n` line endings for all files
+line-ending = "lf"
+
+[lint]
+preview = true
+select = ["ALL"]
+
+# Rules we intentionally suppress across the code-base
+ignore = [
+  "ANN",     # flake8-annotations
+  "B006",
+  "B008",
+  "BLE001",
+  "C408",    # unnecessary-collection-call
+  "C416",
+  "C90",     # mccabe complexity
+  "COM",     # flake8-commas
+  "CPY001",
+  "DJ",      # django
+  "DOC201",
+  "DOC402",
+  "DOC501",
+  "DTZ006",
+  "D100",    # ignore missing docs
+  "D101",
+  "D102",
+  "D103",
+  "D104",
+  "D105",
+  "D106",
+  "D107",
+  "D200",
+  "D205",
+  "D212",
+  "D400",
+  "D401",
+  "D404",
+  "D415",
+  "EM101",
+  "EM102",
+  "ERA001",
+  "EXE",     # flake8-executable
+  "FAST002",
+  "FBT001",
+  "FBT002",
+  "FIX002",  # too-verbose TODOs
+  "G004",
+  "INP001",
+  "N818",
+  "PERF401",
+  "PGH003",
+  "PTH109",
+  "PLR0904",
+  "PLR0911",
+  "PLR0912",
+  "PLR0913",
+  "PLR0914",
+  "PLR0915",
+  "PLR0917",
+  "PLR1702",
+  "PLR2004",
+  "PLR6301",
+  "PLW0603",
+  "PLW1514",
+  "PLW1641",
+  "RET503",
+  "RUF005",
+  "S101",
+  "S105",
+  "S108",
+  "S110",
+  "S112",
+  "S608",
+  "SIM105",
+  "SIM117",
+  "T10",     # debugger
+  "T201",
+  "TC002",
+  "TD001",
+  "TD002",
+  "TD003",
+  "TD004",
+  "TID",     # flake8-tidy-imports
+  "TRY003",  # verbose exception messages
+  "TRY201",
+  "TRY300",
+]
+
+fixable = ["ALL"]
+unfixable = ["F401"]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"*.ipynb" = ["I"]

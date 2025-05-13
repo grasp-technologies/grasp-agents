@@ -13,13 +13,14 @@ def from_api_completion(
     api_completion: ChatCompletion, model_id: str | None = None
 ) -> Completion:
     choices: list[CompletionChoice] = []
-    # TODO: add custom error type
     if api_completion.choices is None:  # type: ignore
-        raise ValueError(
+        # Choices can sometimes be None for some providers using the OpenAI API
+        # TODO: add custom error types
+        raise RuntimeError(
             f"Completion API error: {getattr(api_completion, 'error', None)}"
         )
     for api_choice in api_completion.choices:
-        # TODO: no way to assign individual message usages when len(choices) > 1
+        # TODO: currently no way to assign individual message usages when len(choices) > 1
         message = from_api_assistant_message(
             api_choice.message, api_completion.usage, model_id=model_id
         )

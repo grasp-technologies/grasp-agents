@@ -33,6 +33,8 @@ from .typing.io import (
     AgentPayload,
     AgentState,
     InT,
+    LLMFormattedArgs,
+    LLMFormattedSystemArgs,
     LLMPrompt,
     LLMPromptArgs,
     OutT,
@@ -67,7 +69,7 @@ class LLMAgent(
         # Output schema
         out_schema: type[OutT] = cast("type[OutT]", AgentPayload),
         # Tools
-        tools: list[BaseTool[BaseModel, BaseModel, CtxT]] | None = None,
+        tools: list[BaseTool[Any, Any, CtxT]] | None = None,
         max_turns: int = 1000,
         react_mode: bool = False,
         # Agent state management
@@ -75,7 +77,6 @@ class LLMAgent(
         # Multi-agent routing
         message_pool: AgentMessagePool[CtxT] | None = None,
         recipient_ids: list[AgentID] | None = None,
-        dynamic_routing: bool = False,
     ) -> None:
         super().__init__(
             agent_id=agent_id,
@@ -83,7 +84,6 @@ class LLMAgent(
             rcv_args_schema=rcv_args_schema,
             message_pool=message_pool,
             recipient_ids=recipient_ids,
-            dynamic_routing=dynamic_routing,
         )
 
         # Agent state
@@ -114,12 +114,24 @@ class LLMAgent(
 
         self.no_tqdm = getattr(llm, "no_tqdm", False)
 
+        if type(self)._format_sys_args is not LLMAgent[Any, Any, Any]._format_sys_args:  # noqa: SLF001
+            self._prompt_builder.format_sys_args_impl = self._format_sys_args
+
+        if type(self)._format_inp_args is not LLMAgent[Any, Any, Any]._format_inp_args:  # noqa: SLF001
+            self._prompt_builder.format_inp_args_impl = self._format_inp_args
+
+        if (
+            type(self)._tool_call_loop_exit  # noqa: SLF001
+            is not LLMAgent[Any, Any, Any]._tool_call_loop_exit  # noqa: SLF001
+        ):
+            self._tool_orchestrator.tool_call_loop_exit_impl = self._tool_call_loop_exit
+
     @property
     def llm(self) -> LLM[LLMSettings, Converters]:
         return self._tool_orchestrator.llm
 
     @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, BaseModel, CtxT]]:
+    def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
         return self._tool_orchestrator.tools
 
     @property
@@ -142,37 +154,10 @@ class LLMAgent(
     def inp_prompt(self) -> LLMPrompt | None:
         return self._prompt_builder.inp_prompt
 
-    def format_sys_args_handler(
-        self, func: FormatSystemArgsHandler[CtxT]
-    ) -> FormatSystemArgsHandler[CtxT]:
-        self._prompt_builder.format_sys_args_impl = func
-
-        return func
-
-    def format_inp_args_handler(
-        self, func: FormatInputArgsHandler[InT, CtxT]
-    ) -> FormatInputArgsHandler[InT, CtxT]:
-        self._prompt_builder.format_inp_args_impl = func
-
-        return func
-
-    def make_custom_agent_state_handler(
-        self, func: MakeCustomAgentState
-    ) -> MakeCustomAgentState:
-        self._make_custom_agent_state_impl = func
-
-        return func
-
-    def tool_call_loop_exit_handler(
-        self, func: ToolCallLoopExitHandler[CtxT]
-    ) -> ToolCallLoopExitHandler[CtxT]:
-        self._tool_orchestrator.tool_call_loop_exit_impl = func
-
-        return func
-
     def _parse_output(
         self,
         conversation: Conversation,
+        *,
         rcv_args: InT | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
         **kwargs: Any,
@@ -274,10 +259,7 @@ class LLMAgent(
 
         # 6. Write interaction history to context
 
-        if self.dynamic_routing:
-            recipient_ids = self._validate_dynamic_routing(val_output_batch)
-        else:
-            recipient_ids = self._validate_static_routing(val_output_batch)
+        recipient_ids = self._validate_routing(val_output_batch)
 
         if ctx:
             interaction_record = InteractionRecord(
@@ -332,30 +314,66 @@ class LLMAgent(
         ):
             self._print_msgs([state.message_history[0][0]], ctx=ctx)
 
-    # def _format_sys_args(
-    #     self,
-    #     sys_args: LLMPromptArgs,
-    #     ctx: RunContextWrapper[CtxT] | None = None,
-    # ) -> LLMFormattedSystemArgs:
-    #     return self._prompt_builder.format_sys_args(sys_args=sys_args, ctx=ctx)
+    # -- Handlers for custom implementations --
 
-    # def _format_inp_args(
-    #     self,
-    #     usr_args: LLMPromptArgs,
-    #     rcv_args: InT,
-    #     ctx: RunContextWrapper[CtxT] | None = None,
-    # ) -> LLMFormattedArgs:
-    #     return self._prompt_builder.format_inp_args(
-    #         usr_args=usr_args, rcv_args=rcv_args, ctx=ctx
-    #     )
+    def format_sys_args_handler(
+        self, func: FormatSystemArgsHandler[CtxT]
+    ) -> FormatSystemArgsHandler[CtxT]:
+        self._prompt_builder.format_sys_args_impl = func
 
-    # def _tool_call_loop_exit(
-    #     self,
-    #     conversation: Conversation,
-    #     *,
-    #     ctx: RunContextWrapper[CtxT] | None = None,
-    #     **kwargs: Any,
-    # ) -> bool:
-    #     return self._tool_orchestrator.tool_call_loop_exit(
-    #         conversation=conversation, ctx=ctx, **kwargs
-    #     )
+        return func
+
+    def format_inp_args_handler(
+        self, func: FormatInputArgsHandler[InT, CtxT]
+    ) -> FormatInputArgsHandler[InT, CtxT]:
+        self._prompt_builder.format_inp_args_impl = func
+
+        return func
+
+    def make_custom_agent_state_handler(
+        self, func: MakeCustomAgentState
+    ) -> MakeCustomAgentState:
+        self._make_custom_agent_state_impl = func
+
+        return func
+
+    def tool_call_loop_exit_handler(
+        self, func: ToolCallLoopExitHandler[CtxT]
+    ) -> ToolCallLoopExitHandler[CtxT]:
+        self._tool_orchestrator.tool_call_loop_exit_impl = func
+
+        return func
+
+    # -- Override these methods in subclasses if needed --
+
+    def _format_sys_args(
+        self,
+        sys_args: LLMPromptArgs,
+        *,
+        ctx: RunContextWrapper[CtxT] | None = None,
+    ) -> LLMFormattedSystemArgs:
+        raise NotImplementedError(
+            "LLMAgent._format_sys_args must be overridden by a subclass "
+            "if it's intended to be used as the system arguments formatter."
+        )
+
+    def _format_inp_args(
+        self,
+        usr_args: LLMPromptArgs,
+        rcv_args: InT,
+        ctx: RunContextWrapper[CtxT] | None = None,
+    ) -> LLMFormattedArgs:
+        raise NotImplementedError(
+            "LLMAgent._format_inp_args must be overridden by a subclass"
+        )
+
+    def _tool_call_loop_exit(
+        self,
+        conversation: Conversation,
+        *,
+        ctx: RunContextWrapper[CtxT] | None = None,
+        **kwargs: Any,
+    ) -> bool:
+        raise NotImplementedError(
+            "LLMAgent._tool_call_loop_exit must be overridden by a subclass"
+        )

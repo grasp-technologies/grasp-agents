@@ -1,9 +1,11 @@
+import json
 from collections.abc import Hashable, Sequence
 from enum import StrEnum
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt
+from pydantic.json import pydantic_encoder
 
 from .content import Content, ImageData
 from .tool import ToolCall
@@ -110,13 +112,13 @@ class ToolMessage(MessageBase):
     @classmethod
     def from_tool_output(
         cls,
-        tool_output: BaseModel,
+        tool_output: Any,
         tool_call: ToolCall,
         model_id: str | None = None,
         indent: int = 2,
     ) -> "ToolMessage":
         return cls(
-            content=tool_output.model_dump_json(indent=indent),
+            content=json.dumps(tool_output, default=pydantic_encoder, indent=indent),
             tool_call_id=tool_call.id,
             model_id=model_id,
         )

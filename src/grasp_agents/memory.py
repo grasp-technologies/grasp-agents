@@ -142,9 +142,3 @@ class MessageHistory:
 
     def erase(self) -> None:
         self._batched_conversations = [[]]
-
-    # def get_batch(self, batch_id: int) -> list[Message]:
-    #     return self._batched_conversations[batch_id]
-
-    # def iterate_conversations(self) -> Iterator[list[Message]]:
-    #     return iter(self._batched_conversations)
