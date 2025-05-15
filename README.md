@@ -1,8 +1,10 @@
 # Grasp Agents
 
 <br/>
-<img src="./.assets/grasp.svg" alt="Grasp Agents" width="320" />
-
+<picture>
+  <source srcset="./.assets/grasp-dark.svg" media="(prefers-color-scheme: dark)">
+  <img src="./.assets/grasp.svg" alt="Grasp Agents"/>
+</picture>
 <br/>
 <br/>
 
