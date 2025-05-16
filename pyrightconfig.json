@@ -22,9 +22,6 @@
         "node_modules",
         "venv",
     ],
-    "ignore": [
-        "src/grasp_agents/examples/notebooks"
-    ],
     "extraPaths": [
         ".",
         "src",

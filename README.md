@@ -91,17 +91,20 @@ GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
 Create a script, e.g., `problem_recommender.py`:
 
 ```python
+import asyncio
 import re
-from typing import Any
 from pathlib import Path
-from pydantic import BaseModel, Field
+from typing import Any
+
 from dotenv import load_dotenv
-from grasp_agents.typing.tool import BaseTool
-from grasp_agents.run_context import RunContextWrapper
-from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
-from grasp_agents.llm_agent import LLMAgent
+from pydantic import BaseModel, Field
+
 from grasp_agents.grasp_logging import setup_logging
+from grasp_agents.llm_agent import LLMAgent
+from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
+from grasp_agents.run_context import RunContextWrapper
 from grasp_agents.typing.message import Conversation
+from grasp_agents.typing.tool import BaseTool
 
 load_dotenv()
 
@@ -125,6 +128,7 @@ Ask the student about their education, interests, and preferences, then suggest 
 
 class TeacherQuestion(BaseModel):
     question: str = Field(..., description="The question to ask the student.")
+
 
 StudentReply = str
 
@@ -158,22 +162,24 @@ teacher = LLMAgent[Any, Problem, None](
 
 
 @teacher.exit_tool_call_loop_handler
-def exit_tool_call_loop(conversation: Conversation, ctx, **kwargs) -> None:
-    message_text = conversation[-1].content
-
-    return re.search(r"<PROBLEM>", message_text)
+def exit_tool_call_loop(
+    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
+) -> bool:
+    return r"<PROBLEM>" in str(conversation[-1].content)
 
 
 @teacher.parse_output_handler
-def parse_output(conversation: Conversation, ctx, **kwargs) -> Problem:
-    message_text = conversation[-1].content
-    matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message_text, re.DOTALL)
+def parse_output(
+    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
+) -> Problem:
+    message = str(conversation[-1].content)
+    matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message, re.DOTALL)
 
     return matches[0]
 
 
 async def main():
-    ctx = RunContextWrapper(print_messages=True)
+    ctx = RunContextWrapper[None](print_messages=True)
     out = await teacher.run(ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)

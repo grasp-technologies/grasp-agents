@@ -53,22 +53,12 @@ class RunContextWrapper(BaseModel, Generic[CtxT]):
     context: CtxT | None = None
     run_id: str = Field(default_factory=lambda: str(uuid4())[:8], frozen=True)
     run_args: dict[AgentID, RunArgs] = Field(default_factory=dict)
-    interaction_history: InteractionHistory = Field(default_factory=list)
+    interaction_history: InteractionHistory = Field(default_factory=list)  # type: ignore[valid-type]
 
     print_messages: bool = False
 
     _usage_tracker: UsageTracker = PrivateAttr()
     _printer: Printer = PrivateAttr()
-
-    # usage_tracker: Optional[UsageTracker] = None
-    # printer: Optional[Printer] = None
-
-    # @model_validator(mode="after")
-    # def set_usage_tracker_and_printer(self) -> "RunContextWrapper":
-    #     self.usage_tracker = UsageTracker(source_id=self.run_id)
-    #     self.printer = Printer(source_id=self.run_id)
-
-    #     return self
 
     def model_post_init(self, context: Any) -> None:  # noqa: ARG002
         self._usage_tracker = UsageTracker(source_id=self.run_id)
