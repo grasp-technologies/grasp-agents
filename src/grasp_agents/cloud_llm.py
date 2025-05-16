@@ -26,7 +26,7 @@ from .rate_limiting.rate_limiter_chunked import (  # type: ignore
 from .typing.completion import Completion, CompletionChunk
 from .typing.message import AssistantMessage, Conversation
 from .typing.tool import BaseTool, ToolChoice
-from .utils import extract_json
+from .utils import validate_obj_from_json_or_py_string
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +271,11 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
             api_completion, model_id=self.model_id
         )
 
+        self._validate_completion(completion)
+
+        return completion
+
+    def _validate_completion(self, completion: Completion) -> None:
         for choice in completion.choices:
             message = choice.message
             if (
@@ -278,12 +283,10 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
                 and not self._llm_settings.get("use_structured_outputs")
                 and not message.tool_calls
             ):
-                message_json = extract_json(
-                    message.content, return_none_on_failure=True
+                validate_obj_from_json_or_py_string(
+                    message.content,
+                    adapter=self._response_format_pyd,
                 )
-                self._response_format_pyd.validate_python(message_json)
-
-        return completion
 
     async def generate_completion_stream(
         self,

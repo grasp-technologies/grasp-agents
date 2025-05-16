@@ -14,7 +14,7 @@ class MakeCustomAgentState(Protocol):
     def __call__(
         self,
         cur_state: Optional["LLMAgentState"],
-        rec_state: Optional["LLMAgentState"],
+        rcv_state: AgentState | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContextWrapper[Any] | None,
     ) -> "LLMAgentState": ...
@@ -31,7 +31,7 @@ class LLMAgentState(AgentState):
     def from_cur_and_rcv_states(
         cls,
         cur_state: Optional["LLMAgentState"] = None,
-        rcv_state: Optional["LLMAgentState"] = None,
+        rcv_state: Optional["AgentState"] = None,
         sys_prompt: LLMPrompt | None = None,
         strategy: SetAgentStateStrategy = "from_sender",
         make_custom_state_impl: MakeCustomAgentState | None = None,
@@ -48,7 +48,11 @@ class LLMAgentState(AgentState):
             upd_mh.reset(sys_prompt)
 
         elif strategy == "from_sender":
-            rcv_mh = rcv_state.message_history if rcv_state else None
+            rcv_mh = (
+                rcv_state.message_history
+                if rcv_state and isinstance(rcv_state, "LLMAgentState")
+                else None
+            )
             if rcv_mh:
                 upd_mh = deepcopy(rcv_mh)
             else:
@@ -60,12 +64,12 @@ class LLMAgentState(AgentState):
             )
             return make_custom_state_impl(
                 cur_state=cur_state,
-                rec_state=rcv_state,
+                rcv_state=rcv_state,
                 sys_prompt=sys_prompt,
                 ctx=ctx,
             )
 
-        return cls(message_history=upd_mh)
+        return cls.model_construct(message_history=upd_mh)
 
     def __repr__(self) -> str:
         return f"Message History: {len(self.message_history)}"

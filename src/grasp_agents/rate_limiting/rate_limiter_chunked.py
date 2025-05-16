@@ -2,6 +2,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Generic, overload
 
@@ -9,21 +10,25 @@ from tqdm.autonotebook import tqdm
 
 from ..utils import asyncio_gather_with_pbar
 from .types import (
-    QueryP,
-    QueryR,
-    QueryT,
-    RateLimDecoratorWithArgsList,
-    RateLimDecoratorWithArgsSingle,
-    RateLimiterState,
-    RetrievalCallableList,
-    RetrievalCallableSingle,
+    P,
+    ProcessorCallableList,
+    ProcessorCallableSingle,
+    R,
+    RateLimWrapperWithArgsList,
+    RateLimWrapperWithArgsSingle,
+    T,
 )
-from .utils import partial_retrieval_callable, split_pos_args
+from .utils import partial_processor_callable, split_pos_args
 
 logger = logging.getLogger(__name__)
 
 
-class RateLimiterC(Generic[QueryT, QueryR]):
+@dataclass
+class RateLimiterState:
+    next_request_time: float = 0.0
+
+
+class RateLimiterC(Generic[T, R]):
     def __init__(
         self,
         rpm: float,
@@ -40,9 +45,9 @@ class RateLimiterC(Generic[QueryT, QueryR]):
 
     async def process_input(
         self,
-        func_partial: Callable[[QueryT], Coroutine[Any, Any, QueryR]],
-        inp: QueryT,
-    ) -> QueryR:
+        func_partial: Callable[[T], Coroutine[Any, Any, R]],
+        inp: T,
+    ) -> R:
         async with self._semaphore:
             async with self._lock:
                 now = monotonic()
@@ -53,11 +58,11 @@ class RateLimiterC(Generic[QueryT, QueryR]):
 
     async def process_inputs(
         self,
-        func_partial: Callable[[QueryT], Coroutine[Any, Any, QueryR]],
-        inputs: list[QueryT],
+        func_partial: Callable[[T], Coroutine[Any, Any, R]],
+        inputs: list[T],
         no_tqdm: bool = False,
-    ) -> list[QueryR]:
-        results: list[QueryR] = []
+    ) -> list[R]:
+        results: list[R] = []
         for i in tqdm(
             range(0, len(inputs), self._chunk_size),
             disable=no_tqdm,
@@ -95,33 +100,30 @@ class RateLimiterC(Generic[QueryT, QueryR]):
 
 @overload
 def limit_rate(
-    call: RetrievalCallableSingle[QueryT, QueryP, QueryR],
-    rate_limiter: RateLimiterC[QueryT, QueryR] | None = None,
-) -> RetrievalCallableSingle[QueryT, QueryP, QueryR]: ...
+    call: ProcessorCallableSingle[T, P, R],
+    rate_limiter: RateLimiterC[T, R] | None = None,
+) -> ProcessorCallableSingle[T, P, R]: ...
 
 
 @overload
 def limit_rate(
     call: None = None,
-    rate_limiter: RateLimiterC[QueryT, QueryR] | None = None,
-) -> RateLimDecoratorWithArgsSingle[QueryT, QueryP, QueryR]: ...
+    rate_limiter: RateLimiterC[T, R] | None = None,
+) -> RateLimWrapperWithArgsSingle[T, P, R]: ...
 
 
 def limit_rate(
-    call: RetrievalCallableSingle[QueryT, QueryP, QueryR] | None = None,
-    rate_limiter: RateLimiterC[QueryT, QueryR] | None = None,
-) -> (
-    RetrievalCallableSingle[QueryT, QueryP, QueryR]
-    | RateLimDecoratorWithArgsSingle[QueryT, QueryP, QueryR]
-):
+    call: ProcessorCallableSingle[T, P, R] | None = None,
+    rate_limiter: RateLimiterC[T, R] | None = None,
+) -> ProcessorCallableSingle[T, P, R] | RateLimWrapperWithArgsSingle[T, P, R]:
     if call is None:
         return functools.partial(limit_rate, rate_limiter=rate_limiter)
 
     @functools.wraps(call)  # type: ignore
-    async def wrapper(*args: Any, **kwargs: Any) -> QueryR:
-        inp: QueryT
-        self_obj, inp, other_args = split_pos_args(call, args)  # type: ignore
-        call_partial = partial_retrieval_callable(call, self_obj, *other_args, **kwargs)
+    async def wrapper(*args: Any, **kwargs: Any) -> R:
+        inp: T
+        self_obj, inp, other_args = split_pos_args(call, args)
+        call_partial = partial_processor_callable(call, self_obj, *other_args, **kwargs)
 
         _rate_limiter = rate_limiter
         if _rate_limiter is None:
@@ -136,39 +138,36 @@ def limit_rate(
 
 @overload
 def limit_rate_chunked(
-    call: RetrievalCallableSingle[QueryT, QueryP, QueryR],
-    rate_limiter: RateLimiterC[QueryT, QueryR] | None = None,
+    call: ProcessorCallableList[T, P, R],
+    rate_limiter: RateLimiterC[T, R] | None = None,
     no_tqdm: bool | None = None,
-) -> RetrievalCallableList[QueryT, QueryP, QueryR]: ...
+) -> ProcessorCallableList[T, P, R]: ...
 
 
 @overload
 def limit_rate_chunked(
     call: None = None,
-    rate_limiter: RateLimiterC[QueryT, QueryR] | None = None,
+    rate_limiter: RateLimiterC[T, R] | None = None,
     no_tqdm: bool | None = None,
-) -> RateLimDecoratorWithArgsList[QueryT, QueryP, QueryR]: ...
+) -> RateLimWrapperWithArgsList[T, P, R]: ...
 
 
 def limit_rate_chunked(
-    call: RetrievalCallableSingle[QueryT, QueryP, QueryR] | None = None,
-    rate_limiter: RateLimiterC[QueryT, QueryR] | None = None,
+    call: ProcessorCallableList[T, P, R] | None = None,
+    rate_limiter: RateLimiterC[T, R] | None = None,
     no_tqdm: bool | None = None,
-) -> (
-    RetrievalCallableList[QueryT, QueryP, QueryR]
-    | RateLimDecoratorWithArgsList[QueryT, QueryP, QueryR]
-):
+) -> ProcessorCallableList[T, P, R] | RateLimWrapperWithArgsList[T, P, R]:
     if call is None:
         return functools.partial(
             limit_rate_chunked, rate_limiter=rate_limiter, no_tqdm=no_tqdm
-        )
+        )  # type: ignore
 
     @functools.wraps(call)  # type: ignore
-    async def wrapper(*args: Any, **kwargs: Any) -> list[QueryR]:
+    async def wrapper(*args: Any, **kwargs: Any) -> list[R]:
         assert call is not None
 
-        self_obj, inputs, other_args = split_pos_args(call, args)  # type: ignore
-        call_partial = partial_retrieval_callable(call, self_obj, *other_args, **kwargs)
+        self_obj, inputs, other_args = split_pos_args(call, args)
+        call_partial = partial_processor_callable(call, self_obj, *other_args, **kwargs)
 
         _no_tqdm = no_tqdm
         _rate_limiter = rate_limiter
@@ -182,7 +181,9 @@ def limit_rate_chunked(
                 *[call_partial(inp) for inp in inputs], no_tqdm=_no_tqdm
             )
         return await _rate_limiter.process_inputs(
-            func_partial=call_partial, inputs=inputs, no_tqdm=_no_tqdm
+            func_partial=call_partial,  # type: ignore
+            inputs=inputs,
+            no_tqdm=_no_tqdm,
         )
 
     return wrapper

@@ -111,6 +111,7 @@ ignore = [
   "TRY003",  # verbose exception messages
   "TRY201",
   "TRY300",
+  "RUF052",  # used-dummy-variable
 ]
 
 fixable = ["ALL"]

@@ -69,6 +69,10 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
     def tools(self, tools: list[BaseTool[BaseModel, Any, Any]] | None) -> None:
         self._tools = {t.name: t for t in tools} if tools else None
 
+    @response_format.setter
+    def response_format(self, response_format: type | None) -> None:
+        self._response_format = response_format
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}(model_id={self.model_id}; "

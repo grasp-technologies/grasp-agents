@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
+from pydantic import BaseModel
+
 from .completion import Completion, CompletionChunk
 from .content import Content
 from .message import AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage
@@ -64,7 +66,7 @@ class Converters(ABC):
 
     @staticmethod
     @abstractmethod
-    def to_tool(tool: BaseTool[Any, Any, Any], **kwargs: Any) -> Any:
+    def to_tool(tool: BaseTool[BaseModel, Any, Any], **kwargs: Any) -> Any:
         pass
 
     @staticmethod

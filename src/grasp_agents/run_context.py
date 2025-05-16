@@ -8,7 +8,6 @@ from .printer import Printer
 from .typing.content import ImageData
 from .typing.io import (
     AgentID,
-    AgentPayload,
     AgentState,
     InT,
     LLMPrompt,
@@ -44,9 +43,7 @@ class InteractionRecord(BaseModel, Generic[InT, OutT, StateT]):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-InteractionHistory: TypeAlias = list[
-    InteractionRecord[AgentPayload, AgentPayload, AgentState]
-]
+InteractionHistory: TypeAlias = list[InteractionRecord[Any, Any, AgentState]]
 
 
 CtxT = TypeVar("CtxT")

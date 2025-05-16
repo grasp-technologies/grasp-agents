@@ -25,7 +25,7 @@
     * Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
     * Workflows (static communication topology), including loops
     * Agents-as-tools for task delegation
-    * Freeform A2A communication via in-process Actor model
+    * Freeform A2A communication via the in-process actor model
 - Batch processing support outside of agentic loops
 - Simple logging and usage/cost tracking
 
@@ -97,7 +97,6 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from grasp_agents.typing.tool import BaseTool
-from grasp_agents.typing.io import AgentPayload
 from grasp_agents.run_context import RunContextWrapper
 from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
 from grasp_agents.llm_agent import LLMAgent
@@ -133,8 +132,6 @@ StudentReply = str
 class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
     name: str = "ask_student_tool"
     description: str = "Ask the student a question and get their reply."
-    in_schema: type[TeacherQuestion] = TeacherQuestion
-    out_schema: type[StudentReply] = StudentReply
 
     async def run(
         self, inp: TeacherQuestion, ctx: RunContextWrapper[Any] | None = None
@@ -142,11 +139,10 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
         return input(inp.question)
 
 
-class FinalResponse(AgentPayload):
-    problem: str
+Problem = str
 
 
-teacher = LLMAgent[Any, FinalResponse, None](
+teacher = LLMAgent[Any, Problem, None](
     agent_id="teacher",
     llm=OpenAILLM(
         model_name="gpt-4.1",
@@ -157,12 +153,11 @@ teacher = LLMAgent[Any, FinalResponse, None](
     max_turns=20,
     react_mode=True,
     sys_prompt=sys_prompt_react,
-    out_schema=FinalResponse,
     set_state_strategy="reset",
 )
 
 
-@teacher.tool_call_loop_exit_handler
+@teacher.exit_tool_call_loop_handler
 def exit_tool_call_loop(conversation: Conversation, ctx, **kwargs) -> None:
     message_text = conversation[-1].content
 
@@ -170,17 +165,17 @@ def exit_tool_call_loop(conversation: Conversation, ctx, **kwargs) -> None:
 
 
 @teacher.parse_output_handler
-def parse_output(conversation: Conversation, ctx, **kwargs) -> FinalResponse:
+def parse_output(conversation: Conversation, ctx, **kwargs) -> Problem:
     message_text = conversation[-1].content
     matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message_text, re.DOTALL)
 
-    return FinalResponse(problem=matches[0])
+    return matches[0]
 
 
 async def main():
     ctx = RunContextWrapper(print_messages=True)
     out = await teacher.run(ctx=ctx)
-    print(out.payloads[0].problem)
+    print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)
 
 

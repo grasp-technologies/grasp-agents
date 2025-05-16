@@ -4,12 +4,12 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from .agent_message import AgentMessage
 from .run_context import CtxT, RunContextWrapper
-from .typing.io import AgentID, AgentPayload, AgentState
+from .typing.io import AgentID, AgentState
 
 logger = logging.getLogger(__name__)
 
 
-_MH_PayloadT = TypeVar("_MH_PayloadT", bound=AgentPayload, contravariant=True)  # noqa: PLC0105
+_MH_PayloadT = TypeVar("_MH_PayloadT", contravariant=True)  # noqa: PLC0105
 _MH_StateT = TypeVar("_MH_StateT", bound=AgentState, contravariant=True)  # noqa: PLC0105
 
 
@@ -24,15 +24,13 @@ class MessageHandler(Protocol[_MH_PayloadT, _MH_StateT, CtxT]):
 
 class AgentMessagePool(Generic[CtxT]):
     def __init__(self) -> None:
-        self._queues: dict[
-            AgentID, asyncio.Queue[AgentMessage[AgentPayload, AgentState]]
-        ] = {}
+        self._queues: dict[AgentID, asyncio.Queue[AgentMessage[Any, AgentState]]] = {}
         self._message_handlers: dict[
-            AgentID, MessageHandler[AgentPayload, AgentState, CtxT]
+            AgentID, MessageHandler[Any, AgentState, CtxT]
         ] = {}
         self._tasks: dict[AgentID, asyncio.Task[None]] = {}
 
-    async def post(self, message: AgentMessage[AgentPayload, AgentState]) -> None:
+    async def post(self, message: AgentMessage[Any, AgentState]) -> None:
         for recipient_id in message.recipient_ids:
             queue = self._queues.setdefault(recipient_id, asyncio.Queue())
             await queue.put(message)
@@ -40,7 +38,7 @@ class AgentMessagePool(Generic[CtxT]):
     def register_message_handler(
         self,
         agent_id: AgentID,
-        handler: MessageHandler[AgentPayload, AgentState, CtxT],
+        handler: MessageHandler[Any, AgentState, CtxT],
         ctx: RunContextWrapper[CtxT] | None = None,
         **run_kwargs: Any,
     ) -> None:

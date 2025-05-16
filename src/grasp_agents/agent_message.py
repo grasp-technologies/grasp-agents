@@ -4,9 +4,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .typing.io import AgentID, AgentPayload, AgentState
+from .typing.io import AgentID, AgentState
 
-_PayloadT = TypeVar("_PayloadT", bound=AgentPayload, covariant=True)  # noqa: PLC0105
+_PayloadT = TypeVar("_PayloadT", covariant=True)  # noqa: PLC0105
 _StateT = TypeVar("_StateT", bound=AgentState, covariant=True)  # noqa: PLC0105
 
 
