@@ -1,7 +1,10 @@
 # Grasp Agents
 
 <br/>
-<img src="./.assets/grasp.svg" alt="Grasp Agents" width="320" />
+<picture>
+  <source srcset="./.assets/grasp-dark.svg" media="(prefers-color-scheme: dark)">
+  <img src="./.assets/grasp.svg" alt="Grasp Agents"/>
+</picture>
 <br/>
 <br/>
 
@@ -18,9 +21,9 @@
 ## Features
 
 - Clean formulation of agents as generic entities over:
-    * I/O schemas
-    * Agent state
-    * Shared context
+  - I/O schemas
+  - Agent state
+  - Shared context
 - Transparent implementation of common agentic patterns:
     * Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
     * Workflows (static communication topology), including loops
@@ -38,7 +41,7 @@
 - `prompt_builder.py`: Tools for constructing prompts.
 - `workflow/`: Modules for defining and managing agent workflows.
 - `cloud_llm.py`, `llm.py`: LLM integration and base LLM functionalities.
-- `openai/`: Modules specific to OpenAI API integration.    
+- `openai/`: Modules specific to OpenAI API integration.
 - `memory.py`: Memory management for agents (currently only message history).
 - `run_context.py`: Context management for agent runs.
 - `usage_tracker.py`: Tracking of API usage and costs.
@@ -116,8 +119,8 @@ setup_logging(
 )
 
 sys_prompt_react = """
-Your task is to suggest an exciting stats problem to a student. 
-Ask the student about their education, interests, and preferences, then suggest a problem tailored to them. 
+Your task is to suggest an exciting stats problem to a student.
+Ask the student about their education, interests, and preferences, then suggest a problem tailored to them.
 
 # Instructions
 * Ask questions one by one.
