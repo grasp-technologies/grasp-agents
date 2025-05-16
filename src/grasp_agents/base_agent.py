@@ -1,47 +1,30 @@
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Protocol
+from typing import Any, ClassVar, Generic
 
-from pydantic import BaseModel
+from pydantic import TypeAdapter
 
+from .generics_utils import AutoInstanceAttributesMixin
 from .run_context import CtxT, RunContextWrapper
-from .typing.io import AgentID, AgentPayload, OutT, StateT
+from .typing.io import AgentID, OutT, StateT
 from .typing.tool import BaseTool
 
 
-class ParseOutputHandler(Protocol[OutT, CtxT]):
-    def __call__(
-        self, *args: Any, ctx: RunContextWrapper[CtxT] | None, **kwargs: Any
-    ) -> OutT: ...
+class BaseAgent(AutoInstanceAttributesMixin, ABC, Generic[OutT, StateT, CtxT]):
+    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {0: "_out_type"}
 
-
-class BaseAgent(ABC, Generic[OutT, StateT, CtxT]):
     @abstractmethod
-    def __init__(
-        self,
-        agent_id: AgentID,
-        *,
-        out_schema: type[OutT] = AgentPayload,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, agent_id: AgentID, **kwargs: Any) -> None:
+        self._out_type: type[OutT]
         self._state: StateT
+
+        super().__init__()
+
         self._agent_id = agent_id
-        self._out_schema = out_schema
-        self._parse_output_impl: ParseOutputHandler[OutT, CtxT] | None = None
+        self._out_type_adapter: TypeAdapter[OutT] = TypeAdapter(self._out_type)
 
-    def parse_output_handler(
-        self, func: ParseOutputHandler[OutT, CtxT]
-    ) -> ParseOutputHandler[OutT, CtxT]:
-        self._parse_output_impl = func
-
-        return func
-
-    def _parse_output(
-        self, *args: Any, ctx: RunContextWrapper[CtxT] | None = None, **kwargs: Any
-    ) -> OutT:
-        if self._parse_output_impl:
-            return self._parse_output_impl(*args, ctx=ctx, **kwargs)
-
-        return self._out_schema()
+    @property
+    def out_type(self) -> type[OutT]:
+        return self._out_type
 
     @property
     def agent_id(self) -> AgentID:
@@ -50,10 +33,6 @@ class BaseAgent(ABC, Generic[OutT, StateT, CtxT]):
     @property
     def state(self) -> StateT:
         return self._state
-
-    @property
-    def out_schema(self) -> type[OutT]:
-        return self._out_schema
 
     @abstractmethod
     async def run(
@@ -68,5 +47,5 @@ class BaseAgent(ABC, Generic[OutT, StateT, CtxT]):
     @abstractmethod
     def as_tool(
         self, tool_name: str, tool_description: str, tool_strict: bool = True
-    ) -> BaseTool[BaseModel, Any, CtxT]:
+    ) -> BaseTool[Any, OutT, CtxT]:
         pass

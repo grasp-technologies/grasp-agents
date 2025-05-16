@@ -16,7 +16,7 @@ from .typing.tool import BaseTool, ToolCall, ToolChoice
 logger = getLogger(__name__)
 
 
-class ToolCallLoopExitHandler(Protocol[CtxT]):
+class ExitToolCallLoopHandler(Protocol[CtxT]):
     def __call__(
         self,
         conversation: Conversation,
@@ -24,6 +24,16 @@ class ToolCallLoopExitHandler(Protocol[CtxT]):
         ctx: RunContextWrapper[CtxT] | None,
         **kwargs: Any,
     ) -> bool: ...
+
+
+class ManageAgentStateHandler(Protocol[CtxT]):
+    def __call__(
+        self,
+        agent_state: LLMAgentState,
+        *,
+        ctx: RunContextWrapper[CtxT] | None,
+        **kwargs: Any,
+    ) -> None: ...
 
 
 class ToolOrchestrator(Generic[CtxT]):
@@ -38,13 +48,13 @@ class ToolOrchestrator(Generic[CtxT]):
         self._agent_id = agent_id
 
         self._llm = llm
-        self._tools = tools
-        self.llm.tools = tools
+        self._llm.tools = tools
 
         self._max_turns = max_turns
         self._react_mode = react_mode
 
-        self.tool_call_loop_exit_impl: ToolCallLoopExitHandler[CtxT] | None = None
+        self.exit_tool_call_loop_impl: ExitToolCallLoopHandler[CtxT] | None = None
+        self.manage_agent_state_impl: ManageAgentStateHandler[CtxT] | None = None
 
     @property
     def agent_id(self) -> str:
@@ -62,15 +72,15 @@ class ToolOrchestrator(Generic[CtxT]):
     def max_turns(self) -> int:
         return self._max_turns
 
-    def _tool_call_loop_exit(
+    def _exit_tool_call_loop(
         self,
         conversation: Conversation,
         *,
         ctx: RunContextWrapper[CtxT] | None = None,
         **kwargs: Any,
     ) -> bool:
-        if self.tool_call_loop_exit_impl:
-            return self.tool_call_loop_exit_impl(
+        if self.exit_tool_call_loop_impl:
+            return self.exit_tool_call_loop_impl(
                 conversation=conversation, ctx=ctx, **kwargs
             )
 
@@ -80,6 +90,16 @@ class ToolOrchestrator(Generic[CtxT]):
         )
 
         return not bool(conversation[-1].tool_calls)
+
+    def _manage_agent_state(
+        self,
+        agent_state: LLMAgentState,
+        *,
+        ctx: RunContextWrapper[CtxT] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if self.manage_agent_state_impl:
+            self.manage_agent_state_impl(agent_state=agent_state, ctx=ctx, **kwargs)
 
     async def generate_once(
         self,
@@ -117,7 +137,9 @@ class ToolOrchestrator(Generic[CtxT]):
         turns = 0
 
         while True:
-            if self._tool_call_loop_exit(
+            self._manage_agent_state(agent_state=agent_state, ctx=ctx, num_turns=turns)
+
+            if self._exit_tool_call_loop(
                 message_history.batched_conversations[0], ctx=ctx, num_turns=turns
             ):
                 return

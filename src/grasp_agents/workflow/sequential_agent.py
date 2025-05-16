@@ -1,20 +1,23 @@
 from collections.abc import Sequence
-from typing import Any, Generic, cast, final
+from typing import Any, ClassVar, Generic, cast, final
 
 from ..agent_message_pool import AgentMessage, AgentMessagePool
 from ..comm_agent import CommunicatingAgent
 from ..run_context import CtxT, RunContextWrapper
-from ..typing.io import AgentID, AgentPayload, AgentState, InT, OutT
+from ..typing.io import AgentID, AgentState, InT, OutT
 from .workflow_agent import WorkflowAgent
 
 
 class SequentialWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
+    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
+        0: "_in_type",
+        1: "_out_type",
+    }
+
     def __init__(
         self,
         agent_id: AgentID,
-        subagents: Sequence[
-            CommunicatingAgent[AgentPayload, AgentPayload, AgentState, CtxT]
-        ],
+        subagents: Sequence[CommunicatingAgent[Any, Any, AgentState, CtxT]],
         message_pool: AgentMessagePool[CtxT] | None = None,
         recipient_ids: list[AgentID] | None = None,
         dynamic_routing: bool = False,
@@ -23,7 +26,7 @@ class SequentialWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT,
         super().__init__(
             subagents=subagents,
             start_agent=subagents[0],
-            end_agent=subagents[-1],  # type: ignore[assignment]
+            end_agent=subagents[-1],
             agent_id=agent_id,
             message_pool=message_pool,
             recipient_ids=recipient_ids,

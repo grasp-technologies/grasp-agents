@@ -1,34 +1,25 @@
 import ast
 import asyncio
-import functools
 import json
 import re
-from collections.abc import Callable, Coroutine
-from copy import deepcopy
+from collections.abc import Coroutine
 from datetime import datetime
 from logging import getLogger
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
-from pydantic import BaseModel, GetCoreSchemaHandler, TypeAdapter, create_model
-from pydantic.fields import FieldInfo
+from pydantic import (
+    BaseModel,
+    GetCoreSchemaHandler,
+    TypeAdapter,
+    ValidationError,
+)
 from pydantic_core import core_schema
 from tqdm.autonotebook import tqdm
 
 logger = getLogger(__name__)
 
-
-def merge_pydantic_models(*models: type[BaseModel]) -> type[BaseModel]:
-    fields_dict: dict[str, FieldInfo] = {}
-    for model in models:
-        for field_name, field_info in model.model_fields.items():
-            if field_name in fields_dict:
-                raise ValueError(
-                    f"Field conflict detected: '{field_name}' exists in multiple models"
-                )
-            fields_dict[field_name] = field_info
-
-    return create_model("MergedModel", __module__=__name__, **fields_dict)  # type: ignore
+T = TypeVar("T")
 
 
 def filter_fields(data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
@@ -57,7 +48,7 @@ def format_json_string(text: str) -> str:
     return text
 
 
-def read_json_string(
+def parse_json_or_py_string(
     json_str: str, return_none_on_failure: bool = False
 ) -> dict[str, Any] | list[Any] | None:
     try:
@@ -79,7 +70,21 @@ def read_json_string(
 def extract_json(
     json_str: str, return_none_on_failure: bool = False
 ) -> dict[str, Any] | list[Any] | None:
-    return read_json_string(format_json_string(json_str), return_none_on_failure)
+    return parse_json_or_py_string(format_json_string(json_str), return_none_on_failure)
+
+
+def validate_obj_from_json_or_py_string(s: str, adapter: TypeAdapter[T]) -> T:
+    s_fmt = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
+    try:
+        parsed = json.loads(s_fmt)
+        return adapter.validate_python(parsed)
+    except (json.JSONDecodeError, ValidationError):
+        try:
+            return adapter.validate_python(s_fmt)
+        except ValidationError as exc:
+            raise ValueError(
+                f"Invalid JSON or Python string:\n{s}\nExpected type: {adapter._type}",  # type: ignore[arg-type]
+            ) from exc
 
 
 def extract_xml_list(text: str) -> list[str]:
@@ -129,24 +134,6 @@ def make_conditional_parsed_output_type(
             return handler(core_schema)
 
     return ParsedOutput
-
-
-T = TypeVar("T", bound=Callable[..., Any])
-
-
-def forbid_state_change(method: T) -> T:
-    @functools.wraps(method)
-    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        before = deepcopy(self.__dict__)
-        result = method(self, *args, **kwargs)
-        after = self.__dict__
-        if before != after:
-            raise RuntimeError(
-                f"Method '{method.__name__}' modified the instance state."
-            )
-        return result
-
-    return cast("T", wrapper)
 
 
 def read_contents_from_file(

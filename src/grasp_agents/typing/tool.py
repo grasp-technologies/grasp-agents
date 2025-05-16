@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, PrivateAttr, TypeAdapter
+
+from ..generics_utils import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
     from ..run_context import CtxT, RunContextWrapper
@@ -26,14 +28,31 @@ class ToolCall(BaseModel):
     tool_arguments: str
 
 
-class BaseTool(BaseModel, ABC, Generic[_ToolInT, _ToolOutT, CtxT]):
+class BaseTool(
+    AutoInstanceAttributesMixin, BaseModel, ABC, Generic[_ToolInT, _ToolOutT, CtxT]
+):
+    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
+        0: "_in_schema",
+        1: "_out_schema",
+    }
+
     name: str
     description: str
-    in_schema: type[_ToolInT]
-    out_schema: type[_ToolOutT]
+
+    _in_schema: type[_ToolInT] = PrivateAttr()
+    _out_schema: type[_ToolOutT] = PrivateAttr()
 
     # Supported by OpenAI API
     strict: bool | None = None
+
+    @property
+    def in_schema(self) -> type[_ToolInT]:  # type: ignore[reportInvalidTypeVarUse]
+        # Exposing the type of a contravariant variable only, should be type safe
+        return self._in_schema
+
+    @property
+    def out_schema(self) -> type[_ToolOutT]:
+        return self._out_schema
 
     @abstractmethod
     async def run(
@@ -49,9 +68,9 @@ class BaseTool(BaseModel, ABC, Generic[_ToolInT, _ToolOutT, CtxT]):
     async def __call__(
         self, ctx: RunContextWrapper[CtxT] | None = None, **kwargs: Any
     ) -> _ToolOutT:
-        result = await self.run(self.in_schema(**kwargs), ctx=ctx)
+        result = await self.run(self._in_schema(**kwargs), ctx=ctx)
 
-        return TypeAdapter(self.out_schema).validate_python(result)
+        return TypeAdapter(self._out_schema).validate_python(result)
 
 
 ToolChoice: TypeAlias = (

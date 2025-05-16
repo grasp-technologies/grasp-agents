@@ -1,57 +1,36 @@
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
-from typing import (
-    Any,
-    Concatenate,
-    ParamSpec,
-    TypeAlias,
-    TypeVar,
+from typing import Any, Concatenate, ParamSpec, TypeAlias, TypeVar
+
+T = TypeVar("T")
+R = TypeVar("R")
+P = ParamSpec("P")
+
+ProcessorFuncSingle: TypeAlias = Callable[Concatenate[T, P], Coroutine[Any, Any, R]]
+ProcessorFuncList: TypeAlias = Callable[
+    Concatenate[list[T], P], Coroutine[Any, Any, list[R]]
+]
+
+ProcessorMethodSingle: TypeAlias = Callable[
+    Concatenate[Any, T, P], Coroutine[Any, Any, R]
+]
+ProcessorMethodList: TypeAlias = Callable[
+    Concatenate[Any, list[T], P], Coroutine[Any, Any, list[R]]
+]
+
+ProcessorCallableSingle: TypeAlias = (
+    ProcessorFuncSingle[T, P, R] | ProcessorMethodSingle[T, P, R]
 )
 
-MAX_RPM = 1e10
-
-
-@dataclass
-class RateLimiterState:
-    next_request_time: float = 0.0
-
-
-QueryT = TypeVar("QueryT")
-QueryR = TypeVar("QueryR")
-QueryP = ParamSpec("QueryP")
-
-RetrievalFuncSingle: TypeAlias = Callable[
-    Concatenate[QueryT, QueryP], Coroutine[Any, Any, QueryR]
-]
-RetrievalFuncList: TypeAlias = Callable[
-    Concatenate[list[QueryT], QueryP], Coroutine[Any, Any, list[QueryR]]
-]
-
-RetrievalMethodSingle: TypeAlias = Callable[
-    Concatenate[Any, QueryT, QueryP], Coroutine[Any, Any, QueryR]
-]
-RetrievalMethodList: TypeAlias = Callable[
-    Concatenate[Any, list[QueryT], QueryP], Coroutine[Any, Any, list[QueryR]]
-]
-
-RetrievalCallableSingle: TypeAlias = (
-    RetrievalFuncSingle[QueryT, QueryP, QueryR]
-    | RetrievalMethodSingle[QueryT, QueryP, QueryR]
-)
-
-RetrievalCallableList: TypeAlias = (
-    RetrievalFuncList[QueryT, QueryP, QueryR]
-    | RetrievalMethodList[QueryT, QueryP, QueryR]
+ProcessorCallableList: TypeAlias = (
+    ProcessorFuncList[T, P, R] | ProcessorMethodList[T, P, R]
 )
 
 
-RateLimDecoratorWithArgsSingle = Callable[
-    [RetrievalCallableSingle[QueryT, QueryP, QueryR]],
-    RetrievalCallableSingle[QueryT, QueryP, QueryR],
+RateLimWrapperWithArgsSingle = Callable[
+    [ProcessorCallableSingle[T, P, R]], ProcessorCallableSingle[T, P, R]
 ]
 
 
-RateLimDecoratorWithArgsList = Callable[
-    [RetrievalCallableList[QueryT, QueryP, QueryR]],
-    RetrievalCallableList[QueryT, QueryP, QueryR],
+RateLimWrapperWithArgsList = Callable[
+    [ProcessorCallableList[T, P, R]], ProcessorCallableList[T, P, R]
 ]

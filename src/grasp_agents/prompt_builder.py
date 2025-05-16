@@ -1,11 +1,13 @@
 from collections.abc import Sequence
 from copy import deepcopy
-from typing import Generic, Protocol
+from typing import ClassVar, Generic, Protocol
 
+from pydantic import BaseModel, TypeAdapter
+
+from .generics_utils import AutoInstanceAttributesMixin
 from .run_context import CtxT, RunContextWrapper, UserRunArgs
 from .typing.content import ImageData
 from .typing.io import (
-    AgentPayload,
     InT,
     LLMFormattedArgs,
     LLMFormattedSystemArgs,
@@ -13,6 +15,10 @@ from .typing.io import (
     LLMPromptArgs,
 )
 from .typing.message import UserMessage
+
+
+class DummySchema(BaseModel):
+    pass
 
 
 class FormatSystemArgsHandler(Protocol[CtxT]):
@@ -33,7 +39,9 @@ class FormatInputArgsHandler(Protocol[InT, CtxT]):
     ) -> LLMFormattedArgs: ...
 
 
-class PromptBuilder(Generic[InT, CtxT]):
+class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
+    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {0: "_in_type"}
+
     def __init__(
         self,
         agent_id: str,
@@ -41,16 +49,19 @@ class PromptBuilder(Generic[InT, CtxT]):
         inp_prompt: LLMPrompt | None,
         sys_args_schema: type[LLMPromptArgs],
         usr_args_schema: type[LLMPromptArgs],
-        rcv_args_schema: type[InT],
     ):
+        self._in_type: type[InT]
+        super().__init__()
+
         self._agent_id = agent_id
         self.sys_prompt = sys_prompt
         self.inp_prompt = inp_prompt
         self.sys_args_schema = sys_args_schema
         self.usr_args_schema = usr_args_schema
-        self.rcv_args_schema = rcv_args_schema
         self.format_sys_args_impl: FormatSystemArgsHandler[CtxT] | None = None
         self.format_inp_args_impl: FormatInputArgsHandler[InT, CtxT] | None = None
+
+        self._rcv_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
 
     def _format_sys_args(
         self,
@@ -73,9 +84,18 @@ class PromptBuilder(Generic[InT, CtxT]):
                 usr_args=usr_args, rcv_args=rcv_args, ctx=ctx
             )
 
-        return usr_args.model_dump(exclude_unset=True) | rcv_args.model_dump(
-            exclude_unset=True, exclude={"selected_recipient_ids"}
-        )
+        if not isinstance(rcv_args, BaseModel) and rcv_args is not None:
+            raise TypeError(
+                "Cannot apply default formatting to non-BaseModel received arguments."
+            )
+
+        usr_args_ = usr_args
+        rcv_args_ = DummySchema() if rcv_args is None else rcv_args
+
+        usr_args_dump = usr_args_.model_dump(exclude_unset=True)
+        rcv_args_dump = rcv_args_.model_dump(exclude={"selected_recipient_ids"})
+
+        return usr_args_dump | rcv_args_dump
 
     def make_sys_prompt(
         self,
@@ -100,20 +120,18 @@ class PromptBuilder(Generic[InT, CtxT]):
     def _usr_messages_from_rcv_args(
         self, rcv_args_batch: Sequence[InT]
     ) -> list[UserMessage]:
-        val_rcv_args_batch = [
-            self.rcv_args_schema.model_validate(rcv) for rcv in rcv_args_batch
-        ]
-
         return [
             UserMessage.from_text(
-                rcv.model_dump_json(
+                self._rcv_args_type_adapter.dump_json(
+                    rcv,
                     exclude_unset=True,
                     indent=2,
                     exclude={"selected_recipient_ids"},
-                ),
+                    warnings="error",
+                ).decode("utf-8"),
                 model_id=self._agent_id,
             )
-            for rcv in val_rcv_args_batch
+            for rcv in rcv_args_batch
         ]
 
     def _usr_messages_from_prompt_template(
@@ -123,17 +141,19 @@ class PromptBuilder(Generic[InT, CtxT]):
         rcv_args_batch: Sequence[InT] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> Sequence[UserMessage]:
-        usr_args_batch, rcv_args_batch = self._make_batched(usr_args, rcv_args_batch)
-        val_usr_args_batch = [
-            self.usr_args_schema.model_validate(u) for u in usr_args_batch
+        usr_args_batch_, rcv_args_batch_ = self._make_batched(usr_args, rcv_args_batch)
+
+        val_usr_args_batch_ = [
+            self.usr_args_schema.model_validate(u) for u in usr_args_batch_
         ]
-        val_rcv_args_batch = [
-            self.rcv_args_schema.model_validate(r) for r in rcv_args_batch
+        val_rcv_args_batch_ = [
+            self._rcv_args_type_adapter.validate_python(rcv) for rcv in rcv_args_batch_
         ]
+
         formatted_inp_args_batch = [
             self._format_inp_args(usr_args=val_usr_args, rcv_args=val_rcv_args, ctx=ctx)
             for val_usr_args, val_rcv_args in zip(
-                val_usr_args_batch, val_rcv_args_batch, strict=False
+                val_usr_args_batch_, val_rcv_args_batch_, strict=False
             )
         ]
 
@@ -187,11 +207,11 @@ class PromptBuilder(Generic[InT, CtxT]):
         self,
         usr_args: UserRunArgs | None = None,
         rcv_args_batch: Sequence[InT] | None = None,
-    ) -> tuple[Sequence[LLMPromptArgs], Sequence[InT]]:
+    ) -> tuple[Sequence[LLMPromptArgs | DummySchema], Sequence[InT | DummySchema]]:
         usr_args_batch_ = (
-            usr_args if isinstance(usr_args, list) else [usr_args or LLMPromptArgs()]
+            usr_args if isinstance(usr_args, list) else [usr_args or DummySchema()]
         )
-        rcv_args_batch_ = rcv_args_batch or [AgentPayload()]
+        rcv_args_batch_ = rcv_args_batch or [DummySchema()]
 
         # Broadcast singleton → match lengths
         if len(usr_args_batch_) == 1 and len(rcv_args_batch_) > 1:
@@ -201,4 +221,4 @@ class PromptBuilder(Generic[InT, CtxT]):
         if len(usr_args_batch_) != len(rcv_args_batch_):
             raise ValueError("User args and received args must have the same length")
 
-        return usr_args_batch_, rcv_args_batch_  # type: ignore
+        return usr_args_batch_, rcv_args_batch_

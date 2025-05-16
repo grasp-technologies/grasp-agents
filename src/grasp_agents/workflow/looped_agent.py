@@ -1,16 +1,16 @@
 from collections.abc import Sequence
 from logging import getLogger
-from typing import Any, Generic, Protocol, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
 from ..agent_message_pool import AgentMessage, AgentMessagePool
 from ..comm_agent import CommunicatingAgent
 from ..run_context import CtxT, RunContextWrapper
-from ..typing.io import AgentID, AgentPayload, AgentState, InT, OutT
+from ..typing.io import AgentID, AgentState, InT, OutT
 from .workflow_agent import WorkflowAgent
 
 logger = getLogger(__name__)
 
-_EH_OutT = TypeVar("_EH_OutT", bound=AgentPayload, contravariant=True)  # noqa: PLC0105
+_EH_OutT = TypeVar("_EH_OutT", contravariant=True)  # noqa: PLC0105
 
 
 class WorkflowLoopExitHandler(Protocol[_EH_OutT, CtxT]):
@@ -23,13 +23,16 @@ class WorkflowLoopExitHandler(Protocol[_EH_OutT, CtxT]):
 
 
 class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
+    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
+        0: "_in_type",
+        1: "_out_type",
+    }
+
     def __init__(
         self,
         agent_id: AgentID,
-        subagents: Sequence[
-            CommunicatingAgent[AgentPayload, AgentPayload, AgentState, CtxT]
-        ],
-        exit_agent: CommunicatingAgent[AgentPayload, OutT, AgentState, CtxT],
+        subagents: Sequence[CommunicatingAgent[Any, Any, AgentState, CtxT]],
+        exit_agent: CommunicatingAgent[Any, OutT, AgentState, CtxT],
         message_pool: AgentMessagePool[CtxT] | None = None,
         recipient_ids: list[AgentID] | None = None,
         dynamic_routing: bool = False,
@@ -61,7 +64,7 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
 
         return func
 
-    def _workflow_loop_exit(
+    def _exit_workflow_loop(
         self,
         output_message: AgentMessage[OutT, AgentState],
         ctx: RunContextWrapper[CtxT] | None,
@@ -101,7 +104,7 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
                 if subagent is self._end_agent:
                     num_iterations += 1
                     exit_message = cast("AgentMessage[OutT, AgentState]", agent_message)
-                    if self._workflow_loop_exit(exit_message, ctx=ctx):
+                    if self._exit_workflow_loop(exit_message, ctx=ctx):
                         return exit_message
                     if num_iterations >= self._max_iterations:
                         logger.info(
