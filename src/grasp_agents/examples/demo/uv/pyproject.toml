@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11.4,<4"
-dependencies = ["grasp-agents>=0.1.15"]
+dependencies = ["grasp-agents>=0.2.0"]
 
 [dependency-groups]
 dev = ["ruff>=0.11.8"]

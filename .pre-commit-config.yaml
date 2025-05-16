@@ -24,9 +24,18 @@ repos:
 
   - repo: local
     hooks:
+    - id: uv-sync
+      name: Sync lockfile and stage uv.lock
+      entry: bash -c 'uv sync && git add uv.lock'
+      language: system
+      pass_filenames: false
+      stages: [pre-commit]
+
+  - repo: local
+    hooks:
     - id: uv-compile
-      name: Update, sync lockfile and stage requirements.txt
-      entry: bash -c 'uv sync && git add pyproject.toml uv.lock && uv pip compile pyproject.toml -o requirements.txt && git add requirements.txt'
+      name: Update and stage requirements.txt
+      entry: bash -c 'uv pip compile pyproject.toml -o requirements.txt && git add requirements.txt'
       language: system
       pass_filenames: false
       files: ^pyproject\.toml$

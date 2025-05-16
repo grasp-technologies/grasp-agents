@@ -6,7 +6,7 @@ authors = []
 
 [tool.poetry.dependencies]
 python = ">=3.11.4,<4"
-grasp-agents = ">=0.1.15"
+grasp-agents = ">=0.2.0"
 
 [build-system]
 requires = ["poetry-core"]
