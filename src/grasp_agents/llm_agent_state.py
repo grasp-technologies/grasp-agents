@@ -10,10 +10,11 @@ from .typing.io import AgentState, LLMPrompt
 SetAgentStateStrategy = Literal["keep", "reset", "from_sender", "custom"]
 
 
-class MakeCustomAgentState(Protocol):
+class SetAgentState(Protocol):
     def __call__(
         self,
-        cur_state: Optional["LLMAgentState"],
+        cur_state: "LLMAgentState",
+        *,
         rcv_state: AgentState | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContextWrapper[Any] | None,
@@ -30,11 +31,12 @@ class LLMAgentState(AgentState):
     @classmethod
     def from_cur_and_rcv_states(
         cls,
-        cur_state: Optional["LLMAgentState"] = None,
+        cur_state: "LLMAgentState",
+        *,
         rcv_state: Optional["AgentState"] = None,
         sys_prompt: LLMPrompt | None = None,
         strategy: SetAgentStateStrategy = "from_sender",
-        make_custom_state_impl: MakeCustomAgentState | None = None,
+        set_agent_state_impl: SetAgentState | None = None,
         ctx: RunContextWrapper[Any] | None = None,
     ) -> "LLMAgentState":
         upd_mh = cur_state.message_history if cur_state else None
@@ -59,10 +61,10 @@ class LLMAgentState(AgentState):
                 upd_mh.reset(sys_prompt)
 
         elif strategy == "custom":
-            assert make_custom_state_impl is not None, (
-                "Custom message history handler implementation is not provided."
+            assert set_agent_state_impl is not None, (
+                "Agent state setter implementation is not provided."
             )
-            return make_custom_state_impl(
+            return set_agent_state_impl(
                 cur_state=cur_state,
                 rcv_state=rcv_state,
                 sys_prompt=sys_prompt,

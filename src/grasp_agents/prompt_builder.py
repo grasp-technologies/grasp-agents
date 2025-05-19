@@ -35,6 +35,8 @@ class FormatInputArgsHandler(Protocol[InT, CtxT]):
         self,
         usr_args: LLMPromptArgs,
         rcv_args: InT,
+        *,
+        batch_idx: int,
         ctx: RunContextWrapper[CtxT] | None,
     ) -> LLMFormattedArgs: ...
 
@@ -77,11 +79,13 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         self,
         usr_args: LLMPromptArgs,
         rcv_args: InT,
+        *,
+        batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
         if self.format_inp_args_impl:
             return self.format_inp_args_impl(
-                usr_args=usr_args, rcv_args=rcv_args, ctx=ctx
+                usr_args=usr_args, rcv_args=rcv_args, batch_idx=batch_idx, ctx=ctx
             )
 
         if not isinstance(rcv_args, BaseModel) and rcv_args is not None:
@@ -100,6 +104,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     def make_sys_prompt(
         self,
         sys_args: LLMPromptArgs,
+        *,
         ctx: RunContextWrapper[CtxT] | None,
     ) -> LLMPrompt | None:
         if self.sys_prompt is None:
@@ -151,9 +156,11 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         ]
 
         formatted_inp_args_batch = [
-            self._format_inp_args(usr_args=val_usr_args, rcv_args=val_rcv_args, ctx=ctx)
-            for val_usr_args, val_rcv_args in zip(
-                val_usr_args_batch_, val_rcv_args_batch_, strict=False
+            self._format_inp_args(
+                usr_args=val_usr_args, rcv_args=val_rcv_args, batch_idx=i, ctx=ctx
+            )
+            for i, (val_usr_args, val_rcv_args) in enumerate(
+                zip(val_usr_args_batch_, val_rcv_args_batch_, strict=False)
             )
         ]
 

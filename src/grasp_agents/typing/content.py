@@ -1,6 +1,6 @@
 import base64
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -66,7 +66,7 @@ class Content(BaseModel):
     def from_formatted_prompt(
         cls,
         prompt_template: str,
-        prompt_args: dict[str, str | ImageData] | None = None,
+        prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
     ) -> "Content":
         prompt_args = prompt_args or {}
         image_args = {

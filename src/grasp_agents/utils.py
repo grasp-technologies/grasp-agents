@@ -2,14 +2,13 @@ import ast
 import asyncio
 import json
 import re
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Mapping
 from datetime import datetime
 from logging import getLogger
 from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import (
-    BaseModel,
     GetCoreSchemaHandler,
     TypeAdapter,
     ValidationError,
@@ -19,72 +18,65 @@ from tqdm.autonotebook import tqdm
 
 logger = getLogger(__name__)
 
+_JSON_START_RE = re.compile(r"[{\[]")
+
 T = TypeVar("T")
 
 
-def filter_fields(data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
-    return {key: data[key] for key in model.model_fields if key in data}
-
-
-def read_txt(file_path: str) -> str:
-    return Path(file_path).read_text()
-
-
-def format_json_string(text: str) -> str:
+def extract_json_substring(text: str) -> str | None:
     decoder = json.JSONDecoder()
-    text = text.replace("\n", "")
-    length = len(text)
-    i = 0
-    while i < length:
-        ch = text[i]
-        if ch in "{[":
-            try:
-                _, end = decoder.raw_decode(text[i:])
-                return text[i : i + end]
-            except ValueError:
-                pass
-        i += 1
+    for match in _JSON_START_RE.finditer(text):
+        start = match.start()
+        try:
+            _, end = decoder.raw_decode(text, idx=start)
+            return text[start:end]
+        except ValueError:
+            continue
 
-    return text
+    return None
 
 
 def parse_json_or_py_string(
-    json_str: str, return_none_on_failure: bool = False
+    s: str, return_none_on_failure: bool = False
 ) -> dict[str, Any] | list[Any] | None:
+    s_fmt = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
     try:
-        json_response = ast.literal_eval(json_str)
+        return ast.literal_eval(s_fmt)
     except (ValueError, SyntaxError):
         try:
-            json_response = json.loads(json_str)
+            return json.loads(s_fmt)
         except json.JSONDecodeError as exc:
             if return_none_on_failure:
                 return None
             raise ValueError(
-                "Invalid JSON - Both ast.literal_eval and json.loads "
-                f"failed to parse the following response:\n{json_str}"
+                "Invalid JSON/Python string - Both ast.literal_eval and json.loads "
+                f"failed to parse the following response:\n{s}"
             ) from exc
 
-    return json_response
 
-
-def extract_json(
+def parse_json_or_py_substring(
     json_str: str, return_none_on_failure: bool = False
 ) -> dict[str, Any] | list[Any] | None:
-    return parse_json_or_py_string(format_json_string(json_str), return_none_on_failure)
+    return parse_json_or_py_string(
+        extract_json_substring(json_str) or "", return_none_on_failure
+    )
 
 
-def validate_obj_from_json_or_py_string(s: str, adapter: TypeAdapter[T]) -> T:
-    s_fmt = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
+def validate_obj_from_json_or_py_string(
+    s: str, adapter: TypeAdapter[T], from_substring: bool = False
+) -> T:
     try:
-        parsed = json.loads(s_fmt)
+        if from_substring:
+            parsed = parse_json_or_py_substring(s, return_none_on_failure=True)
+        else:
+            parsed = parse_json_or_py_string(s, return_none_on_failure=True)
+        if parsed is None:
+            parsed = s
         return adapter.validate_python(parsed)
-    except (json.JSONDecodeError, ValidationError):
-        try:
-            return adapter.validate_python(s_fmt)
-        except ValidationError as exc:
-            raise ValueError(
-                f"Invalid JSON or Python string:\n{s}\nExpected type: {adapter._type}",  # type: ignore[arg-type]
-            ) from exc
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise ValueError(
+            f"Invalid JSON or Python string:\n{s}\nExpected type: {adapter._type}",  # type: ignore[arg-type]
+        ) from exc
 
 
 def extract_xml_list(text: str) -> list[str]:
@@ -97,16 +89,26 @@ def extract_xml_list(text: str) -> list[str]:
     return chunks
 
 
-def make_conditional_parsed_output_type(
-    response_format: type, marker: str = "<DONE>"
+def build_marker_json_parser_type(
+    marker_to_model: Mapping[str, type],
 ) -> type:
-    class ParsedOutput:
-        """
-        * Accepts any **str**.
-        * If the string contains `marker`, it must contain a valid JSON for
-        `response_format` → we return that a response_format instance.
-        * Otherwise we leave the string untouched.
-        """
+    """
+    Return a Pydantic-compatible *type* that, when given a **str**, searches for
+    the first marker substring and validates the JSON that follows with the
+    corresponding Pydantic model.
+
+    If no marker is found, the raw string is returned unchanged.
+
+    Example:
+    -------
+    >>> Todo = build_marker_json_parser_type({'```json': MyModel})
+    >>> Todo.validate('```json {"a": 1}')
+    MyModel(a=1)
+
+    """
+
+    class MarkerParsedOutput:
+        """String → (Model | str) parser generated by build_marker_json_parser_type."""
 
         @classmethod
         def __get_pydantic_core_schema__(
@@ -114,40 +116,49 @@ def make_conditional_parsed_output_type(
             _source_type: Any,
             _handler: GetCoreSchemaHandler,
         ) -> core_schema.CoreSchema:
-            def validator(v: Any) -> Any:
-                if isinstance(v, str) and marker in v:
-                    v_json_str = format_json_string(v)
-                    response_format_adapter = TypeAdapter[Any](response_format)
+            def _validate(value: Any) -> Any:
+                if not isinstance(value, str):
+                    raise TypeError("MarkerParsedOutput expects a string")
 
-                    return response_format_adapter.validate_json(v_json_str)
+                for marker, model in marker_to_model.items():
+                    if marker in value:
+                        adapter = TypeAdapter[Any](model)
+                        return validate_obj_from_json_or_py_string(
+                            value, adapter=adapter, from_substring=True
+                        )
 
-                return v
+                return value
 
             return core_schema.no_info_after_validator_function(
-                validator, core_schema.any_schema()
+                _validate, core_schema.any_schema()
             )
 
         @classmethod
         def __get_pydantic_json_schema__(
-            cls, core_schema: core_schema.CoreSchema, handler: GetCoreSchemaHandler
+            cls,
+            schema: core_schema.CoreSchema,
+            handler: GetCoreSchemaHandler,
         ):
-            return handler(core_schema)
+            return handler(schema)
 
-    return ParsedOutput
+    unique_suffix = "_".join(sorted(marker_to_model))[:40]
+    MarkerParsedOutput.__name__ = f"MarkerParsedOutput_{unique_suffix}"
+
+    return MarkerParsedOutput
+
+
+def read_txt(file_path: str | Path, encoding: str = "utf-8") -> str:
+    return Path(file_path).read_text(encoding=encoding)
 
 
 def read_contents_from_file(
     file_path: str | Path,
     binary_mode: bool = False,
 ) -> str | bytes:
-    """Reads and returns contents of file"""
     try:
         if binary_mode:
-            with open(file_path, "rb") as file:
-                return file.read()
-        else:
-            with open(file_path) as file:
-                return file.read()
+            return Path(file_path).read_bytes()
+        return Path(file_path).read_text()
     except FileNotFoundError:
         logger.error(f"File {file_path} not found.")
         return ""
@@ -155,13 +166,9 @@ def read_contents_from_file(
 
 def get_prompt(prompt_text: str | None, prompt_path: str | Path | None) -> str | None:
     if prompt_text is None:
-        prompt = (
-            read_contents_from_file(prompt_path) if prompt_path is not None else None
-        )
-    else:
-        prompt = prompt_text
+        return read_contents_from_file(prompt_path) if prompt_path is not None else None  # type: ignore[arg-type]
 
-    return prompt  # type: ignore[assignment]
+    return prompt_text
 
 
 async def asyncio_gather_with_pbar(

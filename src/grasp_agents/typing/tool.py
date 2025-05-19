@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel, PrivateAttr, TypeAdapter
@@ -59,11 +57,6 @@ class BaseTool(
         self, inp: _ToolInT, ctx: RunContextWrapper[CtxT] | None = None
     ) -> _ToolOutT:
         pass
-
-    async def run_batch(
-        self, inp_batch: Sequence[_ToolInT], ctx: RunContextWrapper[CtxT] | None = None
-    ) -> Sequence[_ToolOutT]:
-        return await asyncio.gather(*[self.run(inp, ctx=ctx) for inp in inp_batch])
 
     async def __call__(
         self, ctx: RunContextWrapper[CtxT] | None = None, **kwargs: Any

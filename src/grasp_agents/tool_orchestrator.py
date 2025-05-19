@@ -29,7 +29,7 @@ class ExitToolCallLoopHandler(Protocol[CtxT]):
 class ManageAgentStateHandler(Protocol[CtxT]):
     def __call__(
         self,
-        agent_state: LLMAgentState,
+        state: LLMAgentState,
         *,
         ctx: RunContextWrapper[CtxT] | None,
         **kwargs: Any,
@@ -93,13 +93,13 @@ class ToolOrchestrator(Generic[CtxT]):
 
     def _manage_agent_state(
         self,
-        agent_state: LLMAgentState,
+        state: LLMAgentState,
         *,
         ctx: RunContextWrapper[CtxT] | None = None,
         **kwargs: Any,
     ) -> None:
         if self.manage_agent_state_impl:
-            self.manage_agent_state_impl(agent_state=agent_state, ctx=ctx, **kwargs)
+            self.manage_agent_state_impl(state=state, ctx=ctx, **kwargs)
 
     async def generate_once(
         self,
@@ -119,10 +119,10 @@ class ToolOrchestrator(Generic[CtxT]):
 
     async def run_loop(
         self,
-        agent_state: LLMAgentState,
+        state: LLMAgentState,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> None:
-        message_history = agent_state.message_history
+        message_history = state.message_history
         assert message_history.batch_size == 1, (
             "Batch size must be 1 for tool call loop"
         )
@@ -131,13 +131,13 @@ class ToolOrchestrator(Generic[CtxT]):
 
         tool_choice = "none" if self._react_mode else "auto"
         gen_message_batch = await self.generate_once(
-            agent_state, tool_choice=tool_choice, ctx=ctx
+            state, tool_choice=tool_choice, ctx=ctx
         )
 
         turns = 0
 
         while True:
-            self._manage_agent_state(agent_state=agent_state, ctx=ctx, num_turns=turns)
+            self._manage_agent_state(state=state, ctx=ctx, num_turns=turns)
 
             if self._exit_tool_call_loop(
                 message_history.batched_conversations[0], ctx=ctx, num_turns=turns
@@ -156,7 +156,7 @@ class ToolOrchestrator(Generic[CtxT]):
 
             tool_choice = "none" if (self._react_mode and msg.tool_calls) else "auto"
             gen_message_batch = await self.generate_once(
-                agent_state, tool_choice=tool_choice, ctx=ctx
+                state, tool_choice=tool_choice, ctx=ctx
             )
 
             turns += 1
