@@ -10,7 +10,7 @@ from .comm_agent import CommunicatingAgent
 from .llm import LLM, LLMSettings
 from .llm_agent_state import (
     LLMAgentState,
-    MakeCustomAgentState,
+    SetAgentState,
     SetAgentStateStrategy,
 )
 from .prompt_builder import (
@@ -25,7 +25,11 @@ from .run_context import (
     SystemRunArgs,
     UserRunArgs,
 )
-from .tool_orchestrator import ExitToolCallLoopHandler, ToolOrchestrator
+from .tool_orchestrator import (
+    ExitToolCallLoopHandler,
+    ManageAgentStateHandler,
+    ToolOrchestrator,
+)
 from .typing.content import ImageData
 from .typing.converters import Converters
 from .typing.io import (
@@ -43,9 +47,14 @@ from .typing.tool import BaseTool
 from .utils import get_prompt, validate_obj_from_json_or_py_string
 
 
-class ParseOutputHandler(Protocol[OutT, CtxT]):
+class ParseOutputHandler(Protocol[InT, OutT, CtxT]):
     def __call__(
-        self, *args: Any, ctx: RunContextWrapper[CtxT] | None, **kwargs: Any
+        self,
+        conversation: Conversation,
+        *,
+        rcv_args: InT | None,
+        batch_idx: int,
+        ctx: RunContextWrapper[CtxT] | None,
     ) -> OutT: ...
 
 
@@ -91,9 +100,15 @@ class LLMAgent(
         # Agent state
         self._state: LLMAgentState = LLMAgentState()
         self.set_state_strategy: SetAgentStateStrategy = set_state_strategy
-        self._make_custom_agent_state_impl: MakeCustomAgentState | None = None
+        self._set_agent_state_impl: SetAgentState | None = None
 
         # Tool orchestrator
+
+        self._using_default_llm_response_format: bool = False
+        if llm.response_format is None and tools is None:
+            llm.response_format = self.out_type
+            self._using_default_llm_response_format = True
+
         self._tool_orchestrator: ToolOrchestrator[CtxT] = ToolOrchestrator[CtxT](
             agent_id=self.agent_id,
             llm=llm,
@@ -152,16 +167,28 @@ class LLMAgent(
         conversation: Conversation,
         *,
         rcv_args: InT | None = None,
+        batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
-        **kwargs: Any,
     ) -> OutT:
         if self._parse_output_impl:
+            if self._using_default_llm_response_format:
+                # When using custom output parsing, the required LLM response format
+                # can differ from the final agent output type ->
+                # set it back to None unless it was specified explicitly at init.
+                self._tool_orchestrator.llm.response_format = None
+                self._using_default_llm_response_format = False
+
             return self._parse_output_impl(
-                conversation=conversation, rcv_args=rcv_args, ctx=ctx, **kwargs
+                conversation=conversation,
+                rcv_args=rcv_args,
+                batch_idx=batch_idx,
+                ctx=ctx,
             )
 
         return validate_obj_from_json_or_py_string(
-            str(conversation[-1].content), self._out_type_adapter
+            str(conversation[-1].content),
+            adapter=self._out_type_adapter,
+            from_substring=True,
         )
 
     @final
@@ -210,7 +237,7 @@ class LLMAgent(
             rcv_state=rcv_state,
             sys_prompt=formatted_sys_prompt,
             strategy=self.set_state_strategy,
-            make_custom_state_impl=self._make_custom_agent_state_impl,
+            set_agent_state_impl=self._set_agent_state_impl,
             ctx=ctx,
         )
 
@@ -234,7 +261,7 @@ class LLMAgent(
         else:
             # 4. Run tool call loop (new messages are added to the message
             #    history inside the loop)
-            await self._tool_orchestrator.run_loop(agent_state=state, ctx=ctx)
+            await self._tool_orchestrator.run_loop(state=state, ctx=ctx)
 
         # 5. Parse outputs
         batch_size = state.message_history.batch_size
@@ -324,15 +351,13 @@ class LLMAgent(
         return func
 
     def parse_output_handler(
-        self, func: ParseOutputHandler[OutT, CtxT]
-    ) -> ParseOutputHandler[OutT, CtxT]:
+        self, func: ParseOutputHandler[InT, OutT, CtxT]
+    ) -> ParseOutputHandler[InT, OutT, CtxT]:
         self._parse_output_impl = func
 
         return func
 
-    def make_custom_agent_state_handler(
-        self, func: MakeCustomAgentState
-    ) -> MakeCustomAgentState:
+    def set_agent_state_handler(self, func: SetAgentState) -> SetAgentState:
         self._make_custom_agent_state_impl = func
 
         return func
@@ -341,6 +366,13 @@ class LLMAgent(
         self, func: ExitToolCallLoopHandler[CtxT]
     ) -> ExitToolCallLoopHandler[CtxT]:
         self._tool_orchestrator.exit_tool_call_loop_impl = func
+
+        return func
+
+    def manage_agent_state_handler(
+        self, func: ManageAgentStateHandler[CtxT]
+    ) -> ManageAgentStateHandler[CtxT]:
+        self._tool_orchestrator.manage_agent_state_impl = func
 
         return func
 
@@ -356,15 +388,18 @@ class LLMAgent(
         if cur_cls._format_inp_args is not base_cls._format_inp_args:  # noqa: SLF001
             self._prompt_builder.format_inp_args_impl = self._format_inp_args
 
-        if cur_cls._make_custom_agent_state is not base_cls._make_custom_agent_state:  # noqa: SLF001
-            self._make_custom_agent_state_impl = self._make_custom_agent_state
+        if cur_cls._set_agent_state is not base_cls._set_agent_state:  # noqa: SLF001
+            self._set_agent_state_impl = self._set_agent_state
+
+        if cur_cls._manage_agent_state is not base_cls._manage_agent_state:  # noqa: SLF001
+            self._tool_orchestrator.manage_agent_state_impl = self._manage_agent_state
 
         if (
             cur_cls._tool_call_loop_exit is not base_cls._tool_call_loop_exit  # noqa: SLF001
         ):
             self._tool_orchestrator.exit_tool_call_loop_impl = self._tool_call_loop_exit
 
-        self._parse_output_impl: ParseOutputHandler[OutT, CtxT] | None = None
+        self._parse_output_impl: ParseOutputHandler[InT, OutT, CtxT] | None = None
 
     def _format_sys_args(
         self,
@@ -381,21 +416,24 @@ class LLMAgent(
         self,
         usr_args: LLMPromptArgs,
         rcv_args: InT,
+        *,
+        batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
         raise NotImplementedError(
             "LLMAgent._format_inp_args must be overridden by a subclass"
         )
 
-    def _make_custom_agent_state(
+    def _set_agent_state(
         self,
-        cur_state: LLMAgentState | None,
+        cur_state: LLMAgentState,
+        *,
         rcv_state: AgentState | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContextWrapper[Any] | None,
     ) -> LLMAgentState:
         raise NotImplementedError(
-            "LLMAgent._make_custom_agent_state_handler must be overridden by a subclass"
+            "LLMAgent._set_agent_state_handler must be overridden by a subclass"
         )
 
     def _tool_call_loop_exit(
@@ -407,4 +445,15 @@ class LLMAgent(
     ) -> bool:
         raise NotImplementedError(
             "LLMAgent._tool_call_loop_exit must be overridden by a subclass"
+        )
+
+    def _manage_agent_state(
+        self,
+        state: LLMAgentState,
+        *,
+        ctx: RunContextWrapper[CtxT] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        raise NotImplementedError(
+            "LLMAgent._manage_agent_state must be overridden by a subclass"
         )

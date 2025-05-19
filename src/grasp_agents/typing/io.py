@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import TypeAlias, TypeVar
 
 from pydantic import BaseModel
@@ -20,5 +21,5 @@ OutT = TypeVar("OutT", covariant=True)  # noqa: PLC0105
 StateT = TypeVar("StateT", bound=AgentState, covariant=True)  # noqa: PLC0105
 
 LLMPrompt: TypeAlias = str
-LLMFormattedSystemArgs: TypeAlias = dict[str, str]
-LLMFormattedArgs: TypeAlias = dict[str, str | ImageData]
+LLMFormattedSystemArgs: TypeAlias = Mapping[str, str | int | bool]
+LLMFormattedArgs: TypeAlias = Mapping[str, str | int | bool | ImageData]

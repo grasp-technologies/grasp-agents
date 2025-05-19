@@ -1,5 +1,5 @@
 import json
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias
 from uuid import uuid4
@@ -79,7 +79,7 @@ class UserMessage(MessageBase):
     def from_formatted_prompt(
         cls,
         prompt_template: str,
-        prompt_args: dict[str, str | ImageData] | None = None,
+        prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
         model_id: str | None = None,
     ) -> "UserMessage":
         content = Content.from_formatted_prompt(

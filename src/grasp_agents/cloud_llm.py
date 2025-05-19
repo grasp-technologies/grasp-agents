@@ -286,6 +286,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
                 validate_obj_from_json_or_py_string(
                     message.content,
                     adapter=self._response_format_pyd,
+                    from_substring=True,
                 )
 
     async def generate_completion_stream(
