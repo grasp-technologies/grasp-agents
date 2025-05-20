@@ -81,3 +81,7 @@ from openai.types.shared_params.response_format_json_schema import (
 from openai.types.shared_params.response_format_text import (
     ResponseFormatText,
 )
+
+from .openai_llm import OpenAILLM, OpenAILLMSettings
+
+__all__ = ["OpenAILLM", "OpenAILLMSettings"]

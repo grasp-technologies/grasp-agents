@@ -5,13 +5,11 @@ from typing import Any, ClassVar, Generic
 from ..agent_message_pool import AgentMessage, AgentMessagePool
 from ..comm_agent import CommunicatingAgent
 from ..run_context import CtxT, RunContextWrapper
-from ..typing.io import AgentID, AgentState, InT, OutT
+from ..typing.io import AgentID, InT, OutT
 
 
 class WorkflowAgent(
-    CommunicatingAgent[InT, OutT, AgentState, CtxT],
-    ABC,
-    Generic[InT, OutT, CtxT],
+    CommunicatingAgent[InT, OutT, Any, CtxT], ABC, Generic[InT, OutT, CtxT]
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -21,9 +19,9 @@ class WorkflowAgent(
     def __init__(
         self,
         agent_id: AgentID,
-        subagents: Sequence[CommunicatingAgent[Any, Any, AgentState, CtxT]],
-        start_agent: CommunicatingAgent[InT, Any, AgentState, CtxT],
-        end_agent: CommunicatingAgent[Any, OutT, AgentState, CtxT],
+        subagents: Sequence[CommunicatingAgent[Any, Any, Any, CtxT]],
+        start_agent: CommunicatingAgent[InT, Any, Any, CtxT],
+        end_agent: CommunicatingAgent[Any, OutT, Any, CtxT],
         message_pool: AgentMessagePool[CtxT] | None = None,
         recipient_ids: list[AgentID] | None = None,
         dynamic_routing: bool = False,
@@ -53,11 +51,11 @@ class WorkflowAgent(
             )
 
     @property
-    def start_agent(self) -> CommunicatingAgent[InT, Any, AgentState, CtxT]:
+    def start_agent(self) -> CommunicatingAgent[InT, Any, Any, CtxT]:
         return self._start_agent
 
     @property
-    def end_agent(self) -> CommunicatingAgent[Any, OutT, AgentState, CtxT]:
+    def end_agent(self) -> CommunicatingAgent[Any, OutT, Any, CtxT]:
         return self._end_agent
 
     @abstractmethod
@@ -65,10 +63,10 @@ class WorkflowAgent(
         self,
         inp_items: Any | None = None,
         *,
+        rcv_message: AgentMessage[InT, Any] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
-        rcv_message: AgentMessage[InT, AgentState] | None = None,
         entry_point: bool = False,
         forbid_state_change: bool = False,
         **generation_kwargs: Any,
-    ) -> AgentMessage[OutT, AgentState]:
+    ) -> AgentMessage[OutT, Any]:
         pass

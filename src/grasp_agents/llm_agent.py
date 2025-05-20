@@ -395,9 +395,9 @@ class LLMAgent(
             self._tool_orchestrator.manage_agent_state_impl = self._manage_agent_state
 
         if (
-            cur_cls._tool_call_loop_exit is not base_cls._tool_call_loop_exit  # noqa: SLF001
+            cur_cls._exit_tool_call_loop is not base_cls._exit_tool_call_loop  # noqa: SLF001
         ):
-            self._tool_orchestrator.exit_tool_call_loop_impl = self._tool_call_loop_exit
+            self._tool_orchestrator.exit_tool_call_loop_impl = self._exit_tool_call_loop
 
         self._parse_output_impl: ParseOutputHandler[InT, OutT, CtxT] | None = None
 
@@ -414,9 +414,9 @@ class LLMAgent(
 
     def _format_inp_args(
         self,
+        *,
         usr_args: LLMPromptArgs,
         rcv_args: InT,
-        *,
         batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
@@ -436,7 +436,7 @@ class LLMAgent(
             "LLMAgent._set_agent_state_handler must be overridden by a subclass"
         )
 
-    def _tool_call_loop_exit(
+    def _exit_tool_call_loop(
         self,
         conversation: Conversation,
         *,

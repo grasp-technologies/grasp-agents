@@ -13,10 +13,10 @@ logger = getLogger(__name__)
 _EH_OutT = TypeVar("_EH_OutT", contravariant=True)  # noqa: PLC0105
 
 
-class WorkflowLoopExitHandler(Protocol[_EH_OutT, CtxT]):
+class ExitWorkflowLoopHandler(Protocol[_EH_OutT, CtxT]):
     def __call__(
         self,
-        output_message: AgentMessage[_EH_OutT, AgentState],
+        output_message: AgentMessage[_EH_OutT, Any],
         ctx: RunContextWrapper[CtxT] | None,
         **kwargs: Any,
     ) -> bool: ...
@@ -31,8 +31,8 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
     def __init__(
         self,
         agent_id: AgentID,
-        subagents: Sequence[CommunicatingAgent[Any, Any, AgentState, CtxT]],
-        exit_agent: CommunicatingAgent[Any, OutT, AgentState, CtxT],
+        subagents: Sequence[CommunicatingAgent[Any, Any, Any, CtxT]],
+        exit_agent: CommunicatingAgent[Any, OutT, Any, CtxT],
         message_pool: AgentMessagePool[CtxT] | None = None,
         recipient_ids: list[AgentID] | None = None,
         dynamic_routing: bool = False,
@@ -51,27 +51,27 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
 
         self._max_iterations = max_iterations
 
-        self._workflow_loop_exit_impl: WorkflowLoopExitHandler[OutT, CtxT] | None = None
+        self._exit_workflow_loop_impl: ExitWorkflowLoopHandler[OutT, CtxT] | None = None
 
     @property
     def max_iterations(self) -> int:
         return self._max_iterations
 
-    def workflow_loop_exit_handler(
-        self, func: WorkflowLoopExitHandler[OutT, CtxT]
-    ) -> WorkflowLoopExitHandler[OutT, CtxT]:
-        self._workflow_loop_exit_impl = func
+    def exit_workflow_loop_handler(
+        self, func: ExitWorkflowLoopHandler[OutT, CtxT]
+    ) -> ExitWorkflowLoopHandler[OutT, CtxT]:
+        self._exit_workflow_loop_impl = func
 
         return func
 
     def _exit_workflow_loop(
         self,
-        output_message: AgentMessage[OutT, AgentState],
+        output_message: AgentMessage[OutT, Any],
         ctx: RunContextWrapper[CtxT] | None,
         **kwargs: Any,
     ) -> bool:
-        if self._workflow_loop_exit_impl:
-            return self._workflow_loop_exit_impl(output_message, ctx=ctx, **kwargs)
+        if self._exit_workflow_loop_impl:
+            return self._exit_workflow_loop_impl(output_message, ctx=ctx, **kwargs)
 
         return False
 
@@ -80,15 +80,15 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
         self,
         inp_items: Any | None = None,
         *,
+        rcv_message: AgentMessage[InT, Any] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
-        rcv_message: AgentMessage[InT, AgentState] | None = None,
         entry_point: bool = False,
         forbid_state_change: bool = False,
         **kwargs: Any,
     ) -> AgentMessage[OutT, AgentState]:
         agent_message = rcv_message
         num_iterations = 0
-        exit_message: AgentMessage[OutT, AgentState] | None = None
+        exit_message: AgentMessage[OutT, Any] | None = None
 
         while True:
             for subagent in self.subagents:
