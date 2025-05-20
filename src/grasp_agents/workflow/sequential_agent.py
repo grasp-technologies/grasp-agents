@@ -4,7 +4,7 @@ from typing import Any, ClassVar, Generic, cast, final
 from ..agent_message_pool import AgentMessage, AgentMessagePool
 from ..comm_agent import CommunicatingAgent
 from ..run_context import CtxT, RunContextWrapper
-from ..typing.io import AgentID, AgentState, InT, OutT
+from ..typing.io import AgentID, InT, OutT
 from .workflow_agent import WorkflowAgent
 
 
@@ -17,7 +17,7 @@ class SequentialWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT,
     def __init__(
         self,
         agent_id: AgentID,
-        subagents: Sequence[CommunicatingAgent[Any, Any, AgentState, CtxT]],
+        subagents: Sequence[CommunicatingAgent[Any, Any, Any, CtxT]],
         message_pool: AgentMessagePool[CtxT] | None = None,
         recipient_ids: list[AgentID] | None = None,
         dynamic_routing: bool = False,
@@ -38,12 +38,12 @@ class SequentialWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT,
         self,
         inp_items: Any | None = None,
         *,
+        rcv_message: AgentMessage[InT, Any] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
-        rcv_message: AgentMessage[InT, AgentState] | None = None,
         entry_point: bool = False,
         forbid_state_change: bool = False,
         **kwargs: Any,
-    ) -> AgentMessage[OutT, AgentState]:
+    ) -> AgentMessage[OutT, Any]:
         agent_message = rcv_message
         for subagent in self.subagents:
             agent_message = await subagent.run(
@@ -57,4 +57,4 @@ class SequentialWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT,
             inp_items = None
             entry_point = False
 
-        return cast("AgentMessage[OutT, AgentState]", agent_message)
+        return cast("AgentMessage[OutT, Any]", agent_message)

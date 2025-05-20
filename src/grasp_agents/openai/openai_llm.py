@@ -3,10 +3,9 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel
-
 from openai import AsyncOpenAI
 from openai._types import NOT_GIVEN  # type: ignore[import]
+from pydantic import BaseModel
 
 from ..cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams

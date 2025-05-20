@@ -33,9 +33,9 @@ class FormatSystemArgsHandler(Protocol[CtxT]):
 class FormatInputArgsHandler(Protocol[InT, CtxT]):
     def __call__(
         self,
+        *,
         usr_args: LLMPromptArgs,
         rcv_args: InT,
-        *,
         batch_idx: int,
         ctx: RunContextWrapper[CtxT] | None,
     ) -> LLMFormattedArgs: ...
@@ -77,9 +77,9 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
 
     def _format_inp_args(
         self,
+        *,
         usr_args: LLMPromptArgs,
         rcv_args: InT,
-        *,
         batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
