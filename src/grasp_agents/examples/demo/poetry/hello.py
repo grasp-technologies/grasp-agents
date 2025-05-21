@@ -56,8 +56,7 @@ Problem = str
 teacher = LLMAgent[Any, Problem, None](
     agent_id="teacher",
     llm=OpenAILLM(
-        model_name="gpt-4.1",
-        api_provider="openai",
+        model_name="openai:gpt-4.1",
         llm_settings=OpenAILLMSettings(temperature=0.1),
     ),
     tools=[AskStudentTool()],

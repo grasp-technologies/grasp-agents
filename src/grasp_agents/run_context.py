@@ -32,7 +32,7 @@ class InteractionRecord(BaseModel, Generic[InT, OutT, StateT]):
     source_id: str
     recipient_ids: Sequence[AgentID]
     state: StateT
-    inp_items: LLMPrompt | list[str | ImageData] | None = None
+    chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None
     sys_prompt: LLMPrompt | None = None
     inp_prompt: LLMPrompt | None = None
     sys_args: SystemRunArgs | None = None

@@ -19,6 +19,7 @@ CostsDict: TypeAlias = dict[str, ModelCostsDict]
 
 
 class UsageTracker(BaseModel):
+    # TODO: specify different costs per provider:model, not just per model
     source_id: str
     costs_dict_path: str | Path = COSTS_DICT_PATH
     costs_dict: CostsDict | None = None
@@ -60,7 +61,7 @@ class UsageTracker(BaseModel):
         self, messages: Sequence[Message], model_name: str | None = None
     ) -> None:
         if model_name is not None and self.costs_dict is not None:
-            model_costs_dict = self.costs_dict.get(model_name)
+            model_costs_dict = self.costs_dict.get(model_name.split(":", 1)[-1])
         else:
             model_costs_dict = None
 

@@ -61,8 +61,9 @@ class WorkflowAgent(
     @abstractmethod
     async def run(
         self,
-        inp_items: Any | None = None,
+        chat_inputs: Any | None = None,
         *,
+        rcv_args: InT | Sequence[InT] | None = None,
         rcv_message: AgentMessage[InT, Any] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
         entry_point: bool = False,

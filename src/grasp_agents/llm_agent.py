@@ -186,19 +186,42 @@ class LLMAgent(
             )
 
         return validate_obj_from_json_or_py_string(
-            str(conversation[-1].content),
+            str(conversation[-1].content or ""),
             adapter=self._out_type_adapter,
             from_substring=True,
         )
 
+    @staticmethod
+    def _validate_run_inputs(
+        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        rcv_args: InT | Sequence[InT] | None = None,
+        rcv_message: AgentMessage[InT, AgentState] | None = None,
+        entry_point: bool = False,
+    ) -> None:
+        multiple_inputs_err_message = (
+            "Only one of chat_inputs, rcv_args, or rcv_message must be provided."
+        )
+        if chat_inputs is not None and rcv_args is not None:
+            raise ValueError(multiple_inputs_err_message)
+        if chat_inputs is not None and rcv_message is not None:
+            raise ValueError(multiple_inputs_err_message)
+        if rcv_args is not None and rcv_message is not None:
+            raise ValueError(multiple_inputs_err_message)
+
+        if entry_point and rcv_message is not None:
+            raise ValueError(
+                "Entry point agent cannot receive messages from other agents."
+            )
+
     @final
     async def run(
         self,
-        inp_items: LLMPrompt | list[str | ImageData] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         *,
-        ctx: RunContextWrapper[CtxT] | None = None,
         rcv_message: AgentMessage[InT, AgentState] | None = None,
+        rcv_args: InT | Sequence[InT] | None = None,
         entry_point: bool = False,
+        ctx: RunContextWrapper[CtxT] | None = None,
         forbid_state_change: bool = False,
         **gen_kwargs: Any,  # noqa: ARG002
     ) -> AgentMessage[OutT, LLMAgentState]:
@@ -211,16 +234,12 @@ class LLMAgent(
                 sys_args = run_args.sys
                 usr_args = run_args.usr
 
-        if entry_point:
-            assert rcv_message is None, (
-                "Entry point run should not have a received message"
-            )
-        if inp_items:
-            assert rcv_message is None, (
-                "There must be no received message with user inputs"
-            )
-
-        cur_state = self.state.model_copy(deep=True)
+        self._validate_run_inputs(
+            chat_inputs=chat_inputs,
+            rcv_args=rcv_args,
+            rcv_message=rcv_message,
+            entry_point=entry_point,
+        )
 
         # 1. Make system prompt (can be None)
         formatted_sys_prompt = self._prompt_builder.make_sys_prompt(
@@ -229,6 +248,7 @@ class LLMAgent(
 
         # 2. Set agent state
 
+        cur_state = self.state.model_copy(deep=True)
         rcv_state = rcv_message.sender_state if rcv_message else None
         prev_mh_len = len(cur_state.message_history)
 
@@ -244,10 +264,16 @@ class LLMAgent(
         self._print_sys_msg(state=state, prev_mh_len=prev_mh_len, ctx=ctx)
 
         # 3. Make and add user messages (can be empty)
+        _rcv_args_batch: Sequence[InT] | None = None
+        if rcv_message is not None:
+            _rcv_args_batch = rcv_message.payloads
+        elif rcv_args is not None:
+            _rcv_args_batch = rcv_args if isinstance(rcv_args, Sequence) else [rcv_args]  # type: ignore[assignment]
+
         user_message_batch = self._prompt_builder.make_user_messages(
-            inp_items=inp_items,
+            chat_inputs=chat_inputs,
             usr_args=usr_args,
-            rcv_args_batch=rcv_message.payloads if rcv_message else None,
+            rcv_args_batch=_rcv_args_batch,
             entry_point=entry_point,
             ctx=ctx,
         )
@@ -257,7 +283,7 @@ class LLMAgent(
 
         if not self.tools:
             # 4. Generate messages without tools
-            await self._tool_orchestrator.generate_once(agent_state=state, ctx=ctx)
+            await self._tool_orchestrator.generate_once(state=state, ctx=ctx)
         else:
             # 4. Run tool call loop (new messages are added to the message
             #    history inside the loop)
@@ -285,7 +311,7 @@ class LLMAgent(
             interaction_record = InteractionRecord(
                 source_id=self.agent_id,
                 recipient_ids=recipient_ids,
-                inp_items=inp_items,
+                chat_inputs=chat_inputs,
                 sys_prompt=self.sys_prompt,
                 inp_prompt=self.inp_prompt,
                 sys_args=sys_args,

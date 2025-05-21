@@ -37,7 +37,7 @@ class BaseAgent(AutoInstanceAttributesMixin, ABC, Generic[OutT, StateT, CtxT]):
     @abstractmethod
     async def run(
         self,
-        inp_items: Any,
+        chat_inputs: Any | None = None,
         *,
         ctx: RunContextWrapper[CtxT] | None = None,
         **kwargs: Any,

@@ -15,15 +15,16 @@ from . import (
 def to_api_tool(
     tool: BaseTool[BaseModel, Any, Any],
 ) -> ChatCompletionToolParam:
-    return ChatCompletionToolParam(
-        type="function",
-        function=ChatCompletionFunctionDefinition(
-            name=tool.name,
-            description=tool.description,
-            parameters=tool.in_schema.model_json_schema(),
-            strict=tool.strict,
-        ),
+    function = ChatCompletionFunctionDefinition(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.in_schema.model_json_schema(),
+        strict=tool.strict,
     )
+    if tool.strict is None:
+        function.pop("strict")
+
+    return ChatCompletionToolParam(type="function", function=function)
 
 
 def to_api_tool_choice(

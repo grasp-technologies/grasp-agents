@@ -106,7 +106,6 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | None = None,
         # Connection settings
-        api_provider: APIProvider = "openai",
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
@@ -134,7 +133,16 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         )
 
         self._model_name = model_name
+
+        api_provider = model_name.split(":", 1)[0]
+        api_model_name = model_name.split(":", 1)[-1]
+        if api_provider not in PROVIDERS:
+            raise ValueError(
+                f"API provider '{api_provider}' is not supported. "
+                f"Supported providers are: {', '.join(PROVIDERS.keys())}"
+            )
         self._api_provider: APIProvider = api_provider
+        self._api_model_name: str = api_model_name
 
         self._struct_output_support: bool = any(
             fnmatch.fnmatch(self._model_name, pat)
@@ -284,7 +292,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
                 and not message.tool_calls
             ):
                 validate_obj_from_json_or_py_string(
-                    message.content,
+                    message.content or "",
                     adapter=self._response_format_pyd,
                     from_substring=True,
                 )

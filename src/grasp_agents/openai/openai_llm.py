@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from openai._types import NOT_GIVEN  # type: ignore[import]
 from pydantic import BaseModel
 
-from ..cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
+from ..cloud_llm import CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams
 from ..rate_limiting.rate_limiter_chunked import RateLimiterC
 from ..typing.message import AssistantMessage, Conversation
@@ -69,7 +69,6 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | None = None,
         # Connection settings
-        api_provider: APIProvider = "openai",
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
@@ -92,7 +91,6 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             converters=OpenAIConverters(),
             tools=tools,
             response_format=response_format,
-            api_provider=api_provider,
             async_http_client_params=async_http_client_params,
             rate_limiter=rate_limiter,
             rate_limiter_rpm=rate_limiter_rpm,
@@ -125,7 +123,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         tool_choice = api_tool_choice or NOT_GIVEN
 
         return await self._client.chat.completions.create(
-            model=self._model_name,
+            model=self._api_model_name,
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,
@@ -146,7 +144,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         response_format = api_response_format or NOT_GIVEN
 
         return await self._client.beta.chat.completions.parse(
-            model=self._model_name,
+            model=self._api_model_name,
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,
@@ -167,7 +165,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         tool_choice = api_tool_choice or NOT_GIVEN
 
         return await self._client.chat.completions.create(
-            model=self._model_name,
+            model=self._api_model_name,
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,

@@ -61,7 +61,7 @@ class MessageBase(BaseModel):
 
 class AssistantMessage(MessageBase):
     role: Literal[Role.ASSISTANT] = Role.ASSISTANT
-    content: str
+    content: str | None
     usage: Usage | None = None
     tool_calls: Sequence[ToolCall] | None = None
     refusal: str | None = None
