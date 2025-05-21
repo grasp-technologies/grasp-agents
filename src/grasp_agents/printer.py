@@ -88,7 +88,7 @@ class Printer:
 
         role = message.role
         usage = message.usage if isinstance(message, AssistantMessage) else None
-        content_str = self.content_to_str(message.content, message.role)
+        content_str = self.content_to_str(message.content or "", message.role)
 
         if self.color_by == "agent_id":
             color = self.get_agent_color(agent_id)

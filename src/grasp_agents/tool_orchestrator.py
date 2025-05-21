@@ -103,11 +103,11 @@ class ToolOrchestrator(Generic[CtxT]):
 
     async def generate_once(
         self,
-        agent_state: LLMAgentState,
+        state: LLMAgentState,
         tool_choice: ToolChoice | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> Sequence[AssistantMessage]:
-        message_history = agent_state.message_history
+        message_history = state.message_history
         message_batch = await self.llm.generate_message_batch(
             message_history, tool_choice=tool_choice
         )

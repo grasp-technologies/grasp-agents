@@ -118,13 +118,13 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         return [UserMessage.from_text(text, model_id=self._agent_id)]
 
     def _usr_messages_from_content_parts(
-        self, content_parts: list[str | ImageData]
-    ) -> list[UserMessage]:
+        self, content_parts: Sequence[str | ImageData]
+    ) -> Sequence[UserMessage]:
         return [UserMessage.from_content_parts(content_parts, model_id=self._agent_id)]
 
     def _usr_messages_from_rcv_args(
         self, rcv_args_batch: Sequence[InT]
-    ) -> list[UserMessage]:
+    ) -> Sequence[UserMessage]:
         return [
             UserMessage.from_text(
                 self._rcv_args_type_adapter.dump_json(
@@ -173,28 +173,28 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
 
     def make_user_messages(
         self,
-        inp_items: LLMPrompt | list[str | ImageData] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         usr_args: UserRunArgs | None = None,
         rcv_args_batch: Sequence[InT] | None = None,
         entry_point: bool = False,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> Sequence[UserMessage]:
         # 1) Direct user input (e.g. chat input)
-        if inp_items is not None or entry_point:
+        if chat_inputs is not None or entry_point:
             """
-            * If user inputs are provided, use them instead of the predefined
+            * If chat inputs are provided, use them instead of the predefined
                 input prompt template
             * In a multi-agent system, the predefined input prompt is used to
                 construct agent inputs using the combination of received
                 and user arguments.
                 However, the first agent run (entry point) has no received
-                messages, so we use the user inputs directly, if provided.
+                messages, so we use the chat inputs directly, if provided.
             """
-            if isinstance(inp_items, LLMPrompt):
-                return self._usr_messages_from_text(inp_items)
-            if isinstance(inp_items, list) and inp_items:
-                return self._usr_messages_from_content_parts(inp_items)
-            return []
+            if isinstance(chat_inputs, LLMPrompt):
+                return self._usr_messages_from_text(chat_inputs)
+
+            if isinstance(chat_inputs, Sequence) and chat_inputs:
+                return self._usr_messages_from_content_parts(chat_inputs)
 
         # 2) No input prompt template + received args → raw JSON messages
         if self.inp_prompt is None and rcv_args_batch:
@@ -208,6 +208,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                 rcv_args_batch=rcv_args_batch,
                 ctx=ctx,
             )
+
         return []
 
     def _make_batched(

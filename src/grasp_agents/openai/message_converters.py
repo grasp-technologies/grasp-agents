@@ -51,11 +51,6 @@ def from_api_assistant_message(
     api_usage: ChatCompletionUsage | None = None,
     model_id: str | None = None,
 ) -> AssistantMessage:
-    content = api_message.content or ""
-    assert isinstance(content, str), (
-        "Only string content is currently supported in assistant messages"
-    )
-
     usage = None
     if api_usage is not None:
         reasoning_tokens = None
@@ -88,7 +83,7 @@ def from_api_assistant_message(
         ]
 
     return AssistantMessage(
-        content=content,
+        content=api_message.content,
         usage=usage,
         tool_calls=tool_calls,
         refusal=api_message.refusal,
@@ -113,12 +108,22 @@ def to_api_assistant_message(
             for tool_call in message.tool_calls
         ]
 
-    return ChatCompletionAssistantMessageParam(
+    api_message = ChatCompletionAssistantMessageParam(
         role="assistant",
         content=message.content,
-        tool_calls=api_tool_calls,  # type: ignore
+        tool_calls=api_tool_calls or [],
         refusal=message.refusal,
     )
+    if message.content is None and not api_tool_calls:
+        # Some API providers return None in the generated content without errors,
+        # even though None in the input content is not accepted.
+        api_message["content"] = "<empty>"
+    if api_tool_calls is None:
+        api_message.pop("tool_calls")
+    if message.refusal is None:
+        api_message.pop("refusal")
+
+    return api_message
 
 
 def from_api_system_message(

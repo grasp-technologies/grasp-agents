@@ -99,7 +99,7 @@ class CommunicatingAgent(
     @abstractmethod
     async def run(
         self,
-        inp_items: Any | None = None,
+        chat_inputs: Any | None = None,
         *,
         ctx: RunContextWrapper[CtxT] | None = None,
         rcv_message: AgentMessage[InT, AgentState] | None = None,

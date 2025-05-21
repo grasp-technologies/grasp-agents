@@ -67,7 +67,8 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
     def _exit_workflow_loop(
         self,
         output_message: AgentMessage[OutT, Any],
-        ctx: RunContextWrapper[CtxT] | None,
+        *,
+        ctx: RunContextWrapper[CtxT] | None = None,
         **kwargs: Any,
     ) -> bool:
         if self._exit_workflow_loop_impl:
@@ -78,8 +79,9 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
     @final
     async def run(
         self,
-        inp_items: Any | None = None,
+        chat_inputs: Any | None = None,
         *,
+        rcv_args: InT | Sequence[InT] | None = None,
         rcv_message: AgentMessage[InT, Any] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
         entry_point: bool = False,
@@ -93,7 +95,8 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
         while True:
             for subagent in self.subagents:
                 agent_message = await subagent.run(
-                    inp_items=inp_items,
+                    chat_inputs=chat_inputs,
+                    rcv_args=rcv_args,
                     rcv_message=agent_message,
                     entry_point=entry_point,
                     forbid_state_change=forbid_state_change,
@@ -112,5 +115,6 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
                         )
                         return exit_message
 
-                inp_items = None
+                chat_inputs = None
+                rcv_args = None
                 entry_point = False
