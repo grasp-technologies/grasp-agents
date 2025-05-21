@@ -2,8 +2,8 @@
 
 <br/>
 <picture>
-  <source srcset="./.assets/grasp-dark.svg" media="(prefers-color-scheme: dark)">
-  <img src="./.assets/grasp.svg" alt="Grasp Agents"/>
+  <source srcset="https://raw.githubusercontent.com/grasp-technologies/grasp-agents/master/.assets/grasp-dark.svg" media="(prefers-color-scheme: dark)">
+  <img src="https://raw.githubusercontent.com/grasp-technologies/grasp-agents/master/.assets/grasp.svg" alt="Grasp Agents"/>
 </picture>
 <br/>
 <br/>
@@ -25,10 +25,10 @@
   - Agent state
   - Shared context
 - Transparent implementation of common agentic patterns:
-    * Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
-    * Workflows (static communication topology), including loops
-    * Agents-as-tools for task delegation
-    * Freeform A2A communication via the in-process actor model
+  - Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
+  - Workflows (static communication topology), including loops
+  - Agents-as-tools for task delegation
+  - Freeform A2A communication via the in-process actor model
 - Batch processing support outside of agentic loops
 - Simple logging and usage/cost tracking
 
