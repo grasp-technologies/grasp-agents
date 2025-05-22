@@ -2,12 +2,12 @@ import fnmatch
 import logging
 import os
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, Generic, Literal
 
 import httpx
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 from tenacity import (
     RetryCallState,
     retry,
@@ -104,7 +104,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         llm_settings: SettingsT | None = None,
         model_id: str | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_format: type | None = None,
+        response_format: type | Mapping[str, type] | None = None,
         # Connection settings
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
@@ -147,9 +147,6 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         self._struct_output_support: bool = any(
             fnmatch.fnmatch(self._model_name, pat)
             for pat in PROVIDERS[api_provider]["struct_output_support"]
-        )
-        self._response_format_pyd: TypeAdapter[Any] | None = (
-            TypeAdapter(self._response_format) if response_format else None
         )
         if (
             self._llm_settings.get("use_structured_outputs")
