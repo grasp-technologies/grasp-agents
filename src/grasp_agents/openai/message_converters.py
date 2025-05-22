@@ -114,7 +114,7 @@ def to_api_assistant_message(
         tool_calls=api_tool_calls or [],
         refusal=message.refusal,
     )
-    if message.content is None and not api_tool_calls:
+    if message.content is None:
         # Some API providers return None in the generated content without errors,
         # even though None in the input content is not accepted.
         api_message["content"] = "<empty>"

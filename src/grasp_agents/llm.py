@@ -1,10 +1,10 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Generic, TypeVar, cast
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 from typing_extensions import TypedDict
 
 from .memory import MessageHistory
@@ -33,7 +33,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         model_id: str | None = None,
         llm_settings: SettingsT | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_format: type | None = None,
+        response_format: type | Mapping[str, type] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -42,8 +42,20 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         self._model_id = model_id or str(uuid4())[:8]
         self._model_name = model_name
         self._tools = {t.name: t for t in tools} if tools else None
-        self._response_format = response_format
         self._llm_settings: SettingsT = llm_settings or cast("SettingsT", {})
+
+        self._response_format = response_format
+        self._response_format_pyd: (
+            TypeAdapter[Any] | Mapping[str, TypeAdapter[Any]] | None
+        )
+        if isinstance(response_format, type):
+            self._response_format_pyd = TypeAdapter(response_format)
+        elif isinstance(response_format, Mapping):
+            self._response_format_pyd = {
+                k: TypeAdapter(v) for k, v in response_format.items()
+            }
+        else:
+            self._response_format_pyd = None
 
     @property
     def model_id(self) -> str:
@@ -62,7 +74,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         return self._tools
 
     @property
-    def response_format(self) -> type | None:
+    def response_format(self) -> type | Mapping[str, type] | None:
         return self._response_format
 
     @tools.setter

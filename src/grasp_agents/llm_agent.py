@@ -441,8 +441,8 @@ class LLMAgent(
     def _format_in_args(
         self,
         *,
-        usr_args: LLMPromptArgs | None = None,
-        in_args: InT | None = None,
+        usr_args: LLMPromptArgs,
+        in_args: InT,
         batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
