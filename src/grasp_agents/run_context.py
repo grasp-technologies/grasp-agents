@@ -34,10 +34,10 @@ class InteractionRecord(BaseModel, Generic[InT, OutT, StateT]):
     state: StateT
     chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None
     sys_prompt: LLMPrompt | None = None
-    inp_prompt: LLMPrompt | None = None
+    in_prompt: LLMPrompt | None = None
     sys_args: SystemRunArgs | None = None
     usr_args: UserRunArgs | None = None
-    rcv_args: Sequence[InT] | None = None
+    in_args: Sequence[InT] | None = None
     outputs: Sequence[OutT]
 
     model_config = ConfigDict(extra="forbid", frozen=True)

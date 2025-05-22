@@ -51,7 +51,7 @@ class CommunicatingAgent(
         self._in_type: type[InT]
         super().__init__(agent_id=agent_id, **kwargs)
 
-        self._rcv_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
+        self._in_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
         self.recipient_ids = recipient_ids or []
 
         self._message_pool = message_pool or AgentMessagePool()
@@ -102,7 +102,7 @@ class CommunicatingAgent(
         chat_inputs: Any | None = None,
         *,
         ctx: RunContextWrapper[CtxT] | None = None,
-        rcv_message: AgentMessage[InT, AgentState] | None = None,
+        in_message: AgentMessage[InT, AgentState] | None = None,
         entry_point: bool = False,
         forbid_state_change: bool = False,
         **kwargs: Any,
@@ -113,7 +113,7 @@ class CommunicatingAgent(
         self, ctx: RunContextWrapper[CtxT] | None = None, **run_kwargs: Any
     ) -> None:
         output_message = await self.run(
-            ctx=ctx, rcv_message=None, entry_point=True, **run_kwargs
+            ctx=ctx, in_message=None, entry_point=True, **run_kwargs
         )
         await self.post_message(output_message)
 
@@ -140,8 +140,8 @@ class CommunicatingAgent(
         ctx: RunContextWrapper[CtxT] | None = None,
         **run_kwargs: Any,
     ) -> None:
-        rcv_message = cast("AgentMessage[InT, AgentState]", message)
-        out_message = await self.run(ctx=ctx, rcv_message=rcv_message, **run_kwargs)
+        in_message = cast("AgentMessage[InT, AgentState]", message)
+        out_message = await self.run(ctx=ctx, in_message=in_message, **run_kwargs)
 
         if self._exit_condition(output_message=out_message, ctx=ctx):
             await self._message_pool.stop_all()
@@ -199,14 +199,14 @@ class CommunicatingAgent(
                 inp: InT,
                 ctx: RunContextWrapper[CtxT] | None = None,
             ) -> OutT:
-                rcv_args = in_type.model_validate(inp)
-                rcv_message = AgentMessage[in_type, AgentState](
-                    payloads=[rcv_args],
+                in_args = in_type.model_validate(inp)
+                in_message = AgentMessage[in_type, AgentState](
+                    payloads=[in_args],
                     sender_id="<tool_user>",
                     recipient_ids=[agent_instance.agent_id],
                 )
                 agent_result = await agent_instance.run(
-                    rcv_message=rcv_message,
+                    in_message=in_message,
                     entry_point=False,
                     forbid_state_change=True,
                     ctx=ctx,

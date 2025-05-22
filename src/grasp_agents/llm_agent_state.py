@@ -15,7 +15,7 @@ class SetAgentState(Protocol):
         self,
         cur_state: "LLMAgentState",
         *,
-        rcv_state: AgentState | None,
+        in_state: AgentState | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContextWrapper[Any] | None,
     ) -> "LLMAgentState": ...
@@ -29,11 +29,11 @@ class LLMAgentState(AgentState):
         return self.message_history.batch_size
 
     @classmethod
-    def from_cur_and_rcv_states(
+    def from_cur_and_in_states(
         cls,
         cur_state: "LLMAgentState",
         *,
-        rcv_state: Optional["AgentState"] = None,
+        in_state: Optional["AgentState"] = None,
         sys_prompt: LLMPrompt | None = None,
         strategy: SetAgentStateStrategy = "from_sender",
         set_agent_state_impl: SetAgentState | None = None,
@@ -50,13 +50,13 @@ class LLMAgentState(AgentState):
             upd_mh.reset(sys_prompt)
 
         elif strategy == "from_sender":
-            rcv_mh = (
-                rcv_state.message_history
-                if rcv_state and isinstance(rcv_state, "LLMAgentState")
+            in_mh = (
+                in_state.message_history
+                if in_state and isinstance(in_state, "LLMAgentState")
                 else None
             )
-            if rcv_mh:
-                upd_mh = deepcopy(rcv_mh)
+            if in_mh:
+                in_mh = deepcopy(in_mh)
             else:
                 upd_mh.reset(sys_prompt)
 
@@ -66,7 +66,7 @@ class LLMAgentState(AgentState):
             )
             return set_agent_state_impl(
                 cur_state=cur_state,
-                rcv_state=rcv_state,
+                in_state=in_state,
                 sys_prompt=sys_prompt,
                 ctx=ctx,
             )

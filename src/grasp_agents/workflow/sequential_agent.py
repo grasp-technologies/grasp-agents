@@ -38,26 +38,26 @@ class SequentialWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT,
         self,
         chat_inputs: Any | None = None,
         *,
-        rcv_args: InT | Sequence[InT] | None = None,
-        rcv_message: AgentMessage[InT, Any] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
+        in_message: AgentMessage[InT, Any] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
         entry_point: bool = False,
         forbid_state_change: bool = False,
         **kwargs: Any,
     ) -> AgentMessage[OutT, Any]:
-        agent_message = rcv_message
+        agent_message = in_message
         for subagent in self.subagents:
             agent_message = await subagent.run(
                 chat_inputs=chat_inputs,
-                rcv_args=rcv_args,
-                rcv_message=agent_message,
+                in_args=in_args,
+                in_message=agent_message,
                 entry_point=entry_point,
                 forbid_state_change=forbid_state_change,
                 ctx=ctx,
                 **kwargs,
             )
             chat_inputs = None
-            rcv_args = None
+            in_args = None
             entry_point = False
 
         return cast("AgentMessage[OutT, Any]", agent_message)
