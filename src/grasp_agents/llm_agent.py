@@ -52,7 +52,7 @@ class ParseOutputHandler(Protocol[InT, OutT, CtxT]):
         self,
         conversation: Conversation,
         *,
-        rcv_args: InT | None,
+        in_args: InT | None,
         batch_idx: int,
         ctx: RunContextWrapper[CtxT] | None,
     ) -> OutT: ...
@@ -74,8 +74,8 @@ class LLMAgent(
         # LLM
         llm: LLM[LLMSettings, Converters],
         # Input prompt template (combines user and received arguments)
-        inp_prompt: LLMPrompt | None = None,
-        inp_prompt_path: str | Path | None = None,
+        in_prompt: LLMPrompt | None = None,
+        in_prompt_path: str | Path | None = None,
         # System prompt template
         sys_prompt: LLMPrompt | None = None,
         sys_prompt_path: str | Path | None = None,
@@ -119,13 +119,13 @@ class LLMAgent(
 
         # Prompt builder
         sys_prompt = get_prompt(prompt_text=sys_prompt, prompt_path=sys_prompt_path)
-        inp_prompt = get_prompt(prompt_text=inp_prompt, prompt_path=inp_prompt_path)
+        in_prompt = get_prompt(prompt_text=in_prompt, prompt_path=in_prompt_path)
         self._prompt_builder: PromptBuilder[InT, CtxT] = PromptBuilder[
             self.in_type, CtxT
         ](
             agent_id=self._agent_id,
             sys_prompt=sys_prompt,
-            inp_prompt=inp_prompt,
+            in_prompt=in_prompt,
             sys_args_schema=sys_args_schema,
             usr_args_schema=usr_args_schema,
         )
@@ -159,14 +159,14 @@ class LLMAgent(
         return self._prompt_builder.sys_prompt
 
     @property
-    def inp_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.inp_prompt
+    def in_prompt(self) -> LLMPrompt | None:
+        return self._prompt_builder.in_prompt
 
     def _parse_output(
         self,
         conversation: Conversation,
         *,
-        rcv_args: InT | None = None,
+        in_args: InT | None = None,
         batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> OutT:
@@ -180,7 +180,7 @@ class LLMAgent(
 
             return self._parse_output_impl(
                 conversation=conversation,
-                rcv_args=rcv_args,
+                in_args=in_args,
                 batch_idx=batch_idx,
                 ctx=ctx,
             )
@@ -194,21 +194,21 @@ class LLMAgent(
     @staticmethod
     def _validate_run_inputs(
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
-        rcv_args: InT | Sequence[InT] | None = None,
-        rcv_message: AgentMessage[InT, AgentState] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
+        in_message: AgentMessage[InT, AgentState] | None = None,
         entry_point: bool = False,
     ) -> None:
         multiple_inputs_err_message = (
-            "Only one of chat_inputs, rcv_args, or rcv_message must be provided."
+            "Only one of chat_inputs, in_args, or in_message must be provided."
         )
-        if chat_inputs is not None and rcv_args is not None:
+        if chat_inputs is not None and in_args is not None:
             raise ValueError(multiple_inputs_err_message)
-        if chat_inputs is not None and rcv_message is not None:
+        if chat_inputs is not None and in_message is not None:
             raise ValueError(multiple_inputs_err_message)
-        if rcv_args is not None and rcv_message is not None:
+        if in_args is not None and in_message is not None:
             raise ValueError(multiple_inputs_err_message)
 
-        if entry_point and rcv_message is not None:
+        if entry_point and in_message is not None:
             raise ValueError(
                 "Entry point agent cannot receive messages from other agents."
             )
@@ -218,8 +218,8 @@ class LLMAgent(
         self,
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         *,
-        rcv_message: AgentMessage[InT, AgentState] | None = None,
-        rcv_args: InT | Sequence[InT] | None = None,
+        in_message: AgentMessage[InT, AgentState] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
         entry_point: bool = False,
         ctx: RunContextWrapper[CtxT] | None = None,
         forbid_state_change: bool = False,
@@ -236,8 +236,8 @@ class LLMAgent(
 
         self._validate_run_inputs(
             chat_inputs=chat_inputs,
-            rcv_args=rcv_args,
-            rcv_message=rcv_message,
+            in_args=in_args,
+            in_message=in_message,
             entry_point=entry_point,
         )
 
@@ -249,12 +249,12 @@ class LLMAgent(
         # 2. Set agent state
 
         cur_state = self.state.model_copy(deep=True)
-        rcv_state = rcv_message.sender_state if rcv_message else None
+        in_state = in_message.sender_state if in_message else None
         prev_mh_len = len(cur_state.message_history)
 
-        state = LLMAgentState.from_cur_and_rcv_states(
+        state = LLMAgentState.from_cur_and_in_states(
             cur_state=cur_state,
-            rcv_state=rcv_state,
+            in_state=in_state,
             sys_prompt=formatted_sys_prompt,
             strategy=self.set_state_strategy,
             set_agent_state_impl=self._set_agent_state_impl,
@@ -264,16 +264,16 @@ class LLMAgent(
         self._print_sys_msg(state=state, prev_mh_len=prev_mh_len, ctx=ctx)
 
         # 3. Make and add user messages (can be empty)
-        _rcv_args_batch: Sequence[InT] | None = None
-        if rcv_message is not None:
-            _rcv_args_batch = rcv_message.payloads
-        elif rcv_args is not None:
-            _rcv_args_batch = rcv_args if isinstance(rcv_args, Sequence) else [rcv_args]  # type: ignore[assignment]
+        _in_args_batch: Sequence[InT] | None = None
+        if in_message is not None:
+            _in_args_batch = in_message.payloads
+        elif in_args is not None:
+            _in_args_batch = in_args if isinstance(in_args, Sequence) else [in_args]  # type: ignore[assignment]
 
         user_message_batch = self._prompt_builder.make_user_messages(
             chat_inputs=chat_inputs,
             usr_args=usr_args,
-            rcv_args_batch=_rcv_args_batch,
+            in_args_batch=_in_args_batch,
             entry_point=entry_point,
             ctx=ctx,
         )
@@ -291,14 +291,14 @@ class LLMAgent(
 
         # 5. Parse outputs
         batch_size = state.message_history.batch_size
-        rcv_args_batch = rcv_message.payloads if rcv_message else batch_size * [None]
+        in_args_batch = in_message.payloads if in_message else batch_size * [None]
         val_output_batch = [
             self._out_type_adapter.validate_python(
-                self._parse_output(conversation=conv, rcv_args=rcv_args, ctx=ctx)
+                self._parse_output(conversation=conv, in_args=in_args, ctx=ctx)
             )
-            for conv, rcv_args in zip(
+            for conv, in_args in zip(
                 state.message_history.batched_conversations,
-                rcv_args_batch,
+                in_args_batch,
                 strict=False,
             )
         ]
@@ -313,10 +313,10 @@ class LLMAgent(
                 recipient_ids=recipient_ids,
                 chat_inputs=chat_inputs,
                 sys_prompt=self.sys_prompt,
-                inp_prompt=self.inp_prompt,
+                in_prompt=self.in_prompt,
                 sys_args=sys_args,
                 usr_args=usr_args,
-                rcv_args=(rcv_message.payloads if rcv_message is not None else None),
+                in_args=(in_message.payloads if in_message is not None else None),
                 outputs=val_output_batch,
                 state=state,
             )
@@ -369,10 +369,10 @@ class LLMAgent(
 
         return func
 
-    def format_inp_args_handler(
+    def format_in_args_handler(
         self, func: FormatInputArgsHandler[InT, CtxT]
     ) -> FormatInputArgsHandler[InT, CtxT]:
-        self._prompt_builder.format_inp_args_impl = func
+        self._prompt_builder.format_in_args_impl = func
 
         return func
 
@@ -411,8 +411,8 @@ class LLMAgent(
         if cur_cls._format_sys_args is not base_cls._format_sys_args:  # noqa: SLF001
             self._prompt_builder.format_sys_args_impl = self._format_sys_args
 
-        if cur_cls._format_inp_args is not base_cls._format_inp_args:  # noqa: SLF001
-            self._prompt_builder.format_inp_args_impl = self._format_inp_args
+        if cur_cls._format_in_args is not base_cls._format_in_args:  # noqa: SLF001
+            self._prompt_builder.format_in_args_impl = self._format_in_args
 
         if cur_cls._set_agent_state is not base_cls._set_agent_state:  # noqa: SLF001
             self._set_agent_state_impl = self._set_agent_state
@@ -438,23 +438,23 @@ class LLMAgent(
             "if it's intended to be used as the system arguments formatter."
         )
 
-    def _format_inp_args(
+    def _format_in_args(
         self,
         *,
         usr_args: LLMPromptArgs,
-        rcv_args: InT,
+        in_args: InT,
         batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
         raise NotImplementedError(
-            "LLMAgent._format_inp_args must be overridden by a subclass"
+            "LLMAgent._format_in_args must be overridden by a subclass"
         )
 
     def _set_agent_state(
         self,
         cur_state: LLMAgentState,
         *,
-        rcv_state: AgentState | None,
+        in_state: AgentState | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContextWrapper[Any] | None,
     ) -> LLMAgentState:
