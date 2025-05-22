@@ -34,8 +34,8 @@ class FormatInputArgsHandler(Protocol[InT, CtxT]):
     def __call__(
         self,
         *,
-        usr_args: LLMPromptArgs,
-        in_args: InT,
+        usr_args: LLMPromptArgs | None,
+        in_args: InT | None,
         batch_idx: int,
         ctx: RunContextWrapper[CtxT] | None,
     ) -> LLMFormattedArgs: ...
@@ -78,8 +78,8 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     def _format_in_args(
         self,
         *,
-        usr_args: LLMPromptArgs,
-        in_args: InT,
+        usr_args: LLMPromptArgs | None = None,
+        in_args: InT | None = None,
         batch_idx: int = 0,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> LLMFormattedArgs:
@@ -93,7 +93,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                 "Cannot apply default formatting to non-BaseModel received arguments."
             )
 
-        usr_args_ = usr_args
+        usr_args_ = DummySchema() if usr_args is None else usr_args
         in_args_ = DummySchema() if in_args is None else in_args
 
         usr_args_dump = usr_args_.model_dump(exclude_unset=True)
@@ -149,10 +149,12 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         usr_args_batch_, in_args_batch_ = self._make_batched(usr_args, in_args_batch)
 
         val_usr_args_batch_ = [
-            self.usr_args_schema.model_validate(u) for u in usr_args_batch_
+            self.usr_args_schema.model_validate(u) if u is not None else None
+            for u in usr_args_batch_
         ]
         val_in_args_batch_ = [
-            self._in_args_type_adapter.validate_python(inp) for inp in in_args_batch_
+            self._in_args_type_adapter.validate_python(inp) if inp is not None else None
+            for inp in in_args_batch_
         ]
 
         formatted_in_args_batch = [
@@ -220,11 +222,9 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         self,
         usr_args: UserRunArgs | None = None,
         in_args_batch: Sequence[InT] | None = None,
-    ) -> tuple[Sequence[LLMPromptArgs | DummySchema], Sequence[InT | DummySchema]]:
-        usr_args_batch_ = (
-            usr_args if isinstance(usr_args, list) else [usr_args or DummySchema()]
-        )
-        in_args_batch_ = in_args_batch or [DummySchema()]
+    ) -> tuple[Sequence[LLMPromptArgs | None], Sequence[InT | None]]:
+        usr_args_batch_ = usr_args if isinstance(usr_args, list) else [usr_args]
+        in_args_batch_ = in_args_batch or [None]
 
         # Broadcast singleton → match lengths
         if len(usr_args_batch_) == 1 and len(in_args_batch_) > 1:
