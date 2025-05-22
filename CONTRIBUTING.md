@@ -22,6 +22,12 @@ source .venv/bin/activate
 uv sync
 ```
 
+Install pre-commit hooks:
+
+```bash
+pre-commit install --install-hooks
+```
+
 ### 3. Test Example for VS Code
 
 - Install the [Jupyter Notebook extension](https://marketplace.visualstudio.com/items/?itemName=ms-toolsai.jupyter).
@@ -33,7 +39,7 @@ OPENAI_API_KEY=your_openai_api_key
 GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
 ```
 
-- Open [src/grasp_agents/examples/notebooks/agents_demo.ipynb](src/grasp_agents/examples/notebooks/agents_demo.ipynb).
+- Open [src/grasp_agents/examples/notebooks/agents_demo.ipynb](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/notebooks/agents_demo.ipynb).
 
 You're now ready to run and experiment with the example notebook.
 

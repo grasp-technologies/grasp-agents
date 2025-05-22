@@ -50,7 +50,7 @@
 
 ## Quickstart & Installation Variants (UV Package manager)
 
-> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project. There are also [examples](src/grasp_agents/examples/demo/) for other package managers.
+> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project. There are also [examples](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/demo/) for other package managers.
 
 #### 1. Prerequisites
 
@@ -196,4 +196,4 @@ Run your script:
 uv run problem_recommender.py
 ```
 
-You can find more examples in [src/grasp_agents/examples/notebooks/agents_demo.ipynb](src/grasp_agents/examples/notebooks/agents_demo.ipynb).
+You can find more examples in [src/grasp_agents/examples/notebooks/agents_demo.ipynb](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/notebooks/agents_demo.ipynb).
