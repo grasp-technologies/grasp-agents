@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any, Literal
 
@@ -67,7 +67,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         model_id: str | None = None,
         llm_settings: OpenAILLMSettings | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_format: type | None = None,
+        response_format: type | Mapping[str, type] | None = None,
         # Connection settings
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
