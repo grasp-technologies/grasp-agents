@@ -153,8 +153,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
             and not self._struct_output_support
         ):
             raise ValueError(
-                f"Model {api_provider}:{self._model_name} does "
-                "not support structured outputs."
+                f"Model {self._model_name} does not support structured outputs."
             )
 
         self._rate_limiter: RateLimiterC[Conversation, AssistantMessage] | None = (
