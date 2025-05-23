@@ -1,7 +1,31 @@
 costs:
-  google/gemini-2.5-flash-preview:
+  gemini-2.5-pro-preview-05-06:
+    input: 1.25
+    output: 10
+    cached_discount: 0.5
+  google/gemini-2.5-pro-preview:
+    input: 1.25
+    output: 10
+    cached_discount: 0.5
+  gemini-2.5-flash-preview-05-20:
     input: 0.15
     output: 0.60
+    cached_discount: 0.5
+  google/gemini-2.5-flash-preview-05-20:
+    input: 0.15
+    output: 0.60
+    cached_discount: 0.5
+  gemini-1.5-pro:
+    input: 1.25
+    output: 5
+    cached_discount: 0.5
+  gemini-2.0-flash:
+    input: 0.1
+    output: 0.4
+    cached_discount: 0.5
+  google/gemini-2.0-flash-001:
+    input: 0.1
+    output: 0.4
     cached_discount: 0.5
   gpt-4.1:
     input: 2.0
@@ -19,25 +43,9 @@ costs:
     input: 2.0
     output: 8.0
     cached_discount: 0.5
-  google/gemini-2.5-pro-preview-03-25:
-    input: 1.25
-    output: 10
-    cached_discount: 0.5
-  gemini-2.5-pro-preview-03-25:
-    input: 1.25
-    output: 10
-    cached_discount: 0.5
   llama-3.3-70b-versatile:
     input: 0.59
     output: 0.79
-    cached_discount: 0.5
-  gemini-1.5-pro:
-    input: 1.25
-    output: 5
-    cached_discount: 0.5
-  gemini-2.0-flash:
-    input: 0.1
-    output: 0.4
     cached_discount: 0.5
   anthropic/claude-3.5-sonnet:
     input: 3.0
@@ -47,9 +55,9 @@ costs:
     input: 3.0
     output: 15
     cached_discount: 0.5
-  google/gemini-2.0-flash-001:
-    input: 0.1
-    output: 0.4
+  anthropic/claude-sonnet-4:
+    input: 3.0
+    output: 15
     cached_discount: 0.5
   deepseek/deepseek-chat:
     input: 0.4
