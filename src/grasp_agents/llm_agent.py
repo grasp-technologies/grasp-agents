@@ -18,13 +18,7 @@ from .prompt_builder import (
     FormatSystemArgsHandler,
     PromptBuilder,
 )
-from .run_context import (
-    CtxT,
-    InteractionRecord,
-    RunContextWrapper,
-    SystemRunArgs,
-    UserRunArgs,
-)
+from .run_context import CtxT, InteractionRecord, RunContextWrapper
 from .tool_orchestrator import (
     ExitToolCallLoopHandler,
     ManageAgentStateHandler,
@@ -226,8 +220,8 @@ class LLMAgent(
         **gen_kwargs: Any,  # noqa: ARG002
     ) -> AgentMessage[OutT, LLMAgentState]:
         # Get run arguments
-        sys_args: SystemRunArgs = LLMPromptArgs()
-        usr_args: UserRunArgs = LLMPromptArgs()
+        sys_args: LLMPromptArgs = LLMPromptArgs()
+        usr_args: LLMPromptArgs | Sequence[LLMPromptArgs] = LLMPromptArgs()
         if ctx is not None:
             run_args = ctx.run_args.get(self.agent_id)
             if run_args is not None:
@@ -240,6 +234,7 @@ class LLMAgent(
             in_message=in_message,
             entry_point=entry_point,
         )
+        resolved_in_args = in_message.payloads if in_message else in_args
 
         # 1. Make system prompt (can be None)
         formatted_sys_prompt = self._prompt_builder.make_sys_prompt(
@@ -264,16 +259,11 @@ class LLMAgent(
         self._print_sys_msg(state=state, prev_mh_len=prev_mh_len, ctx=ctx)
 
         # 3. Make and add user messages (can be empty)
-        _in_args_batch: Sequence[InT] | None = None
-        if in_message is not None:
-            _in_args_batch = in_message.payloads
-        elif in_args is not None:
-            _in_args_batch = in_args if isinstance(in_args, Sequence) else [in_args]  # type: ignore[assignment]
 
         user_message_batch = self._prompt_builder.make_user_messages(
             chat_inputs=chat_inputs,
+            in_args=resolved_in_args,
             usr_args=usr_args,
-            in_args_batch=_in_args_batch,
             entry_point=entry_point,
             ctx=ctx,
         )
@@ -290,18 +280,23 @@ class LLMAgent(
             await self._tool_orchestrator.run_loop(state=state, ctx=ctx)
 
         # 5. Parse outputs
-        batch_size = state.message_history.batch_size
-        in_args_batch = in_message.payloads if in_message else batch_size * [None]
-        val_output_batch = [
-            self._out_type_adapter.validate_python(
-                self._parse_output(conversation=conv, in_args=in_args, ctx=ctx)
+
+        val_output_batch: list[OutT] = []
+        for i, _conv in enumerate(state.message_history.batched_conversations):
+            if isinstance(resolved_in_args, Sequence):
+                _resolved_in_args = cast("Sequence[InT]", resolved_in_args)
+                _in_args = _resolved_in_args[min(i, len(_resolved_in_args) - 1)]
+            else:
+                _resolved_in_args = cast("InT | None", resolved_in_args)
+                _in_args = _resolved_in_args
+
+            val_output_batch.append(
+                self._out_type_adapter.validate_python(
+                    self._parse_output(
+                        conversation=_conv, in_args=_in_args, batch_idx=i, ctx=ctx
+                    )
+                )
             )
-            for conv, in_args in zip(
-                state.message_history.batched_conversations,
-                in_args_batch,
-                strict=False,
-            )
-        ]
 
         # 6. Write interaction history to context
 
@@ -316,7 +311,7 @@ class LLMAgent(
                 in_prompt=self.in_prompt,
                 sys_args=sys_args,
                 usr_args=usr_args,
-                in_args=(in_message.payloads if in_message is not None else None),
+                in_args=resolved_in_args,  # type: ignore[valid-type]
                 outputs=val_output_batch,
                 state=state,
             )

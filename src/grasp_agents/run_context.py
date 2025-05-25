@@ -17,13 +17,10 @@ from .typing.io import (
 )
 from .usage_tracker import UsageTracker
 
-SystemRunArgs: TypeAlias = LLMPromptArgs
-UserRunArgs: TypeAlias = LLMPromptArgs | list[LLMPromptArgs]
-
 
 class RunArgs(BaseModel):
-    sys: SystemRunArgs = Field(default_factory=LLMPromptArgs)
-    usr: UserRunArgs = Field(default_factory=LLMPromptArgs)
+    sys: LLMPromptArgs = Field(default_factory=LLMPromptArgs)
+    usr: LLMPromptArgs | Sequence[LLMPromptArgs] = Field(default_factory=LLMPromptArgs)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -35,9 +32,9 @@ class InteractionRecord(BaseModel, Generic[InT, OutT, StateT]):
     chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None
     sys_prompt: LLMPrompt | None = None
     in_prompt: LLMPrompt | None = None
-    sys_args: SystemRunArgs | None = None
-    usr_args: UserRunArgs | None = None
-    in_args: Sequence[InT] | None = None
+    sys_args: LLMPromptArgs | None = None
+    usr_args: LLMPromptArgs | Sequence[LLMPromptArgs] | None = None
+    in_args: InT | Sequence[InT] | None = None
     outputs: Sequence[OutT]
 
     model_config = ConfigDict(extra="forbid", frozen=True)
