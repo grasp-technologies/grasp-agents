@@ -27,28 +27,43 @@ class WorkflowAgent(
         dynamic_routing: bool = False,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
-        if not subagents:
-            raise ValueError("At least one step is required")
-        if start_agent not in subagents:
-            raise ValueError("Start agent must be in the subagents list")
-        if end_agent not in subagents:
-            raise ValueError("End agent must be in the subagents list")
-
-        self.subagents = subagents
-
-        self._start_agent = start_agent
-        self._end_agent = end_agent
-
         super().__init__(
             agent_id=agent_id,
             message_pool=message_pool,
             recipient_ids=recipient_ids,
             dynamic_routing=dynamic_routing,
         )
+
+        if len(subagents) < 2:
+            raise ValueError("At least two steps are required")
+        if start_agent not in subagents:
+            raise ValueError("Start agent must be in the subagents list")
+        if end_agent not in subagents:
+            raise ValueError("End agent must be in the subagents list")
+
+        if start_agent.in_type != self.in_type:
+            raise ValueError(
+                f"Start agent's input type {start_agent.in_type} does not "
+                f"match workflow's input type {self._in_type}"
+            )
+        if end_agent.out_type != self.out_type:
+            raise ValueError(
+                f"End agent's output type {end_agent.out_type} does not "
+                f"match workflow's output type {self._out_type}"
+            )
+
+        self._subagents = subagents
+        self._start_agent = start_agent
+        self._end_agent = end_agent
+
         for subagent in subagents:
             assert not subagent.recipient_ids, (
                 "Subagents must not have recipient_ids set."
             )
+
+    @property
+    def subagents(self) -> Sequence[CommunicatingAgent[Any, Any, Any, CtxT]]:
+        return self._subagents
 
     @property
     def start_agent(self) -> CommunicatingAgent[InT, Any, Any, CtxT]:

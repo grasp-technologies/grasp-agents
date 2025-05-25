@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from itertools import pairwise
 from logging import getLogger
 from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
@@ -48,6 +49,19 @@ class LoopedWorkflowAgent(WorkflowAgent[InT, OutT, CtxT], Generic[InT, OutT, Ctx
             recipient_ids=recipient_ids,
             dynamic_routing=dynamic_routing,
         )
+
+        for prev_agent, agent in pairwise(subagents):
+            if prev_agent.out_type != agent.in_type:
+                raise ValueError(
+                    f"Output type {prev_agent.out_type} of agent {prev_agent.agent_id} "
+                    f"does not match input type {agent.in_type} of agent "
+                    f"{agent.agent_id}"
+                )
+        if subagents[-1].out_type != subagents[0].in_type:
+            raise ValueError(
+                f"Looped workflow's last agent output type {subagents[-1].out_type} "
+                f"does not match first agent input type {subagents[0].in_type}"
+            )
 
         self._max_iterations = max_iterations
 

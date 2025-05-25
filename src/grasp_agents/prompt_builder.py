@@ -1,11 +1,11 @@
 from collections.abc import Sequence
 from copy import deepcopy
-from typing import ClassVar, Generic, Protocol
+from typing import ClassVar, Generic, Protocol, cast
 
 from pydantic import BaseModel, TypeAdapter
 
 from .generics_utils import AutoInstanceAttributesMixin
-from .run_context import CtxT, RunContextWrapper, UserRunArgs
+from .run_context import CtxT, RunContextWrapper
 from .typing.content import ImageData
 from .typing.io import (
     InT,
@@ -142,11 +142,13 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     def _usr_messages_from_prompt_template(
         self,
         in_prompt: LLMPrompt,
-        usr_args: UserRunArgs | None = None,
         in_args_batch: Sequence[InT] | None = None,
+        usr_args_batch: Sequence[LLMPromptArgs] | None = None,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> Sequence[UserMessage]:
-        usr_args_batch_, in_args_batch_ = self._make_batched(usr_args, in_args_batch)
+        usr_args_batch_, in_args_batch_ = self._align_in_usr_batches(
+            in_args_batch, usr_args_batch
+        )
 
         val_usr_args_batch_ = [
             self.usr_args_schema.model_validate(u) for u in usr_args_batch_
@@ -174,8 +176,8 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     def make_user_messages(
         self,
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
-        usr_args: UserRunArgs | None = None,
-        in_args_batch: Sequence[InT] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
+        usr_args: LLMPromptArgs | Sequence[LLMPromptArgs] | None = None,
         entry_point: bool = False,
         ctx: RunContextWrapper[CtxT] | None = None,
     ) -> Sequence[UserMessage]:
@@ -196,9 +198,23 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
             if isinstance(chat_inputs, Sequence) and chat_inputs:
                 return self._usr_messages_from_content_parts(chat_inputs)
 
+        in_args_batch = cast(
+            "Sequence[InT] | None",
+            in_args if (isinstance(in_args, Sequence) or not in_args) else [in_args],
+        )
+
         # 2) No input prompt template + received args → raw JSON messages
         if self.in_prompt is None and in_args_batch:
             return self._usr_messages_from_in_args(in_args_batch)
+
+        usr_args_batch = cast(
+            "Sequence[LLMPromptArgs] | None",
+            (
+                usr_args
+                if (isinstance(usr_args, Sequence) or not usr_args)
+                else [usr_args]
+            ),
+        )
 
         # 3) Input prompt template + any args → batch & format
         if self.in_prompt is not None:
@@ -209,21 +225,19 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                 )
             return self._usr_messages_from_prompt_template(
                 in_prompt=self.in_prompt,
-                usr_args=usr_args,
+                usr_args_batch=usr_args_batch,
                 in_args_batch=in_args_batch,
                 ctx=ctx,
             )
 
         return []
 
-    def _make_batched(
+    def _align_in_usr_batches(
         self,
-        usr_args: UserRunArgs | None = None,
         in_args_batch: Sequence[InT] | None = None,
+        usr_args_batch: Sequence[LLMPromptArgs] | None = None,
     ) -> tuple[Sequence[LLMPromptArgs | DummySchema], Sequence[InT | DummySchema]]:
-        usr_args_batch_ = (
-            usr_args if isinstance(usr_args, list) else [usr_args or DummySchema()]
-        )
+        usr_args_batch_ = usr_args_batch or [DummySchema()]
         in_args_batch_ = in_args_batch or [DummySchema()]
 
         # Broadcast singleton → match lengths
