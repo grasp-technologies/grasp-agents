@@ -5,20 +5,16 @@ from pydantic import BaseModel
 
 from .content import ImageData
 
-AgentID: TypeAlias = str
-
-
-class AgentState(BaseModel):
-    pass
+ProcessorName: TypeAlias = str
 
 
 class LLMPromptArgs(BaseModel):
     pass
 
 
-InT = TypeVar("InT", contravariant=True)  # noqa: PLC0105
-OutT = TypeVar("OutT", covariant=True)  # noqa: PLC0105
-StateT = TypeVar("StateT", bound=AgentState, covariant=True)  # noqa: PLC0105
+InT_contra = TypeVar("InT_contra", contravariant=True)
+OutT_co = TypeVar("OutT_co", covariant=True)
+MemT_co = TypeVar("MemT_co", covariant=True)
 
 LLMPrompt: TypeAlias = str
 LLMFormattedSystemArgs: TypeAlias = Mapping[str, str | int | bool]

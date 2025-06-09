@@ -148,12 +148,20 @@ class AutoInstanceAttributesMixin:
         return resolved
 
     def _set_resolved_generic_instance_attributes(self) -> None:
-        for name, typ in getattr(
+        attr_names = self._generic_arg_to_instance_attr_map.values()
+        resolved_attr_types = getattr(
             self.__class__, "_resolved_instance_attr_types", {}
-        ).items():
-            _typ = None if typ is type(None) else typ
-            pyd_private = getattr(self, "__pydantic_private__", {})
-            if name in pyd_private:
-                pyd_private[name] = _typ
+        )
+        pyd_private = getattr(self, "__pydantic_private__", {})
+
+        for attr_name in attr_names:
+            if attr_name in resolved_attr_types:
+                _attr_type = resolved_attr_types[attr_name]
+                attr_type = None if _attr_type is type(None) else _attr_type
             else:
-                setattr(self, name, _typ)
+                attr_type = Any
+
+            if attr_name in pyd_private:
+                pyd_private[attr_name] = attr_type
+            else:
+                setattr(self, attr_name, attr_type)

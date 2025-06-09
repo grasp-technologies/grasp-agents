@@ -1,19 +1,21 @@
-from collections.abc import Sequence
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from typing import Any, Generic, TypeAlias, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from .printer import Printer
+from grasp_agents.typing.completion import Completion
+
+from .printer import ColoringMode, Printer
 from .typing.content import ImageData
 from .typing.io import (
-    AgentID,
-    AgentState,
-    InT,
+    InT_contra,
     LLMPrompt,
     LLMPromptArgs,
-    OutT,
-    StateT,
+    MemT_co,
+    OutT_co,
+    ProcessorName,
 )
 from .usage_tracker import UsageTracker
 
@@ -25,34 +27,39 @@ class RunArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class InteractionRecord(BaseModel, Generic[InT, OutT, StateT]):
+class InteractionRecord(BaseModel, Generic[InT_contra, OutT_co, MemT_co]):
     source_id: str
-    recipient_ids: Sequence[AgentID]
-    state: StateT
+    recipients: Sequence[ProcessorName]
+    memory: MemT_co
     chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None
     sys_prompt: LLMPrompt | None = None
     in_prompt: LLMPrompt | None = None
     sys_args: LLMPromptArgs | None = None
     usr_args: LLMPromptArgs | Sequence[LLMPromptArgs] | None = None
-    in_args: InT | Sequence[InT] | None = None
-    outputs: Sequence[OutT]
+    in_args: InT_contra | Sequence[InT_contra] | None = None
+    outputs: Sequence[OutT_co]
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-InteractionHistory: TypeAlias = list[InteractionRecord[Any, Any, AgentState]]
+InteractionHistory: TypeAlias = list[InteractionRecord[Any, Any, Any]]
 
 
 CtxT = TypeVar("CtxT")
 
 
-class RunContextWrapper(BaseModel, Generic[CtxT]):
-    context: CtxT | None = None
+class RunContext(BaseModel, Generic[CtxT]):
+    state: CtxT | None = None
     run_id: str = Field(default_factory=lambda: str(uuid4())[:8], frozen=True)
-    run_args: dict[AgentID, RunArgs] = Field(default_factory=dict)
+    run_args: dict[ProcessorName, RunArgs] = Field(default_factory=dict)
+
+    completions: Mapping[ProcessorName, list[Completion]] = Field(
+        default_factory=lambda: defaultdict(list)
+    )
     interaction_history: InteractionHistory = Field(default_factory=list)  # type: ignore[valid-type]
 
     print_messages: bool = False
+    color_messages_by: ColoringMode = "role"
 
     _usage_tracker: UsageTracker = PrivateAttr()
     _printer: Printer = PrivateAttr()

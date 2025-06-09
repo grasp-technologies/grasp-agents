@@ -8,12 +8,12 @@ from pydantic import BaseModel, PrivateAttr, TypeAdapter
 from ..generics_utils import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
-    from ..run_context import CtxT, RunContextWrapper
+    from ..run_context import CtxT, RunContext
 else:
     CtxT = TypeVar("CtxT")
 
-    class RunContextWrapper(Generic[CtxT]):
-        """Runtime placeholder so RunContextWrapper[CtxT] works"""
+    class RunContext(Generic[CtxT]):
+        """Runtime placeholder so RunContext[CtxT] works"""
 
 
 _ToolInT = TypeVar("_ToolInT", bound=BaseModel, contravariant=True)  # noqa: PLC0105
@@ -54,12 +54,12 @@ class BaseTool(
 
     @abstractmethod
     async def run(
-        self, inp: _ToolInT, ctx: RunContextWrapper[CtxT] | None = None
+        self, inp: _ToolInT, ctx: RunContext[CtxT] | None = None
     ) -> _ToolOutT:
         pass
 
     async def __call__(
-        self, ctx: RunContextWrapper[CtxT] | None = None, **kwargs: Any
+        self, ctx: RunContext[CtxT] | None = None, **kwargs: Any
     ) -> _ToolOutT:
         result = await self.run(self._in_schema(**kwargs), ctx=ctx)
 

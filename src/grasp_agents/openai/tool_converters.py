@@ -4,18 +4,18 @@ from pydantic import BaseModel
 
 from ..typing.tool import BaseTool, ToolChoice
 from . import (
-    ChatCompletionFunctionDefinition,
-    ChatCompletionNamedToolChoiceFunction,
-    ChatCompletionNamedToolChoiceParam,
-    ChatCompletionToolChoiceOptionParam,
-    ChatCompletionToolParam,
+    OpenAIFunctionDefinition,
+    OpenAINamedToolChoiceFunction,
+    OpenAINamedToolChoiceParam,
+    OpenAIToolChoiceOptionParam,
+    OpenAIToolParam,
 )
 
 
 def to_api_tool(
     tool: BaseTool[BaseModel, Any, Any],
-) -> ChatCompletionToolParam:
-    function = ChatCompletionFunctionDefinition(
+) -> OpenAIToolParam:
+    function = OpenAIFunctionDefinition(
         name=tool.name,
         description=tool.description,
         parameters=tool.in_schema.model_json_schema(),
@@ -24,15 +24,15 @@ def to_api_tool(
     if tool.strict is None:
         function.pop("strict")
 
-    return ChatCompletionToolParam(type="function", function=function)
+    return OpenAIToolParam(type="function", function=function)
 
 
 def to_api_tool_choice(
     tool_choice: ToolChoice,
-) -> ChatCompletionToolChoiceOptionParam:
+) -> OpenAIToolChoiceOptionParam:
     if isinstance(tool_choice, BaseTool):
-        return ChatCompletionNamedToolChoiceParam(
+        return OpenAINamedToolChoiceParam(
             type="function",
-            function=ChatCompletionNamedToolChoiceFunction(name=tool_choice.name),
+            function=OpenAINamedToolChoiceFunction(name=tool_choice.name),
         )
     return tool_choice

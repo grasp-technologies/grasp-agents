@@ -9,46 +9,46 @@ from ..typing.message import (
 )
 from ..typing.tool import ToolCall
 from . import (
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionDeveloperMessageParam,
-    ChatCompletionFunctionMessageParam,
-    ChatCompletionMessage,
-    ChatCompletionMessageToolCallParam,
-    ChatCompletionSystemMessageParam,
-    ChatCompletionToolCallFunction,
-    ChatCompletionToolMessageParam,
-    ChatCompletionUsage,
-    ChatCompletionUserMessageParam,
+    OpenAIAssistantMessageParam,
+    OpenAICompletionUsage,
+    OpenAIDeveloperMessageParam,
+    OpenAIFunctionMessageParam,
+    OpenAIMessage,
+    OpenAISystemMessageParam,
+    OpenAIToolCallFunction,
+    OpenAIToolCallParam,
+    OpenAIToolMessageParam,
+    OpenAIUserMessageParam,
 )
 from .content_converters import from_api_content, to_api_content
 
-OpenAIMessage: TypeAlias = (
-    ChatCompletionAssistantMessageParam
-    | ChatCompletionToolMessageParam
-    | ChatCompletionUserMessageParam
-    | ChatCompletionDeveloperMessageParam
-    | ChatCompletionSystemMessageParam
-    | ChatCompletionFunctionMessageParam
+OpenAIMessageType: TypeAlias = (
+    OpenAIAssistantMessageParam
+    | OpenAIToolMessageParam
+    | OpenAIUserMessageParam
+    | OpenAIDeveloperMessageParam
+    | OpenAISystemMessageParam
+    | OpenAIFunctionMessageParam
 )
 
 
 def from_api_user_message(
-    api_message: ChatCompletionUserMessageParam, model_id: str | None = None
+    api_message: OpenAIUserMessageParam, model_id: str | None = None
 ) -> UserMessage:
     content = from_api_content(api_message["content"])
 
     return UserMessage(content=content, model_id=model_id)
 
 
-def to_api_user_message(message: UserMessage) -> ChatCompletionUserMessageParam:
+def to_api_user_message(message: UserMessage) -> OpenAIUserMessageParam:
     api_content = to_api_content(message.content)
 
-    return ChatCompletionUserMessageParam(role="user", content=api_content)
+    return OpenAIUserMessageParam(role="user", content=api_content)
 
 
 def from_api_assistant_message(
-    api_message: ChatCompletionMessage,
-    api_usage: ChatCompletionUsage | None = None,
+    api_message: OpenAIMessage,
+    api_usage: OpenAICompletionUsage | None = None,
     model_id: str | None = None,
 ) -> AssistantMessage:
     usage = None
@@ -93,14 +93,14 @@ def from_api_assistant_message(
 
 def to_api_assistant_message(
     message: AssistantMessage,
-) -> ChatCompletionAssistantMessageParam:
+) -> OpenAIAssistantMessageParam:
     api_tool_calls = None
     if message.tool_calls is not None:
         api_tool_calls = [
-            ChatCompletionMessageToolCallParam(
+            OpenAIToolCallParam(
                 type="function",
                 id=tool_call.id,
-                function=ChatCompletionToolCallFunction(
+                function=OpenAIToolCallFunction(
                     name=tool_call.tool_name,
                     arguments=tool_call.tool_arguments,
                 ),
@@ -108,7 +108,7 @@ def to_api_assistant_message(
             for tool_call in message.tool_calls
         ]
 
-    api_message = ChatCompletionAssistantMessageParam(
+    api_message = OpenAIAssistantMessageParam(
         role="assistant",
         content=message.content,
         tool_calls=api_tool_calls or [],
@@ -127,7 +127,7 @@ def to_api_assistant_message(
 
 
 def from_api_system_message(
-    api_message: ChatCompletionSystemMessageParam,
+    api_message: OpenAISystemMessageParam,
     model_id: str | None = None,
 ) -> SystemMessage:
     return SystemMessage(content=api_message["content"], model_id=model_id)  # type: ignore
@@ -135,12 +135,12 @@ def from_api_system_message(
 
 def to_api_system_message(
     message: SystemMessage,
-) -> ChatCompletionSystemMessageParam:
-    return ChatCompletionSystemMessageParam(role="system", content=message.content)
+) -> OpenAISystemMessageParam:
+    return OpenAISystemMessageParam(role="system", content=message.content)
 
 
 def from_api_tool_message(
-    api_message: ChatCompletionToolMessageParam, model_id: str | None = None
+    api_message: OpenAIToolMessageParam, model_id: str | None = None
 ) -> ToolMessage:
     return ToolMessage(
         content=api_message["content"],  # type: ignore
@@ -149,7 +149,7 @@ def from_api_tool_message(
     )
 
 
-def to_api_tool_message(message: ToolMessage) -> ChatCompletionToolMessageParam:
-    return ChatCompletionToolMessageParam(
+def to_api_tool_message(message: ToolMessage) -> OpenAIToolMessageParam:
+    return OpenAIToolMessageParam(
         role="tool", content=message.content, tool_call_id=message.tool_call_id
     )

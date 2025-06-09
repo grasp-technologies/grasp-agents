@@ -12,7 +12,7 @@ from .typing.message import AssistantMessage, Message, Role, ToolMessage
 logger = logging.getLogger(__name__)
 
 
-ColoringMode: TypeAlias = Literal["agent_id", "role"]
+ColoringMode: TypeAlias = Literal["agent", "role"]
 
 ROLE_TO_COLOR: Mapping[Role, Color] = {
     Role.SYSTEM: "magenta",
@@ -50,9 +50,9 @@ class Printer:
         return ROLE_TO_COLOR[role]
 
     @staticmethod
-    def get_agent_color(agent_id: str) -> Color:
+    def get_agent_color(agent_name: str) -> Color:
         idx = int(
-            hashlib.md5(agent_id.encode()).hexdigest(),  # noqa :S324
+            hashlib.md5(agent_name.encode()).hexdigest(),  # noqa :S324
             16,
         ) % len(AVAILABLE_COLORS)
 
@@ -82,7 +82,7 @@ class Printer:
 
         return content_str
 
-    def print_llm_message(self, message: Message, agent_id: str) -> None:
+    def print_llm_message(self, message: Message, agent_name: str) -> None:
         if not self.print_messages:
             return
 
@@ -90,8 +90,8 @@ class Printer:
         usage = message.usage if isinstance(message, AssistantMessage) else None
         content_str = self.content_to_str(message.content or "", message.role)
 
-        if self.color_by == "agent_id":
-            color = self.get_agent_color(agent_id)
+        if self.color_by == "agent":
+            color = self.get_agent_color(agent_name)
         elif self.color_by == "role":
             color = self.get_role_color(role)
 
@@ -99,7 +99,7 @@ class Printer:
 
         # Print message title
 
-        out = f"\n<{agent_id}>"
+        out = f"\n<{agent_name}>"
         out += "[" + role.value.upper() + "]"
 
         if isinstance(message, ToolMessage):
@@ -123,12 +123,12 @@ class Printer:
 
         if isinstance(message, AssistantMessage) and message.tool_calls is not None:
             for tool_call in message.tool_calls:
-                if self.color_by == "agent_id":
-                    tool_color = self.get_agent_color(agent_id=agent_id)
+                if self.color_by == "agent":
+                    tool_color = self.get_agent_color(agent_name=agent_name)
                 elif self.color_by == "role":
                     tool_color = self.get_role_color(role=Role.TOOL)
                 logger.debug(
-                    f"\n[TOOL_CALL]<{agent_id}>\n{tool_call.tool_name} "
+                    f"\n[TOOL_CALL]<{agent_name}>\n{tool_call.tool_name} "
                     f"| {tool_call.id}\n{tool_call.tool_arguments}",
                     extra={"color": tool_color},  # type: ignore
                 )
@@ -148,9 +148,9 @@ class Printer:
                 **log_kwargs,  # type: ignore
             )
 
-    def print_llm_messages(self, messages: Sequence[Message], agent_id: str) -> None:
+    def print_llm_messages(self, messages: Sequence[Message], agent_name: str) -> None:
         if not self.print_messages:
             return
 
         for message in messages:
-            self.print_llm_message(message, agent_id)
+            self.print_llm_message(message, agent_name)

@@ -55,7 +55,7 @@ class Usage(BaseModel):
 
 
 class MessageBase(BaseModel):
-    message_id: Hashable = Field(default_factory=lambda: str(uuid4())[:8])
+    id: Hashable = Field(default_factory=lambda: str(uuid4())[:8])
     model_id: str | None = None
 
 
@@ -129,4 +129,4 @@ Message = Annotated[
     Field(discriminator="role"),
 ]
 
-Conversation: TypeAlias = list[Message]
+Messages: TypeAlias = list[Message]

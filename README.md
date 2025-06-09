@@ -22,7 +22,7 @@
 
 - Clean formulation of agents as generic entities over:
   - I/O schemas
-  - Agent state
+  - Memory
   - Shared context
 - Transparent implementation of common agentic patterns:
   - Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
@@ -34,16 +34,15 @@
 
 ## Project Structure
 
-- `base_agent.py`, `llm_agent.py`, `comm_agent.py`: Core agent class implementations.
-- `agent_message.py`, `agent_message_pool.py`: Messaging and message pool management.
-- `llm_agent_state.py`: State management for LLM agents.
-- `tool_orchestrator.py`: Orchestration of tools used by agents.
+- `processor.py`, `comm_processor.py`, `llm_agent.py`: Core processor and agent class implementations.
+- `packet.py`, `packet_pool.py`: Communication management.
+- `tool_orchestrator.py`: Orchestration of tool usage.
 - `prompt_builder.py`: Tools for constructing prompts.
 - `workflow/`: Modules for defining and managing agent workflows.
-- `cloud_llm.py`, `llm.py`: LLM integration and base LLM functionalities.
+- `llm.py`, `cloud_llm.py`: LLM integration and base LLM functionalities.
 - `openai/`: Modules specific to OpenAI API integration.
-- `memory.py`: Memory management for agents (currently only message history).
-- `run_context.py`: Context management for agent runs.
+- `memory.py`, `llm_agent_memory.py`: Memory management.
+- `run_context.py`: Shared context management for agent runs.
 - `usage_tracker.py`: Tracking of API usage and costs.
 - `costs_dict.yaml`: Dictionary for cost tracking (update if needed).
 - `rate_limiting/`: Basic rate limiting tools.
@@ -103,11 +102,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from grasp_agents.grasp_logging import setup_logging
-from grasp_agents.llm_agent import LLMAgent
-from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
-from grasp_agents.run_context import RunContextWrapper
-from grasp_agents.typing.message import Conversation
-from grasp_agents.typing.tool import BaseTool
+from grasp_agents.openai import OpenAILLM, OpenAILLMSettings
+from grasp_agents import LLMAgent, Messages, BaseTool, RunContext
 
 load_dotenv()
 
@@ -141,7 +137,7 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
     description: str = "Ask the student a question and get their reply."
 
     async def run(
-        self, inp: TeacherQuestion, ctx: RunContextWrapper[Any] | None = None
+        self, inp: TeacherQuestion, ctx: RunContext[Any] | None = None
     ) -> StudentReply:
         return input(inp.question)
 
@@ -149,30 +145,29 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
 Problem = str
 
 
-teacher = LLMAgent[Any, Problem, None](
-    agent_id="teacher",
+teacher = LLMAgent[None, Problem, None](
+    name="teacher",
     llm=OpenAILLM(
-        model_name="openai:gpt-4.1",
-        llm_settings=OpenAILLMSettings(temperature=0.1)
+        model_name="openai:gpt-4.1", llm_settings=OpenAILLMSettings(temperature=0.1)
     ),
     tools=[AskStudentTool()],
     max_turns=20,
     react_mode=True,
     sys_prompt=sys_prompt_react,
-    set_state_strategy="reset",
+    reset_memory_on_run=True,
 )
 
 
-@teacher.exit_tool_call_loop_handler
+@teacher.exit_tool_call_loop
 def exit_tool_call_loop(
-    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
+    conversation: Messages, ctx: RunContext[Any] | None, **kwargs: Any
 ) -> bool:
     return r"<PROBLEM>" in str(conversation[-1].content)
 
 
-@teacher.parse_output_handler
+@teacher.parse_output
 def parse_output(
-    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
+    conversation: Messages, ctx: RunContext[Any] | None, **kwargs: Any
 ) -> Problem:
     message = str(conversation[-1].content)
     matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message, re.DOTALL)
@@ -181,7 +176,7 @@ def parse_output(
 
 
 async def main():
-    ctx = RunContextWrapper[None](print_messages=True)
+    ctx = RunContext[None](print_messages=True)
     out = await teacher.run(ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)

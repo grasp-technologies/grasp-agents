@@ -10,21 +10,21 @@ from pydantic import BaseModel
 from ..cloud_llm import CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams
 from ..rate_limiting.rate_limiter_chunked import RateLimiterC
-from ..typing.message import AssistantMessage, Conversation
+from ..typing.message import AssistantMessage, Messages
 from ..typing.tool import BaseTool
 from . import (
-    ChatCompletion,
-    ChatCompletionAsyncStream,  # type: ignore[import]
-    ChatCompletionChunk,
-    ChatCompletionMessageParam,
-    ChatCompletionPredictionContentParam,
-    ChatCompletionStreamOptionsParam,
-    ChatCompletionToolChoiceOptionParam,
-    ChatCompletionToolParam,
-    ParsedChatCompletion,
-    # ResponseFormatJSONObject,
-    # ResponseFormatJSONSchema,
-    # ResponseFormatText,
+    OpenAIAsyncStream,  # type: ignore[import]
+    OpenAICompletion,
+    OpenAICompletionChunk,
+    OpenAIMessageParam,
+    OpenAIParsedCompletion,
+    # OpenAIResponseFormatJSONObject,
+    # OpenAIResponseFormatJSONSchema,
+    # OpenAIResponseFormatText,
+    OpenAIPredictionContentParam,
+    OpenAIStreamOptionsParam,
+    OpenAIToolChoiceOptionParam,
+    OpenAIToolParam,
 )
 from .converters import OpenAIConverters
 
@@ -37,7 +37,9 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     parallel_tool_calls: bool
 
     # response_format: (
-    #     ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject
+    #     OpenAIResponseFormatText
+    #     | OpenAIResponseFormatJSONSchema
+    #     | OpenAIResponseFormatJSONObject
     # )
 
     modalities: list[Literal["text", "audio"]] | None
@@ -50,9 +52,9 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     top_logprobs: int | None
     n: int | None
 
-    prediction: ChatCompletionPredictionContentParam | None
+    prediction: OpenAIPredictionContentParam | None
 
-    stream_options: ChatCompletionStreamOptionsParam | None
+    stream_options: OpenAIStreamOptionsParam | None
 
     metadata: dict[str, str] | None
     store: bool | None
@@ -74,7 +76,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         ) = None,
         async_openai_client_params: dict[str, Any] | None = None,
         # Rate limiting
-        rate_limiter: (RateLimiterC[Conversation, AssistantMessage] | None) = None,
+        rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
         rate_limiter_rpm: float | None = None,
         rate_limiter_chunk_size: int = 1000,
         rate_limiter_max_concurrency: int = 300,
@@ -114,11 +116,11 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
 
     async def _get_completion(
         self,
-        api_messages: Iterable[ChatCompletionMessageParam],
-        api_tools: list[ChatCompletionToolParam] | None = None,
-        api_tool_choice: ChatCompletionToolChoiceOptionParam | None = None,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         **api_llm_settings: Any,
-    ) -> ChatCompletion:
+    ) -> OpenAICompletion:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
 
@@ -133,12 +135,12 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
 
     async def _get_parsed_completion(
         self,
-        api_messages: Iterable[ChatCompletionMessageParam],
-        api_tools: list[ChatCompletionToolParam] | None = None,
-        api_tool_choice: ChatCompletionToolChoiceOptionParam | None = None,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         api_response_format: type | None = None,
         **api_llm_settings: Any,
-    ) -> ParsedChatCompletion[Any]:
+    ) -> OpenAIParsedCompletion[Any]:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
         response_format = api_response_format or NOT_GIVEN
@@ -154,11 +156,11 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
 
     async def _get_completion_stream(
         self,
-        api_messages: Iterable[ChatCompletionMessageParam],
-        api_tools: list[ChatCompletionToolParam] | None = None,
-        api_tool_choice: ChatCompletionToolChoiceOptionParam | None = None,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         **api_llm_settings: Any,
-    ) -> ChatCompletionAsyncStream[ChatCompletionChunk]:
+    ) -> OpenAIAsyncStream[OpenAICompletionChunk]:
         assert not api_tools, "Tool use is not supported in streaming mode"
 
         tools = api_tools or NOT_GIVEN

@@ -6,12 +6,9 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from grasp_agents import BaseTool, LLMAgent, Messages, RunContext
 from grasp_agents.grasp_logging import setup_logging
-from grasp_agents.llm_agent import LLMAgent
-from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
-from grasp_agents.run_context import RunContextWrapper
-from grasp_agents.typing.message import Conversation
-from grasp_agents.typing.tool import BaseTool
+from grasp_agents.openai import OpenAILLM, OpenAILLMSettings
 
 load_dotenv()
 
@@ -23,8 +20,8 @@ setup_logging(
 )
 
 sys_prompt_react = """
-Your task is to suggest an exciting stats problem to a student. 
-Ask the student about their education, interests, and preferences, then suggest a problem tailored to them. 
+Your task is to suggest an exciting stats problem to a student.
+Ask the student about their education, interests, and preferences, then suggest a problem tailored to them.
 
 # Instructions
 * Ask questions one by one.
@@ -45,7 +42,7 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
     description: str = "Ask the student a question and get their reply."
 
     async def run(
-        self, inp: TeacherQuestion, ctx: RunContextWrapper[Any] | None = None
+        self, inp: TeacherQuestion, ctx: RunContext[Any] | None = None
     ) -> StudentReply:
         return input(inp.question)
 
@@ -53,8 +50,8 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
 Problem = str
 
 
-teacher = LLMAgent[Any, Problem, None](
-    agent_id="teacher",
+teacher = LLMAgent[None, Problem, None](
+    name="teacher",
     llm=OpenAILLM(
         model_name="openai:gpt-4.1", llm_settings=OpenAILLMSettings(temperature=0.1)
     ),
@@ -62,20 +59,20 @@ teacher = LLMAgent[Any, Problem, None](
     max_turns=20,
     react_mode=True,
     sys_prompt=sys_prompt_react,
-    set_state_strategy="reset",
+    reset_memory_on_run=True,
 )
 
 
-@teacher.exit_tool_call_loop_handler
+@teacher.exit_tool_call_loop
 def exit_tool_call_loop(
-    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
+    conversation: Messages, ctx: RunContext[Any] | None, **kwargs: Any
 ) -> bool:
     return r"<PROBLEM>" in str(conversation[-1].content)
 
 
-@teacher.parse_output_handler
+@teacher.parse_output
 def parse_output(
-    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
+    conversation: Messages, ctx: RunContext[Any] | None, **kwargs: Any
 ) -> Problem:
     message = str(conversation[-1].content)
     matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message, re.DOTALL)
@@ -84,7 +81,7 @@ def parse_output(
 
 
 async def main():
-    ctx = RunContextWrapper[None](print_messages=True)
+    ctx = RunContext[None](print_messages=True)
     out = await teacher.run(ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)

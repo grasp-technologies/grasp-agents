@@ -1,14 +1,23 @@
 from abc import ABC
+from typing import Literal
 
+from openai.types.chat.chat_completion import (
+    ChoiceLogprobs as ChatCompletionChoiceLogprobs,
+)
+from openai.types.completion_usage import CompletionUsage as ChatCompletionUsage
 from pydantic import BaseModel
 
 from .message import AssistantMessage
 
 
 class CompletionChoice(BaseModel):
-    # TODO: add fields
     message: AssistantMessage
-    finish_reason: str | None
+    finish_reason: (
+        Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
+        | None
+    )
+    index: int
+    logprobs: ChatCompletionChoiceLogprobs | None = None
 
 
 class CompletionError(BaseModel):
@@ -18,13 +27,21 @@ class CompletionError(BaseModel):
 
 
 class Completion(BaseModel, ABC):
-    # TODO: add fields
-    choices: list[CompletionChoice]
+    id: str
     model_id: str | None = None
+    created: int
+    choices: list[CompletionChoice]
+    usage: ChatCompletionUsage | None = None
     error: CompletionError | None = None
+
+    @property
+    def messages(self) -> list[AssistantMessage]:
+        return [choice.message for choice in self.choices if choice.message]
 
 
 class CompletionChunk(BaseModel):
-    # TODO: add more fields and tool use support (and choices?)
+    # TODO: add choices and tool calls
+    id: str
+    created: int
     delta: str | None = None
     model_id: str | None = None

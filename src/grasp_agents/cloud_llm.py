@@ -17,14 +17,14 @@ from tenacity import (
 from typing_extensions import TypedDict
 
 from .http_client import AsyncHTTPClientParams, create_async_http_client
-from .llm import LLM, ConvertT, LLMSettings, SettingsT
-from .memory import MessageHistory
+from .llm import LLM, ConvertT_co, LLMSettings, SettingsT_co
+from .message_history import MessageHistory
 from .rate_limiting.rate_limiter_chunked import (  # type: ignore
     RateLimiterC,
     limit_rate_chunked,
 )
 from .typing.completion import Completion, CompletionChunk
-from .typing.message import AssistantMessage, Conversation
+from .typing.message import AssistantMessage, Messages
 from .typing.tool import BaseTool, ToolChoice
 from .utils import validate_obj_from_json_or_py_string
 
@@ -95,13 +95,13 @@ class CloudLLMSettings(LLMSettings, total=False):
     use_structured_outputs: bool
 
 
-class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
+class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co]):
     def __init__(
         self,
         # Base LLM args
         model_name: str,
-        converters: ConvertT,
-        llm_settings: SettingsT | None = None,
+        converters: ConvertT_co,
+        llm_settings: SettingsT_co | None = None,
         model_id: str | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | Mapping[str, type] | None = None,
@@ -110,7 +110,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
         # Rate limiting
-        rate_limiter: (RateLimiterC[Conversation, AssistantMessage] | None) = None,
+        rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
         rate_limiter_rpm: float | None = None,
         rate_limiter_chunk_size: int = 1000,
         rate_limiter_max_concurrency: int = 300,
@@ -156,7 +156,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
                 f"Model {self._model_name} does not support structured outputs."
             )
 
-        self._rate_limiter: RateLimiterC[Conversation, AssistantMessage] | None = (
+        self._rate_limiter: RateLimiterC[Messages, AssistantMessage] | None = (
             self._get_rate_limiter(
                 rate_limiter=rate_limiter,
                 rate_limiter_rpm=rate_limiter_rpm,
@@ -188,11 +188,11 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
     @property
     def rate_limiter(
         self,
-    ) -> RateLimiterC[Conversation, AssistantMessage] | None:
+    ) -> RateLimiterC[Messages, AssistantMessage] | None:
         return self._rate_limiter
 
     def _make_completion_kwargs(
-        self, conversation: Conversation, tool_choice: ToolChoice | None = None
+        self, conversation: Messages, tool_choice: ToolChoice | None = None
     ) -> dict[str, Any]:
         api_messages = [self._converters.to_message(m) for m in conversation]
 
@@ -250,7 +250,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
 
     async def generate_completion(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -295,7 +295,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
 
     async def generate_completion_stream(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -314,7 +314,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
 
     async def _generate_completion_with_retry(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -331,7 +331,7 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
     @limit_rate_chunked  # type: ignore
     async def _generate_completion_batch_with_retry_and_rate_lim(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -348,14 +348,14 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
         **kwargs: Any,
     ) -> Sequence[Completion]:
         return await self._generate_completion_batch_with_retry_and_rate_lim(
-            list(message_history.batched_conversations),  # type: ignore
+            list(message_history.conversations),  # type: ignore
             tool_choice=tool_choice,
             **kwargs,
         )
 
     async def generate_message(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -381,11 +381,11 @@ class CloudLLM(LLM[SettingsT, ConvertT], Generic[SettingsT, ConvertT]):
 
     def _get_rate_limiter(
         self,
-        rate_limiter: RateLimiterC[Conversation, AssistantMessage] | None = None,
+        rate_limiter: RateLimiterC[Messages, AssistantMessage] | None = None,
         rate_limiter_rpm: float | None = None,
         rate_limiter_chunk_size: int = 1000,
         rate_limiter_max_concurrency: int = 300,
-    ) -> RateLimiterC[Conversation, AssistantMessage] | None:
+    ) -> RateLimiterC[Messages, AssistantMessage] | None:
         if rate_limiter is not None:
             logger.info(
                 f"[{self.__class__.__name__}] Set rate limit to {rate_limiter.rpm} RPM"

@@ -7,10 +7,10 @@ from uuid import uuid4
 from pydantic import BaseModel, TypeAdapter
 from typing_extensions import TypedDict
 
-from .memory import MessageHistory
+from .message_history import MessageHistory
 from .typing.completion import Completion, CompletionChunk
 from .typing.converters import Converters
-from .typing.message import AssistantMessage, Conversation
+from .typing.message import AssistantMessage, Messages
 from .typing.tool import BaseTool, ToolChoice
 
 logger = logging.getLogger(__name__)
@@ -20,18 +20,18 @@ class LLMSettings(TypedDict):
     pass
 
 
-SettingsT = TypeVar("SettingsT", bound=LLMSettings, covariant=True)  # noqa: PLC0105
-ConvertT = TypeVar("ConvertT", bound=Converters, covariant=True)  # noqa: PLC0105
+SettingsT_co = TypeVar("SettingsT_co", bound=LLMSettings, covariant=True)
+ConvertT_co = TypeVar("ConvertT_co", bound=Converters, covariant=True)
 
 
-class LLM(ABC, Generic[SettingsT, ConvertT]):
+class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
     @abstractmethod
     def __init__(
         self,
-        converters: ConvertT,
+        converters: ConvertT_co,
         model_name: str | None = None,
         model_id: str | None = None,
-        llm_settings: SettingsT | None = None,
+        llm_settings: SettingsT_co | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | Mapping[str, type] | None = None,
         **kwargs: Any,
@@ -42,7 +42,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         self._model_id = model_id or str(uuid4())[:8]
         self._model_name = model_name
         self._tools = {t.name: t for t in tools} if tools else None
-        self._llm_settings: SettingsT = llm_settings or cast("SettingsT", {})
+        self._llm_settings: SettingsT_co = llm_settings or cast("SettingsT_co", {})
 
         self._response_format = response_format
         self._response_format_pyd: (
@@ -66,7 +66,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         return self._model_name
 
     @property
-    def llm_settings(self) -> SettingsT:
+    def llm_settings(self) -> SettingsT_co:
         return self._llm_settings
 
     @property
@@ -94,7 +94,7 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
     @abstractmethod
     async def generate_completion(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -102,9 +102,19 @@ class LLM(ABC, Generic[SettingsT, ConvertT]):
         pass
 
     @abstractmethod
+    async def generate_completion_batch(
+        self,
+        message_history: MessageHistory,
+        *,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> Sequence[Completion]:
+        pass
+
+    @abstractmethod
     async def generate_completion_stream(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
