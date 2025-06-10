@@ -10,7 +10,7 @@ from typing_extensions import TypedDict
 from .message_history import MessageHistory
 from .typing.completion import Completion, CompletionChunk
 from .typing.converters import Converters
-from .typing.message import AssistantMessage, Messages
+from .typing.message import Messages
 from .typing.tool import BaseTool, ToolChoice
 
 logger = logging.getLogger(__name__)
@@ -119,14 +119,4 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[CompletionChunk]:
-        pass
-
-    @abstractmethod
-    async def generate_message_batch(
-        self,
-        message_history: MessageHistory,
-        *,
-        tool_choice: ToolChoice | None = None,
-        **kwargs: Any,
-    ) -> Sequence[AssistantMessage]:
         pass

@@ -67,7 +67,9 @@ class RunContext(BaseModel, Generic[CtxT]):
     def model_post_init(self, context: Any) -> None:  # noqa: ARG002
         self._usage_tracker = UsageTracker(source_id=self.run_id)
         self._printer = Printer(
-            source_id=self.run_id, print_messages=self.print_messages
+            source_id=self.run_id,
+            print_messages=self.print_messages,
+            color_by=self.color_messages_by,
         )
 
     @property

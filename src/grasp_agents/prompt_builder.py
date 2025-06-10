@@ -110,14 +110,12 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
         return self.sys_prompt.format(**fmt_sys_args)
 
     def _usr_messages_from_text(self, text: str) -> list[UserMessage]:
-        return [UserMessage.from_text(text, model_id=self._agent_name)]
+        return [UserMessage.from_text(text, name=self._agent_name)]
 
     def _usr_messages_from_content_parts(
         self, content_parts: Sequence[str | ImageData]
     ) -> Sequence[UserMessage]:
-        return [
-            UserMessage.from_content_parts(content_parts, model_id=self._agent_name)
-        ]
+        return [UserMessage.from_content_parts(content_parts, name=self._agent_name)]
 
     def _usr_messages_from_in_args(
         self, in_args_batch: Sequence[InT_contra]
@@ -131,7 +129,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
                     exclude={"selected_recipients"},
                     warnings="error",
                 ).decode("utf-8"),
-                model_id=self._agent_name,
+                name=self._agent_name,
             )
             for inp in in_args_batch
         ]

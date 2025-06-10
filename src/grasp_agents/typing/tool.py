@@ -16,8 +16,8 @@ else:
         """Runtime placeholder so RunContext[CtxT] works"""
 
 
-_ToolInT = TypeVar("_ToolInT", bound=BaseModel, contravariant=True)  # noqa: PLC0105
-_ToolOutT = TypeVar("_ToolOutT", covariant=True)  # noqa: PLC0105
+_InT_contra = TypeVar("_InT_contra", bound=BaseModel, contravariant=True)
+_OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
 class ToolCall(BaseModel):
@@ -27,43 +27,46 @@ class ToolCall(BaseModel):
 
 
 class BaseTool(
-    AutoInstanceAttributesMixin, BaseModel, ABC, Generic[_ToolInT, _ToolOutT, CtxT]
+    AutoInstanceAttributesMixin,
+    BaseModel,
+    ABC,
+    Generic[_InT_contra, _OutT_co, CtxT],
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-        0: "_in_schema",
-        1: "_out_schema",
+        0: "_in_type",
+        1: "_out_type",
     }
 
     name: str
     description: str
 
-    _in_schema: type[_ToolInT] = PrivateAttr()
-    _out_schema: type[_ToolOutT] = PrivateAttr()
+    _in_type: type[_InT_contra] = PrivateAttr()
+    _out_type: type[_OutT_co] = PrivateAttr()
 
     # Supported by OpenAI API
     strict: bool | None = None
 
     @property
-    def in_schema(self) -> type[_ToolInT]:  # type: ignore[reportInvalidTypeVarUse]
+    def in_type(self) -> type[_InT_contra]:  # type: ignore[reportInvalidTypeVarUse]
         # Exposing the type of a contravariant variable only, should be type safe
-        return self._in_schema
+        return self._in_type
 
     @property
-    def out_schema(self) -> type[_ToolOutT]:
-        return self._out_schema
+    def out_type(self) -> type[_OutT_co]:
+        return self._out_type
 
     @abstractmethod
     async def run(
-        self, inp: _ToolInT, ctx: RunContext[CtxT] | None = None
-    ) -> _ToolOutT:
+        self, inp: _InT_contra, ctx: RunContext[CtxT] | None = None
+    ) -> _OutT_co:
         pass
 
     async def __call__(
         self, ctx: RunContext[CtxT] | None = None, **kwargs: Any
-    ) -> _ToolOutT:
-        result = await self.run(self._in_schema(**kwargs), ctx=ctx)
+    ) -> _OutT_co:
+        result = await self.run(self._in_type(**kwargs), ctx=ctx)
 
-        return TypeAdapter(self._out_schema).validate_python(result)
+        return TypeAdapter(self._out_type).validate_python(result)
 
 
 ToolChoice: TypeAlias = (

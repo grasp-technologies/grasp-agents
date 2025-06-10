@@ -4,13 +4,11 @@ from ..typing.message import (
     AssistantMessage,
     SystemMessage,
     ToolMessage,
-    Usage,
     UserMessage,
 )
 from ..typing.tool import ToolCall
 from . import (
     OpenAIAssistantMessageParam,
-    OpenAICompletionUsage,
     OpenAIDeveloperMessageParam,
     OpenAIFunctionMessageParam,
     OpenAIMessage,
@@ -33,44 +31,27 @@ OpenAIMessageType: TypeAlias = (
 
 
 def from_api_user_message(
-    api_message: OpenAIUserMessageParam, model_id: str | None = None
+    api_message: OpenAIUserMessageParam, name: str | None = None
 ) -> UserMessage:
     content = from_api_content(api_message["content"])
+    name = api_message.get("name")
 
-    return UserMessage(content=content, model_id=model_id)
+    return UserMessage(content=content, name=name)
 
 
 def to_api_user_message(message: UserMessage) -> OpenAIUserMessageParam:
     api_content = to_api_content(message.content)
+    api_name = message.name
+    api_message = OpenAIUserMessageParam(role="user", content=api_content)
+    if api_name is not None:
+        api_message["name"] = api_name
 
-    return OpenAIUserMessageParam(role="user", content=api_content)
+    return api_message
 
 
 def from_api_assistant_message(
-    api_message: OpenAIMessage,
-    api_usage: OpenAICompletionUsage | None = None,
-    model_id: str | None = None,
+    api_message: OpenAIMessage, name: str | None = None
 ) -> AssistantMessage:
-    usage = None
-    if api_usage is not None:
-        reasoning_tokens = None
-        cached_tokens = None
-
-        if api_usage.completion_tokens_details is not None:
-            reasoning_tokens = api_usage.completion_tokens_details.reasoning_tokens
-        if api_usage.prompt_tokens_details is not None:
-            cached_tokens = api_usage.prompt_tokens_details.cached_tokens
-
-        input_tokens = api_usage.prompt_tokens - (cached_tokens or 0)
-        output_tokens = api_usage.completion_tokens - (reasoning_tokens or 0)
-
-        usage = Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            cached_tokens=cached_tokens,
-        )
-
     tool_calls = None
     if api_message.tool_calls is not None:
         tool_calls = [
@@ -84,10 +65,9 @@ def from_api_assistant_message(
 
     return AssistantMessage(
         content=api_message.content,
-        usage=usage,
         tool_calls=tool_calls,
         refusal=api_message.refusal,
-        model_id=model_id,
+        name=name,
     )
 
 
@@ -108,44 +88,45 @@ def to_api_assistant_message(
             for tool_call in message.tool_calls
         ]
 
-    api_message = OpenAIAssistantMessageParam(
-        role="assistant",
-        content=message.content,
-        tool_calls=api_tool_calls or [],
-        refusal=message.refusal,
-    )
+    api_message = OpenAIAssistantMessageParam(role="assistant", content=message.content)
+
+    if message.name is not None:
+        api_message["name"] = message.name
+    if api_tool_calls is not None:
+        api_message["tool_calls"] = api_tool_calls or []
+    if message.refusal is not None:
+        api_message["refusal"] = message.refusal
+
+    # TODO: hack
     if message.content is None:
         # Some API providers return None in the generated content without errors,
         # even though None in the input content is not accepted.
         api_message["content"] = "<empty>"
-    if api_tool_calls is None:
-        api_message.pop("tool_calls")
-    if message.refusal is None:
-        api_message.pop("refusal")
 
     return api_message
 
 
 def from_api_system_message(
-    api_message: OpenAISystemMessageParam,
-    model_id: str | None = None,
+    api_message: OpenAISystemMessageParam, name: str | None = None
 ) -> SystemMessage:
-    return SystemMessage(content=api_message["content"], model_id=model_id)  # type: ignore
+    return SystemMessage(content=api_message["content"], name=name)  # type: ignore
 
 
-def to_api_system_message(
-    message: SystemMessage,
-) -> OpenAISystemMessageParam:
-    return OpenAISystemMessageParam(role="system", content=message.content)
+def to_api_system_message(message: SystemMessage) -> OpenAISystemMessageParam:
+    api_message = OpenAISystemMessageParam(role="system", content=message.content)
+    if message.name is not None:
+        api_message["name"] = message.name
+
+    return api_message
 
 
 def from_api_tool_message(
-    api_message: OpenAIToolMessageParam, model_id: str | None = None
+    api_message: OpenAIToolMessageParam, name: str | None = None
 ) -> ToolMessage:
     return ToolMessage(
         content=api_message["content"],  # type: ignore
         tool_call_id=api_message["tool_call_id"],
-        model_id=model_id,
+        name=name,
     )
 
 

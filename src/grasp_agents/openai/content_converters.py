@@ -48,7 +48,7 @@ def from_api_content(
                     detail=detail,
                 )
             else:
-                image_data = ImageData.from_url(img_url=url, detail=detail)  # type: ignore
+                image_data = ImageData.from_url(img_url=url, detail=detail)
             content_part = ContentPartImage(data=image_data)
 
         content_parts.append(content_part)  # type: ignore
@@ -64,8 +64,7 @@ def to_api_content(
         api_content_part: OpenAIContentPartParam
         if isinstance(content_part, ContentPartText):
             api_content_part = OpenAIContentPartTextParam(
-                type="text",
-                text=content_part.data,
+                type="text", text=content_part.data
             )
         else:
             api_content_part = OpenAIContentPartImageParam(

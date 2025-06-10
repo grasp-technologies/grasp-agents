@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import Coroutine, Sequence
+from itertools import starmap
 from logging import getLogger
 from typing import Any, Generic, Protocol
 
@@ -9,8 +10,9 @@ from pydantic import BaseModel
 from .llm import LLM, LLMSettings
 from .llm_agent_memory import LLMAgentMemory
 from .run_context import CtxT, RunContext
+from .typing.completion import Completion
 from .typing.converters import Converters
-from .typing.message import AssistantMessage, Message, Messages, ToolMessage
+from .typing.message import AssistantMessage, Messages, ToolMessage
 from .typing.tool import BaseTool, ToolCall, ToolChoice
 
 logger = getLogger(__name__)
@@ -105,6 +107,7 @@ class ToolOrchestrator(Generic[CtxT]):
         tool_choice: ToolChoice | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Sequence[AssistantMessage]:
+        # TODO: ensure n_choices is always 1
         completion_batch = await self.llm.generate_completion_batch(
             memory.message_history, tool_choice=tool_choice
         )
@@ -113,7 +116,7 @@ class ToolOrchestrator(Generic[CtxT]):
 
         if ctx is not None:
             ctx.completions[self.agent_name].extend(completion_batch)
-            self._print_messages_and_track_usage(message_batch, ctx=ctx)
+            self._print_completions_and_track_usage(completion_batch, ctx=ctx)
 
         return message_batch
 
@@ -168,23 +171,23 @@ class ToolOrchestrator(Generic[CtxT]):
 
         outs = await asyncio.gather(*corouts)
 
-        tool_messages = [
-            ToolMessage.from_tool_output(out, call, model_id=self.agent_name)
-            for out, call in zip(outs, calls, strict=False)
-        ]
+        tool_messages = list(
+            starmap(ToolMessage.from_tool_output, zip(outs, calls, strict=False))
+        )
 
-        self._print_messages(tool_messages, ctx=ctx)
+        if ctx is not None:
+            ctx.printer.print_llm_messages(tool_messages, agent_name=self.agent_name)
 
         return tool_messages
 
-    def _print_messages(
-        self, message_batch: Sequence[Message], ctx: RunContext[CtxT] | None = None
+    def _print_completions_and_track_usage(
+        self, completion_batch: Sequence[Completion], ctx: RunContext[CtxT]
     ) -> None:
-        if ctx:
-            ctx.printer.print_llm_messages(message_batch, agent_name=self.agent_name)
-
-    def _print_messages_and_track_usage(
-        self, message_batch: Sequence[AssistantMessage], ctx: RunContext[CtxT]
-    ) -> None:
-        self._print_messages(message_batch, ctx=ctx)
-        ctx.usage_tracker.update(messages=message_batch, model_name=self.llm.model_name)
+        ctx.usage_tracker.update(
+            completions=completion_batch, model_name=self.llm.model_name
+        )
+        messages = [c.messages[0] for c in completion_batch]
+        usages = [c.usage for c in completion_batch]
+        ctx.printer.print_llm_messages(
+            messages, usages=usages, agent_name=self.agent_name
+        )

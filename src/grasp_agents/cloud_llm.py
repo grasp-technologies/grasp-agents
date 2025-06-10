@@ -272,7 +272,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             )
 
         completion = self._converters.from_completion(
-            api_completion, model_id=self.model_id
+            api_completion, name=self.model_id
         )
 
         self._validate_completion(completion)
@@ -309,7 +309,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         )
 
         return self._converters.from_completion_chunk_iterator(
-            api_completion_chunk_iterator, model_id=self.model_id
+            api_completion_chunk_iterator, name=self.model_id
         )
 
     async def _generate_completion_with_retry(
@@ -352,32 +352,6 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             tool_choice=tool_choice,
             **kwargs,
         )
-
-    async def generate_message(
-        self,
-        conversation: Messages,
-        *,
-        tool_choice: ToolChoice | None = None,
-        **kwargs: Any,
-    ) -> AssistantMessage:
-        completion = await self.generate_completion(
-            conversation, tool_choice=tool_choice, **kwargs
-        )
-
-        return completion.choices[0].message
-
-    async def generate_message_batch(
-        self,
-        message_history: MessageHistory,
-        *,
-        tool_choice: ToolChoice | None = None,
-        **kwargs: Any,
-    ) -> Sequence[AssistantMessage]:
-        completion_batch = await self.generate_completion_batch(
-            message_history, tool_choice=tool_choice, **kwargs
-        )
-
-        return [completion.choices[0].message for completion in completion_batch]
 
     def _get_rate_limiter(
         self,

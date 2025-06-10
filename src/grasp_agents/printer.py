@@ -6,6 +6,7 @@ from typing import Literal, TypeAlias
 
 from termcolor._types import Color  # type: ignore[import]
 
+from .typing.completion import Usage
 from .typing.content import Content, ContentPartText
 from .typing.message import AssistantMessage, Message, Role, ToolMessage
 
@@ -82,12 +83,18 @@ class Printer:
 
         return content_str
 
-    def print_llm_message(self, message: Message, agent_name: str) -> None:
+    def print_llm_message(
+        self, message: Message, agent_name: str, usage: Usage | None = None
+    ) -> None:
         if not self.print_messages:
             return
 
+        if usage is not None and not isinstance(message, AssistantMessage):
+            raise ValueError(
+                "Usage information can only be printed for AssistantMessage"
+            )
+
         role = message.role
-        usage = message.usage if isinstance(message, AssistantMessage) else None
         content_str = self.content_to_str(message.content or "", message.role)
 
         if self.color_by == "agent":
@@ -103,7 +110,7 @@ class Printer:
         out += "[" + role.value.upper() + "]"
 
         if isinstance(message, ToolMessage):
-            out += f"\nTool call ID: {message.tool_call_id}"
+            out += f"\n{message.name} | {message.tool_call_id}"
 
         # Print message content
 
@@ -148,9 +155,16 @@ class Printer:
                 **log_kwargs,  # type: ignore
             )
 
-    def print_llm_messages(self, messages: Sequence[Message], agent_name: str) -> None:
+    def print_llm_messages(
+        self,
+        messages: Sequence[Message],
+        agent_name: str,
+        usages: Sequence[Usage | None] | None = None,
+    ) -> None:
         if not self.print_messages:
             return
 
-        for message in messages:
-            self.print_llm_message(message, agent_name)
+        _usages: Sequence[Usage | None] = usages or [None] * len(messages)
+
+        for _message, _usage in zip(messages, _usages, strict=False):
+            self.print_llm_message(_message, usage=_usage, agent_name=agent_name)

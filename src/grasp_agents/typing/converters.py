@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .completion import Completion, CompletionChunk
+from .completion import Completion, CompletionChunk, Usage
 from .content import Content
 from .message import AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage
 from .tool import BaseTool, ToolChoice
@@ -38,9 +38,12 @@ class Converters(ABC):
 
     @staticmethod
     @abstractmethod
-    def from_assistant_message(
-        raw_message: Any, raw_usage: Any, **kwargs: Any
-    ) -> AssistantMessage:
+    def from_completion_usage(raw_usage: Any, **kwargs: Any) -> Usage:
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def from_assistant_message(raw_message: Any, **kwargs: Any) -> AssistantMessage:
         pass
 
     @staticmethod

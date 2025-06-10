@@ -1,13 +1,49 @@
 from abc import ABC
 from typing import Literal
+from uuid import uuid4
 
 from openai.types.chat.chat_completion import (
     ChoiceLogprobs as ChatCompletionChoiceLogprobs,
 )
-from openai.types.completion_usage import CompletionUsage as ChatCompletionUsage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt
 
 from .message import AssistantMessage
+
+
+class Usage(BaseModel):
+    input_tokens: NonNegativeInt = 0
+    output_tokens: NonNegativeInt = 0
+    reasoning_tokens: NonNegativeInt | None = None
+    cached_tokens: NonNegativeInt | None = None
+    cost: NonNegativeFloat | None = None
+
+    def __add__(self, add_usage: "Usage") -> "Usage":
+        input_tokens = self.input_tokens + add_usage.input_tokens
+        output_tokens = self.output_tokens + add_usage.output_tokens
+        if self.reasoning_tokens is not None or add_usage.reasoning_tokens is not None:
+            reasoning_tokens = (self.reasoning_tokens or 0) + (
+                add_usage.reasoning_tokens or 0
+            )
+        else:
+            reasoning_tokens = None
+
+        if self.cached_tokens is not None or add_usage.cached_tokens is not None:
+            cached_tokens = (self.cached_tokens or 0) + (add_usage.cached_tokens or 0)
+        else:
+            cached_tokens = None
+
+        cost = (
+            (self.cost or 0.0) + add_usage.cost
+            if (add_usage.cost is not None)
+            else None
+        )
+        return Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cached_tokens=cached_tokens,
+            cost=cost,
+        )
 
 
 class CompletionChoice(BaseModel):
@@ -27,11 +63,13 @@ class CompletionError(BaseModel):
 
 
 class Completion(BaseModel, ABC):
-    id: str
-    model_id: str | None = None
+    id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    model: str
+    name: str | None = None
     created: int
+    system_fingerprint: str | None = None
     choices: list[CompletionChoice]
-    usage: ChatCompletionUsage | None = None
+    usage: Usage | None = None
     error: CompletionError | None = None
 
     @property
@@ -43,5 +81,7 @@ class CompletionChunk(BaseModel):
     # TODO: add choices and tool calls
     id: str
     created: int
+    model: str
+    system_fingerprint: str | None = None
     delta: str | None = None
-    model_id: str | None = None
+    name: str | None = None

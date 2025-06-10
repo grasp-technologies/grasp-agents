@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..typing.completion import Completion, CompletionChunk
+from ..typing.completion import Completion, CompletionChunk, Usage
 from ..typing.content import Content
 from ..typing.converters import Converters
 from ..typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
@@ -26,6 +26,7 @@ from .completion_converters import (
     from_api_completion,
     from_api_completion_chunk,
     from_api_completion_chunk_iterator,
+    from_api_completion_usage,
     to_api_completion,
 )
 from .content_converters import from_api_content, to_api_content
@@ -51,11 +52,9 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def from_system_message(
-        raw_message: OpenAISystemMessageParam,
-        model_id: str | None = None,
-        **kwargs: Any,
+        raw_message: OpenAISystemMessageParam, name: str | None = None, **kwargs: Any
     ) -> SystemMessage:
-        return from_api_system_message(raw_message, model_id=model_id, **kwargs)
+        return from_api_system_message(raw_message, name=name, **kwargs)
 
     @staticmethod
     def to_user_message(
@@ -65,11 +64,9 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def from_user_message(
-        raw_message: OpenAIUserMessageParam,
-        model_id: str | None = None,
-        **kwargs: Any,
+        raw_message: OpenAIUserMessageParam, name: str | None = None, **kwargs: Any
     ) -> UserMessage:
-        return from_api_user_message(raw_message, model_id=model_id, **kwargs)
+        return from_api_user_message(raw_message, name=name, **kwargs)
 
     @staticmethod
     def to_assistant_message(
@@ -78,15 +75,14 @@ class OpenAIConverters(Converters):
         return to_api_assistant_message(assistant_message, **kwargs)
 
     @staticmethod
+    def from_completion_usage(raw_usage: OpenAICompletionUsage, **kwargs: Any) -> Usage:
+        return from_api_completion_usage(raw_usage, **kwargs)
+
+    @staticmethod
     def from_assistant_message(
-        raw_message: OpenAIMessage,
-        raw_usage: OpenAICompletionUsage,
-        model_id: str | None = None,
-        **kwargs: Any,
+        raw_message: OpenAIMessage, name: str | None = None, **kwargs: Any
     ) -> AssistantMessage:
-        return from_api_assistant_message(
-            raw_message, raw_usage, model_id=model_id, **kwargs
-        )
+        return from_api_assistant_message(raw_message, name=name, **kwargs)
 
     @staticmethod
     def to_tool_message(
@@ -96,11 +92,9 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def from_tool_message(
-        raw_message: OpenAIToolMessageParam,
-        model_id: str | None = None,
-        **kwargs: Any,
+        raw_message: OpenAIToolMessageParam, name: str | None = None, **kwargs: Any
     ) -> ToolMessage:
-        return from_api_tool_message(raw_message, model_id=model_id, **kwargs)
+        return from_api_tool_message(raw_message, name=name, **kwargs)
 
     @staticmethod
     def to_tool(tool: BaseTool[BaseModel, Any, Any], **kwargs: Any) -> OpenAIToolParam:
@@ -118,8 +112,7 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def from_content(
-        raw_content: str | Iterable[OpenAIContentPartParam],
-        **kwargs: Any,
+        raw_content: str | Iterable[OpenAIContentPartParam], **kwargs: Any
     ) -> Content:
         return from_api_content(raw_content, **kwargs)
 
@@ -129,11 +122,9 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def from_completion(
-        raw_completion: OpenAICompletion,
-        model_id: str | None = None,
-        **kwargs: Any,
+        raw_completion: OpenAICompletion, name: str | None = None, **kwargs: Any
     ) -> Completion:
-        return from_api_completion(raw_completion, model_id=model_id, **kwargs)
+        return from_api_completion(raw_completion, name=name, **kwargs)
 
     @staticmethod
     def to_completion_chunk(
@@ -143,18 +134,16 @@ class OpenAIConverters(Converters):
 
     @staticmethod
     def from_completion_chunk(
-        raw_chunk: OpenAICompletionChunk,
-        model_id: str | None = None,
-        **kwargs: Any,
+        raw_chunk: OpenAICompletionChunk, name: str | None = None, **kwargs: Any
     ) -> CompletionChunk:
-        return from_api_completion_chunk(raw_chunk, model_id=model_id, **kwargs)
+        return from_api_completion_chunk(raw_chunk, name=name, **kwargs)
 
     @staticmethod
     def from_completion_chunk_iterator(  # type: ignore[override]
         raw_chunk_iterator: OpenAIAsyncStream[OpenAICompletionChunk],
-        model_id: str | None = None,
+        name: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[CompletionChunk]:
         return from_api_completion_chunk_iterator(
-            raw_chunk_iterator, model_id=model_id, **kwargs
+            raw_chunk_iterator, name=name, **kwargs
         )
