@@ -1,44 +1,44 @@
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from copy import deepcopy
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from openai import AsyncOpenAI
 from openai._types import NOT_GIVEN  # type: ignore[import]
+from openai.lib.streaming.chat import (
+    AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
+)
+from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
 from ..cloud_llm import CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams
 from ..rate_limiting.rate_limiter_chunked import RateLimiterC
-from ..typing.message import AssistantMessage, Conversation
+from ..typing.message import AssistantMessage, Messages
 from ..typing.tool import BaseTool
 from . import (
-    ChatCompletion,
-    ChatCompletionAsyncStream,  # type: ignore[import]
-    ChatCompletionChunk,
-    ChatCompletionMessageParam,
-    ChatCompletionPredictionContentParam,
-    ChatCompletionStreamOptionsParam,
-    ChatCompletionToolChoiceOptionParam,
-    ChatCompletionToolParam,
-    ParsedChatCompletion,
-    # ResponseFormatJSONObject,
-    # ResponseFormatJSONSchema,
-    # ResponseFormatText,
+    OpenAICompletion,
+    OpenAICompletionChunk,
+    OpenAIMessageParam,
+    OpenAIParsedCompletion,
+    OpenAIPredictionContentParam,
+    OpenAIStreamOptionsParam,
+    OpenAIToolChoiceOptionParam,
+    OpenAIToolParam,
 )
 from .converters import OpenAIConverters
 
 logger = logging.getLogger(__name__)
 
 
+class ToolCallSettings(NamedTuple):
+    strict: bool | None = None
+
+
 class OpenAILLMSettings(CloudLLMSettings, total=False):
     reasoning_effort: Literal["low", "medium", "high"] | None
 
     parallel_tool_calls: bool
-
-    # response_format: (
-    #     ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject
-    # )
 
     modalities: list[Literal["text", "audio"]] | None
 
@@ -48,15 +48,22 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     stop: str | list[str] | None
     logprobs: bool | None
     top_logprobs: int | None
-    n: int | None
 
-    prediction: ChatCompletionPredictionContentParam | None
+    prediction: OpenAIPredictionContentParam | None
 
-    stream_options: ChatCompletionStreamOptionsParam | None
+    stream_options: OpenAIStreamOptionsParam | None
 
     metadata: dict[str, str] | None
     store: bool | None
     user: str
+
+    strict_tool_args: bool
+
+    # response_format: (
+    #     OpenAIResponseFormatText
+    #     | OpenAIResponseFormatJSONSchema
+    #     | OpenAIResponseFormatJSONObject
+    # )
 
 
 class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
@@ -74,7 +81,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         ) = None,
         async_openai_client_params: dict[str, Any] | None = None,
         # Rate limiting
-        rate_limiter: (RateLimiterC[Conversation, AssistantMessage] | None) = None,
+        rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
         rate_limiter_rpm: float | None = None,
         rate_limiter_chunk_size: int = 1000,
         rate_limiter_max_concurrency: int = 300,
@@ -101,46 +108,55 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             **kwargs,
         )
 
-        async_openai_client_params_ = deepcopy(async_openai_client_params or {})
+        self._tool_call_settings = {
+            "strict": self._llm_settings.pop("strict_tool_args", None)
+        }
+
+        _async_openai_client_params = deepcopy(async_openai_client_params or {})
         if self._async_http_client is not None:
-            async_openai_client_params_["http_client"] = self._async_http_client
+            _async_openai_client_params["http_client"] = self._async_http_client
 
         # TODO: context manager for async client
         self._client: AsyncOpenAI = AsyncOpenAI(
             base_url=self._base_url,
             api_key=self._api_key,
-            **async_openai_client_params_,
+            **_async_openai_client_params,
         )
 
     async def _get_completion(
         self,
-        api_messages: Iterable[ChatCompletionMessageParam],
-        api_tools: list[ChatCompletionToolParam] | None = None,
-        api_tool_choice: ChatCompletionToolChoiceOptionParam | None = None,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
+        n_choices: int | None = None,
         **api_llm_settings: Any,
-    ) -> ChatCompletion:
+    ) -> OpenAICompletion:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
+        n = n_choices or NOT_GIVEN
 
         return await self._client.chat.completions.create(
             model=self._api_model_name,
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,
+            n=n,
             stream=False,
             **api_llm_settings,
         )
 
     async def _get_parsed_completion(
         self,
-        api_messages: Iterable[ChatCompletionMessageParam],
-        api_tools: list[ChatCompletionToolParam] | None = None,
-        api_tool_choice: ChatCompletionToolChoiceOptionParam | None = None,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         api_response_format: type | None = None,
+        n_choices: int | None = None,
         **api_llm_settings: Any,
-    ) -> ParsedChatCompletion[Any]:
+    ) -> OpenAIParsedCompletion[Any]:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
+        n = n_choices or NOT_GIVEN
         response_format = api_response_format or NOT_GIVEN
 
         return await self._client.beta.chat.completions.parse(
@@ -148,27 +164,70 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,
-            response_format=response_format,  # type: ignore[arg-type]
+            response_format=response_format,
+            n=n,
             **api_llm_settings,
         )
 
     async def _get_completion_stream(
         self,
-        api_messages: Iterable[ChatCompletionMessageParam],
-        api_tools: list[ChatCompletionToolParam] | None = None,
-        api_tool_choice: ChatCompletionToolChoiceOptionParam | None = None,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
+        n_choices: int | None = None,
         **api_llm_settings: Any,
-    ) -> ChatCompletionAsyncStream[ChatCompletionChunk]:
-        assert not api_tools, "Tool use is not supported in streaming mode"
-
+    ) -> AsyncIterator[OpenAICompletionChunk]:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
+        n = n_choices or NOT_GIVEN
 
-        return await self._client.chat.completions.create(
+        stream_generator = await self._client.chat.completions.create(
             model=self._api_model_name,
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,
             stream=True,
+            n=n,
             **api_llm_settings,
         )
+
+        async def iterate() -> AsyncIterator[OpenAICompletionChunk]:
+            async with stream_generator as stream:
+                async for completion_chunk in stream:
+                    yield completion_chunk
+
+        return iterate()
+
+    async def _get_parsed_completion_stream(
+        self,
+        api_messages: Iterable[OpenAIMessageParam],
+        api_tools: list[OpenAIToolParam] | None = None,
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
+        api_response_format: type | None = None,
+        n_choices: int | None = None,
+        **api_llm_settings: Any,
+    ) -> AsyncIterator[OpenAICompletionChunk]:
+        tools = api_tools or NOT_GIVEN
+        tool_choice = api_tool_choice or NOT_GIVEN
+        response_format = api_response_format or NOT_GIVEN
+        n = n_choices or NOT_GIVEN
+
+        stream_manager: OpenAIAsyncChatCompletionStreamManager[
+            OpenAICompletionChunk
+        ] = self._client.beta.chat.completions.stream(
+            model=self._api_model_name,
+            messages=api_messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            n=n,
+            **api_llm_settings,
+        )
+
+        async def iterate() -> AsyncIterator[OpenAICompletionChunk]:
+            async with stream_manager as stream:
+                async for chunk_event in stream:
+                    if isinstance(chunk_event, OpenAIChunkEvent):
+                        yield chunk_event.chunk
+
+        return iterate()

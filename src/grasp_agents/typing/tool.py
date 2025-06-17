@@ -1,23 +1,31 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    TypeAlias,
+    TypeVar,
+)
 
 from pydantic import BaseModel, PrivateAttr, TypeAdapter
 
 from ..generics_utils import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
-    from ..run_context import CtxT, RunContextWrapper
+    from ..run_context import CtxT, RunContext
 else:
     CtxT = TypeVar("CtxT")
 
-    class RunContextWrapper(Generic[CtxT]):
-        """Runtime placeholder so RunContextWrapper[CtxT] works"""
+    class RunContext(Generic[CtxT]):
+        """Runtime placeholder so RunContext[CtxT] works"""
 
 
-_ToolInT = TypeVar("_ToolInT", bound=BaseModel, contravariant=True)  # noqa: PLC0105
-_ToolOutT = TypeVar("_ToolOutT", covariant=True)  # noqa: PLC0105
+_InT_contra = TypeVar("_InT_contra", bound=BaseModel, contravariant=True)
+_OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
 class ToolCall(BaseModel):
@@ -27,45 +35,63 @@ class ToolCall(BaseModel):
 
 
 class BaseTool(
-    AutoInstanceAttributesMixin, BaseModel, ABC, Generic[_ToolInT, _ToolOutT, CtxT]
+    AutoInstanceAttributesMixin,
+    BaseModel,
+    ABC,
+    Generic[_InT_contra, _OutT_co, CtxT],
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-        0: "_in_schema",
-        1: "_out_schema",
+        0: "_in_type",
+        1: "_out_type",
     }
 
     name: str
     description: str
 
-    _in_schema: type[_ToolInT] = PrivateAttr()
-    _out_schema: type[_ToolOutT] = PrivateAttr()
+    _in_type: type[_InT_contra] = PrivateAttr()
+    _out_type: type[_OutT_co] = PrivateAttr()
 
-    # Supported by OpenAI API
-    strict: bool | None = None
+    # _in_type_adapter: TypeAdapter[_InT_contra] = PrivateAttr()
+    # _out_type_adapter: TypeAdapter[_OutT_co] = PrivateAttr()
+
+    # def model_post_init(self, context: Any) -> None:
+    #     self._in_type_adapter = TypeAdapter(self._in_type)
+    #     self._out_type_adapter = TypeAdapter(self._out_type)
 
     @property
-    def in_schema(self) -> type[_ToolInT]:  # type: ignore[reportInvalidTypeVarUse]
+    def in_type(self) -> type[_InT_contra]:  # type: ignore[reportInvalidTypeVarUse]
         # Exposing the type of a contravariant variable only, should be type safe
-        return self._in_schema
+        return self._in_type
 
     @property
-    def out_schema(self) -> type[_ToolOutT]:
-        return self._out_schema
+    def out_type(self) -> type[_OutT_co]:
+        return self._out_type
+
+    # @property
+    # def in_type_adapter(self) -> TypeAdapter[_InT_contra]:
+    #     return self._in_type_adapter
+
+    # @property
+    # def out_type_adapter(self) -> TypeAdapter[_OutT_co]:
+    #     return self._out_type_adapter
 
     @abstractmethod
     async def run(
-        self, inp: _ToolInT, ctx: RunContextWrapper[CtxT] | None = None
-    ) -> _ToolOutT:
+        self, inp: _InT_contra, ctx: RunContext[CtxT] | None = None
+    ) -> _OutT_co:
         pass
 
     async def __call__(
-        self, ctx: RunContextWrapper[CtxT] | None = None, **kwargs: Any
-    ) -> _ToolOutT:
-        result = await self.run(self._in_schema(**kwargs), ctx=ctx)
+        self, ctx: RunContext[CtxT] | None = None, **kwargs: Any
+    ) -> _OutT_co:
+        input_args = TypeAdapter(self._in_type).validate_python(kwargs)
+        output = await self.run(input_args, ctx=ctx)
 
-        return TypeAdapter(self._out_schema).validate_python(result)
+        return TypeAdapter(self._out_type).validate_python(output)
 
 
-ToolChoice: TypeAlias = (
-    Literal["none", "auto", "required"] | BaseTool[BaseModel, Any, Any]
-)
+class NamedToolChoice(BaseModel):
+    name: str
+
+
+ToolChoice: TypeAlias = Literal["none", "auto", "required"] | NamedToolChoice

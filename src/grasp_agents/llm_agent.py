@@ -1,60 +1,47 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Protocol, cast, final
+from typing import Any, ClassVar, Generic, Protocol
 
 from pydantic import BaseModel
 
-from .agent_message import AgentMessage
-from .agent_message_pool import AgentMessagePool
-from .comm_agent import CommunicatingAgent
+from .comm_processor import CommProcessor
 from .llm import LLM, LLMSettings
-from .llm_agent_state import (
-    LLMAgentState,
-    SetAgentState,
-    SetAgentStateStrategy,
+from .llm_agent_memory import LLMAgentMemory, SetMemoryHandler
+from .llm_policy_executor import (
+    ExitToolCallLoopHandler,
+    LLMPolicyExecutor,
+    ManageMemoryHandler,
 )
+from .packet_pool import PacketPool
 from .prompt_builder import (
-    FormatInputArgsHandler,
-    FormatSystemArgsHandler,
+    MakeInputContentHandler,
+    MakeSystemPromptHandler,
     PromptBuilder,
 )
-from .run_context import CtxT, InteractionRecord, RunContextWrapper
-from .tool_orchestrator import (
-    ExitToolCallLoopHandler,
-    ManageAgentStateHandler,
-    ToolOrchestrator,
-)
-from .typing.content import ImageData
+from .run_context import CtxT, RunContext
+from .typing.content import Content, ImageData
 from .typing.converters import Converters
-from .typing.io import (
-    AgentID,
-    AgentState,
-    InT,
-    LLMFormattedArgs,
-    LLMFormattedSystemArgs,
-    LLMPrompt,
-    LLMPromptArgs,
-    OutT,
-)
-from .typing.message import Conversation, Message, SystemMessage
+from .typing.events import Event, ProcOutputEvent, SystemMessageEvent, UserMessageEvent
+from .typing.io import InT_contra, LLMPrompt, LLMPromptArgs, OutT_co, ProcName
+from .typing.message import Message, Messages, SystemMessage, UserMessage
 from .typing.tool import BaseTool
 from .utils import get_prompt, validate_obj_from_json_or_py_string
 
 
-class ParseOutputHandler(Protocol[InT, OutT, CtxT]):
+class ParseOutputHandler(Protocol[InT_contra, OutT_co, CtxT]):
     def __call__(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
-        in_args: InT | None,
+        in_args: InT_contra | None,
         batch_idx: int,
-        ctx: RunContextWrapper[CtxT] | None,
-    ) -> OutT: ...
+        ctx: RunContext[CtxT] | None,
+    ) -> OutT_co: ...
 
 
 class LLMAgent(
-    CommunicatingAgent[InT, OutT, LLMAgentState, CtxT],
-    Generic[InT, OutT, CtxT],
+    CommProcessor[InT_contra, OutT_co, LLMAgentMemory, CtxT],
+    Generic[InT_contra, OutT_co, CtxT],
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -63,63 +50,68 @@ class LLMAgent(
 
     def __init__(
         self,
-        agent_id: AgentID,
+        name: ProcName,
         *,
         # LLM
         llm: LLM[LLMSettings, Converters],
+        # Tools
+        tools: list[BaseTool[Any, Any, CtxT]] | None = None,
         # Input prompt template (combines user and received arguments)
         in_prompt: LLMPrompt | None = None,
         in_prompt_path: str | Path | None = None,
         # System prompt template
         sys_prompt: LLMPrompt | None = None,
         sys_prompt_path: str | Path | None = None,
-        # System args (static args provided via RunContextWrapper)
+        # System args (static args provided via RunContext)
         sys_args_schema: type[LLMPromptArgs] = LLMPromptArgs,
-        # User args (static args provided via RunContextWrapper)
+        # User args (static args provided via RunContext)
         usr_args_schema: type[LLMPromptArgs] = LLMPromptArgs,
-        # Tools
-        tools: list[BaseTool[Any, Any, CtxT]] | None = None,
-        max_turns: int = 1000,
+        # Agent loop settings
+        max_turns: int = 100,
         react_mode: bool = False,
-        # Agent state management
-        set_state_strategy: SetAgentStateStrategy = "keep",
+        final_answer_as_tool_call: bool = False,
+        # Agent memory management
+        reset_memory_on_run: bool = False,
         # Multi-agent routing
-        message_pool: AgentMessagePool[CtxT] | None = None,
-        recipient_ids: list[AgentID] | None = None,
+        packet_pool: PacketPool[CtxT] | None = None,
+        recipients: list[ProcName] | None = None,
     ) -> None:
-        super().__init__(
-            agent_id=agent_id, message_pool=message_pool, recipient_ids=recipient_ids
-        )
+        super().__init__(name=name, packet_pool=packet_pool, recipients=recipients)
 
-        # Agent state
-        self._state: LLMAgentState = LLMAgentState()
-        self.set_state_strategy: SetAgentStateStrategy = set_state_strategy
-        self._set_agent_state_impl: SetAgentState | None = None
+        # Agent memory
 
-        # Tool orchestrator
+        self._memory: LLMAgentMemory = LLMAgentMemory()
+        self._reset_memory_on_run = reset_memory_on_run
+        self._set_memory_impl: SetMemoryHandler | None = None
+
+        # LLM policy executor
 
         self._using_default_llm_response_format: bool = False
         if llm.response_format is None and tools is None:
             llm.response_format = self.out_type
             self._using_default_llm_response_format = True
 
-        self._tool_orchestrator: ToolOrchestrator[CtxT] = ToolOrchestrator[CtxT](
-            agent_id=self.agent_id,
+        self._policy_executor: LLMPolicyExecutor[OutT_co, CtxT] = LLMPolicyExecutor[
+            self.out_type, CtxT
+        ](
+            agent_name=self.name,
             llm=llm,
             tools=tools,
             max_turns=max_turns,
             react_mode=react_mode,
+            final_answer_as_tool_call=final_answer_as_tool_call,
         )
 
         # Prompt builder
+
         sys_prompt = get_prompt(prompt_text=sys_prompt, prompt_path=sys_prompt_path)
         in_prompt = get_prompt(prompt_text=in_prompt, prompt_path=in_prompt_path)
-        self._prompt_builder: PromptBuilder[InT, CtxT] = PromptBuilder[
+        self._prompt_builder: PromptBuilder[InT_contra, CtxT] = PromptBuilder[
             self.in_type, CtxT
         ](
-            agent_id=self._agent_id,
-            sys_prompt=sys_prompt,
-            in_prompt=in_prompt,
+            agent_name=self._name,
+            sys_prompt_template=sys_prompt,
+            in_prompt_template=in_prompt,
             sys_args_schema=sys_args_schema,
             usr_args_schema=usr_args_schema,
         )
@@ -130,53 +122,50 @@ class LLMAgent(
 
     @property
     def llm(self) -> LLM[LLMSettings, Converters]:
-        return self._tool_orchestrator.llm
+        return self._policy_executor.llm
 
     @property
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
-        return self._tool_orchestrator.tools
+        return self._policy_executor.tools
 
     @property
     def max_turns(self) -> int:
-        return self._tool_orchestrator.max_turns
+        return self._policy_executor.max_turns
 
     @property
-    def sys_args_schema(self) -> type[LLMPromptArgs]:
+    def sys_args_schema(self) -> type[LLMPromptArgs] | None:
         return self._prompt_builder.sys_args_schema
 
     @property
-    def usr_args_schema(self) -> type[LLMPromptArgs]:
+    def usr_args_schema(self) -> type[LLMPromptArgs] | None:
         return self._prompt_builder.usr_args_schema
 
     @property
     def sys_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.sys_prompt
+        return self._prompt_builder.sys_prompt_template
 
     @property
     def in_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.in_prompt
+        return self._prompt_builder.in_prompt_template
 
     def _parse_output(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
-        in_args: InT | None = None,
+        in_args: InT_contra | None = None,
         batch_idx: int = 0,
-        ctx: RunContextWrapper[CtxT] | None = None,
-    ) -> OutT:
+        ctx: RunContext[CtxT] | None = None,
+    ) -> OutT_co:
         if self._parse_output_impl:
             if self._using_default_llm_response_format:
                 # When using custom output parsing, the required LLM response format
                 # can differ from the final agent output type ->
                 # set it back to None unless it was specified explicitly at init.
-                self._tool_orchestrator.llm.response_format = None
-                self._using_default_llm_response_format = False
+                self._policy_executor.llm.response_format = None
+                # self._using_default_llm_response_format = False
 
             return self._parse_output_impl(
-                conversation=conversation,
-                in_args=in_args,
-                batch_idx=batch_idx,
-                ctx=ctx,
+                conversation=conversation, in_args=in_args, batch_idx=batch_idx, ctx=ctx
             )
 
         return validate_obj_from_json_or_py_string(
@@ -185,215 +174,182 @@ class LLMAgent(
             from_substring=True,
         )
 
-    @staticmethod
-    def _validate_run_inputs(
-        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-        in_message: AgentMessage[InT, AgentState] | None = None,
-        entry_point: bool = False,
-    ) -> None:
-        multiple_inputs_err_message = (
-            "Only one of chat_inputs, in_args, or in_message must be provided."
-        )
-        if chat_inputs is not None and in_args is not None:
-            raise ValueError(multiple_inputs_err_message)
-        if chat_inputs is not None and in_message is not None:
-            raise ValueError(multiple_inputs_err_message)
-        if in_args is not None and in_message is not None:
-            raise ValueError(multiple_inputs_err_message)
-
-        if entry_point and in_message is not None:
-            raise ValueError(
-                "Entry point agent cannot receive messages from other agents."
-            )
-
-    @final
-    async def run(
+    def _memorize_inputs(
         self,
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         *,
-        in_message: AgentMessage[InT, AgentState] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-        entry_point: bool = False,
-        ctx: RunContextWrapper[CtxT] | None = None,
-        forbid_state_change: bool = False,
-        **gen_kwargs: Any,  # noqa: ARG002
-    ) -> AgentMessage[OutT, LLMAgentState]:
+        in_args: Sequence[InT_contra] | None = None,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> tuple[SystemMessage | None, Sequence[UserMessage], LLMAgentMemory]:
         # Get run arguments
-        sys_args: LLMPromptArgs = LLMPromptArgs()
-        usr_args: LLMPromptArgs | Sequence[LLMPromptArgs] = LLMPromptArgs()
+        sys_args: LLMPromptArgs | None = None
+        usr_args: LLMPromptArgs | None = None
         if ctx is not None:
-            run_args = ctx.run_args.get(self.agent_id)
+            run_args = ctx.run_args.get(self.name)
             if run_args is not None:
                 sys_args = run_args.sys
                 usr_args = run_args.usr
 
-        self._validate_run_inputs(
-            chat_inputs=chat_inputs,
-            in_args=in_args,
-            in_message=in_message,
-            entry_point=entry_point,
-        )
-        resolved_in_args = in_message.payloads if in_message else in_args
-
         # 1. Make system prompt (can be None)
+
         formatted_sys_prompt = self._prompt_builder.make_sys_prompt(
             sys_args=sys_args, ctx=ctx
         )
 
-        # 2. Set agent state
+        # 2. Set agent memory
 
-        cur_state = self.state.model_copy(deep=True)
-        in_state = in_message.sender_state if in_message else None
-        prev_mh_len = len(cur_state.message_history)
+        _memory = self.memory.model_copy(deep=True)
+        prev_message_hist_length = len(_memory.message_history)
+        if self._reset_memory_on_run or _memory.is_empty:
+            _memory.reset(formatted_sys_prompt)
+        elif self._set_memory_impl:
+            _memory = self._set_memory_impl(
+                prev_memory=_memory,
+                in_args=in_args,
+                sys_prompt=formatted_sys_prompt,
+                ctx=ctx,
+            )
 
-        state = LLMAgentState.from_cur_and_in_states(
-            cur_state=cur_state,
-            in_state=in_state,
-            sys_prompt=formatted_sys_prompt,
-            strategy=self.set_state_strategy,
-            set_agent_state_impl=self._set_agent_state_impl,
-            ctx=ctx,
-        )
-
-        self._print_sys_msg(state=state, prev_mh_len=prev_mh_len, ctx=ctx)
-
-        # 3. Make and add user messages (can be empty)
+        # 3. Make and add user messages
 
         user_message_batch = self._prompt_builder.make_user_messages(
-            chat_inputs=chat_inputs,
-            in_args=resolved_in_args,
-            usr_args=usr_args,
-            entry_point=entry_point,
-            ctx=ctx,
+            chat_inputs=chat_inputs, in_args_batch=in_args, usr_args=usr_args, ctx=ctx
         )
         if user_message_batch:
-            state.message_history.add_message_batch(user_message_batch)
-            self._print_msgs(user_message_batch, ctx=ctx)
+            _memory.update(message_batch=user_message_batch)
 
-        if not self.tools:
-            # 4. Generate messages without tools
-            await self._tool_orchestrator.generate_once(state=state, ctx=ctx)
-        else:
-            # 4. Run tool call loop (new messages are added to the message
-            #    history inside the loop)
-            await self._tool_orchestrator.run_loop(state=state, ctx=ctx)
+        # 4. Extract system message if it was added
 
-        # 5. Parse outputs
+        system_message: SystemMessage | None = None
+        if (
+            len(_memory.message_history) == 1
+            and prev_message_hist_length == 0
+            and isinstance(_memory.message_history[0][0], SystemMessage)
+        ):
+            system_message = _memory.message_history[0][0]
 
-        val_output_batch: list[OutT] = []
-        for i, _conv in enumerate(state.message_history.batched_conversations):
-            if isinstance(resolved_in_args, Sequence):
-                _resolved_in_args = cast("Sequence[InT]", resolved_in_args)
-                _in_args = _resolved_in_args[min(i, len(_resolved_in_args) - 1)]
+        return system_message, user_message_batch, _memory
+
+    def _extract_outputs(
+        self,
+        memory: LLMAgentMemory,
+        in_args: Sequence[InT_contra] | None = None,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> Sequence[OutT_co]:
+        outputs: list[OutT_co] = []
+        for i, _conv in enumerate(memory.message_history.conversations):
+            if in_args is not None:
+                _in_args_single = in_args[min(i, len(in_args) - 1)]
             else:
-                _resolved_in_args = cast("InT | None", resolved_in_args)
-                _in_args = _resolved_in_args
+                _in_args_single = None
 
-            val_output_batch.append(
-                self._out_type_adapter.validate_python(
-                    self._parse_output(
-                        conversation=_conv, in_args=_in_args, batch_idx=i, ctx=ctx
-                    )
+            outputs.append(
+                self._parse_output(
+                    conversation=_conv, in_args=_in_args_single, batch_idx=i, ctx=ctx
                 )
             )
 
-        # 6. Write interaction history to context
+        return outputs
 
-        recipient_ids = self._validate_routing(val_output_batch)
-
-        if ctx:
-            interaction_record = InteractionRecord(
-                source_id=self.agent_id,
-                recipient_ids=recipient_ids,
-                chat_inputs=chat_inputs,
-                sys_prompt=self.sys_prompt,
-                in_prompt=self.in_prompt,
-                sys_args=sys_args,
-                usr_args=usr_args,
-                in_args=resolved_in_args,  # type: ignore[valid-type]
-                outputs=val_output_batch,
-                state=state,
-            )
-            ctx.interaction_history.append(
-                cast(
-                    "InteractionRecord[Any, Any, AgentState]",
-                    interaction_record,
-                )
-            )
-
-        agent_message = AgentMessage(
-            payloads=val_output_batch,
-            sender_id=self.agent_id,
-            sender_state=state,
-            recipient_ids=recipient_ids,
+    async def _process(
+        self,
+        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        *,
+        in_args: Sequence[InT_contra] | None = None,
+        forgetful: bool = False,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> Sequence[OutT_co]:
+        system_message, user_message_batch, memory = self._memorize_inputs(
+            chat_inputs=chat_inputs, in_args=in_args, ctx=ctx
         )
 
-        if not forbid_state_change:
-            self._state = state
+        if system_message is not None:
+            self._print_messages([system_message], ctx=ctx)
+        if user_message_batch:
+            self._print_messages(user_message_batch, ctx=ctx)
 
-        return agent_message
+        await self._policy_executor.execute(memory, ctx=ctx)
 
-    def _print_msgs(
+        if not forgetful:
+            self._memory = memory
+
+        return self._extract_outputs(memory=memory, in_args=in_args, ctx=ctx)
+
+    async def _process_stream(
         self,
-        messages: Sequence[Message],
-        ctx: RunContextWrapper[CtxT] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        *,
+        in_args: Sequence[InT_contra] | None = None,
+        forgetful: bool = False,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        system_message, user_message_batch, memory = self._memorize_inputs(
+            chat_inputs=chat_inputs, in_args=in_args, ctx=ctx
+        )
+
+        if system_message is not None:
+            yield SystemMessageEvent(data=system_message)
+        if user_message_batch:
+            for user_message in user_message_batch:
+                yield UserMessageEvent(data=user_message)
+
+        # 4. Run tool call loop (new messages are added to the message
+        #    history inside the loop)
+        async for event in self._policy_executor.execute_stream(memory, ctx=ctx):
+            yield event
+
+        if not forgetful:
+            self._memory = memory
+
+        outputs = self._extract_outputs(memory=memory, in_args=in_args, ctx=ctx)
+        for output in outputs:
+            yield ProcOutputEvent(data=output, name=self.name)
+
+    def _print_messages(
+        self, messages: Sequence[Message], ctx: RunContext[CtxT] | None = None
     ) -> None:
         if ctx:
-            ctx.printer.print_llm_messages(messages, agent_id=self.agent_id)
+            ctx.printer.print_llm_messages(messages, agent_name=self.name)
 
-    def _print_sys_msg(
-        self,
-        state: LLMAgentState,
-        prev_mh_len: int,
-        ctx: RunContextWrapper[CtxT] | None = None,
-    ) -> None:
-        if (
-            len(state.message_history) == 1
-            and prev_mh_len == 0
-            and isinstance(state.message_history[0][0], SystemMessage)
-        ):
-            self._print_msgs([state.message_history[0][0]], ctx=ctx)
+    # -- Decorators for custom implementations --
 
-    # -- Handlers for custom implementations --
-
-    def format_sys_args_handler(
-        self, func: FormatSystemArgsHandler[CtxT]
-    ) -> FormatSystemArgsHandler[CtxT]:
-        self._prompt_builder.format_sys_args_impl = func
+    def make_sys_prompt(
+        self, func: MakeSystemPromptHandler[CtxT]
+    ) -> MakeSystemPromptHandler[CtxT]:
+        self._prompt_builder.make_sys_prompt_impl = func
 
         return func
 
-    def format_in_args_handler(
-        self, func: FormatInputArgsHandler[InT, CtxT]
-    ) -> FormatInputArgsHandler[InT, CtxT]:
-        self._prompt_builder.format_in_args_impl = func
+    def make_in_content(
+        self, func: MakeInputContentHandler[InT_contra, CtxT]
+    ) -> MakeInputContentHandler[InT_contra, CtxT]:
+        self._prompt_builder.make_in_content_impl = func
 
         return func
 
-    def parse_output_handler(
-        self, func: ParseOutputHandler[InT, OutT, CtxT]
-    ) -> ParseOutputHandler[InT, OutT, CtxT]:
+    def parse_output(
+        self, func: ParseOutputHandler[InT_contra, OutT_co, CtxT]
+    ) -> ParseOutputHandler[InT_contra, OutT_co, CtxT]:
         self._parse_output_impl = func
 
         return func
 
-    def set_agent_state_handler(self, func: SetAgentState) -> SetAgentState:
-        self._make_custom_agent_state_impl = func
+    def set_memory(self, func: SetMemoryHandler) -> SetMemoryHandler:
+        self._set_memory_impl = func
 
         return func
 
-    def exit_tool_call_loop_handler(
+    def manage_memory(
+        self, func: ManageMemoryHandler[CtxT]
+    ) -> ManageMemoryHandler[CtxT]:
+        self._policy_executor.manage_memory_impl = func
+
+        return func
+
+    def exit_tool_call_loop(
         self, func: ExitToolCallLoopHandler[CtxT]
     ) -> ExitToolCallLoopHandler[CtxT]:
-        self._tool_orchestrator.exit_tool_call_loop_impl = func
-
-        return func
-
-    def manage_agent_state_handler(
-        self, func: ManageAgentStateHandler[CtxT]
-    ) -> ManageAgentStateHandler[CtxT]:
-        self._tool_orchestrator.manage_agent_state_impl = func
+        self._policy_executor.exit_tool_call_loop_impl = func
 
         return func
 
@@ -403,78 +359,78 @@ class LLMAgent(
         cur_cls = type(self)
         base_cls = LLMAgent[Any, Any, Any]
 
-        if cur_cls._format_sys_args is not base_cls._format_sys_args:  # noqa: SLF001
-            self._prompt_builder.format_sys_args_impl = self._format_sys_args
+        if cur_cls._make_sys_prompt_fn is not base_cls._make_sys_prompt_fn:  # noqa: SLF001
+            self._prompt_builder.make_sys_prompt_impl = self._make_sys_prompt_fn
 
-        if cur_cls._format_in_args is not base_cls._format_in_args:  # noqa: SLF001
-            self._prompt_builder.format_in_args_impl = self._format_in_args
+        if cur_cls._make_in_content_fn is not base_cls._make_in_content_fn:  # noqa: SLF001
+            self._prompt_builder.make_in_content_impl = self._make_in_content_fn
 
-        if cur_cls._set_agent_state is not base_cls._set_agent_state:  # noqa: SLF001
-            self._set_agent_state_impl = self._set_agent_state
+        if cur_cls._set_memory_fn is not base_cls._set_memory_fn:  # noqa: SLF001
+            self._set_memory_impl = self._set_memory_fn
 
-        if cur_cls._manage_agent_state is not base_cls._manage_agent_state:  # noqa: SLF001
-            self._tool_orchestrator.manage_agent_state_impl = self._manage_agent_state
+        if cur_cls._manage_memory_fn is not base_cls._manage_memory_fn:  # noqa: SLF001
+            self._policy_executor.manage_memory_impl = self._manage_memory_fn
 
         if (
-            cur_cls._exit_tool_call_loop is not base_cls._exit_tool_call_loop  # noqa: SLF001
+            cur_cls._exit_tool_call_loop_fn is not base_cls._exit_tool_call_loop_fn  # noqa: SLF001
         ):
-            self._tool_orchestrator.exit_tool_call_loop_impl = self._exit_tool_call_loop
+            self._policy_executor.exit_tool_call_loop_impl = (
+                self._exit_tool_call_loop_fn
+            )
 
-        self._parse_output_impl: ParseOutputHandler[InT, OutT, CtxT] | None = None
+        self._parse_output_impl: (
+            ParseOutputHandler[InT_contra, OutT_co, CtxT] | None
+        ) = None
 
-    def _format_sys_args(
-        self,
-        sys_args: LLMPromptArgs,
-        *,
-        ctx: RunContextWrapper[CtxT] | None = None,
-    ) -> LLMFormattedSystemArgs:
+    def _make_sys_prompt_fn(
+        self, sys_args: LLMPromptArgs | None, *, ctx: RunContext[CtxT] | None = None
+    ) -> str:
         raise NotImplementedError(
             "LLMAgent._format_sys_args must be overridden by a subclass "
             "if it's intended to be used as the system arguments formatter."
         )
 
-    def _format_in_args(
+    def _make_in_content_fn(
         self,
         *,
-        usr_args: LLMPromptArgs,
-        in_args: InT,
+        in_args: InT_contra | None = None,
+        usr_args: LLMPromptArgs | None = None,
         batch_idx: int = 0,
-        ctx: RunContextWrapper[CtxT] | None = None,
-    ) -> LLMFormattedArgs:
+        ctx: RunContext[CtxT] | None = None,
+    ) -> Content:
         raise NotImplementedError(
             "LLMAgent._format_in_args must be overridden by a subclass"
         )
 
-    def _set_agent_state(
+    def _set_memory_fn(
         self,
-        cur_state: LLMAgentState,
-        *,
-        in_state: AgentState | None,
-        sys_prompt: LLMPrompt | None,
-        ctx: RunContextWrapper[Any] | None,
-    ) -> LLMAgentState:
+        prev_memory: LLMAgentMemory,
+        in_args: InT_contra | Sequence[InT_contra] | None = None,
+        sys_prompt: LLMPrompt | None = None,
+        ctx: RunContext[Any] | None = None,
+    ) -> LLMAgentMemory:
         raise NotImplementedError(
-            "LLMAgent._set_agent_state_handler must be overridden by a subclass"
+            "LLMAgent._set_memory must be overridden by a subclass"
         )
 
-    def _exit_tool_call_loop(
+    def _exit_tool_call_loop_fn(
         self,
-        conversation: Conversation,
+        conversation: Messages,
         *,
-        ctx: RunContextWrapper[CtxT] | None = None,
+        ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> bool:
         raise NotImplementedError(
-            "LLMAgent._tool_call_loop_exit must be overridden by a subclass"
+            "LLMAgent._exit_tool_call_loop must be overridden by a subclass"
         )
 
-    def _manage_agent_state(
+    def _manage_memory_fn(
         self,
-        state: LLMAgentState,
+        memory: LLMAgentMemory,
         *,
-        ctx: RunContextWrapper[CtxT] | None = None,
+        ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> None:
         raise NotImplementedError(
-            "LLMAgent._manage_agent_state must be overridden by a subclass"
+            "LLMAgent._manage_memory must be overridden by a subclass"
         )

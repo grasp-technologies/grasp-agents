@@ -7,7 +7,7 @@ import yaml
 from pydantic import BaseModel, Field
 from termcolor import colored
 
-from .typing.message import AssistantMessage, Message, Usage
+from .typing.completion import Completion, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -58,20 +58,20 @@ class UsageTracker(BaseModel):
         usage.cost = (input_cost + output_cost + reasoning_cost + cached_cost) / 1e6
 
     def update(
-        self, messages: Sequence[Message], model_name: str | None = None
+        self, completions: Sequence[Completion], model_name: str | None = None
     ) -> None:
         if model_name is not None and self.costs_dict is not None:
             model_costs_dict = self.costs_dict.get(model_name.split(":", 1)[-1])
         else:
             model_costs_dict = None
 
-        for message in messages:
-            if isinstance(message, AssistantMessage) and message.usage is not None:
+        for completion in completions:
+            if completion.usage is not None:
                 if model_costs_dict is not None:
                     self._add_cost_to_usage(
-                        usage=message.usage, model_costs_dict=model_costs_dict
+                        usage=completion.usage, model_costs_dict=model_costs_dict
                     )
-                self.total_usage += message.usage
+                self.total_usage += completion.usage
 
     def reset(self) -> None:
         self.total_usage = Usage()

@@ -24,9 +24,12 @@
         ],
         "words": [
                 "AILLM",
-                "pbar",
                 "coro",
-                "ipynb"
+                "ipynb",
+                "logp",
+                "pbar",
+                "subprocs",
+                "templ"
         ],
         "patterns": [
                 {

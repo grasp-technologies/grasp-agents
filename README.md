@@ -22,7 +22,7 @@
 
 - Clean formulation of agents as generic entities over:
   - I/O schemas
-  - Agent state
+  - Memory
   - Shared context
 - Transparent implementation of common agentic patterns:
   - Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
@@ -34,16 +34,15 @@
 
 ## Project Structure
 
-- `base_agent.py`, `llm_agent.py`, `comm_agent.py`: Core agent class implementations.
-- `agent_message.py`, `agent_message_pool.py`: Messaging and message pool management.
-- `llm_agent_state.py`: State management for LLM agents.
-- `tool_orchestrator.py`: Orchestration of tools used by agents.
+- `processor.py`, `comm_processor.py`, `llm_agent.py`: Core processor and agent class implementations.
+- `packet.py`, `packet_pool.py`: Communication management.
+- `llm_policy_executor.py`: LLM actions and tool call loops.
 - `prompt_builder.py`: Tools for constructing prompts.
-- `workflow/`: Modules for defining and managing agent workflows.
-- `cloud_llm.py`, `llm.py`: LLM integration and base LLM functionalities.
+- `workflow/`: Modules for defining and managing static agent workflows.
+- `llm.py`, `cloud_llm.py`: LLM integration and base LLM functionalities.
 - `openai/`: Modules specific to OpenAI API integration.
-- `memory.py`: Memory management for agents (currently only message history).
-- `run_context.py`: Context management for agent runs.
+- `memory.py`, `llm_agent_memory.py`: Memory management.
+- `run_context.py`: Shared context management for agent runs.
 - `usage_tracker.py`: Tracking of API usage and costs.
 - `costs_dict.yaml`: Dictionary for cost tracking (update if needed).
 - `rate_limiting/`: Basic rate limiting tools.
@@ -95,7 +94,6 @@ Create a script, e.g., `problem_recommender.py`:
 
 ```python
 import asyncio
-import re
 from pathlib import Path
 from typing import Any
 
@@ -103,11 +101,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from grasp_agents.grasp_logging import setup_logging
-from grasp_agents.llm_agent import LLMAgent
-from grasp_agents.openai.openai_llm import OpenAILLM, OpenAILLMSettings
-from grasp_agents.run_context import RunContextWrapper
-from grasp_agents.typing.message import Conversation
-from grasp_agents.typing.tool import BaseTool
+from grasp_agents.openai import OpenAILLM, OpenAILLMSettings
+from grasp_agents import LLMAgent, BaseTool, RunContext
 
 load_dotenv()
 
@@ -119,70 +114,66 @@ setup_logging(
 )
 
 sys_prompt_react = """
-Your task is to suggest an exciting stats problem to a student.
-Ask the student about their education, interests, and preferences, then suggest a problem tailored to them.
+Your task is to suggest an exciting stats problem to the student. 
+You should first ask the student about their education, interests, and preferences, then suggest a problem tailored specifically to them. 
 
 # Instructions
+* Use the provided tool to ask questions.
 * Ask questions one by one.
 * Provide your thinking before asking a question and after receiving a reply.
-* The problem must be enclosed in <PROBLEM> tags.
+* Do not include your exact question as part of your thinking.
+* The problem must have all the necessary data.
 """
 
-
+# Tool input must be a Pydantic model to infer the JSON schema used by the LLM APIs
 class TeacherQuestion(BaseModel):
-    question: str = Field(..., description="The question to ask the student.")
+    question: str
 
 
 StudentReply = str
 
 
+ask_student_tool_description = """
+"Ask the student a question and get their reply."
+
+Args:
+    question: str
+        The question to ask the student.
+Returns:
+    reply: str
+        The student's reply to the question.
+"""
+
+
 class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
-    name: str = "ask_student_tool"
-    description: str = "Ask the student a question and get their reply."
+    name: str = "ask_student"
+    description: str = ask_student_tool_description
 
     async def run(
-        self, inp: TeacherQuestion, ctx: RunContextWrapper[Any] | None = None
+        self, inp: TeacherQuestion, ctx: RunContext[Any] | None = None
     ) -> StudentReply:
         return input(inp.question)
 
 
-Problem = str
+class Problem(BaseModel):
+    problem: str
 
 
-teacher = LLMAgent[Any, Problem, None](
-    agent_id="teacher",
+teacher = LLMAgent[None, Problem, None](
+    name="teacher",
     llm=OpenAILLM(
         model_name="openai:gpt-4.1",
-        llm_settings=OpenAILLMSettings(temperature=0.1)
+        llm_settings=OpenAILLMSettings(temperature=0.5),
     ),
     tools=[AskStudentTool()],
-    max_turns=20,
     react_mode=True,
+    final_answer_as_tool_call=True,
     sys_prompt=sys_prompt_react,
-    set_state_strategy="reset",
 )
 
-
-@teacher.exit_tool_call_loop_handler
-def exit_tool_call_loop(
-    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
-) -> bool:
-    return r"<PROBLEM>" in str(conversation[-1].content)
-
-
-@teacher.parse_output_handler
-def parse_output(
-    conversation: Conversation, ctx: RunContextWrapper[Any] | None, **kwargs: Any
-) -> Problem:
-    message = str(conversation[-1].content)
-    matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message, re.DOTALL)
-
-    return matches[0]
-
-
 async def main():
-    ctx = RunContextWrapper[None](print_messages=True)
-    out = await teacher.run(ctx=ctx)
+    ctx = RunContext[None](print_messages=True)
+    out = await teacher.run("start", ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)
 

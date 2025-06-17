@@ -1,58 +1,39 @@
-from collections.abc import Sequence
-from typing import Any, Generic, TypeAlias, TypeVar
+from collections import defaultdict
+from collections.abc import Mapping
+from typing import Any, Generic, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from .printer import Printer
-from .typing.content import ImageData
-from .typing.io import (
-    AgentID,
-    AgentState,
-    InT,
-    LLMPrompt,
-    LLMPromptArgs,
-    OutT,
-    StateT,
-)
+from grasp_agents.typing.completion import Completion
+
+from .printer import ColoringMode, Printer
+from .typing.io import LLMPromptArgs, ProcName
 from .usage_tracker import UsageTracker
 
 
 class RunArgs(BaseModel):
     sys: LLMPromptArgs = Field(default_factory=LLMPromptArgs)
-    usr: LLMPromptArgs | Sequence[LLMPromptArgs] = Field(default_factory=LLMPromptArgs)
+    usr: LLMPromptArgs = Field(default_factory=LLMPromptArgs)
 
     model_config = ConfigDict(extra="forbid")
-
-
-class InteractionRecord(BaseModel, Generic[InT, OutT, StateT]):
-    source_id: str
-    recipient_ids: Sequence[AgentID]
-    state: StateT
-    chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None
-    sys_prompt: LLMPrompt | None = None
-    in_prompt: LLMPrompt | None = None
-    sys_args: LLMPromptArgs | None = None
-    usr_args: LLMPromptArgs | Sequence[LLMPromptArgs] | None = None
-    in_args: InT | Sequence[InT] | None = None
-    outputs: Sequence[OutT]
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-InteractionHistory: TypeAlias = list[InteractionRecord[Any, Any, AgentState]]
 
 
 CtxT = TypeVar("CtxT")
 
 
-class RunContextWrapper(BaseModel, Generic[CtxT]):
-    context: CtxT | None = None
+class RunContext(BaseModel, Generic[CtxT]):
     run_id: str = Field(default_factory=lambda: str(uuid4())[:8], frozen=True)
-    run_args: dict[AgentID, RunArgs] = Field(default_factory=dict)
-    interaction_history: InteractionHistory = Field(default_factory=list)  # type: ignore[valid-type]
+
+    state: CtxT | None = None
+
+    run_args: dict[ProcName, RunArgs] = Field(default_factory=dict)
+    completions: Mapping[ProcName, list[Completion]] = Field(
+        default_factory=lambda: defaultdict(list)
+    )
 
     print_messages: bool = False
+    color_messages_by: ColoringMode = "role"
 
     _usage_tracker: UsageTracker = PrivateAttr()
     _printer: Printer = PrivateAttr()
@@ -60,7 +41,9 @@ class RunContextWrapper(BaseModel, Generic[CtxT]):
     def model_post_init(self, context: Any) -> None:  # noqa: ARG002
         self._usage_tracker = UsageTracker(source_id=self.run_id)
         self._printer = Printer(
-            source_id=self.run_id, print_messages=self.print_messages
+            source_id=self.run_id,
+            print_messages=self.print_messages,
+            color_by=self.color_messages_by,
         )
 
     @property

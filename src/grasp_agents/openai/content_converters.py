@@ -8,10 +8,10 @@ from ..typing.content import (
     ImageData,
 )
 from . import (
-    ChatCompletionContentPartImageParam,
-    ChatCompletionContentPartParam,
-    ChatCompletionContentPartTextParam,
-    ChatCompletionImageURL,
+    OpenAIContentPartImageParam,
+    OpenAIContentPartParam,
+    OpenAIContentPartTextParam,
+    OpenAIImageURL,
 )
 
 BASE64_PREFIX = "data:image/jpeg;base64,"
@@ -26,7 +26,7 @@ def image_data_to_str(image_data: ImageData) -> str:
 
 
 def from_api_content(
-    api_content: str | Iterable[ChatCompletionContentPartParam],
+    api_content: str | Iterable[OpenAIContentPartParam],
 ) -> "Content":
     if isinstance(api_content, str):
         return Content(parts=[ContentPartText(data=api_content)])
@@ -48,7 +48,7 @@ def from_api_content(
                     detail=detail,
                 )
             else:
-                image_data = ImageData.from_url(img_url=url, detail=detail)  # type: ignore
+                image_data = ImageData.from_url(img_url=url, detail=detail)
             content_part = ContentPartImage(data=image_data)
 
         content_parts.append(content_part)  # type: ignore
@@ -58,19 +58,18 @@ def from_api_content(
 
 def to_api_content(
     content: Content,
-) -> Iterable[ChatCompletionContentPartParam]:
-    api_content: list[ChatCompletionContentPartParam] = []
+) -> Iterable[OpenAIContentPartParam]:
+    api_content: list[OpenAIContentPartParam] = []
     for content_part in content.parts:
-        api_content_part: ChatCompletionContentPartParam
+        api_content_part: OpenAIContentPartParam
         if isinstance(content_part, ContentPartText):
-            api_content_part = ChatCompletionContentPartTextParam(
-                type="text",
-                text=content_part.data,
+            api_content_part = OpenAIContentPartTextParam(
+                type="text", text=content_part.data
             )
         else:
-            api_content_part = ChatCompletionContentPartImageParam(
+            api_content_part = OpenAIContentPartImageParam(
                 type="image_url",
-                image_url=ChatCompletionImageURL(
+                image_url=OpenAIImageURL(
                     url=image_data_to_str(content_part.data),
                     detail=content_part.data.detail,
                 ),
