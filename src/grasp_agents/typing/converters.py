@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
 from typing import Any
 
 from pydantic import BaseModel
 
-from .completion import Completion, CompletionChunk, Usage
+from .completion import Completion, Usage
+from .completion_chunk import CompletionChunk
 from .content import Content
 from .message import AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage
 from .tool import BaseTool, ToolChoice
@@ -105,11 +105,4 @@ class Converters(ABC):
     @staticmethod
     @abstractmethod
     def from_completion_chunk(raw_chunk: Any, **kwargs: Any) -> CompletionChunk:
-        pass
-
-    @staticmethod
-    @abstractmethod
-    def from_completion_chunk_iterator(
-        raw_chunk_iterator: AsyncIterator[Any], **kwargs: Any
-    ) -> AsyncIterator[CompletionChunk]:
         pass

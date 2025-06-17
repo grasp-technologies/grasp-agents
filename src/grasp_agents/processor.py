@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, cast, final
 
 from pydantic import BaseModel, TypeAdapter
@@ -7,7 +7,8 @@ from pydantic import BaseModel, TypeAdapter
 from .generics_utils import AutoInstanceAttributesMixin
 from .packet import Packet
 from .run_context import CtxT, RunContext
-from .typing.io import InT_contra, MemT_co, OutT_co, ProcessorName
+from .typing.events import Event, PacketEvent, ProcOutputEvent
+from .typing.io import InT_contra, MemT_co, OutT_co, ProcName
 from .typing.tool import BaseTool
 
 
@@ -20,7 +21,7 @@ class Processor(
     }
 
     @abstractmethod
-    def __init__(self, name: ProcessorName, **kwargs: Any) -> None:
+    def __init__(self, name: ProcName, **kwargs: Any) -> None:
         self._in_type: type[InT_contra]
         self._out_type: type[OutT_co]
 
@@ -29,7 +30,7 @@ class Processor(
         self._in_type_adapter: TypeAdapter[InT_contra] = TypeAdapter(self._in_type)
         self._out_type_adapter: TypeAdapter[OutT_co] = TypeAdapter(self._out_type)
 
-        self._name: ProcessorName = name
+        self._name: ProcName = name
         self._memory: MemT_co
 
     @property
@@ -42,20 +43,19 @@ class Processor(
         return self._out_type
 
     @property
-    def name(self) -> ProcessorName:
+    def name(self) -> ProcName:
         return self._name
 
     @property
     def memory(self) -> MemT_co:
         return self._memory
 
-    @staticmethod
-    def _validate_inputs(
+    def _validate_and_resolve_inputs(
+        self,
         chat_inputs: Any | None = None,
         in_packet: Packet[InT_contra] | None = None,
         in_args: InT_contra | Sequence[InT_contra] | None = None,
-        entry_point: bool = False,
-    ) -> None:
+    ) -> Sequence[InT_contra] | None:
         multiple_inputs_err_message = (
             "Only one of chat_inputs, in_args, or in_message must be provided."
         )
@@ -66,30 +66,46 @@ class Processor(
         if in_args is not None and in_packet is not None:
             raise ValueError(multiple_inputs_err_message)
 
-        if entry_point and in_packet is not None:
-            raise ValueError(
-                "Entry point agent cannot receive packets from other agents."
-            )
+        resolved_in_args: Sequence[InT_contra] | None = None
+        if in_packet is not None:
+            resolved_in_args = in_packet.payloads
+        elif isinstance(in_args, self._in_type):
+            resolved_in_args = cast("Sequence[InT_contra]", [in_args])
+        elif in_args is None:
+            resolved_in_args = in_args
+        else:
+            resolved_in_args = cast("Sequence[InT_contra]", in_args)
+
+        return resolved_in_args
 
     async def _process(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_args: InT_contra | Sequence[InT_contra] | None = None,
-        entry_point: bool = False,
+        in_args: Sequence[InT_contra] | None = None,
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> Sequence[OutT_co]:
         assert in_args is not None, (
             "Default implementation of _process requires in_args"
         )
-        outputs: Sequence[OutT_co]
-        if not isinstance(in_args, Sequence):
-            outputs = cast("Sequence[OutT_co]", [in_args])
-        else:
-            outputs = cast("Sequence[OutT_co]", in_args)
 
-        return outputs
+        return cast("Sequence[OutT_co]", in_args)
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: Sequence[InT_contra] | None = None,
+        forgetful: bool = False,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        assert in_args is not None, (
+            "Default implementation of _process requires in_args"
+        )
+        outputs = cast("Sequence[OutT_co]", in_args)
+        for out in outputs:
+            yield ProcOutputEvent(data=out, name=self.name)
 
     def _validate_outputs(self, out_payloads: Sequence[OutT_co]) -> Sequence[OutT_co]:
         return [
@@ -102,21 +118,15 @@ class Processor(
         *,
         in_packet: Packet[InT_contra] | None = None,
         in_args: InT_contra | Sequence[InT_contra] | None = None,
-        entry_point: bool = False,
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
-        self._validate_inputs(
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            in_args=in_args,
-            entry_point=entry_point,
+        resolved_in_args = self._validate_and_resolve_inputs(
+            chat_inputs=chat_inputs, in_packet=in_packet, in_args=in_args
         )
-        resolved_in_args = in_packet.payloads if in_packet else in_args
         outputs = await self._process(
             chat_inputs=chat_inputs,
             in_args=resolved_in_args,
-            entry_point=entry_point,
             forgetful=forgetful,
             ctx=ctx,
         )
@@ -124,11 +134,41 @@ class Processor(
 
         return Packet(payloads=val_outputs, sender=self.name)
 
+    async def run_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_packet: Packet[InT_contra] | None = None,
+        in_args: InT_contra | Sequence[InT_contra] | None = None,
+        forgetful: bool = False,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        resolved_in_args = self._validate_and_resolve_inputs(
+            chat_inputs=chat_inputs, in_packet=in_packet, in_args=in_args
+        )
+
+        outputs: Sequence[OutT_co] = []
+        async for output_event in self._process_stream(
+            chat_inputs=chat_inputs,
+            in_args=resolved_in_args,
+            forgetful=forgetful,
+            ctx=ctx,
+        ):
+            if isinstance(output_event, ProcOutputEvent):
+                outputs.append(output_event.data)
+            else:
+                yield output_event
+
+        val_outputs = self._validate_outputs(outputs)
+        out_packet = Packet[OutT_co](payloads=val_outputs, sender=self.name)
+
+        yield PacketEvent(data=out_packet, name=self.name)
+
     @final
     def as_tool(
-        self, tool_name: str, tool_description: str, tool_strict: bool = True
+        self, tool_name: str, tool_description: str
     ) -> BaseTool[InT_contra, OutT_co, Any]:  # type: ignore[override]
-        # Will check if InT is a BaseModel at runtime
+        # TODO: stream tools
         processor_instance = self
         in_type = processor_instance.in_type
         out_type = processor_instance.out_type
@@ -141,16 +181,12 @@ class Processor(
         class ProcessorTool(BaseTool[in_type, out_type, Any]):
             name: str = tool_name
             description: str = tool_description
-            strict: bool | None = tool_strict
 
             async def run(
                 self, inp: InT_contra, ctx: RunContext[CtxT] | None = None
             ) -> OutT_co:
                 result = await processor_instance.run(
-                    in_args=in_type.model_validate(inp),
-                    entry_point=False,
-                    forgetful=True,
-                    ctx=ctx,
+                    in_args=in_type.model_validate(inp), forgetful=True, ctx=ctx
                 )
 
                 return result.payloads[0]

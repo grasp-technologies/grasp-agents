@@ -32,8 +32,7 @@ class AssistantMessage(MessageBase):
 
 class UserMessage(MessageBase):
     role: Literal[Role.USER] = Role.USER
-    content: Content
-    name: str | None = None
+    content: Content | str
 
     @classmethod
     def from_text(cls, text: str, name: str | None = None) -> "UserMessage":

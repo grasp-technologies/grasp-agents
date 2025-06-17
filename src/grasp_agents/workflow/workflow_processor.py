@@ -7,7 +7,7 @@ from ..packet import Packet
 from ..packet_pool import PacketPool
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
-from ..typing.io import InT_contra, OutT_co, ProcessorName
+from ..typing.io import InT_contra, OutT_co, ProcName
 
 
 class WorkflowProcessor(
@@ -22,48 +22,48 @@ class WorkflowProcessor(
 
     def __init__(
         self,
-        name: ProcessorName,
-        subprocessors: Sequence[Processor[Any, Any, Any, CtxT]],
-        start_processor: Processor[InT_contra, Any, Any, CtxT],
-        end_processor: Processor[Any, OutT_co, Any, CtxT],
+        name: ProcName,
+        subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
+        start_proc: Processor[InT_contra, Any, Any, CtxT],
+        end_proc: Processor[Any, OutT_co, Any, CtxT],
         packet_pool: PacketPool[CtxT] | None = None,
-        recipients: list[ProcessorName] | None = None,
+        recipients: list[ProcName] | None = None,
     ) -> None:
         super().__init__(name=name, packet_pool=packet_pool, recipients=recipients)
 
-        if len(subprocessors) < 2:
+        if len(subprocs) < 2:
             raise ValueError("At least two subprocessors are required")
-        if start_processor not in subprocessors:
+        if start_proc not in subprocs:
             raise ValueError("Start subprocessor must be in the subprocessors list")
-        if end_processor not in subprocessors:
+        if end_proc not in subprocs:
             raise ValueError("End subprocessor must be in the subprocessors list")
 
-        if start_processor.in_type != self.in_type:
+        if start_proc.in_type != self.in_type:
             raise ValueError(
-                f"Start subprocessor's input type {start_processor.in_type} does not "
+                f"Start subprocessor's input type {start_proc.in_type} does not "
                 f"match workflow's input type {self._in_type}"
             )
-        if end_processor.out_type != self.out_type:
+        if end_proc.out_type != self.out_type:
             raise ValueError(
-                f"End subprocessor's output type {end_processor.out_type} does not "
+                f"End subprocessor's output type {end_proc.out_type} does not "
                 f"match workflow's output type {self._out_type}"
             )
 
-        self._subprocessors = subprocessors
-        self._start_processor = start_processor
-        self._end_processor = end_processor
+        self._subprocs = subprocs
+        self._start_proc = start_proc
+        self._end_proc = end_proc
 
     @property
-    def subprocessors(self) -> Sequence[Processor[Any, Any, Any, CtxT]]:
-        return self._subprocessors
+    def subprocs(self) -> Sequence[Processor[Any, Any, Any, CtxT]]:
+        return self._subprocs
 
     @property
-    def start_processor(self) -> Processor[InT_contra, Any, Any, CtxT]:
-        return self._start_processor
+    def start_proc(self) -> Processor[InT_contra, Any, Any, CtxT]:
+        return self._start_proc
 
     @property
-    def end_processor(self) -> Processor[Any, OutT_co, Any, CtxT]:
-        return self._end_processor
+    def end_proc(self) -> Processor[Any, OutT_co, Any, CtxT]:
+        return self._end_proc
 
     @abstractmethod
     async def run(
@@ -73,7 +73,6 @@ class WorkflowProcessor(
         in_packet: Packet[InT_contra] | None = None,
         in_args: InT_contra | Sequence[InT_contra] | None = None,
         ctx: RunContext[CtxT] | None = None,
-        entry_point: bool = False,
         forgetful: bool = False,
     ) -> Packet[OutT_co]:
         pass

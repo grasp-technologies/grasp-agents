@@ -15,7 +15,13 @@ from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk as OpenAICompletionChunk,
 )
 from openai.types.chat.chat_completion_chunk import (
+    Choice as CompletionChunkChoice,
+)
+from openai.types.chat.chat_completion_chunk import (
     Choice as OpenAIChunkChoice,
+)
+from openai.types.chat.chat_completion_chunk import (
+    ChoiceDelta as CompletionChunkChoiceDelta,
 )
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDelta as OpenAIChunkChoiceDelta,
@@ -92,16 +98,8 @@ from openai.types.chat.parsed_chat_completion import (
 from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
-from openai.types.shared_params.response_format_json_object import (
-    ResponseFormatJSONObject as OpenAIResponseFormatJSONObject,
-)
-from openai.types.shared_params.response_format_json_schema import (
-    ResponseFormatJSONSchema as OpenAIResponseFormatJSONSchema,
-)
-from openai.types.shared_params.response_format_text import (
-    ResponseFormatText as OpenAIResponseFormatText,
-)
 
+# from openai.beta.types.chat.
 from .openai_llm import OpenAILLM, OpenAILLMSettings
 
 __all__ = ["OpenAILLM", "OpenAILLMSettings"]

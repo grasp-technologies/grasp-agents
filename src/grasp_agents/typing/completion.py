@@ -1,13 +1,15 @@
-from abc import ABC
-from typing import Literal
+import time
+from typing import Literal, TypeAlias
 from uuid import uuid4
 
-from openai.types.chat.chat_completion import (
-    ChoiceLogprobs as ChatCompletionChoiceLogprobs,
-)
+from openai.types.chat.chat_completion import ChoiceLogprobs as CompletionChoiceLogprobs
 from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt
 
 from .message import AssistantMessage
+
+FinishReason: TypeAlias = Literal[
+    "stop", "length", "tool_calls", "content_filter", "function_call"
+]
 
 
 class Usage(BaseModel):
@@ -48,12 +50,9 @@ class Usage(BaseModel):
 
 class CompletionChoice(BaseModel):
     message: AssistantMessage
-    finish_reason: (
-        Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
-        | None
-    )
+    finish_reason: FinishReason | None
     index: int
-    logprobs: ChatCompletionChoiceLogprobs | None = None
+    logprobs: CompletionChoiceLogprobs | None = None
 
 
 class CompletionError(BaseModel):
@@ -62,11 +61,11 @@ class CompletionError(BaseModel):
     code: int
 
 
-class Completion(BaseModel, ABC):
+class Completion(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     name: str | None = None
-    created: int
     system_fingerprint: str | None = None
     choices: list[CompletionChoice]
     usage: Usage | None = None
@@ -75,13 +74,3 @@ class Completion(BaseModel, ABC):
     @property
     def messages(self) -> list[AssistantMessage]:
         return [choice.message for choice in self.choices if choice.message]
-
-
-class CompletionChunk(BaseModel):
-    # TODO: add choices and tool calls
-    id: str
-    created: int
-    model: str
-    system_fingerprint: str | None = None
-    delta: str | None = None
-    name: str | None = None

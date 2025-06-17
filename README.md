@@ -115,13 +115,15 @@ setup_logging(
 )
 
 sys_prompt_react = """
-Your task is to suggest an exciting stats problem to a student.
-Ask the student about their education, interests, and preferences, then suggest a problem tailored to them.
+Your task is to suggest an exciting stats problem to the student. 
+You should first ask the student about their education, interests, and preferences, then suggest a problem tailored specifically to them. 
 
 # Instructions
+* Use the provided tool to ask questions.
 * Ask questions one by one.
 * Provide your thinking before asking a question and after receiving a reply.
-* The problem must be enclosed in <PROBLEM> tags.
+* Do not include your exact question as part of your thinking.
+* The problem must have all the necessary data.
 """
 
 
@@ -151,29 +153,10 @@ teacher = LLMAgent[None, Problem, None](
         model_name="openai:gpt-4.1", llm_settings=OpenAILLMSettings(temperature=0.1)
     ),
     tools=[AskStudentTool()],
-    max_turns=20,
     react_mode=True,
+    final_answer_as_tool_call=True,
     sys_prompt=sys_prompt_react,
-    reset_memory_on_run=True,
 )
-
-
-@teacher.exit_tool_call_loop
-def exit_tool_call_loop(
-    conversation: Messages, ctx: RunContext[Any] | None, **kwargs: Any
-) -> bool:
-    return r"<PROBLEM>" in str(conversation[-1].content)
-
-
-@teacher.parse_output
-def parse_output(
-    conversation: Messages, ctx: RunContext[Any] | None, **kwargs: Any
-) -> Problem:
-    message = str(conversation[-1].content)
-    matches = re.findall(r"<PROBLEM>(.*?)</PROBLEM>", message, re.DOTALL)
-
-    return matches[0]
-
 
 async def main():
     ctx = RunContext[None](print_messages=True)

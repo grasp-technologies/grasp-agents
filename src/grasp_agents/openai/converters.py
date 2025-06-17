@@ -1,16 +1,16 @@
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel
 
-from ..typing.completion import Completion, CompletionChunk, Usage
+from ..typing.completion import Completion, Usage
+from ..typing.completion_chunk import CompletionChunk
 from ..typing.content import Content
 from ..typing.converters import Converters
 from ..typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
 from ..typing.tool import BaseTool, ToolChoice
 from . import (
     OpenAIAssistantMessageParam,
-    OpenAIAsyncStream,  # type: ignore[import]
     OpenAICompletion,
     OpenAICompletionChunk,
     OpenAICompletionUsage,
@@ -22,10 +22,9 @@ from . import (
     OpenAIToolParam,
     OpenAIUserMessageParam,
 )
+from .completion_chunk_converters import from_api_completion_chunk
 from .completion_converters import (
     from_api_completion,
-    from_api_completion_chunk,
-    from_api_completion_chunk_iterator,
     from_api_completion_usage,
     to_api_completion,
 )
@@ -97,8 +96,10 @@ class OpenAIConverters(Converters):
         return from_api_tool_message(raw_message, name=name, **kwargs)
 
     @staticmethod
-    def to_tool(tool: BaseTool[BaseModel, Any, Any], **kwargs: Any) -> OpenAIToolParam:
-        return to_api_tool(tool, **kwargs)
+    def to_tool(
+        tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None, **kwargs: Any
+    ) -> OpenAIToolParam:
+        return to_api_tool(tool, strict=strict, **kwargs)
 
     @staticmethod
     def to_tool_choice(
@@ -137,13 +138,3 @@ class OpenAIConverters(Converters):
         raw_chunk: OpenAICompletionChunk, name: str | None = None, **kwargs: Any
     ) -> CompletionChunk:
         return from_api_completion_chunk(raw_chunk, name=name, **kwargs)
-
-    @staticmethod
-    def from_completion_chunk_iterator(  # type: ignore[override]
-        raw_chunk_iterator: OpenAIAsyncStream[OpenAICompletionChunk],
-        name: str | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[CompletionChunk]:
-        return from_api_completion_chunk_iterator(
-            raw_chunk_iterator, name=name, **kwargs
-        )

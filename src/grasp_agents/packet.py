@@ -4,16 +4,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .typing.io import ProcessorName
+from .typing.io import ProcName
 
 _PayloadT_co = TypeVar("_PayloadT_co", covariant=True)
 
 
 class Packet(BaseModel, Generic[_PayloadT_co]):
+    id: str = Field(default_factory=lambda: str(uuid4())[:8])
     payloads: Sequence[_PayloadT_co]
-    sender: ProcessorName
-    recipients: Sequence[ProcessorName] = Field(default_factory=list)
-    message_id: str = Field(default_factory=lambda: str(uuid4())[:8])
+    sender: ProcName
+    recipients: Sequence[ProcName] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

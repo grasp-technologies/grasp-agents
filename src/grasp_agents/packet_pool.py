@@ -4,7 +4,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from .packet import Packet
 from .run_context import CtxT, RunContext
-from .typing.io import ProcessorName
+from .typing.io import ProcName
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,9 @@ class PacketHandler(Protocol[_PayloadT_contra, CtxT]):
 
 class PacketPool(Generic[CtxT]):
     def __init__(self) -> None:
-        self._queues: dict[ProcessorName, asyncio.Queue[Packet[Any]]] = {}
-        self._packet_handlers: dict[ProcessorName, PacketHandler[Any, CtxT]] = {}
-        self._tasks: dict[ProcessorName, asyncio.Task[None]] = {}
+        self._queues: dict[ProcName, asyncio.Queue[Packet[Any]]] = {}
+        self._packet_handlers: dict[ProcName, PacketHandler[Any, CtxT]] = {}
+        self._tasks: dict[ProcName, asyncio.Task[None]] = {}
 
     async def post(self, packet: Packet[Any]) -> None:
         for recipient_id in packet.recipients:
@@ -34,7 +34,7 @@ class PacketPool(Generic[CtxT]):
 
     def register_packet_handler(
         self,
-        processor_name: ProcessorName,
+        processor_name: ProcName,
         handler: PacketHandler[Any, CtxT],
         ctx: RunContext[CtxT] | None = None,
         **run_kwargs: Any,
@@ -48,7 +48,7 @@ class PacketPool(Generic[CtxT]):
 
     async def _handle_packets(
         self,
-        processor_name: ProcessorName,
+        processor_name: ProcName,
         ctx: RunContext[CtxT] | None = None,
         **run_kwargs: Any,
     ) -> None:
@@ -74,7 +74,7 @@ class PacketPool(Generic[CtxT]):
                     f"Unexpected error in processing loop for {processor_name}"
                 )
 
-    async def unregister_packet_handler(self, processor_name: ProcessorName) -> None:
+    async def unregister_packet_handler(self, processor_name: ProcName) -> None:
         if task := self._tasks.get(processor_name):
             task.cancel()
             try:

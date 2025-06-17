@@ -3,7 +3,7 @@ import asyncio
 import json
 import re
 from collections.abc import Coroutine, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from logging import getLogger
 from pathlib import Path
 from typing import Any, TypeVar, overload
@@ -126,7 +126,7 @@ def read_contents_from_file(
             return Path(file_path).read_bytes()
         return Path(file_path).read_text()
     except FileNotFoundError:
-        logger.error(f"File {file_path} not found.")
+        logger.exception(f"File {file_path} not found.")
         return ""
 
 
@@ -157,4 +157,4 @@ async def asyncio_gather_with_pbar(
 
 
 def get_timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    TypeAlias,
+    TypeVar,
+)
 
 from pydantic import BaseModel, PrivateAttr, TypeAdapter
 
@@ -43,8 +51,12 @@ class BaseTool(
     _in_type: type[_InT_contra] = PrivateAttr()
     _out_type: type[_OutT_co] = PrivateAttr()
 
-    # Supported by OpenAI API
-    strict: bool | None = None
+    # _in_type_adapter: TypeAdapter[_InT_contra] = PrivateAttr()
+    # _out_type_adapter: TypeAdapter[_OutT_co] = PrivateAttr()
+
+    # def model_post_init(self, context: Any) -> None:
+    #     self._in_type_adapter = TypeAdapter(self._in_type)
+    #     self._out_type_adapter = TypeAdapter(self._out_type)
 
     @property
     def in_type(self) -> type[_InT_contra]:  # type: ignore[reportInvalidTypeVarUse]
@@ -55,6 +67,14 @@ class BaseTool(
     def out_type(self) -> type[_OutT_co]:
         return self._out_type
 
+    # @property
+    # def in_type_adapter(self) -> TypeAdapter[_InT_contra]:
+    #     return self._in_type_adapter
+
+    # @property
+    # def out_type_adapter(self) -> TypeAdapter[_OutT_co]:
+    #     return self._out_type_adapter
+
     @abstractmethod
     async def run(
         self, inp: _InT_contra, ctx: RunContext[CtxT] | None = None
@@ -64,11 +84,14 @@ class BaseTool(
     async def __call__(
         self, ctx: RunContext[CtxT] | None = None, **kwargs: Any
     ) -> _OutT_co:
-        result = await self.run(self._in_type(**kwargs), ctx=ctx)
+        input_args = TypeAdapter(self._in_type).validate_python(kwargs)
+        output = await self.run(input_args, ctx=ctx)
 
-        return TypeAdapter(self._out_type).validate_python(result)
+        return TypeAdapter(self._out_type).validate_python(output)
 
 
-ToolChoice: TypeAlias = (
-    Literal["none", "auto", "required"] | BaseTool[BaseModel, Any, Any]
-)
+class NamedToolChoice(BaseModel):
+    name: str
+
+
+ToolChoice: TypeAlias = Literal["none", "auto", "required"] | NamedToolChoice

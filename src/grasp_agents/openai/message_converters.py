@@ -1,5 +1,6 @@
 from typing import TypeAlias
 
+from ..typing.content import Content
 from ..typing.message import (
     AssistantMessage,
     SystemMessage,
@@ -40,7 +41,11 @@ def from_api_user_message(
 
 
 def to_api_user_message(message: UserMessage) -> OpenAIUserMessageParam:
-    api_content = to_api_content(message.content)
+    api_content = (
+        to_api_content(message.content)
+        if isinstance(message.content, Content)
+        else message.content
+    )
     api_name = message.name
     api_message = OpenAIUserMessageParam(role="user", content=api_content)
     if api_name is not None:

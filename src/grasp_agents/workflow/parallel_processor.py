@@ -8,7 +8,7 @@ from ..packet import Packet
 from ..packet_pool import PacketPool
 from ..processor import Processor
 from ..run_context import CtxT
-from ..typing.io import InT_contra, OutT_co, ProcessorName
+from ..typing.io import InT_contra, OutT_co, ProcName
 
 
 class ParallelCommProcessor(
@@ -17,10 +17,10 @@ class ParallelCommProcessor(
 ):
     def __init__(
         self,
-        name: ProcessorName,
+        name: ProcName,
         processor_type: type[Processor[InT_contra, OutT_co, Any, CtxT]],
         packet_pool: PacketPool[CtxT] | None = None,
-        recipients: Sequence[ProcessorName] | None = None,
+        recipients: Sequence[ProcName] | None = None,
         **subproc_init_kwargs: Any,
     ) -> None:
         self._processor_type = processor_type

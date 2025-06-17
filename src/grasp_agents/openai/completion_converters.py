@@ -1,12 +1,5 @@
-from collections.abc import AsyncIterator
-
-from ..typing.completion import Completion, CompletionChoice, CompletionChunk, Usage
-from . import (
-    OpenAIAsyncStream,  # type: ignore[import]
-    OpenAICompletion,
-    OpenAICompletionChunk,
-    OpenAICompletionUsage,
-)
+from ..typing.completion import Completion, CompletionChoice, Usage
+from . import OpenAICompletion, OpenAICompletionUsage
 from .message_converters import from_api_assistant_message
 
 
@@ -83,24 +76,3 @@ def from_api_completion(
 
 def to_api_completion(completion: Completion) -> OpenAICompletion:
     raise NotImplementedError
-
-
-def from_api_completion_chunk(
-    api_completion_chunk: OpenAICompletionChunk, name: str | None = None
-) -> CompletionChunk:
-    return CompletionChunk(
-        id=api_completion_chunk.id,
-        model=api_completion_chunk.model,
-        system_fingerprint=api_completion_chunk.system_fingerprint,
-        created=api_completion_chunk.created,
-        delta=api_completion_chunk.choices[0].delta.content,
-        name=name,
-    )
-
-
-async def from_api_completion_chunk_iterator(
-    api_completion_chunk_iterator: OpenAIAsyncStream[OpenAICompletionChunk],
-    name: str | None = None,
-) -> AsyncIterator[CompletionChunk]:
-    async for api_chunk in api_completion_chunk_iterator:
-        yield from_api_completion_chunk(api_chunk, name=name)

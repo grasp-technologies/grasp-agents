@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Generic, cast, final
 from ..packet_pool import Packet, PacketPool
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
-from ..typing.io import InT_contra, OutT_co, ProcessorName
+from ..typing.io import InT_contra, OutT_co, ProcName
 from .workflow_processor import WorkflowProcessor
 
 
@@ -19,21 +19,21 @@ class SequentialWorkflow(
 
     def __init__(
         self,
-        name: ProcessorName,
-        subprocessors: Sequence[Processor[Any, Any, Any, CtxT]],
+        name: ProcName,
+        subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
         packet_pool: PacketPool[CtxT] | None = None,
-        recipients: list[ProcessorName] | None = None,
+        recipients: list[ProcName] | None = None,
     ) -> None:
         super().__init__(
-            subprocessors=subprocessors,
-            start_processor=subprocessors[0],
-            end_processor=subprocessors[-1],
+            subprocs=subprocs,
+            start_proc=subprocs[0],
+            end_proc=subprocs[-1],
             name=name,
             packet_pool=packet_pool,
             recipients=recipients,
         )
 
-        for prev_proc, proc in pairwise(subprocessors):
+        for prev_proc, proc in pairwise(subprocs):
             if prev_proc.out_type != proc.in_type:
                 raise ValueError(
                     f"Output type {prev_proc.out_type} of subprocessor {prev_proc.name}"
@@ -49,21 +49,18 @@ class SequentialWorkflow(
         in_packet: Packet[InT_contra] | None = None,
         in_args: InT_contra | Sequence[InT_contra] | None = None,
         ctx: RunContext[CtxT] | None = None,
-        entry_point: bool = False,
         forgetful: bool = False,
     ) -> Packet[OutT_co]:
         packet = in_packet
-        for subproc in self.subprocessors:
+        for subproc in self.subprocs:
             packet = await subproc.run(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
                 in_args=in_args,
-                entry_point=entry_point,
                 forgetful=forgetful,
                 ctx=ctx,
             )
             chat_inputs = None
             in_args = None
-            entry_point = False
 
         return cast("Packet[OutT_co]", packet)
