@@ -36,9 +36,9 @@
 
 - `processor.py`, `comm_processor.py`, `llm_agent.py`: Core processor and agent class implementations.
 - `packet.py`, `packet_pool.py`: Communication management.
-- `tool_orchestrator.py`: Orchestration of tool usage.
+- `llm_policy_executor.py`: LLM actions and tool call loops.
 - `prompt_builder.py`: Tools for constructing prompts.
-- `workflow/`: Modules for defining and managing agent workflows.
+- `workflow/`: Modules for defining and managing static agent workflows.
 - `llm.py`, `cloud_llm.py`: LLM integration and base LLM functionalities.
 - `openai/`: Modules specific to OpenAI API integration.
 - `memory.py`, `llm_agent_memory.py`: Memory management.
@@ -94,7 +94,6 @@ Create a script, e.g., `problem_recommender.py`:
 
 ```python
 import asyncio
-import re
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +102,7 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.grasp_logging import setup_logging
 from grasp_agents.openai import OpenAILLM, OpenAILLMSettings
-from grasp_agents import LLMAgent, Messages, BaseTool, RunContext
+from grasp_agents import LLMAgent, BaseTool, RunContext
 
 load_dotenv()
 
@@ -126,17 +125,29 @@ You should first ask the student about their education, interests, and preferenc
 * The problem must have all the necessary data.
 """
 
-
+# Tool input must be a Pydantic model to infer the JSON schema used by the LLM APIs
 class TeacherQuestion(BaseModel):
-    question: str = Field(..., description="The question to ask the student.")
+    question: str
 
 
 StudentReply = str
 
 
+ask_student_tool_description = """
+"Ask the student a question and get their reply."
+
+Args:
+    question: str
+        The question to ask the student.
+Returns:
+    reply: str
+        The student's reply to the question.
+"""
+
+
 class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
-    name: str = "ask_student_tool"
-    description: str = "Ask the student a question and get their reply."
+    name: str = "ask_student"
+    description: str = ask_student_tool_description
 
     async def run(
         self, inp: TeacherQuestion, ctx: RunContext[Any] | None = None
@@ -144,13 +155,15 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
         return input(inp.question)
 
 
-Problem = str
+class Problem(BaseModel):
+    problem: str
 
 
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
     llm=OpenAILLM(
-        model_name="openai:gpt-4.1", llm_settings=OpenAILLMSettings(temperature=0.1)
+        model_name="openai:gpt-4.1",
+        llm_settings=OpenAILLMSettings(temperature=0.5),
     ),
     tools=[AskStudentTool()],
     react_mode=True,
@@ -160,7 +173,7 @@ teacher = LLMAgent[None, Problem, None](
 
 async def main():
     ctx = RunContext[None](print_messages=True)
-    out = await teacher.run(ctx=ctx)
+    out = await teacher.run("start", ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)
 
