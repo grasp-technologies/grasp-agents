@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, cast, final
 
@@ -20,7 +20,6 @@ class Processor(
         1: "_out_type",
     }
 
-    @abstractmethod
     def __init__(self, name: ProcName, **kwargs: Any) -> None:
         self._in_type: type[InT_contra]
         self._out_type: type[OutT_co]
