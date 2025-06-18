@@ -88,6 +88,9 @@ def validate_obj_from_json_or_py_string(
     else:
         _selected_adapter = adapter
 
+    if _selected_adapter._type is str:  # type: ignore[arg-type]
+        return s
+
     try:
         if from_substring:
             parsed = parse_json_or_py_substring(s, return_none_on_failure=True)

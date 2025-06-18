@@ -192,7 +192,7 @@ class LLMAgent(
 
         # 1. Make system prompt (can be None)
 
-        formatted_sys_prompt = self._prompt_builder.make_sys_prompt(
+        formatted_sys_prompt = self._prompt_builder.make_system_prompt(
             sys_args=sys_args, ctx=ctx
         )
 
@@ -313,17 +313,17 @@ class LLMAgent(
 
     # -- Decorators for custom implementations --
 
-    def make_sys_prompt(
+    def make_system_prompt(
         self, func: MakeSystemPromptHandler[CtxT]
     ) -> MakeSystemPromptHandler[CtxT]:
-        self._prompt_builder.make_sys_prompt_impl = func
+        self._prompt_builder.make_system_prompt_impl = func
 
         return func
 
-    def make_in_content(
+    def make_input_content(
         self, func: MakeInputContentHandler[InT_contra, CtxT]
     ) -> MakeInputContentHandler[InT_contra, CtxT]:
-        self._prompt_builder.make_in_content_impl = func
+        self._prompt_builder.make_input_content_impl = func
 
         return func
 
@@ -359,30 +359,28 @@ class LLMAgent(
         cur_cls = type(self)
         base_cls = LLMAgent[Any, Any, Any]
 
-        if cur_cls._make_sys_prompt_fn is not base_cls._make_sys_prompt_fn:  # noqa: SLF001
-            self._prompt_builder.make_sys_prompt_impl = self._make_sys_prompt_fn
+        if cur_cls._make_system_prompt is not base_cls._make_system_prompt:  # noqa: SLF001
+            self._prompt_builder.make_system_prompt_impl = self._make_system_prompt
 
-        if cur_cls._make_in_content_fn is not base_cls._make_in_content_fn:  # noqa: SLF001
-            self._prompt_builder.make_in_content_impl = self._make_in_content_fn
+        if cur_cls._make_input_content is not base_cls._make_input_content:  # noqa: SLF001
+            self._prompt_builder.make_input_content_impl = self._make_input_content
 
-        if cur_cls._set_memory_fn is not base_cls._set_memory_fn:  # noqa: SLF001
-            self._set_memory_impl = self._set_memory_fn
+        if cur_cls._set_memory is not base_cls._set_memory:  # noqa: SLF001
+            self._set_memory_impl = self._set_memory
 
-        if cur_cls._manage_memory_fn is not base_cls._manage_memory_fn:  # noqa: SLF001
-            self._policy_executor.manage_memory_impl = self._manage_memory_fn
+        if cur_cls._manage_memory is not base_cls._manage_memory:  # noqa: SLF001
+            self._policy_executor.manage_memory_impl = self._manage_memory
 
         if (
-            cur_cls._exit_tool_call_loop_fn is not base_cls._exit_tool_call_loop_fn  # noqa: SLF001
+            cur_cls._exit_tool_call_loop is not base_cls._exit_tool_call_loop  # noqa: SLF001
         ):
-            self._policy_executor.exit_tool_call_loop_impl = (
-                self._exit_tool_call_loop_fn
-            )
+            self._policy_executor.exit_tool_call_loop_impl = self._exit_tool_call_loop
 
         self._parse_output_impl: (
             ParseOutputHandler[InT_contra, OutT_co, CtxT] | None
         ) = None
 
-    def _make_sys_prompt_fn(
+    def _make_system_prompt(
         self, sys_args: LLMPromptArgs | None, *, ctx: RunContext[CtxT] | None = None
     ) -> str:
         raise NotImplementedError(
@@ -390,7 +388,7 @@ class LLMAgent(
             "if it's intended to be used as the system arguments formatter."
         )
 
-    def _make_in_content_fn(
+    def _make_input_content(
         self,
         *,
         in_args: InT_contra | None = None,
@@ -402,10 +400,10 @@ class LLMAgent(
             "LLMAgent._format_in_args must be overridden by a subclass"
         )
 
-    def _set_memory_fn(
+    def _set_memory(
         self,
         prev_memory: LLMAgentMemory,
-        in_args: InT_contra | Sequence[InT_contra] | None = None,
+        in_args: Sequence[InT_contra] | None = None,
         sys_prompt: LLMPrompt | None = None,
         ctx: RunContext[Any] | None = None,
     ) -> LLMAgentMemory:
@@ -413,7 +411,7 @@ class LLMAgent(
             "LLMAgent._set_memory must be overridden by a subclass"
         )
 
-    def _exit_tool_call_loop_fn(
+    def _exit_tool_call_loop(
         self,
         conversation: Messages,
         *,
@@ -424,7 +422,7 @@ class LLMAgent(
             "LLMAgent._exit_tool_call_loop must be overridden by a subclass"
         )
 
-    def _manage_memory_fn(
+    def _manage_memory(
         self,
         memory: LLMAgentMemory,
         *,
