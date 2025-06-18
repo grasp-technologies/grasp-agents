@@ -28,6 +28,9 @@ from .typing.tool import BaseTool, NamedToolChoice, ToolCall, ToolChoice
 logger = getLogger(__name__)
 
 
+FINAL_ANSWER_TOOL_NAME = "final_answer"
+
+
 _FinalAnswerT = TypeVar("_FinalAnswerT")
 
 
@@ -102,7 +105,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
     def max_turns(self) -> int:
         return self._max_turns
 
-    def _exit_tool_call_loop_fn(
+    def _exit_tool_call_loop(
         self,
         conversation: Messages,
         *,
@@ -119,7 +122,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
         return not bool(conversation[-1].tool_calls)
 
-    def _manage_memory_fn(
+    def _manage_memory(
         self,
         memory: LLMAgentMemory,
         *,
@@ -318,7 +321,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
             # When final_answer_tool_name is None, we use exit_tool_call_loop_impl
             # to determine whether to exit the loop.
-            if self._final_answer_tool_name is None and self._exit_tool_call_loop_fn(
+            if self._final_answer_tool_name is None and self._exit_tool_call_loop(
                 conversation, ctx=ctx, num_turns=turns
             ):
                 return gen_message
@@ -353,7 +356,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
                 await self.call_tools(gen_message.tool_calls, memory=memory, ctx=ctx)
 
             # Apply the memory management function if provided.
-            self._manage_memory_fn(memory, ctx=ctx, num_turns=turns)
+            self._manage_memory(memory, ctx=ctx, num_turns=turns)
 
             # 4. Generate the next message based on the updated memory.
             #    In ReAct mode, we set tool_choice to "none" if we just called tools,
@@ -394,7 +397,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         while True:
             conversation = memory.message_history.conversations[0]
 
-            if self._final_answer_tool_name is None and self._exit_tool_call_loop_fn(
+            if self._final_answer_tool_name is None and self._exit_tool_call_loop(
                 conversation, ctx=ctx, num_turns=turns
             ):
                 return
@@ -429,7 +432,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
                 ):
                     yield tool_message_event
 
-            self._manage_memory_fn(memory, ctx=ctx, num_turns=turns)
+            self._manage_memory(memory, ctx=ctx, num_turns=turns)
 
             tool_choice = (
                 "none" if (self._react_mode and gen_message.tool_calls) else "required"
@@ -458,11 +461,10 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             )
 
         class FinalAnswerTool(BaseTool[self._final_answer_type, None, Any]):
-            name: str = "final_answer"
+            name: str = FINAL_ANSWER_TOOL_NAME
             description: str = (
-                "You must use this tool to provide the final answer. "
-                "Do not provide the final answer anywhere else. "
-                "Input arguments correspond to the final answer."
+                "You must call this tool to provide the final answer. "
+                "DO NOT output your answer before calling the tool. "
             )
 
             async def run(

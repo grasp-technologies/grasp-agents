@@ -53,14 +53,14 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
         self.in_prompt_template = in_prompt_template
         self.sys_args_schema = sys_args_schema
         self.usr_args_schema = usr_args_schema
-        self.make_sys_prompt_impl: MakeSystemPromptHandler[CtxT] | None = None
-        self.make_in_content_impl: MakeInputContentHandler[InT_contra, CtxT] | None = (
-            None
-        )
+        self.make_system_prompt_impl: MakeSystemPromptHandler[CtxT] | None = None
+        self.make_input_content_impl: (
+            MakeInputContentHandler[InT_contra, CtxT] | None
+        ) = None
 
         self._in_args_type_adapter: TypeAdapter[InT_contra] = TypeAdapter(self._in_type)
 
-    def make_sys_prompt(
+    def make_system_prompt(
         self, sys_args: LLMPromptArgs | None = None, ctx: RunContext[CtxT] | None = None
     ) -> str | None:
         if self.sys_prompt_template is None:
@@ -76,8 +76,8 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
                     "provided."
                 )
 
-        if self.make_sys_prompt_impl:
-            return self.make_sys_prompt_impl(sys_args=val_sys_args, ctx=ctx)
+        if self.make_system_prompt_impl:
+            return self.make_system_prompt_impl(sys_args=val_sys_args, ctx=ctx)
 
         sys_args_dict = (
             val_sys_args.model_dump(exclude_unset=True) if val_sys_args else {}
@@ -85,7 +85,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
 
         return self.sys_prompt_template.format(**sys_args_dict)
 
-    def make_in_content(
+    def make_input_content(
         self,
         *,
         in_args: InT_contra | None,
@@ -97,8 +97,8 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
             in_args=in_args, usr_args=usr_args
         )
 
-        if self.make_in_content_impl:
-            return self.make_in_content_impl(
+        if self.make_input_content_impl:
+            return self.make_input_content_impl(
                 in_args=val_in_args, usr_args=val_usr_args, batch_idx=batch_idx, ctx=ctx
             )
 
@@ -126,7 +126,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
             return self._usr_messages_from_content_parts(chat_inputs)
 
         in_content_batch = [
-            self.make_in_content(
+            self.make_input_content(
                 in_args=in_args, usr_args=usr_args, batch_idx=i, ctx=ctx
             )
             for i, in_args in enumerate(in_args_batch or [None])
