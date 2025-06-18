@@ -13,8 +13,8 @@ from .usage_tracker import UsageTracker
 
 
 class RunArgs(BaseModel):
-    sys: LLMPromptArgs = Field(default_factory=LLMPromptArgs)
-    usr: LLMPromptArgs = Field(default_factory=LLMPromptArgs)
+    sys: LLMPromptArgs | None = None
+    usr: LLMPromptArgs | None = None
 
     model_config = ConfigDict(extra="forbid")
 

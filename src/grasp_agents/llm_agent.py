@@ -63,9 +63,9 @@ class LLMAgent(
         sys_prompt: LLMPrompt | None = None,
         sys_prompt_path: str | Path | None = None,
         # System args (static args provided via RunContext)
-        sys_args_schema: type[LLMPromptArgs] = LLMPromptArgs,
+        sys_args_schema: type[LLMPromptArgs] | None = None,
         # User args (static args provided via RunContext)
-        usr_args_schema: type[LLMPromptArgs] = LLMPromptArgs,
+        usr_args_schema: type[LLMPromptArgs] | None = None,
         # Agent loop settings
         max_turns: int = 100,
         react_mode: bool = False,
@@ -82,14 +82,13 @@ class LLMAgent(
 
         self._memory: LLMAgentMemory = LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
-        self._set_memory_impl: SetMemoryHandler | None = None
 
         # LLM policy executor
 
-        self._using_default_llm_response_format: bool = False
+        self._used_default_llm_response_format: bool = False
         if llm.response_format is None and tools is None:
             llm.response_format = self.out_type
-            self._using_default_llm_response_format = True
+            self._used_default_llm_response_format = True
 
         self._policy_executor: LLMPolicyExecutor[OutT_co, CtxT] = LLMPolicyExecutor[
             self.out_type, CtxT
@@ -118,6 +117,10 @@ class LLMAgent(
 
         self.no_tqdm = getattr(llm, "no_tqdm", False)
 
+        self._set_memory_impl: SetMemoryHandler | None = None
+        self._parse_output_impl: (
+            ParseOutputHandler[InT_contra, OutT_co, CtxT] | None
+        ) = None
         self._register_overridden_handlers()
 
     @property
@@ -147,32 +150,6 @@ class LLMAgent(
     @property
     def in_prompt(self) -> LLMPrompt | None:
         return self._prompt_builder.in_prompt_template
-
-    def _parse_output(
-        self,
-        conversation: Messages,
-        *,
-        in_args: InT_contra | None = None,
-        batch_idx: int = 0,
-        ctx: RunContext[CtxT] | None = None,
-    ) -> OutT_co:
-        if self._parse_output_impl:
-            if self._using_default_llm_response_format:
-                # When using custom output parsing, the required LLM response format
-                # can differ from the final agent output type ->
-                # set it back to None unless it was specified explicitly at init.
-                self._policy_executor.llm.response_format = None
-                # self._using_default_llm_response_format = False
-
-            return self._parse_output_impl(
-                conversation=conversation, in_args=in_args, batch_idx=batch_idx, ctx=ctx
-            )
-
-        return validate_obj_from_json_or_py_string(
-            str(conversation[-1].content or ""),
-            adapter=self._out_type_adapter,
-            from_substring=True,
-        )
 
     def _memorize_inputs(
         self,
@@ -250,6 +227,25 @@ class LLMAgent(
             )
 
         return outputs
+
+    def _parse_output(
+        self,
+        conversation: Messages,
+        *,
+        in_args: InT_contra | None = None,
+        batch_idx: int = 0,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> OutT_co:
+        if self._parse_output_impl:
+            return self._parse_output_impl(
+                conversation=conversation, in_args=in_args, batch_idx=batch_idx, ctx=ctx
+            )
+
+        return validate_obj_from_json_or_py_string(
+            str(conversation[-1].content or ""),
+            adapter=self._out_type_adapter,
+            from_substring=True,
+        )
 
     async def _process(
         self,
@@ -330,6 +326,8 @@ class LLMAgent(
     def parse_output(
         self, func: ParseOutputHandler[InT_contra, OutT_co, CtxT]
     ) -> ParseOutputHandler[InT_contra, OutT_co, CtxT]:
+        if self._used_default_llm_response_format:
+            self._policy_executor.llm.response_format = None
         self._parse_output_impl = func
 
         return func
@@ -376,9 +374,11 @@ class LLMAgent(
         ):
             self._policy_executor.exit_tool_call_loop_impl = self._exit_tool_call_loop
 
-        self._parse_output_impl: (
-            ParseOutputHandler[InT_contra, OutT_co, CtxT] | None
-        ) = None
+        if (
+            cur_cls._parse_output is not base_cls._parse_output  # noqa: SLF001
+            and self._used_default_llm_response_format
+        ):
+            self._policy_executor.llm.response_format = None
 
     def _make_system_prompt(
         self, sys_args: LLMPromptArgs | None, *, ctx: RunContext[CtxT] | None = None

@@ -79,9 +79,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
         if self.make_system_prompt_impl:
             return self.make_system_prompt_impl(sys_args=val_sys_args, ctx=ctx)
 
-        sys_args_dict = (
-            val_sys_args.model_dump(exclude_unset=True) if val_sys_args else {}
-        )
+        sys_args_dict = val_sys_args.model_dump() if val_sys_args else {}
 
         return self.sys_prompt_template.format(**sys_args_dict)
 
@@ -208,10 +206,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
         return formatted_args, contains_image_data
 
     def _combine_args(
-        self,
-        *,
-        in_args: InT_contra | None,
-        usr_args: LLMPromptArgs | None,
+        self, *, in_args: InT_contra | None, usr_args: LLMPromptArgs | None
     ) -> Mapping[str, PromptArgumentType] | str:
         fmt_usr_args, _ = (
             self._format_pydantic_prompt_args(usr_args) if usr_args else ({}, False)
