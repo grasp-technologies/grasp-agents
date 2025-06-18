@@ -135,7 +135,7 @@ class Printer:
                 elif self.color_by == "role":
                     tool_color = self.get_role_color(role=Role.TOOL)
                 logger.debug(
-                    f"\n[TOOL_CALL]<{agent_name}>\n{tool_call.tool_name} "
+                    f"\n<{agent_name}>[TOOL_CALL]\n{tool_call.tool_name} "
                     f"| {tool_call.id}\n{tool_call.tool_arguments}",
                     extra={"color": tool_color},  # type: ignore
                 )

@@ -6,7 +6,7 @@ from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime
 from logging import getLogger
 from pathlib import Path
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, get_args, overload
 
 from pydantic import TypeAdapter, ValidationError
 from tqdm.autonotebook import tqdm
@@ -88,21 +88,24 @@ def validate_obj_from_json_or_py_string(
     else:
         _selected_adapter = adapter
 
-    if _selected_adapter._type is str:  # type: ignore[arg-type]
-        return s
+    _type = _selected_adapter._type  # type: ignore[attr-defined]
+    type_args = get_args(_type)
+    is_str_type = (_type is str) or (len(type_args) == 1 and type_args[0] is str)
 
     try:
-        if from_substring:
-            parsed = parse_json_or_py_substring(s, return_none_on_failure=True)
+        if not is_str_type:
+            if from_substring:
+                parsed = parse_json_or_py_substring(s, return_none_on_failure=True)
+            else:
+                parsed = parse_json_or_py_string(s, return_none_on_failure=True)
+            if parsed is None:
+                parsed = s
         else:
-            parsed = parse_json_or_py_string(s, return_none_on_failure=True)
-        if parsed is None:
             parsed = s
         return _selected_adapter.validate_python(parsed)
     except (json.JSONDecodeError, ValidationError) as exc:
         raise ValueError(
-            f"Invalid JSON or Python string:\n{s}\n"
-            f"Expected type: {_selected_adapter._type}",  # type: ignore[arg-type]
+            f"Invalid JSON or Python string:\n{s}\nExpected type: {_type}"
         ) from exc
 
 

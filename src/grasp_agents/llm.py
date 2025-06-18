@@ -39,7 +39,7 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         model_id: str | None = None,
         llm_settings: SettingsT_co | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_format: type | Mapping[str, type] | None = None,
+        response_format: Any | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -51,15 +51,19 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         self._llm_settings: SettingsT_co = llm_settings or cast("SettingsT_co", {})
 
         self._response_format = response_format
-        self._response_format_adapter: TypeAdapter[Any] | Mapping[str, TypeAdapter[Any]]
-        if isinstance(response_format, type):
-            self._response_format_adapter = TypeAdapter(response_format)
-        elif isinstance(response_format, Mapping):
-            self._response_format_adapter = {
-                k: TypeAdapter(v) for k, v in response_format.items()
-            }
-        else:
-            self._response_format_adapter = TypeAdapter(Any)
+        self._response_format_adapter: (
+            TypeAdapter[Any] | Mapping[str, TypeAdapter[Any]]
+        ) = self._get_response_format_adapter(response_format=response_format)
+
+    @staticmethod
+    def _get_response_format_adapter(
+        response_format: Any | Mapping[str, Any] | None = None,
+    ) -> TypeAdapter[Any] | Mapping[str, TypeAdapter[Any]]:
+        if response_format is None:
+            return TypeAdapter(Any)
+        if isinstance(response_format, Mapping):
+            return {k: TypeAdapter(v) for k, v in response_format.items()}  # type: ignore[return-value]
+        return TypeAdapter(response_format)
 
     @property
     def model_id(self) -> str:
@@ -74,22 +78,23 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         return self._llm_settings
 
     @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, Any, Any]] | None:
-        return self._tools
+    def response_format(self) -> Any | Mapping[str, Any] | None:
+        return self._response_format
+
+    @response_format.setter
+    def response_format(self, response_format: Any | Mapping[str, Any] | None) -> None:
+        self._response_format = response_format
+        self._response_format_adapter = self._get_response_format_adapter(
+            response_format
+        )
 
     @property
-    def response_format(self) -> type | Mapping[str, type] | None:
-        return self._response_format
+    def tools(self) -> dict[str, BaseTool[BaseModel, Any, Any]] | None:
+        return self._tools
 
     @tools.setter
     def tools(self, tools: list[BaseTool[BaseModel, Any, Any]] | None) -> None:
         self._tools = {t.name: t for t in tools} if tools else None
-
-    @response_format.setter
-    def response_format(
-        self, response_format: type | Mapping[str, type] | None
-    ) -> None:
-        self._response_format = response_format
 
     def __repr__(self) -> str:
         return (
@@ -101,9 +106,7 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         for message in completion.messages:
             if not message.tool_calls:
                 validate_obj_from_json_or_py_string(
-                    message.content or "",
-                    adapter=self._response_format_adapter,
-                    from_substring=True,
+                    message.content or "", adapter=self._response_format_adapter
                 )
 
     def _validate_tool_calls(self, completion: Completion) -> None:
