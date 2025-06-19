@@ -76,6 +76,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | Mapping[str, type] | None = None,
         # Connection settings
+        client: AsyncOpenAI | None = None,
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
@@ -117,11 +118,14 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             _async_openai_client_params["http_client"] = self._async_http_client
 
         # TODO: context manager for async client
-        self._client: AsyncOpenAI = AsyncOpenAI(
-            base_url=self._base_url,
-            api_key=self._api_key,
-            **_async_openai_client_params,
-        )
+        if client:
+            self._client = client
+        else:
+            self._client: AsyncOpenAI = AsyncOpenAI(
+                base_url=self._base_url,
+                api_key=self._api_key,
+                **_async_openai_client_params,
+            )
 
     async def _get_completion(
         self,
