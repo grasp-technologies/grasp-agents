@@ -76,11 +76,11 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | Mapping[str, type] | None = None,
         # Connection settings
-        client: AsyncOpenAI | None = None,
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
         async_openai_client_params: dict[str, Any] | None = None,
+        client: AsyncOpenAI | None = None,
         # Rate limiting
         rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
         rate_limiter_rpm: float | None = None,
