@@ -127,21 +127,32 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         )
 
         self._model_name = model_name
+        model_name_parts = model_name.split(":", 1)
 
-        api_provider = model_name.split(":", 1)[0]
-        api_model_name = model_name.split(":", 1)[-1]
-        if api_provider not in PROVIDERS:
-            raise ValueError(
-                f"API provider '{api_provider}' is not supported. "
-                f"Supported providers are: {', '.join(PROVIDERS.keys())}"
+        if len(model_name_parts) == 2 and model_name_parts[0] in PROVIDERS:
+            api_provider, api_model_name = model_name_parts
+            if api_provider not in PROVIDERS:
+                raise ValueError(
+                    f"API provider '{api_provider}' is not supported. "
+                    f"Supported providers are: {', '.join(PROVIDERS.keys())}"
+                )
+
+            self._api_provider: APIProvider | None = api_provider
+            self._api_model_name: str = api_model_name
+            self._base_url: str | None = PROVIDERS[api_provider]["base_url"]
+            self._api_key: str | None = PROVIDERS[api_provider]["api_key"]
+            self._struct_outputs_support: bool = any(
+                fnmatch.fnmatch(self._model_name, pat)
+                for pat in PROVIDERS[api_provider]["struct_outputs_support"]
             )
-        self._api_provider: APIProvider = api_provider
-        self._api_model_name: str = api_model_name
 
-        self._struct_outputs_support: bool = any(
-            fnmatch.fnmatch(self._model_name, pat)
-            for pat in PROVIDERS[api_provider]["struct_outputs_support"]
-        )
+        else:
+            self._api_provider = None
+            self._api_model_name = model_name
+            self._base_url = None
+            self._api_key = None
+            self._struct_outputs_support = False
+
         if (
             self._llm_settings.get("use_struct_outputs")
             and not self._struct_outputs_support
@@ -161,9 +172,6 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             )
         )
         self.no_tqdm = no_tqdm
-
-        self._base_url: str = PROVIDERS[api_provider]["base_url"]
-        self._api_key: str | None = PROVIDERS[api_provider]["api_key"]
         self._client: Any
 
         self._async_http_client: httpx.AsyncClient | None = None
@@ -178,7 +186,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self.num_generation_retries = num_generation_retries
 
     @property
-    def api_provider(self) -> APIProvider:
+    def api_provider(self) -> APIProvider | None:
         return self._api_provider
 
     @property

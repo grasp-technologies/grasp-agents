@@ -80,6 +80,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
         async_openai_client_params: dict[str, Any] | None = None,
+        client: AsyncOpenAI | None = None,
         # Rate limiting
         rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
         rate_limiter_rpm: float | None = None,
@@ -117,11 +118,14 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             _async_openai_client_params["http_client"] = self._async_http_client
 
         # TODO: context manager for async client
-        self._client: AsyncOpenAI = AsyncOpenAI(
-            base_url=self._base_url,
-            api_key=self._api_key,
-            **_async_openai_client_params,
-        )
+        if client:
+            self._client = client
+        else:
+            self._client: AsyncOpenAI = AsyncOpenAI(
+                base_url=self._base_url,
+                api_key=self._api_key,
+                **_async_openai_client_params,
+            )
 
     async def _get_completion(
         self,
