@@ -137,7 +137,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                     f"Supported providers are: {', '.join(PROVIDERS.keys())}"
                 )
 
-            self._api_provider: APIProvider | None = api_provider
+            self._api_provider: APIProvider | str | None = api_provider
             self._api_model_name: str = api_model_name
             self._base_url: str | None = PROVIDERS[api_provider]["base_url"]
             self._api_key: str | None = PROVIDERS[api_provider]["api_key"]
@@ -147,8 +147,13 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             )
 
         else:
-            self._api_provider = None
-            self._api_model_name = model_name
+            if len(model_name_parts) == 2:
+                api_provider, api_model_name = model_name_parts
+                self._api_provider = api_provider
+                self._api_model_name = api_model_name
+            else:
+                self._api_provider = None
+                self._api_model_name = model_name
             self._base_url = None
             self._api_key = None
             self._struct_outputs_support = False
