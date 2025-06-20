@@ -165,7 +165,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
         if in_args is not None:
             val_in_args = self._in_args_type_adapter.validate_python(in_args)
             if isinstance(val_in_args, BaseModel):
-                _, has_image = self._format_pydantic_prompt_args(val_in_args)
+                has_image = self._has_image_data(val_in_args)
                 if has_image and self.in_prompt_template is None:
                     raise TypeError(
                         "BaseModel input arguments contain ImageData, but input prompt "
@@ -180,21 +180,26 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
         return val_in_args, val_usr_args
 
     @staticmethod
+    def _has_image_data(inp: BaseModel) -> bool:
+        contains_image_data = False
+        for field in type(inp).model_fields:
+            if isinstance(getattr(inp, field), ImageData):
+                contains_image_data = True
+
+        return contains_image_data
+
+    @staticmethod
     def _format_pydantic_prompt_args(
         inp: BaseModel,
-    ) -> tuple[dict[str, PromptArgumentType], bool]:
+    ) -> dict[str, PromptArgumentType]:
         formatted_args: dict[str, PromptArgumentType] = {}
-        contains_image_data = False
         for field in type(inp).model_fields:
             if field == "selected_recipients":
                 continue
 
             val = getattr(inp, field)
-            if isinstance(val, (int, str, bool)):
+            if isinstance(val, (int, str, bool, ImageData)):
                 formatted_args[field] = val
-            elif isinstance(val, ImageData):
-                formatted_args[field] = val
-                contains_image_data = True
             elif isinstance(val, BaseModel):
                 formatted_args[field] = val.model_dump_json(indent=2, warnings="error")
             else:
@@ -203,20 +208,18 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT_contra, CtxT]):
                     "int, str, bool, BaseModel, or ImageData."
                 )
 
-        return formatted_args, contains_image_data
+        return formatted_args
 
     def _combine_args(
         self, *, in_args: InT_contra | None, usr_args: LLMPromptArgs | None
     ) -> Mapping[str, PromptArgumentType] | str:
-        fmt_usr_args, _ = (
-            self._format_pydantic_prompt_args(usr_args) if usr_args else ({}, False)
-        )
+        fmt_usr_args = self._format_pydantic_prompt_args(usr_args) if usr_args else {}
 
         if in_args is None:
             return fmt_usr_args
 
         if isinstance(in_args, BaseModel):
-            fmt_in_args, _ = self._format_pydantic_prompt_args(in_args)
+            fmt_in_args = self._format_pydantic_prompt_args(in_args)
             return fmt_in_args | fmt_usr_args
 
         combined_args_str = self._in_args_type_adapter.dump_json(
