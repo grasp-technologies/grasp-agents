@@ -175,10 +175,12 @@ class LLMAgent(
 
         # 2. Set agent memory
 
+        system_message: SystemMessage | None = None
         _memory = self.memory.model_copy(deep=True)
-        prev_message_hist_length = len(_memory.message_history)
         if self._reset_memory_on_run or _memory.is_empty:
             _memory.reset(formatted_sys_prompt)
+            if formatted_sys_prompt is not None:
+                system_message = _memory.message_history[0][0]  # type: ignore[assignment]
         elif self._set_memory_impl:
             _memory = self._set_memory_impl(
                 prev_memory=_memory,
@@ -194,16 +196,6 @@ class LLMAgent(
         )
         if user_message_batch:
             _memory.update(message_batch=user_message_batch)
-
-        # 4. Extract system message if it was added
-
-        system_message: SystemMessage | None = None
-        if (
-            len(_memory.message_history) == 1
-            and prev_message_hist_length == 0
-            and isinstance(_memory.message_history[0][0], SystemMessage)
-        ):
-            system_message = _memory.message_history[0][0]
 
         return system_message, user_message_batch, _memory
 
