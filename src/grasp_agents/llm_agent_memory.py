@@ -30,9 +30,9 @@ class LLMAgentMemory(Memory):
 
     def update(
         self,
+        message_list: Sequence[Message] | None = None,
         *,
         message_batch: Sequence[Message] | None = None,
-        message_list: Sequence[Message] | None = None,
         ctx: RunContext[Any] | None = None,
     ):
         if message_batch is not None and message_list is not None:

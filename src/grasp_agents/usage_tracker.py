@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -23,7 +24,7 @@ class UsageTracker(BaseModel):
     source_id: str
     costs_dict_path: str | Path = COSTS_DICT_PATH
     costs_dict: CostsDict | None = None
-    total_usage: Usage = Field(default_factory=Usage)
+    usages: dict[str, Usage] = Field(default_factory=dict)
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -58,7 +59,10 @@ class UsageTracker(BaseModel):
         usage.cost = (input_cost + output_cost + reasoning_cost + cached_cost) / 1e6
 
     def update(
-        self, completions: Sequence[Completion], model_name: str | None = None
+        self,
+        agent_name: str,
+        completions: Sequence[Completion],
+        model_name: str | None = None,
     ) -> None:
         if model_name is not None and self.costs_dict is not None:
             model_costs_dict = self.costs_dict.get(model_name.split(":", 1)[-1])
@@ -71,10 +75,16 @@ class UsageTracker(BaseModel):
                     self._add_cost_to_usage(
                         usage=completion.usage, model_costs_dict=model_costs_dict
                     )
-                self.total_usage += completion.usage
+                if agent_name not in self.usages:
+                    self.usages[agent_name] = Usage()
+                self.usages[agent_name] += completion.usage
+
+    @property
+    def total_usage(self) -> Usage:
+        return sum((usage for usage in self.usages.values()), Usage())
 
     def reset(self) -> None:
-        self.total_usage = Usage()
+        self.usages = defaultdict(Usage)
 
     def print_usage(self) -> None:
         usage = self.total_usage
