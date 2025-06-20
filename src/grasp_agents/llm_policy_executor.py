@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Coroutine, Sequence
-from itertools import starmap
+from itertools import chain, starmap
 from logging import getLogger
 from typing import Any, ClassVar, Generic, Protocol, TypeVar
 
@@ -141,19 +141,14 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         completion_batch = await self.llm.generate_completion_batch(
             memory.message_history, tool_choice=tool_choice
         )
-        if (
-            len(completion_batch[0].messages) > 1
-            and memory.message_history.batch_size > 1
-        ):
-            raise ValueError(
-                "Batch size must be 1 when generating completions with n>1."
-            )
-        message_batch = [c.messages[0] for c in completion_batch]
+        message_batch = list(
+            chain.from_iterable([c.messages for c in completion_batch])
+        )
         memory.update(message_batch=message_batch)
 
         if ctx is not None:
             ctx.completions[self.agent_name].extend(completion_batch)
-            self._track_usage(completion_batch, ctx=ctx)
+            self._track_usage(self.agent_name, completion_batch, ctx=ctx)
             self._print_completions(completion_batch, ctx=ctx)
 
         return message_batch
@@ -179,16 +174,14 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
         if completion is None:
             raise RuntimeError("No completion generated during stream.")
-        if len(completion.messages) > 1:
-            raise ValueError("Streaming completion must have n=1")
 
-        message = completion.messages[0]
-        memory.update(message_batch=[message])
+        memory.update(message_batch=completion.messages)
 
-        yield GenMessageEvent(name=self.agent_name, data=message)
+        for message in completion.messages:
+            yield GenMessageEvent(name=self.agent_name, data=message)
 
         if ctx is not None:
-            self._track_usage([completion], ctx=ctx)
+            self._track_usage(self.agent_name, [completion], ctx=ctx)
             ctx.completions[self.agent_name].append(completion)
 
     async def call_tools(
@@ -207,7 +200,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         tool_messages = list(
             starmap(ToolMessage.from_tool_output, zip(outs, calls, strict=False))
         )
-        memory.update(message_list=tool_messages)
+        memory.update(tool_messages)
 
         if ctx is not None:
             ctx.printer.print_llm_messages(tool_messages, agent_name=self.agent_name)
@@ -234,7 +227,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
                     name=self.agent_name, content=tool_call.tool_arguments
                 )
                 gen_message.tool_calls = None
-                memory.update(message_list=[final_answer_message])
+                memory.update([final_answer_message])
                 return final_answer_message
 
         return final_answer_message
@@ -247,7 +240,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!"
         )
-        memory.update(message_list=[user_message])
+        memory.update([user_message])
         if ctx is not None:
             ctx.printer.print_llm_messages([user_message], agent_name=self.agent_name)
 
@@ -263,6 +256,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             raise RuntimeError(
                 "Final answer tool call did not return a final answer message."
             )
+
         return final_answer_message
 
     async def _generate_final_answer_stream(
@@ -273,7 +267,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!",
         )
-        memory.update(message_list=[user_message])
+        memory.update([user_message])
         yield UserMessageEvent(name=self.agent_name, data=user_message)
 
         tool_choice = NamedToolChoice(name=self._final_answer_tool_name)
@@ -447,10 +441,15 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             turns += 1
 
     def _track_usage(
-        self, completion_batch: Sequence[Completion], ctx: RunContext[CtxT]
+        self,
+        agent_name: str,
+        completion_batch: Sequence[Completion],
+        ctx: RunContext[CtxT],
     ) -> None:
         ctx.usage_tracker.update(
-            completions=completion_batch, model_name=self.llm.model_name
+            agent_name=agent_name,
+            completions=completion_batch,
+            model_name=self.llm.model_name,
         )
 
     def get_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
