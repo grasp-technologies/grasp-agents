@@ -90,13 +90,14 @@ class CommProcessor(
         *,
         in_packet: Packet[InT_contra] | None = None,
         in_args: InT_contra | Sequence[InT_contra] | None = None,
-        forgetful: bool = True,
+        forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
         out_packet = await super().run(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
+            forgetful=forgetful,
             ctx=ctx,
         )
         recipients = self._validate_routing(out_packet.payloads)
@@ -115,7 +116,7 @@ class CommProcessor(
         *,
         in_packet: Packet[InT_contra] | None = None,
         in_args: InT_contra | Sequence[InT_contra] | None = None,
-        forgetful: bool = True,
+        forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         out_packet: Packet[OutT_co] | None = None
@@ -123,6 +124,7 @@ class CommProcessor(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
+            forgetful=forgetful,
             ctx=ctx,
         ):
             if isinstance(event, PacketEvent):
