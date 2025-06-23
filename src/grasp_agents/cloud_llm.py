@@ -21,7 +21,11 @@ from .llm import LLM, ConvertT_co, LLMSettings, SettingsT_co
 from .message_history import MessageHistory
 from .rate_limiting.rate_limiter_chunked import RateLimiterC, limit_rate_chunked
 from .typing.completion import Completion
-from .typing.completion_chunk import CompletionChunk, combine_completion_chunks
+from .typing.completion_chunk import (
+    CompletionChoice,
+    CompletionChunk,
+    combine_completion_chunks,
+)
 from .typing.events import CompletionChunkEvent, CompletionEvent
 from .typing.message import AssistantMessage, Messages
 from .typing.tool import BaseTool, ToolChoice
@@ -61,12 +65,12 @@ PROVIDERS: dict[APIProvider, APIProviderInfo] = {
 }
 
 
-def retry_error_callback(retry_state: RetryCallState) -> None:
+def retry_error_callback(retry_state: RetryCallState) -> Completion:
     assert retry_state.outcome is not None
     exception = retry_state.outcome.exception()
     if exception:
         if retry_state.attempt_number == 1:
-            logger.error(
+            logger.warning(
                 f"CloudLLM completion request failed:\n{exception}",
                 exc_info=exception,
             )
@@ -75,6 +79,12 @@ def retry_error_callback(retry_state: RetryCallState) -> None:
                 f"CloudLLM completion request failed after retrying:\n{exception}",
                 exc_info=exception,
             )
+    failed_message = AssistantMessage(content=None, refusal=str(exception))
+
+    return Completion(
+        model="",
+        choices=[CompletionChoice(message=failed_message, finish_reason=None, index=0)],
+    )
 
 
 def retry_before_callback(retry_state: RetryCallState) -> None:
