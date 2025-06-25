@@ -36,12 +36,10 @@ AVAILABLE_COLORS: list[Color] = [
 class Printer:
     def __init__(
         self,
-        source_id: str,
         color_by: ColoringMode = "role",
         msg_trunc_len: int = 20000,
         print_messages: bool = False,
     ) -> None:
-        self.source_id = source_id
         self.color_by = color_by
         self.msg_trunc_len = msg_trunc_len
         self.print_messages = print_messages
@@ -84,7 +82,7 @@ class Printer:
         return content_str
 
     def print_llm_message(
-        self, message: Message, agent_name: str, usage: Usage | None = None
+        self, message: Message, agent_name: str, run_id: str, usage: Usage | None = None
     ) -> None:
         if not self.print_messages:
             return
@@ -106,8 +104,7 @@ class Printer:
 
         # Print message title
 
-        out = f"\n<{agent_name}>"
-        out += "[" + role.value.upper() + "]"
+        out = f"\n[agent: {agent_name} | role: {role.value} | run: {run_id}]"
 
         if isinstance(message, ToolMessage):
             out += f"\n{message.name} | {message.tool_call_id}"
@@ -159,6 +156,7 @@ class Printer:
         self,
         messages: Sequence[Message],
         agent_name: str,
+        run_id: str,
         usages: Sequence[Usage | None] | None = None,
     ) -> None:
         if not self.print_messages:
@@ -167,4 +165,6 @@ class Printer:
         _usages: Sequence[Usage | None] = usages or [None] * len(messages)
 
         for _message, _usage in zip(messages, _usages, strict=False):
-            self.print_llm_message(_message, usage=_usage, agent_name=agent_name)
+            self.print_llm_message(
+                _message, usage=_usage, agent_name=agent_name, run_id=run_id
+            )

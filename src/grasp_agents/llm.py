@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from typing import Any, Generic, TypeVar, cast
 from uuid import uuid4
 
@@ -9,7 +9,7 @@ from typing_extensions import TypedDict
 
 from grasp_agents.utils import validate_obj_from_json_or_py_string
 
-from .message_history import MessageHistory
+from .errors import ToolValidationError
 from .typing.completion import Completion
 from .typing.converters import Converters
 from .typing.events import CompletionChunkEvent, CompletionEvent
@@ -118,7 +118,7 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
 
                     available_tool_names = list(self.tools) if self.tools else []
                     if tool_name not in available_tool_names or not self.tools:
-                        raise ValueError(
+                        raise ToolValidationError(
                             f"Tool '{tool_name}' is not available in the LLM tools "
                             f"(available: {available_tool_names}"
                         )
@@ -145,10 +145,4 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
     ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent]:
-        pass
-
-    @abstractmethod
-    async def generate_completion_batch(
-        self, message_history: MessageHistory, *, tool_choice: ToolChoice | None = None
-    ) -> Sequence[Completion]:
         pass

@@ -21,7 +21,6 @@ CostsDict: TypeAlias = dict[str, ModelCostsDict]
 
 class UsageTracker(BaseModel):
     # TODO: specify different costs per provider:model, not just per model
-    source_id: str
     costs_dict_path: str | Path = COSTS_DICT_PATH
     costs_dict: CostsDict | None = None
     usages: dict[str, Usage] = Field(default_factory=dict)
@@ -92,8 +91,7 @@ class UsageTracker(BaseModel):
         logger.debug("\n-------------------")
 
         token_usage_str = (
-            f"Total {self.source_id} I/O/(R)/(C) tokens: "
-            f"{usage.input_tokens}/{usage.output_tokens}"
+            f"Total I/O/(R)/(C) tokens: {usage.input_tokens}/{usage.output_tokens}"
         )
         if usage.reasoning_tokens is not None:
             token_usage_str += f"/{usage.reasoning_tokens}"
@@ -104,7 +102,7 @@ class UsageTracker(BaseModel):
         if usage.cost is not None:
             logger.debug(
                 colored(
-                    f"Total {self.source_id} cost: ${usage.cost:.4f}",
+                    f"Total cost: ${usage.cost:.4f}",
                     "light_grey",
                 )
             )

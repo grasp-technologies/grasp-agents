@@ -3,10 +3,11 @@ from itertools import pairwise
 from logging import getLogger
 from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
+from ..errors import WorkflowConstructionError
 from ..packet_pool import Packet, PacketPool
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
-from ..typing.io import InT_contra, OutT_co, ProcName
+from ..typing.io import InT, OutT_co, ProcName
 from .workflow_processor import WorkflowProcessor
 
 logger = getLogger(__name__)
@@ -24,7 +25,7 @@ class ExitWorkflowLoopHandler(Protocol[_OutT_contra, CtxT]):
 
 
 class LoopedWorkflow(
-    WorkflowProcessor[InT_contra, OutT_co, CtxT], Generic[InT_contra, OutT_co, CtxT]
+    WorkflowProcessor[InT, OutT_co, CtxT], Generic[InT, OutT_co, CtxT]
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -38,6 +39,7 @@ class LoopedWorkflow(
         exit_proc: Processor[Any, OutT_co, Any, CtxT],
         packet_pool: PacketPool[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
+        num_par_run_retries: int = 0,
         max_iterations: int = 10,
     ) -> None:
         super().__init__(
@@ -47,17 +49,18 @@ class LoopedWorkflow(
             end_proc=exit_proc,
             packet_pool=packet_pool,
             recipients=recipients,
+            num_par_run_retries=num_par_run_retries,
         )
 
         for prev_proc, proc in pairwise(subprocs):
             if prev_proc.out_type != proc.in_type:
-                raise ValueError(
+                raise WorkflowConstructionError(
                     f"Output type {prev_proc.out_type} of subprocessor "
                     f"{prev_proc.name} does not match input type {proc.in_type} of "
                     f"subprocessor {proc.name}"
                 )
         if subprocs[-1].out_type != subprocs[0].in_type:
-            raise ValueError(
+            raise WorkflowConstructionError(
                 "Looped workflow's last subprocessor output type "
                 f"{subprocs[-1].out_type} does not match first subprocessor input "
                 f"type {subprocs[0].in_type}"
@@ -80,7 +83,7 @@ class LoopedWorkflow(
 
         return func
 
-    def _exit_workflow_loop_fn(
+    def _exit_workflow_loop(
         self,
         out_packet: Packet[OutT_co],
         *,
@@ -97,10 +100,11 @@ class LoopedWorkflow(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT_contra] | None = None,
-        in_args: InT_contra | Sequence[InT_contra] | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
+        run_id: str | None = None,
         forgetful: bool = False,
+        ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
         packet = in_packet
         num_iterations = 0
@@ -113,13 +117,14 @@ class LoopedWorkflow(
                     in_packet=packet,
                     in_args=in_args,
                     forgetful=forgetful,
+                    run_id=self._generate_subproc_run_id(run_id, subproc=subproc),
                     ctx=ctx,
                 )
 
                 if subproc is self._end_proc:
                     num_iterations += 1
                     exit_packet = cast("Packet[OutT_co]", packet)
-                    if self._exit_workflow_loop_fn(exit_packet, ctx=ctx):
+                    if self._exit_workflow_loop(exit_packet, ctx=ctx):
                         return exit_packet
                     if num_iterations >= self._max_iterations:
                         logger.info(

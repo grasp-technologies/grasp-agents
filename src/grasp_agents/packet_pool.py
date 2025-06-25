@@ -80,7 +80,7 @@ class PacketPool(Generic[CtxT]):
             try:
                 await task
             except asyncio.CancelledError:
-                logger.debug(f"{processor_name} exited")
+                logger.info(f"{processor_name} exited")
 
         self._tasks.pop(processor_name, None)
         self._queues.pop(processor_name, None)

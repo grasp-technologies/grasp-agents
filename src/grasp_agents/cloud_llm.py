@@ -2,9 +2,9 @@ import fnmatch
 import logging
 import os
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
-from typing import Any, Generic, Literal
+from typing import Any, Generic, Literal, NotRequired
 
 import httpx
 from pydantic import BaseModel
@@ -16,10 +16,9 @@ from tenacity import (
 )
 from typing_extensions import TypedDict
 
-from .http_client import AsyncHTTPClientParams, create_async_http_client
+from .http_client import AsyncHTTPClientParams, create_simple_async_httpx_client
 from .llm import LLM, ConvertT_co, LLMSettings, SettingsT_co
-from .message_history import MessageHistory
-from .rate_limiting.rate_limiter_chunked import RateLimiterC, limit_rate_chunked
+from .rate_limiting.rate_limiter_chunked import RateLimiterC, limit_rate
 from .typing.completion import Completion
 from .typing.completion_chunk import (
     CompletionChoice,
@@ -33,30 +32,30 @@ from .typing.tool import BaseTool, ToolChoice
 logger = logging.getLogger(__name__)
 
 
-APIProvider = Literal["openai", "openrouter", "google_ai_studio"]
+APIProviderName = Literal["openai", "openrouter", "google_ai_studio"]
 
 
-class APIProviderInfo(TypedDict):
-    name: APIProvider
+class APIProvider(TypedDict):
+    name: APIProviderName
     base_url: str
-    api_key: str | None
-    struct_outputs_support: tuple[str, ...]
+    api_key: NotRequired[str | None]
+    struct_outputs_support: NotRequired[tuple[str, ...]]
 
 
-PROVIDERS: dict[APIProvider, APIProviderInfo] = {
-    "openai": APIProviderInfo(
+API_PROVIDERS: dict[APIProviderName, APIProvider] = {
+    "openai": APIProvider(
         name="openai",
         base_url="https://api.openai.com/v1",
         api_key=os.getenv("OPENAI_API_KEY"),
         struct_outputs_support=("*",),
     ),
-    "openrouter": APIProviderInfo(
+    "openrouter": APIProvider(
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         struct_outputs_support=(),
     ),
-    "google_ai_studio": APIProviderInfo(
+    "google_ai_studio": APIProvider(
         name="google_ai_studio",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key=os.getenv("GOOGLE_AI_STUDIO_API_KEY"),
@@ -66,18 +65,17 @@ PROVIDERS: dict[APIProvider, APIProviderInfo] = {
 
 
 def retry_error_callback(retry_state: RetryCallState) -> Completion:
-    assert retry_state.outcome is not None
-    exception = retry_state.outcome.exception()
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
     if exception:
         if retry_state.attempt_number == 1:
             logger.warning(
-                f"CloudLLM completion request failed:\n{exception}",
-                exc_info=exception,
+                f"\nCloudLLM completion request failed:\n{exception}",
+                # exc_info=exception,
             )
         if retry_state.attempt_number > 1:
             logger.warning(
-                f"CloudLLM completion request failed after retrying:\n{exception}",
-                exc_info=exception,
+                f"\nCloudLLM completion request failed after retrying:\n{exception}",
+                # exc_info=exception,
             )
     failed_message = AssistantMessage(content=None, refusal=str(exception))
 
@@ -87,11 +85,12 @@ def retry_error_callback(retry_state: RetryCallState) -> Completion:
     )
 
 
-def retry_before_callback(retry_state: RetryCallState) -> None:
-    if retry_state.attempt_number > 1:
+def retry_before_sleep_callback(retry_state: RetryCallState) -> None:
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    if exception:
         logger.info(
-            "Retrying CloudLLM completion request "
-            f"(attempt {retry_state.attempt_number - 1}) ..."
+            "\nRetrying CloudLLM completion request "
+            f"(attempt {retry_state.attempt_number}):\n{exception}"
         )
 
 
@@ -106,10 +105,13 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         model_name: str,
         converters: ConvertT_co,
         llm_settings: SettingsT_co | None = None,
-        model_id: str | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | Mapping[str, type] | None = None,
+        model_id: str | None = None,
+        # Custom LLM provider
+        api_provider: APIProvider | None = None,
         # Connection settings
+        async_http_client: httpx.AsyncClient | None = None,
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
@@ -120,8 +122,6 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         rate_limiter_max_concurrency: int = 300,
         # Retries
         num_generation_retries: int = 0,
-        # Disable tqdm for batch processing
-        no_tqdm: bool = True,
         **kwargs: Any,
     ) -> None:
         self.llm_settings: CloudLLMSettings | None
@@ -139,29 +139,31 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self._model_name = model_name
         model_name_parts = model_name.split(":", 1)
 
-        if len(model_name_parts) == 2 and model_name_parts[0] in PROVIDERS:
-            api_provider, api_model_name = model_name_parts
-            if api_provider not in PROVIDERS:
-                raise ValueError(
-                    f"API provider '{api_provider}' is not supported. "
-                    f"Supported providers are: {', '.join(PROVIDERS.keys())}"
-                )
-
-            self._api_provider: APIProvider | None = api_provider
+        if len(model_name_parts) == 2:
+            api_provider_name, api_model_name = model_name_parts
             self._api_model_name: str = api_model_name
-            self._base_url: str | None = PROVIDERS[api_provider]["base_url"]
-            self._api_key: str | None = PROVIDERS[api_provider]["api_key"]
-            self._struct_outputs_support: bool = any(
-                fnmatch.fnmatch(self._model_name, pat)
-                for pat in PROVIDERS[api_provider]["struct_outputs_support"]
+            if api_provider_name not in API_PROVIDERS:
+                raise ValueError(
+                    f"API provider '{api_provider_name}' is not supported. "
+                    f"Supported providers are: {', '.join(API_PROVIDERS.keys())}"
+                )
+            _api_provider = API_PROVIDERS[api_provider_name]
+        elif api_provider is not None:
+            self._api_model_name: str = model_name
+            _api_provider = api_provider
+        else:
+            raise ValueError(
+                "API provider must be specified either in the model name "
+                "or as a separate argument."
             )
 
-        else:
-            self._api_provider = None
-            self._api_model_name = model_name
-            self._base_url = None
-            self._api_key = None
-            self._struct_outputs_support = False
+        self._api_provider_name: APIProviderName = _api_provider["name"]
+        self._base_url: str | None = _api_provider.get("base_url")
+        self._api_key: str | None = _api_provider.get("api_key")
+        self._struct_outputs_support: bool = any(
+            fnmatch.fnmatch(self._model_name, pat)
+            for pat in _api_provider.get("struct_outputs_support", ())
+        )
 
         if (
             self._llm_settings.get("use_struct_outputs")
@@ -181,23 +183,20 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 max_concurrency=rate_limiter_max_concurrency,
             )
         )
-        self.no_tqdm = no_tqdm
-        self._client: Any
 
         self._async_http_client: httpx.AsyncClient | None = None
-        if async_http_client_params is not None:
-            val_async_http_client_params = AsyncHTTPClientParams.model_validate(
+        if async_http_client is not None:
+            self._async_http_client = async_http_client
+        elif async_http_client_params is not None:
+            self._async_http_client = create_simple_async_httpx_client(
                 async_http_client_params
-            )
-            self._async_http_client = create_async_http_client(
-                val_async_http_client_params
             )
 
         self.num_generation_retries = num_generation_retries
 
     @property
-    def api_provider(self) -> APIProvider | None:
-        return self._api_provider
+    def api_provider_name(self) -> APIProviderName | None:
+        return self._api_provider_name
 
     @property
     def rate_limiter(
@@ -353,7 +352,8 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
 
         return iterate()
 
-    async def generate_completion(
+    @limit_rate
+    async def generate_completion(  # type: ignore[override]
         self,
         conversation: Messages,
         *,
@@ -363,29 +363,12 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         wrapped_func = retry(
             wait=wait_random_exponential(min=1, max=8),
             stop=stop_after_attempt(self.num_generation_retries + 1),
-            before=retry_before_callback,
+            before_sleep=retry_before_sleep_callback,
             retry_error_callback=retry_error_callback,
         )(self.__class__.generate_completion_no_retry)
 
         return await wrapped_func(
             self, conversation, tool_choice=tool_choice, n_choices=n_choices
-        )
-
-    @limit_rate_chunked  # type: ignore
-    async def _generate_completion_batch(
-        self,
-        conversation: Messages,
-        *,
-        tool_choice: ToolChoice | None = None,
-    ) -> Completion:
-        return await self.generate_completion(conversation, tool_choice=tool_choice)
-
-    async def generate_completion_batch(
-        self, message_history: MessageHistory, *, tool_choice: ToolChoice | None = None
-    ) -> Sequence[Completion]:
-        return await self._generate_completion_batch(
-            list(message_history.conversations),  # type: ignore
-            tool_choice=tool_choice,
         )
 
     def _get_rate_limiter(

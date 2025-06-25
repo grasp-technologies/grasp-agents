@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from copy import deepcopy
 from typing import Any, Literal, NamedTuple
 
+import httpx
 from openai import AsyncOpenAI
 from openai._types import NOT_GIVEN  # type: ignore[import]
 from openai.lib.streaming.chat import (
@@ -11,7 +12,7 @@ from openai.lib.streaming.chat import (
 from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
-from ..cloud_llm import CloudLLM, CloudLLMSettings
+from ..cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
 from ..http_client import AsyncHTTPClientParams
 from ..rate_limiting.rate_limiter_chunked import RateLimiterC
 from ..typing.message import AssistantMessage, Messages
@@ -57,8 +58,6 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     store: bool | None
     user: str
 
-    strict_tool_args: bool
-
     # response_format: (
     #     OpenAIResponseFormatText
     #     | OpenAIResponseFormatJSONSchema
@@ -71,16 +70,18 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         self,
         # Base LLM args
         model_name: str,
-        model_id: str | None = None,
         llm_settings: OpenAILLMSettings | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
         response_format: type | Mapping[str, type] | None = None,
+        model_id: str | None = None,
+        # Custom LLM provider
+        api_provider: APIProvider | None = None,
         # Connection settings
+        async_http_client: httpx.AsyncClient | None = None,
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
         async_openai_client_params: dict[str, Any] | None = None,
-        client: AsyncOpenAI | None = None,
         # Rate limiting
         rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
         rate_limiter_rpm: float | None = None,
@@ -88,9 +89,6 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         rate_limiter_max_concurrency: int = 300,
         # Retries
         num_generation_retries: int = 0,
-        # Disable tqdm for batch processing
-        no_tqdm: bool = True,
-        **kwargs: Any,
     ) -> None:
         super().__init__(
             model_name=model_name,
@@ -99,33 +97,29 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             converters=OpenAIConverters(),
             tools=tools,
             response_format=response_format,
+            api_provider=api_provider,
+            async_http_client=async_http_client,
             async_http_client_params=async_http_client_params,
             rate_limiter=rate_limiter,
             rate_limiter_rpm=rate_limiter_rpm,
             rate_limiter_chunk_size=rate_limiter_chunk_size,
             rate_limiter_max_concurrency=rate_limiter_max_concurrency,
             num_generation_retries=num_generation_retries,
-            no_tqdm=no_tqdm,
-            **kwargs,
         )
 
         self._tool_call_settings = {
-            "strict": self._llm_settings.pop("strict_tool_args", None)
+            "strict": self._llm_settings.get("use_struct_outputs", False),
         }
 
         _async_openai_client_params = deepcopy(async_openai_client_params or {})
         if self._async_http_client is not None:
             _async_openai_client_params["http_client"] = self._async_http_client
 
-        # TODO: context manager for async client
-        if client:
-            self._client = client
-        else:
-            self._client: AsyncOpenAI = AsyncOpenAI(
-                base_url=self._base_url,
-                api_key=self._api_key,
-                **_async_openai_client_params,
-            )
+        self._client: AsyncOpenAI = AsyncOpenAI(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            **_async_openai_client_params,
+        )
 
     async def _get_completion(
         self,

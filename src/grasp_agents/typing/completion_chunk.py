@@ -11,6 +11,7 @@ from openai.types.chat.chat_completion_token_logprob import (
 )
 from pydantic import BaseModel, Field
 
+from ..errors import CombineCompletionChunksError
 from .completion import (
     Completion,
     CompletionChoice,
@@ -54,21 +55,25 @@ class CompletionChunk(BaseModel):
 
 def combine_completion_chunks(chunks: list[CompletionChunk]) -> Completion:
     if not chunks:
-        raise ValueError("Cannot combine an empty list of completion chunks.")
+        raise CombineCompletionChunksError(
+            "Cannot combine an empty list of completion chunks."
+        )
 
     model_list = {chunk.model for chunk in chunks}
     if len(model_list) > 1:
-        raise ValueError("All chunks must have the same model.")
+        raise CombineCompletionChunksError("All chunks must have the same model.")
     model = model_list.pop()
 
     name_list = {chunk.name for chunk in chunks}
     if len(name_list) > 1:
-        raise ValueError("All chunks must have the same name.")
+        raise CombineCompletionChunksError("All chunks must have the same name.")
     name = name_list.pop()
 
     system_fingerprints_list = {chunk.system_fingerprint for chunk in chunks}
     if len(system_fingerprints_list) > 1:
-        raise ValueError("All chunks must have the same system fingerprint.")
+        raise CombineCompletionChunksError(
+            "All chunks must have the same system fingerprint."
+        )
     system_fingerprint = system_fingerprints_list.pop()
 
     created_list = [chunk.created for chunk in chunks]
@@ -128,7 +133,7 @@ def combine_completion_chunks(chunks: list[CompletionChunk]) -> Completion:
                     or _tool_call.tool_name is None
                     or _tool_call.tool_arguments is None
                 ):
-                    raise ValueError(
+                    raise CombineCompletionChunksError(
                         "Completion chunk tool calls must have id, tool_name, "
                         "and tool_arguments set."
                     )

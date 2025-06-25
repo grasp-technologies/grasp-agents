@@ -1,16 +1,15 @@
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from pydantic import Field
+from pydantic import PrivateAttr
 
 from .memory import Memory
-from .message_history import MessageHistory
 from .run_context import RunContext
 from .typing.io import LLMPrompt
-from .typing.message import Message
+from .typing.message import Message, Messages, SystemMessage
 
 
-class SetMemoryHandler(Protocol):
+class MakeMemoryHandler(Protocol):
     def __call__(
         self,
         prev_memory: "LLMAgentMemory",
@@ -21,38 +20,48 @@ class SetMemoryHandler(Protocol):
 
 
 class LLMAgentMemory(Memory):
-    message_history: MessageHistory = Field(default_factory=MessageHistory)
+    _message_history: Messages = PrivateAttr(default_factory=list)  # type: ignore
+    _sys_prompt: LLMPrompt | None = PrivateAttr(default=None)
+
+    def __init__(self, sys_prompt: LLMPrompt | None = None) -> None:
+        super().__init__()
+        self._sys_prompt = sys_prompt
+        self.reset(sys_prompt)
+
+    @property
+    def sys_prompt(self) -> LLMPrompt | None:
+        return self._sys_prompt
+
+    @property
+    def message_history(self) -> Messages:
+        return self._message_history
 
     def reset(
         self, sys_prompt: LLMPrompt | None = None, ctx: RunContext[Any] | None = None
     ):
-        self.message_history.reset(sys_prompt=sys_prompt)
+        if sys_prompt is not None:
+            self._sys_prompt = sys_prompt
+
+        self._message_history = (
+            [SystemMessage(content=self._sys_prompt)]
+            if self._sys_prompt is not None
+            else []
+        )
+
+    def erase(self) -> None:
+        self._message_history = []
 
     def update(
-        self,
-        message_list: Sequence[Message] | None = None,
-        *,
-        message_batch: Sequence[Message] | None = None,
-        ctx: RunContext[Any] | None = None,
+        self, messages: Sequence[Message], *, ctx: RunContext[Any] | None = None
     ):
-        if message_batch is not None and message_list is not None:
-            raise ValueError(
-                "Only one of message_batch or messages should be provided."
-            )
-        if message_batch is not None:
-            self.message_history.add_message_batch(message_batch)
-        elif message_list is not None:
-            self.message_history.add_message_list(message_list)
-        else:
-            raise ValueError("Either message_batch or messages must be provided.")
+        self._message_history.extend(messages)
 
     @property
     def is_empty(self) -> bool:
-        return len(self.message_history) == 0
-
-    @property
-    def batch_size(self) -> int:
-        return self.message_history.batch_size
+        return len(self._message_history) == 0
 
     def __repr__(self) -> str:
-        return f"Message History: {len(self.message_history)}"
+        return (
+            "LLMAgentMemory with message history of "
+            f"length {len(self._message_history)}"
+        )
