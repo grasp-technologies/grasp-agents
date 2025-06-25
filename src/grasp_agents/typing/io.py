@@ -5,12 +5,12 @@ from pydantic import BaseModel
 ProcName: TypeAlias = str
 
 
+InT = TypeVar("InT")
+OutT_co = TypeVar("OutT_co", covariant=True)
+
+
 class LLMPromptArgs(BaseModel):
     pass
 
-
-InT_contra = TypeVar("InT_contra", contravariant=True)
-OutT_co = TypeVar("OutT_co", covariant=True)
-MemT_co = TypeVar("MemT_co", covariant=True)
 
 LLMPrompt: TypeAlias = str

@@ -6,10 +6,12 @@ from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime
 from logging import getLogger
 from pathlib import Path
-from typing import Any, TypeVar, get_args, overload
+from typing import Annotated, Any, TypeVar, get_args, get_origin, overload
 
 from pydantic import TypeAdapter, ValidationError
 from tqdm.autonotebook import tqdm
+
+from .errors import OutputValidationError, StringParsingError
 
 logger = getLogger(__name__)
 
@@ -25,35 +27,41 @@ def extract_json_substring(text: str) -> str | None:
         try:
             _, end = decoder.raw_decode(text, idx=start)
             return text[start:end]
-        except ValueError:
+        except json.JSONDecodeError:
             continue
 
     return None
 
 
 def parse_json_or_py_string(
-    s: str, return_none_on_failure: bool = False
+    s: str, return_none_on_failure: bool = False, strip_language_markdown: bool = True
 ) -> dict[str, Any] | list[Any] | None:
-    s_fmt = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
+    s_orig = s
+    if strip_language_markdown:
+        s = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
     try:
-        return ast.literal_eval(s_fmt)
+        return ast.literal_eval(s)
     except (ValueError, SyntaxError):
         try:
-            return json.loads(s_fmt)
+            return json.loads(s)
         except json.JSONDecodeError as exc:
             if return_none_on_failure:
                 return None
-            raise ValueError(
+            raise StringParsingError(
                 "Invalid JSON/Python string - Both ast.literal_eval and json.loads "
-                f"failed to parse the following response:\n{s}"
+                f"failed to parse the following response:\n{s_orig}"
             ) from exc
 
 
 def parse_json_or_py_substring(
-    json_str: str, return_none_on_failure: bool = False
+    json_str: str,
+    return_none_on_failure: bool = False,
+    strip_language_markdown: bool = True,
 ) -> dict[str, Any] | list[Any] | None:
     return parse_json_or_py_string(
-        extract_json_substring(json_str) or "", return_none_on_failure
+        extract_json_substring(json_str) or "",
+        return_none_on_failure=return_none_on_failure,
+        strip_language_markdown=strip_language_markdown,
     )
 
 
@@ -62,6 +70,7 @@ def validate_obj_from_json_or_py_string(
     s: str,
     adapter: TypeAdapter[T],
     from_substring: bool = False,
+    strip_language_markdown: bool = True,
 ) -> T: ...
 
 
@@ -70,6 +79,7 @@ def validate_obj_from_json_or_py_string(
     s: str,
     adapter: Mapping[str, TypeAdapter[T]],
     from_substring: bool = False,
+    strip_language_markdown: bool = True,
 ) -> T | str: ...
 
 
@@ -77,6 +87,7 @@ def validate_obj_from_json_or_py_string(
     s: str,
     adapter: TypeAdapter[T] | Mapping[str, TypeAdapter[T]],
     from_substring: bool = False,
+    strip_language_markdown: bool = True,
 ) -> T | str:
     _selected_adapter: TypeAdapter[T] | None = None
     if isinstance(adapter, Mapping):
@@ -89,22 +100,33 @@ def validate_obj_from_json_or_py_string(
         _selected_adapter = adapter
 
     _type = _selected_adapter._type  # type: ignore[attr-defined]
+    type_origin = get_origin(_type)
     type_args = get_args(_type)
-    is_str_type = (_type is str) or (len(type_args) == 1 and type_args[0] is str)
+    is_str_type = (_type is str) or (
+        type_origin is Annotated and type_args and type_args[0] is str
+    )
 
     try:
         if not is_str_type:
             if from_substring:
-                parsed = parse_json_or_py_substring(s, return_none_on_failure=True)
+                parsed = parse_json_or_py_substring(
+                    s,
+                    return_none_on_failure=True,
+                    strip_language_markdown=strip_language_markdown,
+                )
             else:
-                parsed = parse_json_or_py_string(s, return_none_on_failure=True)
+                parsed = parse_json_or_py_string(
+                    s,
+                    return_none_on_failure=True,
+                    strip_language_markdown=strip_language_markdown,
+                )
             if parsed is None:
                 parsed = s
         else:
             parsed = s
         return _selected_adapter.validate_python(parsed)
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise ValueError(
+    except ValidationError as exc:
+        raise OutputValidationError(
             f"Invalid JSON or Python string:\n{s}\nExpected type: {_type}"
         ) from exc
 

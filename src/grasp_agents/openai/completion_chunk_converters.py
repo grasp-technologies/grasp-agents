@@ -1,3 +1,4 @@
+from ..errors import CompletionError
 from ..typing.completion_chunk import (
     CompletionChunk,
     CompletionChunkChoice,
@@ -12,7 +13,7 @@ def from_api_completion_chunk(
     api_completion_chunk: OpenAICompletionChunk, name: str | None = None
 ) -> CompletionChunk:
     if api_completion_chunk.choices is None:  # type: ignore
-        raise RuntimeError(
+        raise CompletionError(
             f"Completion chunk API error: "
             f"{getattr(api_completion_chunk, 'error', None)}"
         )
@@ -24,12 +25,12 @@ def from_api_completion_chunk(
         finish_reason = api_choice.finish_reason
 
         if api_choice.delta is None:  # type: ignore
-            raise RuntimeError(
+            raise CompletionError(
                 "API returned None for delta content in completion chunk "
                 f"with finish_reason: {finish_reason}."
             )
         # if api_choice.delta.content is None:
-        #     raise RuntimeError(
+        #     raise CompletionError(
         #         "API returned None for delta content in completion chunk "
         #         f"with finish_reason: {finish_reason}."
         #     )

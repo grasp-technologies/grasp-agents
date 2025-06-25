@@ -5,12 +5,13 @@ from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
 from pydantic import BaseModel
 from pydantic.json_schema import SkipJsonSchema
 
+from .memory import MemT
 from .packet import Packet
 from .packet_pool import PacketPool
 from .processor import Processor
 from .run_context import CtxT, RunContext
 from .typing.events import Event, PacketEvent
-from .typing.io import InT_contra, MemT_co, OutT_co, ProcName
+from .typing.io import InT, OutT_co, ProcName
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,8 @@ class ExitCommunicationHandler(Protocol[_OutT_contra, CtxT]):
 
 
 class CommProcessor(
-    Processor[InT_contra, OutT_co, MemT_co, CtxT],
-    Generic[InT_contra, OutT_co, MemT_co, CtxT],
+    Processor[InT, OutT_co, MemT, CtxT],
+    Generic[InT, OutT_co, MemT, CtxT],
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -45,8 +46,9 @@ class CommProcessor(
         *,
         recipients: Sequence[ProcName] | None = None,
         packet_pool: PacketPool[CtxT] | None = None,
+        num_par_run_retries: int = 0,
     ) -> None:
-        super().__init__(name=name)
+        super().__init__(name=name, num_par_run_retries=num_par_run_retries)
 
         self.recipients = recipients or []
 
@@ -55,6 +57,10 @@ class CommProcessor(
         self._exit_communication_impl: (
             ExitCommunicationHandler[OutT_co, CtxT] | None
         ) = None
+
+    @property
+    def packet_pool(self) -> PacketPool[CtxT] | None:
+        return self._packet_pool
 
     def _validate_routing(self, payloads: Sequence[OutT_co]) -> Sequence[ProcName]:
         if all(isinstance(p, DynCommPayload) for p in payloads):
@@ -88,9 +94,10 @@ class CommProcessor(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT_contra] | None = None,
-        in_args: InT_contra | Sequence[InT_contra] | None = None,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
         forgetful: bool = False,
+        run_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
         out_packet = await super().run(
@@ -98,6 +105,7 @@ class CommProcessor(
             in_packet=in_packet,
             in_args=in_args,
             forgetful=forgetful,
+            run_id=run_id,
             ctx=ctx,
         )
         recipients = self._validate_routing(out_packet.payloads)
@@ -114,9 +122,10 @@ class CommProcessor(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT_contra] | None = None,
-        in_args: InT_contra | Sequence[InT_contra] | None = None,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | None = None,
         forgetful: bool = False,
+        run_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         out_packet: Packet[OutT_co] | None = None
@@ -125,6 +134,7 @@ class CommProcessor(
             in_packet=in_packet,
             in_args=in_args,
             forgetful=forgetful,
+            run_id=run_id,
             ctx=ctx,
         ):
             if isinstance(event, PacketEvent):
@@ -152,7 +162,7 @@ class CommProcessor(
 
         return func
 
-    def _exit_communication_fn(
+    def _exit_communication(
         self, out_packet: Packet[OutT_co], ctx: RunContext[CtxT] | None
     ) -> bool:
         if self._exit_communication_impl:
@@ -162,7 +172,7 @@ class CommProcessor(
 
     async def _packet_handler(
         self,
-        packet: Packet[InT_contra],
+        packet: Packet[InT],
         ctx: RunContext[CtxT] | None = None,
         **run_kwargs: Any,
     ) -> None:
@@ -170,7 +180,7 @@ class CommProcessor(
 
         out_packet = await self.run(ctx=ctx, in_packet=packet, **run_kwargs)
 
-        if self._exit_communication_fn(out_packet=out_packet, ctx=ctx):
+        if self._exit_communication(out_packet=out_packet, ctx=ctx):
             await self._packet_pool.stop_all()
             return
 

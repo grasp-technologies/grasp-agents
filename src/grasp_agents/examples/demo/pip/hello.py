@@ -28,6 +28,7 @@ You should first ask the student about their education, interests, and preferenc
 * Provide your thinking before asking a question and after receiving a reply.
 * Do not include your exact question as part of your thinking.
 * The problem must have all the necessary data.
+* Use the final answer tool to provide the problem.
 """
 
 

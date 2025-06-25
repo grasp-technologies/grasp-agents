@@ -17,7 +17,6 @@ def to_api_tool(
     tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None
 ) -> OpenAIToolParam:
     if strict:
-        # Enforce strict mode for pydantic models
         return pydantic_function_tool(
             model=tool.in_type, name=tool.name, description=tool.description
         )

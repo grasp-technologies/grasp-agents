@@ -42,11 +42,11 @@ class UserMessage(MessageBase):
     def from_formatted_prompt(
         cls,
         prompt_template: str,
-        prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
         name: str | None = None,
+        prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
     ) -> "UserMessage":
         content = Content.from_formatted_prompt(
-            prompt_template=prompt_template, prompt_args=prompt_args
+            prompt_template=prompt_template, **(prompt_args or {})
         )
 
         return cls(content=content, name=name)
@@ -74,10 +74,7 @@ class ToolMessage(MessageBase):
 
     @classmethod
     def from_tool_output(
-        cls,
-        tool_output: Any,
-        tool_call: ToolCall,
-        indent: int = 2,
+        cls, tool_output: Any, tool_call: ToolCall, indent: int = 2
     ) -> "ToolMessage":
         return cls(
             content=json.dumps(tool_output, default=pydantic_encoder, indent=indent),

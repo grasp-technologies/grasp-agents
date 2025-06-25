@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Coroutine, Sequence
-from itertools import chain, starmap
+from itertools import starmap
 from logging import getLogger
 from typing import Any, ClassVar, Generic, Protocol, TypeVar
 
@@ -132,62 +132,58 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         if self.manage_memory_impl:
             self.manage_memory_impl(memory=memory, ctx=ctx, **kwargs)
 
-    async def generate_message_batch(
+    async def generate_messages(
         self,
         memory: LLMAgentMemory,
+        run_id: str,
         tool_choice: ToolChoice | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Sequence[AssistantMessage]:
-        completion_batch = await self.llm.generate_completion_batch(
+        completion = await self.llm.generate_completion(
             memory.message_history, tool_choice=tool_choice
         )
-        message_batch = list(
-            chain.from_iterable([c.messages for c in completion_batch])
-        )
-        memory.update(message_batch=message_batch)
+        memory.update(completion.messages)
 
         if ctx is not None:
-            ctx.completions[self.agent_name].extend(completion_batch)
-            self._track_usage(self.agent_name, completion_batch, ctx=ctx)
-            self._print_completions(completion_batch, ctx=ctx)
+            ctx.completions[self.agent_name].append(completion)
+            self._track_usage(self.agent_name, completion, ctx=ctx)
+            self._print_completion(completion, run_id=run_id, ctx=ctx)
 
-        return message_batch
+        return completion.messages
 
-    async def generate_message_stream(
+    async def generate_messages_stream(
         self,
         memory: LLMAgentMemory,
+        run_id: str,
         tool_choice: ToolChoice | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent | GenMessageEvent]:
         message_hist = memory.message_history
-        if memory.message_history.batch_size > 1:
-            raise ValueError("Batch size must be 1 when streaming completions.")
-        conversation = message_hist.conversations[0]
 
         completion: Completion | None = None
         async for event in await self.llm.generate_completion_stream(
-            conversation, tool_choice=tool_choice
+            message_hist, tool_choice=tool_choice
         ):
             yield event
             if isinstance(event, CompletionEvent):
                 completion = event.data
-
         if completion is None:
             raise RuntimeError("No completion generated during stream.")
 
-        memory.update(message_batch=completion.messages)
+        memory.update(completion.messages)
 
         for message in completion.messages:
             yield GenMessageEvent(name=self.agent_name, data=message)
 
         if ctx is not None:
-            self._track_usage(self.agent_name, [completion], ctx=ctx)
+            self._track_usage(self.agent_name, completion, ctx=ctx)
             ctx.completions[self.agent_name].append(completion)
 
     async def call_tools(
         self,
         calls: Sequence[ToolCall],
         memory: LLMAgentMemory,
+        run_id: str,
         ctx: RunContext[CtxT] | None = None,
     ) -> Sequence[ToolMessage]:
         corouts: list[Coroutine[Any, Any, BaseModel]] = []
@@ -198,12 +194,14 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
         outs = await asyncio.gather(*corouts)
         tool_messages = list(
-            starmap(ToolMessage.from_tool_output, zip(outs, calls, strict=False))
+            starmap(ToolMessage.from_tool_output, zip(outs, calls, strict=True))
         )
         memory.update(tool_messages)
 
         if ctx is not None:
-            ctx.printer.print_llm_messages(tool_messages, agent_name=self.agent_name)
+            ctx.printer.print_llm_messages(
+                tool_messages, agent_name=self.agent_name, run_id=run_id
+            )
 
         return tool_messages
 
@@ -211,10 +209,13 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         self,
         calls: Sequence[ToolCall],
         memory: LLMAgentMemory,
+        run_id: str,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[ToolMessageEvent]:
-        tool_messages = await self.call_tools(calls, memory=memory, ctx=ctx)
-        for tool_message, call in zip(tool_messages, calls, strict=False):
+        tool_messages = await self.call_tools(
+            calls, memory=memory, run_id=run_id, ctx=ctx
+        )
+        for tool_message, call in zip(tool_messages, calls, strict=True):
             yield ToolMessageEvent(name=call.tool_name, data=tool_message)
 
     def _extract_final_answer_from_tool_calls(
@@ -233,7 +234,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         return final_answer_message
 
     async def _generate_final_answer(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, run_id: str, ctx: RunContext[CtxT] | None = None
     ) -> AssistantMessage:
         assert self._final_answer_tool_name is not None
 
@@ -242,11 +243,15 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         )
         memory.update([user_message])
         if ctx is not None:
-            ctx.printer.print_llm_messages([user_message], agent_name=self.agent_name)
+            ctx.printer.print_llm_messages(
+                [user_message], agent_name=self.agent_name, run_id=run_id
+            )
 
         tool_choice = NamedToolChoice(name=self._final_answer_tool_name)
         gen_message = (
-            await self.generate_message_batch(memory, tool_choice=tool_choice, ctx=ctx)
+            await self.generate_messages(
+                memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
+            )
         )[0]
 
         final_answer_message = self._extract_final_answer_from_tool_calls(
@@ -260,7 +265,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         return final_answer_message
 
     async def _generate_final_answer_stream(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, run_id: str, ctx: RunContext[CtxT] | None = None
     ) -> AsyncIterator[Event[Any]]:
         assert self._final_answer_tool_name is not None
 
@@ -272,8 +277,8 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
         tool_choice = NamedToolChoice(name=self._final_answer_tool_name)
         event: Event[Any] | None = None
-        async for event in self.generate_message_stream(
-            memory, tool_choice=tool_choice, ctx=ctx
+        async for event in self.generate_messages_stream(
+            memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
         ):
             yield event
 
@@ -289,7 +294,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         yield GenMessageEvent(name=self.agent_name, data=final_answer_message)
 
     async def execute(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, run_id: str, ctx: RunContext[CtxT] | None = None
     ) -> AssistantMessage | Sequence[AssistantMessage]:
         # 1. Generate the first message:
         #    In ReAct mode, we generate the first message without tool calls
@@ -297,26 +302,24 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         tool_choice: ToolChoice | None = None
         if self.tools:
             tool_choice = "none" if self._react_mode else "auto"
-        gen_message_batch = await self.generate_message_batch(
-            memory, tool_choice=tool_choice, ctx=ctx
+        gen_messages = await self.generate_messages(
+            memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
         )
         if not self.tools:
-            return gen_message_batch
+            return gen_messages
 
-        if memory.message_history.batch_size > 1:
-            raise ValueError("Batch size must be 1 for tool call loop.")
-        gen_message = gen_message_batch[0]
+        if len(gen_messages) > 1:
+            raise ValueError("n_choices must be 1 when executing the tool call loop.")
+        gen_message = gen_messages[0]
         turns = 0
 
         while True:
-            conversation = memory.message_history.conversations[0]
-
             # 2. Check if we should exit the tool call loop
 
             # When final_answer_tool_name is None, we use exit_tool_call_loop_impl
             # to determine whether to exit the loop.
             if self._final_answer_tool_name is None and self._exit_tool_call_loop(
-                conversation, ctx=ctx, num_turns=turns
+                memory.message_history, ctx=ctx, num_turns=turns
             ):
                 return gen_message
 
@@ -336,7 +339,9 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
                 # tool call.
                 # Otherwise, we simply return the last generated message.
                 if self._final_answer_tool_name is not None:
-                    final_answer = await self._generate_final_answer(memory, ctx=ctx)
+                    final_answer = await self._generate_final_answer(
+                        memory, run_id=run_id, ctx=ctx
+                    )
                 else:
                     final_answer = gen_message
                 logger.info(
@@ -347,7 +352,9 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             # 3. Call tools if there are any tool calls in the generated message.
 
             if gen_message.tool_calls:
-                await self.call_tools(gen_message.tool_calls, memory=memory, ctx=ctx)
+                await self.call_tools(
+                    gen_message.tool_calls, memory=memory, run_id=run_id, ctx=ctx
+                )
 
             # Apply the memory management function if provided.
             self._manage_memory(memory, ctx=ctx, num_turns=turns)
@@ -363,23 +370,20 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
                 "none" if (self._react_mode and gen_message.tool_calls) else "required"
             )
             gen_message = (
-                await self.generate_message_batch(
-                    memory, tool_choice=tool_choice, ctx=ctx
+                await self.generate_messages(
+                    memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
                 )
             )[0]
 
             turns += 1
 
     async def execute_stream(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, run_id: str, ctx: RunContext[CtxT] | None = None
     ) -> AsyncIterator[Event[Any]]:
-        if memory.message_history.batch_size > 1:
-            raise ValueError("Batch size must be 1 when streaming.")
-
         tool_choice: ToolChoice = "none" if self._react_mode else "auto"
         gen_message: AssistantMessage | None = None
-        async for event in self.generate_message_stream(
-            memory, tool_choice=tool_choice, ctx=ctx
+        async for event in self.generate_messages_stream(
+            memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
         ):
             yield event
             if isinstance(event, GenMessageEvent):
@@ -389,10 +393,8 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
         turns = 0
 
         while True:
-            conversation = memory.message_history.conversations[0]
-
             if self._final_answer_tool_name is None and self._exit_tool_call_loop(
-                conversation, ctx=ctx, num_turns=turns
+                memory.message_history, ctx=ctx, num_turns=turns
             ):
                 return
 
@@ -409,7 +411,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             if turns >= self.max_turns:
                 if self._final_answer_tool_name is not None:
                     async for event in self._generate_final_answer_stream(
-                        memory, ctx=ctx
+                        memory, run_id=run_id, ctx=ctx
                     ):
                         yield event
                 logger.info(
@@ -422,7 +424,7 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
                     yield ToolCallEvent(name=self.agent_name, data=tool_call)
 
                 async for tool_message_event in self.call_tools_stream(
-                    gen_message.tool_calls, memory=memory, ctx=ctx
+                    gen_message.tool_calls, memory=memory, run_id=run_id, ctx=ctx
                 ):
                     yield tool_message_event
 
@@ -431,8 +433,8 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             tool_choice = (
                 "none" if (self._react_mode and gen_message.tool_calls) else "required"
             )
-            async for event in self.generate_message_stream(
-                memory, tool_choice=tool_choice, ctx=ctx
+            async for event in self.generate_messages_stream(
+                memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
             ):
                 yield event
                 if isinstance(event, GenMessageEvent):
@@ -443,12 +445,12 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
     def _track_usage(
         self,
         agent_name: str,
-        completion_batch: Sequence[Completion],
+        completion: Completion,
         ctx: RunContext[CtxT],
     ) -> None:
         ctx.usage_tracker.update(
             agent_name=agent_name,
-            completions=completion_batch,
+            completions=[completion],
             model_name=self.llm.model_name,
         )
 
@@ -473,11 +475,12 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
         return FinalAnswerTool()
 
-    def _print_completions(
-        self, completion_batch: Sequence[Completion], ctx: RunContext[CtxT]
+    def _print_completion(
+        self, completion: Completion, run_id: str, ctx: RunContext[CtxT]
     ) -> None:
-        messages = [c.messages[0] for c in completion_batch]
-        usages = [c.usage for c in completion_batch]
         ctx.printer.print_llm_messages(
-            messages, usages=usages, agent_name=self.agent_name
+            completion.messages,
+            usages=[completion.usage],
+            agent_name=self.agent_name,
+            run_id=run_id,
         )

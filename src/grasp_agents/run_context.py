@@ -1,7 +1,6 @@
 from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
@@ -23,8 +22,6 @@ CtxT = TypeVar("CtxT")
 
 
 class RunContext(BaseModel, Generic[CtxT]):
-    run_id: str = Field(default_factory=lambda: str(uuid4())[:8], frozen=True)
-
     state: CtxT | None = None
 
     run_args: dict[ProcName, RunArgs] = Field(default_factory=dict)
@@ -39,9 +36,8 @@ class RunContext(BaseModel, Generic[CtxT]):
     _printer: Printer = PrivateAttr()
 
     def model_post_init(self, context: Any) -> None:  # noqa: ARG002
-        self._usage_tracker = UsageTracker(source_id=self.run_id)
+        self._usage_tracker = UsageTracker()
         self._printer = Printer(
-            source_id=self.run_id,
             print_messages=self.print_messages,
             color_by=self.color_messages_by,
         )
