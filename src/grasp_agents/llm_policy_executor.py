@@ -488,11 +488,3 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             agent_name=self.agent_name,
             run_id=run_id,
         )
-
-
-if self._react_mode and gen_message.tool_calls:
-    tool_choice = "none"
-elif gen_message.tool_calls:
-    tool_choice = "auto"
-else:
-    tool_choice = "required"
