@@ -45,9 +45,7 @@ class UserMessage(MessageBase):
         name: str | None = None,
         prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
     ) -> "UserMessage":
-        content = Content.from_formatted_prompt(
-            prompt_template=prompt_template, **(prompt_args or {})
-        )
+        content = Content.from_formatted_prompt(prompt_template, **(prompt_args or {}))
 
         return cls(content=content, name=name)
 

@@ -29,7 +29,7 @@
   - Workflows (static communication topology), including loops
   - Agents-as-tools for task delegation
   - Freeform A2A communication via the in-process actor model
-- Batch processing support outside of agentic loops
+- Parallel processing with flexible retries and rate limiting
 - Simple logging and usage/cost tracking
 
 ## Project Structure
