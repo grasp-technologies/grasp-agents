@@ -245,7 +245,9 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT_co, MemT, Ct
         run_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
-        if isinstance(in_args, Sequence):
+        if (in_args is not None and isinstance(in_args, Sequence)) or (
+            in_packet is not None and len(in_packet.payloads) > 1
+        ):
             return await self._run_par(
                 chat_inputs=chat_inputs,
                 in_packet=in_packet,
