@@ -106,7 +106,9 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         for message in completion.messages:
             if not message.tool_calls:
                 validate_obj_from_json_or_py_string(
-                    message.content or "", adapter=self._response_format_adapter
+                    message.content or "",
+                    adapter=self._response_format_adapter,
+                    from_substring=True,
                 )
 
     def _validate_tool_calls(self, completion: Completion) -> None:

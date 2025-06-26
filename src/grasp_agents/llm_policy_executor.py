@@ -434,9 +434,12 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
 
             self._manage_memory(memory, ctx=ctx, num_turns=turns)
 
-            tool_choice = (
-                "none" if (self._react_mode and gen_message.tool_calls) else "required"
-            )
+            if self._react_mode and gen_message.tool_calls:
+                tool_choice = "none"
+            elif gen_message.tool_calls:
+                tool_choice = "auto"
+            else:
+                tool_choice = "required"
             async for event in self.generate_messages_stream(
                 memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
             ):
