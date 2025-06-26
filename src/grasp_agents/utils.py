@@ -90,10 +90,18 @@ def validate_obj_from_json_or_py_string(
     strip_language_markdown: bool = True,
 ) -> T | str:
     _selected_adapter: TypeAdapter[T] | None = None
+    _selected_tag: str | None = None
+    s_orig = s
+
     if isinstance(adapter, Mapping):
-        for _marker, _adapter in adapter.items():
-            if _marker in s:
-                _selected_adapter = _adapter
+        for _tag, _adapter in adapter.items():
+            match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
+            if not match:
+                continue
+            s = match.group(1).strip()
+            _selected_adapter = _adapter
+            _selected_tag = _tag
+            break
         if _selected_adapter is None:
             return s
     else:
@@ -126,9 +134,12 @@ def validate_obj_from_json_or_py_string(
             parsed = s
         return _selected_adapter.validate_python(parsed)
     except ValidationError as exc:
-        raise OutputValidationError(
-            f"Invalid JSON or Python string:\n{s}\nExpected type: {_type}"
-        ) from exc
+        err_message = f"Invalid JSON or Python string:\n{s_orig}"
+        if _selected_tag:
+            err_message += f"\nExpected type {_type} within tag <{_selected_tag}>"
+        else:
+            err_message += f"\nExpected type {_type}"
+        raise OutputValidationError(err_message) from exc
 
 
 def extract_xml_list(text: str) -> list[str]:
