@@ -181,6 +181,7 @@ async def asyncio_gather_with_pbar(
     no_tqdm: bool = False,
     desc: str | None = None,
 ) -> list[Any]:
+    # TODO: optimize
     pbar = tqdm(total=len(corouts), desc=desc, disable=no_tqdm)
 
     async def run_and_update(coro: Coroutine[Any, Any, Any]) -> Any:
