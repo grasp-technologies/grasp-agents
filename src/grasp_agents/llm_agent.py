@@ -221,7 +221,7 @@ class LLMAgent(
         return validate_obj_from_json_or_py_string(
             str(conversation[-1].content or ""),
             adapter=self._out_type_adapter,
-            from_substring=False,
+            from_substring=True,
         )
 
     async def _process(
