@@ -366,9 +366,13 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             #    If we are not in ReAct mode, we set tool_choice to "auto" to allow
             #    the LLM to choose freely whether to call tools.
 
-            tool_choice = (
-                "none" if (self._react_mode and gen_message.tool_calls) else "required"
-            )
+            if self._react_mode and gen_message.tool_calls:
+                tool_choice = "none"
+            elif gen_message.tool_calls:
+                tool_choice = "auto"
+            else:
+                tool_choice = "required"
+
             gen_message = (
                 await self.generate_messages(
                     memory, tool_choice=tool_choice, run_id=run_id, ctx=ctx
@@ -484,3 +488,11 @@ class LLMPolicyExecutor(AutoInstanceAttributesMixin, Generic[_FinalAnswerT, CtxT
             agent_name=self.agent_name,
             run_id=run_id,
         )
+
+
+if self._react_mode and gen_message.tool_calls:
+    tool_choice = "none"
+elif gen_message.tool_calls:
+    tool_choice = "auto"
+else:
+    tool_choice = "required"

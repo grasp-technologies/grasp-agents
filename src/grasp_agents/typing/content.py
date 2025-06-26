@@ -66,6 +66,7 @@ class Content(BaseModel):
     def from_formatted_prompt(
         cls,
         prompt_template: str,
+        /,
         **prompt_args: str | int | bool | ImageData | None,
     ) -> "Content":
         prompt_args = prompt_args or {}
