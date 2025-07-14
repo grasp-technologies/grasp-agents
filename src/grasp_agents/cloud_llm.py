@@ -42,26 +42,28 @@ class APIProvider(TypedDict):
     struct_outputs_support: NotRequired[tuple[str, ...]]
 
 
-API_PROVIDERS: dict[APIProviderName, APIProvider] = {
-    "openai": APIProvider(
-        name="openai",
-        base_url="https://api.openai.com/v1",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        struct_outputs_support=("*",),
-    ),
-    "openrouter": APIProvider(
-        name="openrouter",
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        struct_outputs_support=(),
-    ),
-    "google_ai_studio": APIProvider(
-        name="google_ai_studio",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=os.getenv("GOOGLE_AI_STUDIO_API_KEY"),
-        struct_outputs_support=("*",),
-    ),
-}
+def get_api_providers() -> dict[APIProviderName, APIProvider]:
+    """Returns a dictionary of available API providers."""
+    return {
+        "openai": APIProvider(
+            name="openai",
+            base_url="https://api.openai.com/v1",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            struct_outputs_support=("*",),
+        ),
+        "openrouter": APIProvider(
+            name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            struct_outputs_support=(),
+        ),
+        "google_ai_studio": APIProvider(
+            name="google_ai_studio",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=os.getenv("GOOGLE_AI_STUDIO_API_KEY"),
+            struct_outputs_support=("*",),
+        ),
+    }
 
 
 def retry_error_callback(retry_state: RetryCallState) -> Completion:
@@ -142,12 +144,16 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         if len(model_name_parts) == 2:
             api_provider_name, api_model_name = model_name_parts
             self._api_model_name: str = api_model_name
-            if api_provider_name not in API_PROVIDERS:
+
+            api_providers = get_api_providers()
+
+            if api_provider_name not in api_providers:
                 raise ValueError(
                     f"API provider '{api_provider_name}' is not supported. "
-                    f"Supported providers are: {', '.join(API_PROVIDERS.keys())}"
+                    f"Supported providers are: {', '.join(api_providers.keys())}"
                 )
-            _api_provider = API_PROVIDERS[api_provider_name]
+
+            _api_provider = api_providers[api_provider_name]
         elif api_provider is not None:
             self._api_model_name: str = model_name
             _api_provider = api_provider
