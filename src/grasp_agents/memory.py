@@ -34,3 +34,22 @@ class Memory(BaseModel, ABC):
         return f"{self.__class__.__name__}()"
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class DummyMemory(Memory):
+    def reset(
+        self, *args: Any, ctx: RunContext[Any] | None = None, **kwargs: Any
+    ) -> None:
+        pass
+
+    def erase(self) -> None:
+        pass
+
+    def update(
+        self, *args: Any, ctx: RunContext[Any] | None = None, **kwargs: Any
+    ) -> None:
+        pass
+
+    @property
+    def is_empty(self) -> bool:
+        return True
