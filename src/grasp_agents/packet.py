@@ -15,10 +15,13 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
     sender: ProcName
     recipients: Sequence[ProcName] = Field(default_factory=list)
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid")
 
     def __repr__(self) -> str:
         return (
-            f"From: {self.sender}, To: {', '.join(self.recipients)}, "
+            f"{self.__class__.__name__}:\n"
+            f"ID: {self.id}\n"
+            f"From: {self.sender}\n"
+            f"To: {', '.join(self.recipients)}\n"
             f"Payloads: {len(self.payloads)}"
         )

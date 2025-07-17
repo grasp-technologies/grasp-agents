@@ -20,7 +20,7 @@ class MakeSystemPromptHandler(Protocol[CtxT]):
         sys_args: LLMPromptArgs | None,
         *,
         ctx: RunContext[CtxT] | None,
-    ) -> str: ...
+    ) -> str | None: ...
 
 
 class MakeInputContentHandler(Protocol[_InT_contra, CtxT]):
@@ -110,7 +110,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
 
         return Content.from_text(json.dumps(combined_args, indent=2))
 
-    def make_user_message(
+    def make_input_message(
         self,
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         in_args: InT | None = None,

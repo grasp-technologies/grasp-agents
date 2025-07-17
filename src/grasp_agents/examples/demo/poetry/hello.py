@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from grasp_agents import BaseTool, LLMAgent, RunContext
 from grasp_agents.grasp_logging import setup_logging
-from grasp_agents.openai import OpenAILLM, OpenAILLMSettings
+from grasp_agents.litellm import LiteLLM, LiteLLMSettings
 
 load_dotenv()
 
@@ -68,9 +68,9 @@ class Problem(BaseModel):
 
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
-    llm=OpenAILLM(
-        model_name="openai:gpt-4.1",
-        llm_settings=OpenAILLMSettings(temperature=0.5),
+    llm=LiteLLM(
+        model_name="gpt-4.1",
+        llm_settings=LiteLLMSettings(temperature=0.5),
     ),
     tools=[AskStudentTool()],
     react_mode=True,

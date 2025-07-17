@@ -13,10 +13,8 @@ from . import (
 )
 
 
-def to_api_tool(
-    tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None
-) -> OpenAIToolParam:
-    if strict:
+def to_api_tool(tool: BaseTool[BaseModel, Any, Any]) -> OpenAIToolParam:
+    if tool.strict:
         return pydantic_function_tool(
             model=tool.in_type, name=tool.name, description=tool.description
         )
@@ -25,9 +23,9 @@ def to_api_tool(
         name=tool.name,
         description=tool.description,
         parameters=tool.in_type.model_json_schema(),
-        strict=strict,
+        strict=tool.strict,
     )
-    if strict is None:
+    if tool.strict is None:
         function.pop("strict")
 
     return OpenAIToolParam(type="function", function=function)

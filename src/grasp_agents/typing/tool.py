@@ -48,6 +48,8 @@ class BaseTool(
     name: str
     description: str
 
+    strict: bool | None = None
+
     _in_type: type[_InT] = PrivateAttr()
     _out_type: type[_OutT_co] = PrivateAttr()
 

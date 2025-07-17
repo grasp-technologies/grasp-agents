@@ -36,7 +36,7 @@ pre-commit install --install-hooks
 
 ```
 OPENAI_API_KEY=your_openai_api_key
-GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
 - Open [src/grasp_agents/examples/notebooks/agents_demo.ipynb](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/notebooks/agents_demo.ipynb).

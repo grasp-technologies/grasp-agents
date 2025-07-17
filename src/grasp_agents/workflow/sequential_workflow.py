@@ -1,11 +1,12 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
-from typing import Any, ClassVar, Generic, cast, final
+from typing import Any, Generic, cast, final
 
 from ..errors import WorkflowConstructionError
 from ..packet_pool import Packet, PacketPool
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
+from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
 from ..typing.io import InT, OutT_co, ProcName
 from .workflow_processor import WorkflowProcessor
 
@@ -13,18 +14,13 @@ from .workflow_processor import WorkflowProcessor
 class SequentialWorkflow(
     WorkflowProcessor[InT, OutT_co, CtxT], Generic[InT, OutT_co, CtxT]
 ):
-    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-        0: "_in_type",
-        1: "_out_type",
-    }
-
     def __init__(
         self,
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
         packet_pool: PacketPool[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
-        num_par_run_retries: int = 0,
+        max_retries: int = 0,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -33,7 +29,7 @@ class SequentialWorkflow(
             name=name,
             packet_pool=packet_pool,
             recipients=recipients,
-            num_par_run_retries=num_par_run_retries,
+            max_retries=max_retries,
         )
 
         for prev_proc, proc in pairwise(subprocs):
@@ -52,9 +48,11 @@ class SequentialWorkflow(
         in_packet: Packet[InT] | None = None,
         in_args: InT | Sequence[InT] | None = None,
         forgetful: bool = False,
-        run_id: str | None = None,
+        call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
+        call_id = self._generate_call_id(call_id)
+
         packet = in_packet
         for subproc in self.subprocs:
             packet = await subproc.run(
@@ -62,10 +60,44 @@ class SequentialWorkflow(
                 in_packet=packet,
                 in_args=in_args,
                 forgetful=forgetful,
-                run_id=self._generate_subproc_run_id(run_id, subproc),
+                call_id=f"{call_id}/{subproc.name}",
                 ctx=ctx,
             )
             chat_inputs = None
             in_args = None
 
         return cast("Packet[OutT_co]", packet)
+
+    @final
+    async def run_stream(  # type: ignore[override]
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
+        forgetful: bool = False,
+        call_id: str | None = None,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        call_id = self._generate_call_id(call_id)
+
+        packet = in_packet
+        for subproc in self.subprocs:
+            async for event in subproc.run_stream(
+                chat_inputs=chat_inputs,
+                in_packet=packet,
+                in_args=in_args,
+                forgetful=forgetful,
+                call_id=f"{call_id}/{subproc.name}",
+                ctx=ctx,
+            ):
+                if isinstance(event, ProcPacketOutputEvent):
+                    packet = event.data
+                yield event
+
+            chat_inputs = None
+            in_args = None
+
+        yield WorkflowResultEvent(
+            data=cast("Packet[OutT_co]", packet), proc_name=self.name, call_id=call_id
+        )

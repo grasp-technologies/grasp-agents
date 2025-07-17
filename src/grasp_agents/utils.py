@@ -2,22 +2,21 @@ import ast
 import asyncio
 import json
 import re
-from collections.abc import Coroutine, Mapping
+from collections.abc import AsyncIterator, Coroutine, Mapping
 from datetime import UTC, datetime
 from logging import getLogger
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, get_args, get_origin, overload
+from typing import Annotated, Any, TypeVar, get_args, get_origin
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
+from pydantic import ValidationError as PydanticValidationError
 from tqdm.autonotebook import tqdm
 
-from .errors import OutputValidationError, StringParsingError
+from .errors import JSONSchemaValidationError, PyJSONStringParsingError
 
 logger = getLogger(__name__)
 
 _JSON_START_RE = re.compile(r"[{\[]")
-
-T = TypeVar("T")
 
 
 def extract_json_substring(text: str) -> str | None:
@@ -34,112 +33,95 @@ def extract_json_substring(text: str) -> str | None:
 
 
 def parse_json_or_py_string(
-    s: str, return_none_on_failure: bool = False, strip_language_markdown: bool = True
+    s: str,
+    from_substring: bool = False,
+    return_none_on_failure: bool = False,
+    strip_language_markdown: bool = True,
 ) -> dict[str, Any] | list[Any] | None:
     s_orig = s
+
     if strip_language_markdown:
         s = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
+
+    if from_substring:
+        s = extract_json_substring(s) or ""
+
     try:
         return ast.literal_eval(s)
     except (ValueError, SyntaxError):
         try:
             return json.loads(s)
         except json.JSONDecodeError as exc:
+            err_message = (
+                "Both ast.literal_eval and json.loads "
+                f"failed to parse the following JSON/Python string:\n{s_orig}"
+            )
             if return_none_on_failure:
+                logger.warning(err_message)
                 return None
-            raise StringParsingError(
-                "Invalid JSON/Python string - Both ast.literal_eval and json.loads "
-                f"failed to parse the following response:\n{s_orig}"
-            ) from exc
+            raise PyJSONStringParsingError(s_orig, message=err_message) from exc
 
 
-def parse_json_or_py_substring(
-    json_str: str,
-    return_none_on_failure: bool = False,
-    strip_language_markdown: bool = True,
-) -> dict[str, Any] | list[Any] | None:
-    return parse_json_or_py_string(
-        extract_json_substring(json_str) or "",
-        return_none_on_failure=return_none_on_failure,
-        strip_language_markdown=strip_language_markdown,
+def is_str_type(t: Any) -> bool:
+    type_origin = get_origin(t)
+    type_args = get_args(t)
+
+    return (t is str) or (
+        (type_origin is Annotated) and len(type_args) > 0 and type_args[0] is str
     )
 
 
-@overload
 def validate_obj_from_json_or_py_string(
     s: str,
-    adapter: TypeAdapter[T],
+    schema: Any,
     from_substring: bool = False,
     strip_language_markdown: bool = True,
-) -> T: ...
+) -> Any:
+    try:
+        if is_str_type(schema):
+            parsed = s
+        else:
+            parsed = parse_json_or_py_string(
+                s,
+                return_none_on_failure=True,
+                from_substring=from_substring,
+                strip_language_markdown=strip_language_markdown,
+            )
+        return TypeAdapter(schema).validate_python(parsed)
+    except PydanticValidationError as exc:
+        raise JSONSchemaValidationError(s, schema) from exc
 
 
-@overload
-def validate_obj_from_json_or_py_string(
+def validate_tagged_objs_from_json_or_py_string(
     s: str,
-    adapter: Mapping[str, TypeAdapter[T]],
+    schema_by_xml_tag: Mapping[str, Any],
     from_substring: bool = False,
     strip_language_markdown: bool = True,
-) -> T | str: ...
+) -> Mapping[str, Any]:
+    validated_obj_per_tag: dict[str, Any] = {}
+    _schema: Any = None
+    _tag: str | None = None
 
-
-def validate_obj_from_json_or_py_string(
-    s: str,
-    adapter: TypeAdapter[T] | Mapping[str, TypeAdapter[T]],
-    from_substring: bool = False,
-    strip_language_markdown: bool = True,
-) -> T | str:
-    _selected_adapter: TypeAdapter[T] | None = None
-    _selected_tag: str | None = None
-    s_orig = s
-
-    if isinstance(adapter, Mapping):
-        for _tag, _adapter in adapter.items():
+    try:
+        for _tag, _schema in schema_by_xml_tag.items():
             match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
             if not match:
                 continue
-            s = match.group(1).strip()
-            _selected_adapter = _adapter
-            _selected_tag = _tag
-            break
-        if _selected_adapter is None:
-            return s
-    else:
-        _selected_adapter = adapter
+            tagged_substring = match.group(1).strip()
+            validated_obj_per_tag[_tag] = validate_obj_from_json_or_py_string(
+                tagged_substring,  # type: ignore[assignment]
+                schema=_schema,
+                from_substring=from_substring,
+                strip_language_markdown=strip_language_markdown,
+            )
+    except JSONSchemaValidationError as exc:
+        err_message = (
+            f"Failed to validate substring within tag <{_tag}> against JSON schema:"
+            f"\n{s}\nExpected type: {_schema}"
+        )
+        raise JSONSchemaValidationError(s, _schema, message=err_message) from exc
 
-    _type = _selected_adapter._type  # type: ignore[attr-defined]
-    type_origin = get_origin(_type)
-    type_args = get_args(_type)
-    is_str_type = (_type is str) or (
-        type_origin is Annotated and type_args and type_args[0] is str
-    )
-
-    try:
-        if not is_str_type:
-            if from_substring:
-                parsed = parse_json_or_py_substring(
-                    s,
-                    return_none_on_failure=True,
-                    strip_language_markdown=strip_language_markdown,
-                )
-            else:
-                parsed = parse_json_or_py_string(
-                    s,
-                    return_none_on_failure=True,
-                    strip_language_markdown=strip_language_markdown,
-                )
-            if parsed is None:
-                parsed = s
-        else:
-            parsed = s
-        return _selected_adapter.validate_python(parsed)
-    except ValidationError as exc:
-        err_message = f"Invalid JSON or Python string:\n{s_orig}"
-        if _selected_tag:
-            err_message += f"\nExpected type {_type} within tag <{_selected_tag}>"
-        else:
-            err_message += f"\nExpected type {_type}"
-        raise OutputValidationError(err_message) from exc
+    return validated_obj_per_tag
 
 
 def extract_xml_list(text: str) -> list[str]:
@@ -198,3 +180,32 @@ async def asyncio_gather_with_pbar(
 
 def get_timestamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+
+
+_T = TypeVar("_T")
+
+
+async def stream_concurrent(
+    generators: list[AsyncIterator[_T]],
+) -> AsyncIterator[tuple[int, _T]]:
+    queue: asyncio.Queue[tuple[int, _T] | None] = asyncio.Queue()
+    pumps_left = len(generators)
+
+    async def pump(gen: AsyncIterator[_T], idx: int) -> None:
+        nonlocal pumps_left
+        try:
+            async for item in gen:
+                await queue.put((idx, item))
+        finally:
+            pumps_left -= 1
+            if pumps_left == 0:
+                await queue.put(None)
+
+    for idx, gen in enumerate(generators):
+        asyncio.create_task(pump(gen, idx))
+
+    while True:
+        msg = await queue.get()
+        if msg is None:
+            break
+        yield msg

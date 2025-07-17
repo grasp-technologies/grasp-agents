@@ -1,8 +1,9 @@
 import time
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 from uuid import uuid4
 
-from openai.types.chat.chat_completion import ChoiceLogprobs as CompletionChoiceLogprobs
+from litellm.types.utils import ChoiceLogprobs as LiteLLMChoiceLogprobs
+from openai.types.chat.chat_completion import ChoiceLogprobs as OpenAIChoiceLogprobs
 from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt
 
 from .message import AssistantMessage
@@ -22,6 +23,7 @@ class Usage(BaseModel):
     def __add__(self, add_usage: "Usage") -> "Usage":
         input_tokens = self.input_tokens + add_usage.input_tokens
         output_tokens = self.output_tokens + add_usage.output_tokens
+
         if self.reasoning_tokens is not None or add_usage.reasoning_tokens is not None:
             reasoning_tokens = (self.reasoning_tokens or 0) + (
                 add_usage.reasoning_tokens or 0
@@ -34,11 +36,11 @@ class Usage(BaseModel):
         else:
             cached_tokens = None
 
-        cost = (
-            (self.cost or 0.0) + add_usage.cost
-            if (add_usage.cost is not None)
-            else None
-        )
+        if self.cost is not None or add_usage.cost is not None:
+            cost = (self.cost or 0.0) + (add_usage.cost or 0.0)
+        else:
+            cost = None
+
         return Usage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -52,7 +54,9 @@ class CompletionChoice(BaseModel):
     message: AssistantMessage
     finish_reason: FinishReason | None
     index: int
-    logprobs: CompletionChoiceLogprobs | None = None
+    logprobs: OpenAIChoiceLogprobs | LiteLLMChoiceLogprobs | Any | None = None
+    # LiteLLM-specific fields
+    provider_specific_fields: dict[str, Any] | None = None
 
 
 class CompletionError(BaseModel):
@@ -64,12 +68,15 @@ class CompletionError(BaseModel):
 class Completion(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     created: int = Field(default_factory=lambda: int(time.time()))
-    model: str
+    model: str | None
     name: str | None = None
     system_fingerprint: str | None = None
     choices: list[CompletionChoice]
     usage: Usage | None = None
     error: CompletionError | None = None
+    # LiteLLM-specific fields
+    response_ms: float | None = None
+    hidden_params: dict[str, Any] | None = None
 
     @property
     def messages(self) -> list[AssistantMessage]:

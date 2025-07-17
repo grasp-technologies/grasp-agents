@@ -56,9 +56,7 @@ def from_api_content(
     return Content(parts=content_parts)
 
 
-def to_api_content(
-    content: Content,
-) -> Iterable[OpenAIContentPartParam]:
+def to_api_content(content: Content) -> Iterable[OpenAIContentPartParam]:
     api_content: list[OpenAIContentPartParam] = []
     for content_part in content.parts:
         api_content_part: OpenAIContentPartParam

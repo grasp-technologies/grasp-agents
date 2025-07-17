@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "0.4.6"
+version = "0.5.0"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.11.4,<4"
@@ -13,6 +13,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "pyyaml>=6.0.2",
     "pydantic>=2",
+    "litellm>=1.74.4",
 ]
 
 [dependency-groups]

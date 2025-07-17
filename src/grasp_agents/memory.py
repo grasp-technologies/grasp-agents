@@ -16,6 +16,10 @@ class Memory(BaseModel, ABC):
         pass
 
     @abstractmethod
+    def erase(self) -> None:
+        pass
+
+    @abstractmethod
     def update(
         self, *args: Any, ctx: RunContext[Any] | None = None, **kwargs: Any
     ) -> None:

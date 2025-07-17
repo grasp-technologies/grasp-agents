@@ -1,13 +1,18 @@
 # pyright: reportUnusedImport=false
 
+from litellm.types.utils import ChatCompletionMessageToolCall as LiteLLMToolCall
+from litellm.types.utils import Choices as LiteLLMChoice
+from litellm.types.utils import Function as LiteLLMFunction
+from litellm.types.utils import Message as LiteLLMCompletionMessage
+from litellm.types.utils import ModelResponse as LiteLLMCompletion
+from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
+from litellm.types.utils import StreamingChoices as LiteLLMChunkChoice
+from litellm.types.utils import Usage as LiteLLMUsage
 from openai._streaming import (
     AsyncStream as OpenAIAsyncStream,  # type: ignore[import] # noqa: PLC2701
 )
 from openai.types import CompletionUsage as OpenAIUsage
 from openai.types.chat.chat_completion import ChatCompletion as OpenAICompletion
-from openai.types.chat.chat_completion import (
-    Choice as OpenAIChoice,
-)
 from openai.types.chat.chat_completion import (
     ChoiceLogprobs as OpenAIChoiceLogprobs,
 )
@@ -26,9 +31,6 @@ from openai.types.chat.chat_completion_chunk import (
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall as OpenAIChunkChoiceDeltaToolCall,
 )
-from openai.types.chat.chat_completion_chunk import (
-    ChoiceLogprobs as OpenAIChunkChoiceLogprobs,
-)
 from openai.types.chat.chat_completion_content_part_image_param import (
     ChatCompletionContentPartImageParam as OpenAIContentPartImageParam,
 )
@@ -46,12 +48,6 @@ from openai.types.chat.chat_completion_developer_message_param import (
 )
 from openai.types.chat.chat_completion_function_message_param import (
     ChatCompletionFunctionMessageParam as OpenAIFunctionMessageParam,
-)
-from openai.types.chat.chat_completion_message import (
-    Annotation as OpenAIAnnotation,
-)
-from openai.types.chat.chat_completion_message import (
-    AnnotationURLCitation as OpenAIAnnotationURLCitation,
 )
 from openai.types.chat.chat_completion_message import (
     ChatCompletionMessage as OpenAICompletionMessage,
@@ -92,9 +88,6 @@ from openai.types.chat.chat_completion_tool_param import (
 from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam as OpenAIUserMessageParam,
 )
-from openai.types.chat.completion_create_params import (
-    WebSearchOptions as OpenAIWebSearchOptions,
-)
 from openai.types.chat.parsed_chat_completion import (
     ParsedChatCompletion as OpenAIParsedCompletion,
 )
@@ -104,17 +97,10 @@ from openai.types.chat.parsed_chat_completion import (
 from openai.types.chat.parsed_chat_completion import (
     ParsedChoice as OpenAIParsedChoice,
 )
-from openai.types.shared_params import (
-    ResponseFormatJSONObject as OpenAIResponseFormatJSONObject,
-)
-from openai.types.shared_params import (
-    ResponseFormatText as OpenAIResponseFormatText,
-)
 from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
 
-# from openai.beta.types.chat.
-from .openai_llm import OpenAILLM, OpenAILLMSettings
+from .lite_llm import LiteLLM, LiteLLMSettings
 
-__all__ = ["OpenAILLM", "OpenAILLMSettings"]
+__all__ = ["LiteLLM", "LiteLLMSettings"]
