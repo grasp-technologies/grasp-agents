@@ -136,9 +136,7 @@ class Printer:
             elif isinstance(message, AssistantMessage):
                 out += f"<response>\n{content}\n</response>\n"
             else:
-                out += (
-                    f"<tool result> [{message.tool_call_id}]{content}\n</tool result>"
-                )
+                out += f"<tool result> [{message.tool_call_id}]\n{content}\n</tool result>\n"
 
         # Tool calls
         if isinstance(message, AssistantMessage) and message.tool_calls is not None:
@@ -154,7 +152,7 @@ class Printer:
             usage_str += f"/{usage.reasoning_tokens or '-'}"
             usage_str += f"/{usage.cached_tokens or '-'}"
 
-            out += f"\n------------------------------------\n{usage_str}"
+            out += f"\n------------------------------------\n{usage_str}\n"
 
         logger.debug(out, **log_kwargs)  # type: ignore
 

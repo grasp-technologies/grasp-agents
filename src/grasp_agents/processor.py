@@ -10,15 +10,13 @@ from pydantic import ValidationError as PydanticValidationError
 
 from .errors import ProcInputValidationError, ProcOutputValidationError
 from .generics_utils import AutoInstanceAttributesMixin
-from .memory import MemT
+from .memory import DummyMemory, MemT
 from .packet import Packet
 from .run_context import CtxT, RunContext
 from .typing.events import (
     Event,
-    # ProcFinishEvent,
     ProcPacketOutputEvent,
     ProcPayloadOutputEvent,
-    # ProcStartEvent,
     ProcStreamingErrorData,
     ProcStreamingErrorEvent,
 )
@@ -42,7 +40,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT_co, MemT, Ct
         super().__init__()
 
         self._name: ProcName = name
-        self._memory: MemT
+        self._memory: MemT = cast("MemT", DummyMemory())
         self._max_retries: int = max_retries
 
     @property
@@ -176,6 +174,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT_co, MemT, Ct
             chat_inputs=chat_inputs, in_packet=in_packet, in_args=in_args
         )
         _memory = self.memory.model_copy(deep=True) if forgetful else self.memory
+
         outputs = await self._process(
             chat_inputs=chat_inputs,
             in_args=resolved_in_args,
@@ -292,7 +291,6 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT_co, MemT, Ct
         resolved_in_args = self._validate_and_resolve_single_input(
             chat_inputs=chat_inputs, in_packet=in_packet, in_args=in_args
         )
-
         _memory = self.memory.model_copy(deep=True) if forgetful else self.memory
 
         outputs: list[OutT_co] = []
