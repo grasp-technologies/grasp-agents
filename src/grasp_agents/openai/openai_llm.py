@@ -36,32 +36,28 @@ from .converters import OpenAIConverters
 logger = logging.getLogger(__name__)
 
 
-OPENAI_COMPATIBLE_PROVIDERS: list[APIProvider] = [
-    APIProvider(
-        name="openai",
-        base_url="https://api.openai.com/v1",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        response_schema_support=("*",),
-    ),
-    APIProvider(
-        name="gemini_openai",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=os.getenv("GEMINI_API_KEY"),
-        response_schema_support=("*",),
-    ),
-    APIProvider(
-        name="openrouter",
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        response_schema_support=(),
-    ),
-    # "anthropic": APIProvider(
-    #     name="anthropic",
-    #     base_url="https://api.anthropic.com/v1/messages",
-    #     api_key=os.getenv("ANTHROPIC_API_KEY"),
-    #     response_schema_support=(),
-    # ),
-]
+def get_openai_compatible_providers() -> list[APIProvider]:
+    """Returns a dictionary of available OpenAI-compatible API providers."""
+    return [
+        APIProvider(
+            name="openai",
+            base_url="https://api.openai.com/v1",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            response_schema_support=("*",),
+        ),
+        APIProvider(
+            name="gemini_openai",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=os.getenv("GEMINI_API_KEY"),
+            response_schema_support=("*",),
+        ),
+        APIProvider(
+            name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            response_schema_support=(),
+        ),
+    ]
 
 
 class OpenAILLMSettings(CloudLLMSettings, total=False):
@@ -119,12 +115,14 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         # LLM response retries: try to regenerate to pass validation
         max_response_retries: int = 1,
     ) -> None:
+        openai_compatible_providers = get_openai_compatible_providers()
+
         model_name_parts = model_name.split("/", 1)
         if api_provider is not None:
             provider_model_name = model_name
         elif len(model_name_parts) == 2:
             compat_providers_map = {
-                provider["name"]: provider for provider in OPENAI_COMPATIBLE_PROVIDERS
+                provider["name"]: provider for provider in openai_compatible_providers
             }
             provider_name, provider_model_name = model_name_parts
             if provider_name not in compat_providers_map:

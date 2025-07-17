@@ -18,8 +18,6 @@ from .typing.events import (
     CompletionChunkEvent,
     CompletionEvent,
     LLMStreamingErrorData,
-    # CompletionResponseChunkEvent,
-    # CompletionThinkingChunkEvent,
     LLMStreamingErrorEvent,
 )
 from .typing.message import AssistantMessage, Messages
@@ -365,22 +363,3 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                     "\nCloudLLM completion request failed "
                     f"(retry attempt {n_attempt}):\n{err}"
                 )
-
-    # @limit_rate
-    # async def _generate_completion_with_client_retries(  # type: ignore[override]
-    #     self,
-    #     conversation: Messages,
-    #     *,
-    #     tool_choice: ToolChoice | None = None,
-    #     n_choices: int | None = None,
-    # ) -> Completion:
-    #     wrapped_func = retry(
-    #         wait=wait_random_exponential(min=1, max=8),
-    #         stop=stop_after_attempt(self.num_client_retries + 1),
-    #         before_sleep=retry_before_sleep_callback,
-    #         retry_error_callback=retry_error_callback,
-    #     )(self.__class__.generate_completion_no_retry)
-
-    #     return await wrapped_func(
-    #         self, conversation, tool_choice=tool_choice, n_choices=n_choices
-    #     )
