@@ -1,8 +1,7 @@
 from collections import defaultdict
-from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field
 
 from grasp_agents.typing.completion import Completion
 
@@ -25,29 +24,21 @@ class RunContext(BaseModel, Generic[CtxT]):
     state: CtxT | None = None
 
     run_args: dict[ProcName, RunArgs] = Field(default_factory=dict)
-    completions: Mapping[ProcName, list[Completion]] = Field(
+
+    is_streaming: bool = False
+    result: Any | None = None
+
+    completions: dict[ProcName, list[Completion]] = Field(
         default_factory=lambda: defaultdict(list)
     )
+    usage_tracker: UsageTracker = Field(default_factory=UsageTracker)
 
+    printer: Printer | None = None
     print_messages: bool = False
     color_messages_by: ColoringMode = "role"
 
-    _usage_tracker: UsageTracker = PrivateAttr()
-    _printer: Printer = PrivateAttr()
-
     def model_post_init(self, context: Any) -> None:  # noqa: ARG002
-        self._usage_tracker = UsageTracker()
-        self._printer = Printer(
-            print_messages=self.print_messages,
-            color_by=self.color_messages_by,
-        )
+        if self.print_messages:
+            self.printer = Printer(color_by=self.color_messages_by)
 
-    @property
-    def usage_tracker(self) -> UsageTracker:
-        return self._usage_tracker
-
-    @property
-    def printer(self) -> Printer:
-        return self._printer
-
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)

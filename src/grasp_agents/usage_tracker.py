@@ -20,7 +20,6 @@ CostsDict: TypeAlias = dict[str, ModelCostsDict]
 
 
 class UsageTracker(BaseModel):
-    # TODO: specify different costs per provider:model, not just per model
     costs_dict_path: str | Path = COSTS_DICT_PATH
     costs_dict: CostsDict | None = None
     usages: dict[str, Usage] = Field(default_factory=dict)
@@ -29,34 +28,6 @@ class UsageTracker(BaseModel):
         super().__init__(**kwargs)
         self.costs_dict = self.load_costs_dict()
 
-    def load_costs_dict(self) -> CostsDict | None:
-        try:
-            with Path(self.costs_dict_path).open() as f:
-                return yaml.safe_load(f)["costs"]
-        except Exception:
-            logger.info(f"Failed to load cost dictionary from {self.costs_dict_path}")
-            return None
-
-    def _add_cost_to_usage(
-        self, usage: Usage, model_costs_dict: ModelCostsDict
-    ) -> None:
-        in_rate = model_costs_dict["input"]
-        out_rate = model_costs_dict["output"]
-        cached_discount = model_costs_dict.get("cached_discount")
-        input_cost = in_rate * usage.input_tokens
-        output_cost = out_rate * usage.output_tokens
-        reasoning_cost = (
-            out_rate * usage.reasoning_tokens
-            if usage.reasoning_tokens is not None
-            else 0.0
-        )
-        cached_cost: float = (
-            cached_discount * in_rate * usage.cached_tokens
-            if (usage.cached_tokens is not None) and (cached_discount is not None)
-            else 0.0
-        )
-        usage.cost = (input_cost + output_cost + reasoning_cost + cached_cost) / 1e6
-
     def update(
         self,
         agent_name: str,
@@ -64,13 +35,13 @@ class UsageTracker(BaseModel):
         model_name: str | None = None,
     ) -> None:
         if model_name is not None and self.costs_dict is not None:
-            model_costs_dict = self.costs_dict.get(model_name.split(":", 1)[-1])
+            model_costs_dict = self.costs_dict.get(model_name.split("/", 1)[-1])
         else:
             model_costs_dict = None
 
         for completion in completions:
             if completion.usage is not None:
-                if model_costs_dict is not None:
+                if completion.usage.cost is None and model_costs_dict is not None:
                     self._add_cost_to_usage(
                         usage=completion.usage, model_costs_dict=model_costs_dict
                     )
@@ -100,9 +71,32 @@ class UsageTracker(BaseModel):
         logger.debug(colored(token_usage_str, "light_grey"))
 
         if usage.cost is not None:
-            logger.debug(
-                colored(
-                    f"Total cost: ${usage.cost:.4f}",
-                    "light_grey",
-                )
-            )
+            logger.debug(colored(f"Total cost: ${usage.cost:.4f}", "light_grey"))
+
+    def load_costs_dict(self) -> CostsDict | None:
+        try:
+            with Path(self.costs_dict_path).open() as f:
+                return yaml.safe_load(f)["costs"]
+        except Exception:
+            logger.info(f"Failed to load cost dictionary from {self.costs_dict_path}")
+            return None
+
+    def _add_cost_to_usage(
+        self, usage: Usage, model_costs_dict: ModelCostsDict
+    ) -> None:
+        in_rate = model_costs_dict["input"]
+        out_rate = model_costs_dict["output"]
+        cached_discount = model_costs_dict.get("cached_discount")
+        input_cost = in_rate * usage.input_tokens
+        output_cost = out_rate * usage.output_tokens
+        reasoning_cost = (
+            out_rate * usage.reasoning_tokens
+            if usage.reasoning_tokens is not None
+            else 0.0
+        )
+        cached_cost: float = (
+            cached_discount * in_rate * usage.cached_tokens
+            if (usage.cached_tokens is not None) and (cached_discount is not None)
+            else 0.0
+        )
+        usage.cost = (input_cost + output_cost + reasoning_cost + cached_cost) / 1e6

@@ -1,9 +1,10 @@
+from ..errors import CompletionError
 from ..typing.completion import Completion, CompletionChoice, Usage
-from . import OpenAICompletion, OpenAICompletionUsage
+from . import OpenAICompletion, OpenAIUsage
 from .message_converters import from_api_assistant_message
 
 
-def from_api_completion_usage(api_usage: OpenAICompletionUsage) -> Usage:
+def from_api_completion_usage(api_usage: OpenAIUsage) -> Usage:
     reasoning_tokens = None
     cached_tokens = None
 
@@ -27,41 +28,38 @@ def from_api_completion(
     api_completion: OpenAICompletion, name: str | None = None
 ) -> Completion:
     choices: list[CompletionChoice] = []
-    usage: Usage | None = None
 
     if api_completion.choices is None:  # type: ignore
         # Some providers return None for the choices when there is an error
         # TODO: add custom error types
-        raise RuntimeError(
+        raise CompletionError(
             f"Completion API error: {getattr(api_completion, 'error', None)}"
         )
     for api_choice in api_completion.choices:
-        index = api_choice.index
         finish_reason = api_choice.finish_reason
 
         # Some providers return None for the message when finish_reason is other than "stop"
         if api_choice.message is None:  # type: ignore
-            raise RuntimeError(
+            raise CompletionError(
                 f"API returned None for message with finish_reason: {finish_reason}"
             )
 
-        # usage = from_api_completion_usage(api_usage) if api_usage else None
-
-        usage = (
-            from_api_completion_usage(api_completion.usage)
-            if api_completion.usage
-            else None
-        )
         message = from_api_assistant_message(api_choice.message, name=name)
 
         choices.append(
             CompletionChoice(
-                index=index,
+                index=api_choice.index,
                 message=message,
                 finish_reason=finish_reason,
                 logprobs=api_choice.logprobs,
             )
         )
+
+    usage = (
+        from_api_completion_usage(api_completion.usage)
+        if api_completion.usage
+        else None
+    )
 
     return Completion(
         id=api_completion.id,

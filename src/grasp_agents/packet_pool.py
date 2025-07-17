@@ -1,9 +1,11 @@
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from typing import Any, Generic, Protocol, TypeVar
 
 from .packet import Packet
 from .run_context import CtxT, RunContext
+from .typing.events import Event
 from .typing.io import ProcName
 
 logger = logging.getLogger(__name__)
@@ -16,16 +18,16 @@ class PacketHandler(Protocol[_PayloadT_contra, CtxT]):
     async def __call__(
         self,
         packet: Packet[_PayloadT_contra],
-        ctx: RunContext[CtxT] | None,
+        ctx: RunContext[CtxT],
         **kwargs: Any,
-    ) -> None: ...
+    ) -> AsyncIterator[Event[Any]] | None: ...
 
 
 class PacketPool(Generic[CtxT]):
     def __init__(self) -> None:
         self._queues: dict[ProcName, asyncio.Queue[Packet[Any]]] = {}
         self._packet_handlers: dict[ProcName, PacketHandler[Any, CtxT]] = {}
-        self._tasks: dict[ProcName, asyncio.Task[None]] = {}
+        self._tasks: dict[ProcName, asyncio.Task[AsyncIterator[Event[Any]] | None]] = {}
 
     async def post(self, packet: Packet[Any]) -> None:
         for recipient_id in packet.recipients:
@@ -36,7 +38,7 @@ class PacketPool(Generic[CtxT]):
         self,
         processor_name: ProcName,
         handler: PacketHandler[Any, CtxT],
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
         **run_kwargs: Any,
     ) -> None:
         self._packet_handlers[processor_name] = handler
@@ -47,11 +49,8 @@ class PacketPool(Generic[CtxT]):
             )
 
     async def _handle_packets(
-        self,
-        processor_name: ProcName,
-        ctx: RunContext[CtxT] | None = None,
-        **run_kwargs: Any,
-    ) -> None:
+        self, processor_name: ProcName, ctx: RunContext[CtxT], **run_kwargs: Any
+    ) -> AsyncIterator[Event[Any]] | None:
         queue = self._queues[processor_name]
         while True:
             try:
@@ -59,11 +58,13 @@ class PacketPool(Generic[CtxT]):
                 handler = self._packet_handlers.get(processor_name)
                 if handler is None:
                     break
-
                 try:
-                    await self._packet_handlers[processor_name](
-                        packet, ctx=ctx, **run_kwargs
-                    )
+                    if ctx.is_streaming:
+                        async for event in handler(packet, ctx=ctx, **run_kwargs):  # type: ignore[return-value]
+                            yield event
+                    else:
+                        await handler(packet, ctx=ctx, **run_kwargs)
+
                 except Exception:
                     logger.exception(f"Error handling packet for {processor_name}")
 

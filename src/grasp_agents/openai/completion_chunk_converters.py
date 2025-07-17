@@ -1,3 +1,5 @@
+from typing import cast
+
 from ..errors import CompletionError
 from ..typing.completion_chunk import (
     CompletionChunk,
@@ -5,7 +7,8 @@ from ..typing.completion_chunk import (
     CompletionChunkChoiceDelta,
     CompletionChunkDeltaToolCall,
 )
-from . import OpenAICompletionChunk  # type: ignore[import]
+from ..typing.message import Role
+from . import OpenAICompletionChunk
 from .completion_converters import from_api_completion_usage
 
 
@@ -21,7 +24,6 @@ def from_api_completion_chunk(
     choices: list[CompletionChunkChoice] = []
 
     for api_choice in api_completion_chunk.choices:
-        index = api_choice.index
         finish_reason = api_choice.finish_reason
 
         if api_choice.delta is None:  # type: ignore
@@ -38,7 +40,7 @@ def from_api_completion_chunk(
         delta = CompletionChunkChoiceDelta(
             content=api_choice.delta.content,
             refusal=api_choice.delta.refusal,
-            role=api_choice.delta.role,
+            role=cast("Role", api_choice.delta.role),
             tool_calls=[
                 CompletionChunkDeltaToolCall(
                     id=tool_call.id,
@@ -52,11 +54,9 @@ def from_api_completion_chunk(
         )
 
         choice = CompletionChunkChoice(
-            index=index,
+            index=api_choice.index,
             delta=delta,
             finish_reason=finish_reason,
-            # OpenAI logprobs have identical, but separately defined, types for
-            # completion chunks and completions
             logprobs=api_choice.logprobs,
         )
 

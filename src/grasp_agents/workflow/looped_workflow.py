@@ -1,12 +1,13 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
 from logging import getLogger
-from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
+from typing import Any, Generic, Protocol, TypeVar, cast, final
 
 from ..errors import WorkflowConstructionError
 from ..packet_pool import Packet, PacketPool
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
+from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
 from ..typing.io import InT, OutT_co, ProcName
 from .workflow_processor import WorkflowProcessor
 
@@ -27,11 +28,6 @@ class ExitWorkflowLoopHandler(Protocol[_OutT_contra, CtxT]):
 class LoopedWorkflow(
     WorkflowProcessor[InT, OutT_co, CtxT], Generic[InT, OutT_co, CtxT]
 ):
-    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-        0: "_in_type",
-        1: "_out_type",
-    }
-
     def __init__(
         self,
         name: ProcName,
@@ -39,7 +35,7 @@ class LoopedWorkflow(
         exit_proc: Processor[Any, OutT_co, Any, CtxT],
         packet_pool: PacketPool[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
-        num_par_run_retries: int = 0,
+        max_retries: int = 0,
         max_iterations: int = 10,
     ) -> None:
         super().__init__(
@@ -49,7 +45,7 @@ class LoopedWorkflow(
             end_proc=exit_proc,
             packet_pool=packet_pool,
             recipients=recipients,
-            num_par_run_retries=num_par_run_retries,
+            max_retries=max_retries,
         )
 
         for prev_proc, proc in pairwise(subprocs):
@@ -102,10 +98,12 @@ class LoopedWorkflow(
         *,
         in_packet: Packet[InT] | None = None,
         in_args: InT | Sequence[InT] | None = None,
-        run_id: str | None = None,
+        call_id: str | None = None,
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT_co]:
+        call_id = self._generate_call_id(call_id)
+
         packet = in_packet
         num_iterations = 0
         exit_packet: Packet[OutT_co] | None = None
@@ -117,7 +115,7 @@ class LoopedWorkflow(
                     in_packet=packet,
                     in_args=in_args,
                     forgetful=forgetful,
-                    run_id=self._generate_subproc_run_id(run_id, subproc=subproc),
+                    call_id=f"{call_id}/{subproc.name}",
                     ctx=ctx,
                 )
 
@@ -135,3 +133,54 @@ class LoopedWorkflow(
 
                 chat_inputs = None
                 in_args = None
+
+    @final
+    async def run_stream(  # type: ignore[override]
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | Sequence[InT] | None = None,
+        call_id: str | None = None,
+        forgetful: bool = False,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        call_id = self._generate_call_id(call_id)
+
+        packet = in_packet
+        num_iterations = 0
+        exit_packet: Packet[OutT_co] | None = None
+
+        for subproc in self.subprocs:
+            async for event in subproc.run_stream(
+                chat_inputs=chat_inputs,
+                in_packet=packet,
+                in_args=in_args,
+                forgetful=forgetful,
+                call_id=f"{call_id}/{subproc.name}",
+                ctx=ctx,
+            ):
+                if isinstance(event, ProcPacketOutputEvent):
+                    packet = event.data
+                yield event
+
+            if subproc is self._end_proc:
+                num_iterations += 1
+                exit_packet = cast("Packet[OutT_co]", packet)
+                if self._exit_workflow_loop(exit_packet, ctx=ctx):
+                    yield WorkflowResultEvent(
+                        data=exit_packet, proc_name=self.name, call_id=call_id
+                    )
+                    return
+                if num_iterations >= self._max_iterations:
+                    logger.info(
+                        f"Max iterations reached ({self._max_iterations}). "
+                        "Exiting loop."
+                    )
+                    yield WorkflowResultEvent(
+                        data=exit_packet, proc_name=self.name, call_id=call_id
+                    )
+                    return
+
+            chat_inputs = None
+            in_args = None

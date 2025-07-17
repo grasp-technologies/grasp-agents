@@ -1,103 +1,59 @@
-import fnmatch
 import logging
-import os
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
-from typing import Any, Generic, Literal, NotRequired
+from typing import Any, Generic, Required, cast
 
 import httpx
 from pydantic import BaseModel
-from tenacity import (
-    RetryCallState,
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-)
 from typing_extensions import TypedDict
 
+from .errors import LLMResponseValidationError, LLMToolCallValidationError
 from .http_client import AsyncHTTPClientParams, create_simple_async_httpx_client
 from .llm import LLM, ConvertT_co, LLMSettings, SettingsT_co
 from .rate_limiting.rate_limiter_chunked import RateLimiterC, limit_rate
 from .typing.completion import Completion
-from .typing.completion_chunk import (
-    CompletionChoice,
-    CompletionChunk,
-    combine_completion_chunks,
+from .typing.completion_chunk import CompletionChoice
+from .typing.events import (
+    CompletionChunkEvent,
+    CompletionEvent,
+    LLMStreamingErrorData,
+    LLMStreamingErrorEvent,
 )
-from .typing.events import CompletionChunkEvent, CompletionEvent
 from .typing.message import AssistantMessage, Messages
 from .typing.tool import BaseTool, ToolChoice
 
 logger = logging.getLogger(__name__)
 
 
-APIProviderName = Literal["openai", "openrouter", "google_ai_studio"]
+class APIProvider(TypedDict, total=False):
+    name: Required[str]
+    base_url: str | None
+    api_key: str | None
+    # Wildcard patterns for model names that support response schema validation:
+    response_schema_support: tuple[str, ...] | None
 
 
-class APIProvider(TypedDict):
-    name: APIProviderName
-    base_url: str
-    api_key: NotRequired[str | None]
-    struct_outputs_support: NotRequired[tuple[str, ...]]
-
-
-def get_api_providers() -> dict[APIProviderName, APIProvider]:
-    """Returns a dictionary of available API providers."""
-    return {
-        "openai": APIProvider(
-            name="openai",
-            base_url="https://api.openai.com/v1",
-            api_key=os.getenv("OPENAI_API_KEY"),
-            struct_outputs_support=("*",),
-        ),
-        "openrouter": APIProvider(
-            name="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-            struct_outputs_support=(),
-        ),
-        "google_ai_studio": APIProvider(
-            name="google_ai_studio",
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=os.getenv("GOOGLE_AI_STUDIO_API_KEY"),
-            struct_outputs_support=("*",),
-        ),
-    }
-
-
-def retry_error_callback(retry_state: RetryCallState) -> Completion:
-    exception = retry_state.outcome.exception() if retry_state.outcome else None
-    if exception:
-        if retry_state.attempt_number == 1:
-            logger.warning(
-                f"\nCloudLLM completion request failed:\n{exception}",
-                # exc_info=exception,
-            )
-        if retry_state.attempt_number > 1:
-            logger.warning(
-                f"\nCloudLLM completion request failed after retrying:\n{exception}",
-                # exc_info=exception,
-            )
-    failed_message = AssistantMessage(content=None, refusal=str(exception))
+def make_refusal_completion(model_name: str, err: BaseException) -> Completion:
+    failed_message = AssistantMessage(content=None, refusal=str(err))
 
     return Completion(
-        model="",
+        model=model_name,
         choices=[CompletionChoice(message=failed_message, finish_reason=None, index=0)],
     )
 
 
-def retry_before_sleep_callback(retry_state: RetryCallState) -> None:
-    exception = retry_state.outcome.exception() if retry_state.outcome else None
-    if exception:
-        logger.info(
-            "\nRetrying CloudLLM completion request "
-            f"(attempt {retry_state.attempt_number}):\n{exception}"
-        )
-
-
 class CloudLLMSettings(LLMSettings, total=False):
-    use_struct_outputs: bool
+    extra_headers: dict[str, Any] | None
+    extra_body: object | None
+    extra_query: dict[str, Any] | None
+
+
+LLMRateLimiter = RateLimiterC[
+    Messages,
+    AssistantMessage
+    | AsyncIterator[CompletionChunkEvent | CompletionEvent | LLMStreamingErrorEvent],
+]
 
 
 class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co]):
@@ -105,25 +61,24 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self,
         # Base LLM args
         model_name: str,
+        api_provider: APIProvider,
         converters: ConvertT_co,
         llm_settings: SettingsT_co | None = None,
         tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_format: type | Mapping[str, type] | None = None,
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        apply_response_schema_via_provider: bool = True,
         model_id: str | None = None,
-        # Custom LLM provider
-        api_provider: APIProvider | None = None,
         # Connection settings
         async_http_client: httpx.AsyncClient | None = None,
         async_http_client_params: (
             dict[str, Any] | AsyncHTTPClientParams | None
         ) = None,
+        max_client_retries: int = 2,
         # Rate limiting
-        rate_limiter: (RateLimiterC[Messages, AssistantMessage] | None) = None,
-        rate_limiter_rpm: float | None = None,
-        rate_limiter_chunk_size: int = 1000,
-        rate_limiter_max_concurrency: int = 300,
-        # Retries
-        num_generation_retries: int = 0,
+        rate_limiter: LLMRateLimiter | None = None,
+        # LLM response retries: try to regenerate to pass validation
+        max_response_retries: int = 0,
         **kwargs: Any,
     ) -> None:
         self.llm_settings: CloudLLMSettings | None
@@ -134,61 +89,30 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             converters=converters,
             model_id=model_id,
             tools=tools,
-            response_format=response_format,
+            response_schema=response_schema,
+            response_schema_by_xml_tag=response_schema_by_xml_tag,
             **kwargs,
         )
 
         self._model_name = model_name
-        model_name_parts = model_name.split(":", 1)
-
-        if len(model_name_parts) == 2:
-            api_provider_name, api_model_name = model_name_parts
-            self._api_model_name: str = api_model_name
-
-            api_providers = get_api_providers()
-
-            if api_provider_name not in api_providers:
-                raise ValueError(
-                    f"API provider '{api_provider_name}' is not supported. "
-                    f"Supported providers are: {', '.join(api_providers.keys())}"
-                )
-
-            _api_provider = api_providers[api_provider_name]
-        elif api_provider is not None:
-            self._api_model_name: str = model_name
-            _api_provider = api_provider
-        else:
-            raise ValueError(
-                "API provider must be specified either in the model name "
-                "or as a separate argument."
-            )
-
-        self._api_provider_name: APIProviderName = _api_provider["name"]
-        self._base_url: str | None = _api_provider.get("base_url")
-        self._api_key: str | None = _api_provider.get("api_key")
-        self._struct_outputs_support: bool = any(
-            fnmatch.fnmatch(self._model_name, pat)
-            for pat in _api_provider.get("struct_outputs_support", ())
-        )
+        self._api_provider = api_provider
+        self._apply_response_schema_via_provider = apply_response_schema_via_provider
 
         if (
-            self._llm_settings.get("use_struct_outputs")
-            and not self._struct_outputs_support
+            apply_response_schema_via_provider
+            and response_schema_by_xml_tag is not None
         ):
             raise ValueError(
-                f"Model {self._model_name} does not support structured outputs."
+                "Response schema by XML tag is not supported "
+                "when apply_response_schema_via_provider is True."
             )
 
-        self._tool_call_settings: dict[str, Any] = {}
-
-        self._rate_limiter: RateLimiterC[Messages, AssistantMessage] | None = (
-            self._get_rate_limiter(
-                rate_limiter=rate_limiter,
-                rpm=rate_limiter_rpm,
-                chunk_size=rate_limiter_chunk_size,
-                max_concurrency=rate_limiter_max_concurrency,
+        self._rate_limiter: LLMRateLimiter | None = None
+        if rate_limiter is not None:
+            self._rate_limiter = rate_limiter
+            logger.info(
+                f"[{self.__class__.__name__}] Set rate limit to {rate_limiter.rpm} RPM"
             )
-        )
 
         self._async_http_client: httpx.AsyncClient | None = None
         if async_http_client is not None:
@@ -198,17 +122,30 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 async_http_client_params
             )
 
-        self.num_generation_retries = num_generation_retries
+        self.max_client_retries = max_client_retries
+        self.max_response_retries = max_response_retries
 
     @property
-    def api_provider_name(self) -> APIProviderName | None:
-        return self._api_provider_name
+    def api_provider(self) -> APIProvider:
+        return self._api_provider
 
     @property
-    def rate_limiter(
-        self,
-    ) -> RateLimiterC[Messages, AssistantMessage] | None:
+    def rate_limiter(self) -> LLMRateLimiter | None:
         return self._rate_limiter
+
+    @property
+    def tools(self) -> dict[str, BaseTool[BaseModel, Any, Any]] | None:
+        return self._tools
+
+    @tools.setter
+    def tools(self, tools: Sequence[BaseTool[BaseModel, Any, Any]] | None) -> None:
+        if not tools:
+            self._tools = None
+            return
+        strict_value = True if self._apply_response_schema_via_provider else None
+        for t in tools:
+            t.strict = strict_value
+        self._tools = {t.name: t for t in tools}
 
     def _make_completion_kwargs(
         self,
@@ -221,21 +158,17 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         api_tools = None
         api_tool_choice = None
         if self.tools:
-            api_tools = [
-                self._converters.to_tool(t, **self._tool_call_settings)
-                for t in self.tools.values()
-            ]
+            api_tools = [self._converters.to_tool(t) for t in self.tools.values()]
             if tool_choice is not None:
                 api_tool_choice = self._converters.to_tool_choice(tool_choice)
 
         api_llm_settings = deepcopy(self.llm_settings or {})
-        api_llm_settings.pop("use_struct_outputs", None)
 
         return dict(
             api_messages=api_messages,
             api_tools=api_tools,
             api_tool_choice=api_tool_choice,
-            api_response_format=self._response_format,
+            api_response_schema=self._response_schema,
             n_choices=n_choices,
             **api_llm_settings,
         )
@@ -247,19 +180,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        n_choices: int | None = None,
-        **api_llm_settings: Any,
-    ) -> Any:
-        pass
-
-    @abstractmethod
-    async def _get_parsed_completion(
-        self,
-        api_messages: list[Any],
-        *,
-        api_tools: list[Any] | None = None,
-        api_tool_choice: Any | None = None,
-        api_response_format: type | None = None,
+        api_response_schema: type | None = None,
         n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> Any:
@@ -272,25 +193,14 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
+        api_response_schema: type | None = None,
         n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[Any]:
         pass
 
-    @abstractmethod
-    async def _get_parsed_completion_stream(
-        self,
-        api_messages: list[Any],
-        *,
-        api_tools: list[Any] | None = None,
-        api_tool_choice: Any | None = None,
-        api_response_format: type | None = None,
-        n_choices: int | None = None,
-        **api_llm_settings: Any,
-    ) -> AsyncIterator[Any]:
-        pass
-
-    async def generate_completion_no_retry(
+    @limit_rate
+    async def _generate_completion_once(
         self,
         conversation: Messages,
         *,
@@ -301,98 +211,155 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             conversation=conversation, tool_choice=tool_choice, n_choices=n_choices
         )
 
-        if not self._llm_settings.get("use_struct_outputs"):
-            completion_kwargs.pop("api_response_format", None)
-            api_completion = await self._get_completion(**completion_kwargs)
-        else:
-            api_completion = await self._get_parsed_completion(**completion_kwargs)
+        if not self._apply_response_schema_via_provider:
+            completion_kwargs.pop("api_response_schema", None)
+        api_completion = await self._get_completion(**completion_kwargs)
 
         completion = self._converters.from_completion(
             api_completion, name=self.model_id
         )
 
-        if not self._llm_settings.get("use_struct_outputs"):
-            # If validation is not handled by the structured output functionality
-            # of the LLM provider
-            self._validate_completion(completion)
+        if not self._apply_response_schema_via_provider:
+            self._validate_response(completion)
             self._validate_tool_calls(completion)
 
         return completion
 
-    async def generate_completion_stream(
+    async def generate_completion(
         self,
         conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
+        proc_name: str | None = None,
+        call_id: str | None = None,
+    ) -> Completion:
+        n_attempt = 0
+        while n_attempt <= self.max_response_retries:
+            try:
+                return await self._generate_completion_once(
+                    conversation,  # type: ignore[return]
+                    tool_choice=tool_choice,
+                    n_choices=n_choices,
+                )
+            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+                n_attempt += 1
+
+                if n_attempt > self.max_response_retries:
+                    if n_attempt == 1:
+                        logger.warning(f"\nCloudLLM completion request failed:\n{err}")
+                    if n_attempt > 1:
+                        logger.warning(
+                            f"\nCloudLLM completion request failed after retrying:\n{err}"
+                        )
+                    raise err
+                    # return make_refusal_completion(self._model_name, err)
+
+                logger.warning(
+                    f"\nCloudLLM completion request failed (retry attempt {n_attempt}):"
+                    f"\n{err}"
+                )
+
+        return make_refusal_completion(
+            self._model_name,
+            Exception("Unexpected error: retry loop exited without returning"),
+        )
+
+    @limit_rate
+    async def _generate_completion_stream_once(
+        self,
+        conversation: Messages,
+        *,
+        tool_choice: ToolChoice | None = None,
+        n_choices: int | None = None,
+        proc_name: str | None = None,
+        call_id: str | None = None,
     ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent]:
         completion_kwargs = self._make_completion_kwargs(
             conversation=conversation, tool_choice=tool_choice, n_choices=n_choices
         )
+        if not self._apply_response_schema_via_provider:
+            completion_kwargs.pop("api_response_schema", None)
 
-        if not self._llm_settings.get("use_struct_outputs"):
-            completion_kwargs.pop("api_response_format", None)
-            api_stream = await self._get_completion_stream(**completion_kwargs)
-        else:
-            api_stream = await self._get_parsed_completion_stream(**completion_kwargs)
+        api_stream = self._get_completion_stream(**completion_kwargs)
+        api_stream = cast("AsyncIterator[Any]", api_stream)
 
-        async def iterate() -> AsyncIterator[CompletionChunkEvent | CompletionEvent]:
-            completion_chunks: list[CompletionChunk] = []
+        async def iterator() -> AsyncIterator[CompletionChunkEvent | CompletionEvent]:
+            api_completion_chunks: list[Any] = []
+
             async for api_completion_chunk in api_stream:
+                api_completion_chunks.append(api_completion_chunk)
                 completion_chunk = self._converters.from_completion_chunk(
                     api_completion_chunk, name=self.model_id
                 )
-                completion_chunks.append(completion_chunk)
-                yield CompletionChunkEvent(data=completion_chunk, name=self.model_id)
 
-            # TODO: can be done using the OpenAI final_completion_chunk
-            completion = combine_completion_chunks(completion_chunks)
+                yield CompletionChunkEvent(
+                    data=completion_chunk, proc_name=proc_name, call_id=call_id
+                )
 
-            yield CompletionEvent(data=completion, name=self.model_id)
+            api_completion = self.combine_completion_chunks(api_completion_chunks)
+            completion = self._converters.from_completion(
+                api_completion, name=self.model_id
+            )
 
-            if not self._llm_settings.get("use_struct_outputs"):
-                # If validation is not handled by the structured outputs functionality
-                # of the LLM provider
-                self._validate_completion(completion)
+            yield CompletionEvent(data=completion, proc_name=proc_name, call_id=call_id)
+
+            if not self._apply_response_schema_via_provider:
+                self._validate_response(completion)
                 self._validate_tool_calls(completion)
 
-        return iterate()
+        return iterator()
 
-    @limit_rate
-    async def generate_completion(  # type: ignore[override]
+    async def generate_completion_stream(  # type: ignore[override]
         self,
         conversation: Messages,
         *,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
-    ) -> Completion:
-        wrapped_func = retry(
-            wait=wait_random_exponential(min=1, max=8),
-            stop=stop_after_attempt(self.num_generation_retries + 1),
-            before_sleep=retry_before_sleep_callback,
-            retry_error_callback=retry_error_callback,
-        )(self.__class__.generate_completion_no_retry)
+        proc_name: str | None = None,
+        call_id: str | None = None,
+    ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent | LLMStreamingErrorEvent]:
+        n_attempt = 0
+        while n_attempt <= self.max_response_retries:
+            try:
+                async for event in await self._generate_completion_stream_once(  # type: ignore[return]
+                    conversation,  # type: ignore[arg-type]
+                    tool_choice=tool_choice,
+                    n_choices=n_choices,
+                    proc_name=proc_name,
+                    call_id=call_id,
+                ):
+                    yield event
+                return
+            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+                err_data = LLMStreamingErrorData(
+                    error=err, model_name=self._model_name, model_id=self.model_id
+                )
+                yield LLMStreamingErrorEvent(
+                    data=err_data, proc_name=proc_name, call_id=call_id
+                )
 
-        return await wrapped_func(
-            self, conversation, tool_choice=tool_choice, n_choices=n_choices
-        )
+                n_attempt += 1
+                if n_attempt > self.max_response_retries:
+                    if n_attempt == 1:
+                        logger.warning(f"\nCloudLLM completion request failed:\n{err}")
+                    if n_attempt > 1:
+                        logger.warning(
+                            "\nCloudLLM completion request failed after "
+                            f"retrying:\n{err}"
+                        )
+                        refusal_completion = make_refusal_completion(
+                            self._model_name, err
+                        )
+                        yield CompletionEvent(
+                            data=refusal_completion,
+                            proc_name=proc_name,
+                            call_id=call_id,
+                        )
+                    raise err
+                    # return
 
-    def _get_rate_limiter(
-        self,
-        rate_limiter: RateLimiterC[Messages, AssistantMessage] | None = None,
-        rpm: float | None = None,
-        chunk_size: int = 1000,
-        max_concurrency: int = 300,
-    ) -> RateLimiterC[Messages, AssistantMessage] | None:
-        if rate_limiter is not None:
-            logger.info(
-                f"[{self.__class__.__name__}] Set rate limit to {rate_limiter.rpm} RPM"
-            )
-            return rate_limiter
-        if rpm is not None:
-            logger.info(f"[{self.__class__.__name__}] Set rate limit to {rpm} RPM")
-            return RateLimiterC(
-                rpm=rpm, chunk_size=chunk_size, max_concurrency=max_concurrency
-            )
-
-        return None
+                logger.warning(
+                    "\nCloudLLM completion request failed "
+                    f"(retry attempt {n_attempt}):\n{err}"
+                )

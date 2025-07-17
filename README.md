@@ -87,7 +87,7 @@ Ensure you have a `.env` file with your OpenAI and Google AI Studio API keys set
 
 ```
 OPENAI_API_KEY=your_openai_api_key
-GOOGLE_AI_STUDIO_API_KEY=your_google_ai_studio_api_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
 Create a script, e.g., `problem_recommender.py`:
@@ -101,7 +101,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from grasp_agents.grasp_logging import setup_logging
-from grasp_agents.openai import OpenAILLM, OpenAILLMSettings
+from grasp_agents.litellm import LiteLLM, LiteLLMSettings
 from grasp_agents import LLMAgent, BaseTool, RunContext
 
 load_dotenv()
@@ -162,9 +162,9 @@ class Problem(BaseModel):
 
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
-    llm=OpenAILLM(
-        model_name="openai:gpt-4.1",
-        llm_settings=OpenAILLMSettings(temperature=0.5),
+    llm=LiteLLM(
+        model_name="gpt-4.1",
+        llm_settings=LiteLLMSettings(temperature=0.5),
     ),
     tools=[AskStudentTool()],
     react_mode=True,

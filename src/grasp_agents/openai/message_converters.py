@@ -1,5 +1,10 @@
 from typing import TypeAlias
 
+from litellm.types.llms.openai import (
+    ChatCompletionAnnotation,
+    ChatCompletionAnnotationURLCitation,
+)
+
 from ..typing.content import Content
 from ..typing.message import (
     AssistantMessage,
@@ -10,9 +15,9 @@ from ..typing.message import (
 from ..typing.tool import ToolCall
 from . import (
     OpenAIAssistantMessageParam,
+    OpenAICompletionMessage,
     OpenAIDeveloperMessageParam,
     OpenAIFunctionMessageParam,
-    OpenAIMessage,
     OpenAISystemMessageParam,
     OpenAIToolCallFunction,
     OpenAIToolCallParam,
@@ -55,7 +60,7 @@ def to_api_user_message(message: UserMessage) -> OpenAIUserMessageParam:
 
 
 def from_api_assistant_message(
-    api_message: OpenAIMessage, name: str | None = None
+    api_message: OpenAICompletionMessage, name: str | None = None
 ) -> AssistantMessage:
     tool_calls = None
     if api_message.tool_calls is not None:
@@ -68,10 +73,23 @@ def from_api_assistant_message(
             for tool_call in api_message.tool_calls
         ]
 
+    annotations = None
+    if api_message.annotations is not None:
+        annotations = [
+            ChatCompletionAnnotation(
+                type="url_citation",
+                url_citation=ChatCompletionAnnotationURLCitation(
+                    **api_annotation.url_citation.model_dump()
+                ),
+            )
+            for api_annotation in api_message.annotations
+        ]
+
     return AssistantMessage(
         content=api_message.content,
         tool_calls=tool_calls,
         refusal=api_message.refusal,
+        annotations=annotations,
         name=name,
     )
 
@@ -102,7 +120,7 @@ def to_api_assistant_message(
     if message.refusal is not None:
         api_message["refusal"] = message.refusal
 
-    # TODO: hack
+    # TODO: avoid this hack
     if message.content is None:
         # Some API providers return None in the generated content without errors,
         # even though None in the input content is not accepted.

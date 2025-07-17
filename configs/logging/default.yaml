@@ -37,6 +37,9 @@ loggers:
 
   openai:
     level: INFO
+
+  LiteLLM:
+    level: WARNING
   
   chromadb:
     level: INFO

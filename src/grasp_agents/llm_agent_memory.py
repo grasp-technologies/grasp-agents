@@ -9,14 +9,14 @@ from .typing.io import LLMPrompt
 from .typing.message import Message, Messages, SystemMessage
 
 
-class MakeMemoryHandler(Protocol):
+class PrepareMemoryHandler(Protocol):
     def __call__(
         self,
-        prev_memory: "LLMAgentMemory",
+        memory: "LLMAgentMemory",
         in_args: Any | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContext[Any] | None,
-    ) -> "LLMAgentMemory": ...
+    ) -> None: ...
 
 
 class LLMAgentMemory(Memory):

@@ -23,11 +23,15 @@
                 "pylance"
         ],
         "words": [
+                "acompletion",
                 "AILLM",
                 "coro",
                 "ipynb",
+                "litellm",
+                "llms",
                 "logp",
                 "pbar",
+                "procs",
                 "subprocs",
                 "templ"
         ],
