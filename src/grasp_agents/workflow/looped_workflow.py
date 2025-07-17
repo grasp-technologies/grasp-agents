@@ -151,36 +151,37 @@ class LoopedWorkflow(
         num_iterations = 0
         exit_packet: Packet[OutT_co] | None = None
 
-        for subproc in self.subprocs:
-            async for event in subproc.run_stream(
-                chat_inputs=chat_inputs,
-                in_packet=packet,
-                in_args=in_args,
-                forgetful=forgetful,
-                call_id=f"{call_id}/{subproc.name}",
-                ctx=ctx,
-            ):
-                if isinstance(event, ProcPacketOutputEvent):
-                    packet = event.data
-                yield event
+        while True:
+            for subproc in self.subprocs:
+                async for event in subproc.run_stream(
+                    chat_inputs=chat_inputs,
+                    in_packet=packet,
+                    in_args=in_args,
+                    forgetful=forgetful,
+                    call_id=f"{call_id}/{subproc.name}",
+                    ctx=ctx,
+                ):
+                    if isinstance(event, ProcPacketOutputEvent):
+                        packet = event.data
+                    yield event
 
-            if subproc is self._end_proc:
-                num_iterations += 1
-                exit_packet = cast("Packet[OutT_co]", packet)
-                if self._exit_workflow_loop(exit_packet, ctx=ctx):
-                    yield WorkflowResultEvent(
-                        data=exit_packet, proc_name=self.name, call_id=call_id
-                    )
-                    return
-                if num_iterations >= self._max_iterations:
-                    logger.info(
-                        f"Max iterations reached ({self._max_iterations}). "
-                        "Exiting loop."
-                    )
-                    yield WorkflowResultEvent(
-                        data=exit_packet, proc_name=self.name, call_id=call_id
-                    )
-                    return
+                if subproc is self._end_proc:
+                    num_iterations += 1
+                    exit_packet = cast("Packet[OutT_co]", packet)
+                    if self._exit_workflow_loop(exit_packet, ctx=ctx):
+                        yield WorkflowResultEvent(
+                            data=exit_packet, proc_name=self.name, call_id=call_id
+                        )
+                        return
+                    if num_iterations >= self._max_iterations:
+                        logger.info(
+                            f"Max iterations reached ({self._max_iterations}). "
+                            "Exiting loop."
+                        )
+                        yield WorkflowResultEvent(
+                            data=exit_packet, proc_name=self.name, call_id=call_id
+                        )
+                        return
 
-            chat_inputs = None
-            in_args = None
+                chat_inputs = None
+                in_args = None
