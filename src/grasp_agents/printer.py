@@ -197,11 +197,11 @@ async def print_event_stream(
             closing_text += "\n</tool call>\n"
 
         if _thinking_open:
-            closing_text += "</thinking>\n"
+            closing_text += "\n</thinking>\n"
             _thinking_open = False
 
         if _response_open:
-            closing_text += "</response>\n"
+            closing_text += "\n</response>\n"
             _response_open = False
 
         if closing_text:
