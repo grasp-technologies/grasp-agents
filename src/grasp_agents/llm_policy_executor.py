@@ -255,7 +255,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         final_answer_message = self._extract_final_answer_from_tool_calls(memory=memory)
         if final_answer_message is None:
-            raise AgentFinalAnswerError
+            raise AgentFinalAnswerError(proc_name=self.agent_name, call_id=call_id)
 
         return final_answer_message
 
@@ -282,7 +282,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         final_answer_message = self._extract_final_answer_from_tool_calls(memory)
         if final_answer_message is None:
-            raise AgentFinalAnswerError
+            raise AgentFinalAnswerError(proc_name=self.agent_name, call_id=call_id)
         yield GenMessageEvent(
             proc_name=self.agent_name, call_id=call_id, data=final_answer_message
         )

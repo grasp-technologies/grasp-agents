@@ -136,16 +136,20 @@ class ProcPayloadOutputEvent(Event[Any], frozen=True):
 
 
 class ProcPacketOutputEvent(Event[Packet[Any]], frozen=True):
-    type: Literal[EventType.PACKET_OUT] = EventType.PACKET_OUT
-    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    type: Literal[EventType.PACKET_OUT, EventType.WORKFLOW_RES, EventType.RUN_RES] = (
+        EventType.PACKET_OUT
+    )
+    source: Literal[
+        EventSourceType.PROC, EventSourceType.WORKFLOW, EventSourceType.RUN
+    ] = EventSourceType.PROC
 
 
-class WorkflowResultEvent(Event[Packet[Any]], frozen=True):
+class WorkflowResultEvent(ProcPacketOutputEvent, frozen=True):
     type: Literal[EventType.WORKFLOW_RES] = EventType.WORKFLOW_RES
     source: Literal[EventSourceType.WORKFLOW] = EventSourceType.WORKFLOW
 
 
-class RunResultEvent(Event[Packet[Any]], frozen=True):
+class RunResultEvent(ProcPacketOutputEvent, frozen=True):
     type: Literal[EventType.RUN_RES] = EventType.RUN_RES
     source: Literal[EventSourceType.RUN] = EventSourceType.RUN
 

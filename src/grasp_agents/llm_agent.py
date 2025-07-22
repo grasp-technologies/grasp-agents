@@ -4,7 +4,6 @@ from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
-from .comm_processor import CommProcessor
 from .llm import LLM, LLMSettings
 from .llm_agent_memory import LLMAgentMemory, PrepareMemoryHandler
 from .llm_policy_executor import (
@@ -12,7 +11,7 @@ from .llm_policy_executor import (
     LLMPolicyExecutor,
     ManageMemoryHandler,
 )
-from .packet_pool import PacketPool
+from .processor import Processor
 from .prompt_builder import (
     MakeInputContentHandler,
     MakeSystemPromptHandler,
@@ -27,7 +26,7 @@ from .typing.events import (
     SystemMessageEvent,
     UserMessageEvent,
 )
-from .typing.io import InT, LLMPrompt, LLMPromptArgs, OutT_co, ProcName
+from .typing.io import InT, LLMPrompt, LLMPromptArgs, OutT, ProcName
 from .typing.message import Message, Messages, SystemMessage, UserMessage
 from .typing.tool import BaseTool
 from .utils import get_prompt, validate_obj_from_json_or_py_string
@@ -47,8 +46,8 @@ class ParseOutputHandler(Protocol[_InT_contra, _OutT_co, CtxT]):
 
 
 class LLMAgent(
-    CommProcessor[InT, OutT_co, LLMAgentMemory, CtxT],
-    Generic[InT, OutT_co, CtxT],
+    Processor[InT, OutT, LLMAgentMemory, CtxT],
+    Generic[InT, OutT, CtxT],
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -71,8 +70,6 @@ class LLMAgent(
         sys_prompt_path: str | Path | None = None,
         # System args (static args provided via RunContext)
         sys_args_schema: type[LLMPromptArgs] | None = None,
-        # User args (static args provided via RunContext)
-        usr_args_schema: type[LLMPromptArgs] | None = None,
         # Agent loop settings
         max_turns: int = 100,
         react_mode: bool = False,
@@ -82,15 +79,9 @@ class LLMAgent(
         # Retries
         max_retries: int = 0,
         # Multi-agent routing
-        packet_pool: PacketPool[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
     ) -> None:
-        super().__init__(
-            name=name,
-            packet_pool=packet_pool,
-            recipients=recipients,
-            max_retries=max_retries,
-        )
+        super().__init__(name=name, recipients=recipients, max_retries=max_retries)
 
         # Agent memory
 
@@ -132,14 +123,13 @@ class LLMAgent(
             self.in_type, CtxT
         ](
             agent_name=self._name,
-            sys_prompt_template=sys_prompt,
-            in_prompt_template=in_prompt,
+            sys_prompt=sys_prompt,
+            in_prompt=in_prompt,
             sys_args_schema=sys_args_schema,
-            usr_args_schema=usr_args_schema,
         )
 
         self._prepare_memory_impl: PrepareMemoryHandler | None = None
-        self._parse_output_impl: ParseOutputHandler[InT, OutT_co, CtxT] | None = None
+        self._parse_output_impl: ParseOutputHandler[InT, OutT, CtxT] | None = None
         self._register_overridden_handlers()
 
     @property
@@ -159,16 +149,12 @@ class LLMAgent(
         return self._prompt_builder.sys_args_schema
 
     @property
-    def usr_args_schema(self) -> type[LLMPromptArgs] | None:
-        return self._prompt_builder.usr_args_schema
-
-    @property
     def sys_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.sys_prompt_template
+        return self._prompt_builder.sys_prompt
 
     @property
     def in_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.in_prompt_template
+        return self._prompt_builder.in_prompt
 
     def _prepare_memory(
         self,
@@ -184,20 +170,13 @@ class LLMAgent(
 
     def _memorize_inputs(
         self,
-        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
-        *,
-        in_args: InT | None = None,
         memory: LLMAgentMemory,
+        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        in_args: InT | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> tuple[SystemMessage | None, UserMessage | None]:
-        # 1. Get run arguments
-        sys_args: LLMPromptArgs | None = None
-        usr_args: LLMPromptArgs | None = None
-        if ctx is not None:
-            run_args = ctx.run_args.get(self.name)
-            if run_args is not None:
-                sys_args = run_args.sys
-                usr_args = run_args.usr
+        # 1. Get system arguments
+        sys_args = ctx.sys_args.get(self.name) if ctx and ctx.sys_args else None
 
         # 2. Make system prompt (can be None)
 
@@ -214,16 +193,13 @@ class LLMAgent(
                 system_message = cast("SystemMessage", memory.message_history[0])
         else:
             self._prepare_memory(
-                memory=memory,
-                in_args=in_args,
-                sys_prompt=formatted_sys_prompt,
-                ctx=ctx,
+                memory=memory, in_args=in_args, sys_prompt=formatted_sys_prompt, ctx=ctx
             )
 
         # 3. Make and add input messages
 
         input_message = self._prompt_builder.make_input_message(
-            chat_inputs=chat_inputs, in_args=in_args, usr_args=usr_args, ctx=ctx
+            chat_inputs=chat_inputs, in_args=in_args, ctx=ctx
         )
         if input_message:
             memory.update([input_message])
@@ -236,7 +212,7 @@ class LLMAgent(
         *,
         in_args: InT | None = None,
         ctx: RunContext[CtxT] | None = None,
-    ) -> OutT_co:
+    ) -> OutT:
         if self._parse_output_impl:
             return self._parse_output_impl(
                 conversation=conversation, in_args=in_args, ctx=ctx
@@ -257,9 +233,12 @@ class LLMAgent(
         memory: LLMAgentMemory,
         call_id: str,
         ctx: RunContext[CtxT] | None = None,
-    ) -> Sequence[OutT_co]:
+    ) -> OutT:
         system_message, input_message = self._memorize_inputs(
-            chat_inputs=chat_inputs, in_args=in_args, memory=memory, ctx=ctx
+            memory=memory,
+            chat_inputs=chat_inputs,
+            in_args=in_args,
+            ctx=ctx,
         )
         if system_message:
             self._print_messages([system_message], call_id=call_id, ctx=ctx)
@@ -268,11 +247,9 @@ class LLMAgent(
 
         await self._policy_executor.execute(memory, call_id=call_id, ctx=ctx)
 
-        return [
-            self._parse_output(
-                conversation=memory.message_history, in_args=in_args, ctx=ctx
-            )
-        ]
+        return self._parse_output(
+            conversation=memory.message_history, in_args=in_args, ctx=ctx
+        )
 
     async def _process_stream(
         self,
@@ -284,7 +261,10 @@ class LLMAgent(
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         system_message, input_message = self._memorize_inputs(
-            chat_inputs=chat_inputs, in_args=in_args, memory=memory, ctx=ctx
+            memory=memory,
+            chat_inputs=chat_inputs,
+            in_args=in_args,
+            ctx=ctx,
         )
         if system_message:
             self._print_messages([system_message], call_id=call_id, ctx=ctx)
@@ -322,6 +302,10 @@ class LLMAgent(
         cur_cls = type(self)
         base_cls = LLMAgent[Any, Any, Any]
 
+        # Packet routing
+        if cur_cls._select_recipients is not base_cls._select_recipients:  # noqa: SLF001
+            self.select_recipients_impl = self._select_recipients
+
         # Prompt builder
 
         if cur_cls._make_system_prompt is not base_cls._make_system_prompt:  # noqa: SLF001
@@ -354,15 +338,9 @@ class LLMAgent(
         return self._prompt_builder.make_system_prompt(sys_args=sys_args, ctx=ctx)
 
     def _make_input_content(
-        self,
-        *,
-        in_args: InT | None = None,
-        usr_args: LLMPromptArgs | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        self, in_args: InT | None = None, *, ctx: RunContext[CtxT] | None = None
     ) -> Content:
-        return self._prompt_builder.make_input_content(
-            in_args=in_args, usr_args=usr_args, ctx=ctx
-        )
+        return self._prompt_builder.make_input_content(in_args=in_args, ctx=ctx)
 
     def _exit_tool_call_loop(
         self,
@@ -403,8 +381,8 @@ class LLMAgent(
         return func
 
     def parse_output(
-        self, func: ParseOutputHandler[InT, OutT_co, CtxT]
-    ) -> ParseOutputHandler[InT, OutT_co, CtxT]:
+        self, func: ParseOutputHandler[InT, OutT, CtxT]
+    ) -> ParseOutputHandler[InT, OutT, CtxT]:
         if self._used_default_llm_response_schema:
             self._policy_executor.llm.response_schema = None
         self._parse_output_impl = func

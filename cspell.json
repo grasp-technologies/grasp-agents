@@ -30,6 +30,7 @@
                 "litellm",
                 "llms",
                 "logp",
+                "mult",
                 "pbar",
                 "procs",
                 "subprocs",

@@ -9,21 +9,13 @@ from .printer import ColoringMode, Printer
 from .typing.io import LLMPromptArgs, ProcName
 from .usage_tracker import UsageTracker
 
-
-class RunArgs(BaseModel):
-    sys: LLMPromptArgs | None = None
-    usr: LLMPromptArgs | None = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 CtxT = TypeVar("CtxT")
 
 
 class RunContext(BaseModel, Generic[CtxT]):
     state: CtxT | None = None
 
-    run_args: dict[ProcName, RunArgs] = Field(default_factory=dict)
+    sys_args: dict[ProcName, LLMPromptArgs] = Field(default_factory=dict)
 
     is_streaming: bool = False
     result: Any | None = None

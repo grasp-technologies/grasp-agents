@@ -2,37 +2,29 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, Generic
 
-from ..comm_processor import CommProcessor
 from ..errors import WorkflowConstructionError
 from ..packet import Packet
-from ..packet_pool import PacketPool
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
 from ..typing.events import Event
-from ..typing.io import InT, OutT_co, ProcName
+from ..typing.io import InT, OutT, ProcName
 
 
 class WorkflowProcessor(
-    CommProcessor[InT, OutT_co, Any, CtxT],
+    Processor[InT, OutT, Any, CtxT],
     ABC,
-    Generic[InT, OutT_co, CtxT],
+    Generic[InT, OutT, CtxT],
 ):
     def __init__(
         self,
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
         start_proc: Processor[InT, Any, Any, CtxT],
-        end_proc: Processor[Any, OutT_co, Any, CtxT],
-        packet_pool: PacketPool[CtxT] | None = None,
+        end_proc: Processor[Any, OutT, Any, CtxT],
         recipients: list[ProcName] | None = None,
         max_retries: int = 0,
     ) -> None:
-        super().__init__(
-            name=name,
-            packet_pool=packet_pool,
-            recipients=recipients,
-            max_retries=max_retries,
-        )
+        super().__init__(name=name, recipients=recipients, max_retries=max_retries)
 
         self._in_type = start_proc.in_type
         self._out_type = end_proc.out_type
@@ -61,7 +53,7 @@ class WorkflowProcessor(
         return self._start_proc
 
     @property
-    def end_proc(self) -> Processor[Any, OutT_co, Any, CtxT]:
+    def end_proc(self) -> Processor[Any, OutT, Any, CtxT]:
         return self._end_proc
 
     def _generate_subproc_call_id(
@@ -79,7 +71,7 @@ class WorkflowProcessor(
         ctx: RunContext[CtxT] | None = None,
         forgetful: bool = False,
         call_id: str | None = None,
-    ) -> Packet[OutT_co]:
+    ) -> Packet[OutT]:
         pass
 
     @abstractmethod
