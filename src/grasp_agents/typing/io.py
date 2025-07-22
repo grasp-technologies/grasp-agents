@@ -6,7 +6,7 @@ ProcName: TypeAlias = str
 
 
 InT = TypeVar("InT")
-OutT_co = TypeVar("OutT_co", covariant=True)
+OutT = TypeVar("OutT")
 
 
 class LLMPromptArgs(BaseModel):

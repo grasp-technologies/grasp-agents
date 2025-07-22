@@ -1,24 +1,48 @@
 # from openai import APIResponseValidationError
-class CompletionError(Exception):
-    pass
 
 
-class CombineCompletionChunksError(Exception):
-    pass
-
-
-class ProcInputValidationError(Exception):
-    pass
-
-
-class ProcOutputValidationError(Exception):
-    pass
-
-
-class AgentFinalAnswerError(Exception):
-    def __init__(self, message: str | None = None) -> None:
+class ProcRunError(Exception):
+    def __init__(
+        self, proc_name: str, call_id: str, message: str | None = None
+    ) -> None:
         super().__init__(
-            message or "Final answer tool call did not return a final answer message."
+            message
+            or f"Processor run failed [proc_name: {proc_name}; call_id: {call_id}]."
+        )
+        self.proc_name = proc_name
+        self.call_id = call_id
+
+
+class ProcInputValidationError(ProcRunError):
+    pass
+
+
+class ProcOutputValidationError(ProcRunError):
+    def __init__(
+        self, schema: object, proc_name: str, call_id: str, message: str | None = None
+    ):
+        super().__init__(
+            proc_name=proc_name,
+            call_id=call_id,
+            message=message
+            or (
+                "Processor output validation failed "
+                f"[proc_name: {proc_name}; call_id: {call_id}]. "
+                f"Expected type:\n{schema}"
+            ),
+        )
+
+
+class AgentFinalAnswerError(ProcRunError):
+    def __init__(
+        self, proc_name: str, call_id: str, message: str | None = None
+    ) -> None:
+        super().__init__(
+            proc_name=proc_name,
+            call_id=call_id,
+            message=message
+            or "Final answer tool call did not return a final answer message "
+            f"[proc_name={proc_name}; call_id={call_id}]",
         )
         self.message = message
 
@@ -27,28 +51,58 @@ class WorkflowConstructionError(Exception):
     pass
 
 
-class PacketRoutingError(Exception):
+class PacketRoutingError(ProcRunError):
     def __init__(
         self,
-        selected_recipient: str,
-        allowed_recipients: list[str],
+        proc_name: str,
+        call_id: str,
+        selected_recipient: str | None = None,
+        allowed_recipients: list[str] | None = None,
         message: str | None = None,
     ) -> None:
         default_message = (
             f"Selected recipient '{selected_recipient}' is not in the allowed "
-            f"recipients: {allowed_recipients}"
+            f"recipients: {allowed_recipients} "
+            f"[proc_name={proc_name}; call_id={call_id}]"
         )
-        super().__init__(message or default_message)
+        super().__init__(
+            proc_name=proc_name, call_id=call_id, message=message or default_message
+        )
         self.selected_recipient = selected_recipient
         self.allowed_recipients = allowed_recipients
 
 
-class SystemPromptBuilderError(Exception):
+class RunnerError(Exception):
     pass
 
 
-class InputPromptBuilderError(Exception):
-    pass
+class PromptBuilderError(Exception):
+    def __init__(self, proc_name: str, message: str | None = None) -> None:
+        super().__init__(message or f"Prompt builder failed [proc_name={proc_name}]")
+        self.proc_name = proc_name
+        self.message = message
+
+
+class SystemPromptBuilderError(PromptBuilderError):
+    def __init__(self, proc_name: str, message: str | None = None) -> None:
+        super().__init__(
+            proc_name=proc_name,
+            message=message
+            or "System prompt builder failed to make system prompt "
+            f"[proc_name={proc_name}]",
+        )
+        self.message = message
+
+
+class InputPromptBuilderError(PromptBuilderError):
+    def __init__(self, proc_name: str, message: str | None = None) -> None:
+        super().__init__(
+            proc_name=proc_name,
+            message=message
+            or "Input prompt builder failed to make input content "
+            f"[proc_name={proc_name}]",
+        )
+        self.message = message
 
 
 class PyJSONStringParsingError(Exception):
@@ -69,6 +123,14 @@ class JSONSchemaValidationError(Exception):
         )
         self.s = s
         self.schema = schema
+
+
+class CompletionError(Exception):
+    pass
+
+
+class CombineCompletionChunksError(Exception):
+    pass
 
 
 class LLMToolCallValidationError(Exception):

@@ -219,12 +219,12 @@ async def print_event_stream(
     ) -> None:
         color = _get_color(event, Role.ASSISTANT)
 
-        if isinstance(event, ProcPacketOutputEvent):
-            src = "processor"
-        elif isinstance(event, WorkflowResultEvent):
+        if isinstance(event, WorkflowResultEvent):
             src = "workflow"
-        else:
+        elif isinstance(event, RunResultEvent):
             src = "run"
+        else:
+            src = "processor"
 
         text = f"\n<{event.proc_name}> [{event.call_id}]\n"
 
@@ -232,6 +232,10 @@ async def print_event_stream(
             text += f"<{src} output>\n"
             for p in event.data.payloads:
                 if isinstance(p, BaseModel):
+                    for field_info in type(p).model_fields.values():
+                        if field_info.exclude:
+                            field_info.exclude = False
+                    type(p).model_rebuild(force=True)
                     p_str = p.model_dump_json(indent=2)
                 else:
                     try:

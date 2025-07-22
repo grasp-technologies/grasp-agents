@@ -4,11 +4,11 @@ from logging import getLogger
 from typing import Any, Generic, Protocol, TypeVar, cast, final
 
 from ..errors import WorkflowConstructionError
-from ..packet_pool import Packet, PacketPool
+from ..packet_pool import Packet
 from ..processor import Processor
 from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
-from ..typing.io import InT, OutT_co, ProcName
+from ..typing.io import InT, OutT, ProcName
 from .workflow_processor import WorkflowProcessor
 
 logger = getLogger(__name__)
@@ -25,15 +25,12 @@ class ExitWorkflowLoopHandler(Protocol[_OutT_contra, CtxT]):
     ) -> bool: ...
 
 
-class LoopedWorkflow(
-    WorkflowProcessor[InT, OutT_co, CtxT], Generic[InT, OutT_co, CtxT]
-):
+class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def __init__(
         self,
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
-        exit_proc: Processor[Any, OutT_co, Any, CtxT],
-        packet_pool: PacketPool[CtxT] | None = None,
+        exit_proc: Processor[Any, OutT, Any, CtxT],
         recipients: list[ProcName] | None = None,
         max_retries: int = 0,
         max_iterations: int = 10,
@@ -43,7 +40,6 @@ class LoopedWorkflow(
             name=name,
             start_proc=subprocs[0],
             end_proc=exit_proc,
-            packet_pool=packet_pool,
             recipients=recipients,
             max_retries=max_retries,
         )
@@ -64,24 +60,22 @@ class LoopedWorkflow(
 
         self._max_iterations = max_iterations
 
-        self._exit_workflow_loop_impl: ExitWorkflowLoopHandler[OutT_co, CtxT] | None = (
-            None
-        )
+        self._exit_workflow_loop_impl: ExitWorkflowLoopHandler[OutT, CtxT] | None = None
 
     @property
     def max_iterations(self) -> int:
         return self._max_iterations
 
     def exit_workflow_loop(
-        self, func: ExitWorkflowLoopHandler[OutT_co, CtxT]
-    ) -> ExitWorkflowLoopHandler[OutT_co, CtxT]:
+        self, func: ExitWorkflowLoopHandler[OutT, CtxT]
+    ) -> ExitWorkflowLoopHandler[OutT, CtxT]:
         self._exit_workflow_loop_impl = func
 
         return func
 
     def _exit_workflow_loop(
         self,
-        out_packet: Packet[OutT_co],
+        out_packet: Packet[OutT],
         *,
         ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
@@ -101,12 +95,12 @@ class LoopedWorkflow(
         call_id: str | None = None,
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
-    ) -> Packet[OutT_co]:
+    ) -> Packet[OutT]:
         call_id = self._generate_call_id(call_id)
 
         packet = in_packet
         num_iterations = 0
-        exit_packet: Packet[OutT_co] | None = None
+        exit_packet: Packet[OutT] | None = None
 
         while True:
             for subproc in self.subprocs:
@@ -121,7 +115,7 @@ class LoopedWorkflow(
 
                 if subproc is self._end_proc:
                     num_iterations += 1
-                    exit_packet = cast("Packet[OutT_co]", packet)
+                    exit_packet = cast("Packet[OutT]", packet)
                     if self._exit_workflow_loop(exit_packet, ctx=ctx):
                         return exit_packet
                     if num_iterations >= self._max_iterations:
@@ -149,7 +143,7 @@ class LoopedWorkflow(
 
         packet = in_packet
         num_iterations = 0
-        exit_packet: Packet[OutT_co] | None = None
+        exit_packet: Packet[OutT] | None = None
 
         while True:
             for subproc in self.subprocs:
@@ -167,7 +161,7 @@ class LoopedWorkflow(
 
                 if subproc is self._end_proc:
                     num_iterations += 1
-                    exit_packet = cast("Packet[OutT_co]", packet)
+                    exit_packet = cast("Packet[OutT]", packet)
                     if self._exit_workflow_loop(exit_packet, ctx=ctx):
                         yield WorkflowResultEvent(
                             data=exit_packet, proc_name=self.name, call_id=call_id
