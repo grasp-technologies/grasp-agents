@@ -4,7 +4,7 @@ from typing import Any, Generic
 
 from ..errors import WorkflowConstructionError
 from ..packet import Packet
-from ..processor import Processor
+from ..processor import Processor, RecipientSelector
 from ..run_context import CtxT, RunContext
 from ..typing.events import Event
 from ..typing.io import InT, OutT, ProcName
@@ -43,6 +43,21 @@ class WorkflowProcessor(
         self._subprocs = subprocs
         self._start_proc = start_proc
         self._end_proc = end_proc
+
+        self.recipients = end_proc.recipients
+        if recipients is not None:
+            self.recipients = recipients
+
+        if hasattr(type(self), "recipient_selector"):
+            self._end_proc.recipient_selector = self.recipient_selector
+
+    def add_recipient_selector(
+        self, func: RecipientSelector[OutT, CtxT]
+    ) -> RecipientSelector[OutT, CtxT]:
+        self._end_proc.recipient_selector = func
+        self.recipient_selector = func
+
+        return func
 
     @property
     def subprocs(self) -> Sequence[Processor[Any, Any, Any, CtxT]]:

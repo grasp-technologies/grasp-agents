@@ -119,7 +119,7 @@ class Printer:
         # Thinking
         if isinstance(message, AssistantMessage) and message.reasoning_content:
             thinking = message.reasoning_content.strip(" \n")
-            out += f"\n<thinking>\n{thinking}\n</thinking>\n"
+            out += f"<thinking>\n{thinking}\n</thinking>\n"
 
         # Content
         content = self.content_to_str(message.content or "", message.role)

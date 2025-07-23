@@ -10,7 +10,7 @@ from .processor import Processor
 from .run_context import RunContext
 from .typing.completion import Completion
 from .typing.content import Content, ImageData
-from .typing.io import LLMPrompt, LLMPromptArgs, ProcName
+from .typing.io import LLMPrompt, ProcName
 from .typing.message import AssistantMessage, Messages, SystemMessage, UserMessage
 from .typing.tool import BaseTool
 
@@ -24,7 +24,6 @@ __all__ = [
     "LLMAgent",
     "LLMAgentMemory",
     "LLMPrompt",
-    "LLMPromptArgs",
     "LLMSettings",
     "Memory",
     "Messages",

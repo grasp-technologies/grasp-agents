@@ -9,7 +9,7 @@ from .typing.io import LLMPrompt
 from .typing.message import Message, Messages, SystemMessage
 
 
-class PrepareMemoryHandler(Protocol):
+class MemoryPreparator(Protocol):
     def __call__(
         self,
         memory: "LLMAgentMemory",
