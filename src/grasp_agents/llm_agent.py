@@ -1,21 +1,21 @@
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
+from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
 from pydantic import BaseModel
 
 from .llm import LLM, LLMSettings
-from .llm_agent_memory import LLMAgentMemory, PrepareMemoryHandler
+from .llm_agent_memory import LLMAgentMemory, MemoryPreparator
 from .llm_policy_executor import (
-    ExitToolCallLoopHandler,
     LLMPolicyExecutor,
-    ManageMemoryHandler,
+    MemoryManager,
+    ToolCallLoopTerminator,
 )
 from .processor import Processor
 from .prompt_builder import (
-    MakeInputContentHandler,
-    MakeSystemPromptHandler,
+    InputContentBuilder,
     PromptBuilder,
+    SystemPromptBuilder,
 )
 from .run_context import CtxT, RunContext
 from .typing.content import Content, ImageData
@@ -26,7 +26,7 @@ from .typing.events import (
     SystemMessageEvent,
     UserMessageEvent,
 )
-from .typing.io import InT, LLMPrompt, LLMPromptArgs, OutT, ProcName
+from .typing.io import InT, LLMPrompt, OutT, ProcName
 from .typing.message import Message, Messages, SystemMessage, UserMessage
 from .typing.tool import BaseTool
 from .utils import get_prompt, validate_obj_from_json_or_py_string
@@ -35,7 +35,7 @@ _InT_contra = TypeVar("_InT_contra", contravariant=True)
 _OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
-class ParseOutputHandler(Protocol[_InT_contra, _OutT_co, CtxT]):
+class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
     def __call__(
         self,
         conversation: Messages,
@@ -68,8 +68,6 @@ class LLMAgent(
         # System prompt template
         sys_prompt: LLMPrompt | None = None,
         sys_prompt_path: str | Path | None = None,
-        # System args (static args provided via RunContext)
-        sys_args_schema: type[LLMPromptArgs] | None = None,
         # Agent loop settings
         max_turns: int = 100,
         react_mode: bool = False,
@@ -88,10 +86,22 @@ class LLMAgent(
         self._memory: LLMAgentMemory = LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
 
+        self.memory_preparator: MemoryPreparator | None
+        if not hasattr(type(self), "memory_preparator"):
+            self.memory_preparator = None
+
+        self.output_parser: OutputParser[InT, OutT, CtxT] | None
+        if not hasattr(type(self), "output_parser"):
+            self.output_parser = None
+
         # LLM policy executor
 
         self._used_default_llm_response_schema: bool = False
-        if llm.response_schema is None and tools is None:
+        if (
+            llm.response_schema is None
+            and tools is None
+            and not hasattr(type(self), "output_parser")
+        ):
             llm.response_schema = self.out_type
             self._used_default_llm_response_schema = True
 
@@ -119,17 +129,11 @@ class LLMAgent(
 
         sys_prompt = get_prompt(prompt_text=sys_prompt, prompt_path=sys_prompt_path)
         in_prompt = get_prompt(prompt_text=in_prompt, prompt_path=in_prompt_path)
-        self._prompt_builder: PromptBuilder[InT, CtxT] = PromptBuilder[
-            self.in_type, CtxT
-        ](
-            agent_name=self._name,
-            sys_prompt=sys_prompt,
-            in_prompt=in_prompt,
-            sys_args_schema=sys_args_schema,
+
+        self._prompt_builder = PromptBuilder[self.in_type, CtxT](
+            agent_name=self._name, sys_prompt=sys_prompt, in_prompt=in_prompt
         )
 
-        self._prepare_memory_impl: PrepareMemoryHandler | None = None
-        self._parse_output_impl: ParseOutputHandler[InT, OutT, CtxT] | None = None
         self._register_overridden_handlers()
 
     @property
@@ -145,10 +149,6 @@ class LLMAgent(
         return self._policy_executor.max_turns
 
     @property
-    def sys_args_schema(self) -> type[LLMPromptArgs] | None:
-        return self._prompt_builder.sys_args_schema
-
-    @property
     def sys_prompt(self) -> LLMPrompt | None:
         return self._prompt_builder.sys_prompt
 
@@ -156,6 +156,7 @@ class LLMAgent(
     def in_prompt(self) -> LLMPrompt | None:
         return self._prompt_builder.in_prompt
 
+    @final
     def _prepare_memory(
         self,
         memory: LLMAgentMemory,
@@ -163,8 +164,8 @@ class LLMAgent(
         sys_prompt: LLMPrompt | None = None,
         ctx: RunContext[Any] | None = None,
     ) -> None:
-        if self._prepare_memory_impl:
-            return self._prepare_memory_impl(
+        if self.memory_preparator:
+            return self.memory_preparator(
                 memory=memory, in_args=in_args, sys_prompt=sys_prompt, ctx=ctx
             )
 
@@ -175,16 +176,7 @@ class LLMAgent(
         in_args: InT | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> tuple[SystemMessage | None, UserMessage | None]:
-        # 1. Get system arguments
-        sys_args = ctx.sys_args.get(self.name) if ctx and ctx.sys_args else None
-
-        # 2. Make system prompt (can be None)
-
-        formatted_sys_prompt = self._prompt_builder.make_system_prompt(
-            sys_args=sys_args, ctx=ctx
-        )
-
-        # 3. Set agent memory
+        formatted_sys_prompt = self._prompt_builder.build_system_prompt(ctx=ctx)
 
         system_message: SystemMessage | None = None
         if self._reset_memory_on_run or memory.is_empty:
@@ -196,9 +188,7 @@ class LLMAgent(
                 memory=memory, in_args=in_args, sys_prompt=formatted_sys_prompt, ctx=ctx
             )
 
-        # 3. Make and add input messages
-
-        input_message = self._prompt_builder.make_input_message(
+        input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs, in_args=in_args, ctx=ctx
         )
         if input_message:
@@ -213,8 +203,8 @@ class LLMAgent(
         in_args: InT | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> OutT:
-        if self._parse_output_impl:
-            return self._parse_output_impl(
+        if self.output_parser:
+            return self.output_parser(
                 conversation=conversation, in_args=in_args, ctx=ctx
             )
 
@@ -302,108 +292,100 @@ class LLMAgent(
         cur_cls = type(self)
         base_cls = LLMAgent[Any, Any, Any]
 
-        # Packet routing
-        if cur_cls._select_recipients is not base_cls._select_recipients:  # noqa: SLF001
-            self.select_recipients_impl = self._select_recipients
-
         # Prompt builder
 
-        if cur_cls._make_system_prompt is not base_cls._make_system_prompt:  # noqa: SLF001
-            self._prompt_builder.make_system_prompt_impl = self._make_system_prompt
+        if cur_cls.system_prompt_builder is not base_cls.system_prompt_builder:
+            self._prompt_builder.system_prompt_builder = self.system_prompt_builder
 
-        if cur_cls._make_input_content is not base_cls._make_input_content:  # noqa: SLF001
-            self._prompt_builder.make_input_content_impl = self._make_input_content
+        if cur_cls.input_content_builder is not base_cls.input_content_builder:
+            self._prompt_builder.input_content_builder = self.input_content_builder
 
         # Policy executor
 
-        if (
-            cur_cls._exit_tool_call_loop is not base_cls._exit_tool_call_loop  # noqa: SLF001
-        ):
-            self._policy_executor.exit_tool_call_loop_impl = self._exit_tool_call_loop
+        if cur_cls.tool_call_loop_terminator is not base_cls.tool_call_loop_terminator:
+            self._policy_executor.tool_call_loop_terminator = (
+                self.tool_call_loop_terminator
+            )
 
-        if cur_cls._manage_memory is not base_cls._manage_memory:  # noqa: SLF001
-            self._policy_executor.manage_memory_impl = self._manage_memory
+        if cur_cls.memory_manager is not base_cls.memory_manager:
+            self._policy_executor.memory_manager = self.memory_manager
 
-        # Make sure default LLM response schema is not used when custom output
-        # parsing is provided
-        if (
-            cur_cls._parse_output is not base_cls._parse_output  # noqa: SLF001
-            and self._used_default_llm_response_schema
-        ):
-            self._policy_executor.llm.response_schema = None
+    def system_prompt_builder(self, ctx: RunContext[CtxT] | None = None) -> str | None:
+        if self._prompt_builder.system_prompt_builder is not None:
+            return self._prompt_builder.system_prompt_builder(ctx=ctx)
+        raise NotImplementedError("System prompt builder is not implemented.")
 
-    def _make_system_prompt(
-        self, sys_args: LLMPromptArgs | None, *, ctx: RunContext[CtxT] | None = None
-    ) -> str | None:
-        return self._prompt_builder.make_system_prompt(sys_args=sys_args, ctx=ctx)
-
-    def _make_input_content(
+    def input_content_builder(
         self, in_args: InT | None = None, *, ctx: RunContext[CtxT] | None = None
     ) -> Content:
-        return self._prompt_builder.make_input_content(in_args=in_args, ctx=ctx)
+        if self._prompt_builder.input_content_builder is not None:
+            return self._prompt_builder.input_content_builder(in_args=in_args, ctx=ctx)
+        raise NotImplementedError("Input content builder is not implemented.")
 
-    def _exit_tool_call_loop(
+    def tool_call_loop_terminator(
         self,
         conversation: Messages,
         *,
         ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> bool:
-        return self._policy_executor._exit_tool_call_loop(  # type: ignore[return-value]
-            conversation=conversation, ctx=ctx, **kwargs
-        )
+        if self._policy_executor.tool_call_loop_terminator is not None:
+            return self._policy_executor.tool_call_loop_terminator(
+                conversation=conversation, ctx=ctx, **kwargs
+            )
+        raise NotImplementedError("Tool call loop terminator is not implemented.")
 
-    def _manage_memory(
+    def memory_manager(
         self,
         memory: LLMAgentMemory,
         *,
         ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> None:
-        return self._policy_executor._manage_memory(  # type: ignore[return-value]
-            memory=memory, ctx=ctx, **kwargs
-        )
+        if self._policy_executor.memory_manager is not None:
+            return self._policy_executor.memory_manager(
+                memory=memory, ctx=ctx, **kwargs
+            )
+        raise NotImplementedError("Memory manager is not implemented.")
 
     # Decorators for custom implementations as an alternative to overriding methods
 
-    def make_system_prompt(
-        self, func: MakeSystemPromptHandler[CtxT]
-    ) -> MakeSystemPromptHandler[CtxT]:
-        self._prompt_builder.make_system_prompt_impl = func
+    def add_system_prompt_builder(
+        self, func: SystemPromptBuilder[CtxT]
+    ) -> SystemPromptBuilder[CtxT]:
+        self._prompt_builder.system_prompt_builder = func
 
         return func
 
-    def make_input_content(
-        self, func: MakeInputContentHandler[InT, CtxT]
-    ) -> MakeInputContentHandler[InT, CtxT]:
-        self._prompt_builder.make_input_content_impl = func
+    def add_input_content_builder(
+        self, func: InputContentBuilder[InT, CtxT]
+    ) -> InputContentBuilder[InT, CtxT]:
+        self._prompt_builder.input_content_builder = func
 
         return func
 
-    def parse_output(
-        self, func: ParseOutputHandler[InT, OutT, CtxT]
-    ) -> ParseOutputHandler[InT, OutT, CtxT]:
+    def add_memory_manager(self, func: MemoryManager[CtxT]) -> MemoryManager[CtxT]:
+        self._policy_executor.memory_manager = func
+
+        return func
+
+    def add_tool_call_loop_terminator(
+        self, func: ToolCallLoopTerminator[CtxT]
+    ) -> ToolCallLoopTerminator[CtxT]:
+        self._policy_executor.tool_call_loop_terminator = func
+
+        return func
+
+    def add_output_parser(
+        self, func: OutputParser[InT, OutT, CtxT]
+    ) -> OutputParser[InT, OutT, CtxT]:
         if self._used_default_llm_response_schema:
             self._policy_executor.llm.response_schema = None
-        self._parse_output_impl = func
+        self.output_parser = func
 
         return func
 
-    def prepare_memory(self, func: PrepareMemoryHandler) -> PrepareMemoryHandler:
-        self._prepare_memory_impl = func
-
-        return func
-
-    def manage_memory(
-        self, func: ManageMemoryHandler[CtxT]
-    ) -> ManageMemoryHandler[CtxT]:
-        self._policy_executor.manage_memory_impl = func
-
-        return func
-
-    def exit_tool_call_loop(
-        self, func: ExitToolCallLoopHandler[CtxT]
-    ) -> ExitToolCallLoopHandler[CtxT]:
-        self._policy_executor.exit_tool_call_loop_impl = func
+    def add_memory_preparator(self, func: MemoryPreparator) -> MemoryPreparator:
+        self.memory_preparator = func
 
         return func

@@ -3,7 +3,7 @@ import json
 from collections.abc import AsyncIterator, Coroutine, Sequence
 from itertools import starmap
 from logging import getLogger
-from typing import Any, Generic, Protocol
+from typing import Any, Generic, Protocol, final
 
 from pydantic import BaseModel
 
@@ -29,7 +29,7 @@ from .typing.tool import BaseTool, NamedToolChoice, ToolCall, ToolChoice
 logger = getLogger(__name__)
 
 
-class ExitToolCallLoopHandler(Protocol[CtxT]):
+class ToolCallLoopTerminator(Protocol[CtxT]):
     def __call__(
         self,
         conversation: Messages,
@@ -39,7 +39,7 @@ class ExitToolCallLoopHandler(Protocol[CtxT]):
     ) -> bool: ...
 
 
-class ManageMemoryHandler(Protocol[CtxT]):
+class MemoryManager(Protocol[CtxT]):
     def __call__(
         self,
         memory: LLMAgentMemory,
@@ -78,8 +78,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self._max_turns = max_turns
         self._react_mode = react_mode
 
-        self.exit_tool_call_loop_impl: ExitToolCallLoopHandler[CtxT] | None = None
-        self.manage_memory_impl: ManageMemoryHandler[CtxT] | None = None
+        self.tool_call_loop_terminator: ToolCallLoopTerminator[CtxT] | None = None
+        self.memory_manager: MemoryManager[CtxT] | None = None
 
     @property
     def agent_name(self) -> str:
@@ -97,18 +97,20 @@ class LLMPolicyExecutor(Generic[CtxT]):
     def max_turns(self) -> int:
         return self._max_turns
 
-    def _exit_tool_call_loop(
+    @final
+    def _terminate_tool_call_loop(
         self,
         conversation: Messages,
         *,
         ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> bool:
-        if self.exit_tool_call_loop_impl:
-            return self.exit_tool_call_loop_impl(conversation, ctx=ctx, **kwargs)
+        if self.tool_call_loop_terminator:
+            return self.tool_call_loop_terminator(conversation, ctx=ctx, **kwargs)
 
         return False
 
+    @final
     def _manage_memory(
         self,
         memory: LLMAgentMemory,
@@ -116,8 +118,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
         ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> None:
-        if self.manage_memory_impl:
-            self.manage_memory_impl(memory=memory, ctx=ctx, **kwargs)
+        if self.memory_manager:
+            self.memory_manager(memory=memory, ctx=ctx, **kwargs)
 
     async def generate_message(
         self,
@@ -309,8 +311,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
             # 2. Check if we should exit the tool call loop
 
             # If a final answer is not provided via a tool call, we use
-            # exit_tool_call_loop to determine whether to exit the loop.
-            if not self._final_answer_as_tool_call and self._exit_tool_call_loop(
+            # _terminate_tool_call_loop to determine whether to exit the loop.
+            if not self._final_answer_as_tool_call and self._terminate_tool_call_loop(
                 memory.message_history, ctx=ctx, num_turns=turns
             ):
                 return gen_message
@@ -390,7 +392,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         turns = 0
 
         while True:
-            if not self._final_answer_as_tool_call and self._exit_tool_call_loop(
+            if not self._final_answer_as_tool_call and self._terminate_tool_call_loop(
                 memory.message_history, ctx=ctx, num_turns=turns
             ):
                 return

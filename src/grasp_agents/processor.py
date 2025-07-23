@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 _OutT_contra = TypeVar("_OutT_contra", contravariant=True)
 
 
-class SelectRecipientsHandler(Protocol[_OutT_contra, CtxT]):
+class RecipientSelector(Protocol[_OutT_contra, CtxT]):
     def __call__(
         self, output: _OutT_contra, ctx: RunContext[CtxT] | None
     ) -> list[ProcName] | None: ...
@@ -61,8 +61,13 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
         self._name: ProcName = name
         self._memory: MemT = cast("MemT", DummyMemory())
         self._max_retries: int = max_retries
+
         self.recipients = recipients
-        self.select_recipients_impl: SelectRecipientsHandler[OutT, CtxT] | None = None
+
+        self.recipient_selector: RecipientSelector[OutT, CtxT] | None
+        if not hasattr(type(self), "recipient_selector"):
+            # Set to None if not defined in the subclass
+            self.recipient_selector = None
 
     @property
     def in_type(self) -> type[InT]:
@@ -94,8 +99,8 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
         call_id: str,
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-    ) -> Sequence[InT] | None:
+        in_args: InT | list[InT] | None = None,
+    ) -> list[InT] | None:
         mult_inputs_err_message = (
             "Only one of chat_inputs, in_args, or in_message must be provided."
         )
@@ -126,14 +131,14 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
         if chat_inputs is not None:
             return None
 
-        resolved_args: Sequence[InT]
+        resolved_args: list[InT]
 
-        if isinstance(in_args, Sequence):
-            _in_args = cast("Sequence[Any]", in_args)
+        if isinstance(in_args, list):
+            _in_args = cast("list[Any]", in_args)
             if all(isinstance(x, self.in_type) for x in _in_args):
-                resolved_args = cast("Sequence[InT]", _in_args)
+                resolved_args = cast("list[InT]", _in_args)
             elif isinstance(_in_args, self.in_type):
-                resolved_args = cast("Sequence[InT]", [_in_args])
+                resolved_args = cast("list[InT]", [_in_args])
             else:
                 raise ProcInputValidationError(
                     message=f"in_args are neither of type {self.in_type} "
@@ -142,11 +147,11 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
                 )
 
         elif in_args is not None:
-            resolved_args = cast("Sequence[InT]", [in_args])
+            resolved_args = cast("list[InT]", [in_args])
 
         else:
             assert in_packet is not None
-            resolved_args = in_packet.payloads
+            resolved_args = cast("list[InT]", in_packet.payloads)
 
         try:
             for args in resolved_args:
@@ -167,7 +172,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
             ) from err
 
     def _validate_recipients(
-        self, recipients: Sequence[ProcName] | None, call_id: str
+        self, recipients: list[ProcName] | None, call_id: str
     ) -> None:
         for r in recipients or []:
             if r not in (self.recipients or []):
@@ -190,6 +195,22 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
                 message="Parallel runs must return the same recipients "
                 f"[proc_name={self.name}; call_id={call_id}]",
             )
+
+    @final
+    def _select_recipients(
+        self, output: OutT, ctx: RunContext[CtxT] | None = None
+    ) -> list[ProcName] | None:
+        if self.recipient_selector:
+            return self.recipient_selector(output=output, ctx=ctx)
+
+        return self.recipients
+
+    def add_recipient_selector(
+        self, func: RecipientSelector[OutT, CtxT]
+    ) -> RecipientSelector[OutT, CtxT]:
+        self.recipient_selector = func
+
+        return func
 
     async def _process(
         self,
@@ -275,7 +296,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
         raise ProcRunError(proc_name=self.name, call_id=call_id)
 
     async def _run_par(
-        self, in_args: Sequence[InT], call_id: str, ctx: RunContext[CtxT] | None = None
+        self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT] | None = None
     ) -> Packet[OutT]:
         tasks = [
             self._run_single(
@@ -298,7 +319,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
         chat_inputs: Any | None = None,
         *,
         in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
+        in_args: InT | list[InT] | None = None,
         forgetful: bool = False,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
@@ -406,7 +427,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
 
     async def _run_par_stream(
         self,
-        in_args: Sequence[InT],
+        in_args: list[InT],
         call_id: str,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
@@ -442,7 +463,7 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
         chat_inputs: Any | None = None,
         *,
         in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
+        in_args: InT | list[InT] | None = None,
         forgetful: bool = False,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
@@ -468,21 +489,6 @@ class Processor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]
             )
         async for event in stream:
             yield event
-
-    def _select_recipients(
-        self, output: OutT, ctx: RunContext[CtxT] | None = None
-    ) -> list[ProcName] | None:
-        if self.select_recipients_impl:
-            return self.select_recipients_impl(output=output, ctx=ctx)
-
-        return self.recipients
-
-    def select_recipients(
-        self, func: SelectRecipientsHandler[OutT, CtxT]
-    ) -> SelectRecipientsHandler[OutT, CtxT]:
-        self.select_recipients_impl = func
-
-        return func
 
     @final
     def as_tool(
