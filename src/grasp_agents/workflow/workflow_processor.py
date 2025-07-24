@@ -4,23 +4,23 @@ from typing import Any, Generic
 
 from ..errors import WorkflowConstructionError
 from ..packet import Packet
-from ..processor import Processor, RecipientSelector
+from ..processors.base_processor import BaseProcessor, RecipientSelector
 from ..run_context import CtxT, RunContext
-from ..typing.events import Event
+from ..typing.events import DummyEvent, Event
 from ..typing.io import InT, OutT, ProcName
 
 
 class WorkflowProcessor(
-    Processor[InT, OutT, Any, CtxT],
+    BaseProcessor[InT, OutT, Any, CtxT],
     ABC,
     Generic[InT, OutT, CtxT],
 ):
     def __init__(
         self,
         name: ProcName,
-        subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
-        start_proc: Processor[InT, Any, Any, CtxT],
-        end_proc: Processor[Any, OutT, Any, CtxT],
+        subprocs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
+        start_proc: BaseProcessor[InT, Any, Any, CtxT],
+        end_proc: BaseProcessor[Any, OutT, Any, CtxT],
         recipients: list[ProcName] | None = None,
         max_retries: int = 0,
     ) -> None:
@@ -44,10 +44,7 @@ class WorkflowProcessor(
         self._start_proc = start_proc
         self._end_proc = end_proc
 
-        self.recipients = end_proc.recipients
-        if recipients is not None:
-            self.recipients = recipients
-
+        self.recipients = recipients
         if hasattr(type(self), "recipient_selector"):
             self._end_proc.recipient_selector = self.recipient_selector
 
@@ -60,19 +57,28 @@ class WorkflowProcessor(
         return func
 
     @property
-    def subprocs(self) -> Sequence[Processor[Any, Any, Any, CtxT]]:
+    def recipients(self) -> list[ProcName] | None:
+        return self._end_proc.recipients
+
+    @recipients.setter
+    def recipients(self, value: list[ProcName] | None) -> None:
+        if hasattr(self, "_end_proc"):
+            self._end_proc.recipients = value
+
+    @property
+    def subprocs(self) -> Sequence[BaseProcessor[Any, Any, Any, CtxT]]:
         return self._subprocs
 
     @property
-    def start_proc(self) -> Processor[InT, Any, Any, CtxT]:
+    def start_proc(self) -> BaseProcessor[InT, Any, Any, CtxT]:
         return self._start_proc
 
     @property
-    def end_proc(self) -> Processor[Any, OutT, Any, CtxT]:
+    def end_proc(self) -> BaseProcessor[Any, OutT, Any, CtxT]:
         return self._end_proc
 
     def _generate_subproc_call_id(
-        self, call_id: str | None, subproc: Processor[Any, Any, Any, CtxT]
+        self, call_id: str | None, subproc: BaseProcessor[Any, Any, Any, CtxT]
     ) -> str | None:
         return f"{self._generate_call_id(call_id)}/{subproc.name}"
 
@@ -100,4 +106,4 @@ class WorkflowProcessor(
         forgetful: bool = False,
         call_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        pass
+        yield DummyEvent()

@@ -5,7 +5,7 @@ from typing import Any, Generic, Protocol, TypeVar, cast, final
 
 from ..errors import WorkflowConstructionError
 from ..packet_pool import Packet
-from ..processor import Processor
+from ..processors.base_processor import BaseProcessor
 from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
 from ..typing.io import InT, OutT, ProcName
@@ -16,7 +16,7 @@ logger = getLogger(__name__)
 _OutT_contra = TypeVar("_OutT_contra", contravariant=True)
 
 
-class ExitWorkflowLoopHandler(Protocol[_OutT_contra, CtxT]):
+class WorkflowLoopTerminator(Protocol[_OutT_contra, CtxT]):
     def __call__(
         self,
         out_packet: Packet[_OutT_contra],
@@ -29,8 +29,8 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
     def __init__(
         self,
         name: ProcName,
-        subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
-        exit_proc: Processor[Any, OutT, Any, CtxT],
+        subprocs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
+        exit_proc: BaseProcessor[Any, OutT, Any, CtxT],
         recipients: list[ProcName] | None = None,
         max_retries: int = 0,
         max_iterations: int = 10,
@@ -60,28 +60,30 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
         self._max_iterations = max_iterations
 
-        self._exit_workflow_loop_impl: ExitWorkflowLoopHandler[OutT, CtxT] | None = None
+        self.workflow_loop_terminator: WorkflowLoopTerminator[OutT, CtxT] | None
+        if not hasattr(type(self), "workflow_loop_terminator"):
+            self.workflow_loop_terminator = None
 
     @property
     def max_iterations(self) -> int:
         return self._max_iterations
 
-    def exit_workflow_loop(
-        self, func: ExitWorkflowLoopHandler[OutT, CtxT]
-    ) -> ExitWorkflowLoopHandler[OutT, CtxT]:
-        self._exit_workflow_loop_impl = func
+    def add_workflow_loop_terminator(
+        self, func: WorkflowLoopTerminator[OutT, CtxT]
+    ) -> WorkflowLoopTerminator[OutT, CtxT]:
+        self.workflow_loop_terminator = func
 
         return func
 
-    def _exit_workflow_loop(
+    def _terminate_workflow_loop(
         self,
         out_packet: Packet[OutT],
         *,
         ctx: RunContext[CtxT] | None = None,
         **kwargs: Any,
     ) -> bool:
-        if self._exit_workflow_loop_impl:
-            return self._exit_workflow_loop_impl(out_packet, ctx=ctx, **kwargs)
+        if self.workflow_loop_terminator:
+            return self.workflow_loop_terminator(out_packet, ctx=ctx, **kwargs)
 
         return False
 
@@ -96,14 +98,15 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
-        call_id = self._generate_call_id(call_id)
-
         packet = in_packet
-        num_iterations = 0
         exit_packet: Packet[OutT] | None = None
 
-        while True:
+        for num_iterations in range(1, self._max_iterations + 1):
+            call_id = self._generate_call_id(call_id)
+
             for subproc in self.subprocs:
+                logger.info(f"\n[Running subprocessor {subproc.name}]\n")
+
                 packet = await subproc.run(
                     chat_inputs=chat_inputs,
                     in_packet=packet,
@@ -113,12 +116,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                     ctx=ctx,
                 )
 
+                logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
+
                 if subproc is self._end_proc:
-                    num_iterations += 1
                     exit_packet = cast("Packet[OutT]", packet)
-                    if self._exit_workflow_loop(exit_packet, ctx=ctx):
+                    if self._terminate_workflow_loop(exit_packet, ctx=ctx):
                         return exit_packet
-                    if num_iterations >= self._max_iterations:
+                    if num_iterations == self._max_iterations:
                         logger.info(
                             f"Max iterations reached ({self._max_iterations}). "
                             "Exiting loop."
@@ -128,8 +132,10 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                 chat_inputs = None
                 in_args = None
 
+        raise RuntimeError("Looped workflow did not exit after max iterations.")
+
     @final
-    async def run_stream(  # type: ignore[override]
+    async def run_stream(
         self,
         chat_inputs: Any | None = None,
         *,
@@ -139,14 +145,15 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        call_id = self._generate_call_id(call_id)
-
         packet = in_packet
-        num_iterations = 0
         exit_packet: Packet[OutT] | None = None
 
-        while True:
+        for num_iterations in range(1, self._max_iterations + 1):
+            call_id = self._generate_call_id(call_id)
+
             for subproc in self.subprocs:
+                logger.info(f"\n[Running subprocessor {subproc.name}]\n")
+
                 async for event in subproc.run_stream(
                     chat_inputs=chat_inputs,
                     in_packet=packet,
@@ -159,15 +166,16 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                         packet = event.data
                     yield event
 
+                logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
+
                 if subproc is self._end_proc:
-                    num_iterations += 1
                     exit_packet = cast("Packet[OutT]", packet)
-                    if self._exit_workflow_loop(exit_packet, ctx=ctx):
+                    if self._terminate_workflow_loop(exit_packet, ctx=ctx):
                         yield WorkflowResultEvent(
                             data=exit_packet, proc_name=self.name, call_id=call_id
                         )
                         return
-                    if num_iterations >= self._max_iterations:
+                    if num_iterations == self._max_iterations:
                         logger.info(
                             f"Max iterations reached ({self._max_iterations}). "
                             "Exiting loop."

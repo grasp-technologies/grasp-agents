@@ -68,6 +68,11 @@ class PacketPool(Generic[CtxT]):
         finally:
             await self.shutdown()
 
+    @property
+    def final_result_ready(self) -> bool:
+        fut = self._final_result_fut
+        return fut is not None and fut.done()
+
     def register_packet_handler(
         self,
         proc_name: ProcName,
@@ -121,7 +126,7 @@ class PacketPool(Generic[CtxT]):
         queue = self._packet_queues[proc_name]
         handler = self._packet_handlers[proc_name]
 
-        while True:
+        while not self.final_result_ready:
             packet = await queue.get()
             if packet is None:
                 break

@@ -232,11 +232,14 @@ async def print_event_stream(
             text += f"<{src} output>\n"
             for p in event.data.payloads:
                 if isinstance(p, BaseModel):
-                    for field_info in type(p).model_fields.values():
-                        if field_info.exclude:
-                            field_info.exclude = False
-                    type(p).model_rebuild(force=True)
+                    # for field_info in type(p).model_fields.values():
+                    #     if field_info.exclude:
+                    #         field_info.exclude = False
+                    #         break
+                    # type(p).model_rebuild(force=True)
                     p_str = p.model_dump_json(indent=2)
+                    # field_info.exclude = True  # type: ignore
+                    # type(p).model_rebuild(force=True)
                 else:
                     try:
                         p_str = json.dumps(p, indent=2)

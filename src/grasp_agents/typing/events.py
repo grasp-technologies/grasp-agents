@@ -57,6 +57,10 @@ class Event(BaseModel, Generic[_T], frozen=True):
     call_id: str | None = None
     data: _T
 
+class DummyEvent(Event[Any], frozen=True):
+    type: Literal[EventType.PAYLOAD_OUT] = EventType.PAYLOAD_OUT
+    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    data: Any = None
 
 class CompletionEvent(Event[Completion], frozen=True):
     type: Literal[EventType.COMP] = EventType.COMP

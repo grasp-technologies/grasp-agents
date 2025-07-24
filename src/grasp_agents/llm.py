@@ -19,7 +19,11 @@ from .errors import (
 )
 from .typing.completion import Completion
 from .typing.converters import Converters
-from .typing.events import CompletionChunkEvent, CompletionEvent, LLMStreamingErrorEvent
+from .typing.events import (
+    CompletionChunkEvent,
+    CompletionEvent,
+    LLMStreamingErrorEvent,
+)
 from .typing.message import Messages
 from .typing.tool import BaseTool, ToolChoice
 

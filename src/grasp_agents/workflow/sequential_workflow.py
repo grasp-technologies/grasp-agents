@@ -1,21 +1,24 @@
+import logging
 from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
 from typing import Any, Generic, cast, final
 
 from ..errors import WorkflowConstructionError
 from ..packet_pool import Packet
-from ..processor import Processor
+from ..processors.base_processor import BaseProcessor
 from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
 from ..typing.io import InT, OutT, ProcName
 from .workflow_processor import WorkflowProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def __init__(
         self,
         name: ProcName,
-        subprocs: Sequence[Processor[Any, Any, Any, CtxT]],
+        subprocs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
         recipients: list[ProcName] | None = None,
         max_retries: int = 0,
     ) -> None:
@@ -51,6 +54,8 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
 
         packet = in_packet
         for subproc in self.subprocs:
+            logger.info(f"\n[Running subprocessor {subproc.name}]\n")
+
             packet = await subproc.run(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
@@ -62,10 +67,12 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
             chat_inputs = None
             in_args = None
 
+            logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
+
         return cast("Packet[OutT]", packet)
 
     @final
-    async def run_stream(  # type: ignore[override]
+    async def run_stream(
         self,
         chat_inputs: Any | None = None,
         *,
@@ -79,6 +86,8 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
 
         packet = in_packet
         for subproc in self.subprocs:
+            logger.info(f"\n[Running subprocessor {subproc.name}]\n")
+
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
@@ -93,6 +102,8 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
 
             chat_inputs = None
             in_args = None
+
+            logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
 
         yield WorkflowResultEvent(
             data=cast("Packet[OutT]", packet), proc_name=self.name, call_id=call_id

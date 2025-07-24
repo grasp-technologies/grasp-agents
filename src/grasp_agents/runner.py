@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import Any, Generic
@@ -5,10 +6,12 @@ from typing import Any, Generic
 from .errors import RunnerError
 from .packet import Packet, StartPacket
 from .packet_pool import END_PROC_NAME, PacketPool
-from .processor import Processor
+from .processors.processor import Processor
 from .run_context import CtxT, RunContext
 from .typing.events import Event, ProcPacketOutputEvent, RunResultEvent
 from .typing.io import OutT
+
+logger = logging.getLogger(__name__)
 
 
 class Runner(Generic[OutT, CtxT]):
@@ -53,9 +56,18 @@ class Runner(Generic[OutT, CtxT]):
         **run_kwargs: Any,
     ) -> None:
         _in_packet, _chat_inputs = self._unpack_packet(packet)
+
+        logger.info(f"\n[Running processor {proc.name}]\n")
+
         out_packet = await proc.run(
             chat_inputs=_chat_inputs, in_packet=_in_packet, ctx=ctx, **run_kwargs
         )
+
+        logger.info(
+            f"\n[Finished running processor {proc.name}]\n"
+            f"Posting output packet to recipients {out_packet.recipients}\n"
+        )
+
         await pool.post(out_packet)
 
     async def _packet_handler_stream(
@@ -68,6 +80,8 @@ class Runner(Generic[OutT, CtxT]):
     ) -> None:
         _in_packet, _chat_inputs = self._unpack_packet(packet)
 
+        logger.info(f"\n[Running processor {proc.name}]\n")
+
         out_packet: Packet[Any] | None = None
         async for event in proc.run_stream(
             chat_inputs=_chat_inputs, in_packet=_in_packet, ctx=ctx, **run_kwargs
@@ -77,6 +91,11 @@ class Runner(Generic[OutT, CtxT]):
             await pool.push_event(event)
 
         assert out_packet is not None
+
+        logger.info(
+            f"\n[Finished running processor {proc.name}]\n"
+            f"Posting output packet to recipients {out_packet.recipients}\n"
+        )
 
         await pool.post(out_packet)
 

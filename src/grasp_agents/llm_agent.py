@@ -11,7 +11,7 @@ from .llm_policy_executor import (
     MemoryManager,
     ToolCallLoopTerminator,
 )
-from .processor import Processor
+from .processors.parallel_processor import ParallelProcessor
 from .prompt_builder import (
     InputContentBuilder,
     PromptBuilder,
@@ -46,7 +46,7 @@ class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
 
 
 class LLMAgent(
-    Processor[InT, OutT, LLMAgentMemory, CtxT],
+    ParallelProcessor[InT, OutT, LLMAgentMemory, CtxT],
     Generic[InT, OutT, CtxT],
 ):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
@@ -196,6 +196,20 @@ class LLMAgent(
 
         return system_message, input_message
 
+    def _parse_output_default(
+        self,
+        conversation: Messages,
+        *,
+        in_args: InT | None = None,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> OutT:
+        return validate_obj_from_json_or_py_string(
+            str(conversation[-1].content or ""),
+            schema=self._out_type,
+            from_substring=False,
+            strip_language_markdown=True,
+        )
+
     def _parse_output(
         self,
         conversation: Messages,
@@ -208,11 +222,8 @@ class LLMAgent(
                 conversation=conversation, in_args=in_args, ctx=ctx
             )
 
-        return validate_obj_from_json_or_py_string(
-            str(conversation[-1].content or ""),
-            schema=self._out_type,
-            from_substring=False,
-            strip_language_markdown=True,
+        return self._parse_output_default(
+            conversation=conversation, in_args=in_args, ctx=ctx
         )
 
     async def _process(

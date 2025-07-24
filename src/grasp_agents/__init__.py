@@ -6,7 +6,9 @@ from .llm_agent import LLMAgent
 from .llm_agent_memory import LLMAgentMemory
 from .memory import Memory
 from .packet import Packet
-from .processor import Processor
+from .processors.base_processor import BaseProcessor
+from .processors.parallel_processor import ParallelProcessor
+from .processors.processor import Processor
 from .run_context import RunContext
 from .typing.completion import Completion
 from .typing.content import Content, ImageData
@@ -17,6 +19,7 @@ from .typing.tool import BaseTool
 __all__ = [
     "LLM",
     "AssistantMessage",
+    "BaseProcessor",
     "BaseTool",
     "Completion",
     "Content",
@@ -29,6 +32,7 @@ __all__ = [
     "Messages",
     "Packet",
     "Packet",
+    "ParallelProcessor",
     "ProcName",
     "Processor",
     "RunContext",
