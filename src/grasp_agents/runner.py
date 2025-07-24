@@ -6,7 +6,7 @@ from typing import Any, Generic
 from .errors import RunnerError
 from .packet import Packet, StartPacket
 from .packet_pool import END_PROC_NAME, PacketPool
-from .processors.processor import Processor
+from .processors.base_processor import BaseProcessor
 from .run_context import CtxT, RunContext
 from .typing.events import Event, ProcPacketOutputEvent, RunResultEvent
 from .typing.io import OutT
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 class Runner(Generic[OutT, CtxT]):
     def __init__(
         self,
-        entry_proc: Processor[Any, Any, Any, CtxT],
-        procs: Sequence[Processor[Any, Any, Any, CtxT]],
+        entry_proc: BaseProcessor[Any, Any, Any, CtxT],
+        procs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
     ) -> None:
         if entry_proc not in procs:
@@ -34,7 +34,6 @@ class Runner(Generic[OutT, CtxT]):
         self._entry_proc = entry_proc
         self._procs = procs
         self._ctx = ctx or RunContext[CtxT]()
-        self._packet_pool: PacketPool[CtxT] = PacketPool()
 
     @property
     def ctx(self) -> RunContext[CtxT]:
@@ -49,8 +48,8 @@ class Runner(Generic[OutT, CtxT]):
 
     async def _packet_handler(
         self,
-        proc: Processor[Any, Any, Any, CtxT],
-        pool: PacketPool[CtxT],
+        proc: BaseProcessor[Any, Any, Any, CtxT],
+        pool: PacketPool,
         packet: Packet[Any],
         ctx: RunContext[CtxT],
         **run_kwargs: Any,
@@ -72,8 +71,8 @@ class Runner(Generic[OutT, CtxT]):
 
     async def _packet_handler_stream(
         self,
-        proc: Processor[Any, Any, Any, CtxT],
-        pool: PacketPool[CtxT],
+        proc: BaseProcessor[Any, Any, Any, CtxT],
+        pool: PacketPool,
         packet: Packet[Any],
         ctx: RunContext[CtxT],
         **run_kwargs: Any,
@@ -99,12 +98,8 @@ class Runner(Generic[OutT, CtxT]):
 
         await pool.post(out_packet)
 
-    async def run(
-        self,
-        chat_input: Any = "start",
-        **run_args: Any,
-    ) -> Packet[OutT]:
-        async with PacketPool[CtxT]() as pool:
+    async def run(self, chat_input: Any = "start", **run_args: Any) -> Packet[OutT]:
+        async with PacketPool() as pool:
             for proc in self._procs:
                 pool.register_packet_handler(
                     proc_name=proc.name,
@@ -120,11 +115,9 @@ class Runner(Generic[OutT, CtxT]):
             return await pool.final_result()
 
     async def run_stream(
-        self,
-        chat_input: Any = "start",
-        **run_args: Any,
+        self, chat_input: Any = "start", **run_args: Any
     ) -> AsyncIterator[Event[Any]]:
-        async with PacketPool[CtxT]() as pool:
+        async with PacketPool() as pool:
             for proc in self._procs:
                 pool.register_packet_handler(
                     proc_name=proc.name,
