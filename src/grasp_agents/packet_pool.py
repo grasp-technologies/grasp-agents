@@ -56,7 +56,7 @@ class PacketPool:
             await self.shutdown()
 
     def register_packet_handler(
-        self, proc_name: ProcName, handler: PacketHandler[Any], **run_kwargs: Any
+        self, proc_name: ProcName, handler: PacketHandler[Any]
     ) -> None:
         if self._stopping:
             raise RuntimeError("PacketPool is stopping/stopped")
@@ -66,7 +66,7 @@ class PacketPool:
 
         if self._task_group is not None:
             self._task_group.create_task(
-                self._handle_packets(proc_name, **run_kwargs),
+                self._handle_packets(proc_name),
                 name=f"packet-handler:{proc_name}",
             )
 
@@ -100,7 +100,7 @@ class PacketPool:
 
         return False
 
-    async def _handle_packets(self, proc_name: ProcName, **run_kwargs: Any) -> None:
+    async def _handle_packets(self, proc_name: ProcName) -> None:
         queue = self._packet_queues[proc_name]
         handler = self._packet_handlers[proc_name]
 
@@ -113,7 +113,7 @@ class PacketPool:
                 continue
 
             try:
-                await handler(packet, **run_kwargs)
+                await handler(packet)
             except asyncio.CancelledError:
                 raise
             except Exception as err:

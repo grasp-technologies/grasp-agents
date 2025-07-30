@@ -25,7 +25,9 @@
         "words": [
                 "acompletion",
                 "AILLM",
+                "ANNOT",
                 "coro",
+                "evts",
                 "ipynb",
                 "litellm",
                 "llms",
