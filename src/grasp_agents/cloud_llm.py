@@ -13,7 +13,7 @@ from .http_client import AsyncHTTPClientParams, create_simple_async_httpx_client
 from .llm import LLM, ConvertT_co, LLMSettings, SettingsT_co
 from .rate_limiting.rate_limiter_chunked import RateLimiterC, limit_rate
 from .typing.completion import Completion
-from .typing.completion_chunk import CompletionChoice
+from .typing.completion_chunk import CompletionChoice, CompletionChunk
 from .typing.events import (
     CompletionChunkEvent,
     CompletionEvent,
@@ -52,7 +52,9 @@ class CloudLLMSettings(LLMSettings, total=False):
 LLMRateLimiter = RateLimiterC[
     Messages,
     AssistantMessage
-    | AsyncIterator[CompletionChunkEvent | CompletionEvent | LLMStreamingErrorEvent],
+    | AsyncIterator[
+        CompletionChunkEvent[CompletionChunk] | CompletionEvent | LLMStreamingErrorEvent
+    ],
 ]
 
 
@@ -274,7 +276,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         n_choices: int | None = None,
         proc_name: str | None = None,
         call_id: str | None = None,
-    ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent]:
+    ) -> AsyncIterator[CompletionChunkEvent[CompletionChunk] | CompletionEvent]:
         completion_kwargs = self._make_completion_kwargs(
             conversation=conversation, tool_choice=tool_choice, n_choices=n_choices
         )
@@ -284,7 +286,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         api_stream = self._get_completion_stream(**completion_kwargs)
         api_stream = cast("AsyncIterator[Any]", api_stream)
 
-        async def iterator() -> AsyncIterator[CompletionChunkEvent | CompletionEvent]:
+        async def iterator() -> AsyncIterator[
+            CompletionChunkEvent[CompletionChunk] | CompletionEvent
+        ]:
             api_completion_chunks: list[Any] = []
 
             async for api_completion_chunk in api_stream:
@@ -318,7 +322,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         n_choices: int | None = None,
         proc_name: str | None = None,
         call_id: str | None = None,
-    ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent | LLMStreamingErrorEvent]:
+    ) -> AsyncIterator[
+        CompletionChunkEvent[CompletionChunk] | CompletionEvent | LLMStreamingErrorEvent
+    ]:
         n_attempt = 0
         while n_attempt <= self.max_response_retries:
             try:

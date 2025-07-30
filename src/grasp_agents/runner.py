@@ -48,9 +48,10 @@ class Runner(Generic[OutT, CtxT]):
 
     async def _packet_handler(
         self,
+        packet: Packet[Any],
+        *,
         proc: BaseProcessor[Any, Any, Any, CtxT],
         pool: PacketPool,
-        packet: Packet[Any],
         ctx: RunContext[CtxT],
         **run_kwargs: Any,
     ) -> None:
@@ -71,9 +72,10 @@ class Runner(Generic[OutT, CtxT]):
 
     async def _packet_handler_stream(
         self,
+        packet: Packet[Any],
+        *,
         proc: BaseProcessor[Any, Any, Any, CtxT],
         pool: PacketPool,
-        packet: Packet[Any],
         ctx: RunContext[CtxT],
         **run_kwargs: Any,
     ) -> None:
@@ -103,9 +105,13 @@ class Runner(Generic[OutT, CtxT]):
             for proc in self._procs:
                 pool.register_packet_handler(
                     proc_name=proc.name,
-                    handler=partial(self._packet_handler, proc, pool),
-                    ctx=self._ctx,
-                    **run_args,
+                    handler=partial(
+                        self._packet_handler,
+                        proc=proc,
+                        pool=pool,
+                        ctx=self._ctx,
+                        **run_args,
+                    ),
                 )
             await pool.post(
                 StartPacket[Any](
@@ -121,9 +127,13 @@ class Runner(Generic[OutT, CtxT]):
             for proc in self._procs:
                 pool.register_packet_handler(
                     proc_name=proc.name,
-                    handler=partial(self._packet_handler_stream, proc, pool),
-                    ctx=self._ctx,
-                    **run_args,
+                    handler=partial(
+                        self._packet_handler_stream,
+                        proc=proc,
+                        pool=pool,
+                        ctx=self._ctx,
+                        **run_args,
+                    ),
                 )
             await pool.post(
                 StartPacket[Any](

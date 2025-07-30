@@ -7,6 +7,8 @@ from typing import Any, Generic, Protocol, final
 
 from pydantic import BaseModel
 
+from grasp_agents.typing.completion_chunk import CompletionChunk
+
 from .errors import AgentFinalAnswerError
 from .llm import LLM, LLMSettings
 from .llm_agent_memory import LLMAgentMemory
@@ -149,19 +151,23 @@ class LLMPolicyExecutor(Generic[CtxT]):
         tool_choice: ToolChoice | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[
-        CompletionChunkEvent
+        CompletionChunkEvent[CompletionChunk]
         | CompletionEvent
         | GenMessageEvent
         | LLMStreamingErrorEvent
     ]:
         completion: Completion | None = None
-        async for event in self.llm.generate_completion_stream(  # type: ignore[no-untyped-call]
+
+        llm_event_stream = self.llm.generate_completion_stream(
             memory.message_history,
             tool_choice=tool_choice,
             n_choices=1,
             proc_name=self.agent_name,
             call_id=call_id,
-        ):
+        )
+        llm_event_stream_post = self.llm.postprocess_event_stream(llm_event_stream)  # type: ignore[assignment]
+
+        async for event in llm_event_stream_post:
             if isinstance(event, CompletionEvent):
                 completion = event.data
             yield event

@@ -1,16 +1,13 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, ClassVar, Generic,  cast
-
+from typing import Any, ClassVar, Generic, cast
 
 from ..errors import PacketRoutingError
 from ..memory import MemT
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
-from ..typing.events import (
-    Event, ProcPacketOutputEvent, ProcPayloadOutputEvent
-)
+from ..typing.events import Event, ProcPacketOutputEvent, ProcPayloadOutputEvent
 from ..typing.io import InT, OutT
 from ..utils import stream_concurrent
 from .base_processor import BaseProcessor, with_retry, with_retry_stream
@@ -18,7 +15,9 @@ from .base_processor import BaseProcessor, with_retry, with_retry_stream
 logger = logging.getLogger(__name__)
 
 
-class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, CtxT]):
+class ParallelProcessor(
+    BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, CtxT]
+):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
         1: "_out_type",
@@ -33,7 +32,7 @@ class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT,
         call_id: str,
         ctx: RunContext[CtxT] | None = None,
     ) -> OutT:
-        return cast(OutT, in_args)
+        return cast("OutT", in_args)
 
     async def _process_stream(
         self,
@@ -44,7 +43,7 @@ class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT,
         call_id: str,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        output = cast(OutT, in_args)
+        output = cast("OutT", in_args)
         yield ProcPayloadOutputEvent(data=output, proc_name=self.name, call_id=call_id)
 
     def _validate_parallel_recipients(
@@ -59,7 +58,7 @@ class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT,
                 message="Parallel runs must return the same recipients "
                 f"[proc_name={self.name}; call_id={call_id}]",
             )
-    
+
     @with_retry
     async def _run_single(
         self,
@@ -85,7 +84,6 @@ class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT,
         self._validate_recipients(recipients, call_id=call_id)
 
         return Packet(payloads=[val_output], sender=self.name, recipients=recipients)
-
 
     async def _run_parallel(
         self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT] | None = None
@@ -125,8 +123,10 @@ class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT,
         )
 
         if val_in_args and len(val_in_args) > 1:
-            return await self._run_parallel(in_args=val_in_args, call_id=call_id, ctx=ctx)
-        
+            return await self._run_parallel(
+                in_args=val_in_args, call_id=call_id, ctx=ctx
+            )
+
         return await self._run_single(
             chat_inputs=chat_inputs,
             in_args=val_in_args[0] if val_in_args else None,
@@ -231,7 +231,9 @@ class ParallelProcessor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT,
         )
 
         if val_in_args and len(val_in_args) > 1:
-            stream = self._run_parallel_stream(in_args=val_in_args, call_id=call_id, ctx=ctx)
+            stream = self._run_parallel_stream(
+                in_args=val_in_args, call_id=call_id, ctx=ctx
+            )
         else:
             stream = self._run_single_stream(
                 chat_inputs=chat_inputs,

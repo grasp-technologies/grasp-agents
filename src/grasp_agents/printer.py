@@ -9,14 +9,29 @@ from pydantic import BaseModel
 from termcolor import colored
 from termcolor._types import Color
 
+from grasp_agents.typing.completion_chunk import CompletionChunk
 from grasp_agents.typing.events import (
+    AnnotationsChunkEvent,
+    AnnotationsEndEvent,
+    AnnotationsStartEvent,
     CompletionChunkEvent,
+    # CompletionEndEvent,
+    CompletionStartEvent,
     Event,
     GenMessageEvent,
     MessageEvent,
     ProcPacketOutputEvent,
+    ResponseChunkEvent,
+    ResponseEndEvent,
+    ResponseStartEvent,
     RunResultEvent,
     SystemMessageEvent,
+    ThinkingChunkEvent,
+    ThinkingEndEvent,
+    ThinkingStartEvent,
+    ToolCallChunkEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
     ToolMessageEvent,
     UserMessageEvent,
     WorkflowResultEvent,
@@ -24,7 +39,14 @@ from grasp_agents.typing.events import (
 
 from .typing.completion import Usage
 from .typing.content import Content, ContentPartText
-from .typing.message import AssistantMessage, Message, Role, SystemMessage, UserMessage
+from .typing.message import (
+    AssistantMessage,
+    Message,
+    Role,
+    SystemMessage,
+    ToolMessage,
+    UserMessage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +94,7 @@ class Printer:
         return AVAILABLE_COLORS[idx]
 
     @staticmethod
-    def content_to_str(content: Content | str, role: Role) -> str:
+    def content_to_str(content: Content | str | None, role: Role) -> str:
         if role == Role.USER and isinstance(content, Content):
             content_str_parts: list[str] = []
             for content_part in content.parts:
@@ -84,9 +106,9 @@ class Printer:
                     content_str_parts.append("<ENCODED_IMAGE>")
             return "\n".join(content_str_parts)
 
-        assert isinstance(content, str)
+        assert isinstance(content, str | None)
 
-        return content.strip(" \n")
+        return (content or "").strip(" \n")
 
     @staticmethod
     def truncate_content_str(content_str: str, trunc_len: int = 2000) -> str:
@@ -179,35 +201,9 @@ def stream_text(new_text: str, color: Color) -> None:
 async def print_event_stream(
     event_generator: AsyncIterator[Event[Any]],
     color_by: ColoringMode = "role",
-    trunc_len: int = 1000,
+    trunc_len: int = 10000,
 ) -> AsyncIterator[Event[Any]]:
-    prev_chunk_id: str | None = None
-    thinking_open = False
-    response_open = False
-    open_tool_calls: set[str] = set()
-
     color = Printer.get_role_color(Role.ASSISTANT)
-
-    def _close_blocks(
-        _thinking_open: bool, _response_open: bool, color: Color
-    ) -> tuple[bool, bool]:
-        closing_text = ""
-        while open_tool_calls:
-            open_tool_calls.pop()
-            closing_text += "\n</tool call>\n"
-
-        if _thinking_open:
-            closing_text += "\n</thinking>\n"
-            _thinking_open = False
-
-        if _response_open:
-            closing_text += "\n</response>\n"
-            _response_open = False
-
-        if closing_text:
-            stream_text(closing_text, color)
-
-        return _thinking_open, _response_open
 
     def _get_color(event: Event[Any], role: Role = Role.ASSISTANT) -> Color:
         if color_by == "agent":
@@ -232,14 +228,7 @@ async def print_event_stream(
             text += f"<{src} output>\n"
             for p in event.data.payloads:
                 if isinstance(p, BaseModel):
-                    # for field_info in type(p).model_fields.values():
-                    #     if field_info.exclude:
-                    #         field_info.exclude = False
-                    #         break
-                    # type(p).model_rebuild(force=True)
                     p_str = p.model_dump_json(indent=2)
-                    # field_info.exclude = True  # type: ignore
-                    # type(p).model_rebuild(force=True)
                 else:
                     try:
                         p_str = json.dumps(p, indent=2)
@@ -253,56 +242,64 @@ async def print_event_stream(
     async for event in event_generator:
         yield event
 
-        if isinstance(event, CompletionChunkEvent):
-            delta = event.data.choices[0].delta
-            chunk_id = event.data.id
-            new_completion = chunk_id != prev_chunk_id
+        if isinstance(event, CompletionChunkEvent) and isinstance(
+            event.data, CompletionChunk
+        ):
             color = _get_color(event, Role.ASSISTANT)
 
             text = ""
 
-            if new_completion:
-                thinking_open, response_open = _close_blocks(
-                    thinking_open, response_open, color
-                )
+            if isinstance(event, CompletionStartEvent):
                 text += f"\n<{event.proc_name}> [{event.call_id}]\n"
+            elif isinstance(event, ThinkingStartEvent):
+                text += "<thinking>\n"
+            elif isinstance(event, ResponseStartEvent):
+                text += "<response>\n"
+            elif isinstance(event, ToolCallStartEvent):
+                tc = event.data.tool_call
+                text += f"<tool call> {tc.tool_name} [{tc.id}]\n"
+            elif isinstance(event, AnnotationsStartEvent):
+                text += "<annotations>\n"
 
-            if delta.reasoning_content:
-                if not thinking_open:
-                    text += "<thinking>\n"
-                    thinking_open = True
-                text += delta.reasoning_content
-            elif thinking_open:
+            # if isinstance(event, CompletionEndEvent):
+            #     text += f"\n</{event.proc_name}>\n"
+            if isinstance(event, ThinkingEndEvent):
                 text += "\n</thinking>\n"
-                thinking_open = False
-
-            if delta.content:
-                if not response_open:
-                    text += "<response>\n"
-                    response_open = True
-                text += delta.content
-            elif response_open:
+            elif isinstance(event, ResponseEndEvent):
                 text += "\n</response>\n"
-                response_open = False
+            elif isinstance(event, ToolCallEndEvent):
+                text += "\n</tool call>\n"
+            elif isinstance(event, AnnotationsEndEvent):
+                text += "\n</annotations>\n"
 
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    if tc.id and tc.id not in open_tool_calls:
-                        open_tool_calls.add(tc.id)  # type: ignore
-                        text += f"<tool call> {tc.tool_name} [{tc.id}]\n"
+            if isinstance(event, ThinkingChunkEvent):
+                thinking = event.data.thinking
+                if isinstance(thinking, str):
+                    text += thinking
+                else:
+                    text = "\n".join(
+                        [block.get("thinking", "[redacted]") for block in thinking]
+                    )
 
-                    if tc.tool_arguments:
-                        text += tc.tool_arguments
+            if isinstance(event, ResponseChunkEvent):
+                text += event.data.response
+
+            if isinstance(event, ToolCallChunkEvent):
+                text += event.data.tool_call.tool_arguments or ""
+
+            if isinstance(event, AnnotationsChunkEvent):
+                text += "\n".join(
+                    [
+                        json.dumps(annotation, indent=2)
+                        for annotation in event.data.annotations
+                    ]
+                )
 
             stream_text(text, color)
-            prev_chunk_id = chunk_id
-
-        else:
-            thinking_open, response_open = _close_blocks(
-                thinking_open, response_open, color
-            )
 
         if isinstance(event, MessageEvent) and not isinstance(event, GenMessageEvent):
+            assert isinstance(event.data, (SystemMessage | UserMessage | ToolMessage))
+
             message = event.data
             role = message.role
             content = Printer.content_to_str(message.content, role=role)
@@ -320,6 +317,7 @@ async def print_event_stream(
                 text += f"<input>\n{content}\n</input>\n"
 
             elif isinstance(event, ToolMessageEvent):
+                message = event.data
                 try:
                     content = json.dumps(json.loads(content), indent=2)
                 except Exception:

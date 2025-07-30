@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from grasp_agents.typing.completion_chunk import CompletionChunk
 from grasp_agents.utils import (
     validate_obj_from_json_or_py_string,
     validate_tagged_objs_from_json_or_py_string,
@@ -20,14 +21,38 @@ from .errors import (
 from .typing.completion import Completion
 from .typing.converters import Converters
 from .typing.events import (
+    AnnotationsChunkEvent,
+    AnnotationsEndEvent,
+    AnnotationsStartEvent,
     CompletionChunkEvent,
+    CompletionEndEvent,
     CompletionEvent,
+    CompletionStartEvent,
+    LLMStateChangeEvent,
     LLMStreamingErrorEvent,
+    # RefusalChunkEvent,
+    ResponseChunkEvent,
+    ResponseEndEvent,
+    ResponseStartEvent,
+    ThinkingChunkEvent,
+    ThinkingEndEvent,
+    ThinkingStartEvent,
+    ToolCallChunkEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
 )
 from .typing.message import Messages
 from .typing.tool import BaseTool, ToolChoice
 
 logger = logging.getLogger(__name__)
+
+
+LLMStreamGenerator = AsyncIterator[
+    CompletionChunkEvent[CompletionChunk]
+    | CompletionEvent
+    | LLMStateChangeEvent[Any]
+    | LLMStreamingErrorEvent
+]
 
 
 class LLMSettings(TypedDict, total=False):
@@ -160,6 +185,124 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
                             tool_name, tool_arguments
                         ) from exc
 
+    @staticmethod
+    async def postprocess_event_stream(
+        stream: LLMStreamGenerator,
+    ) -> LLMStreamGenerator:
+        prev_completion_id: str | None = None
+        chunk_op_evt: CompletionChunkEvent[CompletionChunk] | None = None
+        response_op_evt: ResponseChunkEvent | None = None
+        thinking_op_evt: ThinkingChunkEvent | None = None
+        annotations_op_evt: AnnotationsChunkEvent | None = None
+        tool_calls_op_evt: ToolCallChunkEvent | None = None
+
+        def _close_open_events() -> list[LLMStateChangeEvent[Any]]:
+            nonlocal \
+                chunk_op_evt, \
+                thinking_op_evt, \
+                tool_calls_op_evt, \
+                response_op_evt, \
+                annotations_op_evt
+
+            events: list[LLMStateChangeEvent[Any]] = []
+
+            if tool_calls_op_evt:
+                events.append(ToolCallEndEvent.from_chunk_event(tool_calls_op_evt))
+
+            if response_op_evt:
+                events.append(ResponseEndEvent.from_chunk_event(response_op_evt))
+
+            if thinking_op_evt:
+                events.append(ThinkingEndEvent.from_chunk_event(thinking_op_evt))
+
+            if annotations_op_evt:
+                events.append(AnnotationsEndEvent.from_chunk_event(annotations_op_evt))
+
+            if chunk_op_evt:
+                events.append(CompletionEndEvent.from_chunk_event(chunk_op_evt))
+
+            chunk_op_evt = None
+            thinking_op_evt = None
+            tool_calls_op_evt = None
+            response_op_evt = None
+            annotations_op_evt = None
+
+            return events
+
+        async for event in stream:
+            if isinstance(event, CompletionChunkEvent) and not isinstance(
+                event, LLMStateChangeEvent
+            ):
+                chunk = event.data
+                if len(chunk.choices) != 1:
+                    raise ValueError(
+                        "Expected exactly one choice in completion chunk, "
+                        f"got {len(chunk.choices)}"
+                    )
+
+                new_completion = chunk.id != prev_completion_id
+
+                if new_completion:
+                    for close_event in _close_open_events():
+                        yield close_event
+
+                    chunk_op_evt = event
+                    yield CompletionStartEvent.from_chunk_event(event)
+
+                sub_events = event.split_into_specialized()
+
+                for sub_event in sub_events:
+                    if isinstance(sub_event, ThinkingChunkEvent):
+                        if not thinking_op_evt:
+                            thinking_op_evt = sub_event
+                            yield ThinkingStartEvent.from_chunk_event(sub_event)
+                        yield sub_event
+                    elif thinking_op_evt:
+                        yield ThinkingEndEvent.from_chunk_event(thinking_op_evt)
+                        thinking_op_evt = None
+
+                    if isinstance(sub_event, ToolCallChunkEvent):
+                        tc = sub_event.data.tool_call
+                        if tc.id:
+                            # Tool call ID is not None only for the first chunk of a tool call
+                            if tool_calls_op_evt:
+                                yield ToolCallEndEvent.from_chunk_event(
+                                    tool_calls_op_evt
+                                )
+                                tool_calls_op_evt = None
+                            tool_calls_op_evt = sub_event
+                            yield ToolCallStartEvent.from_chunk_event(sub_event)
+                        yield sub_event
+                    elif tool_calls_op_evt:
+                        yield ToolCallEndEvent.from_chunk_event(tool_calls_op_evt)
+                        tool_calls_op_evt = None
+
+                    if isinstance(sub_event, ResponseChunkEvent):
+                        if not response_op_evt:
+                            response_op_evt = sub_event
+                            yield ResponseStartEvent.from_chunk_event(sub_event)
+                        yield sub_event
+                    elif response_op_evt:
+                        yield ResponseEndEvent.from_chunk_event(response_op_evt)
+                        response_op_evt = None
+
+                    if isinstance(sub_event, AnnotationsChunkEvent):
+                        if not annotations_op_evt:
+                            annotations_op_evt = sub_event
+                            yield AnnotationsStartEvent.from_chunk_event(sub_event)
+                        yield sub_event
+                    elif annotations_op_evt:
+                        yield AnnotationsEndEvent.from_chunk_event(annotations_op_evt)
+                        annotations_op_evt = None
+
+                prev_completion_id = chunk.id
+
+            else:
+                for close_event in _close_open_events():
+                    yield close_event
+
+                yield event
+
     @abstractmethod
     async def generate_completion(
         self,
@@ -181,7 +324,9 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         n_choices: int | None = None,
         proc_name: str | None = None,
         call_id: str | None = None,
-    ) -> AsyncIterator[CompletionChunkEvent | CompletionEvent | LLMStreamingErrorEvent]:
+    ) -> AsyncIterator[
+        CompletionChunkEvent[CompletionChunk] | CompletionEvent | LLMStreamingErrorEvent
+    ]:
         pass
 
     @abstractmethod
