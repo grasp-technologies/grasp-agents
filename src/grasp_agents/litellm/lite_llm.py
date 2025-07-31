@@ -1,5 +1,7 @@
 import logging
+from collections import defaultdict
 from collections.abc import AsyncIterator, Mapping
+from copy import deepcopy
 from typing import Any, cast
 
 import litellm
@@ -90,10 +92,19 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
                 "was specified. Please provide a valid API provider or use a different "
                 "model."
             )
+
+        if llm_settings is not None:
+            stream_options = llm_settings.get("stream_options") or {}
+            stream_options["include_usage"] = True
+            _llm_settings = deepcopy(llm_settings)
+            _llm_settings["stream_options"] = stream_options
+        else:
+            _llm_settings = LiteLLMSettings(stream_options={"include_usage": True})
+
         super().__init__(
             model_name=model_name,
             model_id=model_id,
-            llm_settings=llm_settings,
+            llm_settings=_llm_settings,
             converters=LiteLLMConverters(),
             tools=tools,
             response_schema=response_schema,
@@ -192,7 +203,17 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
         )
         stream = cast("CustomStreamWrapper", stream)
 
+        tc_indices: dict[int, set[int]] = defaultdict(set)
+
         async for completion_chunk in stream:
+            # Fix tool call indices to be unique within each choice
+            for n, choice in enumerate(completion_chunk.choices):
+                for tc in choice.delta.tool_calls or []:
+                    # Tool call ID is not None only when it is a new tool call
+                    if tc.id and tc.index in tc_indices[n]:
+                        tc.index = max(tc_indices[n]) + 1
+                    tc_indices[n].add(tc.index)
+
             yield completion_chunk
 
     def combine_completion_chunks(

@@ -25,7 +25,7 @@ from .typing.events import (
     AnnotationsEndEvent,
     AnnotationsStartEvent,
     CompletionChunkEvent,
-    CompletionEndEvent,
+    # CompletionEndEvent,
     CompletionEvent,
     CompletionStartEvent,
     LLMStateChangeEvent,
@@ -196,7 +196,9 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
         annotations_op_evt: AnnotationsChunkEvent | None = None
         tool_calls_op_evt: ToolCallChunkEvent | None = None
 
-        def _close_open_events() -> list[LLMStateChangeEvent[Any]]:
+        def _close_open_events(
+            _event: CompletionChunkEvent[CompletionChunk] | None = None,
+        ) -> list[LLMStateChangeEvent[Any]]:
             nonlocal \
                 chunk_op_evt, \
                 thinking_op_evt, \
@@ -206,26 +208,21 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
 
             events: list[LLMStateChangeEvent[Any]] = []
 
-            if tool_calls_op_evt:
-                events.append(ToolCallEndEvent.from_chunk_event(tool_calls_op_evt))
-
-            if response_op_evt:
-                events.append(ResponseEndEvent.from_chunk_event(response_op_evt))
-
-            if thinking_op_evt:
+            if not isinstance(_event, ThinkingChunkEvent) and thinking_op_evt:
                 events.append(ThinkingEndEvent.from_chunk_event(thinking_op_evt))
+                thinking_op_evt = None
 
-            if annotations_op_evt:
+            if not isinstance(_event, ToolCallChunkEvent) and tool_calls_op_evt:
+                events.append(ToolCallEndEvent.from_chunk_event(tool_calls_op_evt))
+                tool_calls_op_evt = None
+
+            if not isinstance(_event, ResponseChunkEvent) and response_op_evt:
+                events.append(ResponseEndEvent.from_chunk_event(response_op_evt))
+                response_op_evt = None
+
+            if not isinstance(_event, AnnotationsChunkEvent) and annotations_op_evt:
                 events.append(AnnotationsEndEvent.from_chunk_event(annotations_op_evt))
-
-            if chunk_op_evt:
-                events.append(CompletionEndEvent.from_chunk_event(chunk_op_evt))
-
-            chunk_op_evt = None
-            thinking_op_evt = None
-            tool_calls_op_evt = None
-            response_op_evt = None
-            annotations_op_evt = None
+                annotations_op_evt = None
 
             return events
 
@@ -252,14 +249,14 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
                 sub_events = event.split_into_specialized()
 
                 for sub_event in sub_events:
+                    for close_event in _close_open_events(sub_event):
+                        yield close_event
+
                     if isinstance(sub_event, ThinkingChunkEvent):
                         if not thinking_op_evt:
                             thinking_op_evt = sub_event
                             yield ThinkingStartEvent.from_chunk_event(sub_event)
                         yield sub_event
-                    elif thinking_op_evt:
-                        yield ThinkingEndEvent.from_chunk_event(thinking_op_evt)
-                        thinking_op_evt = None
 
                     if isinstance(sub_event, ToolCallChunkEvent):
                         tc = sub_event.data.tool_call
@@ -273,27 +270,18 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
                             tool_calls_op_evt = sub_event
                             yield ToolCallStartEvent.from_chunk_event(sub_event)
                         yield sub_event
-                    elif tool_calls_op_evt:
-                        yield ToolCallEndEvent.from_chunk_event(tool_calls_op_evt)
-                        tool_calls_op_evt = None
 
                     if isinstance(sub_event, ResponseChunkEvent):
                         if not response_op_evt:
                             response_op_evt = sub_event
                             yield ResponseStartEvent.from_chunk_event(sub_event)
                         yield sub_event
-                    elif response_op_evt:
-                        yield ResponseEndEvent.from_chunk_event(response_op_evt)
-                        response_op_evt = None
 
                     if isinstance(sub_event, AnnotationsChunkEvent):
                         if not annotations_op_evt:
                             annotations_op_evt = sub_event
                             yield AnnotationsStartEvent.from_chunk_event(sub_event)
                         yield sub_event
-                    elif annotations_op_evt:
-                        yield AnnotationsEndEvent.from_chunk_event(annotations_op_evt)
-                        annotations_op_evt = None
 
                 prev_completion_id = chunk.id
 

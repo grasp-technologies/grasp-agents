@@ -23,7 +23,6 @@ handlers:
 root:
   level: DEBUG
   handlers: [fileHandler, consoleHandler]
-  # handlers: [fileHandler]
 
 loggers:
   httpcore:
@@ -32,23 +31,11 @@ loggers:
   httpx:
     level: WARNING
 
-  aiomysql:
-    level: INFO
-
   openai:
     level: INFO
 
   LiteLLM:
     level: WARNING
   
-  chromadb:
-    level: INFO
-
   urllib3:
-    level: INFO
-
-  pytubefix.helpers:
-    level: INFO
-
-  grasp_pytubefix.helpers:
     level: INFO

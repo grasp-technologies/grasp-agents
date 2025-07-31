@@ -20,31 +20,30 @@
 
 ## Features
 
-- Clean formulation of agents as generic entities over:
-  - I/O schemas
-  - Memory
-  - Shared context
+- Clean formulation of agents as generic entities over I/O schemas and shared context.
 - Transparent implementation of common agentic patterns:
-  - Single-agent loops with an optional "ReAct mode" to enforce reasoning between the tool calls
+  - Single-agent loops
   - Workflows (static communication topology), including loops
   - Agents-as-tools for task delegation
   - Freeform A2A communication via the in-process actor model
-- Parallel processing with flexible retries and rate limiting
-- Simple logging and usage/cost tracking
+- Built-in parallel processing with flexible retries and rate limiting.
+- Support for all popular API providers via LiteLLM.
+- Granular event streaming with separate events for standard outputs, thinking, and tool calls.
+- Callbacks via decorators or subclassing for straightforward customisation of agentic loops and context management.
 
 ## Project Structure
 
-- `processor.py`, `comm_processor.py`, `llm_agent.py`: Core processor and agent class implementations.
-- `packet.py`, `packet_pool.py`: Communication management.
+- `processors/`, `llm_agent.py`: Core processor and agent class implementations.
+- `packet.py`, `packet_pool.py`, `runner.py`: Communication management.
 - `llm_policy_executor.py`: LLM actions and tool call loops.
 - `prompt_builder.py`: Tools for constructing prompts.
 - `workflow/`: Modules for defining and managing static agent workflows.
 - `llm.py`, `cloud_llm.py`: LLM integration and base LLM functionalities.
 - `openai/`: Modules specific to OpenAI API integration.
-- `memory.py`, `llm_agent_memory.py`: Memory management.
+- `litellm/`: Modules specific to LiteLLM integration.
+- `memory.py`, `llm_agent_memory.py`: Basic agent memory management.
 - `run_context.py`: Shared context management for agent runs.
 - `usage_tracker.py`: Tracking of API usage and costs.
-- `costs_dict.yaml`: Dictionary for cost tracking (update if needed).
 - `rate_limiting/`: Basic rate limiting tools.
 
 ## Quickstart & Installation Variants (UV Package manager)
@@ -173,7 +172,7 @@ teacher = LLMAgent[None, Problem, None](
 )
 
 async def main():
-    ctx = RunContext[None](print_messages=True)
+    ctx = RunContext[None](log_messages=True)
     out = await teacher.run("start", ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)

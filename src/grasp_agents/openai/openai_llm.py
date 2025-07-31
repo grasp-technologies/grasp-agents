@@ -127,8 +127,8 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             provider_name, provider_model_name = model_name_parts
             if provider_name not in compat_providers_map:
                 raise ValueError(
-                    f"OpenAI compatible API provider '{provider_name}' "
-                    "is not supported. Supported providers are: "
+                    f"API provider '{provider_name}' is not a supported OpenAI "
+                    f"compatible provider. Supported providers are: "
                     f"{', '.join(compat_providers_map.keys())}"
                 )
             api_provider = compat_providers_map[provider_name]
@@ -138,10 +138,18 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
                 "you must provide an 'api_provider' argument."
             )
 
+        if llm_settings is not None:
+            stream_options = llm_settings.get("stream_options") or {}
+            stream_options["include_usage"] = True
+            _llm_settings = deepcopy(llm_settings)
+            _llm_settings["stream_options"] = stream_options
+        else:
+            _llm_settings = OpenAILLMSettings(stream_options={"include_usage": True})
+
         super().__init__(
             model_name=provider_model_name,
             model_id=model_id,
-            llm_settings=llm_settings,
+            llm_settings=_llm_settings,
             converters=OpenAIConverters(),
             tools=tools,
             response_schema=response_schema,
