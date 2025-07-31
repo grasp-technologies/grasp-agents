@@ -80,7 +80,7 @@ teacher = LLMAgent[None, Problem, None](
 
 
 async def main():
-    ctx = RunContext[None](print_messages=True)
+    ctx = RunContext[None](log_messages=True)
     out = await teacher.run("start", ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)
