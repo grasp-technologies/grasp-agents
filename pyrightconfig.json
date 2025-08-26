@@ -1,5 +1,5 @@
 {
-    "typeCheckingMode": "standard",
+    "typeCheckingMode": "strict",
     "exclude": [
         ".bzr",
         ".direnv",

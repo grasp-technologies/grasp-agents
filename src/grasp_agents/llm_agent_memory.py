@@ -17,6 +17,7 @@ class MemoryPreparator(Protocol):
         in_args: Any | None,
         sys_prompt: LLMPrompt | None,
         ctx: RunContext[Any],
+        call_id: str,
     ) -> None: ...
 
 

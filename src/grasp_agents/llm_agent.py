@@ -42,6 +42,7 @@ class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
         *,
         in_args: _InT_contra | None,
         ctx: RunContext[CtxT],
+        call_id: str,
     ) -> _OutT_co: ...
 
 
@@ -169,10 +170,15 @@ class LLMAgent(
         in_args: InT | None = None,
         sys_prompt: LLMPrompt | None = None,
         ctx: RunContext[Any],
+        call_id: str,
     ) -> None:
         if self.memory_preparator:
             return self.memory_preparator(
-                memory=memory, in_args=in_args, sys_prompt=sys_prompt, ctx=ctx
+                memory=memory,
+                in_args=in_args,
+                sys_prompt=sys_prompt,
+                ctx=ctx,
+                call_id=call_id,
             )
 
     def _memorize_inputs(
@@ -182,8 +188,11 @@ class LLMAgent(
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
+        call_id: str,
     ) -> tuple[SystemMessage | None, UserMessage | None]:
-        formatted_sys_prompt = self._prompt_builder.build_system_prompt(ctx=ctx)
+        formatted_sys_prompt = self._prompt_builder.build_system_prompt(
+            ctx=ctx, call_id=call_id
+        )
 
         system_message: SystemMessage | None = None
         if self._reset_memory_on_run or memory.is_empty:
@@ -192,24 +201,22 @@ class LLMAgent(
                 system_message = cast("SystemMessage", memory.message_history[0])
         else:
             self._prepare_memory(
-                memory=memory, in_args=in_args, sys_prompt=formatted_sys_prompt, ctx=ctx
+                memory=memory,
+                in_args=in_args,
+                sys_prompt=formatted_sys_prompt,
+                ctx=ctx,
+                call_id=call_id,
             )
 
         input_message = self._prompt_builder.build_input_message(
-            chat_inputs=chat_inputs, in_args=in_args, ctx=ctx
+            chat_inputs=chat_inputs, in_args=in_args, ctx=ctx, call_id=call_id
         )
         if input_message:
             memory.update([input_message])
 
         return system_message, input_message
 
-    def _parse_output_default(
-        self,
-        conversation: Messages,
-        *,
-        in_args: InT | None = None,
-        ctx: RunContext[CtxT],
-    ) -> OutT:
+    def parse_output_default(self, conversation: Messages) -> OutT:
         return validate_obj_from_json_or_py_string(
             str(conversation[-1].content or ""),
             schema=self._out_type,
@@ -223,15 +230,14 @@ class LLMAgent(
         *,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
+        call_id: str,
     ) -> OutT:
         if self.output_parser:
             return self.output_parser(
-                conversation=conversation, in_args=in_args, ctx=ctx
+                conversation=conversation, in_args=in_args, ctx=ctx, call_id=call_id
             )
 
-        return self._parse_output_default(
-            conversation=conversation, in_args=in_args, ctx=ctx
-        )
+        return self.parse_output_default(conversation)
 
     async def _process(
         self,
@@ -239,24 +245,28 @@ class LLMAgent(
         *,
         in_args: InT | None = None,
         memory: LLMAgentMemory,
-        call_id: str,
         ctx: RunContext[CtxT],
+        call_id: str,
     ) -> OutT:
         system_message, input_message = self._memorize_inputs(
             memory=memory,
             chat_inputs=chat_inputs,
             in_args=in_args,
             ctx=ctx,
+            call_id=call_id,
         )
         if system_message:
-            self._print_messages([system_message], call_id=call_id, ctx=ctx)
+            self._print_messages([system_message], ctx=ctx, call_id=call_id)
         if input_message:
-            self._print_messages([input_message], call_id=call_id, ctx=ctx)
+            self._print_messages([input_message], ctx=ctx, call_id=call_id)
 
-        await self._policy_executor.execute(memory, call_id=call_id, ctx=ctx)
+        await self._policy_executor.execute(memory, ctx=ctx, call_id=call_id)
 
         return self._parse_output(
-            conversation=memory.message_history, in_args=in_args, ctx=ctx
+            conversation=memory.message_history,
+            in_args=in_args,
+            ctx=ctx,
+            call_id=call_id,
         )
 
     async def _process_stream(
@@ -265,41 +275,45 @@ class LLMAgent(
         *,
         in_args: InT | None = None,
         memory: LLMAgentMemory,
-        call_id: str,
         ctx: RunContext[CtxT],
+        call_id: str,
     ) -> AsyncIterator[Event[Any]]:
         system_message, input_message = self._memorize_inputs(
             memory=memory,
             chat_inputs=chat_inputs,
             in_args=in_args,
             ctx=ctx,
+            call_id=call_id,
         )
         if system_message:
-            self._print_messages([system_message], call_id=call_id, ctx=ctx)
+            self._print_messages([system_message], ctx=ctx, call_id=call_id)
             yield SystemMessageEvent(
                 data=system_message, proc_name=self.name, call_id=call_id
             )
         if input_message:
-            self._print_messages([input_message], call_id=call_id, ctx=ctx)
+            self._print_messages([input_message], ctx=ctx, call_id=call_id)
             yield UserMessageEvent(
                 data=input_message, proc_name=self.name, call_id=call_id
             )
 
         async for event in self._policy_executor.execute_stream(
-            memory, call_id=call_id, ctx=ctx
+            memory, ctx=ctx, call_id=call_id
         ):
             yield event
 
         output = self._parse_output(
-            conversation=memory.message_history, in_args=in_args, ctx=ctx
+            conversation=memory.message_history,
+            in_args=in_args,
+            ctx=ctx,
+            call_id=call_id,
         )
         yield ProcPayloadOutputEvent(data=output, proc_name=self.name, call_id=call_id)
 
     def _print_messages(
         self,
         messages: Sequence[Message],
-        call_id: str,
         ctx: RunContext[CtxT],
+        call_id: str,
     ) -> None:
         if ctx and ctx.printer:
             ctx.printer.print_messages(messages, agent_name=self.name, call_id=call_id)
@@ -328,31 +342,45 @@ class LLMAgent(
         if cur_cls.memory_manager is not base_cls.memory_manager:
             self._policy_executor.memory_manager = self.memory_manager
 
-    def system_prompt_builder(self, ctx: RunContext[CtxT]) -> str | None:
+    def system_prompt_builder(self, ctx: RunContext[CtxT], call_id: str) -> str | None:
         if self._prompt_builder.system_prompt_builder is not None:
-            return self._prompt_builder.system_prompt_builder(ctx=ctx)
+            return self._prompt_builder.system_prompt_builder(ctx=ctx, call_id=call_id)
         raise NotImplementedError("System prompt builder is not implemented.")
 
-    def input_content_builder(self, in_args: InT, ctx: RunContext[CtxT]) -> Content:
+    def input_content_builder(
+        self, in_args: InT, ctx: RunContext[CtxT], call_id: str
+    ) -> Content:
         if self._prompt_builder.input_content_builder is not None:
-            return self._prompt_builder.input_content_builder(in_args=in_args, ctx=ctx)
+            return self._prompt_builder.input_content_builder(
+                in_args=in_args, ctx=ctx, call_id=call_id
+            )
         raise NotImplementedError("Input content builder is not implemented.")
 
     def tool_call_loop_terminator(
-        self, conversation: Messages, *, ctx: RunContext[CtxT], **kwargs: Any
+        self,
+        conversation: Messages,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        **kwargs: Any,
     ) -> bool:
         if self._policy_executor.tool_call_loop_terminator is not None:
             return self._policy_executor.tool_call_loop_terminator(
-                conversation=conversation, ctx=ctx, **kwargs
+                conversation=conversation, ctx=ctx, call_id=call_id, **kwargs
             )
         raise NotImplementedError("Tool call loop terminator is not implemented.")
 
     def memory_manager(
-        self, memory: LLMAgentMemory, *, ctx: RunContext[CtxT], **kwargs: Any
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        **kwargs: Any,
     ) -> None:
         if self._policy_executor.memory_manager is not None:
             return self._policy_executor.memory_manager(
-                memory=memory, ctx=ctx, **kwargs
+                memory=memory, ctx=ctx, call_id=call_id, **kwargs
             )
         raise NotImplementedError("Memory manager is not implemented.")
 

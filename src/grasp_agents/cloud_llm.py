@@ -61,7 +61,6 @@ LLMRateLimiter = RateLimiterC[
 
 @dataclass(frozen=True)
 class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co]):
-    # Make this field keyword-only to avoid ordering issues with inherited defaulted fields
     api_provider: APIProvider | None = None
     llm_settings: SettingsT_co | None = None
     rate_limiter: LLMRateLimiter | None = None

@@ -64,20 +64,22 @@ class BaseTool(
         self,
         inp: _InT,
         *,
-        call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
+        call_id: str | None = None,
     ) -> _OutT_co:
         pass
 
     async def __call__(
         self,
         *,
-        call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
+        call_id: str | None = None,
         **kwargs: Any,
     ) -> _OutT_co:
+        # NOTE: validation is probably redundant here when tool inputs have been
+        # validated by the LLM already
         input_args = TypeAdapter(self._in_type).validate_python(kwargs)
-        output = await self.run(input_args, call_id=call_id, ctx=ctx)
+        output = await self.run(input_args, ctx=ctx, call_id=call_id)
 
         return TypeAdapter(self._out_type).validate_python(output)
 
