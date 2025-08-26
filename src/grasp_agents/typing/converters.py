@@ -69,7 +69,9 @@ class Converters(ABC):
 
     @staticmethod
     @abstractmethod
-    def to_tool(tool: BaseTool[BaseModel, Any, Any], **kwargs: Any) -> Any:
+    def to_tool(
+        tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None, **kwargs: Any
+    ) -> Any:
         pass
 
     @staticmethod

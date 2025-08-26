@@ -1,7 +1,8 @@
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Generic, Required, cast
 
 import httpx
@@ -58,111 +59,53 @@ LLMRateLimiter = RateLimiterC[
 ]
 
 
+@dataclass(frozen=True)
 class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co]):
-    def __init__(
-        self,
-        # Base LLM args
-        model_name: str,
-        api_provider: APIProvider,
-        converters: ConvertT_co,
-        llm_settings: SettingsT_co | None = None,
-        tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
-        apply_response_schema_via_provider: bool = True,
-        model_id: str | None = None,
-        # Connection settings
-        async_http_client: httpx.AsyncClient | None = None,
-        async_http_client_params: (
-            dict[str, Any] | AsyncHTTPClientParams | None
-        ) = None,
-        max_client_retries: int = 2,
-        # Rate limiting
-        rate_limiter: LLMRateLimiter | None = None,
-        # LLM response retries: try to regenerate to pass validation
-        max_response_retries: int = 0,
-        **kwargs: Any,
-    ) -> None:
-        self.llm_settings: CloudLLMSettings | None
+    # Make this field keyword-only to avoid ordering issues with inherited defaulted fields
+    api_provider: APIProvider | None = None
+    llm_settings: SettingsT_co | None = None
+    rate_limiter: LLMRateLimiter | None = None
+    max_client_retries: int = 2  # HTTP client retries for network errors
+    max_response_retries: int = (
+        0  # LLM response retries: try to regenerate to pass validation
+    )
+    apply_response_schema_via_provider: bool = False
+    async_http_client: httpx.AsyncClient | None = None
+    async_http_client_params: dict[str, Any] | AsyncHTTPClientParams | None = None
 
-        super().__init__(
-            model_name=model_name,
-            llm_settings=llm_settings,
-            converters=converters,
-            model_id=model_id,
-            tools=tools,
-            response_schema=response_schema,
-            response_schema_by_xml_tag=response_schema_by_xml_tag,
-            **kwargs,
-        )
-
-        self._model_name = model_name
-        self._api_provider = api_provider
-        self._apply_response_schema_via_provider = apply_response_schema_via_provider
-
-        if (
-            apply_response_schema_via_provider
-            and response_schema_by_xml_tag is not None
-        ):
-            raise ValueError(
-                "Response schema by XML tag is not supported "
-                "when apply_response_schema_via_provider is True."
-            )
-
-        self._rate_limiter: LLMRateLimiter | None = None
-        if rate_limiter is not None:
-            self._rate_limiter = rate_limiter
+    def __post_init__(self) -> None:
+        if self.rate_limiter is not None:
             logger.info(
-                f"[{self.__class__.__name__}] Set rate limit to {rate_limiter.rpm} RPM"
+                f"[{self.__class__.__name__}] Set rate limit to "
+                f"{self.rate_limiter.rpm} RPM"
             )
 
-        self._async_http_client: httpx.AsyncClient | None = None
-        if async_http_client is not None:
-            self._async_http_client = async_http_client
-        elif async_http_client_params is not None:
-            self._async_http_client = create_simple_async_httpx_client(
-                async_http_client_params
+        if self.async_http_client is None and self.async_http_client_params is not None:
+            object.__setattr__(
+                self,
+                "async_http_client",
+                create_simple_async_httpx_client(self.async_http_client_params),
             )
-
-        self.max_client_retries = max_client_retries
-        self.max_response_retries = max_response_retries
-
-    @property
-    def api_provider(self) -> APIProvider:
-        return self._api_provider
-
-    @property
-    def rate_limiter(self) -> LLMRateLimiter | None:
-        return self._rate_limiter
-
-    @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, Any, Any]] | None:
-        return self._tools
-
-    @tools.setter
-    def tools(self, tools: Sequence[BaseTool[BaseModel, Any, Any]] | None) -> None:
-        if not tools:
-            self._tools = None
-            return
-        strict_value = True if self._apply_response_schema_via_provider else None
-        for t in tools:
-            t.strict = strict_value
-        self._tools = {t.name: t for t in tools}
 
     def _make_completion_kwargs(
         self,
         conversation: Messages,
+        response_schema: Any | None = None,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
     ) -> dict[str, Any]:
-        api_messages = [self._converters.to_message(m) for m in conversation]
+        api_messages = [self.converters.to_message(m) for m in conversation]
 
         api_tools = None
         api_tool_choice = None
-        if self.tools:
-            api_tools = [self._converters.to_tool(t) for t in self.tools.values()]
+        if tools:
+            strict = True if self.apply_response_schema_via_provider else None
+            api_tools = [
+                self.converters.to_tool(t, strict=strict) for t in tools.values()
+            ]
             if tool_choice is not None:
-                api_tool_choice = self._converters.to_tool_choice(tool_choice)
+                api_tool_choice = self.converters.to_tool_choice(tool_choice)
 
         api_llm_settings = deepcopy(self.llm_settings or {})
 
@@ -170,7 +113,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             api_messages=api_messages,
             api_tools=api_tools,
             api_tool_choice=api_tool_choice,
-            api_response_schema=self._response_schema,
+            api_response_schema=response_schema,
             n_choices=n_choices,
             **api_llm_settings,
         )
@@ -206,24 +149,34 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self,
         conversation: Messages,
         *,
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
     ) -> Completion:
         completion_kwargs = self._make_completion_kwargs(
-            conversation=conversation, tool_choice=tool_choice, n_choices=n_choices
+            conversation=conversation,
+            response_schema=response_schema,
+            tools=tools,
+            tool_choice=tool_choice,
+            n_choices=n_choices,
         )
 
-        if not self._apply_response_schema_via_provider:
+        if not self.apply_response_schema_via_provider:
             completion_kwargs.pop("api_response_schema", None)
         api_completion = await self._get_completion(**completion_kwargs)
 
-        completion = self._converters.from_completion(
-            api_completion, name=self.model_id
-        )
+        completion = self.converters.from_completion(api_completion, name=self.model_id)
 
-        if not self._apply_response_schema_via_provider:
-            self._validate_response(completion)
-            self._validate_tool_calls(completion)
+        if not self.apply_response_schema_via_provider:
+            self._validate_response(
+                completion,
+                response_schema=response_schema,
+                response_schema_by_xml_tag=response_schema_by_xml_tag,
+            )
+            if tools is not None:
+                self._validate_tool_calls(completion, tools=tools)
 
         return completion
 
@@ -231,6 +184,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self,
         conversation: Messages,
         *,
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
         proc_name: str | None = None,
@@ -241,6 +197,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             try:
                 return await self._generate_completion_once(
                     conversation,  # type: ignore[return]
+                    response_schema=response_schema,
+                    response_schema_by_xml_tag=response_schema_by_xml_tag,
+                    tools=tools,
                     tool_choice=tool_choice,
                     n_choices=n_choices,
                 )
@@ -263,7 +222,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 )
 
         return make_refusal_completion(
-            self._model_name,
+            self.model_name,
             Exception("Unexpected error: retry loop exited without returning"),
         )
 
@@ -272,15 +231,22 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self,
         conversation: Messages,
         *,
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
         proc_name: str | None = None,
         call_id: str | None = None,
     ) -> AsyncIterator[CompletionChunkEvent[CompletionChunk] | CompletionEvent]:
         completion_kwargs = self._make_completion_kwargs(
-            conversation=conversation, tool_choice=tool_choice, n_choices=n_choices
+            conversation=conversation,
+            response_schema=response_schema,
+            tools=tools,
+            tool_choice=tool_choice,
+            n_choices=n_choices,
         )
-        if not self._apply_response_schema_via_provider:
+        if not self.apply_response_schema_via_provider:
             completion_kwargs.pop("api_response_schema", None)
 
         api_stream = self._get_completion_stream(**completion_kwargs)
@@ -293,7 +259,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
 
             async for api_completion_chunk in api_stream:
                 api_completion_chunks.append(api_completion_chunk)
-                completion_chunk = self._converters.from_completion_chunk(
+                completion_chunk = self.converters.from_completion_chunk(
                     api_completion_chunk, name=self.model_id
                 )
 
@@ -301,16 +267,23 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                     data=completion_chunk, proc_name=proc_name, call_id=call_id
                 )
 
-            api_completion = self.combine_completion_chunks(api_completion_chunks)
-            completion = self._converters.from_completion(
+            api_completion = self.combine_completion_chunks(
+                api_completion_chunks, response_schema=response_schema, tools=tools
+            )
+            completion = self.converters.from_completion(
                 api_completion, name=self.model_id
             )
 
             yield CompletionEvent(data=completion, proc_name=proc_name, call_id=call_id)
 
-            if not self._apply_response_schema_via_provider:
-                self._validate_response(completion)
-                self._validate_tool_calls(completion)
+            if not self.apply_response_schema_via_provider:
+                self._validate_response(
+                    completion,
+                    response_schema=response_schema,
+                    response_schema_by_xml_tag=response_schema_by_xml_tag,
+                )
+                if tools is not None:
+                    self._validate_tool_calls(completion, tools=tools)
 
         return iterator()
 
@@ -318,6 +291,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         self,
         conversation: Messages,
         *,
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         n_choices: int | None = None,
         proc_name: str | None = None,
@@ -330,6 +306,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             try:
                 async for event in await self._generate_completion_stream_once(  # type: ignore[return]
                     conversation,  # type: ignore[arg-type]
+                    response_schema=response_schema,
+                    response_schema_by_xml_tag=response_schema_by_xml_tag,
+                    tools=tools,
                     tool_choice=tool_choice,
                     n_choices=n_choices,
                     proc_name=proc_name,
@@ -339,7 +318,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 return
             except (LLMResponseValidationError, LLMToolCallValidationError) as err:
                 err_data = LLMStreamingErrorData(
-                    error=err, model_name=self._model_name, model_id=self.model_id
+                    error=err, model_name=self.model_name, model_id=self.model_id
                 )
                 yield LLMStreamingErrorEvent(
                     data=err_data, proc_name=proc_name, call_id=call_id
@@ -355,7 +334,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                             f"retrying:\n{err}"
                         )
                         refusal_completion = make_refusal_completion(
-                            self._model_name, err
+                            self.model_name, err
                         )
                         yield CompletionEvent(
                             data=refusal_completion,

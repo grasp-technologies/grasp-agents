@@ -56,9 +56,7 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
     name: str = "ask_student"
     description: str = ask_student_tool_description
 
-    async def run(
-        self, inp: TeacherQuestion, ctx: RunContext[Any] | None = None
-    ) -> StudentReply:
+    async def run(self, inp: TeacherQuestion, **kwargs: Any) -> StudentReply:
         return input(inp.question)
 
 
@@ -68,10 +66,7 @@ class Problem(BaseModel):
 
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
-    llm=LiteLLM(
-        model_name="gpt-4.1",
-        llm_settings=LiteLLMSettings(temperature=0.5),
-    ),
+    llm=LiteLLM(model_name="gpt-4.1", llm_settings=LiteLLMSettings(temperature=0.5)),
     tools=[AskStudentTool()],
     react_mode=True,
     final_answer_as_tool_call=True,

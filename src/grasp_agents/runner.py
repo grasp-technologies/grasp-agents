@@ -33,7 +33,7 @@ class Runner(Generic[OutT, CtxT]):
 
         self._entry_proc = entry_proc
         self._procs = procs
-        self._ctx = ctx or RunContext[CtxT]()
+        self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
     @property
     def ctx(self) -> RunContext[CtxT]:

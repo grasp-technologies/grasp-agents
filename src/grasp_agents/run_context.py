@@ -13,7 +13,7 @@ CtxT = TypeVar("CtxT")
 
 
 class RunContext(BaseModel, Generic[CtxT]):
-    state: CtxT | None = None
+    state: CtxT = None  # type: ignore
 
     completions: dict[ProcName, list[Completion]] = Field(
         default_factory=lambda: defaultdict(list)

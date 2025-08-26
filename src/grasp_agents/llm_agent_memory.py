@@ -13,14 +13,15 @@ class MemoryPreparator(Protocol):
     def __call__(
         self,
         memory: "LLMAgentMemory",
+        *,
         in_args: Any | None,
         sys_prompt: LLMPrompt | None,
-        ctx: RunContext[Any] | None,
+        ctx: RunContext[Any],
     ) -> None: ...
 
 
 class LLMAgentMemory(Memory):
-    _message_history: Messages = PrivateAttr(default_factory=list)  # type: ignore
+    _message_history: Messages = PrivateAttr(default_factory=Messages)
     _sys_prompt: LLMPrompt | None = PrivateAttr(default=None)
 
     def __init__(self, sys_prompt: LLMPrompt | None = None) -> None:

@@ -30,7 +30,7 @@ class ParallelProcessor(
         in_args: InT | None = None,
         memory: MemT,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> OutT:
         return cast("OutT", in_args)
 
@@ -41,7 +41,7 @@ class ParallelProcessor(
         in_args: InT | None = None,
         memory: MemT,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         output = cast("OutT", in_args)
         yield ProcPayloadOutputEvent(data=output, proc_name=self.name, call_id=call_id)
@@ -67,7 +67,7 @@ class ParallelProcessor(
         in_args: InT | None = None,
         forgetful: bool = False,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> Packet[OutT]:
         memory = self.memory.model_copy(deep=True) if forgetful else self.memory
 
@@ -86,7 +86,7 @@ class ParallelProcessor(
         return Packet(payloads=[val_output], sender=self.name, recipients=recipients)
 
     async def _run_parallel(
-        self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT] | None = None
+        self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT]
     ) -> Packet[OutT]:
         tasks = [
             self._run_single(
@@ -114,6 +114,7 @@ class ParallelProcessor(
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         call_id = self._generate_call_id(call_id)
+        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
 
         val_in_args = self._validate_inputs(
             call_id=call_id,
@@ -143,7 +144,7 @@ class ParallelProcessor(
         in_args: InT | None = None,
         forgetful: bool = False,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         memory = self.memory.model_copy(deep=True) if forgetful else self.memory
 
@@ -178,7 +179,7 @@ class ParallelProcessor(
         self,
         in_args: list[InT],
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         streams = [
             self._run_single_stream(
@@ -222,6 +223,7 @@ class ParallelProcessor(
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         call_id = self._generate_call_id(call_id)
+        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
 
         val_in_args = self._validate_inputs(
             call_id=call_id,

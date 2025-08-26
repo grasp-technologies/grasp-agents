@@ -1,5 +1,5 @@
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, cast
 
 from ..memory import MemT
@@ -25,7 +25,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         in_args: list[InT] | None = None,
         memory: MemT,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> list[OutT]:
         return cast("list[OutT]", in_args)
 
@@ -36,7 +36,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         in_args: list[InT] | None = None,
         memory: MemT,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         outputs = await self._process(
             chat_inputs=chat_inputs,
@@ -58,7 +58,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         in_args: InT | list[InT] | None = None,
         forgetful: bool = False,
         call_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> tuple[list[InT] | None, MemT, str]:
         call_id = self._generate_call_id(call_id)
 
@@ -74,10 +74,10 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         return val_in_args, memory, call_id
 
     def _postprocess(
-        self, outputs: list[OutT], call_id: str, ctx: RunContext[CtxT] | None = None
+        self, outputs: list[OutT], call_id: str, ctx: RunContext[CtxT]
     ) -> Packet[OutT]:
         payloads: list[OutT] = []
-        routing: dict[int, list[ProcName] | None] = {}
+        routing: dict[int, Sequence[ProcName] | None] = {}
         for idx, output in enumerate(outputs):
             val_output = self._validate_output(output, call_id=call_id)
             recipients = self._select_recipients(output=val_output, ctx=ctx)
@@ -105,6 +105,8 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
+        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
+
         val_in_args, memory, call_id = self._preprocess(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
@@ -134,6 +136,8 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
+
         val_in_args, memory, call_id = self._preprocess(
             chat_inputs=chat_inputs,
             in_packet=in_packet,

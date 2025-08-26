@@ -1,6 +1,6 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator, Coroutine, Sequence
+from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
 from itertools import starmap
 from logging import getLogger
 from typing import Any, Generic, Protocol, final
@@ -36,7 +36,7 @@ class ToolCallLoopTerminator(Protocol[CtxT]):
         self,
         conversation: Messages,
         *,
-        ctx: RunContext[CtxT] | None,
+        ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> bool: ...
 
@@ -46,7 +46,7 @@ class MemoryManager(Protocol[CtxT]):
         self,
         memory: LLMAgentMemory,
         *,
-        ctx: RunContext[CtxT] | None,
+        ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> None: ...
 
@@ -54,9 +54,12 @@ class MemoryManager(Protocol[CtxT]):
 class LLMPolicyExecutor(Generic[CtxT]):
     def __init__(
         self,
+        *,
         agent_name: str,
         llm: LLM[LLMSettings, Converters],
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
         max_turns: int,
         react_mode: bool = False,
         final_answer_type: type[BaseModel] = BaseModel,
@@ -70,12 +73,15 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self._final_answer_as_tool_call = final_answer_as_tool_call
         self._final_answer_tool = self.get_final_answer_tool()
 
-        _tools: list[BaseTool[BaseModel, Any, CtxT]] | None = tools
+        tools_list: list[BaseTool[BaseModel, Any, CtxT]] | None = tools
         if tools and final_answer_as_tool_call:
-            _tools = tools + [self._final_answer_tool]
+            tools_list = tools + [self._final_answer_tool]
+        self._tools = {t.name: t for t in tools_list} if tools_list else None
+
+        self._response_schema = response_schema
+        self._response_schema_by_xml_tag = response_schema_by_xml_tag
 
         self._llm = llm
-        self._llm.tools = _tools
 
         self._max_turns = max_turns
         self._react_mode = react_mode
@@ -92,8 +98,20 @@ class LLMPolicyExecutor(Generic[CtxT]):
         return self._llm
 
     @property
+    def response_schema(self) -> Any | None:
+        return self._response_schema
+
+    @response_schema.setter
+    def response_schema(self, value: Any | None) -> None:
+        self._response_schema = value
+
+    @property
+    def response_schema_by_xml_tag(self) -> Mapping[str, Any] | None:
+        return self._response_schema_by_xml_tag
+
+    @property
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
-        return self._llm.tools or {}
+        return self._tools or {}
 
     @property
     def max_turns(self) -> int:
@@ -104,7 +122,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self,
         conversation: Messages,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> bool:
         if self.tool_call_loop_terminator:
@@ -117,7 +135,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self,
         memory: LLMAgentMemory,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> None:
         if self.memory_manager:
@@ -126,12 +144,16 @@ class LLMPolicyExecutor(Generic[CtxT]):
     async def generate_message(
         self,
         memory: LLMAgentMemory,
+        *,
         call_id: str,
         tool_choice: ToolChoice | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AssistantMessage:
         completion = await self.llm.generate_completion(
             memory.message_history,
+            response_schema=self.response_schema,
+            response_schema_by_xml_tag=self.response_schema_by_xml_tag,
+            tools=self.tools,
             tool_choice=tool_choice,
             n_choices=1,
             proc_name=self.agent_name,
@@ -147,9 +169,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
     async def generate_message_stream(
         self,
         memory: LLMAgentMemory,
+        *,
         call_id: str,
         tool_choice: ToolChoice | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[
         CompletionChunkEvent[CompletionChunk]
         | CompletionEvent
@@ -160,6 +183,9 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         llm_event_stream = self.llm.generate_completion_stream(
             memory.message_history,
+            response_schema=self.response_schema,
+            response_schema_by_xml_tag=self.response_schema_by_xml_tag,
+            tools=self.tools,
             tool_choice=tool_choice,
             n_choices=1,
             proc_name=self.agent_name,
@@ -189,14 +215,14 @@ class LLMPolicyExecutor(Generic[CtxT]):
         calls: Sequence[ToolCall],
         memory: LLMAgentMemory,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> Sequence[ToolMessage]:
         # TODO: Add image support
         corouts: list[Coroutine[Any, Any, BaseModel]] = []
         for call in calls:
             tool = self.tools[call.tool_name]
             args = json.loads(call.tool_arguments)
-            corouts.append(tool(ctx=ctx, **args))
+            corouts.append(tool(call_id=call_id, ctx=ctx, **args))
 
         outs = await asyncio.gather(*corouts)
         tool_messages = list(
@@ -217,7 +243,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         calls: Sequence[ToolCall],
         memory: LLMAgentMemory,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[ToolMessageEvent]:
         tool_messages = await self.call_tools(
             calls, memory=memory, call_id=call_id, ctx=ctx
@@ -245,7 +271,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 return final_answer_message
 
     async def _generate_final_answer(
-        self, memory: LLMAgentMemory, call_id: str, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, call_id: str, ctx: RunContext[CtxT]
     ) -> AssistantMessage:
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!"
@@ -268,7 +294,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         return final_answer_message
 
     async def _generate_final_answer_stream(
-        self, memory: LLMAgentMemory, call_id: str, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, call_id: str, ctx: RunContext[CtxT]
     ) -> AsyncIterator[Event[Any]]:
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!",
@@ -296,7 +322,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         )
 
     async def execute(
-        self, memory: LLMAgentMemory, call_id: str, ctx: RunContext[CtxT] | None = None
+        self, memory: LLMAgentMemory, call_id: str, ctx: RunContext[CtxT]
     ) -> AssistantMessage | Sequence[AssistantMessage]:
         # 1. Generate the first message:
         #    In ReAct mode, we generate the first message without tool calls
@@ -379,7 +405,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self,
         memory: LLMAgentMemory,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         tool_choice: ToolChoice = "none" if self._react_mode else "auto"
         gen_message: AssistantMessage | None = None
@@ -464,7 +490,11 @@ class LLMPolicyExecutor(Generic[CtxT]):
             )
 
             async def run(
-                self, inp: BaseModel, ctx: RunContext[Any] | None = None
+                self,
+                inp: BaseModel,
+                *,
+                call_id: str | None = None,
+                ctx: RunContext[Any] | None = None,
             ) -> None:
                 return None
 
@@ -473,22 +503,22 @@ class LLMPolicyExecutor(Generic[CtxT]):
     def _process_completion(
         self,
         completion: Completion,
+        *,
         call_id: str,
         print_messages: bool = False,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> None:
-        if ctx is not None:
-            ctx.completions[self.agent_name].append(completion)
-            ctx.usage_tracker.update(
+        ctx.completions[self.agent_name].append(completion)
+        ctx.usage_tracker.update(
+            agent_name=self.agent_name,
+            completions=[completion],
+            model_name=self.llm.model_name,
+        )
+        if ctx.printer and print_messages:
+            usages = [None] * (len(completion.messages) - 1) + [completion.usage]
+            ctx.printer.print_messages(
+                completion.messages,
+                usages=usages,
                 agent_name=self.agent_name,
-                completions=[completion],
-                model_name=self.llm.model_name,
+                call_id=call_id,
             )
-            if ctx.printer and print_messages:
-                usages = [None] * (len(completion.messages) - 1) + [completion.usage]
-                ctx.printer.print_messages(
-                    completion.messages,
-                    usages=usages,
-                    agent_name=self.agent_name,
-                    call_id=call_id,
-                )

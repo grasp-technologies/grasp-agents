@@ -118,8 +118,10 @@ class LiteLLMConverters(Converters):
         return from_api_tool_message(raw_message, name=name, **kwargs)
 
     @staticmethod
-    def to_tool(tool: BaseTool[BaseModel, Any, Any], **kwargs: Any) -> OpenAIToolParam:
-        return to_api_tool(tool, **kwargs)
+    def to_tool(
+        tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None, **kwargs: Any
+    ) -> OpenAIToolParam:
+        return to_api_tool(tool, strict=strict, **kwargs)
 
     @staticmethod
     def to_tool_choice(
