@@ -106,7 +106,7 @@ _OutT_contra = TypeVar("_OutT_contra", contravariant=True)
 
 class RecipientSelector(Protocol[_OutT_contra, CtxT]):
     def __call__(
-        self, output: _OutT_contra, ctx: RunContext[CtxT]
+        self, output: _OutT_contra, *, ctx: RunContext[CtxT]
     ) -> Sequence[ProcName] | None: ...
 
 

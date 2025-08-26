@@ -15,11 +15,22 @@ _InT_contra = TypeVar("_InT_contra", contravariant=True)
 
 
 class SystemPromptBuilder(Protocol[CtxT]):
-    def __call__(self, ctx: RunContext[CtxT]) -> str | None: ...
+    def __call__(
+        self,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ) -> str | None: ...
 
 
 class InputContentBuilder(Protocol[_InT_contra, CtxT]):
-    def __call__(self, in_args: _InT_contra, ctx: RunContext[CtxT]) -> Content: ...
+    def __call__(
+        self,
+        in_args: _InT_contra,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ) -> Content: ...
 
 
 PromptArgumentType: TypeAlias = str | bool | int | ImageData
@@ -43,9 +54,9 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         self._in_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
 
     @final
-    def build_system_prompt(self, ctx: RunContext[CtxT]) -> str | None:
+    def build_system_prompt(self, ctx: RunContext[CtxT], call_id: str) -> str | None:
         if self.system_prompt_builder:
-            return self.system_prompt_builder(ctx=ctx)
+            return self.system_prompt_builder(ctx=ctx, call_id=call_id)
 
         return self.sys_prompt
 
@@ -71,7 +82,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
 
     @final
     def _build_input_content(
-        self, in_args: InT | None, ctx: RunContext[CtxT]
+        self, in_args: InT | None, ctx: RunContext[CtxT], call_id: str
     ) -> Content:
         if in_args is None and self._in_type is not type(None):
             raise InputPromptBuilderError(
@@ -83,7 +94,9 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
 
         val_in_args = self._validate_input_args(in_args)
         if self.input_content_builder:
-            return self.input_content_builder(in_args=val_in_args, ctx=ctx)
+            return self.input_content_builder(
+                in_args=val_in_args, ctx=ctx, call_id=call_id
+            )
 
         if issubclass(self._in_type, BaseModel) and isinstance(val_in_args, BaseModel):
             val_in_args_map = self._format_pydantic_prompt_args(val_in_args)
@@ -102,6 +115,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         *,
         in_args: InT | None = None,
+        call_id: str,
         ctx: RunContext[CtxT],
     ) -> UserMessage | None:
         if chat_inputs is not None:
@@ -116,7 +130,9 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
             return UserMessage.from_content_parts(chat_inputs, name=self._agent_name)
 
         return UserMessage(
-            content=self._build_input_content(in_args=in_args, ctx=ctx),
+            content=self._build_input_content(
+                in_args=in_args, ctx=ctx, call_id=call_id
+            ),
             name=self._agent_name,
         )
 

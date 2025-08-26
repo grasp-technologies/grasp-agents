@@ -114,7 +114,7 @@ class ParallelProcessor(
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         call_id = self._generate_call_id(call_id)
-        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
         val_in_args = self._validate_inputs(
             call_id=call_id,
@@ -223,7 +223,7 @@ class ParallelProcessor(
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         call_id = self._generate_call_id(call_id)
-        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
         val_in_args = self._validate_inputs(
             call_id=call_id,

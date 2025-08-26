@@ -105,7 +105,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
-        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
         val_in_args, memory, call_id = self._preprocess(
             chat_inputs=chat_inputs,
@@ -136,7 +136,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        ctx = RunContext[CtxT](state=None) if ctx is None else ctx  # type: ignore
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
         val_in_args, memory, call_id = self._preprocess(
             chat_inputs=chat_inputs,
