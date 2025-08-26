@@ -48,8 +48,6 @@ class BaseTool(
     name: str
     description: str
 
-    strict: bool | None = None
-
     _in_type: type[_InT] = PrivateAttr()
     _out_type: type[_OutT_co] = PrivateAttr()
 
@@ -62,14 +60,24 @@ class BaseTool(
         return self._out_type
 
     @abstractmethod
-    async def run(self, inp: _InT, ctx: RunContext[CtxT] | None = None) -> _OutT_co:
+    async def run(
+        self,
+        inp: _InT,
+        *,
+        call_id: str | None = None,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> _OutT_co:
         pass
 
     async def __call__(
-        self, ctx: RunContext[CtxT] | None = None, **kwargs: Any
+        self,
+        *,
+        call_id: str | None = None,
+        ctx: RunContext[CtxT] | None = None,
+        **kwargs: Any,
     ) -> _OutT_co:
         input_args = TypeAdapter(self._in_type).validate_python(kwargs)
-        output = await self.run(input_args, ctx=ctx)
+        output = await self.run(input_args, call_id=call_id, ctx=ctx)
 
         return TypeAdapter(self._out_type).validate_python(output)
 

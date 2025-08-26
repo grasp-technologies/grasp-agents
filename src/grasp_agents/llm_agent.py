@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
@@ -41,7 +41,7 @@ class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
         conversation: Messages,
         *,
         in_args: _InT_contra | None,
-        ctx: RunContext[CtxT] | None,
+        ctx: RunContext[CtxT],
     ) -> _OutT_co: ...
 
 
@@ -68,16 +68,19 @@ class LLMAgent(
         # System prompt template
         sys_prompt: LLMPrompt | None = None,
         sys_prompt_path: str | Path | None = None,
+        # LLM response validation
+        response_schema: Any | None = None,
+        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
         # Agent loop settings
         max_turns: int = 100,
         react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
         # Agent memory management
         reset_memory_on_run: bool = False,
-        # Retries
+        # Agent run retries
         max_retries: int = 0,
         # Multi-agent routing
-        recipients: list[ProcName] | None = None,
+        recipients: Sequence[ProcName] | None = None,
     ) -> None:
         super().__init__(name=name, recipients=recipients, max_retries=max_retries)
 
@@ -96,15 +99,6 @@ class LLMAgent(
 
         # LLM policy executor
 
-        self._used_default_llm_response_schema: bool = False
-        if (
-            llm.response_schema is None
-            and tools is None
-            and not hasattr(type(self), "output_parser")
-        ):
-            llm.response_schema = self.out_type
-            self._used_default_llm_response_schema = True
-
         if issubclass(self._out_type, BaseModel):
             final_answer_type = self._out_type
         elif not final_answer_as_tool_call:
@@ -115,10 +109,21 @@ class LLMAgent(
                 "final_answer_as_tool_call is True."
             )
 
+        self._used_default_llm_response_schema: bool = False
+        if (
+            response_schema is None
+            and tools is None
+            and not hasattr(type(self), "output_parser")
+        ):
+            response_schema = self.out_type
+            self._used_default_llm_response_schema = True
+
         self._policy_executor: LLMPolicyExecutor[CtxT] = LLMPolicyExecutor[CtxT](
             agent_name=self.name,
             llm=llm,
             tools=tools,
+            response_schema=response_schema,
+            response_schema_by_xml_tag=response_schema_by_xml_tag,
             max_turns=max_turns,
             react_mode=react_mode,
             final_answer_type=final_answer_type,
@@ -160,9 +165,10 @@ class LLMAgent(
     def _prepare_memory(
         self,
         memory: LLMAgentMemory,
+        *,
         in_args: InT | None = None,
         sys_prompt: LLMPrompt | None = None,
-        ctx: RunContext[Any] | None = None,
+        ctx: RunContext[Any],
     ) -> None:
         if self.memory_preparator:
             return self.memory_preparator(
@@ -172,9 +178,10 @@ class LLMAgent(
     def _memorize_inputs(
         self,
         memory: LLMAgentMemory,
+        *,
         chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
         in_args: InT | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> tuple[SystemMessage | None, UserMessage | None]:
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(ctx=ctx)
 
@@ -201,7 +208,7 @@ class LLMAgent(
         conversation: Messages,
         *,
         in_args: InT | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> OutT:
         return validate_obj_from_json_or_py_string(
             str(conversation[-1].content or ""),
@@ -215,7 +222,7 @@ class LLMAgent(
         conversation: Messages,
         *,
         in_args: InT | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> OutT:
         if self.output_parser:
             return self.output_parser(
@@ -233,7 +240,7 @@ class LLMAgent(
         in_args: InT | None = None,
         memory: LLMAgentMemory,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> OutT:
         system_message, input_message = self._memorize_inputs(
             memory=memory,
@@ -259,7 +266,7 @@ class LLMAgent(
         in_args: InT | None = None,
         memory: LLMAgentMemory,
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         system_message, input_message = self._memorize_inputs(
             memory=memory,
@@ -292,7 +299,7 @@ class LLMAgent(
         self,
         messages: Sequence[Message],
         call_id: str,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
     ) -> None:
         if ctx and ctx.printer:
             ctx.printer.print_messages(messages, agent_name=self.name, call_id=call_id)
@@ -321,24 +328,18 @@ class LLMAgent(
         if cur_cls.memory_manager is not base_cls.memory_manager:
             self._policy_executor.memory_manager = self.memory_manager
 
-    def system_prompt_builder(self, ctx: RunContext[CtxT] | None = None) -> str | None:
+    def system_prompt_builder(self, ctx: RunContext[CtxT]) -> str | None:
         if self._prompt_builder.system_prompt_builder is not None:
             return self._prompt_builder.system_prompt_builder(ctx=ctx)
         raise NotImplementedError("System prompt builder is not implemented.")
 
-    def input_content_builder(
-        self, in_args: InT | None = None, *, ctx: RunContext[CtxT] | None = None
-    ) -> Content:
+    def input_content_builder(self, in_args: InT, ctx: RunContext[CtxT]) -> Content:
         if self._prompt_builder.input_content_builder is not None:
             return self._prompt_builder.input_content_builder(in_args=in_args, ctx=ctx)
         raise NotImplementedError("Input content builder is not implemented.")
 
     def tool_call_loop_terminator(
-        self,
-        conversation: Messages,
-        *,
-        ctx: RunContext[CtxT] | None = None,
-        **kwargs: Any,
+        self, conversation: Messages, *, ctx: RunContext[CtxT], **kwargs: Any
     ) -> bool:
         if self._policy_executor.tool_call_loop_terminator is not None:
             return self._policy_executor.tool_call_loop_terminator(
@@ -347,11 +348,7 @@ class LLMAgent(
         raise NotImplementedError("Tool call loop terminator is not implemented.")
 
     def memory_manager(
-        self,
-        memory: LLMAgentMemory,
-        *,
-        ctx: RunContext[CtxT] | None = None,
-        **kwargs: Any,
+        self, memory: LLMAgentMemory, *, ctx: RunContext[CtxT], **kwargs: Any
     ) -> None:
         if self._policy_executor.memory_manager is not None:
             return self._policy_executor.memory_manager(
@@ -391,12 +388,11 @@ class LLMAgent(
         self, func: OutputParser[InT, OutT, CtxT]
     ) -> OutputParser[InT, OutT, CtxT]:
         if self._used_default_llm_response_schema:
-            self._policy_executor.llm.response_schema = None
+            self._policy_executor.response_schema = None
         self.output_parser = func
 
         return func
 
     def add_memory_preparator(self, func: MemoryPreparator) -> MemoryPreparator:
         self.memory_preparator = func
-
         return func

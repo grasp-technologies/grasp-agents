@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import litellm
@@ -21,7 +22,7 @@ from litellm.utils import (
 # from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
-from ..cloud_llm import APIProvider, CloudLLM, LLMRateLimiter
+from ..cloud_llm import APIProvider, CloudLLM
 from ..openai.openai_llm import OpenAILLMSettings
 from ..typing.tool import BaseTool
 from . import (
@@ -40,116 +41,101 @@ class LiteLLMSettings(OpenAILLMSettings, total=False):
     thinking: AnthropicThinkingParam | None
 
 
+@dataclass(frozen=True)
 class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
-    def __init__(
-        self,
-        # Base LLM args
-        model_name: str,
-        model_id: str | None = None,
-        llm_settings: LiteLLMSettings | None = None,
-        tools: list[BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
-        apply_response_schema_via_provider: bool = False,
-        # LLM provider
-        api_provider: APIProvider | None = None,
-        # deployment_id: str | None = None,
-        # api_version: str | None = None,
-        # Connection settings
-        timeout: float | None = None,
-        max_client_retries: int = 2,
-        # Rate limiting
-        rate_limiter: LLMRateLimiter | None = None,
-        # Drop unsupported LLM settings
-        drop_params: bool = True,
-        additional_drop_params: list[str] | None = None,
-        allowed_openai_params: list[str] | None = None,
-        # Mock LLM response for testing
-        mock_response: str | None = None,
-        # LLM response retries: try to regenerate to pass validation
-        max_response_retries: int = 1,
-    ) -> None:
-        self._lite_llm_completion_params: dict[str, Any] = {
-            "max_retries": max_client_retries,
-            "timeout": timeout,
-            "drop_params": drop_params,
-            "additional_drop_params": additional_drop_params,
-            "allowed_openai_params": allowed_openai_params,
-            "mock_response": mock_response,
-            # "deployment_id": deployment_id,
-            # "api_version": api_version,
-        }
+    converters: LiteLLMConverters = field(default_factory=LiteLLMConverters)
 
-        if model_name in litellm.get_valid_models():  # type: ignore[no-untyped-call]
-            _, provider_name, _, _ = litellm.get_llm_provider(model_name)  # type: ignore[no-untyped-call]
-            api_provider = APIProvider(name=provider_name)
-        elif api_provider is not None:
-            self._lite_llm_completion_params["api_key"] = api_provider.get("api_key")
-            self._lite_llm_completion_params["api_base"] = api_provider.get("api_base")
-        elif api_provider is None:
+    timeout: float | None = None
+    # Drop unsupported LLM settings
+    drop_params: bool = True
+    additional_drop_params: list[str] | None = None
+    allowed_openai_params: list[str] | None = None
+    # Mock LLM response for testing
+    mock_response: str | None = None
+
+    _lite_llm_completion_params: dict[str, Any] = field(
+        default_factory=dict[str, Any], init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        self._lite_llm_completion_params.update(
+            {
+                "max_retries": self.max_client_retries,
+                "timeout": self.timeout,
+                "drop_params": self.drop_params,
+                "additional_drop_params": self.additional_drop_params,
+                "allowed_openai_params": self.allowed_openai_params,
+                "mock_response": self.mock_response,
+                # "deployment_id": deployment_id,
+                # "api_version": api_version,
+            }
+        )
+
+        _api_provider = self.api_provider
+
+        if self.model_name in litellm.get_valid_models():  # type: ignore[no-untyped-call]
+            _, provider_name, _, _ = litellm.get_llm_provider(self.model_name)  # type: ignore[no-untyped-call]
+            _api_provider = APIProvider(name=provider_name)
+        elif self.api_provider is not None:
+            self._lite_llm_completion_params["api_key"] = self.api_provider.get(
+                "api_key"
+            )
+            self._lite_llm_completion_params["api_base"] = self.api_provider.get(
+                "api_base"
+            )
+        elif self.api_provider is None:
             raise ValueError(
-                f"Model '{model_name}' is not supported by LiteLLM and no API provider "
+                f"Model '{self.model_name}' is not supported by LiteLLM and no API provider "
                 "was specified. Please provide a valid API provider or use a different "
                 "model."
             )
 
-        if llm_settings is not None:
-            stream_options = llm_settings.get("stream_options") or {}
+        if self.llm_settings is not None:
+            stream_options = self.llm_settings.get("stream_options") or {}
             stream_options["include_usage"] = True
-            _llm_settings = deepcopy(llm_settings)
+            _llm_settings = deepcopy(self.llm_settings)
             _llm_settings["stream_options"] = stream_options
         else:
             _llm_settings = LiteLLMSettings(stream_options={"include_usage": True})
 
-        super().__init__(
-            model_name=model_name,
-            model_id=model_id,
-            llm_settings=_llm_settings,
-            converters=LiteLLMConverters(),
-            tools=tools,
-            response_schema=response_schema,
-            response_schema_by_xml_tag=response_schema_by_xml_tag,
-            apply_response_schema_via_provider=apply_response_schema_via_provider,
-            api_provider=api_provider,
-            rate_limiter=rate_limiter,
-            max_client_retries=max_client_retries,
-            max_response_retries=max_response_retries,
-        )
+        if (
+            self.apply_response_schema_via_provider
+            and not self.supports_response_schema
+        ):
+            raise ValueError(
+                f"Model '{self.model_name}' does not support response schema "
+                "natively. Please set `apply_response_schema_via_provider=False`"
+            )
 
-        if self._apply_response_schema_via_provider:
-            if self._tools:
-                for tool in self._tools.values():
-                    tool.strict = True
-            if not self.supports_response_schema:
-                raise ValueError(
-                    f"Model '{self._model_name}' does not support response schema "
-                    "natively. Please set `apply_response_schema_via_provider=False`"
-                )
+        object.__setattr__(self, "api_provider", _api_provider)
+        object.__setattr__(self, "llm_settings", _llm_settings)
 
     def get_supported_openai_params(self) -> list[Any] | None:
         return get_supported_openai_params(  # type: ignore[no-untyped-call]
-            model=self._model_name, request_type="chat_completion"
+            model=self.model_name, request_type="chat_completion"
         )
 
     @property
     def supports_reasoning(self) -> bool:
-        return supports_reasoning(model=self._model_name)
+        return supports_reasoning(model=self.model_name)
 
     @property
     def supports_parallel_function_calling(self) -> bool:
-        return supports_parallel_function_calling(model=self._model_name)
+        return supports_parallel_function_calling(model=self.model_name)
 
     @property
     def supports_prompt_caching(self) -> bool:
-        return supports_prompt_caching(model=self._model_name)
+        return supports_prompt_caching(model=self.model_name)
 
     @property
     def supports_response_schema(self) -> bool:
-        return supports_response_schema(model=self._model_name)
+        return supports_response_schema(model=self.model_name)
 
     @property
     def supports_tool_choice(self) -> bool:
-        return supports_tool_choice(model=self._model_name)
+        return supports_tool_choice(model=self.model_name)
 
     # # client
     # model_list: Optional[list] = (None,)  # pass in a list of api_base,keys, etc.
@@ -164,7 +150,7 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
         completion = await litellm.acompletion(  # type: ignore[no-untyped-call]
-            model=self._model_name,
+            model=self.model_name,
             messages=api_messages,
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
@@ -191,7 +177,7 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
         **api_llm_settings: Any,
     ) -> AsyncIterator[LiteLLMCompletionChunk]:
         stream = await litellm.acompletion(  # type: ignore[no-untyped-call]
-            model=self._model_name,
+            model=self.model_name,
             messages=api_messages,
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
@@ -217,7 +203,10 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
             yield completion_chunk
 
     def combine_completion_chunks(
-        self, completion_chunks: list[LiteLLMCompletionChunk]
+        self,
+        completion_chunks: list[LiteLLMCompletionChunk],
+        response_schema: Any | None = None,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
     ) -> LiteLLMCompletion:
         combined_chunk = cast(
             "LiteLLMCompletion",

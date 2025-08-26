@@ -21,7 +21,7 @@ class WorkflowProcessor(
         subprocs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
         start_proc: BaseProcessor[InT, Any, Any, CtxT],
         end_proc: BaseProcessor[Any, OutT, Any, CtxT],
-        recipients: list[ProcName] | None = None,
+        recipients: Sequence[ProcName] | None = None,
         max_retries: int = 0,
     ) -> None:
         super().__init__(name=name, recipients=recipients, max_retries=max_retries)
@@ -57,11 +57,11 @@ class WorkflowProcessor(
         return func
 
     @property
-    def recipients(self) -> list[ProcName] | None:
+    def recipients(self) -> Sequence[ProcName] | None:
         return self._end_proc.recipients
 
     @recipients.setter
-    def recipients(self, value: list[ProcName] | None) -> None:
+    def recipients(self, value: Sequence[ProcName] | None) -> None:
         if hasattr(self, "_end_proc"):
             self._end_proc.recipients = value
 
@@ -96,7 +96,7 @@ class WorkflowProcessor(
         pass
 
     @abstractmethod
-    async def run_stream(  # type: ignore[override]
+    async def run_stream(
         self,
         chat_inputs: Any | None = None,
         *,

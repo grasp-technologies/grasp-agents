@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from functools import wraps
 from typing import (
     Any,
@@ -37,7 +37,6 @@ from ..typing.tool import BaseTool
 
 logger = logging.getLogger(__name__)
 
-_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
 
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Packet[Any]]])
 F_stream = TypeVar("F_stream", bound=Callable[..., AsyncIterator[Event[Any]]])
@@ -102,10 +101,13 @@ def with_retry_stream(func: F_stream) -> F_stream:
     return cast("F_stream", wrapper)
 
 
+_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
+
+
 class RecipientSelector(Protocol[_OutT_contra, CtxT]):
     def __call__(
-        self, output: _OutT_contra, ctx: RunContext[CtxT] | None
-    ) -> list[ProcName] | None: ...
+        self, output: _OutT_contra, ctx: RunContext[CtxT]
+    ) -> Sequence[ProcName] | None: ...
 
 
 class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]):
@@ -118,7 +120,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
         self,
         name: ProcName,
         max_retries: int = 0,
-        recipients: list[ProcName] | None = None,
+        recipients: Sequence[ProcName] | None = None,
         **kwargs: Any,
     ) -> None:
         self._in_type: type[InT]
@@ -239,7 +241,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
             ) from err
 
     def _validate_recipients(
-        self, recipients: list[ProcName] | None, call_id: str
+        self, recipients: Sequence[ProcName] | None, call_id: str
     ) -> None:
         for r in recipients or []:
             if r not in (self.recipients or []):
@@ -252,8 +254,8 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
 
     @final
     def _select_recipients(
-        self, output: OutT, ctx: RunContext[CtxT] | None = None
-    ) -> list[ProcName] | None:
+        self, output: OutT, ctx: RunContext[CtxT]
+    ) -> Sequence[ProcName] | None:
         if self.recipient_selector:
             return self.recipient_selector(output=output, ctx=ctx)
 
@@ -310,9 +312,15 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
             name: str = tool_name
             description: str = tool_description
 
-            async def run(self, inp: InT, ctx: RunContext[CtxT] | None = None) -> OutT:
+            async def run(
+                self,
+                inp: InT,
+                *,
+                call_id: str | None = None,
+                ctx: RunContext[CtxT] | None = None,
+            ) -> OutT:
                 result = await processor_instance.run(
-                    in_args=inp, forgetful=True, ctx=ctx
+                    in_args=inp, forgetful=True, call_id=call_id, ctx=ctx
                 )
 
                 return result.payloads[0]
