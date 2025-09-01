@@ -149,6 +149,9 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
         n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
+        if api_llm_settings and api_llm_settings.get("stream_options"):
+            api_llm_settings.pop("stream_options")
+
         completion = await litellm.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
             messages=api_messages,

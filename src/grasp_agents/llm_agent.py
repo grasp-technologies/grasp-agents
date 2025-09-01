@@ -310,12 +310,9 @@ class LLMAgent(
         yield ProcPayloadOutputEvent(data=output, proc_name=self.name, call_id=call_id)
 
     def _print_messages(
-        self,
-        messages: Sequence[Message],
-        ctx: RunContext[CtxT],
-        call_id: str,
+        self, messages: Sequence[Message], ctx: RunContext[CtxT], call_id: str
     ) -> None:
-        if ctx and ctx.printer:
+        if ctx.printer:
             ctx.printer.print_messages(messages, agent_name=self.name, call_id=call_id)
 
     # -- Override these methods in subclasses if needed --

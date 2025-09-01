@@ -69,6 +69,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         0  # LLM response retries: try to regenerate to pass validation
     )
     apply_response_schema_via_provider: bool = False
+    apply_tool_call_schema_via_provider: bool = False
     async_http_client: httpx.AsyncClient | None = None
     async_http_client_params: dict[str, Any] | AsyncHTTPClientParams | None = None
 
@@ -78,6 +79,9 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 f"[{self.__class__.__name__}] Set rate limit to "
                 f"{self.rate_limiter.rpm} RPM"
             )
+
+        if self.apply_response_schema_via_provider:
+            object.__setattr__(self, "apply_tool_call_schema_via_provider", True)
 
         if self.async_http_client is None and self.async_http_client_params is not None:
             object.__setattr__(
@@ -99,7 +103,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
         api_tools = None
         api_tool_choice = None
         if tools:
-            strict = True if self.apply_response_schema_via_provider else None
+            strict = True if self.apply_tool_call_schema_via_provider else None
             api_tools = [
                 self.converters.to_tool(t, strict=strict) for t in tools.values()
             ]
@@ -174,8 +178,8 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 response_schema=response_schema,
                 response_schema_by_xml_tag=response_schema_by_xml_tag,
             )
-            if tools is not None:
-                self._validate_tool_calls(completion, tools=tools)
+        if not self.apply_tool_call_schema_via_provider and tools is not None:
+            self._validate_tool_calls(completion, tools=tools)
 
         return completion
 
@@ -207,17 +211,16 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
 
                 if n_attempt > self.max_response_retries:
                     if n_attempt == 1:
-                        logger.warning(f"\nCloudLLM completion request failed:\n{err}")
+                        logger.warning(f"\nCloudLLM completion failed:\n{err}")
                     if n_attempt > 1:
                         logger.warning(
-                            f"\nCloudLLM completion request failed after retrying:\n{err}"
+                            f"\nCloudLLM completion failed after retrying:\n{err}"
                         )
                     raise err
                     # return make_refusal_completion(self._model_name, err)
 
                 logger.warning(
-                    f"\nCloudLLM completion request failed (retry attempt {n_attempt}):"
-                    f"\n{err}"
+                    f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"
                 )
 
         return make_refusal_completion(
@@ -281,8 +284,8 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                     response_schema=response_schema,
                     response_schema_by_xml_tag=response_schema_by_xml_tag,
                 )
-                if tools is not None:
-                    self._validate_tool_calls(completion, tools=tools)
+            if not self.apply_tool_call_schema_via_provider and tools is not None:
+                self._validate_tool_calls(completion, tools=tools)
 
         return iterator()
 
@@ -326,11 +329,10 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 n_attempt += 1
                 if n_attempt > self.max_response_retries:
                     if n_attempt == 1:
-                        logger.warning(f"\nCloudLLM completion request failed:\n{err}")
+                        logger.warning(f"\nCloudLLM completion failed:\n{err}")
                     if n_attempt > 1:
                         logger.warning(
-                            "\nCloudLLM completion request failed after "
-                            f"retrying:\n{err}"
+                            f"\nCloudLLM completion failed after retrying:\n{err}"
                         )
                         refusal_completion = make_refusal_completion(
                             self.model_name, err
@@ -344,6 +346,5 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                     # return
 
                 logger.warning(
-                    "\nCloudLLM completion request failed "
-                    f"(retry attempt {n_attempt}):\n{err}"
+                    f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"
                 )

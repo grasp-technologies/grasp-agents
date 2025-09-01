@@ -72,50 +72,61 @@ ColoringMode: TypeAlias = Literal["agent", "role"]
 CompletionBlockType: TypeAlias = Literal["response", "thinking", "tool_call"]
 
 
-class Printer:
-    def __init__(
-        self, color_by: ColoringMode = "role", msg_trunc_len: int = 20000
-    ) -> None:
-        self.color_by = color_by
-        self.msg_trunc_len = msg_trunc_len
-        self._current_message: str = ""
+def stream_colored_text(new_colored_text: str) -> None:
+    sys.stdout.write(new_colored_text)
+    sys.stdout.flush()
 
-    @staticmethod
-    def get_role_color(role: Role) -> Color:
-        return ROLE_TO_COLOR[role]
 
-    @staticmethod
-    def get_agent_color(agent_name: str) -> Color:
+def get_color(
+    agent_name: str = "", role: Role = Role.ASSISTANT, color_by: ColoringMode = "role"
+) -> Color:
+    if color_by == "agent":
         idx = int(
             hashlib.md5(agent_name.encode()).hexdigest(),  # noqa :S324
             16,
         ) % len(AVAILABLE_COLORS)
 
         return AVAILABLE_COLORS[idx]
+    return ROLE_TO_COLOR[role]
 
-    @staticmethod
-    def content_to_str(content: Content | str | None, role: Role) -> str:
-        if role == Role.USER and isinstance(content, Content):
-            content_str_parts: list[str] = []
-            for content_part in content.parts:
-                if isinstance(content_part, ContentPartText):
-                    content_str_parts.append(content_part.data.strip(" \n"))
-                elif content_part.data.type == "url":
-                    content_str_parts.append(str(content_part.data.url))
-                elif content_part.data.type == "base64":
-                    content_str_parts.append("<ENCODED_IMAGE>")
-            return "\n".join(content_str_parts)
 
-        assert isinstance(content, str | None)
+def content_to_str(content: Content | str | None, role: Role) -> str:
+    if role == Role.USER and isinstance(content, Content):
+        content_str_parts: list[str] = []
+        for content_part in content.parts:
+            if isinstance(content_part, ContentPartText):
+                content_str_parts.append(content_part.data.strip(" \n"))
+            elif content_part.data.type == "url":
+                content_str_parts.append(str(content_part.data.url))
+            elif content_part.data.type == "base64":
+                content_str_parts.append("<ENCODED_IMAGE>")
+        return "\n".join(content_str_parts)
 
-        return (content or "").strip(" \n")
+    assert isinstance(content, str | None)
 
-    @staticmethod
-    def truncate_content_str(content_str: str, trunc_len: int = 2000) -> str:
-        if len(content_str) > trunc_len:
-            return content_str[:trunc_len] + "[...]"
+    return (content or "").strip(" \n")
 
-        return content_str
+
+def truncate_content_str(content_str: str, trunc_len: int = 2000) -> str:
+    if len(content_str) > trunc_len:
+        return content_str[:trunc_len] + "[...]"
+
+    return content_str
+
+
+class Printer:
+    def __init__(
+        self,
+        color_by: ColoringMode = "role",
+        msg_trunc_len: int = 20000,
+        output_to: Literal["print", "log"] = "print",
+        logging_level: Literal["info", "debug", "warning", "error"] = "info",
+    ) -> None:
+        self.color_by: ColoringMode = color_by
+        self.msg_trunc_len = msg_trunc_len
+        self._current_message: str = ""
+        self._logging_level = logging_level
+        self._output_to = output_to
 
     def print_message(
         self,
@@ -128,11 +139,8 @@ class Printer:
             raise ValueError(
                 "Usage information can only be printed for AssistantMessage"
             )
-
-        color = (
-            self.get_agent_color(agent_name)
-            if self.color_by == "agent"
-            else self.get_role_color(message.role)
+        color = get_color(
+            agent_name=agent_name, role=message.role, color_by=self.color_by
         )
         log_kwargs = {"extra": {"color": color}}
 
@@ -144,13 +152,13 @@ class Printer:
             out += f"<thinking>\n{thinking}\n</thinking>\n"
 
         # Content
-        content = self.content_to_str(message.content or "", message.role)
+        content = content_to_str(message.content or "", message.role)
         if content:
             try:
                 content = json.dumps(json.loads(content), indent=2)
             except Exception:
                 pass
-            content = self.truncate_content_str(content, trunc_len=self.msg_trunc_len)
+            content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
             if isinstance(message, SystemMessage):
                 out += f"<system>\n{content}\n</system>\n"
             elif isinstance(message, UserMessage):
@@ -176,7 +184,17 @@ class Printer:
 
             out += f"\n------------------------------------\n{usage_str}\n"
 
-        logger.debug(out, **log_kwargs)  # type: ignore
+        if self._output_to == "log":
+            if self._logging_level == "debug":
+                logger.debug(out, **log_kwargs)  # type: ignore
+            elif self._logging_level == "info":
+                logger.info(out, **log_kwargs)  # type: ignore
+            elif self._logging_level == "warning":
+                logger.warning(out, **log_kwargs)  # type: ignore
+            else:
+                logger.error(out, **log_kwargs)  # type: ignore
+        else:
+            stream_colored_text(colored(out + "\n", color))
 
     def print_messages(
         self,
@@ -193,28 +211,101 @@ class Printer:
             )
 
 
-def stream_text(new_text: str, color: Color) -> None:
-    sys.stdout.write(colored(new_text, color))
-    sys.stdout.flush()
-
-
 async def print_event_stream(
     event_generator: AsyncIterator[Event[Any]],
     color_by: ColoringMode = "role",
     trunc_len: int = 10000,
 ) -> AsyncIterator[Event[Any]]:
-    color = Printer.get_role_color(Role.ASSISTANT)
+    def _make_chunk_text(event: CompletionChunkEvent[CompletionChunk]) -> str:
+        color = get_color(
+            agent_name=event.proc_name or "", role=Role.ASSISTANT, color_by=color_by
+        )
+        text = ""
 
-    def _get_color(event: Event[Any], role: Role = Role.ASSISTANT) -> Color:
-        if color_by == "agent":
-            return Printer.get_agent_color(event.proc_name or "")
-        return Printer.get_role_color(role)
+        if isinstance(event, CompletionStartEvent):
+            text += f"\n<{event.proc_name}> [{event.call_id}]\n"
+        elif isinstance(event, ThinkingStartEvent):
+            text += "<thinking>\n"
+        elif isinstance(event, ResponseStartEvent):
+            text += "<response>\n"
+        elif isinstance(event, ToolCallStartEvent):
+            tc = event.data.tool_call
+            text += f"<tool call> {tc.tool_name} [{tc.id}]\n"
+        elif isinstance(event, AnnotationsStartEvent):
+            text += "<annotations>\n"
 
-    def _print_packet(
+        # if isinstance(event, CompletionEndEvent):
+        #     text += f"\n</{event.proc_name}>\n"
+        if isinstance(event, ThinkingEndEvent):
+            text += "\n</thinking>\n"
+        elif isinstance(event, ResponseEndEvent):
+            text += "\n</response>\n"
+        elif isinstance(event, ToolCallEndEvent):
+            text += "\n</tool call>\n"
+        elif isinstance(event, AnnotationsEndEvent):
+            text += "\n</annotations>\n"
+
+        if isinstance(event, ThinkingChunkEvent):
+            thinking = event.data.thinking
+            if isinstance(thinking, str):
+                text += thinking
+            else:
+                text = "\n".join(
+                    [block.get("thinking", "[redacted]") for block in thinking]
+                )
+
+        if isinstance(event, ResponseChunkEvent):
+            text += event.data.response
+
+        if isinstance(event, ToolCallChunkEvent):
+            text += event.data.tool_call.tool_arguments or ""
+
+        if isinstance(event, AnnotationsChunkEvent):
+            text += "\n".join(
+                [
+                    json.dumps(annotation, indent=2)
+                    for annotation in event.data.annotations
+                ]
+            )
+
+        return colored(text, color)
+
+    def _make_message_text(
+        event: MessageEvent[SystemMessage | UserMessage | ToolMessage],
+    ) -> str:
+        message = event.data
+        role = message.role
+        content = content_to_str(message.content, role=role)
+
+        color = get_color(
+            agent_name=event.proc_name or "", role=role, color_by=color_by
+        )
+        text = f"\n<{event.proc_name}> [{event.call_id}]\n"
+
+        if isinstance(event, (SystemMessageEvent, UserMessageEvent)):
+            content = truncate_content_str(content, trunc_len=trunc_len)
+
+        if isinstance(event, SystemMessageEvent):
+            text += f"<system>\n{content}\n</system>\n"
+
+        elif isinstance(event, UserMessageEvent):
+            text += f"<input>\n{content}\n</input>\n"
+
+        elif isinstance(event, ToolMessageEvent):
+            message = event.data
+            try:
+                content = json.dumps(json.loads(content), indent=2)
+            except Exception:
+                pass
+            text += (
+                f"<tool result> [{message.tool_call_id}]\n{content}\n</tool result>\n"
+            )
+
+        return colored(text, color)
+
+    def _make_packet_text(
         event: ProcPacketOutputEvent | WorkflowResultEvent | RunResultEvent,
-    ) -> None:
-        color = _get_color(event, Role.ASSISTANT)
-
+    ) -> str:
         if isinstance(event, WorkflowResultEvent):
             src = "workflow"
         elif isinstance(event, RunResultEvent):
@@ -222,6 +313,9 @@ async def print_event_stream(
         else:
             src = "processor"
 
+        color = get_color(
+            agent_name=event.proc_name or "", role=Role.ASSISTANT, color_by=color_by
+        )
         text = f"\n<{event.proc_name}> [{event.call_id}]\n"
 
         if event.data.payloads:
@@ -237,7 +331,9 @@ async def print_event_stream(
                 text += f"{p_str}\n"
             text += f"</{src} output>\n"
 
-        stream_text(text, color)
+        return colored(text, color)
+
+    # ------ Wrap event generator -------
 
     async for event in event_generator:
         yield event
@@ -245,91 +341,12 @@ async def print_event_stream(
         if isinstance(event, CompletionChunkEvent) and isinstance(
             event.data, CompletionChunk
         ):
-            color = _get_color(event, Role.ASSISTANT)
-
-            text = ""
-
-            if isinstance(event, CompletionStartEvent):
-                text += f"\n<{event.proc_name}> [{event.call_id}]\n"
-            elif isinstance(event, ThinkingStartEvent):
-                text += "<thinking>\n"
-            elif isinstance(event, ResponseStartEvent):
-                text += "<response>\n"
-            elif isinstance(event, ToolCallStartEvent):
-                tc = event.data.tool_call
-                text += f"<tool call> {tc.tool_name} [{tc.id}]\n"
-            elif isinstance(event, AnnotationsStartEvent):
-                text += "<annotations>\n"
-
-            # if isinstance(event, CompletionEndEvent):
-            #     text += f"\n</{event.proc_name}>\n"
-            if isinstance(event, ThinkingEndEvent):
-                text += "\n</thinking>\n"
-            elif isinstance(event, ResponseEndEvent):
-                text += "\n</response>\n"
-            elif isinstance(event, ToolCallEndEvent):
-                text += "\n</tool call>\n"
-            elif isinstance(event, AnnotationsEndEvent):
-                text += "\n</annotations>\n"
-
-            if isinstance(event, ThinkingChunkEvent):
-                thinking = event.data.thinking
-                if isinstance(thinking, str):
-                    text += thinking
-                else:
-                    text = "\n".join(
-                        [block.get("thinking", "[redacted]") for block in thinking]
-                    )
-
-            if isinstance(event, ResponseChunkEvent):
-                text += event.data.response
-
-            if isinstance(event, ToolCallChunkEvent):
-                text += event.data.tool_call.tool_arguments or ""
-
-            if isinstance(event, AnnotationsChunkEvent):
-                text += "\n".join(
-                    [
-                        json.dumps(annotation, indent=2)
-                        for annotation in event.data.annotations
-                    ]
-                )
-
-            stream_text(text, color)
+            stream_colored_text(_make_chunk_text(event))
 
         if isinstance(event, MessageEvent) and not isinstance(event, GenMessageEvent):
-            assert isinstance(event.data, (SystemMessage | UserMessage | ToolMessage))
-
-            message = event.data
-            role = message.role
-            content = Printer.content_to_str(message.content, role=role)
-            color = _get_color(event, role)
-
-            text = f"\n<{event.proc_name}> [{event.call_id}]\n"
-
-            if isinstance(event, (SystemMessageEvent, UserMessageEvent)):
-                content = Printer.truncate_content_str(content, trunc_len=trunc_len)
-
-            if isinstance(event, SystemMessageEvent):
-                text += f"<system>\n{content}\n</system>\n"
-
-            elif isinstance(event, UserMessageEvent):
-                text += f"<input>\n{content}\n</input>\n"
-
-            elif isinstance(event, ToolMessageEvent):
-                message = event.data
-                try:
-                    content = json.dumps(json.loads(content), indent=2)
-                except Exception:
-                    pass
-                text += (
-                    f"<tool result> [{message.tool_call_id}]\n"
-                    f"{content}\n</tool result>\n"
-                )
-
-            stream_text(text, color)
+            stream_colored_text(_make_message_text(event))
 
         if isinstance(
             event, (ProcPacketOutputEvent, WorkflowResultEvent, RunResultEvent)
         ):
-            _print_packet(event)
+            stream_colored_text(_make_packet_text(event))

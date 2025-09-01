@@ -1,22 +1,13 @@
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from grasp_agents import BaseTool, LLMAgent, RunContext
-from grasp_agents.grasp_logging import setup_logging
-from grasp_agents.litellm import LiteLLM, LiteLLMSettings
+from grasp_agents import BaseTool, LLMAgent, Printer, RunContext
+from grasp_agents.litellm import LiteLLM
 
 load_dotenv()
-
-
-# Configure the logger to output to the console and/or a file
-setup_logging(
-    logs_file_path="grasp_agents_demo.log",
-    logs_config_path=Path().cwd() / "configs/logging/default.yaml",
-)
 
 sys_prompt_react = """
 Your task is to suggest an exciting stats problem to the student. 
@@ -52,7 +43,7 @@ Returns:
 """
 
 
-class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, Any]):
+class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, None]):
     name: str = "ask_student"
     description: str = ask_student_tool_description
 
@@ -66,7 +57,7 @@ class Problem(BaseModel):
 
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
-    llm=LiteLLM(model_name="gpt-4.1", llm_settings=LiteLLMSettings(temperature=0.5)),
+    llm=LiteLLM(model_name="gpt-4.1"),
     tools=[AskStudentTool()],
     react_mode=True,
     final_answer_as_tool_call=True,
@@ -75,7 +66,7 @@ teacher = LLMAgent[None, Problem, None](
 
 
 async def main():
-    ctx = RunContext[None](log_messages=True)
+    ctx = RunContext[None](printer=Printer())
     out = await teacher.run("start", ctx=ctx)
     print(out.payloads[0])
     print(ctx.usage_tracker.total_usage)
