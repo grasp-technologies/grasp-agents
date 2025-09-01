@@ -161,14 +161,11 @@ class LLMPolicyExecutor(Generic[CtxT]):
             response_schema_by_xml_tag=self.response_schema_by_xml_tag,
             tools=self.tools,
             tool_choice=tool_choice,
-            n_choices=1,
             proc_name=self.agent_name,
             call_id=call_id,
         )
         memory.update(completion.messages)
-        self._process_completion(
-            completion, ctx=ctx, call_id=call_id, print_messages=True
-        )
+        self._process_completion(completion, ctx=ctx, call_id=call_id)
 
         return completion.messages[0]
 
@@ -193,7 +190,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
             response_schema_by_xml_tag=self.response_schema_by_xml_tag,
             tools=self.tools,
             tool_choice=tool_choice,
-            n_choices=1,
             proc_name=self.agent_name,
             call_id=call_id,
         )
@@ -212,9 +208,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         memory.update(completion.messages)
 
-        self._process_completion(
-            completion, print_messages=True, ctx=ctx, call_id=call_id
-        )
+        self._process_completion(completion, ctx=ctx, call_id=call_id)
 
     async def call_tools(
         self,
@@ -237,7 +231,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         memory.update(tool_messages)
 
-        if ctx and ctx.printer:
+        if ctx.printer:
             ctx.printer.print_messages(
                 tool_messages, agent_name=self.agent_name, call_id=call_id
             )
@@ -283,7 +277,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             "Exceeded the maximum number of turns: provide a final answer now!"
         )
         memory.update([user_message])
-        if ctx and ctx.printer:
+        if ctx.printer:
             ctx.printer.print_messages(
                 [user_message], agent_name=self.agent_name, call_id=call_id
             )
@@ -309,7 +303,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         yield UserMessageEvent(
             proc_name=self.agent_name, call_id=call_id, data=user_message
         )
-        if ctx and ctx.printer:
+        if ctx.printer:
             ctx.printer.print_messages(
                 [user_message], agent_name=self.agent_name, call_id=call_id
             )
@@ -507,12 +501,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         return FinalAnswerTool()
 
     def _process_completion(
-        self,
-        completion: Completion,
-        *,
-        print_messages: bool = False,
-        ctx: RunContext[CtxT],
-        call_id: str,
+        self, completion: Completion, *, ctx: RunContext[CtxT], call_id: str
     ) -> None:
         ctx.completions[self.agent_name].append(completion)
         ctx.usage_tracker.update(
@@ -520,7 +509,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             completions=[completion],
             model_name=self.llm.model_name,
         )
-        if ctx.printer and print_messages:
+        if ctx.printer:
             usages = [None] * (len(completion.messages) - 1) + [completion.usage]
             ctx.printer.print_messages(
                 completion.messages,

@@ -172,6 +172,9 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         response_format = api_response_schema or NOT_GIVEN
         n = n_choices or NOT_GIVEN
 
+        if api_llm_settings and api_llm_settings.get("stream_options"):
+            api_llm_settings.pop("stream_options")
+
         if self.apply_response_schema_via_provider:
             return await self.client.beta.chat.completions.parse(
                 model=self.model_name,

@@ -60,11 +60,13 @@ def with_retry(func: F) -> F:
                         logger.warning(f"{err_message}:\n{err}")
                     else:
                         logger.warning(f"{err_message} after retrying:\n{err}")
-                    raise ProcRunError(proc_name=self.name, call_id=call_id) from err
+                    # raise ProcRunError(proc_name=self.name, call_id=call_id) from err
+                    return None  # type: ignore[return]
 
                 logger.warning(f"{err_message} (retry attempt {n_attempt + 1}):\n{err}")
         # This part should not be reachable due to the raise in the loop
-        raise ProcRunError(proc_name=self.name, call_id=call_id)
+        # raise ProcRunError(proc_name=self.name, call_id=call_id)
+        return None  # type: ignore[return]
 
     return cast("F", wrapper)
 

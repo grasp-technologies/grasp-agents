@@ -159,7 +159,7 @@ class AutoInstanceAttributesMixin:
                 attr_type = resolved_attr_types[attr_name]
                 # attr_type = None if _attr_type is type(None) else _attr_type
             else:
-                attr_type = Any
+                attr_type = object
 
             if attr_name in pyd_private:
                 pyd_private[attr_name] = attr_type
