@@ -74,23 +74,22 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
         )
 
         _api_provider = self.api_provider
-
-        if self.model_name in litellm.get_valid_models():  # type: ignore[no-untyped-call]
+        try:
             _, provider_name, _, _ = litellm.get_llm_provider(self.model_name)  # type: ignore[no-untyped-call]
             _api_provider = APIProvider(name=provider_name)
-        elif self.api_provider is not None:
-            self._lite_llm_completion_params["api_key"] = self.api_provider.get(
-                "api_key"
-            )
-            self._lite_llm_completion_params["api_base"] = self.api_provider.get(
-                "api_base"
-            )
-        elif self.api_provider is None:
-            raise ValueError(
-                f"Model '{self.model_name}' is not supported by LiteLLM and no API provider "
-                "was specified. Please provide a valid API provider or use a different "
-                "model."
-            )
+        except Exception as exc:
+            if self.api_provider is not None:
+                self._lite_llm_completion_params["api_key"] = self.api_provider.get(
+                    "api_key"
+                )
+                self._lite_llm_completion_params["api_base"] = self.api_provider.get(
+                    "api_base"
+                )
+            else:
+                raise ValueError(
+                    f"Failed to retrieve a LiteLLM supported API provider for model "
+                    f"'{self.model_name}' and no custom API provider was specified."
+                ) from exc
 
         if self.llm_settings is not None:
             stream_options = self.llm_settings.get("stream_options") or {}
