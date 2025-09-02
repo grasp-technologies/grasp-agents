@@ -47,6 +47,7 @@ def with_retry(func: F) -> F:
     async def wrapper(
         self: "BaseProcessor[Any, Any, Any, Any]", *args: Any, **kwargs: Any
     ) -> Packet[Any]:
+        none_packet = Packet(payloads=[None], sender=self.name)
         call_id = kwargs.get("call_id", "unknown")
         for n_attempt in range(self.max_retries + 1):
             try:
@@ -61,12 +62,12 @@ def with_retry(func: F) -> F:
                     else:
                         logger.warning(f"{err_message} after retrying:\n{err}")
                     # raise ProcRunError(proc_name=self.name, call_id=call_id) from err
-                    return None  # type: ignore[return]
+                    return none_packet
 
                 logger.warning(f"{err_message} (retry attempt {n_attempt + 1}):\n{err}")
         # This part should not be reachable due to the raise in the loop
         # raise ProcRunError(proc_name=self.name, call_id=call_id)
-        return None  # type: ignore[return]
+        return none_packet
 
     return cast("F", wrapper)
 
