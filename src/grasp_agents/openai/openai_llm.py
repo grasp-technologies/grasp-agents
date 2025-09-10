@@ -150,6 +150,7 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             base_url=_api_provider.get("base_url"),
             api_key=_api_provider.get("api_key"),
             max_retries=self.max_client_retries,
+            timeout=self.client_timeout,
             **_async_openai_client_params,
         )
 

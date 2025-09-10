@@ -45,7 +45,6 @@ class LiteLLMSettings(OpenAILLMSettings, total=False):
 class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
     converters: LiteLLMConverters = field(default_factory=LiteLLMConverters)
 
-    timeout: float | None = None
     # Drop unsupported LLM settings
     drop_params: bool = True
     additional_drop_params: list[str] | None = None
@@ -63,7 +62,7 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
         self._lite_llm_completion_params.update(
             {
                 "max_retries": self.max_client_retries,
-                "timeout": self.timeout,
+                "timeout": self.client_timeout,
                 "drop_params": self.drop_params,
                 "additional_drop_params": self.additional_drop_params,
                 "allowed_openai_params": self.allowed_openai_params,
@@ -195,14 +194,15 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
 
         async for completion_chunk in stream:
             # Fix tool call indices to be unique within each choice
-            for n, choice in enumerate(completion_chunk.choices):
-                for tc in choice.delta.tool_calls or []:
-                    # Tool call ID is not None only when it is a new tool call
-                    if tc.id and tc.index in tc_indices[n]:
-                        tc.index = max(tc_indices[n]) + 1
-                    tc_indices[n].add(tc.index)
+            if completion_chunk is not None:
+                for n, choice in enumerate(completion_chunk.choices):
+                    for tc in choice.delta.tool_calls or []:
+                        # Tool call ID is not None only when it is a new tool call
+                        if tc.id and tc.index in tc_indices[n]:
+                            tc.index = max(tc_indices[n]) + 1
+                        tc_indices[n].add(tc.index)
 
-            yield completion_chunk
+                yield completion_chunk
 
     def combine_completion_chunks(
         self,

@@ -64,6 +64,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
     api_provider: APIProvider | None = None
     llm_settings: SettingsT_co | None = None
     rate_limiter: LLMRateLimiter | None = None
+    client_timeout: float = 60.0
     max_client_retries: int = 2  # HTTP client retries for network errors
     max_response_retries: int = (
         0  # LLM response retries: try to regenerate to pass validation
@@ -71,7 +72,7 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
     apply_response_schema_via_provider: bool = False
     apply_tool_call_schema_via_provider: bool = False
     async_http_client: httpx.AsyncClient | None = None
-    async_http_client_params: dict[str, Any] | AsyncHTTPClientParams | None = None
+    async_http_client_params: AsyncHTTPClientParams | None = None
 
     def __post_init__(self) -> None:
         if self.rate_limiter is not None:
