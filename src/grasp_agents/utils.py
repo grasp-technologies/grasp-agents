@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Coroutine, Mapping
 from datetime import UTC, datetime
 from logging import getLogger
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, get_args, get_origin
+from typing import Annotated, Any, NoReturn, TypeVar, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -71,12 +71,15 @@ def is_str_type(t: Any) -> bool:
     )
 
 
+T = TypeVar("T")
+
+
 def validate_obj_from_json_or_py_string(
     s: str,
-    schema: Any,
+    schema: type[T],
     from_substring: bool = False,
     strip_language_markdown: bool = True,
-) -> Any:
+) -> T:
     try:
         if is_str_type(schema):
             parsed = s
@@ -94,19 +97,36 @@ def validate_obj_from_json_or_py_string(
 
 def validate_tagged_objs_from_json_or_py_string(
     s: str,
-    schema_by_xml_tag: Mapping[str, Any],
+    schema_by_xml_tag: Mapping[str, type[T]],
     from_substring: bool = False,
     strip_language_markdown: bool = True,
-) -> Mapping[str, Any]:
-    validated_obj_per_tag: dict[str, Any] = {}
-    _schema: Any = None
+) -> Mapping[str, T]:
+    validated_obj_per_tag: dict[str, T] = {}
+    _schema: type[T] | None = None
     _tag: str | None = None
 
-    try:
-        for _tag, _schema in schema_by_xml_tag.items():
-            match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
-            if not match:
-                continue
+    def _raise(
+        tag: str,
+        schema: Any,
+        *,
+        not_found: bool = False,
+        base_exc: Exception | None = None,
+    ) -> NoReturn:
+        if not_found:
+            msg = f"Tag <{tag}> not found in string:\n{s}"
+        else:
+            msg = (
+                f"Failed to validate substring within tag <{tag}> against JSON schema:"
+                f"\n{s}\nExpected type: {schema}"
+            )
+        raise JSONSchemaValidationError(s, schema, message=msg) from base_exc
+
+    for _tag, _schema in schema_by_xml_tag.items():
+        match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
+        if match is None:
+            continue
+            # _raise(_tag, _schema, not_found=True, base_exc=None)
+        try:
             tagged_substring = match.group(1).strip()
             validated_obj_per_tag[_tag] = validate_obj_from_json_or_py_string(
                 tagged_substring,  # type: ignore[assignment]
@@ -114,12 +134,8 @@ def validate_tagged_objs_from_json_or_py_string(
                 from_substring=from_substring,
                 strip_language_markdown=strip_language_markdown,
             )
-    except JSONSchemaValidationError as exc:
-        err_message = (
-            f"Failed to validate substring within tag <{_tag}> against JSON schema:"
-            f"\n{s}\nExpected type: {_schema}"
-        )
-        raise JSONSchemaValidationError(s, _schema, message=err_message) from exc
+        except JSONSchemaValidationError as exc:
+            _raise(_tag, _schema, base_exc=exc)
 
     return validated_obj_per_tag
 

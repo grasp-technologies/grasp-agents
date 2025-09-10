@@ -35,6 +35,7 @@
                 "mult",
                 "pbar",
                 "procs",
+                "redef",
                 "subprocs",
                 "templ"
         ],
