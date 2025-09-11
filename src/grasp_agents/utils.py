@@ -113,7 +113,9 @@ def validate_tagged_objs_from_json_or_py_string(
         base_exc: Exception | None = None,
     ) -> NoReturn:
         if not_found:
-            msg = f"Tag <{tag}> not found in string:\n{s}"
+            msg = (
+                f"Failed to find tagged section <{tag}>...</{tag}> in the string:\n{s}"
+            )
         else:
             msg = (
                 f"Failed to validate substring within tag <{tag}> against JSON schema:"
@@ -122,20 +124,20 @@ def validate_tagged_objs_from_json_or_py_string(
         raise JSONSchemaValidationError(s, schema, message=msg) from base_exc
 
     for _tag, _schema in schema_by_xml_tag.items():
-        match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
-        if match is None:
-            continue
-            # _raise(_tag, _schema, not_found=True, base_exc=None)
-        try:
-            tagged_substring = match.group(1).strip()
-            validated_obj_per_tag[_tag] = validate_obj_from_json_or_py_string(
-                tagged_substring,  # type: ignore[assignment]
-                schema=_schema,
-                from_substring=from_substring,
-                strip_language_markdown=strip_language_markdown,
-            )
-        except JSONSchemaValidationError as exc:
-            _raise(_tag, _schema, base_exc=exc)
+        if f"<{_tag}>" in s:
+            match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
+            if match is None:
+                _raise(_tag, _schema, not_found=True, base_exc=None)
+            try:
+                tagged_substring = match.group(1).strip()
+                validated_obj_per_tag[_tag] = validate_obj_from_json_or_py_string(
+                    tagged_substring,  # type: ignore[assignment]
+                    schema=_schema,
+                    from_substring=from_substring,
+                    strip_language_markdown=strip_language_markdown,
+                )
+            except JSONSchemaValidationError as exc:
+                _raise(_tag, _schema, base_exc=exc)
 
     return validated_obj_per_tag
 
