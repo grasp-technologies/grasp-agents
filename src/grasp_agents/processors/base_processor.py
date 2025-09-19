@@ -163,8 +163,8 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
 
     def _generate_call_id(self, call_id: str | None) -> str:
         if call_id is None:
-            return str(uuid4())[:6] + "_" + self.name
-        return call_id
+            call_id = str(uuid4())[:6]
+        return call_id + "_" + self.name
 
     def _validate_inputs(
         self,
