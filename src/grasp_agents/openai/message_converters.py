@@ -67,8 +67,8 @@ def from_api_assistant_message(
         tool_calls = [
             ToolCall(
                 id=tool_call.id,
-                tool_name=tool_call.function.name,
-                tool_arguments=tool_call.function.arguments,
+                tool_name=tool_call.function.name,  # type: ignore
+                tool_arguments=tool_call.function.arguments,  # type: ignore
             )
             for tool_call in api_message.tool_calls
         ]

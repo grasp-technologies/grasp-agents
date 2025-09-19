@@ -18,7 +18,7 @@ class RunContext(BaseModel, Generic[CtxT]):
     completions: dict[ProcName, list[Completion]] = Field(
         default_factory=lambda: defaultdict(list)
     )
-    usage_tracker: UsageTracker = Field(default_factory=UsageTracker)
-    printer: Printer | None = None
+    usage_tracker: UsageTracker = Field(default_factory=UsageTracker, exclude=True)
+    printer: Printer | None = Field(default=None, exclude=True)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)

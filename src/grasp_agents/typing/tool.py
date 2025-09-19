@@ -13,6 +13,8 @@ from typing import (
 
 from pydantic import BaseModel, PrivateAttr, TypeAdapter
 
+from grasp_agents.tracing_decorators import tool
+
 from ..generics_utils import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
@@ -34,6 +36,7 @@ class ToolCall(BaseModel):
     tool_arguments: str
 
 
+@tool(name="tool", method_name="__call__")  # type: ignore
 class BaseTool(
     AutoInstanceAttributesMixin,
     BaseModel,

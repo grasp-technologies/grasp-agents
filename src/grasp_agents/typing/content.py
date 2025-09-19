@@ -106,6 +106,14 @@ class Content(BaseModel):
         return cls(parts=[ContentPartText(data=text)])
 
     @classmethod
+    def from_image(cls, image: ImageData) -> "Content":
+        return cls(parts=[ContentPartImage(data=image)])
+
+    @classmethod
+    def from_images(cls, images: Iterable[ImageData]) -> "Content":
+        return cls(parts=[ContentPartImage(data=image) for image in images])
+
+    @classmethod
     def from_content_parts(cls, content_parts: Iterable[str | ImageData]) -> "Content":
         parts: list[ContentPart] = []
         for part in content_parts:

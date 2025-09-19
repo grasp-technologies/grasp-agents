@@ -3,6 +3,8 @@ from itertools import pairwise
 from logging import getLogger
 from typing import Any, Generic, Protocol, TypeVar, cast, final
 
+from grasp_agents.tracing_decorators import workflow
+
 from ..errors import WorkflowConstructionError
 from ..packet_pool import Packet
 from ..processors.base_processor import BaseProcessor
@@ -87,6 +89,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
         return False
 
+    @workflow(name="workflow_run")  # type: ignore
     @final
     async def run(
         self,
@@ -134,6 +137,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
         raise RuntimeError("Looped workflow did not exit after max iterations.")
 
+    @workflow(name="workflow_run")  # type: ignore
     @final
     async def run_stream(
         self,

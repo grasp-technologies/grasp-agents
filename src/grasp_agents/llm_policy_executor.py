@@ -7,14 +7,14 @@ from typing import Any, Generic, Protocol, final
 
 from pydantic import BaseModel
 
+from grasp_agents.tracing_decorators import task
 from grasp_agents.typing.completion_chunk import CompletionChunk
 
 from .errors import AgentFinalAnswerError
-from .llm import LLM, LLMSettings
+from .llm import LLM
 from .llm_agent_memory import LLMAgentMemory
 from .run_context import CtxT, RunContext
 from .typing.completion import Completion
-from .typing.converters import Converters
 from .typing.events import (
     CompletionChunkEvent,
     CompletionEvent,
@@ -58,7 +58,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self,
         *,
         agent_name: str,
-        llm: LLM[LLMSettings, Converters],
+        llm: LLM,
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
         response_schema: Any | None = None,
         response_schema_by_xml_tag: Mapping[str, Any] | None = None,
@@ -96,7 +96,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         return self._agent_name
 
     @property
-    def llm(self) -> LLM[LLMSettings, Converters]:
+    def llm(self) -> LLM:
         return self._llm
 
     @property
@@ -147,6 +147,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         if self.memory_manager:
             self.memory_manager(memory=memory, ctx=ctx, call_id=call_id, **kwargs)
 
+    @task(name="generate_message")  # type: ignore
     async def generate_message(
         self,
         memory: LLMAgentMemory,
@@ -169,6 +170,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         return completion.messages[0]
 
+    @task(name="generate_message")  # type: ignore
     async def generate_message_stream(
         self,
         memory: LLMAgentMemory,
@@ -210,6 +212,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         self._process_completion(completion, ctx=ctx, call_id=call_id)
 
+    # @task(name="call_tools")  # type: ignore
     async def call_tools(
         self,
         calls: Sequence[ToolCall],
@@ -238,6 +241,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         return tool_messages
 
+    # @task(name="call_tools")  # type: ignore
     async def call_tools_stream(
         self,
         calls: Sequence[ToolCall],
@@ -270,6 +274,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
                 return final_answer_message
 
+    @task(name="enforce_final_answer")  # type: ignore
     async def _generate_final_answer(
         self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
     ) -> AssistantMessage:
@@ -293,6 +298,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         return final_answer_message
 
+    @task(name="generate_final_answer")  # type: ignore
     async def _generate_final_answer_stream(
         self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
     ) -> AsyncIterator[Event[Any]]:

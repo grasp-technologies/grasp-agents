@@ -3,16 +3,16 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Generic, Required, cast
+from typing import Any, Required, cast
 
 import httpx
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .errors import LLMResponseValidationError, LLMToolCallValidationError
+# from .errors import LLMResponseValidationError, LLMToolCallValidationError
 from .http_client import AsyncHTTPClientParams, create_simple_async_httpx_client
-from .llm import LLM, ConvertT_co, LLMSettings, SettingsT_co
-from .rate_limiting.rate_limiter_chunked import RateLimiterC, limit_rate
+from .llm import LLM, LLMSettings
+from .rate_limiting.rate_limiter import RateLimiter, limit_rate
 from .typing.completion import Completion
 from .typing.completion_chunk import CompletionChoice, CompletionChunk
 from .typing.events import (
@@ -50,8 +50,7 @@ class CloudLLMSettings(LLMSettings, total=False):
     extra_query: dict[str, Any] | None
 
 
-LLMRateLimiter = RateLimiterC[
-    Messages,
+LLMRateLimiter = RateLimiter[
     AssistantMessage
     | AsyncIterator[
         CompletionChunkEvent[CompletionChunk] | CompletionEvent | LLMStreamingErrorEvent
@@ -60,9 +59,9 @@ LLMRateLimiter = RateLimiterC[
 
 
 @dataclass(frozen=True)
-class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co]):
+class CloudLLM(LLM):
+    llm_settings: CloudLLMSettings | None = None
     api_provider: APIProvider | None = None
-    llm_settings: SettingsT_co | None = None
     rate_limiter: LLMRateLimiter | None = None
     client_timeout: float = 60.0
     max_client_retries: int = 2  # HTTP client retries for network errors
@@ -85,6 +84,10 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
             object.__setattr__(self, "apply_tool_call_schema_via_provider", True)
 
         if self.async_http_client is None and self.async_http_client_params is not None:
+            logger.info(
+                f"[{self.__class__.__name__}] Creating custom async HTTP client "
+                f"with params:\n{self.async_http_client_params}"
+            )
             object.__setattr__(
                 self,
                 "async_http_client",
@@ -208,7 +211,8 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                     tool_choice=tool_choice,
                     n_choices=n_choices,
                 )
-            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+            # except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+            except Exception as err:
                 n_attempt += 1
 
                 if n_attempt > self.max_response_retries:
@@ -321,7 +325,8 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                 ):
                     yield event
                 return
-            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+            # except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+            except Exception as err:
                 err_data = LLMStreamingErrorData(
                     error=err, model_name=self.model_name, model_id=self.model_id
                 )
@@ -337,16 +342,15 @@ class CloudLLM(LLM[SettingsT_co, ConvertT_co], Generic[SettingsT_co, ConvertT_co
                         logger.warning(
                             f"\nCloudLLM completion failed after retrying:\n{err}"
                         )
-                        refusal_completion = make_refusal_completion(
-                            self.model_name, err
-                        )
-                        yield CompletionEvent(
-                            data=refusal_completion,
-                            proc_name=proc_name,
-                            call_id=call_id,
-                        )
                     raise err
-                    # return
+                    # refusal_completion = make_refusal_completion(
+                    #     self.model_name, err
+                    # )
+                    # yield CompletionEvent(
+                    #     data=refusal_completion,
+                    #     proc_name=proc_name,
+                    #     call_id=call_id,
+                    # )
 
                 logger.warning(
                     f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"

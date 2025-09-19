@@ -1,8 +1,8 @@
 import inspect
 from collections.abc import Callable, Coroutine, Sequence
-from typing import Any, overload
+from typing import Any, cast
 
-from .types import P, ProcessorCallableList, ProcessorCallableSingle, R, T
+from .types import AsyncFunctionOrMethod, P, R, T
 
 
 def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
@@ -11,24 +11,9 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
     )
 
 
-@overload
 def split_pos_args(
-    call: ProcessorCallableSingle[T, P, R],
-    args: Sequence[Any],
-) -> tuple[Any | None, T, Sequence[Any]]: ...
-
-
-@overload
-def split_pos_args(
-    call: ProcessorCallableList[T, P, R],
-    args: Sequence[Any],
-) -> tuple[Any | None, list[T], Sequence[Any]]: ...
-
-
-def split_pos_args(
-    call: (ProcessorCallableSingle[T, P, R] | ProcessorCallableList[T, P, R]),
-    args: Sequence[Any],
-) -> tuple[Any | None, T | list[T], Sequence[Any]]:
+    call: AsyncFunctionOrMethod[T, P, R], args: tuple[Any, ...]
+) -> tuple[Any | None, T | Sequence[T], tuple[Any, ...]]:
     if not args:
         raise ValueError("No positional arguments passed.")
     maybe_self = args[0]
@@ -39,21 +24,30 @@ def split_pos_args(
                 "Must pass at least `self` and an input (or a list of inputs) "
                 "for a bound instance method."
             )
-        return maybe_self, args[1], args[2:]
+        self_arg = args[0]
+        first_arg = cast("T | Sequence[T]", args[1])
+        remaining_args = args[2:]
+
+        return self_arg, first_arg, remaining_args
+
     # Case: Standalone function with signature (inp, *rest)
     if not args:
         raise ValueError(
             "Must pass an input (or a list of inputs) " + "for a standalone function."
         )
-    return None, args[0], args[1:]
+    self_arg = None
+    first_arg = cast("T | Sequence[T]", args[0])
+    remaining_args = args[1:]
+
+    return self_arg, first_arg, remaining_args
 
 
-def partial_processor_callable(
+def partial_callable(
     call: Callable[..., Coroutine[Any, Any, R]],
     self_obj: Any,
     *args: Any,
     **kwargs: Any,
-) -> Callable[[Any], Coroutine[Any, Any, R]]:
+) -> Callable[..., Coroutine[Any, Any, R]]:
     async def wrapper(inp: Any) -> R:
         if self_obj is not None:
             # `call` is a method
