@@ -103,10 +103,9 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
     ) -> Packet[OutT]:
         packet = in_packet
         exit_packet: Packet[OutT] | None = None
+        call_id = self._generate_call_id(call_id)
 
-        for num_iterations in range(1, self._max_iterations + 1):
-            call_id = self._generate_call_id(call_id)
-
+        for iteration_num in range(1, self._max_iterations + 1):
             for subproc in self.subprocs:
                 logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
@@ -115,7 +114,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                     in_packet=packet,
                     in_args=in_args,
                     forgetful=forgetful,
-                    call_id=f"{call_id}/{subproc.name}",
+                    call_id=f"{call_id}/{subproc.name}/iter_{iteration_num}",
                     ctx=ctx,
                 )
 
@@ -125,7 +124,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                     exit_packet = cast("Packet[OutT]", packet)
                     if self._terminate_workflow_loop(exit_packet, ctx=ctx):
                         return exit_packet
-                    if num_iterations == self._max_iterations:
+                    if iteration_num == self._max_iterations:
                         logger.info(
                             f"Max iterations reached ({self._max_iterations}). "
                             "Exiting loop."
@@ -151,10 +150,9 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
     ) -> AsyncIterator[Event[Any]]:
         packet = in_packet
         exit_packet: Packet[OutT] | None = None
+        call_id = self._generate_call_id(call_id)
 
-        for num_iterations in range(1, self._max_iterations + 1):
-            call_id = self._generate_call_id(call_id)
-
+        for iteration_num in range(1, self._max_iterations + 1):
             for subproc in self.subprocs:
                 logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
@@ -163,7 +161,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                     in_packet=packet,
                     in_args=in_args,
                     forgetful=forgetful,
-                    call_id=f"{call_id}/{subproc.name}",
+                    call_id=f"{call_id}/{subproc.name}/iter_{iteration_num}",
                     ctx=ctx,
                 ):
                     if isinstance(event, ProcPacketOutputEvent):
@@ -179,7 +177,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
                             data=exit_packet, proc_name=self.name, call_id=call_id
                         )
                         return
-                    if num_iterations == self._max_iterations:
+                    if iteration_num == self._max_iterations:
                         logger.info(
                             f"Max iterations reached ({self._max_iterations}). "
                             "Exiting loop."

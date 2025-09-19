@@ -2,6 +2,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import Any, Generic
+from uuid import uuid4
 
 from grasp_agents.tracing_decorators import workflow
 
@@ -22,6 +23,7 @@ class Runner(Generic[OutT, CtxT]):
         entry_proc: BaseProcessor[Any, Any, Any, CtxT],
         procs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
+        runner_id: str | None = None,
     ) -> None:
         if entry_proc not in procs:
             raise RunnerError(
@@ -35,7 +37,12 @@ class Runner(Generic[OutT, CtxT]):
 
         self._entry_proc = entry_proc
         self._procs = procs
+        self._runner_id = runner_id or str(uuid4())[:6]
         self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
+
+    @property
+    def runner_id(self) -> str:
+        return self._runner_id
 
     @property
     def ctx(self) -> RunContext[CtxT]:
@@ -55,6 +62,7 @@ class Runner(Generic[OutT, CtxT]):
         proc: BaseProcessor[Any, Any, Any, CtxT],
         pool: PacketPool,
         ctx: RunContext[CtxT],
+        call_id: str,
         **run_kwargs: Any,
     ) -> None:
         _in_packet, _chat_inputs = self._unpack_packet(packet)
@@ -62,7 +70,11 @@ class Runner(Generic[OutT, CtxT]):
         logger.info(f"\n[Running processor {proc.name}]\n")
 
         out_packet = await proc.run(
-            chat_inputs=_chat_inputs, in_packet=_in_packet, ctx=ctx, **run_kwargs
+            chat_inputs=_chat_inputs,
+            in_packet=_in_packet,
+            ctx=ctx,
+            call_id=call_id,
+            **run_kwargs,
         )
 
         logger.info(
@@ -79,6 +91,7 @@ class Runner(Generic[OutT, CtxT]):
         proc: BaseProcessor[Any, Any, Any, CtxT],
         pool: PacketPool,
         ctx: RunContext[CtxT],
+        call_id: str,
         **run_kwargs: Any,
     ) -> None:
         _in_packet, _chat_inputs = self._unpack_packet(packet)
@@ -87,7 +100,11 @@ class Runner(Generic[OutT, CtxT]):
 
         out_packet: Packet[Any] | None = None
         async for event in proc.run_stream(
-            chat_inputs=_chat_inputs, in_packet=_in_packet, ctx=ctx, **run_kwargs
+            chat_inputs=_chat_inputs,
+            in_packet=_in_packet,
+            ctx=ctx,
+            call_id=call_id,
+            **run_kwargs,
         ):
             if isinstance(event, ProcPacketOutputEvent):
                 out_packet = event.data
@@ -103,7 +120,7 @@ class Runner(Generic[OutT, CtxT]):
         await pool.post(out_packet)
 
     @workflow(name="runner_run")  # type: ignore
-    async def run(self, chat_input: Any = "start", **run_args: Any) -> Packet[OutT]:
+    async def run(self, chat_input: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
         async with PacketPool() as pool:
             for proc in self._procs:
                 pool.register_packet_handler(
@@ -113,7 +130,8 @@ class Runner(Generic[OutT, CtxT]):
                         proc=proc,
                         pool=pool,
                         ctx=self._ctx,
-                        **run_args,
+                        call_id=self._runner_id,
+                        **run_kwargs,
                     ),
                 )
             await pool.post(
@@ -125,7 +143,7 @@ class Runner(Generic[OutT, CtxT]):
 
     @workflow(name="runner_run")  # type: ignore
     async def run_stream(
-        self, chat_input: Any = "start", **run_args: Any
+        self, chat_input: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
         async with PacketPool() as pool:
             for proc in self._procs:
@@ -136,7 +154,8 @@ class Runner(Generic[OutT, CtxT]):
                         proc=proc,
                         pool=pool,
                         ctx=self._ctx,
-                        **run_args,
+                        call_id=self._runner_id,
+                        **run_kwargs,
                     ),
                 )
             await pool.post(
