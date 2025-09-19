@@ -63,15 +63,14 @@ class UserMessage(MessageBase):
         return cls(content=Content.from_text(text), name=name)
 
     @classmethod
-    def from_formatted_prompt(
-        cls,
-        prompt_template: str,
-        name: str | None = None,
-        prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
-    ) -> "UserMessage":
-        content = Content.from_formatted_prompt(prompt_template, **(prompt_args or {}))
+    def from_image(cls, image: ImageData, name: str | None = None) -> "UserMessage":
+        return cls(content=Content.from_image(image), name=name)
 
-        return cls(content=content, name=name)
+    @classmethod
+    def from_images(
+        cls, images: Sequence[ImageData], name: str | None = None
+    ) -> "UserMessage":
+        return cls(content=Content.from_images(images), name=name)
 
     @classmethod
     def from_content_parts(
@@ -79,7 +78,16 @@ class UserMessage(MessageBase):
         content_parts: Sequence[str | ImageData],
         name: str | None = None,
     ) -> "UserMessage":
-        content = Content.from_content_parts(content_parts)
+        return cls(content=Content.from_content_parts(content_parts), name=name)
+
+    @classmethod
+    def from_formatted_prompt(
+        cls,
+        prompt_template: str,
+        name: str | None = None,
+        prompt_args: Mapping[str, str | int | bool | ImageData] | None = None,
+    ) -> "UserMessage":
+        content = Content.from_formatted_prompt(prompt_template, **(prompt_args or {}))
 
         return cls(content=content, name=name)
 

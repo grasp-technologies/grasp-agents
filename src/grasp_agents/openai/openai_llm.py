@@ -4,7 +4,7 @@ import os
 from collections.abc import AsyncIterator, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from openai import AsyncOpenAI, AsyncStream
 from openai._types import NOT_GIVEN  # type: ignore[import]
@@ -50,6 +50,7 @@ def get_openai_compatible_providers() -> list[APIProvider]:
             api_key=os.getenv("GEMINI_API_KEY"),
             response_schema_support=("*",),
         ),
+        # Openrouter does not support structured outputs ATM
         APIProvider(
             name="openrouter",
             base_url="https://openrouter.ai/api/v1",
@@ -90,8 +91,9 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
 
 
 @dataclass(frozen=True)
-class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
-    converters: OpenAIConverters = field(default_factory=OpenAIConverters)
+class OpenAILLM(CloudLLM):
+    llm_settings: OpenAILLMSettings | None = None
+    converters: ClassVar[OpenAIConverters] = OpenAIConverters()
     async_openai_client_params: dict[str, Any] | None = None
     client: AsyncOpenAI = field(init=False)
 
@@ -109,14 +111,14 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
             compat_providers_map = {
                 provider["name"]: provider for provider in openai_compatible_providers
             }
-            provider_name, _model_name = model_name_parts
-            if provider_name not in compat_providers_map:
+            _provider_name, _model_name = model_name_parts
+            if _provider_name not in compat_providers_map:
                 raise ValueError(
-                    f"API provider '{provider_name}' is not a supported OpenAI "
+                    f"API provider '{_provider_name}' is not a supported OpenAI "
                     f"compatible provider. Supported providers are: "
                     f"{', '.join(compat_providers_map.keys())}"
                 )
-            _api_provider = compat_providers_map[provider_name]
+            _api_provider = compat_providers_map[_provider_name]
         else:
             raise ValueError(
                 "Model name must be in the format 'provider/model_name' or "
@@ -138,8 +140,8 @@ class OpenAILLM(CloudLLM[OpenAILLMSettings, OpenAIConverters]):
         if self.apply_response_schema_via_provider and not response_schema_support:
             raise ValueError(
                 "Native response schema validation is not supported for model "
-                f"'{_model_name}' by the API provider. Please set "
-                "apply_response_schema_via_provider=False."
+                f"'{_model_name}' by the API provider '{_api_provider['name']}'. "
+                "Please set apply_response_schema_via_provider=False."
             )
 
         _async_openai_client_params = deepcopy(self.async_openai_client_params or {})

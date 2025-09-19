@@ -4,7 +4,7 @@ from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
 from pydantic import BaseModel
 
-from .llm import LLM, LLMSettings
+from .llm import LLM
 from .llm_agent_memory import LLMAgentMemory, MemoryPreparator
 from .llm_policy_executor import (
     LLMPolicyExecutor,
@@ -19,7 +19,6 @@ from .prompt_builder import (
 )
 from .run_context import CtxT, RunContext
 from .typing.content import Content, ImageData
-from .typing.converters import Converters
 from .typing.events import (
     Event,
     ProcPayloadOutputEvent,
@@ -60,7 +59,7 @@ class LLMAgent(
         name: ProcName,
         *,
         # LLM
-        llm: LLM[LLMSettings, Converters],
+        llm: LLM,
         # Tools
         tools: list[BaseTool[Any, Any, CtxT]] | None = None,
         # Input prompt template (combines user and received arguments)
@@ -143,7 +142,7 @@ class LLMAgent(
         self._register_overridden_handlers()
 
     @property
-    def llm(self) -> LLM[LLMSettings, Converters]:
+    def llm(self) -> LLM:
         return self._policy_executor.llm
 
     @property

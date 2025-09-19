@@ -2,7 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -63,15 +63,11 @@ class LLMSettings(TypedDict, total=False):
     seed: int | None
 
 
-SettingsT_co = TypeVar("SettingsT_co", bound=LLMSettings, covariant=True)
-ConvertT_co = TypeVar("ConvertT_co", bound=Converters, covariant=True)
-
-
 @dataclass(frozen=True)
-class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
+class LLM(ABC):
     model_name: str
-    converters: ConvertT_co
-    llm_settings: SettingsT_co | None = None
+    converters: ClassVar[Converters]
+    llm_settings: LLMSettings | None = None
     model_id: str = field(default_factory=lambda: str(uuid4())[:8])
 
     def _validate_response(
@@ -98,7 +94,6 @@ class LLM(ABC, Generic[SettingsT_co, ConvertT_co]):
                             schema=response_schema,
                             **parsing_params,
                         )
-
                     elif response_schema_by_xml_tag:
                         validate_tagged_objs_from_json_or_py_string(
                             message.content or "",

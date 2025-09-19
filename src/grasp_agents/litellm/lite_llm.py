@@ -3,7 +3,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import litellm
 from litellm.litellm_core_utils.get_supported_openai_params import (
@@ -42,8 +42,9 @@ class LiteLLMSettings(OpenAILLMSettings, total=False):
 
 
 @dataclass(frozen=True)
-class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
-    converters: LiteLLMConverters = field(default_factory=LiteLLMConverters)
+class LiteLLM(CloudLLM):
+    llm_settings: LiteLLMSettings | None = None
+    converters: ClassVar[LiteLLMConverters] = LiteLLMConverters()
 
     # Drop unsupported LLM settings
     drop_params: bool = True
@@ -105,6 +106,11 @@ class LiteLLM(CloudLLM[LiteLLMSettings, LiteLLMConverters]):
             raise ValueError(
                 f"Model '{self.model_name}' does not support response schema "
                 "natively. Please set `apply_response_schema_via_provider=False`"
+            )
+
+        if self.async_http_client is not None:
+            raise ValueError(
+                "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
         object.__setattr__(self, "api_provider", _api_provider)

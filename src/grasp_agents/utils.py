@@ -114,7 +114,8 @@ def validate_tagged_objs_from_json_or_py_string(
     ) -> NoReturn:
         if not_found:
             msg = (
-                f"Failed to find tagged section <{tag}>...</{tag}> in the string:\n{s}"
+                f"Failed to find valid tagged section <{tag}>...</{tag}> "
+                f"in the string:\n{s}"
             )
         else:
             msg = (

@@ -23,19 +23,3 @@ handlers:
 root:
   level: DEBUG
   handlers: [fileHandler, consoleHandler]
-
-loggers:
-  httpcore:
-    level: INFO
-    
-  httpx:
-    level: WARNING
-
-  openai:
-    level: INFO
-
-  LiteLLM:
-    level: WARNING
-  
-  urllib3:
-    level: INFO

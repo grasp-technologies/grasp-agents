@@ -66,7 +66,6 @@ class EventType(StrEnum):
 
     PACKET_OUT = "packet_output"
     PAYLOAD_OUT = "payload_output"
-    PROC_FINISH = "processor_finish"
     PROC_ERR = "processor_error"
     PROC_START = "processor_start"
     PROC_END = "processor_end"

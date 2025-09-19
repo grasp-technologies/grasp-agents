@@ -3,6 +3,8 @@ from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import Any, Generic
 
+from grasp_agents.tracing_decorators import workflow
+
 from .errors import RunnerError
 from .packet import Packet, StartPacket
 from .packet_pool import END_PROC_NAME, PacketPool
@@ -100,6 +102,7 @@ class Runner(Generic[OutT, CtxT]):
 
         await pool.post(out_packet)
 
+    @workflow(name="runner_run")  # type: ignore
     async def run(self, chat_input: Any = "start", **run_args: Any) -> Packet[OutT]:
         async with PacketPool() as pool:
             for proc in self._procs:
@@ -120,6 +123,7 @@ class Runner(Generic[OutT, CtxT]):
             )
             return await pool.final_result()
 
+    @workflow(name="runner_run")  # type: ignore
     async def run_stream(
         self, chat_input: Any = "start", **run_args: Any
     ) -> AsyncIterator[Event[Any]]:
