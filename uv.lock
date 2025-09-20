@@ -619,6 +619,17 @@ dependencies = [
     { name = "traceloop-sdk" },
 ]
 
+[package.optional-dependencies]
+observability = [
+    { name = "arize-phoenix-otel" },
+    { name = "openinference-instrumentation-anthropic" },
+    { name = "openinference-instrumentation-google-genai" },
+    { name = "openinference-instrumentation-litellm" },
+    { name = "openinference-instrumentation-openai" },
+    { name = "openinference-instrumentation-openllmetry" },
+    { name = "openinference-instrumentation-vertexai" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "dotenv" },
@@ -633,22 +644,20 @@ dev = [
     { name = "types-cachetools" },
     { name = "widgetsnbextension" },
 ]
-observability = [
-    { name = "arize-phoenix-otel" },
-    { name = "openinference-instrumentation-anthropic" },
-    { name = "openinference-instrumentation-google-genai" },
-    { name = "openinference-instrumentation-litellm" },
-    { name = "openinference-instrumentation-openai" },
-    { name = "openinference-instrumentation-openllmetry" },
-    { name = "openinference-instrumentation-vertexai" },
-]
 
 [package.metadata]
 requires-dist = [
+    { name = "arize-phoenix-otel", marker = "extra == 'observability'", specifier = ">=0.13.1" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "litellm", specifier = ">=1.76.3" },
     { name = "openai", specifier = ">=1.68.2,<2" },
+    { name = "openinference-instrumentation-anthropic", marker = "extra == 'observability'", specifier = ">=0.1.19" },
+    { name = "openinference-instrumentation-google-genai", marker = "extra == 'observability'", specifier = ">=0.1.5" },
+    { name = "openinference-instrumentation-litellm", marker = "extra == 'observability'", specifier = ">=0.1.25" },
+    { name = "openinference-instrumentation-openai", marker = "extra == 'observability'", specifier = ">=0.1.32" },
+    { name = "openinference-instrumentation-openllmetry", marker = "extra == 'observability'", specifier = ">=0.1.2" },
+    { name = "openinference-instrumentation-vertexai", marker = "extra == 'observability'", specifier = ">=0.1.11" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.37.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.37.0" },
     { name = "pydantic", specifier = ">=2" },
@@ -658,6 +667,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.2,<5" },
     { name = "traceloop-sdk", specifier = ">=0.47.2" },
 ]
+provides-extras = ["observability"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -672,15 +682,6 @@ dev = [
     { name = "twine", specifier = ">=5.1.1,<6" },
     { name = "types-cachetools", specifier = ">=5.0.1,<6" },
     { name = "widgetsnbextension", specifier = ">=4.0.5,<5" },
-]
-observability = [
-    { name = "arize-phoenix-otel", specifier = ">=0.13.1" },
-    { name = "openinference-instrumentation-anthropic", specifier = ">=0.1.19" },
-    { name = "openinference-instrumentation-google-genai", specifier = ">=0.1.5" },
-    { name = "openinference-instrumentation-litellm", specifier = ">=0.1.25" },
-    { name = "openinference-instrumentation-openai", specifier = ">=0.1.32" },
-    { name = "openinference-instrumentation-openllmetry", specifier = ">=0.1.2" },
-    { name = "openinference-instrumentation-vertexai", specifier = ">=0.1.11" },
 ]
 
 [[package]]
