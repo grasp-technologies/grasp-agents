@@ -33,6 +33,8 @@ dev = [
     "pyright>=1.1.400",
     "pip-licenses>=5.0.0",
 ]
+
+[project.optional-dependencies]
 observability = [
     "arize-phoenix-otel>=0.13.1",
     "openinference-instrumentation-openllmetry>=0.1.2",
