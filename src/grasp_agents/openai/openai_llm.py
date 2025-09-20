@@ -61,7 +61,9 @@ def get_openai_compatible_providers() -> list[APIProvider]:
 
 
 class OpenAILLMSettings(CloudLLMSettings, total=False):
-    reasoning_effort: Literal["disable", "minimal", "low", "medium", "high"] | None
+    reasoning_effort: (
+        Literal["none", "disable", "minimal", "low", "medium", "high"] | None
+    )
 
     parallel_tool_calls: bool
 
