@@ -162,8 +162,9 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
         return self._max_retries
 
     def _generate_call_id(self, call_id: str | None) -> str:
-        _new_id = str(uuid4())[:6] + "_" + self.name
-        return _new_id if call_id is None else call_id + "/" + _new_id
+        if call_id is None:
+            return str(uuid4())[:6] + "_" + self.name
+        return call_id
 
     def _validate_inputs(
         self,

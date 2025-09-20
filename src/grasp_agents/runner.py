@@ -48,6 +48,9 @@ class Runner(Generic[OutT, CtxT]):
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
 
+    def _generate_call_id(self, proc: BaseProcessor[Any, Any, Any, CtxT]) -> str | None:
+        return self._runner_id + "/" + proc._generate_call_id(call_id=None)  # type: ignore
+
     def _unpack_packet(
         self, packet: Packet[Any] | None
     ) -> tuple[Packet[Any] | None, Any | None]:
@@ -61,8 +64,6 @@ class Runner(Generic[OutT, CtxT]):
         *,
         proc: BaseProcessor[Any, Any, Any, CtxT],
         pool: PacketPool,
-        ctx: RunContext[CtxT],
-        call_id: str,
         **run_kwargs: Any,
     ) -> None:
         _in_packet, _chat_inputs = self._unpack_packet(packet)
@@ -72,8 +73,8 @@ class Runner(Generic[OutT, CtxT]):
         out_packet = await proc.run(
             chat_inputs=_chat_inputs,
             in_packet=_in_packet,
-            ctx=ctx,
-            call_id=call_id,
+            ctx=self._ctx,
+            call_id=self._generate_call_id(proc),
             **run_kwargs,
         )
 
@@ -90,8 +91,6 @@ class Runner(Generic[OutT, CtxT]):
         *,
         proc: BaseProcessor[Any, Any, Any, CtxT],
         pool: PacketPool,
-        ctx: RunContext[CtxT],
-        call_id: str,
         **run_kwargs: Any,
     ) -> None:
         _in_packet, _chat_inputs = self._unpack_packet(packet)
@@ -102,8 +101,8 @@ class Runner(Generic[OutT, CtxT]):
         async for event in proc.run_stream(
             chat_inputs=_chat_inputs,
             in_packet=_in_packet,
-            ctx=ctx,
-            call_id=call_id,
+            ctx=self._ctx,
+            call_id=self._generate_call_id(proc),
             **run_kwargs,
         ):
             if isinstance(event, ProcPacketOutputEvent):
@@ -129,8 +128,6 @@ class Runner(Generic[OutT, CtxT]):
                         self._packet_handler,
                         proc=proc,
                         pool=pool,
-                        ctx=self._ctx,
-                        call_id=self._runner_id,
                         **run_kwargs,
                     ),
                 )
@@ -153,8 +150,6 @@ class Runner(Generic[OutT, CtxT]):
                         self._packet_handler_stream,
                         proc=proc,
                         pool=pool,
-                        ctx=self._ctx,
-                        call_id=self._runner_id,
                         **run_kwargs,
                     ),
                 )
