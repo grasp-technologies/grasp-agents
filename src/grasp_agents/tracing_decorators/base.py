@@ -1,3 +1,4 @@
+import contextlib
 import inspect
 import json
 import os
@@ -134,6 +135,7 @@ def _handle_generator(span, res):
     except Exception as e:
         span.set_status(Status(StatusCode.ERROR, str(e)))
         span.record_exception(e)
+        span.end()
         raise
     # finally:
     #     span.end()
@@ -153,6 +155,7 @@ async def _ahandle_generator(span, ctx_token, res):
     except Exception as e:
         span.set_status(Status(StatusCode.ERROR, str(e)))
         span.record_exception(e)
+        span.end()
         raise
     # finally:
     #     span.end()
@@ -163,6 +166,21 @@ def _should_send_prompts():
     return (
         os.getenv("TRACELOOP_TRACE_CONTENT") or "true"
     ).lower() == "true" or context_api.get_value("override_enable_content_tracing")
+
+
+# Quiet wrapper that suppresses prints and warnings from TracerWrapper.verify_initialized
+def _tracing_initialized_quietly() -> bool:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            with (
+                open(os.devnull, "w") as devnull,
+                contextlib.redirect_stdout(devnull),
+                contextlib.redirect_stderr(devnull),
+            ):
+                return TracerWrapper.verify_initialized()
+        except Exception:
+            return False
 
 
 # Unified Decorators : handles both sync and async operations
@@ -255,7 +273,7 @@ def entity_method(
 
                 @wraps(fn)
                 async def async_gen_wrap(*args: Any, **kwargs: Any) -> Any:
-                    if not TracerWrapper.verify_initialized():
+                    if not _tracing_initialized_quietly():
                         async for item in fn(*args, **kwargs):
                             yield item
                         return
@@ -279,7 +297,7 @@ def entity_method(
 
             @wraps(fn)
             async def async_wrap(*args: Any, **kwargs: Any) -> Any:
-                if not TracerWrapper.verify_initialized():
+                if not _tracing_initialized_quietly():
                     return await fn(*args, **kwargs)
 
                 span, ctx, ctx_token = _setup_span(entity_name, tlp_span_kind, version)
@@ -299,7 +317,7 @@ def entity_method(
 
         @wraps(fn)
         def sync_wrap(*args: Any, **kwargs: Any) -> Any:
-            if not TracerWrapper.verify_initialized():
+            if not _tracing_initialized_quietly():
                 return fn(*args, **kwargs)
 
             span, ctx, ctx_token = _setup_span(entity_name, tlp_span_kind, version)
