@@ -8,7 +8,5 @@ services:
       - PHOENIX_WORKING_DIR=/phoenix_data
     volumes:
       - type: bind
-        source: /local_data/phoenix_data # Change this to your desired local path
+        source: /Users/john_doe/phoenix_data # Change this to your desired local path
         target: /phoenix_data # Ensure this matches PHOENIX_WORKING_DIR
-    
-    

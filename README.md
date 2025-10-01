@@ -111,8 +111,6 @@ You should first ask the student about their education, interests, and preferenc
 # Instructions
 * Use the provided tool to ask questions.
 * Ask questions one by one.
-* Provide your thinking before asking a question and after receiving a reply.
-* Do not include your exact question as part of your thinking.
 * The problem must have all the necessary data.
 * Use the final answer tool to provide the problem.
 """
@@ -151,9 +149,11 @@ class Problem(BaseModel):
 
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
-    llm=LiteLLM(model_name="gpt-4.1"),
+    llm=LiteLLM(
+        model_name="claude-sonnet-4-20250514",
+        llm_settings=LiteLLMSettings(reasoning_effort="low"),
+    ),
     tools=[AskStudentTool()],
-    react_mode=True,
     final_answer_as_tool_call=True,
     sys_prompt=sys_prompt_react,
 )
