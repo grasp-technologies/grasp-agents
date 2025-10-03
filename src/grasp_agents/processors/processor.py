@@ -2,7 +2,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, cast
 
-from grasp_agents.tracing_decorators import workflow
+from grasp_agents.tracing_decorators import agent
 
 from ..memory import MemT
 from ..packet import Packet
@@ -96,7 +96,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
 
         return Packet(payloads=payloads, sender=self.name, recipients=recipients)  # type: ignore[return-value]
 
-    @workflow(name="processor_run")  # type: ignore
+    @agent(name="processor_run")  # type: ignore
     @with_retry
     async def run(
         self,
@@ -128,7 +128,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
 
         return self._postprocess(outputs=outputs, call_id=call_id, ctx=ctx)
 
-    @workflow(name="processor_run")  # type: ignore
+    @agent(name="processor_run")  # type: ignore
     @with_retry_stream
     async def run_stream(
         self,

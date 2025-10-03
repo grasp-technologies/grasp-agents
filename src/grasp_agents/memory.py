@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from .run_context import RunContext
 
@@ -32,8 +32,6 @@ class Memory(BaseModel, ABC):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class DummyMemory(Memory):

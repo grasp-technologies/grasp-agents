@@ -3,7 +3,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, cast
 
-from grasp_agents.tracing_decorators import workflow
+from grasp_agents.tracing_decorators import agent
 
 from ..errors import PacketRoutingError
 from ..memory import MemT
@@ -105,7 +105,7 @@ class ParallelProcessor(
             recipients=out_packets[0].recipients,
         )
 
-    @workflow(name="processor_run")  # type: ignore
+    @agent(name="processor_run")  # type: ignore
     async def run(
         self,
         chat_inputs: Any | None = None,
@@ -215,7 +215,7 @@ class ParallelProcessor(
             data=out_packet, proc_name=self.name, call_id=call_id
         )
 
-    @workflow(name="processor_run")  # type: ignore
+    @agent(name="processor_run")  # type: ignore
     async def run_stream(
         self,
         chat_inputs: Any | None = None,

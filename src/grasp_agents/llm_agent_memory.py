@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from pydantic import PrivateAttr
+from pydantic import Field
 
 from .memory import Memory
 from .run_context import RunContext
@@ -22,48 +22,38 @@ class MemoryPreparator(Protocol):
 
 
 class LLMAgentMemory(Memory):
-    _message_history: Messages = PrivateAttr(default_factory=Messages)
-    _sys_prompt: LLMPrompt | None = PrivateAttr(default=None)
+    message_history: Messages = Field(default_factory=Messages)
+    sys_prompt: LLMPrompt | None = Field(default=None)
 
     def __init__(self, sys_prompt: LLMPrompt | None = None) -> None:
         super().__init__()
-        self._sys_prompt = sys_prompt
         self.reset(sys_prompt)
-
-    @property
-    def sys_prompt(self) -> LLMPrompt | None:
-        return self._sys_prompt
-
-    @property
-    def message_history(self) -> Messages:
-        return self._message_history
 
     def reset(
         self, sys_prompt: LLMPrompt | None = None, ctx: RunContext[Any] | None = None
     ):
         if sys_prompt is not None:
-            self._sys_prompt = sys_prompt
+            self.sys_prompt = sys_prompt
 
-        self._message_history = (
-            [SystemMessage(content=self._sys_prompt)]
-            if self._sys_prompt is not None
+        self.message_history = (
+            [SystemMessage(content=self.sys_prompt)]
+            if self.sys_prompt is not None
             else []
         )
 
     def erase(self) -> None:
-        self._message_history = []
+        self.message_history = []
 
     def update(
         self, messages: Sequence[Message], *, ctx: RunContext[Any] | None = None
     ):
-        self._message_history.extend(messages)
+        self.message_history.extend(messages)
 
     @property
     def is_empty(self) -> bool:
-        return len(self._message_history) == 0
+        return len(self.message_history) == 0
 
     def __repr__(self) -> str:
         return (
-            "LLMAgentMemory with message history of "
-            f"length {len(self._message_history)}"
+            f"LLMAgentMemory with message history of length {len(self.message_history)}"
         )

@@ -278,10 +278,12 @@ class LLMPolicyExecutor(Generic[CtxT]):
     async def _generate_final_answer(
         self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
     ) -> AssistantMessage:
+        # NOTE: Might not need the user message when forcing the tool call
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!"
         )
         memory.update([user_message])
+
         if ctx.printer:
             ctx.printer.print_messages(
                 [user_message], agent_name=self.agent_name, call_id=call_id

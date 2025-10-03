@@ -602,7 +602,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "0.5.25"
+version = "0.5.26"
 source = { editable = "." }
 dependencies = [
     { name = "dotenv" },
@@ -621,17 +621,13 @@ dependencies = [
 [package.optional-dependencies]
 observability = [
     { name = "arize-phoenix-otel" },
-    { name = "openinference-instrumentation-anthropic" },
-    { name = "openinference-instrumentation-google-genai" },
     { name = "openinference-instrumentation-litellm" },
     { name = "openinference-instrumentation-openai" },
     { name = "openinference-instrumentation-openllmetry" },
-    { name = "openinference-instrumentation-vertexai" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "dotenv" },
     { name = "ipykernel" },
     { name = "ipython" },
     { name = "ipywidgets" },
@@ -651,12 +647,9 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "litellm", specifier = ">=1.76.3" },
     { name = "openai", specifier = ">=1.68.2,<2" },
-    { name = "openinference-instrumentation-anthropic", marker = "extra == 'observability'", specifier = ">=0.1.19" },
-    { name = "openinference-instrumentation-google-genai", marker = "extra == 'observability'", specifier = ">=0.1.5" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'observability'", specifier = ">=0.1.25" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'observability'", specifier = ">=0.1.32" },
     { name = "openinference-instrumentation-openllmetry", marker = "extra == 'observability'", specifier = ">=0.1.2" },
-    { name = "openinference-instrumentation-vertexai", marker = "extra == 'observability'", specifier = ">=0.1.11" },
     { name = "opentelemetry-sdk", specifier = ">=1.37.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6.0.2" },
@@ -669,7 +662,6 @@ provides-extras = ["observability"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "dotenv", specifier = ">=0.9.9" },
     { name = "ipykernel", specifier = ">=6.19.1,<7" },
     { name = "ipython", specifier = ">=8.3.0,<9" },
     { name = "ipywidgets", specifier = ">=8.0.4,<9" },
@@ -1355,41 +1347,6 @@ wheels = [
 ]
 
 [[package]]
-name = "openinference-instrumentation-anthropic"
-version = "0.1.19"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "openinference-instrumentation" },
-    { name = "openinference-semantic-conventions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "typing-extensions" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/11/a3f1c8603fc9ed75dc52d6df119e5c59b22ac000cf5d777d4e175dff4875/openinference_instrumentation_anthropic-0.1.19.tar.gz", hash = "sha256:974ea6aaba5bc7441d0f2227f355a781ce860bf9c2996db45a14442c4402ed8e", size = 14262, upload-time = "2025-08-18T18:13:02.274Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/cc/e7d5ee816b7ef287d76168bb61dcef47c39f9b9ebd7cd86487ff1ee9688d/openinference_instrumentation_anthropic-0.1.19-py3-none-any.whl", hash = "sha256:fa513ed575e245953a2124c3d0cf8cc562b263dace00d6a717e002a3dde3ce39", size = 17389, upload-time = "2025-08-18T18:12:58.796Z" },
-]
-
-[[package]]
-name = "openinference-instrumentation-google-genai"
-version = "0.1.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "openinference-instrumentation" },
-    { name = "openinference-semantic-conventions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/04/24d8df2e446bc8b4e25805288e223d481abeb55840f8c6c9df59aa62eef9/openinference_instrumentation_google_genai-0.1.5.tar.gz", hash = "sha256:0872f7c5ac81e6fcbab31739c71fb2ebc1e245bfb99a8d353937df6d8ba884dc", size = 29557, upload-time = "2025-07-14T16:52:31.024Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/ad/75c43137fb1a5102466dc1846bce97f9b535e7a680ce9f898edc49407c5c/openinference_instrumentation_google_genai-0.1.5-py3-none-any.whl", hash = "sha256:cc17e01154efc536a0d6dc4abc6e1983c9d26f7ef9f7c6e5822c4e24d4052325", size = 22594, upload-time = "2025-07-14T16:52:29.764Z" },
-]
-
-[[package]]
 name = "openinference-instrumentation-litellm"
 version = "0.1.25"
 source = { registry = "https://pypi.org/simple" }
@@ -1438,23 +1395,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/21/68/52a20ee12fb97853b09411e6074bd77d56ddbe5f45e81243da6f4aee5077/openinference_instrumentation_openllmetry-0.1.2.tar.gz", hash = "sha256:13e4776a6bff0e16a2e4ddb6f8e32fa00e23897b2c21ae58af814455effa4a6a", size = 11513, upload-time = "2025-08-21T17:36:22.418Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4e/84/00c546c7dd7dcb23488ca7f2a84fe38ee9631630e5a621ac849d1e96ce58/openinference_instrumentation_openllmetry-0.1.2-py3-none-any.whl", hash = "sha256:e623826f83285cb7de1d7b2fe6d725c402c9cadc75d432e3f87433c1392145b5", size = 11226, upload-time = "2025-08-21T17:36:21.221Z" },
-]
-
-[[package]]
-name = "openinference-instrumentation-vertexai"
-version = "0.1.11"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "openinference-instrumentation" },
-    { name = "openinference-semantic-conventions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/06/3e/a1cd041ed1237e80178c70e5d71d95417225f84065e3aae854b70173f01c/openinference_instrumentation_vertexai-0.1.11.tar.gz", hash = "sha256:600d9be988af6e1371e17187cf6aeed3ebb893d1ca0ef567cc00f67b3242aba6", size = 21061, upload-time = "2025-05-05T16:38:46.18Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/c9/e2ea586fec1f7650d0f8c6e630417859851995ed5ba693315d1ef282de57/openinference_instrumentation_vertexai-0.1.11-py3-none-any.whl", hash = "sha256:5fceb31a89aea0d8b7c93b7b89f8095888fedf8f8944518b2d803b02f39810dc", size = 17169, upload-time = "2025-05-05T16:38:45.151Z" },
 ]
 
 [[package]]
