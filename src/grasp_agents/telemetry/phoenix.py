@@ -1,12 +1,6 @@
 import os
 from logging import getLogger
 
-from openinference.instrumentation.anthropic import (
-    AnthropicInstrumentor as OIAnthropicInstrumentor,
-)
-from openinference.instrumentation.google_genai import (
-    GoogleGenAIInstrumentor as OIGoogleGenAIInstrumentor,
-)
 from openinference.instrumentation.litellm import (
     LiteLLMInstrumentor as OILiteLLMInstrumentor,
 )
@@ -14,17 +8,10 @@ from openinference.instrumentation.openai import (
     OpenAIInstrumentor as OIOpenAIInstrumentor,
 )
 from openinference.instrumentation.openllmetry import OpenInferenceSpanProcessor
-from openinference.instrumentation.vertexai import (
-    VertexAIInstrumentor as OIVertexAIInstrumentor,
-)
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
 
-from phoenix.otel import (
-    BatchSpanProcessor,
-    HTTPSpanExporter,
-    SimpleSpanProcessor,
-)
+from phoenix.otel import BatchSpanProcessor, HTTPSpanExporter, SimpleSpanProcessor
 
 from .exporters import LLM_PROVIDER_NAMES, FilteringExporter
 
@@ -59,9 +46,12 @@ def init_phoenix(
     # 3) Export to Phoenix backend
     # Use FilteringExporter to block LLM provider spans that are
     # already captured by OpenInference instrumentations
+    blocklist: set[str] = (
+        LLM_PROVIDER_NAMES if use_llm_provider_instr or use_litellm_instr else set()
+    )
     exporter = FilteringExporter(
         inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
-        blocklist=LLM_PROVIDER_NAMES,
+        blocklist=blocklist,
     )
     if batch:
         span_processor = BatchSpanProcessor(span_exporter=exporter)
@@ -76,6 +66,3 @@ def init_phoenix(
         OILiteLLMInstrumentor().instrument(tracer_provider=tracer_provider)
     if use_llm_provider_instr:
         OIOpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
-        OIAnthropicInstrumentor().instrument(tracer_provider=tracer_provider)
-        OIVertexAIInstrumentor().instrument(tracer_provider=tracer_provider)
-        OIGoogleGenAIInstrumentor().instrument(tracer_provider=tracer_provider)

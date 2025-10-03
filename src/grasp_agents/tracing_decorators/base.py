@@ -34,6 +34,7 @@ R = TypeVar("R")
 F = TypeVar("F", bound=Callable[P, R | Awaitable[R]])
 
 
+# --- added by Grasp ---
 def _to_plain(obj: Any) -> Any:
     """
     Recursively convert objects to JSON-serializable primitives.
@@ -61,6 +62,9 @@ def _to_plain(obj: Any) -> Any:
             lst.append(_to_plain(v))
         return lst
     return obj
+
+
+# ---
 
 
 def _truncate_json_if_needed(json_str: str) -> str:
@@ -127,39 +131,29 @@ def _handle_generator(span, res):
     context_api.attach(trace.set_span_in_context(span))
     try:
         for item in res:
-            # span.add_event(
-            #     name=getattr(item, "type", "unknown"),
-            #     attributes=_to_plain(item),
-            # )
             yield item
     except Exception as e:
         span.set_status(Status(StatusCode.ERROR, str(e)))
         span.record_exception(e)
-        span.end()
         raise
-    # finally:
-    #     span.end()
-    # Note: we don't detach the context here as this fails in some situations
-    # https://github.com/open-telemetry/opentelemetry-python/issues/2606
-    # This is not a problem since the context will be detached automatically during garbage collection
+    finally:
+        span.end()
+        # Note: we don't detach the context here as this fails in some situations
+        # https://github.com/open-telemetry/opentelemetry-python/issues/2606
+        # This is not a problem since the context will be detached automatically during garbage collection
 
 
 async def _ahandle_generator(span, ctx_token, res):
     try:
         async for part in res:
-            # span.add_event(
-            #     name=getattr(part, "type", "unknown"),
-            #     attributes=_to_plain(part),
-            # )
             yield part
     except Exception as e:
         span.set_status(Status(StatusCode.ERROR, str(e)))
         span.record_exception(e)
-        span.end()
         raise
-    # finally:
-    #     span.end()
-    #     context_api.detach(ctx_token)
+    finally:
+        span.end()
+        context_api.detach(ctx_token)
 
 
 def _should_send_prompts():
@@ -228,7 +222,7 @@ def _handle_span_input(span, args, kwargs, cls=None):
                 {"args": _to_plain(list(args)), "kwargs": _to_plain(kwargs)},
                 **({"cls": cls} if cls else {}),
                 indent=2,
-            )
+            )  # JSON formatting updated by Grasp
             truncated_json = _truncate_json_if_needed(json_input)
             span.set_attribute(
                 SpanAttributes.TRACELOOP_ENTITY_INPUT,
@@ -244,7 +238,7 @@ def _handle_span_output(span, res, cls=None):
         if _should_send_prompts():
             json_output = json.dumps(
                 _to_plain(res), **({"cls": cls} if cls else {}), indent=2
-            )
+            )  # JSON formatting updated by Grasp
             truncated_json = _truncate_json_if_needed(json_output)
             span.set_attribute(
                 SpanAttributes.TRACELOOP_ENTITY_OUTPUT,
@@ -282,16 +276,31 @@ def entity_method(
                         entity_name, tlp_span_kind, version
                     )
                     _handle_span_input(span, args, kwargs, cls=JSONEncoder)
+
+                    #  --- added by Grasp ---
                     items = []
-                    async for item in _ahandle_generator(
-                        span, ctx_token, fn(*args, **kwargs)
-                    ):
-                        items.append(item)
-                        yield item
-                    if items:
-                        _handle_span_output(span, items[-1], cls=JSONEncoder)
-                    span.end()
-                    context_api.detach(ctx_token)
+                    try:
+                        async for item in fn(*args, **kwargs):
+                            # span.add_event(
+                            #     name=getattr(item, "type", "unknown"),
+                            #     attributes=_to_plain(item),
+                            # )
+                            items.append(item)
+                            yield item
+                    except Exception as e:
+                        span.set_status(Status(StatusCode.ERROR, str(e)))
+                        span.record_exception(e)
+                        raise
+                    finally:
+                        if items:
+                            _handle_span_output(span, items[-1], cls=JSONEncoder)
+                        _cleanup_span(span, ctx_token)
+                    #  ---
+
+                    # async for item in _ahandle_generator(
+                    #     span, ctx_token, fn(*args, **kwargs)
+                    # ):
+                    #     yield item
 
                 return cast("F", async_gen_wrap)
 
@@ -330,15 +339,26 @@ def entity_method(
                 _cleanup_span(span, ctx_token)
                 raise
 
-            # span will be ended in the generator
             if isinstance(res, types.GeneratorType):
+                # --- added by Grasp ---
+                context_api.attach(trace.set_span_in_context(span))
                 items = []
-                for item in _handle_generator(span, res):
-                    items.append(item)
-                    yield item
-                if items:
-                    _handle_span_output(span, items[-1], cls=JSONEncoder)
-                span.end()
+                try:
+                    for item in res:
+                        items.append(item)
+                        yield item
+                except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                    raise
+                finally:
+                    if items:
+                        _handle_span_output(span, items[-1], cls=JSONEncoder)
+                    span.end()
+                return
+                # ---
+
+                # _handle_generator(span, res)
 
             _handle_span_output(span, res, cls=JSONEncoder)
             _cleanup_span(span, ctx_token)
