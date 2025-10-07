@@ -96,7 +96,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
 
         return Packet(payloads=payloads, sender=self.name, recipients=recipients)  # type: ignore[return-value]
 
-    @agent(name="processor_run")  # type: ignore
+    @agent(name="processor")  # type: ignore
     @with_retry
     async def run(
         self,
@@ -128,7 +128,7 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
 
         return self._postprocess(outputs=outputs, call_id=call_id, ctx=ctx)
 
-    @agent(name="processor_run")  # type: ignore
+    @agent(name="processor")  # type: ignore
     @with_retry_stream
     async def run_stream(
         self,

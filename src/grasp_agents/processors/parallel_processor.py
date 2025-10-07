@@ -105,7 +105,7 @@ class ParallelProcessor(
             recipients=out_packets[0].recipients,
         )
 
-    @agent(name="processor_run")  # type: ignore
+    @agent(name="processor")  # type: ignore
     async def run(
         self,
         chat_inputs: Any | None = None,
@@ -215,7 +215,7 @@ class ParallelProcessor(
             data=out_packet, proc_name=self.name, call_id=call_id
         )
 
-    @agent(name="processor_run")  # type: ignore
+    @agent(name="processor")  # type: ignore
     async def run_stream(
         self,
         chat_inputs: Any | None = None,

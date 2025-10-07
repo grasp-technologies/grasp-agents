@@ -33,9 +33,10 @@ P = ParamSpec("P")
 R = TypeVar("R")
 F = TypeVar("F", bound=Callable[P, R | Awaitable[R]])
 
+DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "completions"}
 
-# --- added by Grasp ---
-def _to_plain(obj: Any) -> Any:
+
+def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
     """
     Recursively convert objects to JSON-serializable primitives.
 
@@ -46,7 +47,9 @@ def _to_plain(obj: Any) -> Any:
     if isinstance(obj, BaseModel):
         try:
             # TODO: remove this temporary hack
-            return obj.model_dump(exclude={"_hidden_params", "completions"})
+            return obj.model_dump(
+                exclude=DEFAULT_EXCLUDE_FIELDS.union(exclude_fields or set())
+            )
         except Exception:
             return str(obj)
     if isinstance(obj, dict):
@@ -64,9 +67,6 @@ def _to_plain(obj: Any) -> Any:
     return obj
 
 
-# ---
-
-
 def _truncate_json_if_needed(json_str: str) -> str:
     """
     Truncate JSON string if it exceeds OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT;
@@ -81,49 +81,6 @@ def _truncate_json_if_needed(json_str: str) -> str:
         except ValueError:
             pass
     return json_str
-
-
-# Async Decorators - Deprecated
-
-
-def aentity_method(
-    name: str | None = None,
-    version: int | None = None,
-    tlp_span_kind: TraceloopSpanKindValues | None = TraceloopSpanKindValues.TASK,
-):
-    warnings.warn(
-        "DeprecationWarning: The @aentity_method function will be removed in a future version. "
-        "Please migrate to @entity_method for both sync and async operations.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    return entity_method(
-        name=name,
-        version=version,
-        tlp_span_kind=tlp_span_kind,
-    )
-
-
-def aentity_class(
-    name: str | None,
-    version: int | None,
-    method_name: str,
-    tlp_span_kind: TraceloopSpanKindValues | None = TraceloopSpanKindValues.TASK,
-):
-    warnings.warn(
-        "DeprecationWarning: The @aentity_class function will be removed in a future version. "
-        "Please migrate to @entity_class for both sync and async operations.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    return entity_class(
-        name=name,
-        version=version,
-        method_name=method_name,
-        tlp_span_kind=tlp_span_kind,
-    )
 
 
 def _handle_generator(span, res):
@@ -185,14 +142,47 @@ def _is_async_method(fn):
     return inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)
 
 
-def _setup_span(entity_name, tlp_span_kind, version):
+def _setup_span(
+    entity_name,
+    tlp_span_kind,
+    version,
+    # --- added by Grasp ---
+    instance: type | None = None,
+    kwargs: dict[str, Any] | None = None,
+    # ---
+):
     """Sets up the OpenTelemetry span and context"""
     if tlp_span_kind in [
         TraceloopSpanKindValues.WORKFLOW,
         TraceloopSpanKindValues.AGENT,
     ]:
         set_workflow_name(entity_name)
-    span_name = f"{entity_name}.{tlp_span_kind.value}"
+
+    # --- added by Grasp ---
+
+    instance_name = None
+
+    if instance is not None:
+        if tlp_span_kind in [
+            TraceloopSpanKindValues.WORKFLOW,
+            TraceloopSpanKindValues.AGENT,
+            TraceloopSpanKindValues.TOOL,
+        ]:
+            instance_name = getattr(instance, "name", None)
+
+        elif (
+            tlp_span_kind == TraceloopSpanKindValues.TASK and entity_name == "generate"
+        ):
+            instance_name = getattr(instance, "agent_name", None)
+
+    if instance_name:
+        call_id = (kwargs or {}).get("call_id")
+        span_name = f"{instance_name}.{entity_name}" + (
+            f"[{call_id}]" if call_id else ""
+        )
+    else:
+        # ---
+        span_name = f"{entity_name}.{tlp_span_kind.value}"
 
     with get_tracer() as tracer:
         span = tracer.start_span(span_name)
@@ -214,12 +204,17 @@ def _setup_span(entity_name, tlp_span_kind, version):
     return span, ctx, ctx_token
 
 
-def _handle_span_input(span, args, kwargs, cls=None):
+def _handle_span_input(
+    span, args, kwargs, cls=None, exclude_fields: set[str] | None = None
+):
     """Handles entity input logging in JSON for both sync and async functions"""
     try:
         if _should_send_prompts():
             json_input = json.dumps(
-                {"args": _to_plain(list(args)), "kwargs": _to_plain(kwargs)},
+                {
+                    "args": _to_plain(list(args), exclude_fields=exclude_fields),
+                    "kwargs": _to_plain(kwargs, exclude_fields=exclude_fields),
+                },
                 **({"cls": cls} if cls else {}),
                 indent=2,
             )  # JSON formatting updated by Grasp
@@ -232,12 +227,14 @@ def _handle_span_input(span, args, kwargs, cls=None):
         Telemetry().log_exception(e)
 
 
-def _handle_span_output(span, res, cls=None):
+def _handle_span_output(span, res, cls=None, exclude_fields: set[str] | None = None):
     """Handles entity output logging in JSON for both sync and async functions"""
     try:
         if _should_send_prompts():
             json_output = json.dumps(
-                _to_plain(res), **({"cls": cls} if cls else {}), indent=2
+                _to_plain(res, exclude_fields=exclude_fields),
+                **({"cls": cls} if cls else {}),
+                indent=2,
             )  # JSON formatting updated by Grasp
             truncated_json = _truncate_json_if_needed(json_output)
             span.set_attribute(
@@ -252,6 +249,16 @@ def _cleanup_span(span, ctx_token):
     """End the span process and detach the context token"""
     span.end()
     context_api.detach(ctx_token)
+
+
+# --- added by Grasp ---
+def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
+    return (inspect.ismethod(func) and (func.__self__ is self_candidate)) or hasattr(
+        self_candidate, func.__name__
+    )
+
+
+# ---
 
 
 def entity_method(
@@ -272,8 +279,19 @@ def entity_method(
                             yield item
                         return
 
+                    # --- added by Grasp ---
+                    is_bound = is_bound_method(fn, args[0] if args else False)
+                    instance = args[0] if is_bound else None
+                    # ---
+
                     span, ctx, ctx_token = _setup_span(
-                        entity_name, tlp_span_kind, version
+                        entity_name,
+                        tlp_span_kind,
+                        version,
+                        # --- added by Grasp ---
+                        instance=instance,
+                        kwargs=kwargs,
+                        # ---
                     )
                     _handle_span_input(span, args, kwargs, cls=JSONEncoder)
 
@@ -309,7 +327,20 @@ def entity_method(
                 if not _tracing_initialized_quietly():
                     return await fn(*args, **kwargs)
 
-                span, ctx, ctx_token = _setup_span(entity_name, tlp_span_kind, version)
+                # --- added by Grasp ---
+                is_bound = is_bound_method(fn, args[0] if args else False)
+                instance = args[0] if is_bound else None
+                # ---
+
+                span, ctx, ctx_token = _setup_span(
+                    entity_name,
+                    tlp_span_kind,
+                    version,
+                    # --- added by Grasp ---
+                    instance=instance,
+                    kwargs=kwargs,
+                    # ---
+                )
                 _handle_span_input(span, args, kwargs, cls=JSONEncoder)
                 try:
                     res = await fn(*args, **kwargs)
@@ -329,7 +360,20 @@ def entity_method(
             if not _tracing_initialized_quietly():
                 return fn(*args, **kwargs)
 
-            span, ctx, ctx_token = _setup_span(entity_name, tlp_span_kind, version)
+            # --- added by Grasp ---
+            is_bound = is_bound_method(fn, args[0] if args else False)
+            instance = args[0] if is_bound else None
+            # ---
+
+            span, ctx, ctx_token = _setup_span(
+                entity_name,
+                tlp_span_kind,
+                version,
+                # --- added by Grasp ---
+                instance=instance,
+                kwargs=kwargs,
+                # ---
+            )
             _handle_span_input(span, args, kwargs, cls=JSONEncoder)
             try:
                 res = fn(*args, **kwargs)

@@ -23,7 +23,7 @@ class Runner(Generic[OutT, CtxT]):
         entry_proc: BaseProcessor[Any, Any, Any, CtxT],
         procs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
-        runner_id: str | None = None,
+        name: str | None = None,
     ) -> None:
         if entry_proc not in procs:
             raise RunnerError(
@@ -37,19 +37,19 @@ class Runner(Generic[OutT, CtxT]):
 
         self._entry_proc = entry_proc
         self._procs = procs
-        self._runner_id = runner_id or str(uuid4())[:6]
+        self._name = name or str(uuid4())[:6]
         self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
     @property
-    def runner_id(self) -> str:
-        return self._runner_id
+    def name(self) -> str:
+        return self._name
 
     @property
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
 
     def _generate_call_id(self, proc: BaseProcessor[Any, Any, Any, CtxT]) -> str | None:
-        return self._runner_id + "/" + proc._generate_call_id(call_id=None)  # type: ignore
+        return self._name + "/" + proc._generate_call_id(call_id=None)  # type: ignore
 
     def _unpack_packet(
         self, packet: Packet[Any] | None
@@ -118,7 +118,7 @@ class Runner(Generic[OutT, CtxT]):
 
         await pool.post(out_packet)
 
-    @workflow(name="runner_run")  # type: ignore
+    @workflow(name="runner")  # type: ignore
     async def run(self, chat_input: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
         async with PacketPool() as pool:
             for proc in self._procs:
