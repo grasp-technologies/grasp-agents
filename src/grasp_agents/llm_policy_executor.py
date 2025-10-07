@@ -147,7 +147,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         if self.memory_manager:
             self.memory_manager(memory=memory, ctx=ctx, call_id=call_id, **kwargs)
 
-    @task(name="generate_message")  # type: ignore
+    @task(name="generate")  # type: ignore
     async def generate_message(
         self,
         memory: LLMAgentMemory,
@@ -170,7 +170,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         return completion.messages[0]
 
-    @task(name="generate_message")  # type: ignore
+    @task(name="generate")  # type: ignore
     async def generate_message_stream(
         self,
         memory: LLMAgentMemory,
@@ -332,9 +332,17 @@ class LLMPolicyExecutor(Generic[CtxT]):
     async def execute(
         self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
     ) -> AssistantMessage | Sequence[AssistantMessage]:
+        """
+        Some LLMs do not output tool calls and message content in the same response.
+        To enable planning/observation before/after tool calls for such models,
+        we might want to force the agent to output a message without
+        tool calls (planning) first, then force tool calls in the next message, etc.
+        For this, we use the `react_mode` flag.
+        """
         # 1. Generate the first message:
-        #    In ReAct mode, we generate the first message without tool calls
-        #    to force the agent to plan its actions in a separate message.
+
+        # In ReAct mode, we generate the first message without tool calls
+        # to enforce planning.
 
         tool_choice: ToolChoice | None = None
         if self.tools:
@@ -392,16 +400,16 @@ class LLMPolicyExecutor(Generic[CtxT]):
             self._manage_memory(memory, ctx=ctx, call_id=call_id, num_turns=turns)
 
             # 4. Generate the next message based on the updated memory.
-            #    In ReAct mode, we set tool_choice to "none" if we just called tools,
-            #    so the next message will be an observation/planning message with
-            #    no immediate tool calls.
 
             if self._react_mode and gen_message.tool_calls:
+                # ReAct mode: used tools in the last message -> avoid tool calls in the next message
                 tool_choice = "none"
-            elif gen_message.tool_calls:
-                tool_choice = "auto"
-            else:
+            elif self._react_mode:
+                # ReAct mode: no tool calls in the last message -> force tool calls in the next message
                 tool_choice = "required"
+            else:
+                # No ReAct mode: let the model decide
+                tool_choice = "auto"
 
             gen_message = await self.generate_message(
                 memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
@@ -475,10 +483,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
             if self._react_mode and gen_message.tool_calls:
                 tool_choice = "none"
-            elif gen_message.tool_calls:
-                tool_choice = "auto"
-            else:
+            elif self._react_mode:
                 tool_choice = "required"
+            else:
+                tool_choice = "auto"
 
             async for event in self.generate_message_stream(
                 memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id

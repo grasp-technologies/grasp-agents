@@ -89,7 +89,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
         return False
 
-    @workflow(name="workflow_run")  # type: ignore
+    @workflow(name="workflow")  # type: ignore
     @final
     async def run(
         self,
@@ -136,7 +136,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
         raise RuntimeError("Looped workflow did not exit after max iterations.")
 
-    @workflow(name="workflow_run")  # type: ignore
+    @workflow(name="workflow")  # type: ignore
     @final
     async def run_stream(
         self,

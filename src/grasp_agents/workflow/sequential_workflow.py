@@ -41,7 +41,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
                     f" {proc.name}"
                 )
 
-    @workflow(name="workflow_run")  # type: ignore
+    @workflow(name="workflow")  # type: ignore
     @final
     async def run(
         self,
@@ -74,7 +74,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
 
         return cast("Packet[OutT]", packet)
 
-    @workflow(name="workflow_run")  # type: ignore
+    @workflow(name="workflow")  # type: ignore
     @final
     async def run_stream(
         self,
