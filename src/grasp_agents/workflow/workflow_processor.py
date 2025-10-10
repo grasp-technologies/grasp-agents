@@ -8,6 +8,7 @@ from ..processors.base_processor import BaseProcessor, RecipientSelector
 from ..run_context import CtxT, RunContext
 from ..typing.events import DummyEvent, Event
 from ..typing.io import InT, OutT, ProcName
+from ..utils import is_method_overridden
 
 
 class WorkflowProcessor(
@@ -45,14 +46,18 @@ class WorkflowProcessor(
         self._end_proc = end_proc
 
         self.recipients = recipients
-        if hasattr(type(self), "recipient_selector"):
-            self._end_proc.recipient_selector = self.recipient_selector
+
+        # If the recipient selector is overridden, propagate it to the end processor
+        if is_method_overridden(
+            "select_recipients_impl", self, BaseProcessor[Any, Any, Any, Any]
+        ):
+            self._end_proc.select_recipients_impl = self.select_recipients_impl
 
     def add_recipient_selector(
         self, func: RecipientSelector[OutT, CtxT]
     ) -> RecipientSelector[OutT, CtxT]:
-        self._end_proc.recipient_selector = func
-        self.recipient_selector = func
+        self._end_proc.select_recipients_impl = func
+        self.select_recipients_impl = func
 
         return func
 

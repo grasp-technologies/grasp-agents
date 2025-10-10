@@ -14,7 +14,14 @@ from .base_processor import BaseProcessor, with_retry, with_retry_stream
 logger = logging.getLogger(__name__)
 
 
-class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, CtxT]):
+class MappingProcessor(
+    BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, CtxT]
+):
+    """
+    Processor that can have different numbers of inputs and outputs, allowing for an
+    arbitrary mapping between them.
+    """
+
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
         1: "_out_type",
@@ -29,6 +36,10 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         call_id: str,
         ctx: RunContext[CtxT],
     ) -> list[OutT]:
+        """
+        Process a list of inputs and return a list of outputs. The length of the
+        output list can be different from the input list.
+        """
         return cast("list[OutT]", in_args)
 
     async def _process_stream(
@@ -59,42 +70,36 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
         forgetful: bool = False,
-        call_id: str | None = None,
+        call_id: str,
         ctx: RunContext[CtxT],
-    ) -> tuple[list[InT] | None, MemT, str]:
-        call_id = self._generate_call_id(call_id)
-
+    ) -> tuple[list[InT] | None, MemT]:
         val_in_args = self._validate_inputs(
             call_id=call_id,
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
         )
-
         memory = self.memory.model_copy(deep=True) if forgetful else self.memory
 
-        return val_in_args, memory, call_id
+        return val_in_args, memory
 
     def _postprocess(
         self, outputs: list[OutT], call_id: str, ctx: RunContext[CtxT]
     ) -> Packet[OutT]:
         payloads: list[OutT] = []
-        routing: dict[int, Sequence[ProcName] | None] = {}
-        for idx, output in enumerate(outputs):
+        routing: list[Sequence[ProcName]] | None = []
+        for output in outputs:
             val_output = self._validate_output(output, call_id=call_id)
-            recipients = self._select_recipients(output=val_output, ctx=ctx)
-            self._validate_recipients(recipients, call_id=call_id)
-
             payloads.append(val_output)
-            routing[idx] = recipients
 
-        recipient_sets = [set(r or []) for r in routing.values()]
-        if all(r == recipient_sets[0] for r in recipient_sets):
-            recipients = routing[0]
-        else:
-            recipients = routing
+            selected_recipients = self.select_recipients(output=val_output, ctx=ctx)
+            self._validate_recipients(selected_recipients, call_id=call_id)
+            routing.append(selected_recipients or [])
 
-        return Packet(payloads=payloads, sender=self.name, recipients=recipients)  # type: ignore[return-value]
+        if all(len(r) == 0 for r in routing):
+            routing = None
+
+        return Packet(payloads=payloads, sender=self.name, routing=routing)
 
     @agent(name="processor")  # type: ignore
     @with_retry
@@ -109,8 +114,9 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
+        call_id = self._generate_call_id(call_id)
 
-        val_in_args, memory, call_id = self._preprocess(
+        val_in_args, memory = self._preprocess(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
@@ -141,8 +147,9 @@ class Processor(BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, C
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
+        call_id = self._generate_call_id(call_id)
 
-        val_in_args, memory, call_id = self._preprocess(
+        val_in_args, memory = self._preprocess(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,

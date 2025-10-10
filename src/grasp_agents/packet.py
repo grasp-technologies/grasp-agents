@@ -1,46 +1,92 @@
 from collections.abc import Sequence
-from typing import Annotated, Any, Generic, Literal, TypeVar
+from typing import Generic, Self, TypeVar
 from uuid import uuid4
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .typing.io import ProcName
 
-START_PROC_NAME: Literal["*START*"] = "*START*"
-
+PacketRouting = Sequence[Sequence[ProcName]]
 _PayloadT_co = TypeVar("_PayloadT_co", covariant=True)
+
+
+def is_broadcast_routing(routing: PacketRouting | None) -> Sequence[ProcName] | None:
+    if not routing or len(routing) == 0:
+        return None
+
+    first_recipients = routing[0]
+    first_set = set(first_recipients)
+    for recipients in routing[1:]:
+        if len(recipients) != len(first_recipients) or set(recipients) != first_set:
+            return None
+
+    return first_recipients
 
 
 class Packet(BaseModel, Generic[_PayloadT_co]):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     payloads: Sequence[_PayloadT_co]
     sender: ProcName
-    recipients: Sequence[ProcName] | None = None
+    routing: PacketRouting | None = None
+
+    @property
+    def broadcast_routing(self) -> Sequence[ProcName] | None:
+        return is_broadcast_routing(self.routing)
+
+    @model_validator(mode="after")
+    def _validate_routing(self) -> Self:
+        if self.routing is not None and len(self.payloads) != len(self.routing):
+            raise ValueError(
+                "If routing is specified, its length must match the length of payloads"
+            )
+        return self
+
+    def split_per_payload(self) -> Sequence["Packet[_PayloadT_co]"] | None:
+        if self.routing is None:
+            return None
+
+        return [
+            Packet(
+                id=f"{self.id}/{i}",
+                payloads=[payload],
+                routing=[recipients],
+                sender=self.sender,
+            )
+            for i, (payload, recipients) in enumerate(
+                zip(self.payloads, self.routing, strict=False)
+            )
+        ]
+
+    def split_by_recipient(
+        self,
+    ) -> Sequence["Packet[_PayloadT_co]"] | None:
+        if self.routing is None:
+            return None
+
+        recipient_to_payloads: dict[ProcName, list[_PayloadT_co]] = {}
+        for payload, recipients in zip(self.payloads, self.routing, strict=True):
+            for recipient in recipients:
+                if recipient not in recipient_to_payloads:
+                    recipient_to_payloads[recipient] = []
+                recipient_to_payloads[recipient].append(payload)
+
+        return [
+            Packet(
+                id=f"{self.id}/{recipient}",
+                payloads=payloads,
+                routing=[[recipient] for _ in range(len(payloads))],
+                sender=self.sender,
+            )
+            for recipient, payloads in recipient_to_payloads.items()
+        ]
 
     model_config = ConfigDict(extra="forbid")
 
     def __repr__(self) -> str:
-        _to = ", ".join(self.recipients) if self.recipients else "None"
         return (
             f"{self.__class__.__name__}:\n"
             f"ID: {self.id}\n"
             f"From: {self.sender}\n"
-            f"To: {_to}\n"
+            f"Routing: {self.routing or 'None'}\n"
             f"Payloads: {len(self.payloads)}"
         )
-
-
-def _check_recipients_length(v: Sequence[ProcName] | None) -> Sequence[ProcName] | None:
-    if v is not None and len(v) != 1:
-        raise ValueError("recipients must contain exactly one item")
-    return v
-
-
-class StartPacket(Packet[_PayloadT_co]):
-    chat_inputs: Any | None = "start"
-    sender: ProcName = Field(default=START_PROC_NAME, frozen=True)
-    payloads: Sequence[_PayloadT_co] = Field(default=(), frozen=True)
-    recipients: Annotated[
-        Sequence[ProcName] | None,
-        AfterValidator(_check_recipients_length),
-    ] = None

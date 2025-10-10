@@ -50,15 +50,6 @@ class Usage(BaseModel):
         )
 
 
-class CompletionChoice(BaseModel):
-    message: AssistantMessage
-    finish_reason: FinishReason | None
-    index: int
-    logprobs: OpenAIChoiceLogprobs | LiteLLMChoiceLogprobs | Any | None = None
-    # LiteLLM-specific fields
-    provider_specific_fields: dict[str, Any] | None = None
-
-
 class CompletionError(BaseModel):
     message: str
     metadata: dict[str, str | None] | None = None
@@ -71,13 +62,16 @@ class Completion(BaseModel):
     model: str | None
     name: str | None = None
     system_fingerprint: str | None = None
-    choices: list[CompletionChoice]
-    usage: Usage | None = None
     error: CompletionError | None = None
+    usage: Usage | None = None
+
+    # Removed choices to add message directly to Completion
+    message: AssistantMessage
+    finish_reason: FinishReason | None
+    logprobs: OpenAIChoiceLogprobs | LiteLLMChoiceLogprobs | Any | None = None
+    # LiteLLM-specific fields
+    provider_specific_fields: dict[str, Any] | None = None
+
     # LiteLLM-specific fields
     response_ms: float | None = None
     hidden_params: dict[str, Any] | None = None
-
-    @property
-    def messages(self) -> list[AssistantMessage]:
-        return [choice.message for choice in self.choices if choice.message]

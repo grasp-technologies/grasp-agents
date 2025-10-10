@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import Field
 
@@ -9,51 +9,37 @@ from .typing.io import LLMPrompt
 from .typing.message import Message, Messages, SystemMessage
 
 
-class MemoryPreparator(Protocol):
-    def __call__(
-        self,
-        memory: "LLMAgentMemory",
-        *,
-        in_args: Any | None,
-        sys_prompt: LLMPrompt | None,
-        ctx: RunContext[Any],
-        call_id: str,
-    ) -> None: ...
-
-
 class LLMAgentMemory(Memory):
-    message_history: Messages = Field(default_factory=Messages)
-    sys_prompt: LLMPrompt | None = Field(default=None)
+    messages: Messages = Field(default_factory=Messages)
+    instructions: LLMPrompt | None = Field(default=None)
 
-    def __init__(self, sys_prompt: LLMPrompt | None = None) -> None:
+    def __init__(self, instructions: LLMPrompt | None = None) -> None:
         super().__init__()
-        self.reset(sys_prompt)
+        self.reset(instructions)
 
     def reset(
-        self, sys_prompt: LLMPrompt | None = None, ctx: RunContext[Any] | None = None
+        self, instructions: LLMPrompt | None = None, ctx: RunContext[Any] | None = None
     ):
-        if sys_prompt is not None:
-            self.sys_prompt = sys_prompt
+        if instructions is not None:
+            self.instructions = instructions
 
-        self.message_history = (
-            [SystemMessage(content=self.sys_prompt)]
-            if self.sys_prompt is not None
+        self.messages = (
+            [SystemMessage(content=self.instructions)]
+            if self.instructions is not None
             else []
         )
 
     def erase(self) -> None:
-        self.message_history = []
+        self.messages = []
 
     def update(
-        self, messages: Sequence[Message], *, ctx: RunContext[Any] | None = None
+        self, new_messages: Sequence[Message], *, ctx: RunContext[Any] | None = None
     ):
-        self.message_history.extend(messages)
+        self.messages.extend(new_messages)
 
     @property
     def is_empty(self) -> bool:
-        return len(self.message_history) == 0
+        return len(self.messages) == 0
 
     def __repr__(self) -> str:
-        return (
-            f"LLMAgentMemory with message history of length {len(self.message_history)}"
-        )
+        return f"LLMAgentMemory with message history of length {len(self.messages)}"

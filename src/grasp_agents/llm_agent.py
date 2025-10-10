@@ -5,11 +5,12 @@ from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 from pydantic import BaseModel
 
 from .llm import LLM
-from .llm_agent_memory import LLMAgentMemory, MemoryPreparator
+from .llm_agent_memory import LLMAgentMemory
 from .llm_policy_executor import (
+    BeforeGenerateHook,
+    FinalAnswerChecker,
     LLMPolicyExecutor,
-    MemoryManager,
-    ToolCallLoopTerminator,
+    ToolOutputConverter,
 )
 from .processors.parallel_processor import ParallelProcessor
 from .prompt_builder import (
@@ -26,20 +27,33 @@ from .typing.events import (
     UserMessageEvent,
 )
 from .typing.io import InT, LLMPrompt, OutT, ProcName
-from .typing.message import Message, Messages, SystemMessage, UserMessage
-from .typing.tool import BaseTool
-from .utils import get_prompt, validate_obj_from_json_or_py_string
+from .typing.message import Message, SystemMessage, UserMessage
+from .typing.tool import BaseTool, ToolCall
+from .utils import get_prompt, is_method_overridden
+from .validation import validate_obj_from_json_or_py_string
 
 _InT_contra = TypeVar("_InT_contra", contravariant=True)
 _OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
+class MemoryPreparator(Protocol):
+    def __call__(
+        self,
+        memory: "LLMAgentMemory",
+        *,
+        in_args: Any | None,
+        ctx: RunContext[Any],
+        call_id: str,
+    ) -> None: ...
+
+
 class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
     def __call__(
         self,
-        conversation: Messages,
+        final_answer: str,
         *,
-        in_args: _InT_contra | None,
+        memory: LLMAgentMemory,
+        in_args: _InT_contra | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
     ) -> _OutT_co: ...
@@ -89,14 +103,6 @@ class LLMAgent(
         self._memory: LLMAgentMemory = LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
 
-        self.memory_preparator: MemoryPreparator | None
-        if not hasattr(type(self), "memory_preparator"):
-            self.memory_preparator = None
-
-        self.output_parser: OutputParser[InT, OutT, CtxT] | None
-        if not hasattr(type(self), "output_parser"):
-            self.output_parser = None
-
         # LLM policy executor
 
         if issubclass(self._out_type, BaseModel):
@@ -113,7 +119,9 @@ class LLMAgent(
         if (
             response_schema is None
             and tools is None
-            and not hasattr(type(self), "output_parser")
+            and not is_method_overridden(
+                "parse_output_impl", self, ParallelProcessor[Any, Any, Any, Any]
+            )
         ):
             response_schema = self.out_type
             self._used_default_llm_response_schema = True
@@ -139,7 +147,7 @@ class LLMAgent(
             agent_name=self._name, sys_prompt=sys_prompt, in_prompt=in_prompt
         )
 
-        self._register_overridden_handlers()
+        self._register_overridden_implementations()
 
     @property
     def llm(self) -> LLM:
@@ -162,22 +170,17 @@ class LLMAgent(
         return self._prompt_builder.in_prompt
 
     @final
-    def _prepare_memory(
+    def prepare_memory(
         self,
         memory: LLMAgentMemory,
         *,
         in_args: InT | None = None,
-        sys_prompt: LLMPrompt | None = None,
         ctx: RunContext[Any],
         call_id: str,
     ) -> None:
-        if self.memory_preparator:
-            return self.memory_preparator(
-                memory=memory,
-                in_args=in_args,
-                sys_prompt=sys_prompt,
-                ctx=ctx,
-                call_id=call_id,
+        if is_method_overridden("prepare_memory_impl", self, LLMAgent[Any, Any, Any]):
+            return self.prepare_memory_impl(
+                memory=memory, in_args=in_args, ctx=ctx, call_id=call_id
             )
 
     def _memorize_inputs(
@@ -197,14 +200,10 @@ class LLMAgent(
         if self._reset_memory_on_run or memory.is_empty:
             memory.reset(formatted_sys_prompt)
             if formatted_sys_prompt is not None:
-                system_message = cast("SystemMessage", memory.message_history[0])
+                system_message = cast("SystemMessage", memory.messages[0])
         else:
-            self._prepare_memory(
-                memory=memory,
-                in_args=in_args,
-                sys_prompt=formatted_sys_prompt,
-                ctx=ctx,
-                call_id=call_id,
+            self.prepare_memory(
+                memory=memory, in_args=in_args, ctx=ctx, call_id=call_id
             )
 
         input_message = self._prompt_builder.build_input_message(
@@ -215,28 +214,34 @@ class LLMAgent(
 
         return system_message, input_message
 
-    def parse_output_default(self, conversation: Messages) -> OutT:
+    def parse_output_default(self, final_answer: str) -> OutT:
         return validate_obj_from_json_or_py_string(
-            str(conversation[-1].content or ""),
+            final_answer,
             schema=self._out_type,
             from_substring=False,
             strip_language_markdown=True,
         )
 
-    def _parse_output(
+    @final
+    def parse_output(
         self,
-        conversation: Messages,
+        final_answer: str,
         *,
+        memory: LLMAgentMemory,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
     ) -> OutT:
-        if self.output_parser:
-            return self.output_parser(
-                conversation=conversation, in_args=in_args, ctx=ctx, call_id=call_id
+        if is_method_overridden("parse_output_impl", self, LLMAgent[Any, Any, Any]):
+            return self.parse_output_impl(
+                final_answer,
+                memory=memory,
+                in_args=in_args,
+                ctx=ctx,
+                call_id=call_id,
             )
 
-        return self.parse_output_default(conversation)
+        return self.parse_output_default(final_answer)
 
     async def _process(
         self,
@@ -259,10 +264,13 @@ class LLMAgent(
         if input_message:
             self._print_messages([input_message], ctx=ctx, call_id=call_id)
 
-        await self._policy_executor.execute(memory, ctx=ctx, call_id=call_id)
+        final_answer = await self._policy_executor.execute(
+            memory, ctx=ctx, call_id=call_id
+        )
 
-        return self._parse_output(
-            conversation=memory.message_history,
+        return self.parse_output(
+            final_answer,
+            memory=memory,
             in_args=in_args,
             ctx=ctx,
             call_id=call_id,
@@ -295,13 +303,17 @@ class LLMAgent(
                 data=input_message, proc_name=self.name, call_id=call_id
             )
 
+        event: Event[Any] | None = None
         async for event in self._policy_executor.execute_stream(
             memory, ctx=ctx, call_id=call_id
         ):
             yield event
 
-        output = self._parse_output(
-            conversation=memory.message_history,
+        final_answer = self._policy_executor.get_final_answer(memory)
+
+        output = self.parse_output(
+            final_answer or "",
+            memory=memory,
             in_args=in_args,
             ctx=ctx,
             call_id=call_id,
@@ -314,109 +326,157 @@ class LLMAgent(
         if ctx.printer:
             ctx.printer.print_messages(messages, agent_name=self.name, call_id=call_id)
 
-    # -- Override these methods in subclasses if needed --
+    # Methods that can be overridden in subclasses
 
-    def _register_overridden_handlers(self) -> None:
-        cur_cls = type(self)
-        base_cls = LLMAgent[Any, Any, Any]
-
-        # Prompt builder
-
-        if cur_cls.system_prompt_builder is not base_cls.system_prompt_builder:
-            self._prompt_builder.system_prompt_builder = self.system_prompt_builder
-
-        if cur_cls.input_content_builder is not base_cls.input_content_builder:
-            self._prompt_builder.input_content_builder = self.input_content_builder
-
-        # Policy executor
-
-        if cur_cls.tool_call_loop_terminator is not base_cls.tool_call_loop_terminator:
-            self._policy_executor.tool_call_loop_terminator = (
-                self.tool_call_loop_terminator
-            )
-
-        if cur_cls.memory_manager is not base_cls.memory_manager:
-            self._policy_executor.memory_manager = self.memory_manager
-
-    def system_prompt_builder(self, ctx: RunContext[CtxT], call_id: str) -> str | None:
-        if self._prompt_builder.system_prompt_builder is not None:
-            return self._prompt_builder.system_prompt_builder(ctx=ctx, call_id=call_id)
-        raise NotImplementedError("System prompt builder is not implemented.")
-
-    def input_content_builder(
-        self, in_args: InT, ctx: RunContext[CtxT], call_id: str
-    ) -> Content:
-        if self._prompt_builder.input_content_builder is not None:
-            return self._prompt_builder.input_content_builder(
-                in_args=in_args, ctx=ctx, call_id=call_id
-            )
-        raise NotImplementedError("Input content builder is not implemented.")
-
-    def tool_call_loop_terminator(
+    def prepare_memory_impl(
         self,
-        conversation: Messages,
+        memory: LLMAgentMemory,
         *,
+        in_args: InT | None = None,
+        ctx: RunContext[Any],
+        call_id: str,
+    ) -> None:
+        raise NotImplementedError
+
+    def parse_output_impl(
+        self,
+        final_answer: str,
+        *,
+        memory: LLMAgentMemory,
+        in_args: InT | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
-        **kwargs: Any,
-    ) -> bool:
-        if self._policy_executor.tool_call_loop_terminator is not None:
-            return self._policy_executor.tool_call_loop_terminator(
-                conversation=conversation, ctx=ctx, call_id=call_id, **kwargs
-            )
-        raise NotImplementedError("Tool call loop terminator is not implemented.")
+    ) -> OutT:
+        raise NotImplementedError
 
-    def memory_manager(
+    def build_system_prompt_impl(
+        self, *, ctx: RunContext[CtxT], call_id: str
+    ) -> str | None:
+        return self._prompt_builder.build_system_prompt_impl(ctx=ctx, call_id=call_id)
+
+    def build_input_content_impl(
+        self, in_args: InT, *, ctx: RunContext[CtxT], call_id: str
+    ) -> Content:
+        return self._prompt_builder.build_input_content_impl(
+            in_args=in_args, ctx=ctx, call_id=call_id
+        )
+
+    def check_for_final_answer_impl(
         self,
         memory: LLMAgentMemory,
         *,
         ctx: RunContext[CtxT],
         call_id: str,
         **kwargs: Any,
+    ) -> str | None:
+        return self._policy_executor.check_for_final_answer_impl(
+            memory, ctx=ctx, call_id=call_id, **kwargs
+        )
+
+    async def on_before_generate_impl(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
     ) -> None:
-        if self._policy_executor.memory_manager is not None:
-            return self._policy_executor.memory_manager(
-                memory=memory, ctx=ctx, call_id=call_id, **kwargs
-            )
-        raise NotImplementedError("Memory manager is not implemented.")
+        return await self._policy_executor.on_before_generate_impl(
+            memory,
+            ctx=ctx,
+            call_id=call_id,
+            num_turns=num_turns,
+            llm_settings=llm_settings,
+        )
 
-    # Decorators for custom implementations as an alternative to overriding methods
+    def tool_outputs_to_messages_impl(
+        self,
+        tool_outputs: Sequence[Any],
+        tool_calls: Sequence[ToolCall],
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ):
+        return self._policy_executor.tool_outputs_to_messages_impl(
+            tool_outputs=tool_outputs,
+            tool_calls=tool_calls,
+            ctx=ctx,
+            call_id=call_id,
+        )
 
-    def add_system_prompt_builder(
-        self, func: SystemPromptBuilder[CtxT]
-    ) -> SystemPromptBuilder[CtxT]:
-        self._prompt_builder.system_prompt_builder = func
-
-        return func
-
-    def add_input_content_builder(
-        self, func: InputContentBuilder[InT, CtxT]
-    ) -> InputContentBuilder[InT, CtxT]:
-        self._prompt_builder.input_content_builder = func
-
-        return func
-
-    def add_memory_manager(self, func: MemoryManager[CtxT]) -> MemoryManager[CtxT]:
-        self._policy_executor.memory_manager = func
-
-        return func
-
-    def add_tool_call_loop_terminator(
-        self, func: ToolCallLoopTerminator[CtxT]
-    ) -> ToolCallLoopTerminator[CtxT]:
-        self._policy_executor.tool_call_loop_terminator = func
-
-        return func
+    # Decorators as an alternative to overriding methods
 
     def add_output_parser(
         self, func: OutputParser[InT, OutT, CtxT]
     ) -> OutputParser[InT, OutT, CtxT]:
         if self._used_default_llm_response_schema:
             self._policy_executor.response_schema = None
-        self.output_parser = func
-
+        self.parse_output_impl = func
         return func
 
     def add_memory_preparator(self, func: MemoryPreparator) -> MemoryPreparator:
-        self.memory_preparator = func
+        self.memory_preparator_impl = func
         return func
+
+    def add_system_prompt_builder(
+        self, func: SystemPromptBuilder[CtxT]
+    ) -> SystemPromptBuilder[CtxT]:
+        self._prompt_builder.build_system_prompt_impl = func
+        return func
+
+    def add_input_content_builder(
+        self, func: InputContentBuilder[InT, CtxT]
+    ) -> InputContentBuilder[InT, CtxT]:
+        self._prompt_builder.build_input_content_impl = func
+        return func
+
+    def add_final_answer_checker(
+        self, func: FinalAnswerChecker[CtxT]
+    ) -> FinalAnswerChecker[CtxT]:
+        self._policy_executor.check_for_final_answer_impl = func
+        return func
+
+    def add_before_generate_hook(
+        self, func: BeforeGenerateHook[CtxT]
+    ) -> BeforeGenerateHook[CtxT]:
+        self._policy_executor.on_before_generate_impl = func
+        return func
+
+    def add_tool_output_converter(
+        self, func: ToolOutputConverter[CtxT]
+    ) -> ToolOutputConverter[CtxT]:
+        self._policy_executor.tool_outputs_to_messages_impl = func
+        return func
+
+    # When methods are overridden in subclasses, pass them to the components
+
+    def _register_overridden_implementations(self) -> None:
+        base_cls = LLMAgent[Any, Any, Any]
+
+        # Prompt builder
+
+        if is_method_overridden("build_system_prompt_impl", self, base_cls):
+            self._prompt_builder.build_system_prompt_impl = (
+                self.build_system_prompt_impl
+            )
+
+        if is_method_overridden("build_input_content_impl", self, base_cls):
+            self._prompt_builder.build_input_content_impl = (
+                self.build_input_content_impl
+            )
+
+        # Policy executor
+
+        if is_method_overridden("check_for_final_answer_impl", self, base_cls):
+            self._policy_executor.check_for_final_answer_impl = (
+                self.check_for_final_answer_impl
+            )
+
+        if is_method_overridden("on_before_generate_impl", self, base_cls):
+            self._policy_executor.on_before_generate_impl = self.on_before_generate_impl
+
+        if is_method_overridden("tool_outputs_to_messages_impl", self, base_cls):
+            self._policy_executor.tool_outputs_to_messages_impl = (
+                self.tool_outputs_to_messages_impl
+            )

@@ -51,15 +51,24 @@ class ParallelProcessor(
     def _validate_parallel_recipients(
         self, out_packets: Sequence[Packet[OutT]], call_id: str
     ) -> None:
-        recipient_sets = [set(p.recipients or []) for p in out_packets]
-        same_recipients = all(rs == recipient_sets[0] for rs in recipient_sets)
-        if not same_recipients:
-            raise PacketRoutingError(
-                proc_name=self.name,
-                call_id=call_id,
-                message="Parallel runs must return the same recipients "
-                f"[proc_name={self.name}; call_id={call_id}]",
-            )
+        if not out_packets:
+            return
+
+        first_packet = out_packets[0]
+        first_recipients_set = set((first_packet.routing or [[]])[0])
+        err_kwargs = dict(proc_name=self.name, call_id=call_id)
+
+        for p in out_packets[:1]:
+            recipients_set = set((p.routing or [[]])[0])
+            if recipients_set != first_recipients_set:
+                raise PacketRoutingError(
+                    message=(
+                        "Parallel processor requires all parallel outputs to "
+                        "have the same recipients "
+                        f"[proc_name={self.name}; call_id={call_id}]"
+                    ),
+                    **err_kwargs,  # type: ignore
+                )
 
     @with_retry
     async def _run_single(
@@ -82,10 +91,14 @@ class ParallelProcessor(
         )
         val_output = self._validate_output(output, call_id=call_id)
 
-        recipients = self._select_recipients(output=val_output, ctx=ctx)
+        recipients = self.select_recipients(output=val_output, ctx=ctx)
         self._validate_recipients(recipients, call_id=call_id)
 
-        return Packet(payloads=[val_output], sender=self.name, recipients=recipients)
+        return Packet(
+            payloads=[val_output],
+            sender=self.name,
+            routing=[recipients] if recipients is not None else None,
+        )
 
     async def _run_parallel(
         self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT]
@@ -102,7 +115,7 @@ class ParallelProcessor(
         return Packet(
             payloads=[out_packet.payloads[0] for out_packet in out_packets],
             sender=self.name,
-            recipients=out_packets[0].recipients,
+            routing=out_packets[0].routing,
         )
 
     @agent(name="processor")  # type: ignore
@@ -167,11 +180,13 @@ class ParallelProcessor(
 
         val_output = self._validate_output(output, call_id=call_id)
 
-        recipients = self._select_recipients(output=val_output, ctx=ctx)
+        recipients = self.select_recipients(output=val_output, ctx=ctx)
         self._validate_recipients(recipients, call_id=call_id)
 
         out_packet = Packet[OutT](
-            payloads=[val_output], sender=self.name, recipients=recipients
+            payloads=[val_output],
+            sender=self.name,
+            routing=[recipients] if recipients is not None else None,
         )
 
         yield ProcPacketOutputEvent(
@@ -208,7 +223,7 @@ class ParallelProcessor(
                 for _, out_packet in sorted(out_packets_map.items())
             ],
             sender=self.name,
-            recipients=out_packets_map[0].recipients,
+            routing=out_packets_map[0].routing,
         )
 
         yield ProcPacketOutputEvent(

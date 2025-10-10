@@ -1,6 +1,4 @@
 import time
-from collections import defaultdict
-from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
 
@@ -18,7 +16,7 @@ from openai.types.chat.chat_completion_token_logprob import (
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ..errors import CombineCompletionChunksError
-from .completion import Completion, CompletionChoice, FinishReason, Usage
+from .completion import Completion, FinishReason, Usage
 from .message import (
     AssistantMessage,
     RedactedThinkingBlock,
@@ -35,7 +33,7 @@ class CompletionChunkDeltaToolCall(BaseModel):
     tool_arguments: str | None
 
 
-class CompletionChunkChoiceDelta(BaseModel):
+class CompletionChunkDelta(BaseModel):
     content: str | None = None
     refusal: str | None = None
     role: Role | None = None
@@ -46,9 +44,9 @@ class CompletionChunkChoiceDelta(BaseModel):
     provider_specific_fields: dict[str, Any] | None = None
 
     @property
-    def thinking_delta(self) -> "CompletionChunkChoiceDelta | None":
+    def thinking_delta(self) -> "CompletionChunkDelta | None":
         return (
-            CompletionChunkChoiceDelta(
+            CompletionChunkDelta(
                 reasoning_content=self.reasoning_content,
                 thinking_blocks=self.thinking_blocks,
                 role=self.role,
@@ -59,10 +57,10 @@ class CompletionChunkChoiceDelta(BaseModel):
         )
 
     @property
-    def tool_call_deltas(self) -> "list[CompletionChunkChoiceDelta] | None":
+    def tool_call_deltas(self) -> "list[CompletionChunkDelta] | None":
         return (
             [
-                CompletionChunkChoiceDelta(
+                CompletionChunkDelta(
                     tool_calls=[tool_call],
                     role=self.role,
                     provider_specific_fields=self.provider_specific_fields,
@@ -74,9 +72,9 @@ class CompletionChunkChoiceDelta(BaseModel):
         )
 
     @property
-    def response_delta(self) -> "CompletionChunkChoiceDelta | None":
+    def response_delta(self) -> "CompletionChunkDelta | None":
         return (
-            CompletionChunkChoiceDelta(
+            CompletionChunkDelta(
                 content=self.content,
                 role=self.role,
                 provider_specific_fields=self.provider_specific_fields,
@@ -86,9 +84,9 @@ class CompletionChunkChoiceDelta(BaseModel):
         )
 
     @property
-    def annotations_delta(self) -> "CompletionChunkChoiceDelta | None":
+    def annotations_delta(self) -> "CompletionChunkDelta | None":
         return (
-            CompletionChunkChoiceDelta(
+            CompletionChunkDelta(
                 annotations=self.annotations,
                 role=self.role,
                 provider_specific_fields=self.provider_specific_fields,
@@ -98,9 +96,9 @@ class CompletionChunkChoiceDelta(BaseModel):
         )
 
     @property
-    def refusal_delta(self) -> "CompletionChunkChoiceDelta | None":
+    def refusal_delta(self) -> "CompletionChunkDelta | None":
         return (
-            CompletionChunkChoiceDelta(
+            CompletionChunkDelta(
                 refusal=self.refusal,
                 role=self.role,
                 provider_specific_fields=self.provider_specific_fields,
@@ -110,21 +108,19 @@ class CompletionChunkChoiceDelta(BaseModel):
         )
 
 
-class CompletionChunkChoice(BaseModel):
-    delta: CompletionChunkChoiceDelta
-    finish_reason: FinishReason | None
-    index: int
-    logprobs: OpenAIChunkChoiceLogprobs | LiteLLMChoiceLogprobs | Any | None = None
-
-
 class CompletionChunk(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str | None
     name: str | None = None
     system_fingerprint: str | None = None
-    choices: list[CompletionChunkChoice]
     usage: Usage | None = None
+
+    # Removed choices to add delta directly to CompletionChunk
+    delta: CompletionChunkDelta
+    finish_reason: FinishReason | None
+    logprobs: OpenAIChunkChoiceLogprobs | LiteLLMChoiceLogprobs | Any | None = None
+
     # LiteLLM-specific fields
     provider_specific_fields: dict[str, Any] | None = None
     response_ms: float | None = None
@@ -133,11 +129,7 @@ class CompletionChunk(BaseModel):
     def split_into_specialized(
         self,
     ) -> "list[CompletionChunk]":
-        if len(self.choices) != 1:
-            raise ValidationError(
-                "CompletionChunk must have exactly one choice for specialization."
-            )
-        delta = self.choices[0].delta
+        delta = self.delta
 
         specialized_chunks: list[CompletionChunk] = []
 
@@ -148,39 +140,32 @@ class CompletionChunk(BaseModel):
         refusal_delta = delta.refusal_delta
 
         if thinking_delta is not None:
-            new_choice = self.choices[0].model_copy(update={"delta": thinking_delta})
-            new_chunk = self.model_copy(update={"choices": [new_choice]})
+            new_chunk = self.model_copy(update={"delta": thinking_delta})
             specialized_chunks.append(
                 ThinkingChunk.model_validate(new_chunk.model_dump())
             )
 
         if tool_call_deltas:
             for delta_tool_call in tool_call_deltas:
-                new_choice = self.choices[0].model_copy(
-                    update={"delta": delta_tool_call}
-                )
-                new_chunk = self.model_copy(update={"choices": [new_choice]})
+                new_chunk = self.model_copy(update={"delta": delta_tool_call})
                 specialized_chunks.append(
                     ToolCallChunk.model_validate(new_chunk.model_dump())
                 )
 
         if response_delta is not None:
-            new_choice = self.choices[0].model_copy(update={"delta": response_delta})
-            new_chunk = self.model_copy(update={"choices": [new_choice]})
+            new_chunk = self.model_copy(update={"delta": response_delta})
             specialized_chunks.append(
                 ResponseChunk.model_validate(new_chunk.model_dump())
             )
 
         if annotations_delta is not None:
-            new_choice = self.choices[0].model_copy(update={"delta": annotations_delta})
-            new_chunk = self.model_copy(update={"choices": [new_choice]})
+            new_chunk = self.model_copy(update={"delta": annotations_delta})
             specialized_chunks.append(
                 AnnotationsChunk.model_validate(new_chunk.model_dump())
             )
 
         if refusal_delta is not None:
-            new_choice = self.choices[0].model_copy(update={"delta": refusal_delta})
-            new_chunk = self.model_copy(update={"choices": [new_choice]})
+            new_chunk = self.model_copy(update={"delta": refusal_delta})
             specialized_chunks.append(
                 RefusalChunk.model_validate(new_chunk.model_dump())
             )
@@ -189,16 +174,9 @@ class CompletionChunk(BaseModel):
 
 
 class ResponseChunk(CompletionChunk):
-    @field_validator("choices")
+    @field_validator("delta")
     @classmethod
-    def validate_response_chunk(
-        cls, choices: list[CompletionChunkChoice]
-    ) -> list[CompletionChunkChoice]:
-        if len(choices) != 1:
-            raise ValidationError("ResponseChunk must have exactly one choice.")
-
-        delta = choices[0].delta
-
+    def validate_delta(cls, delta: CompletionChunkDelta) -> CompletionChunkDelta:
         if not delta.content:
             raise ValidationError("ResponseChunk must have content in deltas.")
 
@@ -214,25 +192,18 @@ class ResponseChunk(CompletionChunk):
                 "tool calls, refusal, or annotations in deltas."
             )
 
-        return choices
+        return delta
 
     @property
     def response(self) -> str:
-        assert self.choices[0].delta.content
-        return self.choices[0].delta.content
+        assert self.delta.content
+        return self.delta.content
 
 
 class ThinkingChunk(CompletionChunk):
-    @field_validator("choices")
+    @field_validator("delta")
     @classmethod
-    def validate_thinking_chunk(
-        cls, choices: list[CompletionChunkChoice]
-    ) -> list[CompletionChunkChoice]:
-        if len(choices) != 1:
-            raise ValidationError("ThinkingChunk must have exactly one choice.")
-
-        delta = choices[0].delta
-
+    def validate_delta(cls, delta: CompletionChunkDelta) -> CompletionChunkDelta:
         if not (delta.thinking_blocks or delta.reasoning_content):
             raise ValidationError(
                 "ThinkingChunk must have reasoning content or "
@@ -249,11 +220,11 @@ class ThinkingChunk(CompletionChunk):
                 "refusal, or annotations in deltas."
             )
 
-        return choices
+        return delta
 
     @property
     def thinking(self) -> str | list[ThinkingBlock | RedactedThinkingBlock]:
-        delta = self.choices[0].delta
+        delta = self.delta
         if delta.reasoning_content:
             return delta.reasoning_content
         if delta.thinking_blocks:
@@ -262,16 +233,9 @@ class ThinkingChunk(CompletionChunk):
 
 
 class ToolCallChunk(CompletionChunk):
-    @field_validator("choices")
+    @field_validator("delta")
     @classmethod
-    def validate_tool_call_chunk(
-        cls, choices: list[CompletionChunkChoice]
-    ) -> list[CompletionChunkChoice]:
-        if len(choices) != 1:
-            raise ValidationError("ToolCallChunk must have exactly one choice.")
-
-        delta = choices[0].delta
-
+    def validate_delta(cls, delta: CompletionChunkDelta) -> CompletionChunkDelta:
         if not delta.tool_calls:
             raise ValidationError("ToolCallChunk must have tool calls in deltas.")
         if len(delta.tool_calls) != 1:
@@ -291,25 +255,20 @@ class ToolCallChunk(CompletionChunk):
                 "content, refusal, or annotations in deltas."
             )
 
-        return choices
+        return delta
 
     @property
     def tool_call(self) -> CompletionChunkDeltaToolCall:
-        assert self.choices[0].delta.tool_calls is not None
-        return self.choices[0].delta.tool_calls[0]
+        assert self.delta.tool_calls is not None
+        return self.delta.tool_calls[0]
 
 
 class AnnotationsChunk(CompletionChunk):
-    @field_validator("choices")
+    @field_validator("delta")
     @classmethod
     def validate_annotations_chunk(
-        cls, choices: list[CompletionChunkChoice]
-    ) -> list[CompletionChunkChoice]:
-        if len(choices) != 1:
-            raise ValidationError("AnnotationsChunk must have exactly one choice.")
-
-        delta = choices[0].delta
-
+        cls, delta: CompletionChunkDelta
+    ) -> CompletionChunkDelta:
         if not delta.annotations:
             raise ValidationError("AnnotationsChunk must have annotations in deltas.")
 
@@ -325,25 +284,20 @@ class AnnotationsChunk(CompletionChunk):
                 "content, tool calls, or refusal in deltas."
             )
 
-        return choices
+        return delta
 
     @property
     def annotations(self) -> list[LiteLLMAnnotation]:
-        assert self.choices[0].delta.annotations is not None
-        return self.choices[0].delta.annotations
+        assert self.delta.annotations is not None
+        return self.delta.annotations
 
 
 class RefusalChunk(CompletionChunk):
-    @field_validator("choices")
+    @field_validator("delta")
     @classmethod
     def validate_refusal_chunk(
-        cls, choices: list[CompletionChunkChoice]
-    ) -> list[CompletionChunkChoice]:
-        if len(choices) != 1:
-            raise ValidationError("RefusalChunk must have exactly one choice.")
-
-        delta = choices[0].delta
-
+        cls, delta: CompletionChunkDelta
+    ) -> CompletionChunkDelta:
         if not delta.refusal:
             raise ValidationError("RefusalChunk must have refusal in deltas.")
 
@@ -359,11 +313,11 @@ class RefusalChunk(CompletionChunk):
                 "content, tool calls, or annotations in deltas."
             )
 
-        return choices
+        return delta
 
     @property
     def refusal(self) -> str | None:
-        return self.choices[0].delta.refusal
+        return self.delta.refusal
 
 
 def combine_completion_chunks(chunks: list[CompletionChunk]) -> Completion:
@@ -392,115 +346,85 @@ def combine_completion_chunks(chunks: list[CompletionChunk]) -> Completion:
     created_list = [chunk.created for chunk in chunks]
     created = max(created_list)
 
-    # Usage is found in the last completion chunk if requested
-    usage = chunks[-1].usage
+    content: str = ""
+    reasoning_content: str = ""
+    refusal: str = ""
 
-    logp_contents_per_choice: defaultdict[int, list[OpenAITokenLogprob]] = defaultdict(
-        list
-    )
-    logp_refusals_per_choice: defaultdict[int, list[OpenAITokenLogprob]] = defaultdict(
-        list
-    )
-    logprobs_per_choice: defaultdict[int, OpenAIChoiceLogprobs | None] = defaultdict(
-        lambda: None
-    )
-    thinking_blocks_per_choice: defaultdict[
-        int, list[ThinkingBlock | RedactedThinkingBlock]
-    ] = defaultdict(list)
-    annotations_per_choice: defaultdict[int, list[LiteLLMAnnotation]] = defaultdict(
-        list
-    )
+    delta_tool_calls: list[CompletionChunkDeltaToolCall] | None = None
+    logp_contents: list[OpenAITokenLogprob] = []
+    logp_refusals: list[OpenAITokenLogprob] = []
+    thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
+    annotations: list[LiteLLMAnnotation] = []
 
-    finish_reasons_per_choice: defaultdict[int, FinishReason | None] = defaultdict(
-        lambda: None
-    )
+    logprobs: OpenAIChoiceLogprobs | None = None
+    finish_reason: FinishReason | None = None
+    usage: Usage | None = None
 
-    contents_per_choice: defaultdict[int, str] = defaultdict(lambda: "")
-    reasoning_contents_per_choice: defaultdict[int, str] = defaultdict(lambda: "")
-    refusals_per_choice: defaultdict[int, str] = defaultdict(lambda: "")
+    if chunks:
+        last_chunk = chunks[-1]
 
-    tool_calls_per_choice: defaultdict[
-        int, Sequence[CompletionChunkDeltaToolCall] | None
-    ] = defaultdict(lambda: None)
+        # Usage is found in the last completion chunk if requested
+        usage = last_chunk.usage
 
-    messages_per_choice: dict[int, AssistantMessage] = {}
+        # Take the last finish reason
+        finish_reason = last_chunk.finish_reason
+
+        # NOTE: this won't work because tool calls need to be merged across chunks
+        delta_tool_calls = last_chunk.delta.tool_calls
 
     for chunk in chunks:
-        for choice in chunk.choices:
-            index = choice.index
+        # Concatenate content and refusal tokens
+        content += chunk.delta.content or ""
+        reasoning_content += chunk.delta.reasoning_content or ""
+        refusal += chunk.delta.refusal or ""
 
-            # Concatenate content and refusal tokens for each choice
-            contents_per_choice[index] += choice.delta.content or ""
-            reasoning_contents_per_choice[index] += choice.delta.reasoning_content or ""
-            refusals_per_choice[index] += choice.delta.refusal or ""
+        # Concatenate logprobs for content and refusal tokens
+        if chunk.logprobs is not None:
+            logp_contents.extend(chunk.logprobs.content or [])  # type: ignore
+            logp_refusals.extend(chunk.logprobs.refusal or [])  # type: ignore
+            thinking_blocks.extend(chunk.delta.thinking_blocks or [])
+            annotations.extend(chunk.delta.annotations or [])
 
-            # Concatenate logprobs for content and refusal tokens for each choice
-            if choice.logprobs is not None:
-                logp_contents_per_choice[index].extend(choice.logprobs.content or [])  # type: ignore
-                logp_refusals_per_choice[index].extend(choice.logprobs.refusal or [])  # type: ignore
-                thinking_blocks_per_choice[index].extend(
-                    choice.delta.thinking_blocks or []
+    tool_calls: list[ToolCall] | None = []
+    if delta_tool_calls is not None:
+        for _tool_call in delta_tool_calls:
+            if (
+                _tool_call.id is None
+                or _tool_call.tool_name is None
+                or _tool_call.tool_arguments is None
+            ):
+                raise CombineCompletionChunksError(
+                    "Completion chunk tool calls must have id, tool_name, "
+                    "and tool_arguments set."
                 )
-                annotations_per_choice[index].extend(choice.delta.annotations or [])
-
-            # Take the last finish reason for each choice
-            finish_reasons_per_choice[index] = choice.finish_reason
-
-            # Tool calls should be in the last chunk for each choice
-            tool_calls_per_choice[index] = choice.delta.tool_calls
-
-    for index in finish_reasons_per_choice:
-        tool_calls: list[ToolCall] = []
-        if tool_calls_per_choice[index] is not None:
-            for _tool_call in tool_calls_per_choice[index]:  # type: ignore
-                if (
-                    _tool_call.id is None
-                    or _tool_call.tool_name is None
-                    or _tool_call.tool_arguments is None
-                ):
-                    raise CombineCompletionChunksError(
-                        "Completion chunk tool calls must have id, tool_name, "
-                        "and tool_arguments set."
-                    )
-                tool_calls.append(
-                    ToolCall(
-                        id=_tool_call.id,
-                        tool_name=_tool_call.tool_name,
-                        tool_arguments=_tool_call.tool_arguments,
-                    )
+            tool_calls.append(
+                ToolCall(
+                    id=_tool_call.id,
+                    tool_name=_tool_call.tool_name,
+                    tool_arguments=_tool_call.tool_arguments,
                 )
-
-        messages_per_choice[index] = AssistantMessage(
-            name=name,
-            content=contents_per_choice[index] or "<empty>",
-            reasoning_content=(reasoning_contents_per_choice[index] or None),
-            thinking_blocks=(thinking_blocks_per_choice[index] or None),
-            annotations=(annotations_per_choice[index] or None),
-            refusal=(refusals_per_choice[index] or None),
-            tool_calls=(tool_calls or None),
-        )
-
-        if logp_contents_per_choice[index] or logp_refusals_per_choice[index]:
-            logprobs_per_choice[index] = OpenAIChoiceLogprobs(
-                content=logp_contents_per_choice[index],
-                refusal=logp_refusals_per_choice[index],
             )
 
-    choices = [
-        CompletionChoice(
-            index=index,
-            message=message,
-            finish_reason=finish_reasons_per_choice[index],
-            logprobs=logprobs_per_choice[index],
-        )
-        for index, message in messages_per_choice.items()
-    ]
+    message = AssistantMessage(
+        name=name,
+        content=content or "<empty>",
+        reasoning_content=(reasoning_content or None),
+        thinking_blocks=(thinking_blocks or None),
+        annotations=(annotations or None),
+        refusal=(refusal or None),
+        tool_calls=(tool_calls or None),
+    )
+
+    if logp_contents or logp_refusals:
+        logprobs = OpenAIChoiceLogprobs(content=logp_contents, refusal=logp_refusals)
 
     return Completion(
         model=model,
         name=name,
         created=created,
         system_fingerprint=system_fingerprint,
-        choices=choices,
+        message=message,
+        finish_reason=finish_reason,
+        logprobs=logprobs,
         usage=usage,
     )

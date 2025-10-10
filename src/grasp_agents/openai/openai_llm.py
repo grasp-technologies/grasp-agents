@@ -96,7 +96,9 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
 class OpenAILLM(CloudLLM):
     llm_settings: OpenAILLMSettings | None = None
     converters: ClassVar[OpenAIConverters] = OpenAIConverters()
-    async_openai_client_params: dict[str, Any] | None = None
+    openai_client_timeout: float = 60.0
+    openai_client_max_retries: int = 2
+    extra_openai_client_params: dict[str, Any] | None = None
     client: AsyncOpenAI = field(init=False)
 
     def __post_init__(self):
@@ -127,14 +129,6 @@ class OpenAILLM(CloudLLM):
                 "you must provide an 'api_provider' argument."
             )
 
-        if self.llm_settings is not None:
-            stream_options = self.llm_settings.get("stream_options") or {}
-            stream_options["include_usage"] = True
-            _llm_settings = deepcopy(self.llm_settings)
-            _llm_settings["stream_options"] = stream_options
-        else:
-            _llm_settings = OpenAILLMSettings(stream_options={"include_usage": True})
-
         response_schema_support: bool = any(
             fnmatch.fnmatch(_model_name, pat)
             for pat in _api_provider.get("response_schema_support") or []
@@ -146,39 +140,34 @@ class OpenAILLM(CloudLLM):
                 "Please set apply_response_schema_via_provider=False."
             )
 
-        _async_openai_client_params = deepcopy(self.async_openai_client_params or {})
-        if self.async_http_client is not None:
-            _async_openai_client_params["http_client"] = self.async_http_client
+        _openai_client_params = deepcopy(self.extra_openai_client_params or {})
+        _openai_client_params["timeout"] = self.openai_client_timeout
+        _openai_client_params["max_retries"] = self.openai_client_max_retries
+        if self.http_client is not None:
+            _openai_client_params["http_client"] = self.http_client
 
         _client = AsyncOpenAI(
             base_url=_api_provider.get("base_url"),
             api_key=_api_provider.get("api_key"),
-            max_retries=self.max_client_retries,
-            timeout=self.client_timeout,
-            **_async_openai_client_params,
+            **_openai_client_params,
         )
 
         object.__setattr__(self, "model_name", _model_name)
         object.__setattr__(self, "api_provider", _api_provider)
-        object.__setattr__(self, "llm_settings", _llm_settings)
         object.__setattr__(self, "client", _client)
 
-    async def _get_completion(
+    async def _get_api_completion(
         self,
         api_messages: Iterable[OpenAIMessageParam],
+        *,
         api_tools: list[OpenAIToolParam] | None = None,
         api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         api_response_schema: type[Any] | None = None,
-        n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> OpenAICompletion | OpenAIParsedCompletion[Any]:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
         response_format = api_response_schema or NOT_GIVEN
-        n = n_choices or NOT_GIVEN
-
-        if api_llm_settings and api_llm_settings.get("stream_options"):
-            api_llm_settings.pop("stream_options")
 
         if self.apply_response_schema_via_provider:
             return await self.client.beta.chat.completions.parse(
@@ -187,7 +176,6 @@ class OpenAILLM(CloudLLM):
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_format,
-                n=n,
                 **api_llm_settings,
             )
 
@@ -196,56 +184,60 @@ class OpenAILLM(CloudLLM):
             messages=api_messages,
             tools=tools,
             tool_choice=tool_choice,
-            n=n,
             stream=False,
             **api_llm_settings,
         )
 
-    async def _get_completion_stream(  # type: ignore[override]
+    async def _get_api_completion_stream(
         self,
         api_messages: Iterable[OpenAIMessageParam],
         api_tools: list[OpenAIToolParam] | None = None,
         api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         api_response_schema: type[Any] | None = None,
-        n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[OpenAICompletionChunk]:
         tools = api_tools or NOT_GIVEN
         tool_choice = api_tool_choice or NOT_GIVEN
         response_format = api_response_schema or NOT_GIVEN
-        n = n_choices or NOT_GIVEN
 
-        if self.apply_response_schema_via_provider:
-            stream_manager: OpenAIAsyncChatCompletionStreamManager[Any] = (
-                self.client.beta.chat.completions.stream(
+        # Ensure usage is included in the streamed responses
+        stream_options = dict(api_llm_settings.get("stream_options") or {})
+        stream_options["include_usage"] = True
+        _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
+
+        # Need to wrap the iterator to make it work with decorators
+        async def iterator() -> AsyncIterator[OpenAICompletionChunk]:
+            if self.apply_response_schema_via_provider:
+                stream_manager: OpenAIAsyncChatCompletionStreamManager[Any] = (
+                    self.client.beta.chat.completions.stream(
+                        model=self.model_name,
+                        messages=api_messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        response_format=response_format,
+                        **_api_llm_settings,
+                    )
+                )
+                async with stream_manager as stream:
+                    async for chunk_event in stream:
+                        if isinstance(chunk_event, OpenAIChunkEvent):
+                            yield chunk_event.chunk
+            else:
+                stream_generator: AsyncStream[
+                    OpenAICompletionChunk
+                ] = await self.client.chat.completions.create(
                     model=self.model_name,
                     messages=api_messages,
                     tools=tools,
                     tool_choice=tool_choice,
-                    response_format=response_format,
-                    n=n,
+                    stream=True,
                     **api_llm_settings,
                 )
-            )
-            async with stream_manager as stream:
-                async for chunk_event in stream:
-                    if isinstance(chunk_event, OpenAIChunkEvent):
-                        yield chunk_event.chunk
-        else:
-            stream_generator: AsyncStream[
-                OpenAICompletionChunk
-            ] = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=api_messages,
-                tools=tools,
-                tool_choice=tool_choice,
-                stream=True,
-                n=n,
-                **api_llm_settings,
-            )
-            async with stream_generator as stream:
-                async for completion_chunk in stream:
-                    yield completion_chunk
+                async with stream_generator as stream:
+                    async for completion_chunk in stream:
+                        yield completion_chunk
+
+        return iterator()
 
     def combine_completion_chunks(
         self,
@@ -255,14 +247,12 @@ class OpenAILLM(CloudLLM):
     ) -> OpenAICompletion:
         response_format = NOT_GIVEN
         input_tools = NOT_GIVEN
-        if self.apply_response_schema_via_provider:
-            if response_schema:
-                response_format = response_schema
-            if tools:
-                input_tools = [
-                    self.converters.to_tool(tool, strict=True)
-                    for tool in tools.values()
-                ]
+        if self.apply_response_schema_via_provider and response_schema:
+            response_format = response_schema
+        if self.apply_tool_call_schema_via_provider and tools:
+            input_tools = [
+                self.converters.to_tool(tool, strict=True) for tool in tools.values()
+            ]
         state = ChatCompletionStreamState[Any](
             input_tools=input_tools, response_format=response_format
         )

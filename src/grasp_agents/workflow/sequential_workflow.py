@@ -53,6 +53,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         call_id = self._generate_call_id(call_id)
 
         packet = in_packet
@@ -86,6 +87,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         call_id = self._generate_call_id(call_id)
 
         packet = in_packet

@@ -10,16 +10,16 @@ formatters:
 handlers:
   fileHandler:
     class: logging.FileHandler
-    level: DEBUG
+    level: INFO
     formatter: detailed
     mode: 'w'
     filename: 'app.log'
   consoleHandler:
     class: logging.StreamHandler
-    level: DEBUG
+    level: INFO
     formatter: simple
     stream: ext://sys.stdout
 
 root:
-  level: DEBUG
+  level: INFO
   handlers: [fileHandler, consoleHandler]

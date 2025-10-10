@@ -11,6 +11,7 @@ from ..processors.base_processor import BaseProcessor
 from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
 from ..typing.io import InT, OutT, ProcName
+from ..utils import is_method_overridden
 from .workflow_processor import WorkflowProcessor
 
 logger = getLogger(__name__)
@@ -22,7 +23,8 @@ class WorkflowLoopTerminator(Protocol[_OutT_contra, CtxT]):
     def __call__(
         self,
         out_packet: Packet[_OutT_contra],
-        ctx: RunContext[CtxT] | None,
+        *,
+        ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> bool: ...
 
@@ -62,30 +64,29 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
         self._max_iterations = max_iterations
 
-        self.workflow_loop_terminator: WorkflowLoopTerminator[OutT, CtxT] | None
-        if not hasattr(type(self), "workflow_loop_terminator"):
-            self.workflow_loop_terminator = None
-
     @property
     def max_iterations(self) -> int:
         return self._max_iterations
 
+    def terminate_workflow_loop_impl(
+        self, out_packet: Packet[OutT], *, ctx: RunContext[CtxT], **kwargs: Any
+    ) -> bool:
+        raise NotImplementedError
+
     def add_workflow_loop_terminator(
         self, func: WorkflowLoopTerminator[OutT, CtxT]
     ) -> WorkflowLoopTerminator[OutT, CtxT]:
-        self.workflow_loop_terminator = func
+        self.terminate_workflow_loop_impl = func
 
         return func
 
-    def _terminate_workflow_loop(
-        self,
-        out_packet: Packet[OutT],
-        *,
-        ctx: RunContext[CtxT] | None = None,
-        **kwargs: Any,
+    @final
+    def terminate_workflow_loop(
+        self, out_packet: Packet[OutT], *, ctx: RunContext[CtxT], **kwargs: Any
     ) -> bool:
-        if self.workflow_loop_terminator:
-            return self.workflow_loop_terminator(out_packet, ctx=ctx, **kwargs)
+        base_cls = LoopedWorkflow[Any, Any, Any]
+        if is_method_overridden("terminate_workflow_loop_impl", self, base_cls):
+            return self.terminate_workflow_loop_impl(out_packet, ctx=ctx, **kwargs)
 
         return False
 
@@ -101,9 +102,11 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
+        call_id = self._generate_call_id(call_id)
+
         packet = in_packet
         exit_packet: Packet[OutT] | None = None
-        call_id = self._generate_call_id(call_id)
 
         for iteration_num in range(1, self._max_iterations + 1):
             for subproc in self.subprocs:
@@ -122,7 +125,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
                 if subproc is self._end_proc:
                     exit_packet = cast("Packet[OutT]", packet)
-                    if self._terminate_workflow_loop(exit_packet, ctx=ctx):
+                    if self.terminate_workflow_loop(exit_packet, ctx=ctx):
                         return exit_packet
                     if iteration_num == self._max_iterations:
                         logger.info(
@@ -148,9 +151,11 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
         forgetful: bool = False,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
+        call_id = self._generate_call_id(call_id)
+
         packet = in_packet
         exit_packet: Packet[OutT] | None = None
-        call_id = self._generate_call_id(call_id)
 
         for iteration_num in range(1, self._max_iterations + 1):
             for subproc in self.subprocs:
@@ -172,7 +177,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT
 
                 if subproc is self._end_proc:
                     exit_packet = cast("Packet[OutT]", packet)
-                    if self._terminate_workflow_loop(exit_packet, ctx=ctx):
+                    if self.terminate_workflow_loop(exit_packet, ctx=ctx):
                         yield WorkflowResultEvent(
                             data=exit_packet, proc_name=self.name, call_id=call_id
                         )

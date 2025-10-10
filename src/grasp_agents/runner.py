@@ -7,8 +7,8 @@ from uuid import uuid4
 from grasp_agents.tracing_decorators import workflow
 
 from .errors import RunnerError
-from .packet import Packet, StartPacket
-from .packet_pool import END_PROC_NAME, PacketPool
+from .packet import Packet
+from .packet_pool import END_PROC_NAME, START_PROC_NAME, PacketPool
 from .processors.base_processor import BaseProcessor
 from .run_context import CtxT, RunContext
 from .typing.events import Event, ProcPacketOutputEvent, RunResultEvent
@@ -54,8 +54,8 @@ class Runner(Generic[OutT, CtxT]):
     def _unpack_packet(
         self, packet: Packet[Any] | None
     ) -> tuple[Packet[Any] | None, Any | None]:
-        if isinstance(packet, StartPacket):
-            return None, packet.chat_inputs
+        if packet and packet.sender == START_PROC_NAME:
+            return None, packet.payloads[0]
         return packet, None
 
     async def _packet_handler(
@@ -78,9 +78,10 @@ class Runner(Generic[OutT, CtxT]):
             **run_kwargs,
         )
 
+        route = out_packet.broadcast_routing or out_packet.routing
         logger.info(
             f"\n[Finished running processor {proc.name}]\n"
-            f"Posting output packet to recipients {out_packet.recipients}\n"
+            f"Posting output packet to recipients: {route}\n"
         )
 
         await pool.post(out_packet)
@@ -111,15 +112,16 @@ class Runner(Generic[OutT, CtxT]):
 
         assert out_packet is not None
 
+        route = out_packet.broadcast_routing or out_packet.routing
         logger.info(
             f"\n[Finished running processor {proc.name}]\n"
-            f"Posting output packet to recipients {out_packet.recipients}\n"
+            f"Posting output packet to recipients: {route}\n"
         )
 
         await pool.post(out_packet)
 
     @workflow(name="runner")  # type: ignore
-    async def run(self, chat_input: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
+    async def run(self, chat_inputs: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
         async with PacketPool() as pool:
             for proc in self._procs:
                 pool.register_packet_handler(
@@ -131,16 +133,18 @@ class Runner(Generic[OutT, CtxT]):
                         **run_kwargs,
                     ),
                 )
-            await pool.post(
-                StartPacket[Any](
-                    recipients=[self._entry_proc.name], chat_inputs=chat_input
-                )
+            start_packet = Packet[Any](
+                sender=START_PROC_NAME,
+                routing=[[self._entry_proc.name]],
+                payloads=[chat_inputs],
             )
+            await pool.post(start_packet)
+
             return await pool.final_result()
 
     @workflow(name="runner_run")  # type: ignore
     async def run_stream(
-        self, chat_input: Any = "start", **run_kwargs: Any
+        self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
         async with PacketPool() as pool:
             for proc in self._procs:
@@ -153,15 +157,18 @@ class Runner(Generic[OutT, CtxT]):
                         **run_kwargs,
                     ),
                 )
-            await pool.post(
-                StartPacket[Any](
-                    recipients=[self._entry_proc.name], chat_inputs=chat_input
-                )
+
+            start_packet = Packet[Any](
+                sender=START_PROC_NAME,
+                routing=[[self._entry_proc.name]],
+                payloads=[chat_inputs],
             )
+            await pool.post(start_packet)
+
             async for event in pool.stream_events():
                 if isinstance(
                     event, ProcPacketOutputEvent
-                ) and event.data.recipients == [END_PROC_NAME]:
+                ) and event.data.broadcast_routing == [END_PROC_NAME]:
                     yield RunResultEvent(
                         data=event.data,
                         proc_name=event.proc_name,
