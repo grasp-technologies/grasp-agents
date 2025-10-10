@@ -1,11 +1,10 @@
 from collections.abc import Callable, Coroutine
 from typing import Any, Concatenate, ParamSpec, TypeAlias, TypeVar
 
-T = TypeVar("T")
 R = TypeVar("R")
 P = ParamSpec("P")
 
 AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R]]
-AsyncFunction: TypeAlias = Callable[Concatenate[T, P], Coroutine[Any, Any, R]]
-AsyncMethod: TypeAlias = Callable[Concatenate[Any, T, P], Coroutine[Any, Any, R]]
-AsyncFunctionOrMethod: TypeAlias = AsyncFunction[T, P, R] | AsyncMethod[T, P, R]
+AsyncFunction: TypeAlias = Callable[P, Coroutine[Any, Any, R]]
+AsyncMethod: TypeAlias = Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]
+AsyncFunctionOrMethod: TypeAlias = AsyncFunction[P, R] | AsyncMethod[P, R]

@@ -39,15 +39,20 @@ class PacketPool:
         self._errors: list[Exception] = []
 
     async def post(self, packet: Packet[Any]) -> None:
-        if packet.recipients == [END_PROC_NAME]:
+        if packet.broadcast_routing == [END_PROC_NAME]:
             if not self._final_result_fut.done():
                 self._final_result_fut.set_result(packet)
             await self.shutdown()
             return
 
-        for recipient_id in packet.recipients or []:
-            queue = self._packet_queues.setdefault(recipient_id, asyncio.Queue())
-            await queue.put(packet)
+        if packet.routing is None:
+            return
+
+        for sub_packet in packet.split_by_recipient():
+            assert sub_packet.routing
+            recipient = sub_packet.routing[0][0]
+            queue = self._packet_queues.setdefault(recipient, asyncio.Queue())
+            await queue.put(sub_packet)
 
     async def final_result(self) -> Packet[Any]:
         try:

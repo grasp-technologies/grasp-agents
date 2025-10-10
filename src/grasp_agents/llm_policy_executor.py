@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
+from copy import deepcopy
 from itertools import starmap
 from logging import getLogger
 from typing import Any, Generic, Protocol, final
@@ -25,24 +26,14 @@ from .typing.events import (
     ToolMessageEvent,
     UserMessageEvent,
 )
-from .typing.message import AssistantMessage, Messages, ToolMessage, UserMessage
+from .typing.message import AssistantMessage, ToolMessage, UserMessage
 from .typing.tool import BaseTool, NamedToolChoice, ToolCall, ToolChoice
+from .utils import is_method_overridden
 
 logger = getLogger(__name__)
 
 
-class ToolCallLoopTerminator(Protocol[CtxT]):
-    def __call__(
-        self,
-        conversation: Messages,
-        *,
-        ctx: RunContext[CtxT],
-        call_id: str,
-        **kwargs: Any,
-    ) -> bool: ...
-
-
-class MemoryManager(Protocol[CtxT]):
+class FinalAnswerChecker(Protocol[CtxT]):
     def __call__(
         self,
         memory: LLMAgentMemory,
@@ -50,7 +41,31 @@ class MemoryManager(Protocol[CtxT]):
         ctx: RunContext[CtxT],
         call_id: str,
         **kwargs: Any,
+    ) -> str | None: ...
+
+
+class BeforeGenerateHook(Protocol[CtxT]):
+    async def __call__(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
     ) -> None: ...
+
+
+class ToolOutputConverter(Protocol[CtxT]):
+    def __call__(
+        self,
+        tool_outputs: Sequence[Any],
+        tool_calls: Sequence[ToolCall],
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        **kwargs: Any,
+    ) -> Sequence[ToolMessage | UserMessage]: ...
 
 
 class LLMPolicyExecutor(Generic[CtxT]):
@@ -70,6 +85,12 @@ class LLMPolicyExecutor(Generic[CtxT]):
         super().__init__()
 
         self._agent_name = agent_name
+        self._max_turns = max_turns
+        self._react_mode = react_mode
+
+        self._llm = llm
+        self._response_schema = response_schema
+        self._response_schema_by_xml_tag = response_schema_by_xml_tag
 
         self._final_answer_type = final_answer_type
         self._final_answer_as_tool_call = final_answer_as_tool_call
@@ -80,20 +101,17 @@ class LLMPolicyExecutor(Generic[CtxT]):
             tools_list = tools + [self._final_answer_tool]
         self._tools = {t.name: t for t in tools_list} if tools_list else None
 
-        self._response_schema = response_schema
-        self._response_schema_by_xml_tag = response_schema_by_xml_tag
-
-        self._llm = llm
-
-        self._max_turns = max_turns
-        self._react_mode = react_mode
-
-        self.tool_call_loop_terminator: ToolCallLoopTerminator[CtxT] | None = None
-        self.memory_manager: MemoryManager[CtxT] | None = None
-
     @property
     def agent_name(self) -> str:
         return self._agent_name
+
+    @property
+    def max_turns(self) -> int:
+        return self._max_turns
+
+    @property
+    def react_mode(self) -> bool:
+        return self._react_mode
 
     @property
     def llm(self) -> LLM:
@@ -115,37 +133,64 @@ class LLMPolicyExecutor(Generic[CtxT]):
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
         return self._tools or {}
 
-    @property
-    def max_turns(self) -> int:
-        return self._max_turns
-
-    @final
-    def _terminate_tool_call_loop(
-        self,
-        conversation: Messages,
-        *,
-        ctx: RunContext[CtxT],
-        call_id: str,
-        **kwargs: Any,
-    ) -> bool:
-        if self.tool_call_loop_terminator:
-            return self.tool_call_loop_terminator(
-                conversation, ctx=ctx, call_id=call_id, **kwargs
-            )
-
-        return False
-
-    @final
-    def _manage_memory(
+    def check_for_final_answer_impl(
         self,
         memory: LLMAgentMemory,
         *,
         ctx: RunContext[CtxT],
         call_id: str,
         **kwargs: Any,
+    ) -> str | None:
+        raise NotImplementedError
+
+    @final
+    def check_for_final_answer(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        **kwargs: Any,
+    ) -> str | None:
+        if is_method_overridden("check_for_final_answer_impl", self):
+            return self.check_for_final_answer_impl(
+                memory, ctx=ctx, call_id=call_id, **kwargs
+            )
+
+        if self._final_answer_as_tool_call:
+            return self._get_final_answer_from_tool_call(memory)
+
+        return None
+
+    async def on_before_generate_impl(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
     ) -> None:
-        if self.memory_manager:
-            self.memory_manager(memory=memory, ctx=ctx, call_id=call_id, **kwargs)
+        raise NotImplementedError
+
+    @final
+    async def on_before_generate(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
+    ) -> None:
+        if is_method_overridden("on_before_generate_impl", self):
+            await self.on_before_generate_impl(
+                memory=memory,
+                ctx=ctx,
+                call_id=call_id,
+                num_turns=num_turns,
+                llm_settings=llm_settings,
+            )
 
     @task(name="generate")  # type: ignore
     async def generate_message(
@@ -155,20 +200,22 @@ class LLMPolicyExecutor(Generic[CtxT]):
         tool_choice: ToolChoice | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
+        extra_llm_settings: dict[str, Any],
     ) -> AssistantMessage:
         completion = await self.llm.generate_completion(
-            memory.message_history,
+            memory.messages,
             response_schema=self.response_schema,
             response_schema_by_xml_tag=self.response_schema_by_xml_tag,
             tools=self.tools,
             tool_choice=tool_choice,
             proc_name=self.agent_name,
             call_id=call_id,
+            **extra_llm_settings,
         )
-        memory.update(completion.messages)
+        memory.update([completion.message])
         self._process_completion(completion, ctx=ctx, call_id=call_id)
 
-        return completion.messages[0]
+        return completion.message
 
     @task(name="generate")  # type: ignore
     async def generate_message_stream(
@@ -178,6 +225,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         tool_choice: ToolChoice | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
+        extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[
         CompletionChunkEvent[CompletionChunk]
         | CompletionEvent
@@ -187,15 +235,16 @@ class LLMPolicyExecutor(Generic[CtxT]):
         completion: Completion | None = None
 
         llm_event_stream = self.llm.generate_completion_stream(
-            memory.message_history,
+            memory.messages,
             response_schema=self.response_schema,
             response_schema_by_xml_tag=self.response_schema_by_xml_tag,
             tools=self.tools,
             tool_choice=tool_choice,
             proc_name=self.agent_name,
             call_id=call_id,
+            **extra_llm_settings,
         )
-        llm_event_stream_post = self.llm.postprocess_event_stream(llm_event_stream)  # type: ignore[assignment]
+        llm_event_stream_post = self.llm.postprocess_event_stream(llm_event_stream)
 
         async for event in llm_event_stream_post:
             if isinstance(event, CompletionEvent):
@@ -203,14 +252,41 @@ class LLMPolicyExecutor(Generic[CtxT]):
             yield event
         if completion is None:
             return
-
         yield GenMessageEvent(
-            proc_name=self.agent_name, call_id=call_id, data=completion.messages[0]
+            proc_name=self.agent_name, call_id=call_id, data=completion.message
         )
 
-        memory.update(completion.messages)
-
+        memory.update([completion.message])
         self._process_completion(completion, ctx=ctx, call_id=call_id)
+
+    def tool_outputs_to_messages_impl(
+        self,
+        tool_outputs: Sequence[Any],
+        tool_calls: Sequence[ToolCall],
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ) -> Sequence[ToolMessage | UserMessage]:
+        raise NotImplementedError
+
+    @final
+    def tool_outputs_to_messages(
+        self,
+        tool_outputs: Sequence[Any],
+        tool_calls: Sequence[ToolCall],
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ) -> Sequence[ToolMessage | UserMessage]:
+        if is_method_overridden("tool_outputs_to_messages_impl", self):
+            return self.tool_outputs_to_messages_impl(
+                tool_outputs, tool_calls, ctx=ctx, call_id=call_id
+            )
+        return list(
+            starmap(
+                ToolMessage.from_tool_output, zip(tool_outputs, tool_calls, strict=True)
+            )
+        )
 
     # @task(name="call_tools")  # type: ignore
     async def call_tools(
@@ -219,8 +295,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
-    ) -> Sequence[ToolMessage]:
-        # TODO: Add image support
+    ) -> Sequence[ToolMessage | UserMessage]:
         corouts: list[Coroutine[Any, Any, BaseModel]] = []
         for call in calls:
             tool = self.tools[call.tool_name]
@@ -228,10 +303,9 @@ class LLMPolicyExecutor(Generic[CtxT]):
             corouts.append(tool(ctx=ctx, call_id=call_id, **args))
 
         outs = await asyncio.gather(*corouts)
-        tool_messages = list(
-            starmap(ToolMessage.from_tool_output, zip(outs, calls, strict=True))
+        tool_messages = self.tool_outputs_to_messages(
+            outs, calls, ctx=ctx, call_id=call_id
         )
-
         memory.update(tool_messages)
 
         if ctx.printer:
@@ -248,36 +322,56 @@ class LLMPolicyExecutor(Generic[CtxT]):
         memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
-    ) -> AsyncIterator[ToolMessageEvent]:
+    ) -> AsyncIterator[ToolCallEvent | ToolMessageEvent | UserMessageEvent]:
+        for tool_call in calls:
+            yield ToolCallEvent(
+                proc_name=self.agent_name, call_id=call_id, data=tool_call
+            )
+
         tool_messages = await self.call_tools(
             calls, memory=memory, ctx=ctx, call_id=call_id
         )
+
         for tool_message, call in zip(tool_messages, calls, strict=True):
-            yield ToolMessageEvent(
-                proc_name=call.tool_name, call_id=call_id, data=tool_message
-            )
-
-    def _extract_final_answer_from_tool_calls(
-        self, memory: LLMAgentMemory
-    ) -> AssistantMessage | None:
-        last_message = memory.message_history[-1]
-        if not isinstance(last_message, AssistantMessage):
-            return None
-
-        for tool_call in last_message.tool_calls or []:
-            if tool_call.tool_name == self._final_answer_tool.name:
-                final_answer_message = AssistantMessage(
-                    name=self.agent_name, content=tool_call.tool_arguments
+            if isinstance(tool_message, UserMessage):
+                yield UserMessageEvent(
+                    proc_name=call.tool_name, call_id=call_id, data=tool_message
                 )
-                last_message.tool_calls = None
-                memory.update([final_answer_message])
+            else:
+                yield ToolMessageEvent(
+                    proc_name=call.tool_name, call_id=call_id, data=tool_message
+                )
 
-                return final_answer_message
+    def _get_final_answer_from_tool_call(self, memory: LLMAgentMemory) -> str | None:
+        msgs = memory.messages
+        if (
+            msgs
+            and isinstance(msgs[-1], AssistantMessage)
+            and msgs[-1].tool_calls
+            and msgs[-1].tool_calls[0].tool_name == self._final_answer_tool.name
+        ):
+            return msgs[-1].tool_calls[0].tool_arguments
+        return None
 
-    @task(name="enforce_final_answer")  # type: ignore
-    async def _generate_final_answer(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
-    ) -> AssistantMessage:
+    def _get_final_answer_from_message(self, memory: LLMAgentMemory) -> str | None:
+        msgs = memory.messages
+        if msgs and isinstance(msgs[-1], AssistantMessage) and msgs[-1].content:
+            return msgs[-1].content
+        return None
+
+    def get_final_answer(self, memory: LLMAgentMemory) -> str | None:
+        if self._final_answer_as_tool_call:
+            return self._get_final_answer_from_tool_call(memory)
+        return self._get_final_answer_from_message(memory)
+
+    @task(name="force_generate_final_answer")  # type: ignore
+    async def _force_generate_final_answer(
+        self,
+        memory: LLMAgentMemory,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        extra_llm_settings: dict[str, Any],
+    ) -> str:
         # NOTE: Might not need the user message when forcing the tool call
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!"
@@ -289,21 +383,34 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 [user_message], agent_name=self.agent_name, call_id=call_id
             )
 
-        tool_choice = NamedToolChoice(name=self._final_answer_tool.name)
-        await self.generate_message(
-            memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
+        tool_choice = (
+            NamedToolChoice(name=self._final_answer_tool.name)
+            if self._final_answer_as_tool_call
+            else None
+        )
+        _ = await self.generate_message(
+            memory,
+            tool_choice=tool_choice,
+            ctx=ctx,
+            call_id=call_id,
+            extra_llm_settings=extra_llm_settings,
         )
 
-        final_answer_message = self._extract_final_answer_from_tool_calls(memory=memory)
-        if final_answer_message is None:
+        final_answer = self.get_final_answer(memory)
+        if final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, call_id=call_id)
 
-        return final_answer_message
+        return final_answer
 
-    @task(name="generate_final_answer")  # type: ignore
-    async def _generate_final_answer_stream(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
+    @task(name="force_generate_final_answer")  # type: ignore
+    async def _force_generate_final_answer_stream(
+        self,
+        memory: LLMAgentMemory,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
+        # NOTE: Might not need the user message when forcing the tool call
         user_message = UserMessage.from_text(
             "Exceeded the maximum number of turns: provide a final answer now!",
         )
@@ -316,22 +423,31 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 [user_message], agent_name=self.agent_name, call_id=call_id
             )
 
-        tool_choice = NamedToolChoice(name=self._final_answer_tool.name)
+        tool_choice = (
+            NamedToolChoice(name=self._final_answer_tool.name)
+            if self._final_answer_as_tool_call
+            else None
+        )
         async for event in self.generate_message_stream(
-            memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
+            memory,
+            tool_choice=tool_choice,
+            ctx=ctx,
+            call_id=call_id,
+            extra_llm_settings=extra_llm_settings,
         ):
             yield event
 
-        final_answer_message = self._extract_final_answer_from_tool_calls(memory)
-        if final_answer_message is None:
+        final_answer = self.get_final_answer(memory)
+        if final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, call_id=call_id)
-        yield GenMessageEvent(
-            proc_name=self.agent_name, call_id=call_id, data=final_answer_message
-        )
 
     async def execute(
-        self, memory: LLMAgentMemory, ctx: RunContext[CtxT], call_id: str
-    ) -> AssistantMessage | Sequence[AssistantMessage]:
+        self,
+        memory: LLMAgentMemory,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        extra_llm_settings: dict[str, Any] | None = None,
+    ) -> str:
         """
         Some LLMs do not output tool calls and message content in the same response.
         To enable planning/observation before/after tool calls for such models,
@@ -339,72 +455,79 @@ class LLMPolicyExecutor(Generic[CtxT]):
         tool calls (planning) first, then force tool calls in the next message, etc.
         For this, we use the `react_mode` flag.
         """
-        # 1. Generate the first message:
+        _extra_llm_settings = deepcopy(extra_llm_settings or {})
+        turns = 0
+
+        # Can modify LLM settings in the hook
+        await self.on_before_generate(
+            memory,
+            ctx=ctx,
+            call_id=call_id,
+            num_turns=turns,
+            llm_settings=_extra_llm_settings,
+        )
+
+        # 1. Generate the first message and update memory
 
         # In ReAct mode, we generate the first message without tool calls
         # to enforce planning.
 
         tool_choice: ToolChoice | None = None
         if self.tools:
-            tool_choice = "none" if self._react_mode else "auto"
+            tool_choice = "none" if self.react_mode else "auto"
+
         gen_message = await self.generate_message(
-            memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
+            memory,
+            tool_choice=tool_choice,
+            ctx=ctx,
+            call_id=call_id,
+            extra_llm_settings=_extra_llm_settings,
         )
         if not self.tools:
-            return gen_message
-
-        turns = 0
+            return gen_message.content or ""
 
         while True:
-            # 2. Check if we should exit the tool call loop
+            # 2. Check if we have a final answer
 
-            # If a final answer is not provided via a tool call, we use
-            # _terminate_tool_call_loop to determine whether to exit the loop.
-            if not self._final_answer_as_tool_call and self._terminate_tool_call_loop(
-                memory.message_history, ctx=ctx, call_id=call_id, num_turns=turns
-            ):
-                return gen_message
+            final_answer = self.check_for_final_answer(
+                memory, ctx=ctx, call_id=call_id, num_turns=turns
+            )
+            if final_answer is not None:
+                return final_answer
 
-            # If a final answer is provided via a tool call, we check
-            # if the last message contains the corresponding tool call.
-            # If it does, we exit the loop.
-            if self._final_answer_as_tool_call:
-                final_answer = self._extract_final_answer_from_tool_calls(memory)
-                if final_answer is not None:
-                    return final_answer
-
-            # Exit if the maximum number of turns is reached
             if turns >= self.max_turns:
-                # If a final answer is provided via a tool call, we force the
-                # agent to use the final answer tool.
-                # Otherwise, we simply return the last generated message.
-                if self._final_answer_as_tool_call:
-                    final_answer = await self._generate_final_answer(
-                        memory, ctx=ctx, call_id=call_id
-                    )
-                else:
-                    final_answer = gen_message
+                final_answer = await self._force_generate_final_answer(
+                    memory,
+                    ctx=ctx,
+                    call_id=call_id,
+                    extra_llm_settings=_extra_llm_settings,
+                )
                 logger.info(
                     f"Max turns reached: {self.max_turns}. Exiting the tool call loop."
                 )
                 return final_answer
 
-            # 3. Call tools.
+            # 3. Call tools and update memory
 
             if gen_message.tool_calls:
                 await self.call_tools(
                     gen_message.tool_calls, memory=memory, ctx=ctx, call_id=call_id
                 )
 
-            # Apply memory management (e.g. compacting or pruning memory)
-            self._manage_memory(memory, ctx=ctx, call_id=call_id, num_turns=turns)
+            await self.on_before_generate(
+                memory,
+                ctx=ctx,
+                call_id=call_id,
+                llm_settings=_extra_llm_settings,
+                num_turns=turns,
+            )
 
-            # 4. Generate the next message based on the updated memory.
+            # 4. Generate the next message and update memory
 
-            if self._react_mode and gen_message.tool_calls:
+            if self.react_mode and gen_message.tool_calls:
                 # ReAct mode: used tools in the last message -> avoid tool calls in the next message
                 tool_choice = "none"
-            elif self._react_mode:
+            elif self.react_mode:
                 # ReAct mode: no tool calls in the last message -> force tool calls in the next message
                 tool_choice = "required"
             else:
@@ -412,7 +535,11 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 tool_choice = "auto"
 
             gen_message = await self.generate_message(
-                memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
+                memory,
+                tool_choice=tool_choice,
+                ctx=ctx,
+                call_id=call_id,
+                extra_llm_settings=_extra_llm_settings,
             )
 
             turns += 1
@@ -422,74 +549,93 @@ class LLMPolicyExecutor(Generic[CtxT]):
         memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
+        extra_llm_settings: dict[str, Any] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        tool_choice: ToolChoice = "none" if self._react_mode else "auto"
+        _extra_llm_settings = deepcopy(extra_llm_settings or {})
+        turns = 0
+
+        await self.on_before_generate(
+            memory,
+            ctx=ctx,
+            call_id=call_id,
+            llm_settings=_extra_llm_settings,
+            num_turns=turns,
+        )
+
+        # 1. Generate the first message and update memory
+
+        tool_choice: ToolChoice | None = None
+        if self.tools:
+            tool_choice = "none" if self.react_mode else "auto"
+
         gen_message: AssistantMessage | None = None
         async for event in self.generate_message_stream(
-            memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
+            memory,
+            tool_choice=tool_choice,
+            ctx=ctx,
+            call_id=call_id,
+            extra_llm_settings=_extra_llm_settings,
         ):
             if isinstance(event, GenMessageEvent):
                 gen_message = event.data
             yield event
-        if gen_message is None:
-            return
 
-        if not self.tools:
+        if gen_message is None or not self.tools:
             return
-
-        turns = 0
 
         while True:
-            if not self._final_answer_as_tool_call and self._terminate_tool_call_loop(
-                memory.message_history, ctx=ctx, call_id=call_id, num_turns=turns
-            ):
+            # 2. Check if we have a final answer
+
+            final_answer = self.check_for_final_answer(
+                memory, ctx=ctx, call_id=call_id, num_turns=turns
+            )
+            if final_answer is not None:
                 return
 
-            if self._final_answer_as_tool_call:
-                final_answer_message = self._extract_final_answer_from_tool_calls(
-                    memory
-                )
-                if final_answer_message is not None:
-                    yield GenMessageEvent(
-                        proc_name=self.agent_name,
-                        call_id=call_id,
-                        data=final_answer_message,
-                    )
-                    return
-
             if turns >= self.max_turns:
-                if self._final_answer_as_tool_call:
-                    async for event in self._generate_final_answer_stream(
-                        memory, ctx=ctx, call_id=call_id
-                    ):
-                        yield event
+                async for event in self._force_generate_final_answer_stream(
+                    memory,
+                    ctx=ctx,
+                    call_id=call_id,
+                    extra_llm_settings=_extra_llm_settings,
+                ):
+                    yield event
                 logger.info(
                     f"Max turns reached: {self.max_turns}. Exiting the tool call loop."
                 )
                 return
 
-            if gen_message.tool_calls:
-                for tool_call in gen_message.tool_calls:
-                    yield ToolCallEvent(
-                        proc_name=self.agent_name, call_id=call_id, data=tool_call
-                    )
+            # 3. Call tools and update memory
 
+            if gen_message.tool_calls:
                 async for event in self.call_tools_stream(
                     gen_message.tool_calls, memory=memory, ctx=ctx, call_id=call_id
                 ):
                     yield event
 
-            self._manage_memory(memory, ctx=ctx, call_id=call_id, num_turns=turns)
+            await self.on_before_generate(
+                memory,
+                ctx=ctx,
+                call_id=call_id,
+                llm_settings=_extra_llm_settings,
+                num_turns=turns,
+            )
 
-            if self._react_mode and gen_message.tool_calls:
+            # 4. Generate the next message and update memory
+
+            if self.react_mode and gen_message.tool_calls:
                 tool_choice = "none"
-            elif self._react_mode:
+            elif self.react_mode:
                 tool_choice = "required"
             else:
                 tool_choice = "auto"
 
             async for event in self.generate_message_stream(
-                memory, tool_choice=tool_choice, ctx=ctx, call_id=call_id
+                memory,
+                tool_choice=tool_choice,
+                ctx=ctx,
+                call_id=call_id,
+                extra_llm_settings=_extra_llm_settings,
             ):
                 yield event
                 if isinstance(event, GenMessageEvent):
@@ -526,10 +672,9 @@ class LLMPolicyExecutor(Generic[CtxT]):
             model_name=self.llm.model_name,
         )
         if ctx.printer:
-            usages = [None] * (len(completion.messages) - 1) + [completion.usage]
             ctx.printer.print_messages(
-                completion.messages,
-                usages=usages,
+                [completion.message],
+                usages=[completion.usage],
                 agent_name=self.agent_name,
                 call_id=call_id,
             )

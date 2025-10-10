@@ -1,5 +1,5 @@
 from ..errors import CompletionError
-from ..typing.completion import Completion, CompletionChoice, Usage
+from ..typing.completion import Completion, Usage
 from . import OpenAICompletion, OpenAIUsage
 from .message_converters import from_api_assistant_message
 
@@ -27,34 +27,25 @@ def from_api_completion_usage(api_usage: OpenAIUsage) -> Usage:
 def from_api_completion(
     api_completion: OpenAICompletion, name: str | None = None
 ) -> Completion:
-    choices: list[CompletionChoice] = []
-
+    # Some providers return None for the choices when there is an error
+    # TODO: add custom error types
     if api_completion.choices is None:  # type: ignore
-        # Some providers return None for the choices when there is an error
-        # TODO: add custom error types
         raise CompletionError(
             f"Completion API error: {getattr(api_completion, 'error', None)}"
         )
-    for api_choice in api_completion.choices:
-        finish_reason = api_choice.finish_reason
 
-        # Some providers return None for the message when finish_reason is other than "stop"
-        if api_choice.message is None:  # type: ignore
-            raise CompletionError(
-                f"API returned None for message with finish_reason: {finish_reason}"
-            )
+    if len(api_completion.choices) > 1:
+        raise CompletionError("Multiple choices are not supported")
+    api_choice = api_completion.choices[0]
 
-        message = from_api_assistant_message(api_choice.message, name=name)
-
-        choices.append(
-            CompletionChoice(
-                index=api_choice.index,
-                message=message,
-                finish_reason=finish_reason,
-                logprobs=api_choice.logprobs,
-            )
+    # Some providers return None for the message when finish_reason is other than "stop"
+    finish_reason = api_choice.finish_reason
+    if api_choice.message is None:  # type: ignore
+        raise CompletionError(
+            f"API returned None for message with finish_reason: {finish_reason}"
         )
 
+    message = from_api_assistant_message(api_choice.message, name=name)
     usage = (
         from_api_completion_usage(api_completion.usage)
         if api_completion.usage
@@ -65,8 +56,10 @@ def from_api_completion(
         id=api_completion.id,
         created=api_completion.created,
         system_fingerprint=api_completion.system_fingerprint,
+        message=message,
+        finish_reason=finish_reason,
+        logprobs=api_choice.logprobs,
         usage=usage,
-        choices=choices,
         model=api_completion.model,
         name=name,
     )

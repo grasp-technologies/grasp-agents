@@ -1,8 +1,8 @@
 import inspect
-from collections.abc import Callable, Coroutine, Sequence
-from typing import Any, cast
+from collections.abc import Callable, Coroutine
+from typing import Any
 
-from .types import AsyncFunctionOrMethod, P, R, T
+from .types import AsyncFunctionOrMethod, P, R
 
 
 def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
@@ -12,34 +12,27 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
 
 
 def split_pos_args(
-    call: AsyncFunctionOrMethod[T, P, R], args: tuple[Any, ...]
-) -> tuple[Any | None, T | Sequence[T], tuple[Any, ...]]:
+    call: AsyncFunctionOrMethod[P, R], args: tuple[Any, ...]
+) -> tuple[Any | None, tuple[Any, ...]]:
     if not args:
         raise ValueError("No positional arguments passed.")
     maybe_self = args[0]
     if is_bound_method(call, maybe_self):
         # Case: Bound instance method with signature (self, inp, *rest)
-        if len(args) < 2:
-            raise ValueError(
-                "Must pass at least `self` and an input (or a list of inputs) "
-                "for a bound instance method."
-            )
         self_arg = args[0]
-        first_arg = cast("T | Sequence[T]", args[1])
-        remaining_args = args[2:]
+        remaining_args = args[1:]
 
-        return self_arg, first_arg, remaining_args
+        return self_arg, remaining_args
 
     # Case: Standalone function with signature (inp, *rest)
     if not args:
         raise ValueError(
-            "Must pass an input (or a list of inputs) " + "for a standalone function."
+            "Must pass an input (or a list of inputs) for a standalone function."
         )
     self_arg = None
-    first_arg = cast("T | Sequence[T]", args[0])
-    remaining_args = args[1:]
+    remaining_args = args
 
-    return self_arg, first_arg, remaining_args
+    return self_arg, remaining_args
 
 
 def partial_callable(

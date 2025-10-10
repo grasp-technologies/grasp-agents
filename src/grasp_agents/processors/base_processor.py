@@ -34,8 +34,18 @@ from ..typing.events import (
 )
 from ..typing.io import InT, OutT, ProcName
 from ..typing.tool import BaseTool
+from ..utils import is_method_overridden
 
 logger = logging.getLogger(__name__)
+
+
+_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
+
+
+class RecipientSelector(Protocol[_OutT_contra, CtxT]):
+    def __call__(
+        self, output: _OutT_contra, *, ctx: RunContext[CtxT]
+    ) -> Sequence[ProcName] | None: ...
 
 
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Packet[Any]]])
@@ -104,15 +114,6 @@ def with_retry_stream(func: F_stream) -> F_stream:
     return cast("F_stream", wrapper)
 
 
-_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
-
-
-class RecipientSelector(Protocol[_OutT_contra, CtxT]):
-    def __call__(
-        self, output: _OutT_contra, *, ctx: RunContext[CtxT]
-    ) -> Sequence[ProcName] | None: ...
-
-
 class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, CtxT]):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -136,10 +137,6 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
         self._max_retries: int = max_retries
 
         self.recipients = recipients
-
-        self.recipient_selector: RecipientSelector[OutT, CtxT] | None
-        if not hasattr(type(self), "recipient_selector"):
-            self.recipient_selector = None
 
     @property
     def in_type(self) -> type[InT]:
@@ -255,21 +252,27 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
                     allowed_recipients=cast("list[str]", self.recipients),
                 )
 
-    @final
-    def _select_recipients(
-        self, output: OutT, ctx: RunContext[CtxT]
+    def select_recipients_impl(
+        self, output: OutT, *, ctx: RunContext[CtxT]
     ) -> Sequence[ProcName] | None:
-        if self.recipient_selector:
-            return self.recipient_selector(output=output, ctx=ctx)
-
-        return self.recipients
+        raise NotImplementedError
 
     def add_recipient_selector(
         self, func: RecipientSelector[OutT, CtxT]
     ) -> RecipientSelector[OutT, CtxT]:
-        self.recipient_selector = func
+        self.select_recipients_impl = func
 
         return func
+
+    @final
+    def select_recipients(
+        self, output: OutT, ctx: RunContext[CtxT]
+    ) -> Sequence[ProcName] | None:
+        base_cls = BaseProcessor[Any, Any, Any, Any]
+        if is_method_overridden("select_recipients_impl", self, base_cls):
+            return self.select_recipients_impl(output=output, ctx=ctx)
+
+        return self.recipients
 
     @abstractmethod
     async def run(

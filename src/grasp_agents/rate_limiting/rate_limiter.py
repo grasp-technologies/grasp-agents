@@ -78,7 +78,7 @@ def limit_rate(
 
     @functools.wraps(call)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        self_obj, _, _ = split_pos_args(call, args)  # type: ignore
+        self_obj, _ = split_pos_args(call, args)
         call_partial = partial(call, *args, **kwargs)
         _rate_limiter = rate_limiter or getattr(self_obj, "rate_limiter", None)
         if _rate_limiter is None:

@@ -1,7 +1,6 @@
 import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator, Mapping
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
@@ -46,8 +45,11 @@ class LiteLLM(CloudLLM):
     llm_settings: LiteLLMSettings | None = None
     converters: ClassVar[LiteLLMConverters] = LiteLLMConverters()
 
-    # Drop unsupported LLM settings
-    drop_params: bool = True
+    client_timeout: float = 60.0
+    max_client_retries: int = 2
+
+    # Drop unsupported OpenAI params
+    drop_params: bool = False
     additional_drop_params: list[str] | None = None
     allowed_openai_params: list[str] | None = None
     # Mock LLM response for testing
@@ -75,8 +77,12 @@ class LiteLLM(CloudLLM):
 
         _api_provider = self.api_provider
         try:
-            _, provider_name, _, _ = litellm.get_llm_provider(self.model_name)  # type: ignore[no-untyped-call]
-            _api_provider = APIProvider(name=provider_name)
+            _, provider_name, api_key, api_base = litellm.get_llm_provider(
+                self.model_name
+            )  # type: ignore[no-untyped-call]
+            _api_provider = APIProvider(
+                name=provider_name, api_key=api_key, base_url=api_base
+            )
         except Exception as exc:
             if self.api_provider is not None:
                 self._lite_llm_completion_params["api_key"] = self.api_provider.get(
@@ -91,14 +97,6 @@ class LiteLLM(CloudLLM):
                     f"'{self.model_name}' and no custom API provider was specified."
                 ) from exc
 
-        if self.llm_settings is not None:
-            stream_options = self.llm_settings.get("stream_options") or {}
-            stream_options["include_usage"] = True
-            _llm_settings = deepcopy(self.llm_settings)
-            _llm_settings["stream_options"] = stream_options
-        else:
-            _llm_settings = LiteLLMSettings(stream_options={"include_usage": True})
-
         if (
             self.apply_response_schema_via_provider
             and not self.supports_response_schema
@@ -108,13 +106,12 @@ class LiteLLM(CloudLLM):
                 "natively. Please set `apply_response_schema_via_provider=False`"
             )
 
-        if self.async_http_client is not None:
-            raise ValueError(
+        if self.http_client is not None:
+            raise NotImplementedError(
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
         object.__setattr__(self, "api_provider", _api_provider)
-        object.__setattr__(self, "llm_settings", _llm_settings)
 
     def get_supported_openai_params(self) -> list[Any] | None:
         return get_supported_openai_params(  # type: ignore[no-untyped-call]
@@ -144,25 +141,20 @@ class LiteLLM(CloudLLM):
     # # client
     # model_list: Optional[list] = (None,)  # pass in a list of api_base,keys, etc.
 
-    async def _get_completion(
+    async def _get_api_completion(
         self,
         api_messages: list[OpenAIMessageParam],
         api_tools: list[OpenAIToolParam] | None = None,
         api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         api_response_schema: type | None = None,
-        n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
-        if api_llm_settings and api_llm_settings.get("stream_options"):
-            api_llm_settings.pop("stream_options")
-
         completion = await litellm.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
             messages=api_messages,
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
-            n=n_choices,
             stream=False,
             **self._lite_llm_completion_params,
             **api_llm_settings,
@@ -174,15 +166,19 @@ class LiteLLM(CloudLLM):
 
         return completion
 
-    async def _get_completion_stream(  # type: ignore[no-untyped-def]
+    async def _get_api_completion_stream(
         self,
         api_messages: list[OpenAIMessageParam],
         api_tools: list[OpenAIToolParam] | None = None,
         api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
         api_response_schema: type | None = None,
-        n_choices: int | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[LiteLLMCompletionChunk]:
+        # Ensure usage is included in the streamed responses
+        stream_options = dict(api_llm_settings.get("stream_options") or {})
+        stream_options["include_usage"] = True
+        _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
+
         stream = await litellm.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
             messages=api_messages,
@@ -190,25 +186,27 @@ class LiteLLM(CloudLLM):
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
             stream=True,
-            n=n_choices,
             **self._lite_llm_completion_params,
-            **api_llm_settings,
+            **_api_llm_settings,
         )
         stream = cast("CustomStreamWrapper", stream)
 
         tc_indices: dict[int, set[int]] = defaultdict(set)
 
-        async for completion_chunk in stream:
-            # Fix tool call indices to be unique within each choice
-            if completion_chunk is not None:
-                for n, choice in enumerate(completion_chunk.choices):
-                    for tc in choice.delta.tool_calls or []:
-                        # Tool call ID is not None only when it is a new tool call
-                        if tc.id and tc.index in tc_indices[n]:
-                            tc.index = max(tc_indices[n]) + 1
-                        tc_indices[n].add(tc.index)
+        async def iterator() -> AsyncIterator[LiteLLMCompletionChunk]:
+            async for completion_chunk in stream:
+                # Fix tool call indices to be unique within each choice
+                if completion_chunk is not None:
+                    for n, choice in enumerate(completion_chunk.choices):
+                        for tc in choice.delta.tool_calls or []:
+                            # Tool call ID is not None only when it is a new tool call
+                            if tc.id and tc.index in tc_indices[n]:
+                                tc.index = max(tc_indices[n]) + 1
+                            tc_indices[n].add(tc.index)
 
-                yield completion_chunk
+                    yield completion_chunk
+
+        return iterator()
 
     def combine_completion_chunks(
         self,
