@@ -10,7 +10,7 @@ PacketRouting = Sequence[Sequence[ProcName]]
 _PayloadT_co = TypeVar("_PayloadT_co", covariant=True)
 
 
-def is_broadcast_routing(routing: PacketRouting | None) -> Sequence[ProcName] | None:
+def is_uniform_routing(routing: PacketRouting | None) -> Sequence[ProcName] | None:
     if not routing or len(routing) == 0:
         return None
 
@@ -30,8 +30,8 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
     routing: PacketRouting | None = None
 
     @property
-    def broadcast_routing(self) -> Sequence[ProcName] | None:
-        return is_broadcast_routing(self.routing)
+    def uniform_routing(self) -> Sequence[ProcName] | None:
+        return is_uniform_routing(self.routing)
 
     @model_validator(mode="after")
     def _validate_routing(self) -> Self:

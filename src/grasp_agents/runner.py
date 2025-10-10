@@ -78,7 +78,7 @@ class Runner(Generic[OutT, CtxT]):
             **run_kwargs,
         )
 
-        route = out_packet.broadcast_routing or out_packet.routing
+        route = out_packet.uniform_routing or out_packet.routing
         logger.info(
             f"\n[Finished running processor {proc.name}]\n"
             f"Posting output packet to recipients: {route}\n"
@@ -112,7 +112,7 @@ class Runner(Generic[OutT, CtxT]):
 
         assert out_packet is not None
 
-        route = out_packet.broadcast_routing or out_packet.routing
+        route = out_packet.uniform_routing or out_packet.routing
         logger.info(
             f"\n[Finished running processor {proc.name}]\n"
             f"Posting output packet to recipients: {route}\n"
@@ -168,7 +168,7 @@ class Runner(Generic[OutT, CtxT]):
             async for event in pool.stream_events():
                 if isinstance(
                     event, ProcPacketOutputEvent
-                ) and event.data.broadcast_routing == [END_PROC_NAME]:
+                ) and event.data.uniform_routing == [END_PROC_NAME]:
                     yield RunResultEvent(
                         data=event.data,
                         proc_name=event.proc_name,
