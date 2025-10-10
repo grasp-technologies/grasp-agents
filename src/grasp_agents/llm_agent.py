@@ -41,6 +41,7 @@ class MemoryPreparator(Protocol):
         self,
         memory: "LLMAgentMemory",
         *,
+        instructions: LLMPrompt | None = None,
         in_args: Any | None,
         ctx: RunContext[Any],
         call_id: str,
@@ -90,6 +91,7 @@ class LLMAgent(
         react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
         # Agent memory management
+        memory: LLMAgentMemory | None = None,
         reset_memory_on_run: bool = False,
         # Agent run retries
         max_retries: int = 0,
@@ -100,7 +102,7 @@ class LLMAgent(
 
         # Agent memory
 
-        self._memory: LLMAgentMemory = LLMAgentMemory()
+        self._memory: LLMAgentMemory = memory or LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
 
         # LLM policy executor
@@ -174,13 +176,18 @@ class LLMAgent(
         self,
         memory: LLMAgentMemory,
         *,
+        instructions: LLMPrompt | None = None,
         in_args: InT | None = None,
         ctx: RunContext[Any],
         call_id: str,
     ) -> None:
         if is_method_overridden("prepare_memory_impl", self, LLMAgent[Any, Any, Any]):
             return self.prepare_memory_impl(
-                memory=memory, in_args=in_args, ctx=ctx, call_id=call_id
+                memory=memory,
+                instructions=instructions,
+                in_args=in_args,
+                ctx=ctx,
+                call_id=call_id,
             )
 
     def _memorize_inputs(
@@ -203,7 +210,11 @@ class LLMAgent(
                 system_message = cast("SystemMessage", memory.messages[0])
         else:
             self.prepare_memory(
-                memory=memory, in_args=in_args, ctx=ctx, call_id=call_id
+                memory=memory,
+                instructions=formatted_sys_prompt,
+                in_args=in_args,
+                ctx=ctx,
+                call_id=call_id,
             )
 
         input_message = self._prompt_builder.build_input_message(
@@ -332,6 +343,7 @@ class LLMAgent(
         self,
         memory: LLMAgentMemory,
         *,
+        instructions: LLMPrompt | None = None,
         in_args: InT | None = None,
         ctx: RunContext[Any],
         call_id: str,
