@@ -186,11 +186,11 @@ class CloudLLM(LLM):
         if not self.apply_response_schema_via_provider:
             completion_kwargs.pop("api_response_schema", None)
 
-        api_stream = self._get_api_completion_stream(**completion_kwargs)
+        api_stream = await self._get_api_completion_stream(**completion_kwargs)
 
         api_completion_chunks: list[Any] = []
 
-        async for api_completion_chunk in await api_stream:
+        async for api_completion_chunk in api_stream:
             api_completion_chunks.append(api_completion_chunk)
             completion_chunk = self.converters.from_completion_chunk(
                 api_completion_chunk, name=self.model_id

@@ -193,6 +193,7 @@ class LiteLLM(CloudLLM):
 
         tc_indices: dict[int, set[int]] = defaultdict(set)
 
+        # Need to wrap the iterator to make it work with decorators
         async def iterator() -> AsyncIterator[LiteLLMCompletionChunk]:
             async for completion_chunk in stream:
                 # Fix tool call indices to be unique within each choice

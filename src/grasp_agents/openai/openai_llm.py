@@ -205,6 +205,7 @@ class OpenAILLM(CloudLLM):
         stream_options["include_usage"] = True
         _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
 
+        # Need to wrap the iterator to make it work with decorators
         async def iterator() -> AsyncIterator[OpenAICompletionChunk]:
             if self.apply_response_schema_via_provider:
                 stream_manager: OpenAIAsyncChatCompletionStreamManager[Any] = (

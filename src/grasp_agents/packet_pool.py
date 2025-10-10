@@ -11,6 +11,7 @@ from .typing.io import ProcName
 logger = logging.getLogger(__name__)
 
 
+START_PROC_NAME: Literal["*START*"] = "*START*"
 END_PROC_NAME: Literal["*END*"] = "*END*"
 
 
@@ -45,10 +46,7 @@ class PacketPool:
             await self.shutdown()
             return
 
-        if packet.routing is None:
-            return
-
-        for sub_packet in packet.split_by_recipient():
+        for sub_packet in packet.split_by_recipient() or []:
             assert sub_packet.routing
             recipient = sub_packet.routing[0][0]
             queue = self._packet_queues.setdefault(recipient, asyncio.Queue())

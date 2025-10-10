@@ -1,12 +1,11 @@
 from collections.abc import Sequence
-from typing import Any, Generic, Literal, Self, TypeVar
+from typing import Generic, Self, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .typing.io import ProcName
 
-START_PROC_NAME: Literal["*START*"] = "*START*"
 PacketRouting = Sequence[Sequence[ProcName]]
 _PayloadT_co = TypeVar("_PayloadT_co", covariant=True)
 
@@ -42,13 +41,13 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
             )
         return self
 
-    def split_per_payload(self) -> Sequence["Packet[_PayloadT_co]"]:
+    def split_per_payload(self) -> Sequence["Packet[_PayloadT_co]"] | None:
         if self.routing is None:
-            raise ValueError("Routing must be specified to split per payload")
+            return None
 
         return [
             Packet(
-                id=f"{self.id}-{i}",
+                id=f"{self.id}/{i}",
                 payloads=[payload],
                 routing=[recipients],
                 sender=self.sender,
@@ -60,9 +59,9 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
 
     def split_by_recipient(
         self,
-    ) -> Sequence["Packet[_PayloadT_co]"]:
+    ) -> Sequence["Packet[_PayloadT_co]"] | None:
         if self.routing is None:
-            raise ValueError("Routing must be specified to split by recipient")
+            return None
 
         recipient_to_payloads: dict[ProcName, list[_PayloadT_co]] = {}
         for payload, recipients in zip(self.payloads, self.routing, strict=True):
@@ -73,7 +72,7 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
 
         return [
             Packet(
-                id=f"{self.id}->{recipient}",
+                id=f"{self.id}/{recipient}",
                 payloads=payloads,
                 routing=[[recipient] for _ in range(len(payloads))],
                 sender=self.sender,
@@ -91,14 +90,3 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
             f"Routing: {self.routing or 'None'}\n"
             f"Payloads: {len(self.payloads)}"
         )
-
-
-class StartPacket(Packet[Any]):
-    sender: ProcName = Field(default=START_PROC_NAME, frozen=True)
-    payloads: Sequence[Any] = Field(default=("start",), frozen=True)
-
-    @model_validator(mode="after")
-    def validate_routing(self) -> Self:
-        if len(set(self.broadcast_routing or [])) != 1:
-            raise ValueError("There must be exactly one recipient for StartPacket")
-        return self

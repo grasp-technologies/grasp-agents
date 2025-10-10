@@ -7,8 +7,8 @@ from uuid import uuid4
 from grasp_agents.tracing_decorators import workflow
 
 from .errors import RunnerError
-from .packet import Packet, StartPacket
-from .packet_pool import END_PROC_NAME, PacketPool
+from .packet import Packet
+from .packet_pool import END_PROC_NAME, START_PROC_NAME, PacketPool
 from .processors.base_processor import BaseProcessor
 from .run_context import CtxT, RunContext
 from .typing.events import Event, ProcPacketOutputEvent, RunResultEvent
@@ -54,7 +54,7 @@ class Runner(Generic[OutT, CtxT]):
     def _unpack_packet(
         self, packet: Packet[Any] | None
     ) -> tuple[Packet[Any] | None, Any | None]:
-        if isinstance(packet, StartPacket):
+        if packet and packet.sender == START_PROC_NAME:
             return None, packet.payloads[0]
         return packet, None
 
@@ -133,9 +133,13 @@ class Runner(Generic[OutT, CtxT]):
                         **run_kwargs,
                     ),
                 )
-            await pool.post(
-                StartPacket(routing=[[self._entry_proc.name]], payloads=[chat_inputs])
+            start_packet = Packet[Any](
+                sender=START_PROC_NAME,
+                routing=[[self._entry_proc.name]],
+                payloads=[chat_inputs],
             )
+            await pool.post(start_packet)
+
             return await pool.final_result()
 
     @workflow(name="runner_run")  # type: ignore
@@ -153,9 +157,14 @@ class Runner(Generic[OutT, CtxT]):
                         **run_kwargs,
                     ),
                 )
-            await pool.post(
-                StartPacket(routing=[[self._entry_proc.name]], payloads=[chat_inputs])
+
+            start_packet = Packet[Any](
+                sender=START_PROC_NAME,
+                routing=[[self._entry_proc.name]],
+                payloads=[chat_inputs],
             )
+            await pool.post(start_packet)
+
             async for event in pool.stream_events():
                 if isinstance(
                     event, ProcPacketOutputEvent
