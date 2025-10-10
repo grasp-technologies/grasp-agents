@@ -83,23 +83,32 @@ class MappingProcessor(
 
         return val_in_args, memory
 
+    def _join_routings(
+        self, routings: list[Sequence[ProcName] | None]
+    ) -> Sequence[Sequence[ProcName]] | None:
+        if all(r is None for r in routings):
+            joined_routing = None
+        else:
+            joined_routing = [r or [] for r in routings]
+        return joined_routing
+
     def _postprocess(
         self, outputs: list[OutT], call_id: str, ctx: RunContext[CtxT]
     ) -> Packet[OutT]:
         payloads: list[OutT] = []
-        routing: list[Sequence[ProcName]] | None = []
+        routings: list[Sequence[ProcName] | None] = []
         for output in outputs:
             val_output = self._validate_output(output, call_id=call_id)
             payloads.append(val_output)
 
-            selected_recipients = self.select_recipients(output=val_output, ctx=ctx)
-            self._validate_recipients(selected_recipients, call_id=call_id)
-            routing.append(selected_recipients or [])
+            selected_recipients = self.select_recipients(
+                output=val_output, ctx=ctx, call_id=call_id
+            )
+            routings.append(selected_recipients)
 
-        if all(len(r) == 0 for r in routing):
-            routing = None
+        routing = self._join_routings(routings)
 
-        return Packet(payloads=payloads, sender=self.name, routing=routing)
+        return Packet(sender=self.name, payloads=payloads, routing=routing)
 
     @agent(name="processor")  # type: ignore
     @with_retry

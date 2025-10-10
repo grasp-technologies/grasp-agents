@@ -5,7 +5,6 @@ from typing import Any, ClassVar, Generic, cast
 
 from grasp_agents.tracing_decorators import agent
 
-from ..errors import PacketRoutingError
 from ..memory import MemT
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
@@ -20,6 +19,8 @@ logger = logging.getLogger(__name__)
 class ParallelProcessor(
     BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, CtxT]
 ):
+    """Processor that runs multiple inputs in parallel, each producing one output."""
+
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
         1: "_out_type",
@@ -34,6 +35,7 @@ class ParallelProcessor(
         call_id: str,
         ctx: RunContext[CtxT],
     ) -> OutT:
+        """Process a single input and return a single output."""
         return cast("OutT", in_args)
 
     async def _process_stream(
@@ -47,28 +49,6 @@ class ParallelProcessor(
     ) -> AsyncIterator[Event[Any]]:
         output = cast("OutT", in_args)
         yield ProcPayloadOutputEvent(data=output, proc_name=self.name, call_id=call_id)
-
-    def _validate_parallel_recipients(
-        self, out_packets: Sequence[Packet[OutT]], call_id: str
-    ) -> None:
-        if not out_packets:
-            return
-
-        first_packet = out_packets[0]
-        first_recipients_set = set((first_packet.routing or [[]])[0])
-        err_kwargs = dict(proc_name=self.name, call_id=call_id)
-
-        for p in out_packets[:1]:
-            recipients_set = set((p.routing or [[]])[0])
-            if recipients_set != first_recipients_set:
-                raise PacketRoutingError(
-                    message=(
-                        "Parallel processor requires all parallel outputs to "
-                        "have the same recipients "
-                        f"[proc_name={self.name}; call_id={call_id}]"
-                    ),
-                    **err_kwargs,  # type: ignore
-                )
 
     @with_retry
     async def _run_single(
@@ -91,14 +71,29 @@ class ParallelProcessor(
         )
         val_output = self._validate_output(output, call_id=call_id)
 
-        recipients = self.select_recipients(output=val_output, ctx=ctx)
-        self._validate_recipients(recipients, call_id=call_id)
+        recipients = self.select_recipients(output=val_output, ctx=ctx, call_id=call_id)
 
         return Packet(
             payloads=[val_output],
             sender=self.name,
             routing=[recipients] if recipients is not None else None,
         )
+
+    def _join_payloads(self, packets: Sequence[Packet[OutT]]) -> list[OutT]:
+        return [p.payloads[0] for p in packets]
+
+    def _join_routings(
+        self, packets: Sequence[Packet[OutT]]
+    ) -> Sequence[Sequence[str]] | None:
+        if not packets:
+            return None
+        routings = [p.routing[0] if p.routing is not None else None for p in packets]
+        if all(r is None for r in routings):
+            joined_routing = None
+        else:
+            joined_routing = [r or [] for r in routings]
+
+        return joined_routing
 
     async def _run_parallel(
         self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT]
@@ -110,12 +105,11 @@ class ParallelProcessor(
             for idx, inp in enumerate(in_args)
         ]
         out_packets = await asyncio.gather(*tasks)
-        self._validate_parallel_recipients(out_packets, call_id=call_id)
 
         return Packet(
-            payloads=[out_packet.payloads[0] for out_packet in out_packets],
             sender=self.name,
-            routing=out_packets[0].routing,
+            payloads=self._join_payloads(out_packets),
+            routing=self._join_routings(out_packets),
         )
 
     @agent(name="processor")  # type: ignore
@@ -180,8 +174,7 @@ class ParallelProcessor(
 
         val_output = self._validate_output(output, call_id=call_id)
 
-        recipients = self.select_recipients(output=val_output, ctx=ctx)
-        self._validate_recipients(recipients, call_id=call_id)
+        recipients = self.select_recipients(output=val_output, ctx=ctx, call_id=call_id)
 
         out_packet = Packet[OutT](
             payloads=[val_output],
@@ -213,17 +206,10 @@ class ParallelProcessor(
             else:
                 yield event
 
-        self._validate_parallel_recipients(
-            out_packets=list(out_packets_map.values()), call_id=call_id
-        )
-
         out_packet = Packet(
-            payloads=[
-                out_packet.payloads[0]
-                for _, out_packet in sorted(out_packets_map.items())
-            ],
             sender=self.name,
-            routing=out_packets_map[0].routing,
+            payloads=self._join_payloads(list(out_packets_map.values())),
+            routing=self._join_routings(list(out_packets_map.values())),
         )
 
         yield ProcPacketOutputEvent(

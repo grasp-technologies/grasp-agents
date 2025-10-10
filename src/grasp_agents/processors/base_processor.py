@@ -44,7 +44,7 @@ _OutT_contra = TypeVar("_OutT_contra", contravariant=True)
 
 class RecipientSelector(Protocol[_OutT_contra, CtxT]):
     def __call__(
-        self, output: _OutT_contra, *, ctx: RunContext[CtxT]
+        self, output: _OutT_contra, *, ctx: RunContext[CtxT], call_id: str
     ) -> Sequence[ProcName] | None: ...
 
 
@@ -253,7 +253,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
                 )
 
     def select_recipients_impl(
-        self, output: OutT, *, ctx: RunContext[CtxT]
+        self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
     ) -> Sequence[ProcName] | None:
         raise NotImplementedError
 
@@ -266,11 +266,15 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, MemT, C
 
     @final
     def select_recipients(
-        self, output: OutT, ctx: RunContext[CtxT]
+        self, output: OutT, ctx: RunContext[CtxT], call_id: str
     ) -> Sequence[ProcName] | None:
         base_cls = BaseProcessor[Any, Any, Any, Any]
         if is_method_overridden("select_recipients_impl", self, base_cls):
-            return self.select_recipients_impl(output=output, ctx=ctx)
+            recipients = self.select_recipients_impl(
+                output=output, ctx=ctx, call_id=call_id
+            )
+            self._validate_recipients(recipients, call_id=call_id)
+            return recipients
 
         return self.recipients
 
