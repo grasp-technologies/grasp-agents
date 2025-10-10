@@ -122,7 +122,7 @@ class LLMAgent(
             response_schema is None
             and tools is None
             and not is_method_overridden(
-                "parse_output_impl", self, ParallelProcessor[Any, Any, Any, Any]
+                "parse_output_impl", self, LLMAgent[Any, Any, Any]
             )
         ):
             response_schema = self.out_type
