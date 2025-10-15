@@ -24,7 +24,6 @@ def init_phoenix(
     use_llm_provider_instr: bool = True,
 ):
     collector_endpoint = os.getenv("TELEMETRY_COLLECTOR_HTTP_ENDPOINT")
-    batch = bool(os.getenv("TELEMETRY_BATCH", "0") != "0")
 
     if not collector_endpoint:
         logger.warning(

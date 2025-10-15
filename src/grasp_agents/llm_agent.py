@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from .llm import LLM
 from .llm_agent_memory import LLMAgentMemory
 from .llm_policy_executor import (
+    AfterGenerateHook,
     BeforeGenerateHook,
     FinalAnswerChecker,
     LLMPolicyExecutor,
@@ -402,6 +403,23 @@ class LLMAgent(
             llm_settings=llm_settings,
         )
 
+    async def on_after_generate_impl(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
+    ) -> None:
+        return await self._policy_executor.on_after_generate_impl(
+            memory,
+            ctx=ctx,
+            call_id=call_id,
+            num_turns=num_turns,
+            llm_settings=llm_settings,
+        )
+
     def tool_outputs_to_messages_impl(
         self,
         tool_outputs: Sequence[Any],
@@ -455,6 +473,12 @@ class LLMAgent(
         self._policy_executor.on_before_generate_impl = func
         return func
 
+    def add_after_generate_hook(
+        self, func: AfterGenerateHook[CtxT]
+    ) -> AfterGenerateHook[CtxT]:
+        self._policy_executor.on_after_generate_impl = func
+        return func
+
     def add_tool_output_converter(
         self, func: ToolOutputConverter[CtxT]
     ) -> ToolOutputConverter[CtxT]:
@@ -487,6 +511,9 @@ class LLMAgent(
 
         if is_method_overridden("on_before_generate_impl", self, base_cls):
             self._policy_executor.on_before_generate_impl = self.on_before_generate_impl
+
+        if is_method_overridden("on_after_generate_impl", self, base_cls):
+            self._policy_executor.on_after_generate_impl = self.on_after_generate_impl
 
         if is_method_overridden("tool_outputs_to_messages_impl", self, base_cls):
             self._policy_executor.tool_outputs_to_messages_impl = (

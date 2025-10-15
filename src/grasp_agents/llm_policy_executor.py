@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
 from copy import deepcopy
 from itertools import starmap
 from logging import getLogger
-from typing import Any, Generic, Protocol, final
+from typing import Any, Generic, Protocol, TypedDict, final
 
 from pydantic import BaseModel
 
@@ -56,6 +56,18 @@ class BeforeGenerateHook(Protocol[CtxT]):
     ) -> None: ...
 
 
+class AfterGenerateHook(Protocol[CtxT]):
+    async def __call__(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
+    ) -> None: ...
+
+
 class ToolOutputConverter(Protocol[CtxT]):
     def __call__(
         self,
@@ -66,6 +78,13 @@ class ToolOutputConverter(Protocol[CtxT]):
         call_id: str,
         **kwargs: Any,
     ) -> Sequence[ToolMessage | UserMessage]: ...
+
+
+class HookArgs(TypedDict, total=False):
+    memory: LLMAgentMemory
+    ctx: RunContext[Any]
+    call_id: str
+    llm_settings: dict[str, Any]
 
 
 class LLMPolicyExecutor(Generic[CtxT]):
@@ -192,6 +211,36 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 llm_settings=llm_settings,
             )
 
+    async def on_after_generate_impl(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
+    ) -> None:
+        raise NotImplementedError
+
+    @final
+    async def on_after_generate(
+        self,
+        memory: LLMAgentMemory,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        num_turns: int,
+        llm_settings: dict[str, Any],
+    ) -> None:
+        if is_method_overridden("on_after_generate_impl", self):
+            await self.on_after_generate_impl(
+                memory=memory,
+                ctx=ctx,
+                call_id=call_id,
+                num_turns=num_turns,
+                llm_settings=llm_settings,
+            )
+
     @task(name="generate")  # type: ignore
     async def generate_message(
         self,
@@ -269,6 +318,15 @@ class LLMPolicyExecutor(Generic[CtxT]):
     ) -> Sequence[ToolMessage | UserMessage]:
         raise NotImplementedError
 
+    def tool_outputs_to_messages_default(
+        self, tool_outputs: Sequence[Any], tool_calls: Sequence[ToolCall]
+    ) -> Sequence[ToolMessage | UserMessage]:
+        return list(
+            starmap(
+                ToolMessage.from_tool_output, zip(tool_outputs, tool_calls, strict=True)
+            )
+        )
+
     @final
     def tool_outputs_to_messages(
         self,
@@ -282,11 +340,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             return self.tool_outputs_to_messages_impl(
                 tool_outputs, tool_calls, ctx=ctx, call_id=call_id
             )
-        return list(
-            starmap(
-                ToolMessage.from_tool_output, zip(tool_outputs, tool_calls, strict=True)
-            )
-        )
+        return self.tool_outputs_to_messages_default(tool_outputs, tool_calls)
 
     # @task(name="call_tools")  # type: ignore
     async def call_tools(
@@ -456,16 +510,14 @@ class LLMPolicyExecutor(Generic[CtxT]):
         For this, we use the `react_mode` flag.
         """
         _extra_llm_settings = deepcopy(extra_llm_settings or {})
-        turns = 0
-
-        # Can modify LLM settings in the hook
-        await self.on_before_generate(
-            memory,
+        hooks_kwargs: HookArgs = HookArgs(
+            memory=memory,
             ctx=ctx,
             call_id=call_id,
-            num_turns=turns,
             llm_settings=_extra_llm_settings,
         )
+
+        turns = 0
 
         # 1. Generate the first message and update memory
 
@@ -476,6 +528,9 @@ class LLMPolicyExecutor(Generic[CtxT]):
         if self.tools:
             tool_choice = "none" if self.react_mode else "auto"
 
+        # LLM settings can be modified in-place
+        await self.on_before_generate(**hooks_kwargs, num_turns=turns)
+
         gen_message = await self.generate_message(
             memory,
             tool_choice=tool_choice,
@@ -483,6 +538,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
             call_id=call_id,
             extra_llm_settings=_extra_llm_settings,
         )
+
+        # LLM settings can be modified in-place
+        await self.on_after_generate(**hooks_kwargs, num_turns=turns)
+
         if not self.tools:
             return gen_message.content or ""
 
@@ -514,14 +573,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
                     gen_message.tool_calls, memory=memory, ctx=ctx, call_id=call_id
                 )
 
-            await self.on_before_generate(
-                memory,
-                ctx=ctx,
-                call_id=call_id,
-                llm_settings=_extra_llm_settings,
-                num_turns=turns,
-            )
-
             # 4. Generate the next message and update memory
 
             if self.react_mode and gen_message.tool_calls:
@@ -534,6 +585,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 # No ReAct mode: let the model decide
                 tool_choice = "auto"
 
+            await self.on_before_generate(**hooks_kwargs, num_turns=turns)
+
             gen_message = await self.generate_message(
                 memory,
                 tool_choice=tool_choice,
@@ -541,6 +594,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 call_id=call_id,
                 extra_llm_settings=_extra_llm_settings,
             )
+
+            await self.on_after_generate(**hooks_kwargs, num_turns=turns)
 
             turns += 1
 
@@ -552,21 +607,22 @@ class LLMPolicyExecutor(Generic[CtxT]):
         extra_llm_settings: dict[str, Any] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         _extra_llm_settings = deepcopy(extra_llm_settings or {})
-        turns = 0
-
-        await self.on_before_generate(
-            memory,
+        hooks_kwargs: HookArgs = HookArgs(
+            memory=memory,
             ctx=ctx,
             call_id=call_id,
             llm_settings=_extra_llm_settings,
-            num_turns=turns,
         )
+
+        turns = 0
 
         # 1. Generate the first message and update memory
 
         tool_choice: ToolChoice | None = None
         if self.tools:
             tool_choice = "none" if self.react_mode else "auto"
+
+        await self.on_before_generate(**hooks_kwargs, num_turns=turns)
 
         gen_message: AssistantMessage | None = None
         async for event in self.generate_message_stream(
@@ -580,7 +636,14 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 gen_message = event.data
             yield event
 
-        if gen_message is None or not self.tools:
+        if gen_message is None:
+            # Exit if generation failed
+            return
+
+        await self.on_after_generate(**hooks_kwargs, num_turns=turns)
+
+        if not self.tools:
+            # No tools to call, return the content of the generated message
             return
 
         while True:
@@ -613,14 +676,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 ):
                     yield event
 
-            await self.on_before_generate(
-                memory,
-                ctx=ctx,
-                call_id=call_id,
-                llm_settings=_extra_llm_settings,
-                num_turns=turns,
-            )
-
             # 4. Generate the next message and update memory
 
             if self.react_mode and gen_message.tool_calls:
@@ -629,6 +684,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 tool_choice = "required"
             else:
                 tool_choice = "auto"
+
+            await self.on_before_generate(**hooks_kwargs, num_turns=turns)
 
             async for event in self.generate_message_stream(
                 memory,
@@ -640,6 +697,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 yield event
                 if isinstance(event, GenMessageEvent):
                     gen_message = event.data
+
+            await self.on_after_generate(**hooks_kwargs, num_turns=turns)
 
             turns += 1
 
