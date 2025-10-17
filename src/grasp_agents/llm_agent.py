@@ -28,7 +28,7 @@ from .typing.events import (
     UserMessageEvent,
 )
 from .typing.io import InT, LLMPrompt, OutT, ProcName
-from .typing.message import Message, SystemMessage, UserMessage
+from .typing.message import AssistantMessage, Message, SystemMessage, UserMessage
 from .typing.tool import BaseTool, ToolCall
 from .utils import get_prompt, is_method_overridden
 from .validation import validate_obj_from_json_or_py_string
@@ -393,31 +393,31 @@ class LLMAgent(
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
+        extra_llm_settings: dict[str, Any],
     ) -> None:
         return await self._policy_executor.on_before_generate_impl(
             memory,
             ctx=ctx,
             call_id=call_id,
             num_turns=num_turns,
-            llm_settings=llm_settings,
+            extra_llm_settings=extra_llm_settings,
         )
 
     async def on_after_generate_impl(
         self,
-        memory: LLMAgentMemory,
+        gen_message: AssistantMessage,
         *,
+        memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
     ) -> None:
         return await self._policy_executor.on_after_generate_impl(
-            memory,
+            gen_message=gen_message,
+            memory=memory,
             ctx=ctx,
             call_id=call_id,
             num_turns=num_turns,
-            llm_settings=llm_settings,
         )
 
     def tool_outputs_to_messages_impl(

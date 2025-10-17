@@ -52,19 +52,19 @@ class BeforeGenerateHook(Protocol[CtxT]):
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
+        extra_llm_settings: dict[str, Any],
     ) -> None: ...
 
 
 class AfterGenerateHook(Protocol[CtxT]):
     async def __call__(
         self,
-        memory: LLMAgentMemory,
+        gen_message: AssistantMessage,
         *,
+        memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
     ) -> None: ...
 
 
@@ -84,7 +84,6 @@ class HookArgs(TypedDict, total=False):
     memory: LLMAgentMemory
     ctx: RunContext[Any]
     call_id: str
-    llm_settings: dict[str, Any]
 
 
 class LLMPolicyExecutor(Generic[CtxT]):
@@ -188,7 +187,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
+        extra_llm_settings: dict[str, Any],
     ) -> None:
         raise NotImplementedError
 
@@ -200,7 +199,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
+        extra_llm_settings: dict[str, Any],
     ) -> None:
         if is_method_overridden("on_before_generate_impl", self):
             await self.on_before_generate_impl(
@@ -208,37 +207,37 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 ctx=ctx,
                 call_id=call_id,
                 num_turns=num_turns,
-                llm_settings=llm_settings,
+                extra_llm_settings=extra_llm_settings,
             )
 
     async def on_after_generate_impl(
         self,
-        memory: LLMAgentMemory,
+        gen_message: AssistantMessage,
         *,
+        memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
     ) -> None:
         raise NotImplementedError
 
     @final
     async def on_after_generate(
         self,
-        memory: LLMAgentMemory,
+        gen_message: AssistantMessage,
         *,
+        memory: LLMAgentMemory,
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
-        llm_settings: dict[str, Any],
     ) -> None:
         if is_method_overridden("on_after_generate_impl", self):
             await self.on_after_generate_impl(
+                gen_message=gen_message,
                 memory=memory,
                 ctx=ctx,
                 call_id=call_id,
                 num_turns=num_turns,
-                llm_settings=llm_settings,
             )
 
     @task(name="generate")  # type: ignore
@@ -510,12 +509,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         For this, we use the `react_mode` flag.
         """
         _extra_llm_settings = deepcopy(extra_llm_settings or {})
-        hooks_kwargs: HookArgs = HookArgs(
-            memory=memory,
-            ctx=ctx,
-            call_id=call_id,
-            llm_settings=_extra_llm_settings,
-        )
+        hooks_kwargs: HookArgs = HookArgs(memory=memory, ctx=ctx, call_id=call_id)
 
         turns = 0
 
@@ -524,23 +518,26 @@ class LLMPolicyExecutor(Generic[CtxT]):
         # In ReAct mode, we generate the first message without tool calls
         # to enforce planning.
 
+        # LLM settings can be modified in-place
+        await self.on_before_generate(
+            extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
+        )
+
         tool_choice: ToolChoice | None = None
         if self.tools:
             tool_choice = "none" if self.react_mode else "auto"
-
-        # LLM settings can be modified in-place
-        await self.on_before_generate(**hooks_kwargs, num_turns=turns)
+        # Hooks can override tool_choice
+        tool_choice = _extra_llm_settings.pop("tool_choice", tool_choice)
 
         gen_message = await self.generate_message(
             memory,
             tool_choice=tool_choice,
+            extra_llm_settings=_extra_llm_settings,
             ctx=ctx,
             call_id=call_id,
-            extra_llm_settings=_extra_llm_settings,
         )
 
-        # LLM settings can be modified in-place
-        await self.on_after_generate(**hooks_kwargs, num_turns=turns)
+        await self.on_after_generate(gen_message, num_turns=turns, **hooks_kwargs)
 
         if not self.tools:
             return gen_message.content or ""
@@ -575,6 +572,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
             # 4. Generate the next message and update memory
 
+            await self.on_before_generate(
+                extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
+            )
+
             if self.react_mode and gen_message.tool_calls:
                 # ReAct mode: used tools in the last message -> avoid tool calls in the next message
                 tool_choice = "none"
@@ -584,8 +585,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             else:
                 # No ReAct mode: let the model decide
                 tool_choice = "auto"
-
-            await self.on_before_generate(**hooks_kwargs, num_turns=turns)
+            tool_choice = _extra_llm_settings.pop("tool_choice", tool_choice)
 
             gen_message = await self.generate_message(
                 memory,
@@ -595,7 +595,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 extra_llm_settings=_extra_llm_settings,
             )
 
-            await self.on_after_generate(**hooks_kwargs, num_turns=turns)
+            await self.on_after_generate(gen_message, num_turns=turns, **hooks_kwargs)
 
             turns += 1
 
@@ -607,22 +607,20 @@ class LLMPolicyExecutor(Generic[CtxT]):
         extra_llm_settings: dict[str, Any] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         _extra_llm_settings = deepcopy(extra_llm_settings or {})
-        hooks_kwargs: HookArgs = HookArgs(
-            memory=memory,
-            ctx=ctx,
-            call_id=call_id,
-            llm_settings=_extra_llm_settings,
-        )
+        hooks_kwargs: HookArgs = HookArgs(memory=memory, ctx=ctx, call_id=call_id)
 
         turns = 0
 
         # 1. Generate the first message and update memory
 
+        await self.on_before_generate(
+            extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
+        )
+
         tool_choice: ToolChoice | None = None
         if self.tools:
             tool_choice = "none" if self.react_mode else "auto"
-
-        await self.on_before_generate(**hooks_kwargs, num_turns=turns)
+        tool_choice = _extra_llm_settings.pop("tool_choice", tool_choice)
 
         gen_message: AssistantMessage | None = None
         async for event in self.generate_message_stream(
@@ -640,7 +638,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             # Exit if generation failed
             return
 
-        await self.on_after_generate(**hooks_kwargs, num_turns=turns)
+        await self.on_after_generate(gen_message, num_turns=turns, **hooks_kwargs)
 
         if not self.tools:
             # No tools to call, return the content of the generated message
@@ -685,7 +683,9 @@ class LLMPolicyExecutor(Generic[CtxT]):
             else:
                 tool_choice = "auto"
 
-            await self.on_before_generate(**hooks_kwargs, num_turns=turns)
+            await self.on_before_generate(
+                extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
+            )
 
             async for event in self.generate_message_stream(
                 memory,
@@ -698,7 +698,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 if isinstance(event, GenMessageEvent):
                     gen_message = event.data
 
-            await self.on_after_generate(**hooks_kwargs, num_turns=turns)
+            await self.on_after_generate(gen_message, num_turns=turns, **hooks_kwargs)
 
             turns += 1
 
