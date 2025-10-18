@@ -508,7 +508,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
         tool calls (planning) first, then force tool calls in the next message, etc.
         For this, we use the `react_mode` flag.
         """
-        _extra_llm_settings = deepcopy(extra_llm_settings or {})
         hooks_kwargs: HookArgs = HookArgs(memory=memory, ctx=ctx, call_id=call_id)
 
         turns = 0
@@ -519,6 +518,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         # to enforce planning.
 
         # LLM settings can be modified in-place
+        _extra_llm_settings = deepcopy(extra_llm_settings or {})
         await self.on_before_generate(
             extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
         )
@@ -572,6 +572,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
             # 4. Generate the next message and update memory
 
+            _extra_llm_settings = deepcopy(extra_llm_settings or {})
             await self.on_before_generate(
                 extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
             )
@@ -606,13 +607,13 @@ class LLMPolicyExecutor(Generic[CtxT]):
         call_id: str,
         extra_llm_settings: dict[str, Any] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        _extra_llm_settings = deepcopy(extra_llm_settings or {})
         hooks_kwargs: HookArgs = HookArgs(memory=memory, ctx=ctx, call_id=call_id)
 
         turns = 0
 
         # 1. Generate the first message and update memory
 
+        _extra_llm_settings = deepcopy(extra_llm_settings or {})
         await self.on_before_generate(
             extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
         )
@@ -676,16 +677,18 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
             # 4. Generate the next message and update memory
 
+            _extra_llm_settings = deepcopy(extra_llm_settings or {})
+            await self.on_before_generate(
+                extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
+            )
+
             if self.react_mode and gen_message.tool_calls:
                 tool_choice = "none"
             elif self.react_mode:
                 tool_choice = "required"
             else:
                 tool_choice = "auto"
-
-            await self.on_before_generate(
-                extra_llm_settings=_extra_llm_settings, num_turns=turns, **hooks_kwargs
-            )
+            tool_choice = _extra_llm_settings.pop("tool_choice", tool_choice)
 
             async for event in self.generate_message_stream(
                 memory,
