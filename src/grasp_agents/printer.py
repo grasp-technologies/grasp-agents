@@ -114,6 +114,14 @@ def truncate_content_str(content_str: str, trunc_len: int = 2000) -> str:
     return content_str
 
 
+def prettify_json_str(json_str: str) -> str:
+    try:
+        parsed = json.loads(json_str)
+        return json.dumps(parsed, indent=2)
+    except Exception:
+        return json_str
+
+
 class Printer:
     def __init__(
         self,
@@ -173,7 +181,8 @@ class Printer:
             for tool_call in message.tool_calls:
                 out += (
                     f"<tool call> {tool_call.tool_name} [{tool_call.id}]\n"
-                    f"{tool_call.tool_arguments}\n</tool call>\n"
+                    f"{prettify_json_str(tool_call.tool_arguments)}\n"
+                    f"</tool call>\n"
                 )
 
         # Usage
@@ -258,7 +267,7 @@ async def print_event_stream(
             text += event.data.response
 
         if isinstance(event, ToolCallChunkEvent):
-            text += event.data.tool_call.tool_arguments or ""
+            text += prettify_json_str(event.data.tool_call.tool_arguments or "")
 
         if isinstance(event, AnnotationsChunkEvent):
             text += "\n".join(
