@@ -1,31 +1,26 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, Generic
+from typing import Any
 
 from ..errors import WorkflowConstructionError
-from ..packet import Packet
-from ..processors.base_processor import BaseProcessor, RecipientSelector
+from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..typing.events import DummyEvent, Event
 from ..typing.io import InT, OutT, ProcName
-from ..utils import is_method_overridden
 
 
-class WorkflowProcessor(
-    BaseProcessor[InT, OutT, Any, CtxT],
-    ABC,
-    Generic[InT, OutT, CtxT],
-):
+class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
     def __init__(
         self,
         name: ProcName,
-        subprocs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
-        start_proc: BaseProcessor[InT, Any, Any, CtxT],
-        end_proc: BaseProcessor[Any, OutT, Any, CtxT],
+        subprocs: Sequence[Processor[Any, Any, CtxT]],
+        start_proc: Processor[InT, Any, CtxT],
+        end_proc: Processor[Any, OutT, CtxT],
         recipients: Sequence[ProcName] | None = None,
-        max_retries: int = 0,
     ) -> None:
-        super().__init__(name=name, recipients=recipients, max_retries=max_retries)
+        super().__init__(
+            name=name, recipients=(recipients or end_proc.recipients), max_retries=0
+        )
 
         self._in_type = start_proc.in_type
         self._out_type = end_proc.out_type
@@ -45,70 +40,46 @@ class WorkflowProcessor(
         self._start_proc = start_proc
         self._end_proc = end_proc
 
-        self.recipients = recipients
+        for subproc in subprocs:
+            subproc.recipients = None
 
-        # If the recipient selector is overridden, propagate it to the end processor
-        if is_method_overridden(
-            "select_recipients_impl", self, BaseProcessor[Any, Any, Any, Any]
-        ):
-            self._end_proc.select_recipients_impl = self.select_recipients_impl
-
-    def add_recipient_selector(
-        self, func: RecipientSelector[OutT, CtxT]
-    ) -> RecipientSelector[OutT, CtxT]:
-        self._end_proc.select_recipients_impl = func
-        self.select_recipients_impl = func
-
-        return func
+    def select_recipients_impl(
+        self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
+    ) -> Sequence[ProcName]:
+        return self._end_proc.select_recipients_impl(
+            output=output, ctx=ctx, call_id=call_id
+        )
 
     @property
-    def recipients(self) -> Sequence[ProcName] | None:
-        return self._end_proc.recipients
-
-    @recipients.setter
-    def recipients(self, value: Sequence[ProcName] | None) -> None:
-        if hasattr(self, "_end_proc"):
-            self._end_proc.recipients = value
-
-    @property
-    def subprocs(self) -> Sequence[BaseProcessor[Any, Any, Any, CtxT]]:
+    def subprocs(self) -> Sequence[Processor[Any, Any, CtxT]]:
         return self._subprocs
 
     @property
-    def start_proc(self) -> BaseProcessor[InT, Any, Any, CtxT]:
+    def start_proc(self) -> Processor[InT, Any, CtxT]:
         return self._start_proc
 
     @property
-    def end_proc(self) -> BaseProcessor[Any, OutT, Any, CtxT]:
+    def end_proc(self) -> Processor[Any, OutT, CtxT]:
         return self._end_proc
 
-    def _generate_subproc_call_id(
-        self, call_id: str | None, subproc: BaseProcessor[Any, Any, Any, CtxT]
-    ) -> str | None:
-        return f"{self._generate_call_id(call_id)}/{subproc.name}"
-
     @abstractmethod
-    async def run(
+    async def _process(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-        ctx: RunContext[CtxT] | None = None,
-        forgetful: bool = False,
-        call_id: str | None = None,
-    ) -> Packet[OutT]:
+        in_args: list[InT] | None = None,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ) -> list[OutT]:
         pass
 
     @abstractmethod
-    async def run_stream(
+    async def _process_stream(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-        ctx: RunContext[CtxT] | None = None,
-        forgetful: bool = False,
-        call_id: str | None = None,
+        in_args: list[InT] | None = None,
+        ctx: RunContext[CtxT],
+        call_id: str,
     ) -> AsyncIterator[Event[Any]]:
         yield DummyEvent()

@@ -1,11 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import BaseModel
 
 from .run_context import RunContext
-
-MemT = TypeVar("MemT", bound="Memory")
 
 
 class Memory(BaseModel, ABC):

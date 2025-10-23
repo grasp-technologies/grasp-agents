@@ -197,7 +197,7 @@ class CloudLLM(LLM):
             )
 
             yield CompletionChunkEvent(
-                data=completion_chunk, proc_name=proc_name, call_id=call_id
+                data=completion_chunk, src_name=proc_name, call_id=call_id
             )
 
         api_completion = self.combine_completion_chunks(
@@ -205,7 +205,7 @@ class CloudLLM(LLM):
         )
         completion = self.converters.from_completion(api_completion, name=self.model_id)
 
-        yield CompletionEvent(data=completion, proc_name=proc_name, call_id=call_id)
+        yield CompletionEvent(data=completion, src_name=proc_name, call_id=call_id)
 
         # if not self.apply_response_schema_via_provider:
         self._validate_response(

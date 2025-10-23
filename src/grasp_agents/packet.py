@@ -1,3 +1,4 @@
+from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any, Generic, Self, TypeVar
 from uuid import uuid4
@@ -54,6 +55,28 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
             )
         return self
 
+    def split_by_recipient(self) -> Sequence["Packet[_PayloadT_co]"] | None:
+        if self.routing is None:
+            return None
+
+        recipient_to_payloads: defaultdict[ProcName, list[_PayloadT_co]] = defaultdict(
+            list
+        )
+        for payload, recipients in zip(self.payloads, self.routing, strict=True):
+            for recipient in recipients:
+                recipient_to_payloads[recipient].append(payload)
+
+        single_recipient = len(recipient_to_payloads) == 1
+        return [
+            Packet(
+                id=f"{self.id}/{recipient}" if not single_recipient else self.id,
+                payloads=payloads,
+                routing=[[recipient] for _ in range(len(payloads))],
+                sender=self.sender,
+            )
+            for recipient, payloads in recipient_to_payloads.items()
+        ]
+
     def split_per_payload(self) -> Sequence["Packet[_PayloadT_co]"] | None:
         if self.routing is None:
             return None
@@ -70,30 +93,6 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
             for i, (payload, recipients) in enumerate(
                 zip(self.payloads, self.routing, strict=False)
             )
-        ]
-
-    def split_by_recipient(
-        self,
-    ) -> Sequence["Packet[_PayloadT_co]"] | None:
-        if self.routing is None:
-            return None
-
-        recipient_to_payloads: dict[ProcName, list[_PayloadT_co]] = {}
-        for payload, recipients in zip(self.payloads, self.routing, strict=True):
-            for recipient in recipients:
-                if recipient not in recipient_to_payloads:
-                    recipient_to_payloads[recipient] = []
-                recipient_to_payloads[recipient].append(payload)
-
-        single_recipient = len(recipient_to_payloads) == 1
-        return [
-            Packet(
-                id=f"{self.id}/{recipient}" if not single_recipient else self.id,
-                payloads=payloads,
-                routing=[[recipient] for _ in range(len(payloads))],
-                sender=self.sender,
-            )
-            for recipient, payloads in recipient_to_payloads.items()
         ]
 
     model_config = ConfigDict(extra="forbid")

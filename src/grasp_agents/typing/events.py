@@ -31,7 +31,6 @@ class EventSourceType(StrEnum):
     USER = "user"
     TOOL = "tool"
     PROC = "processor"
-    WORKFLOW = "workflow"
     RUN = "run"
 
 
@@ -64,13 +63,13 @@ class EventType(StrEnum):
 
     LLM_ERR = "llm_error"
 
+    TOOL_OUT = "tool_output"
     PACKET_OUT = "packet_output"
     PAYLOAD_OUT = "payload_output"
     PROC_ERR = "processor_error"
     PROC_START = "processor_start"
     PROC_END = "processor_end"
 
-    WORKFLOW_RES = "workflow_result"
     RUN_RES = "run_result"
 
 
@@ -81,58 +80,73 @@ _C_co = TypeVar("_C_co", covariant=True, bound=CompletionChunk)
 
 class Event(BaseModel, Generic[_T_co], frozen=True):
     type: EventType
-    source: EventSourceType
-    id: str = Field(default_factory=lambda: str(uuid4()))
+    src_type: EventSourceType
+    id: str = Field(default_factory=lambda: str(uuid4())[:8])
     created: int = Field(default_factory=lambda: int(time.time()))
-    proc_name: str | None = None
+    src_name: str | None = None
+    dst_name: str | None = None
     call_id: str | None = None
     data: _T_co
-
-
-class DummyEvent(Event[Any], frozen=True):
-    type: Literal[EventType.PAYLOAD_OUT] = EventType.PAYLOAD_OUT
-    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
-    data: Any = None
-
-
-# Non-streamed completion events
-
-
-class CompletionEvent(Event[Completion], frozen=True):
-    type: Literal[EventType.COMP] = EventType.COMP
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 class MessageEvent(Event[_M_co], Generic[_M_co], frozen=True):
     pass
 
 
+class DummyEvent(Event[Any], frozen=True):
+    type: Literal[EventType.PAYLOAD_OUT] = EventType.PAYLOAD_OUT
+    src_type: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    data: Any = None
+
+
+# Non-streamed LLM events
+
+
+class CompletionEvent(Event[Completion], frozen=True):
+    type: Literal[EventType.COMP] = EventType.COMP
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
+
+
+# Agent events
+
+
 class GenMessageEvent(MessageEvent[AssistantMessage], frozen=True):
     type: Literal[EventType.GEN_MSG] = EventType.GEN_MSG
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
-
-
-class ToolMessageEvent(MessageEvent[ToolMessage], frozen=True):
-    type: Literal[EventType.TOOL_MSG] = EventType.TOOL_MSG
-    source: Literal[EventSourceType.TOOL] = EventSourceType.TOOL
-
-
-class UserMessageEvent(MessageEvent[UserMessage], frozen=True):
-    type: Literal[EventType.USR_MSG] = EventType.USR_MSG
-    source: Literal[EventSourceType.USER] = EventSourceType.USER
-
-
-class SystemMessageEvent(MessageEvent[SystemMessage], frozen=True):
-    type: Literal[EventType.SYS_MSG] = EventType.SYS_MSG
-    source: Literal[EventSourceType.AGENT] = EventSourceType.AGENT
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 class ToolCallEvent(Event[ToolCall], frozen=True):
     type: Literal[EventType.TOOL_CALL] = EventType.TOOL_CALL
-    source: Literal[EventSourceType.AGENT] = EventSourceType.AGENT
+    src_type: Literal[EventSourceType.AGENT] = EventSourceType.AGENT
 
 
-# Streamed completion events
+class SystemMessageEvent(MessageEvent[SystemMessage], frozen=True):
+    type: Literal[EventType.SYS_MSG] = EventType.SYS_MSG
+    src_type: Literal[EventSourceType.AGENT] = EventSourceType.AGENT
+
+
+# Tool events
+
+
+class ToolOutputEvent(Event[Any], frozen=True):
+    type: Literal[EventType.TOOL_OUT] = EventType.TOOL_OUT
+    src_type: Literal[EventSourceType.TOOL] = EventSourceType.TOOL
+
+
+class ToolMessageEvent(MessageEvent[ToolMessage], frozen=True):
+    type: Literal[EventType.TOOL_MSG] = EventType.TOOL_MSG
+    src_type: Literal[EventSourceType.TOOL] = EventSourceType.TOOL
+
+
+# User events
+
+
+class UserMessageEvent(MessageEvent[UserMessage], frozen=True):
+    type: Literal[EventType.USR_MSG] = EventType.USR_MSG
+    src_type: Literal[EventSourceType.USER] = EventSourceType.USER
+
+
+# Streamed LLM events
 
 StreamedCompletionEventTypes = Literal[
     EventType.COMP_CHUNK,
@@ -154,9 +168,9 @@ StreamedCompletionEventTypes = Literal[
 ]
 
 
-class CompletionChunkEvent(Event[_C_co], Generic[_C_co], frozen=True):
+class CompletionChunkEvent(Event[_C_co], frozen=True):
     type: StreamedCompletionEventTypes = EventType.COMP_CHUNK
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     data: _C_co
 
     def split_into_specialized(
@@ -206,27 +220,27 @@ class CompletionChunkEvent(Event[_C_co], Generic[_C_co], frozen=True):
 
 class ResponseChunkEvent(CompletionChunkEvent[ResponseChunk], frozen=True):
     type: Literal[EventType.RESP_CHUNK] = EventType.RESP_CHUNK
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 class ThinkingChunkEvent(CompletionChunkEvent[ThinkingChunk], frozen=True):
     type: Literal[EventType.THINK_CHUNK] = EventType.THINK_CHUNK
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 class ToolCallChunkEvent(CompletionChunkEvent[ToolCallChunk], frozen=True):
     type: Literal[EventType.TOOL_CALL_CHUNK] = EventType.TOOL_CALL_CHUNK
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 class AnnotationsChunkEvent(CompletionChunkEvent[AnnotationsChunk], frozen=True):
     type: Literal[EventType.ANNOT_CHUNK] = EventType.ANNOT_CHUNK
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 class RefusalChunkEvent(CompletionChunkEvent[RefusalChunk], frozen=True):
     type: Literal[EventType.REFUSAL_CHUNK] = EventType.REFUSAL_CHUNK
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 START_END_MAP: dict[EventType, list[EventType]] = {
@@ -238,8 +252,8 @@ START_END_MAP: dict[EventType, list[EventType]] = {
 }
 
 
-class LLMStateChangeEvent(CompletionChunkEvent[_C_co], Generic[_C_co], frozen=True):
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+class LLMStateChangeEvent(CompletionChunkEvent[_C_co], frozen=True):
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: bool = True
 
     @classmethod
@@ -252,61 +266,61 @@ class LLMStateChangeEvent(CompletionChunkEvent[_C_co], Generic[_C_co], frozen=Tr
 
 class CompletionStartEvent(LLMStateChangeEvent[CompletionChunk], frozen=True):
     type: Literal[EventType.COMP_START] = EventType.COMP_START
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[True] = True
 
 
 class CompletionEndEvent(LLMStateChangeEvent[CompletionChunk], frozen=True):
     type: Literal[EventType.COMP_END] = EventType.COMP_END
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[False] = False
 
 
 class ResponseStartEvent(LLMStateChangeEvent[ResponseChunk], frozen=True):
     type: Literal[EventType.RESP_START] = EventType.RESP_START
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[True] = True
 
 
 class ResponseEndEvent(LLMStateChangeEvent[ResponseChunk], frozen=True):
     type: Literal[EventType.RESP_END] = EventType.RESP_END
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[False] = False
 
 
 class ThinkingStartEvent(LLMStateChangeEvent[ThinkingChunk], frozen=True):
     type: Literal[EventType.THINK_START] = EventType.THINK_START
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[True] = True
 
 
 class ThinkingEndEvent(LLMStateChangeEvent[ThinkingChunk], frozen=True):
     type: Literal[EventType.THINK_END] = EventType.THINK_END
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[False] = False
 
 
 class ToolCallStartEvent(LLMStateChangeEvent[ToolCallChunk], frozen=True):
     type: Literal[EventType.TOOL_CALL_START] = EventType.TOOL_CALL_START
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[True] = True
 
 
 class ToolCallEndEvent(LLMStateChangeEvent[ToolCallChunk], frozen=True):
     type: Literal[EventType.TOOL_CALL_END] = EventType.TOOL_CALL_END
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[False] = False
 
 
 class AnnotationsStartEvent(LLMStateChangeEvent[AnnotationsChunk], frozen=True):
     type: Literal[EventType.ANNOT_START] = EventType.ANNOT_START
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[True] = True
 
 
 class AnnotationsEndEvent(LLMStateChangeEvent[AnnotationsChunk], frozen=True):
     type: Literal[EventType.ANNOT_END] = EventType.ANNOT_END
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
     start: Literal[False] = False
 
 
@@ -320,7 +334,7 @@ class LLMStreamingErrorData(BaseModel):
 
 class LLMStreamingErrorEvent(Event[LLMStreamingErrorData], frozen=True):
     type: Literal[EventType.LLM_ERR] = EventType.LLM_ERR
-    source: Literal[EventSourceType.LLM] = EventSourceType.LLM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 
 # Processor events
@@ -328,26 +342,22 @@ class LLMStreamingErrorEvent(Event[LLMStreamingErrorData], frozen=True):
 
 class ProcStartEvent(Event[None], frozen=True):
     type: Literal[EventType.PROC_START] = EventType.PROC_START
-    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    src_type: Literal[EventSourceType.PROC] = EventSourceType.PROC
 
 
 class ProcEndEvent(Event[None], frozen=True):
     type: Literal[EventType.PROC_END] = EventType.PROC_END
-    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    src_type: Literal[EventSourceType.PROC] = EventSourceType.PROC
 
 
-class ProcPayloadOutputEvent(Event[Any], frozen=True):
+class ProcPayloadOutEvent(Event[Any], frozen=True):
     type: Literal[EventType.PAYLOAD_OUT] = EventType.PAYLOAD_OUT
-    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    src_type: Literal[EventSourceType.PROC] = EventSourceType.PROC
 
 
-class ProcPacketOutputEvent(Event[Packet[Any]], frozen=True):
-    type: Literal[EventType.PACKET_OUT, EventType.WORKFLOW_RES, EventType.RUN_RES] = (
-        EventType.PACKET_OUT
-    )
-    source: Literal[
-        EventSourceType.PROC, EventSourceType.WORKFLOW, EventSourceType.RUN
-    ] = EventSourceType.PROC
+class ProcPacketOutEvent(Event[Packet[Any]], frozen=True):
+    type: Literal[EventType.PACKET_OUT, EventType.RUN_RES] = EventType.PACKET_OUT
+    src_type: Literal[EventSourceType.PROC, EventSourceType.RUN] = EventSourceType.PROC
 
 
 class ProcStreamingErrorData(BaseModel):
@@ -359,17 +369,12 @@ class ProcStreamingErrorData(BaseModel):
 
 class ProcStreamingErrorEvent(Event[ProcStreamingErrorData], frozen=True):
     type: Literal[EventType.PROC_ERR] = EventType.PROC_ERR
-    source: Literal[EventSourceType.PROC] = EventSourceType.PROC
+    src_type: Literal[EventSourceType.PROC] = EventSourceType.PROC
 
 
-# Workflow and run events
+# Run events
 
 
-class WorkflowResultEvent(ProcPacketOutputEvent, frozen=True):
-    type: Literal[EventType.WORKFLOW_RES] = EventType.WORKFLOW_RES
-    source: Literal[EventSourceType.WORKFLOW] = EventSourceType.WORKFLOW
-
-
-class RunResultEvent(ProcPacketOutputEvent, frozen=True):
+class RunPacketOutEvent(ProcPacketOutEvent, frozen=True):
     type: Literal[EventType.RUN_RES] = EventType.RUN_RES
-    source: Literal[EventSourceType.RUN] = EventSourceType.RUN
+    src_type: Literal[EventSourceType.RUN] = EventSourceType.RUN
