@@ -1,28 +1,25 @@
 import logging
 from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
-from typing import Any, Generic, cast, final
-
-from grasp_agents.tracing_decorators import workflow
+from typing import Any, cast
 
 from ..errors import WorkflowConstructionError
-from ..packet_pool import Packet
-from ..processors.base_processor import BaseProcessor
+from ..packet import Packet
+from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
-from ..typing.events import Event, ProcPacketOutputEvent, WorkflowResultEvent
+from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..typing.io import InT, OutT, ProcName
 from .workflow_processor import WorkflowProcessor
 
 logger = logging.getLogger(__name__)
 
 
-class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
+class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
     def __init__(
         self,
         name: ProcName,
-        subprocs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
+        subprocs: Sequence[Processor[Any, Any, CtxT]],
         recipients: list[ProcName] | None = None,
-        max_retries: int = 0,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -30,7 +27,6 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
             end_proc=subprocs[-1],
             name=name,
             recipients=recipients,
-            max_retries=max_retries,
         )
 
         for prev_proc, proc in pairwise(subprocs):
@@ -41,76 +37,64 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT], Generic[InT, OutT, 
                     f" {proc.name}"
                 )
 
-    @workflow(name="workflow")  # type: ignore
-    @final
-    async def run(
+    async def _process(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-        forgetful: bool = False,
-        call_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
-    ) -> Packet[OutT]:
-        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
-        call_id = self._generate_call_id(call_id)
+        in_args: list[InT] | None = None,
+        call_id: str,
+        ctx: RunContext[CtxT],
+    ) -> list[OutT]:
+        packet = Packet(sender=self.name, payloads=in_args) if in_args else None
 
-        packet = in_packet
         for subproc in self.subprocs:
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
             packet = await subproc.run(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
-                in_args=in_args,
-                forgetful=forgetful,
                 call_id=f"{call_id}/{subproc.name}",
                 ctx=ctx,
             )
             chat_inputs = None
-            in_args = None
 
             logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
 
-        return cast("Packet[OutT]", packet)
+        return list(cast("Packet[OutT]", packet).payloads)
 
-    @workflow(name="workflow")  # type: ignore
-    @final
-    async def run_stream(
+    async def _process_stream(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | Sequence[InT] | None = None,
-        forgetful: bool = False,
-        call_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        in_args: list[InT] | None = None,
+        call_id: str,
+        ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
-        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
-        call_id = self._generate_call_id(call_id)
+        packet = Packet(sender=self.name, payloads=in_args) if in_args else None
 
-        packet = in_packet
         for subproc in self.subprocs:
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
-                in_args=in_args,
-                forgetful=forgetful,
                 call_id=f"{call_id}/{subproc.name}",
                 ctx=ctx,
             ):
-                if isinstance(event, ProcPacketOutputEvent):
-                    packet = event.data
                 yield event
+                if (
+                    isinstance(event, ProcPacketOutEvent)
+                    and event.src_name == subproc.name
+                ):
+                    packet = event.data
+
+            if subproc is self.end_proc:
+                out_packet = cast("Packet[OutT]", packet)
+                for p in out_packet.payloads:
+                    yield ProcPayloadOutEvent(
+                        data=p, src_name=self.name, call_id=call_id
+                    )
 
             chat_inputs = None
-            in_args = None
 
             logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
-
-        yield WorkflowResultEvent(
-            data=cast("Packet[OutT]", packet), proc_name=self.name, call_id=call_id
-        )

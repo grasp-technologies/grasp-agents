@@ -8,8 +8,8 @@ from .memory import Memory
 from .packet import Packet
 from .printer import Printer, print_event_stream
 from .processors.base_processor import BaseProcessor
-from .processors.mapping_processor import MappingProcessor
 from .processors.parallel_processor import ParallelProcessor
+from .processors.processor import Processor
 from .run_context import RunContext
 from .typing.completion import Completion
 from .typing.content import Content, ImageData
@@ -29,7 +29,6 @@ __all__ = [
     "LLMAgentMemory",
     "LLMPrompt",
     "LLMSettings",
-    "MappingProcessor",
     "Memory",
     "Messages",
     "Packet",
@@ -37,6 +36,7 @@ __all__ = [
     "ParallelProcessor",
     "Printer",
     "ProcName",
+    "Processor",
     "RunContext",
     "SystemMessage",
     "UserMessage",

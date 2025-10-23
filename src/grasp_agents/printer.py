@@ -20,11 +20,11 @@ from grasp_agents.typing.events import (
     Event,
     GenMessageEvent,
     MessageEvent,
-    ProcPacketOutputEvent,
+    ProcPacketOutEvent,
     ResponseChunkEvent,
     ResponseEndEvent,
     ResponseStartEvent,
-    RunResultEvent,
+    RunPacketOutEvent,
     SystemMessageEvent,
     ThinkingChunkEvent,
     ThinkingEndEvent,
@@ -33,8 +33,8 @@ from grasp_agents.typing.events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
     ToolMessageEvent,
+    # ToolOutputEvent,
     UserMessageEvent,
-    WorkflowResultEvent,
 )
 
 from .typing.completion import Usage
@@ -127,7 +127,7 @@ class Printer:
         self,
         color_by: ColoringMode = "role",
         msg_trunc_len: int = 20000,
-        output_to: Literal["print", "log"] = "print",
+        output_to: Literal["stdout", "log"] = "stdout",
         logging_level: Literal["info", "debug", "warning", "error"] = "info",
     ) -> None:
         self.color_by: ColoringMode = color_by
@@ -227,12 +227,12 @@ async def print_event_stream(
 ) -> AsyncIterator[Event[Any]]:
     def _make_chunk_text(event: CompletionChunkEvent[CompletionChunk]) -> str:
         color = get_color(
-            agent_name=event.proc_name or "", role=Role.ASSISTANT, color_by=color_by
+            agent_name=event.src_name or "", role=Role.ASSISTANT, color_by=color_by
         )
         text = ""
 
         if isinstance(event, CompletionStartEvent):
-            text += f"\n<{event.proc_name}> [{event.call_id}]\n"
+            text += f"\n<{event.src_name}> [{event.call_id}]\n"
         elif isinstance(event, ThinkingStartEvent):
             text += "<thinking>\n"
         elif isinstance(event, ResponseStartEvent):
@@ -286,10 +286,8 @@ async def print_event_stream(
         role = message.role
         content = content_to_str(message.content, role=role)
 
-        color = get_color(
-            agent_name=event.proc_name or "", role=role, color_by=color_by
-        )
-        text = f"\n<{event.proc_name}> [{event.call_id}]\n"
+        color = get_color(agent_name=event.src_name or "", role=role, color_by=color_by)
+        text = f"\n<{event.src_name}> [{event.call_id}]\n"
 
         if isinstance(event, (SystemMessageEvent, UserMessageEvent)):
             content = truncate_content_str(content, trunc_len=trunc_len)
@@ -313,19 +311,14 @@ async def print_event_stream(
         return colored(text, color)
 
     def _make_packet_text(
-        event: ProcPacketOutputEvent | WorkflowResultEvent | RunResultEvent,
+        event: ProcPacketOutEvent | RunPacketOutEvent,
     ) -> str:
-        if isinstance(event, WorkflowResultEvent):
-            src = "workflow"
-        elif isinstance(event, RunResultEvent):
-            src = "run"
-        else:
-            src = "processor"
+        src = "run" if isinstance(event, RunPacketOutEvent) else "processor"
 
         color = get_color(
-            agent_name=event.proc_name or "", role=Role.ASSISTANT, color_by=color_by
+            agent_name=event.src_name or "", role=Role.ASSISTANT, color_by=color_by
         )
-        text = f"\n<{event.proc_name}> [{event.call_id}]\n"
+        text = f"\n<{event.src_name}> [{event.call_id}]\n"
 
         if event.data.payloads:
             text += f"<{src} output>\n"
@@ -355,7 +348,8 @@ async def print_event_stream(
         if isinstance(event, MessageEvent) and not isinstance(event, GenMessageEvent):
             stream_colored_text(_make_message_text(event))
 
-        if isinstance(
-            event, (ProcPacketOutputEvent, WorkflowResultEvent, RunResultEvent)
-        ):
-            stream_colored_text(_make_packet_text(event))
+        if isinstance(event, (ProcPacketOutEvent, RunPacketOutEvent)):
+            stream_colored_text(_make_packet_text(event))  # type: ignore
+
+        # if isinstance(event, ToolOutputEvent):
+        #     stream_colored_text(_make_packet_text(event))  # type: ignore

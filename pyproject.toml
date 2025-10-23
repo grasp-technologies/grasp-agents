@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "0.6.7"
+version = "0.6.8"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.11.4,<4"
@@ -16,6 +16,8 @@ dependencies = [
     "traceloop-sdk>=0.47.2",
     "termcolor>=2.4.0,<3",
     "dotenv>=0.9.9",
+    "google-genai>=1.45.0",
+    "numpy>=2.3.4",
 ]
 
 [dependency-groups]

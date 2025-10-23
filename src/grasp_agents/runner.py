@@ -1,27 +1,30 @@
 import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
-from typing import Any, Generic
+from typing import Any, Generic, Literal
 from uuid import uuid4
 
 from grasp_agents.tracing_decorators import workflow
 
 from .errors import RunnerError
+from .event_bus import EventBus
 from .packet import Packet
-from .packet_pool import END_PROC_NAME, START_PROC_NAME, PacketPool
 from .processors.base_processor import BaseProcessor
 from .run_context import CtxT, RunContext
-from .typing.events import Event, ProcPacketOutputEvent, RunResultEvent
+from .typing.events import Event, ProcPacketOutEvent, RunPacketOutEvent
 from .typing.io import OutT
 
 logger = logging.getLogger(__name__)
+
+START_PROC_NAME: Literal["*START*"] = "*START*"
+END_PROC_NAME: Literal["*END*"] = "*END*"
 
 
 class Runner(Generic[OutT, CtxT]):
     def __init__(
         self,
-        entry_proc: BaseProcessor[Any, Any, Any, CtxT],
-        procs: Sequence[BaseProcessor[Any, Any, Any, CtxT]],
+        entry_proc: BaseProcessor[Any, Any, CtxT],
+        procs: Sequence[BaseProcessor[Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
         name: str | None = None,
     ) -> None:
@@ -35,9 +38,13 @@ class Runner(Generic[OutT, CtxT]):
                 "There must be exactly one processor with recipient 'END'."
             )
 
+        self._name = name or str(uuid4())[:6]
+
         self._entry_proc = entry_proc
         self._procs = procs
-        self._name = name or str(uuid4())[:6]
+
+        self._event_bus = EventBus()
+
         self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
     @property
@@ -48,131 +55,121 @@ class Runner(Generic[OutT, CtxT]):
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
 
-    def _generate_call_id(self, proc: BaseProcessor[Any, Any, Any, CtxT]) -> str | None:
-        return self._name + "/" + proc._generate_call_id(call_id=None)  # type: ignore
+    def _generate_call_id(self, proc: BaseProcessor[Any, Any, CtxT]) -> str | None:
+        return self._name + "/" + proc.generate_call_id(call_id=None)
+
+    def _make_start_event(self, chat_inputs: Any) -> ProcPacketOutEvent:
+        start_packet = Packet[Any](
+            sender=START_PROC_NAME,
+            routing=[[self._entry_proc.name]],
+            payloads=[chat_inputs],
+        )
+        return ProcPacketOutEvent(
+            id=start_packet.id,
+            data=start_packet,
+            src_name=START_PROC_NAME,
+            dst_name=self._entry_proc.name,
+            call_id=None,
+        )
 
     def _unpack_packet(
-        self, packet: Packet[Any] | None
+        self, packet: Packet[Any]
     ) -> tuple[Packet[Any] | None, Any | None]:
-        if packet and packet.sender == START_PROC_NAME:
+        if packet.sender == START_PROC_NAME:
             return None, packet.payloads[0]
         return packet, None
 
-    async def _packet_handler(
+    async def _event_handler(
         self,
-        packet: Packet[Any],
+        in_event: Event[Any],
         *,
-        proc: BaseProcessor[Any, Any, Any, CtxT],
-        pool: PacketPool,
+        proc: BaseProcessor[Any, Any, CtxT],
         **run_kwargs: Any,
     ) -> None:
-        _in_packet, _chat_inputs = self._unpack_packet(packet)
+        if not (isinstance(in_event, ProcPacketOutEvent)):
+            # Currently, we only handle ProcResultEvent in the runner
+            # TODO: User handoffs and MCP tool calls
+            return
 
         logger.info(f"\n[Running processor {proc.name}]\n")
 
-        out_packet = await proc.run(
-            chat_inputs=_chat_inputs,
-            in_packet=_in_packet,
-            ctx=self._ctx,
-            call_id=self._generate_call_id(proc),
-            **run_kwargs,
-        )
-
-        route = out_packet.uniform_routing or out_packet.routing
-        logger.info(
-            f"\n[Finished running processor {proc.name}]\n"
-            f"Posting output packet to recipients: {route}\n"
-        )
-
-        await pool.post(out_packet)
-
-    async def _packet_handler_stream(
-        self,
-        packet: Packet[Any],
-        *,
-        proc: BaseProcessor[Any, Any, Any, CtxT],
-        pool: PacketPool,
-        **run_kwargs: Any,
-    ) -> None:
-        _in_packet, _chat_inputs = self._unpack_packet(packet)
-
-        logger.info(f"\n[Running processor {proc.name}]\n")
-
+        in_packet, chat_inputs = self._unpack_packet(in_event.data)
+        call_id = self._generate_call_id(proc)
         out_packet: Packet[Any] | None = None
-        async for event in proc.run_stream(
-            chat_inputs=_chat_inputs,
-            in_packet=_in_packet,
+
+        async for out_event in proc.run_stream(
+            chat_inputs=chat_inputs,
+            in_packet=in_packet,
             ctx=self._ctx,
-            call_id=self._generate_call_id(proc),
+            call_id=call_id,
             **run_kwargs,
         ):
-            if isinstance(event, ProcPacketOutputEvent):
-                out_packet = event.data
-            await pool.push_event(event)
+            if (
+                isinstance(out_event, ProcPacketOutEvent)
+                and out_event.src_name == proc.name
+            ):
+                out_packet = out_event.data
 
-        assert out_packet is not None
+                if out_packet.routing == [[END_PROC_NAME]]:
+                    final_event = RunPacketOutEvent(
+                        id=out_packet.id,
+                        data=out_packet,
+                        src_name=out_packet.sender,
+                        dst_name=END_PROC_NAME,
+                        call_id=call_id,
+                    )
+                    await self._event_bus.push_to_stream(final_event)
+                    await self._event_bus.finalize(final_event.data)
+                    break
+
+                for sub_out_packet in out_packet.split_by_recipient() or []:
+                    if not sub_out_packet.routing or not sub_out_packet.routing[0]:
+                        continue
+
+                    dst_name = sub_out_packet.routing[0][0]
+                    sub_out_event = ProcPacketOutEvent(
+                        id=sub_out_packet.id,
+                        data=sub_out_packet,
+                        src_name=sub_out_packet.sender,
+                        dst_name=dst_name,
+                        call_id=call_id,
+                    )
+                    await self._event_bus.push_to_stream(sub_out_event)
+                    await self._event_bus.post(sub_out_event)
+
+            else:
+                await self._event_bus.push_to_stream(out_event)
+
+        if out_packet is None:
+            # Cannot happen, for type checking purposes
+            return
 
         route = out_packet.uniform_routing or out_packet.routing
         logger.info(
             f"\n[Finished running processor {proc.name}]\n"
-            f"Posting output packet to recipients: {route}\n"
+            f"Posted output packet to recipients: {route}\n"
         )
-
-        await pool.post(out_packet)
-
-    @workflow(name="runner")  # type: ignore
-    async def run(self, chat_inputs: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
-        async with PacketPool() as pool:
-            for proc in self._procs:
-                pool.register_packet_handler(
-                    proc_name=proc.name,
-                    handler=partial(
-                        self._packet_handler,
-                        proc=proc,
-                        pool=pool,
-                        **run_kwargs,
-                    ),
-                )
-            start_packet = Packet[Any](
-                sender=START_PROC_NAME,
-                routing=[[self._entry_proc.name]],
-                payloads=[chat_inputs],
-            )
-            await pool.post(start_packet)
-
-            return await pool.final_result()
 
     @workflow(name="runner_run")  # type: ignore
     async def run_stream(
         self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
-        async with PacketPool() as pool:
+        async with self._event_bus:
             for proc in self._procs:
-                pool.register_packet_handler(
-                    proc_name=proc.name,
-                    handler=partial(
-                        self._packet_handler_stream,
-                        proc=proc,
-                        pool=pool,
-                        **run_kwargs,
-                    ),
+                self._event_bus.register_event_handler(
+                    dst_name=proc.name,
+                    handler=partial(self._event_handler, proc=proc, **run_kwargs),
                 )
 
-            start_packet = Packet[Any](
-                sender=START_PROC_NAME,
-                routing=[[self._entry_proc.name]],
-                payloads=[chat_inputs],
-            )
-            await pool.post(start_packet)
+            await self._event_bus.post(self._make_start_event(chat_inputs))
 
-            async for event in pool.stream_events():
-                if isinstance(
-                    event, ProcPacketOutputEvent
-                ) and event.data.uniform_routing == [END_PROC_NAME]:
-                    yield RunResultEvent(
-                        data=event.data,
-                        proc_name=event.proc_name,
-                        call_id=event.call_id,
-                    )
-                else:
-                    yield event
+            async for event in self._event_bus.stream_events():
+                yield event
+
+    async def run(self, chat_inputs: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
+        async for _ in self.run_stream(chat_inputs=chat_inputs, **run_kwargs):
+            pass
+        return await self._event_bus.final_result()
+
+    async def shutdown(self) -> None:
+        await self._event_bus.shutdown()

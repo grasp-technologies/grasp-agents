@@ -15,6 +15,7 @@ from typing import (
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
+from opentelemetry.context import _RUNTIME_CONTEXT
 from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.trace.status import Status, StatusCode
 from pydantic import BaseModel
@@ -248,7 +249,10 @@ def _handle_span_output(span, res, cls=None, exclude_fields: set[str] | None = N
 def _cleanup_span(span, ctx_token):
     """End the span process and detach the context token"""
     span.end()
-    context_api.detach(ctx_token)
+    try:
+        _RUNTIME_CONTEXT.detach(ctx_token)
+    except Exception:
+        pass
 
 
 # --- added by Grasp ---
@@ -312,7 +316,12 @@ def entity_method(
                     finally:
                         if items:
                             _handle_span_output(span, items[-1], cls=JSONEncoder)
+
+                        # Detaching context for generators may cause issues:
+                        # https://github.com/open-telemetry/opentelemetry-python/issues/2606
                         _cleanup_span(span, ctx_token)
+                        # span.end()
+
                     #  ---
 
                     # async for item in _ahandle_generator(
@@ -398,7 +407,11 @@ def entity_method(
                 finally:
                     if items:
                         _handle_span_output(span, items[-1], cls=JSONEncoder)
-                    span.end()
+
+                    # Detaching context for generators may cause issues:
+                    # https://github.com/open-telemetry/opentelemetry-python/issues/2606
+                    _cleanup_span(span, ctx_token)
+                    # span.end()
                 return
                 # ---
 

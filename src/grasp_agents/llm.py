@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from grasp_agents.typing.completion_chunk import CompletionChunk
-from grasp_agents.validation import (
+from grasp_agents.utils.validation import (
     validate_obj_from_json_or_py_string,
     validate_tagged_objs_from_json_or_py_string,
 )
@@ -202,7 +202,7 @@ class LLM(ABC):
                     error=err, model_name=self.model_name, model_id=self.model_id
                 )
                 yield LLMStreamingErrorEvent(
-                    data=err_data, proc_name=proc_name, call_id=call_id
+                    data=err_data, src_name=proc_name, call_id=call_id
                 )
 
                 n_attempt += 1

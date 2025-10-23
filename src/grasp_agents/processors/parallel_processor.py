@@ -1,253 +1,129 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, ClassVar, Generic, cast
+from itertools import chain
+from typing import Any
 
-from grasp_agents.tracing_decorators import agent
+from grasp_agents.utils.streaming import stream_concurrent
 
-from ..memory import MemT
+from ..errors import ProcInputValidationError
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
-from ..typing.events import Event, ProcPacketOutputEvent, ProcPayloadOutputEvent
-from ..typing.io import InT, OutT
-from ..utils import stream_concurrent
-from .base_processor import BaseProcessor, with_retry, with_retry_stream
+from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from ..typing.io import InT, OutT, ProcName
+from .processor import Processor
 
 logger = logging.getLogger(__name__)
 
 
-class ParallelProcessor(
-    BaseProcessor[InT, OutT, MemT, CtxT], Generic[InT, OutT, MemT, CtxT]
-):
-    """Processor that runs multiple inputs in parallel, each producing one output."""
+class ParallelProcessor(Processor[InT, OutT, CtxT]):
+    def __init__(self, subproc: Processor[InT, OutT, CtxT]) -> None:
+        super().__init__(
+            name=subproc.name + "_par", recipients=subproc.recipients, max_retries=0
+        )
 
-    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-        0: "_in_type",
-        1: "_out_type",
-    }
+        self._in_type = subproc.in_type
+        self._out_type = subproc.out_type
+        self._subproc = subproc
+
+        # This disables recipient selection in the subprocessor,
+        # but preserves subproc.select_recipients_impl
+        subproc.recipients = None
+
+    def select_recipients_impl(
+        self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
+    ) -> Sequence[ProcName]:
+        # Move recipient selection to the outer ParallelProcessor
+        return self._subproc.select_recipients_impl(
+            output=output, ctx=ctx, call_id=call_id
+        )
+
+    def _validate_in_args(
+        self,
+        chat_inputs: Any | None = None,
+        in_args: list[InT] | None = None,
+        *,
+        call_id: str,
+    ) -> list[InT]:
+        err_kwargs = {"proc_name": self.name, "call_id": call_id}
+        if chat_inputs is not None:
+            raise ProcInputValidationError(
+                message=f"ParallelProcessor {self.name} does not support chat_inputs",
+                **err_kwargs,
+            )
+        if in_args is None:
+            raise ProcInputValidationError(
+                message=f"ParallelProcessor {self.name} requires in_args to be provided",
+                **err_kwargs,
+            )
+
+        return in_args
+
+    def _join_payloads_from_packets(
+        self, packets: Sequence[Packet[OutT]]
+    ) -> list[OutT]:
+        return list(
+            Packet(
+                payloads=list(chain.from_iterable(p.payloads for p in packets)),
+                sender=self.name,
+            ).payloads
+        )
 
     async def _process(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_args: InT | None = None,
-        memory: MemT,
+        in_args: list[InT] | None = None,
         call_id: str,
         ctx: RunContext[CtxT],
-    ) -> OutT:
-        """Process a single input and return a single output."""
-        return cast("OutT", in_args)
+    ) -> list[OutT]:
+        in_args = self._validate_in_args(
+            chat_inputs=chat_inputs, in_args=in_args, call_id=call_id
+        )
+        subproc_replicas = [self._subproc.copy() for _ in in_args]
+        corouts = [
+            proc.run(in_args=inp, call_id=f"{call_id}/{idx}", ctx=ctx)
+            for idx, (inp, proc) in enumerate(
+                zip(in_args, subproc_replicas, strict=True)
+            )
+        ]
+        out_packets = await asyncio.gather(*corouts)
+
+        return self._join_payloads_from_packets(out_packets)
 
     async def _process_stream(
         self,
         chat_inputs: Any | None = None,
         *,
-        in_args: InT | None = None,
-        memory: MemT,
+        in_args: list[InT] | None = None,
         call_id: str,
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
-        output = cast("OutT", in_args)
-        yield ProcPayloadOutputEvent(data=output, proc_name=self.name, call_id=call_id)
-
-    @with_retry
-    async def _run_single(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: InT | None = None,
-        forgetful: bool = False,
-        call_id: str,
-        ctx: RunContext[CtxT],
-    ) -> Packet[OutT]:
-        memory = self.memory.model_copy(deep=True) if forgetful else self.memory
-
-        output = await self._process(
-            chat_inputs=chat_inputs,
-            in_args=in_args,
-            memory=memory,
-            call_id=call_id,
-            ctx=ctx,
+        in_args = self._validate_in_args(
+            chat_inputs=chat_inputs, in_args=in_args, call_id=call_id
         )
-        val_output = self._validate_output(output, call_id=call_id)
+        subproc_replicas = [self._subproc.copy() for _ in in_args]
 
-        recipients = self.select_recipients(output=val_output, ctx=ctx, call_id=call_id)
-
-        return Packet(
-            payloads=[val_output],
-            sender=self.name,
-            routing=[recipients] if recipients is not None else None,
-        )
-
-    def _join_payloads(self, packets: Sequence[Packet[OutT]]) -> list[OutT]:
-        return [p.payloads[0] for p in packets]
-
-    def _join_routings(
-        self, packets: Sequence[Packet[OutT]]
-    ) -> Sequence[Sequence[str]] | None:
-        if not packets:
-            return None
-        routings = [p.routing[0] if p.routing is not None else None for p in packets]
-        if all(r is None for r in routings):
-            joined_routing = None
-        else:
-            joined_routing = [r or [] for r in routings]
-
-        return joined_routing
-
-    async def _run_parallel(
-        self, in_args: list[InT], call_id: str, ctx: RunContext[CtxT]
-    ) -> Packet[OutT]:
-        tasks = [
-            self._run_single(
-                in_args=inp, forgetful=True, call_id=f"{call_id}/{idx}", ctx=ctx
-            )
-            for idx, inp in enumerate(in_args)
-        ]
-        out_packets = await asyncio.gather(*tasks)
-
-        return Packet(
-            sender=self.name,
-            payloads=self._join_payloads(out_packets),
-            routing=self._join_routings(out_packets),
-        )
-
-    @agent(name="processor")  # type: ignore
-    async def run(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | list[InT] | None = None,
-        forgetful: bool = False,
-        call_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
-    ) -> Packet[OutT]:
-        call_id = self._generate_call_id(call_id)
-        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
-
-        val_in_args = self._validate_inputs(
-            call_id=call_id,
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            in_args=in_args,
-        )
-
-        if val_in_args and len(val_in_args) > 1:
-            return await self._run_parallel(
-                in_args=val_in_args, call_id=call_id, ctx=ctx
-            )
-
-        return await self._run_single(
-            chat_inputs=chat_inputs,
-            in_args=val_in_args[0] if val_in_args else None,
-            forgetful=forgetful,
-            call_id=call_id,
-            ctx=ctx,
-        )
-
-    @with_retry_stream
-    async def _run_single_stream(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: InT | None = None,
-        forgetful: bool = False,
-        call_id: str,
-        ctx: RunContext[CtxT],
-    ) -> AsyncIterator[Event[Any]]:
-        memory = self.memory.model_copy(deep=True) if forgetful else self.memory
-
-        output: OutT | None = None
-        async for event in self._process_stream(
-            chat_inputs=chat_inputs,
-            in_args=in_args,
-            memory=memory,
-            call_id=call_id,
-            ctx=ctx,
-        ):
-            if isinstance(event, ProcPayloadOutputEvent):
-                output = event.data
-            yield event
-
-        assert output is not None
-
-        val_output = self._validate_output(output, call_id=call_id)
-
-        recipients = self.select_recipients(output=val_output, ctx=ctx, call_id=call_id)
-
-        out_packet = Packet[OutT](
-            payloads=[val_output],
-            sender=self.name,
-            routing=[recipients] if recipients is not None else None,
-        )
-
-        yield ProcPacketOutputEvent(
-            data=out_packet, proc_name=self.name, call_id=call_id
-        )
-
-    async def _run_parallel_stream(
-        self,
-        in_args: list[InT],
-        call_id: str,
-        ctx: RunContext[CtxT],
-    ) -> AsyncIterator[Event[Any]]:
         streams = [
-            self._run_single_stream(
-                in_args=inp, forgetful=True, call_id=f"{call_id}/{idx}", ctx=ctx
+            proc.run_stream(in_args=inp, call_id=f"{call_id}/{idx}", ctx=ctx)
+            for idx, (inp, proc) in enumerate(
+                zip(in_args, subproc_replicas, strict=True)
             )
-            for idx, inp in enumerate(in_args)
         ]
-
         out_packets_map: dict[int, Packet[OutT]] = {}
         async for idx, event in stream_concurrent(streams):
-            if isinstance(event, ProcPacketOutputEvent):
+            if (
+                isinstance(event, ProcPacketOutEvent)
+                and event.src_name == self._subproc.name
+            ):
                 out_packets_map[idx] = event.data
             else:
                 yield event
 
-        out_packet = Packet(
-            sender=self.name,
-            payloads=self._join_payloads(list(out_packets_map.values())),
-            routing=self._join_routings(list(out_packets_map.values())),
-        )
+        out_packets = [out_packets_map[idx] for idx in range(len(in_args))]
 
-        yield ProcPacketOutputEvent(
-            data=out_packet, proc_name=self.name, call_id=call_id
-        )
+        # Need to emit ProcPayloadOutputEvent in the order of in_args,
+        # thus we filter them out first, then yield in order.
 
-    @agent(name="processor")  # type: ignore
-    async def run_stream(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | list[InT] | None = None,
-        forgetful: bool = False,
-        call_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncIterator[Event[Any]]:
-        call_id = self._generate_call_id(call_id)
-        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
-
-        val_in_args = self._validate_inputs(
-            call_id=call_id,
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            in_args=in_args,
-        )
-
-        if val_in_args and len(val_in_args) > 1:
-            stream = self._run_parallel_stream(
-                in_args=val_in_args, call_id=call_id, ctx=ctx
-            )
-        else:
-            stream = self._run_single_stream(
-                chat_inputs=chat_inputs,
-                in_args=val_in_args[0] if val_in_args else None,
-                forgetful=forgetful,
-                call_id=call_id,
-                ctx=ctx,
-            )
-        async for event in stream:
-            yield event
+        for p in self._join_payloads_from_packets(out_packets):
+            yield ProcPayloadOutEvent(data=p, src_name=self.name, call_id=call_id)

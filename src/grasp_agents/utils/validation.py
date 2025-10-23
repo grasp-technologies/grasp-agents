@@ -8,7 +8,7 @@ from typing import Annotated, Any, NoReturn, TypeVar, get_args, get_origin
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from .errors import JSONSchemaValidationError, PyJSONStringParsingError
+from ..errors import JSONSchemaValidationError, PyJSONStringParsingError
 
 logger = getLogger(__name__)
 

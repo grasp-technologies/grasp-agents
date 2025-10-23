@@ -10,7 +10,7 @@ from .run_context import CtxT, RunContext
 from .typing.content import Content, ImageData
 from .typing.io import InT, LLMPrompt
 from .typing.message import UserMessage
-from .utils import is_method_overridden
+from .utils.callbacks import is_method_overridden
 
 _InT_contra = TypeVar("_InT_contra", contravariant=True)
 

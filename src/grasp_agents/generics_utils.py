@@ -157,7 +157,8 @@ class AutoInstanceAttributesMixin:
         for attr_name in attr_names:
             if attr_name in resolved_attr_types:
                 attr_type = resolved_attr_types[attr_name]
-                # attr_type = None if _attr_type is type(None) else _attr_type
+                if attr_type is Any:
+                    attr_type = object
             else:
                 attr_type = object
 

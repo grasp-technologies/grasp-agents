@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -19,11 +20,9 @@ from ..generics_utils import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
     from ..run_context import CtxT, RunContext
+    from .events import Event
 else:
     CtxT = TypeVar("CtxT")
-
-    class RunContext(Generic[CtxT]):
-        """Runtime placeholder so RunContext[CtxT] works"""
 
 
 _InT = TypeVar("_InT", bound=BaseModel)
@@ -71,6 +70,18 @@ class BaseTool(
         call_id: str | None = None,
     ) -> _OutT_co:
         pass
+
+    async def run_stream(
+        self,
+        inp: _InT,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        call_id: str | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        from .events import ToolOutputEvent
+
+        out = await self.run(inp, ctx=ctx, call_id=call_id)
+        yield ToolOutputEvent(data=out, src_name=self.name, call_id=call_id)
 
     async def __call__(
         self,
