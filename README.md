@@ -34,17 +34,15 @@
 ## Project Structure
 
 - `processors/`, `llm_agent.py`: Core processor and agent class implementations.
-- `packet.py`, `packet_pool.py`, `runner.py`: Communication management.
+- `event_bus.py`, `runner.py`: Communication management and orchestration.
 - `llm_policy_executor.py`: LLM actions and tool call loops.
 - `prompt_builder.py`: Tools for constructing prompts.
 - `workflow/`: Modules for defining and managing static agent workflows.
 - `llm.py`, `cloud_llm.py`: LLM integration and base LLM functionalities.
 - `openai/`: Modules specific to OpenAI API integration.
 - `litellm/`: Modules specific to LiteLLM integration.
-- `memory.py`, `llm_agent_memory.py`: Basic agent memory management.
-- `run_context.py`: Shared context management for agent runs.
-- `usage_tracker.py`: Tracking of API usage and costs.
-- `rate_limiting/`: Basic rate limiting tools.
+- `memory.py`, `llm_agent_memory.py`: Memory management.
+- `run_context.py`: Shared run context management.
 
 ## Quickstart & Installation Variants (UV Package manager)
 
@@ -82,11 +80,10 @@ uv sync
 
 #### 3. Example Usage
 
-Ensure you have a `.env` file with your OpenAI and Google AI Studio API keys set
+Ensure you have a `.env` file with the necessary API keys, e.g.,
 
 ```
-OPENAI_API_KEY=your_openai_api_key
-GEMINI_API_KEY=your_gemini_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
 Create a script, e.g., `problem_recommender.py`:
@@ -104,7 +101,7 @@ from grasp_agents.litellm import LiteLLM, LiteLLMSettings
 
 load_dotenv()
 
-sys_prompt_react = """
+sys_prompt = """
 Your task is to suggest an exciting stats problem to the student. 
 You should first ask the student about their education, interests, and preferences, then suggest a problem tailored specifically to them. 
 
@@ -155,7 +152,7 @@ teacher = LLMAgent[None, Problem, None](
     ),
     tools=[AskStudentTool()],
     final_answer_as_tool_call=True,
-    sys_prompt=sys_prompt_react,
+    sys_prompt=sys_prompt,
 )
 
 async def main():

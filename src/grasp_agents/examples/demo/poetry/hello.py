@@ -9,7 +9,7 @@ from grasp_agents.litellm import LiteLLM, LiteLLMSettings
 
 load_dotenv()
 
-sys_prompt_react = """
+sys_prompt = """
 Your task is to suggest an exciting stats problem to the student. 
 You should first ask the student about their education, interests, and preferences, then suggest a problem tailored specifically to them. 
 
@@ -61,7 +61,7 @@ teacher = LLMAgent[None, Problem, None](
     ),
     tools=[AskStudentTool()],
     final_answer_as_tool_call=True,
-    sys_prompt=sys_prompt_react,
+    sys_prompt=sys_prompt,
 )
 
 
