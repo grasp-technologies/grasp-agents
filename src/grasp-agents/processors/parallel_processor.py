@@ -124,7 +124,9 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             else:
                 yield event
 
-        out_packets = [out_packets_map[idx] for idx in sorted(out_packets_map)]
+        out_packets = [
+            p for _, p in sorted(out_packets_map.items(), key=lambda kv: kv[0])
+        ]
 
         # Need to emit ProcPayloadOutputEvent in the order of in_args,
         # thus we filter them out first, then yield in order.
