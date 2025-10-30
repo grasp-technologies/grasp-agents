@@ -190,7 +190,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
                     ):
                         yield ToolOutputEvent(
                             data=event.data.payloads[0],
-                            src_name=tool_name,
+                            src_name=processor_instance.name,
                             call_id=call_id,
                         )
                     else:

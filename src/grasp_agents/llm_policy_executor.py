@@ -368,7 +368,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
                     outputs_map[idx] = event.data
                 else:
                     yield event
-            outputs = [outputs_map[idx] for idx in range(len(calls))]
+            outputs = [outputs_map[idx] for idx in sorted(outputs_map)]
 
         else:
             outputs = await self._get_tool_outputs(calls, ctx=ctx, call_id=call_id)
