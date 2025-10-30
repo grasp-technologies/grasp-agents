@@ -9,6 +9,7 @@ from litellm.litellm_core_utils.get_supported_openai_params import (
     get_supported_openai_params,  # type: ignore[no-redef]
 )
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from litellm.router import Router
 from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.utils import (
     supports_parallel_function_calling,
@@ -55,6 +56,8 @@ class LiteLLM(CloudLLM):
     # Mock LLM response for testing
     mock_response: str | None = None
 
+    router: Router = field(init=False)
+
     _lite_llm_completion_params: dict[str, Any] = field(
         default_factory=dict[str, Any], init=False, repr=False, compare=False
     )
@@ -64,12 +67,12 @@ class LiteLLM(CloudLLM):
 
         self._lite_llm_completion_params.update(
             {
-                "max_retries": self.max_client_retries,
-                "timeout": self.client_timeout,
                 "drop_params": self.drop_params,
                 "additional_drop_params": self.additional_drop_params,
                 "allowed_openai_params": self.allowed_openai_params,
                 "mock_response": self.mock_response,
+                # "max_retries": self.max_client_retries,
+                # "timeout": self.client_timeout,
                 # "deployment_id": deployment_id,
                 # "api_version": api_version,
             }
@@ -77,9 +80,9 @@ class LiteLLM(CloudLLM):
 
         _api_provider = self.api_provider
         try:
-            _, provider_name, api_key, api_base = litellm.get_llm_provider(
+            _, provider_name, api_key, api_base = litellm.get_llm_provider(  # type: ignore[no-untyped-call]
                 self.model_name
-            )  # type: ignore[no-untyped-call]
+            )
             _api_provider = APIProvider(
                 name=provider_name, api_key=api_key, base_url=api_base
             )
@@ -111,6 +114,18 @@ class LiteLLM(CloudLLM):
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
+        _router = Router(
+            model_list=[
+                {
+                    "model_name": self.model_name,
+                    "litellm_params": {"model": self.model_name},
+                }
+            ],
+            num_retries=self.max_client_retries,
+            timeout=self.client_timeout,
+        )
+
+        object.__setattr__(self, "router", _router)
         object.__setattr__(self, "api_provider", _api_provider)
 
     def get_supported_openai_params(self) -> list[Any] | None:
@@ -149,9 +164,9 @@ class LiteLLM(CloudLLM):
         api_response_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
-        completion = await litellm.acompletion(  # type: ignore[no-untyped-call]
+        completion = await self.router.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
-            messages=api_messages,
+            messages=api_messages,  # type: ignore[arg-type]
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
@@ -179,9 +194,9 @@ class LiteLLM(CloudLLM):
         stream_options["include_usage"] = True
         _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
 
-        stream = await litellm.acompletion(  # type: ignore[no-untyped-call]
+        stream = await self.router.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
-            messages=api_messages,
+            messages=api_messages,  # type: ignore[arg-type]
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
