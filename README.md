@@ -16,7 +16,7 @@
 
 ## Overview
 
-**Grasp Agents** is a modular Python framework for building agentic AI pipelines and applications. It is meant to be minimalistic but functional, allowing for rapid experimentation while keeping full and granular low-level control over prompting, LLM handling, and inter-agent communication by avoiding excessive higher-level abstractions.
+**Grasp Agents** is a modular Python framework for building agentic AI pipelines and applications. It is meant to be minimalistic but functional, allowing for rapid experimentation while keeping full and granular low-level control over prompting, LLM handling, tool call loops, and inter-agent communication by avoiding excessive higher-level abstractions.
 
 ## Features
 
@@ -28,7 +28,7 @@
   - Freeform A2A communication via the in-process actor model
 - Built-in parallel processing with flexible retries and rate limiting.
 - Support for all popular API providers via LiteLLM.
-- Granular event streaming with separate events for standard outputs, thinking, and tool calls.
+- Granular event streaming with separate events for LLM responses, thinking, and tool calls.
 - Callbacks via decorators or subclassing for straightforward customisation of agentic loops and context management.
 
 ## Project Structure

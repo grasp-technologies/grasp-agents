@@ -24,19 +24,24 @@ async def stream_concurrent(
         try:
             async for item in gen:
                 await queue.put((idx, item))
+
         finally:
             pumps_left -= 1
+
             if pumps_left == 0:
                 await queue.put(None)
 
-    for idx, gen in enumerate(generators):
-        asyncio.create_task(pump(gen, idx))
+    async with asyncio.TaskGroup() as tg:
+        for idx, gen in enumerate(generators):
+            tg.create_task(pump(gen, idx))
 
-    while True:
-        msg = await queue.get()
-        if msg is None:
-            break
-        yield msg
+        while True:
+            msg = await queue.get()
+
+            if msg is None:
+                break
+
+            yield msg
 
 
 _F = TypeVar("_F")
