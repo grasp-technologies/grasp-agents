@@ -44,23 +44,28 @@
 - `memory.py`, `llm_agent_memory.py`: Memory management.
 - `run_context.py`: Shared run context management.
 
-## Quickstart & Installation Variants (UV Package manager)
+## Usage
 
 > **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project. There are also [examples](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/demo/) for other package managers.
 
-#### 1. Prerequisites
+### Installation
 
-Install the [UV Package Manager](https://github.com/astral-sh/uv):
+Assuming your project manages dependencies through [uv](https://docs.astral.sh/uv/).
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+uv add grasp_agents
+uv sync
 ```
 
-#### 2. Create Project & Install Dependencies
+You can of course also install using other managers like poetry or simply pip.
+
+### Try it out
+
+#### Prerequistes: Create Project & Install Dependencies
 
 ```bash
-mkdir my-test-uv-app
-cd my-test-uv-app
+mkdir my-agentic-app
+cd my-agentic-app
 uv init .
 ```
 
@@ -78,9 +83,9 @@ uv add grasp_agents
 uv sync
 ```
 
-#### 3. Example Usage
+#### Example 
 
-Ensure you have a `.env` file with the necessary API keys, e.g.,
+We recommend you use [dotenv](https://pypi.org/project/python-dotenv/) to automatically set enviroment variables from a `.env` file containting the necessary API keys, e.g.,
 
 ```
 ANTHROPIC_API_KEY=your_anthropic_api_key
