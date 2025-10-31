@@ -46,8 +46,6 @@
 
 ## Usage
 
-> **Note:** You can check this sample project code in the [src/grasp_agents/examples/demo/uv](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/demo/uv) folder. Feel free to copy and paste the code from there to a separate project. There are also [examples](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/demo/) for other package managers.
-
 ### Installation
 
 Assuming your project manages dependencies through [uv](https://docs.astral.sh/uv/).
