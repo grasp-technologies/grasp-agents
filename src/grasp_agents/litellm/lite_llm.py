@@ -153,9 +153,6 @@ class LiteLLM(CloudLLM):
     def supports_tool_choice(self) -> bool:
         return supports_tool_choice(model=self.model_name)
 
-    # # client
-    # model_list: Optional[list] = (None,)  # pass in a list of api_base,keys, etc.
-
     async def _get_api_completion(
         self,
         api_messages: list[OpenAIMessageParam],
