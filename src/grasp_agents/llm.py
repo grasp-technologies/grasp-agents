@@ -136,30 +136,26 @@ class LLM(ABC):
         while n_attempt <= self.max_response_retries:
             try:
                 return await self._generate_completion_once(
-                    messages,  # type: ignore[return]
+                    messages,
                     response_schema=response_schema,
                     response_schema_by_xml_tag=response_schema_by_xml_tag,
                     tools=tools,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
-            # except (LLMResponseValidationError, LLMToolCallValidationError) as err:
-            except Exception as err:
-                n_attempt += 1
 
-                if n_attempt > self.max_response_retries:
-                    if n_attempt == 1:
-                        logger.warning(f"\nCloudLLM completion failed:\n{err}")
-                    if n_attempt > 1:
-                        logger.warning(
-                            f"\nCloudLLM completion failed after retrying:\n{err}"
-                        )
+            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+                n_attempt += 1
+                if n_attempt <= self.max_response_retries:
+                    logger.warning(
+                        f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"
+                    )
+                else:
                     raise err
                     # return make_refusal_completion(self._model_name, err)
 
-                logger.warning(
-                    f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"
-                )
+            except Exception as err:
+                raise err
 
         return make_refusal_completion(
             self.model_name,
@@ -196,23 +192,20 @@ class LLM(ABC):
                 ):
                     yield event
                 return
-            # except (LLMResponseValidationError, LLMToolCallValidationError) as err:
-            except Exception as err:
+
+            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+                n_attempt += 1
                 err_data = LLMStreamingErrorData(
                     error=err, model_name=self.model_name, model_id=self.model_id
                 )
                 yield LLMStreamingErrorEvent(
                     data=err_data, src_name=proc_name, call_id=call_id
                 )
-
-                n_attempt += 1
-                if n_attempt > self.max_response_retries:
-                    if n_attempt == 1:
-                        logger.warning(f"\nCloudLLM completion failed:\n{err}")
-                    if n_attempt > 1:
-                        logger.warning(
-                            f"\nCloudLLM completion failed after retrying:\n{err}"
-                        )
+                if n_attempt <= self.max_response_retries:
+                    logger.warning(
+                        f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"
+                    )
+                else:
                     raise err
                     # refusal_completion = make_refusal_completion(
                     #     self.model_name, err
@@ -223,9 +216,8 @@ class LLM(ABC):
                     #     call_id=call_id,
                     # )
 
-                logger.warning(
-                    f"\nCloudLLM completion failed (retry attempt {n_attempt}):\n{err}"
-                )
+            except Exception as err:
+                raise err
 
     def _validate_response(
         self,
@@ -258,9 +250,7 @@ class LLM(ABC):
                         **parsing_params,
                     )
         except JSONSchemaValidationError as exc:
-            raise LLMResponseValidationError(
-                exc.s, exc.schema, message=str(exc)
-            ) from exc
+            raise LLMResponseValidationError(exc.s, exc.schema) from exc
 
     def _validate_tool_calls(
         self, completion: Completion, tools: Mapping[str, BaseTool[BaseModel, Any, Any]]

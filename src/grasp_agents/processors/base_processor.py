@@ -36,12 +36,17 @@ def with_retry(func: F) -> F:
         self: "BaseProcessor[Any, Any, Any]", *args: Any, **kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
         call_id = kwargs.get("call_id", "unknown")
-        for n_attempt in range(self.max_retries + 1):
+
+        n_attempt = 0
+        while n_attempt <= self.max_retries:
             try:
                 async for event in func(self, *args, **kwargs):
                     yield event
                 return
+
             except Exception as err:
+                n_attempt += 1
+
                 err_data = ProcStreamingErrorData(error=err, call_id=call_id)
                 yield ProcStreamingErrorEvent(
                     data=err_data, src_name=self.name, call_id=call_id
@@ -49,11 +54,7 @@ def with_retry(func: F) -> F:
                 err_message = (
                     f"Processor run failed [proc_name={self.name}; call_id={call_id}]"
                 )
-                if n_attempt == self.max_retries:
-                    if self.max_retries == 0:
-                        logger.warning(f"{err_message}:\n{err}")
-                    else:
-                        logger.warning(f"{err_message} after retrying:\n{err}")
+                if n_attempt > self.max_retries:
                     raise ProcRunError(proc_name=self.name, call_id=call_id) from err
 
                 logger.warning(f"{err_message} (retry attempt {n_attempt}):\n{err}")

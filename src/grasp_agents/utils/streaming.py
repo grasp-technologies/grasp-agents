@@ -16,6 +16,7 @@ _T = TypeVar("_T")
 async def stream_concurrent(
     generators: list[AsyncIterator[_T]],
 ) -> AsyncIterator[tuple[int, _T]]:
+    tasks: list[asyncio.Task[None]] = []
     queue: asyncio.Queue[tuple[int, _T] | None] = asyncio.Queue()
     pumps_left = len(generators)
 
@@ -25,22 +26,25 @@ async def stream_concurrent(
             async for item in gen:
                 await queue.put((idx, item))
 
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as e:
+            logger.warning(f"stream_concurrent pump {idx} failed:\n{e!r}")
+
         finally:
             pumps_left -= 1
-
             if pumps_left == 0:
                 await queue.put(None)
 
     async with asyncio.TaskGroup() as tg:
         for idx, gen in enumerate(generators):
-            tg.create_task(pump(gen, idx))
+            tasks.append(tg.create_task(pump(gen, idx)))
 
         while True:
             msg = await queue.get()
-
             if msg is None:
                 break
-
             yield msg
 
 
