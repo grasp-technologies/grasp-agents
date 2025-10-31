@@ -73,12 +73,6 @@ ANTHROPIC_API_KEY=your_anthropic_api_key
 
 #### Script Example 
 
-We recommend you use [dotenv](https://pypi.org/project/python-dotenv/) to automatically set enviroment variables from a `.env` file containting the necessary API keys, e.g.,
-
-```
-ANTHROPIC_API_KEY=your_anthropic_api_key
-```
-
 Create a script, e.g., `problem_recommender.py`:
 
 ```python
