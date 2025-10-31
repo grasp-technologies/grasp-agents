@@ -57,31 +57,21 @@ uv sync
 
 You can of course also install using other managers like poetry or simply pip.
 
+We recommend you use [dotenv](https://pypi.org/project/python-dotenv/) to automatically set enviroment variables from a `.env` file containting the necessary API keys, e.g.,
+
+```
+ANTHROPIC_API_KEY=your_anthropic_api_key
+```
+
 ### Try it out
 
-#### Prerequistes: Create Project & Install Dependencies
+#### Jupyter Notebook Example
+[Notebook Link](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/agents_demo.ipynb)
 
-```bash
-mkdir my-agentic-app
-cd my-agentic-app
-uv init .
-```
+#### A Grasp-Agents Powered Web App
+[https://grasp.study/](https://grasp.study/)
 
-Create and activate a virtual environment:
-
-```bash
-uv venv
-source .venv/bin/activate
-```
-
-Add and sync dependencies:
-
-```bash
-uv add grasp_agents
-uv sync
-```
-
-#### Example 
+#### Script Example 
 
 We recommend you use [dotenv](https://pypi.org/project/python-dotenv/) to automatically set enviroment variables from a `.env` file containting the necessary API keys, e.g.,
 
