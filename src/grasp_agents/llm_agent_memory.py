@@ -13,8 +13,8 @@ class LLMAgentMemory(Memory):
     messages: Messages = Field(default_factory=Messages)
     instructions: LLMPrompt | None = Field(default=None)
 
-    def __init__(self, instructions: LLMPrompt | None = None) -> None:
-        super().__init__()
+    def __init__(self, instructions: LLMPrompt | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.reset(instructions)
 
     def reset(
