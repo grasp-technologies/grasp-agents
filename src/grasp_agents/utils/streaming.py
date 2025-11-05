@@ -30,7 +30,9 @@ async def stream_concurrent(
             raise
 
         except Exception as e:
-            logger.warning(f"stream_concurrent pump {idx} failed:\n{e!r}")
+            logger.warning(
+                f"stream_concurrent pump {idx} failed:\n{e!r}", exc_info=True
+            )
 
         finally:
             pumps_left -= 1
