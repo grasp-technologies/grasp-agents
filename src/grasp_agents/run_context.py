@@ -15,7 +15,7 @@ CtxT = TypeVar("CtxT")
 class RunContext(BaseModel, Generic[CtxT]):
     state: CtxT = None  # type: ignore
 
-    completions: dict[ProcName, list[Completion]] = Field(
+    completions: defaultdict[ProcName, list[Completion]] = Field(
         default_factory=lambda: defaultdict(list)
     )
     usage_tracker: UsageTracker = Field(default_factory=UsageTracker, exclude=True)
