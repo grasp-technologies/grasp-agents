@@ -1,4 +1,4 @@
-# Grasp Agents Hello App (PIP only)
+# Grasp Agents Hello App (UV)
 
 ## Overview
 
