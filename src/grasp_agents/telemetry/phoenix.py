@@ -25,7 +25,6 @@ def init_phoenix(
     api_token: str | None = None,
 ):
     collector_endpoint = os.getenv("TELEMETRY_COLLECTOR_HTTP_ENDPOINT")
-    api_token = os.getenv("PHOENIX_API_KEY")
 
     if not collector_endpoint:
         logger.warning(
