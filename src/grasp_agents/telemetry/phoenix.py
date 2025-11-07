@@ -22,7 +22,6 @@ def init_phoenix(
     batch: bool = False,
     use_litellm_instr: bool = True,
     use_llm_provider_instr: bool = True,
-    api_token: str | None = None,
 ):
     collector_endpoint = os.getenv("TELEMETRY_COLLECTOR_HTTP_ENDPOINT")
 
@@ -50,9 +49,7 @@ def init_phoenix(
         LLM_PROVIDER_NAMES if use_llm_provider_instr or use_litellm_instr else set()
     )
     exporter = FilteringExporter(
-        inner=HTTPSpanExporter(
-            endpoint=collector_endpoint, api_token=api_token, headers=None
-        ),
+        inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
         blocklist=blocklist,
     )
     if batch:
