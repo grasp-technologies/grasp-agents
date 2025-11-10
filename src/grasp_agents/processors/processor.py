@@ -19,6 +19,7 @@ from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..typing.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
+from ..utils.streaming import wrap_with_aclosing
 from .base_processor import BaseProcessor, with_retry
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     @workflow(name="processor")  # type: ignore
     @final
     @with_retry
+    @wrap_with_aclosing
     async def run_stream(
         self,
         chat_inputs: Any | None = None,
@@ -260,25 +262,17 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
-        # Ensure the stream is properly closed even on early return,
-        # so tracing spans from the decorated run_stream end promptly.
         result = None
-        async with contextlib.aclosing(
-            self.run_stream(
-                chat_inputs=chat_inputs,
-                in_packet=in_packet,
-                in_args=in_args,
-                call_id=call_id,
-                ctx=ctx,
-            )
-        ) as stream:
-            async for event in stream:
-                if (
-                    isinstance(event, ProcPacketOutEvent)
-                    and event.src_name == self.name
-                ):
-                    result = event.data
-                    break
+        async for event in self.run_stream(
+            chat_inputs=chat_inputs,
+            in_packet=in_packet,
+            in_args=in_args,
+            call_id=call_id,
+            ctx=ctx,
+        ):
+            if isinstance(event, ProcPacketOutEvent) and event.src_name == self.name:
+                result = event.data
+                break
         if result is None:
             raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
         return result
