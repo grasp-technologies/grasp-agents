@@ -262,6 +262,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> Packet[OutT]:
         # Ensure the stream is properly closed even on early return,
         # so tracing spans from the decorated run_stream end promptly.
+        result = None
         async with contextlib.aclosing(
             self.run_stream(
                 chat_inputs=chat_inputs,
@@ -276,5 +277,8 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                     isinstance(event, ProcPacketOutEvent)
                     and event.src_name == self.name
                 ):
-                    return event.data
-        raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
+                    result = event.data
+                    break
+        if result is None:
+            raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
+        return result
