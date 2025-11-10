@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
@@ -96,59 +97,61 @@ class Runner(Generic[OutT, CtxT]):
         in_packet, chat_inputs = self._unpack_packet(in_event.data)
         call_id = self._generate_call_id(proc)
         out_packet: Packet[Any] | None = None
+        async with contextlib.aclosing(
+            proc.run_stream(
+                chat_inputs=chat_inputs,
+                in_packet=in_packet,
+                ctx=self._ctx,
+                call_id=call_id,
+                **run_kwargs,
+            )
+        ) as stream:
+            async for out_event in stream:
+                if (
+                    isinstance(out_event, ProcPacketOutEvent)
+                    and out_event.src_name == proc.name
+                ):
+                    out_packet = out_event.data
 
-        async for out_event in proc.run_stream(
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            ctx=self._ctx,
-            call_id=call_id,
-            **run_kwargs,
-        ):
-            if (
-                isinstance(out_event, ProcPacketOutEvent)
-                and out_event.src_name == proc.name
-            ):
-                out_packet = out_event.data
+                    if out_packet.routing == [[END_PROC_NAME]]:
+                        final_event = RunPacketOutEvent(
+                            id=out_packet.id,
+                            data=out_packet,
+                            src_name=out_packet.sender,
+                            dst_name=END_PROC_NAME,
+                            call_id=call_id,
+                        )
+                        await self._event_bus.push_to_stream(final_event)
+                        await self._event_bus.finalize(final_event.data)
+                        break
 
-                if out_packet.routing == [[END_PROC_NAME]]:
-                    final_event = RunPacketOutEvent(
-                        id=out_packet.id,
-                        data=out_packet,
-                        src_name=out_packet.sender,
-                        dst_name=END_PROC_NAME,
-                        call_id=call_id,
-                    )
-                    await self._event_bus.push_to_stream(final_event)
-                    await self._event_bus.finalize(final_event.data)
-                    break
+                    for sub_out_packet in out_packet.split_by_recipient() or []:
+                        if not sub_out_packet.routing or not sub_out_packet.routing[0]:
+                            continue
 
-                for sub_out_packet in out_packet.split_by_recipient() or []:
-                    if not sub_out_packet.routing or not sub_out_packet.routing[0]:
-                        continue
+                        dst_name = sub_out_packet.routing[0][0]
+                        sub_out_event = ProcPacketOutEvent(
+                            id=sub_out_packet.id,
+                            data=sub_out_packet,
+                            src_name=sub_out_packet.sender,
+                            dst_name=dst_name,
+                            call_id=call_id,
+                        )
+                        await self._event_bus.push_to_stream(sub_out_event)
+                        await self._event_bus.post(sub_out_event)
 
-                    dst_name = sub_out_packet.routing[0][0]
-                    sub_out_event = ProcPacketOutEvent(
-                        id=sub_out_packet.id,
-                        data=sub_out_packet,
-                        src_name=sub_out_packet.sender,
-                        dst_name=dst_name,
-                        call_id=call_id,
-                    )
-                    await self._event_bus.push_to_stream(sub_out_event)
-                    await self._event_bus.post(sub_out_event)
+                else:
+                    await self._event_bus.push_to_stream(out_event)
 
-            else:
-                await self._event_bus.push_to_stream(out_event)
+            if out_packet is None:
+                # Cannot happen, for type checking purposes
+                return
 
-        if out_packet is None:
-            # Cannot happen, for type checking purposes
-            return
-
-        route = out_packet.uniform_routing or out_packet.routing
-        logger.info(
-            f"\n[Finished running processor {proc.name}]\n"
-            f"Posted output packet to recipients: {route}\n"
-        )
+            route = out_packet.uniform_routing or out_packet.routing
+            logger.info(
+                f"\n[Finished running processor {proc.name}]\n"
+                f"Posted output packet to recipients: {route}\n"
+            )
 
     @workflow(name="runner_run")  # type: ignore
     async def run_stream(

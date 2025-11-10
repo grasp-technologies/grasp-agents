@@ -1,5 +1,6 @@
+import contextlib
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 
 from pydantic import TypeAdapter
@@ -214,7 +215,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncIterator[Event[Any]]:
+    ) -> AsyncGenerator[Event[Any], None]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         call_id = self.generate_call_id(call_id)
 
@@ -259,13 +260,21 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
-        async for event in self.run_stream(
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            in_args=in_args,
-            call_id=call_id,
-            ctx=ctx,
-        ):
-            if isinstance(event, ProcPacketOutEvent) and event.src_name == self.name:
-                return event.data
+        # Ensure the stream is properly closed even on early return,
+        # so tracing spans from the decorated run_stream end promptly.
+        async with contextlib.aclosing(
+            self.run_stream(
+                chat_inputs=chat_inputs,
+                in_packet=in_packet,
+                in_args=in_args,
+                call_id=call_id,
+                ctx=ctx,
+            )
+        ) as stream:
+            async for event in stream:
+                if (
+                    isinstance(event, ProcPacketOutEvent)
+                    and event.src_name == self.name
+                ):
+                    return event.data
         raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
