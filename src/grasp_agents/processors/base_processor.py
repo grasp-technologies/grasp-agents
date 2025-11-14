@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from copy import deepcopy
 from functools import wraps
 from typing import Any, ClassVar, Generic, Self, TypeVar, cast, final
@@ -135,7 +135,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncIterator[Event[Any]]:
+    ) -> AsyncGenerator[Event[Any], None]:
         yield DummyEvent()
 
     @final
