@@ -1,6 +1,5 @@
-import contextlib
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 
 from pydantic import TypeAdapter
@@ -19,7 +18,6 @@ from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..typing.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
-from ..utils.streaming import wrap_with_aclosing
 from .base_processor import BaseProcessor, with_retry
 
 logger = logging.getLogger(__name__)
@@ -208,7 +206,6 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     @workflow(name="processor")  # type: ignore
     @final
     @with_retry
-    @wrap_with_aclosing
     async def run_stream(
         self,
         chat_inputs: Any | None = None,
@@ -217,7 +214,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncGenerator[Event[Any], None]:
+    ) -> AsyncIterator[Event[Any]]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         call_id = self.generate_call_id(call_id)
 
@@ -262,7 +259,6 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
-        result = None
         async for event in self.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
@@ -271,8 +267,5 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             ctx=ctx,
         ):
             if isinstance(event, ProcPacketOutEvent) and event.src_name == self.name:
-                result = event.data
-                break
-        if result is None:
-            raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
-        return result
+                return event.data
+        raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
