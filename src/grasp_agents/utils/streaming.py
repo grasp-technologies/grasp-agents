@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import functools
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable
+from collections.abc import AsyncIterable, AsyncIterator
 from logging import getLogger
-from typing import Any, Generic, ParamSpec, TypeVar
+from typing import Any, Generic, TypeVar
 
 from grasp_agents.typing.events import Event
 
@@ -13,8 +11,6 @@ logger = getLogger(__name__)
 
 
 _T = TypeVar("_T")
-_K = TypeVar("_K")
-_P = ParamSpec("_P")
 
 
 async def stream_concurrent(
@@ -106,15 +102,3 @@ class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
 
     async def final_data(self) -> _F:
         return (await self.final_event()).data
-
-
-def wrap_with_aclosing(
-    async_func: Callable[_P, AsyncGenerator[_K]],
-) -> Callable[_P, AsyncGenerator[_K]]:
-    @functools.wraps(async_func)
-    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[_K]:
-        async with contextlib.aclosing(async_func(*args, **kwargs)) as stream:
-            async for obj in stream:
-                yield obj
-
-    return wrapper
