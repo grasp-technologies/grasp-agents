@@ -24,7 +24,7 @@ jobs:
       # Restrict who can publish via tag
       - name: Ensure authorized tag pusher
         run: |
-          ALLOWED_USERS="edmtthws wolfflow oobidin sergekomarov shivakumarmahesh"
+          ALLOWED_USERS="edmtthws wolfflow oobidin sergekomarov shivakumarmahesh Iana-Kasimova-TR"
           echo "Tag pushed by: ${{ github.actor }}"
           if [[ ! " $ALLOWED_USERS " =~ " ${{ github.actor }} " ]]; then
             echo "❌ Unauthorized tag pusher: ${{ github.actor }}"
