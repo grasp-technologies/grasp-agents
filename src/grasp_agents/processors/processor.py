@@ -1,5 +1,5 @@
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
 
 from pydantic import TypeAdapter
@@ -204,8 +204,9 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return Packet(sender=self.name, payloads=outputs, routing=joined_routing)
 
     @final
+    @workflow(name="processor")  # type: ignore
     @with_retry
-    async def _run_stream(
+    async def run_stream(
         self,
         chat_inputs: Any | None = None,
         *,
@@ -213,7 +214,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncGenerator[Event[Any], None]:
+    ) -> AsyncIterator[Event[Any]]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         call_id = self.generate_call_id(call_id)
 
@@ -248,28 +249,6 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             id=out_packet.id, data=out_packet, src_name=self.name, call_id=call_id
         )
 
-    @final
-    @workflow(name="processor")  # type: ignore
-    async def run_stream(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_packet: Packet[InT] | None = None,
-        in_args: InT | list[InT] | None = None,
-        call_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncIterator[Event[Any]]:
-        async for event in self._run_stream(
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            in_args=in_args,
-            call_id=call_id,
-            ctx=ctx,
-        ):
-            yield event
-
-    @final
-    @workflow(name="processor")  # type: ignore
     async def run(
         self,
         chat_inputs: Any | None = None,
@@ -280,16 +259,22 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         result = None
-        async for event in self._run_stream(
+
+        async for event in self.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
             call_id=call_id,
             ctx=ctx,
         ):
+            if result is not None:
+                # Need to drain the event stream for OTel to work properly
+                continue
+
             if isinstance(event, ProcPacketOutEvent) and event.src_name == self.name:
                 result = event.data
-                break
+
         if result is None:
             raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
+
         return result

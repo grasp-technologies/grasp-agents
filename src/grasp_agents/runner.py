@@ -97,6 +97,8 @@ class Runner(Generic[OutT, CtxT]):
         call_id = self._generate_call_id(proc)
         out_packet: Packet[Any] | None = None
 
+        finalized: bool = False
+
         async for out_event in proc.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
@@ -104,6 +106,10 @@ class Runner(Generic[OutT, CtxT]):
             call_id=call_id,
             **run_kwargs,
         ):
+            if finalized:
+                # Need to drain the async generator for OTel to work properly
+                continue
+
             if (
                 isinstance(out_event, ProcPacketOutEvent)
                 and out_event.src_name == proc.name
@@ -120,7 +126,8 @@ class Runner(Generic[OutT, CtxT]):
                     )
                     await self._event_bus.push_to_stream(final_event)
                     await self._event_bus.finalize(final_event.data)
-                    break
+                    finalized = True
+                    continue
 
                 for sub_out_packet in out_packet.split_by_recipient() or []:
                     if not sub_out_packet.routing or not sub_out_packet.routing[0]:
@@ -150,7 +157,8 @@ class Runner(Generic[OutT, CtxT]):
             f"Posted output packet to recipients: {route}\n"
         )
 
-    async def _run_stream(
+    @workflow(name="runner_run")  # type: ignore
+    async def run_stream(
         self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
         async with self._event_bus:
@@ -165,16 +173,8 @@ class Runner(Generic[OutT, CtxT]):
             async for event in self._event_bus.stream_events():
                 yield event
 
-    @workflow(name="runner_run")  # type: ignore
-    async def run_stream(
-        self, chat_inputs: Any = "start", **run_kwargs: Any
-    ) -> AsyncIterator[Event[Any]]:
-        async for event in self._run_stream(chat_inputs=chat_inputs, **run_kwargs):
-            yield event
-
-    @workflow(name="runner_run")  # type: ignore
     async def run(self, chat_inputs: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
-        async for _ in self._run_stream(chat_inputs=chat_inputs, **run_kwargs):
+        async for _ in self.run_stream(chat_inputs=chat_inputs, **run_kwargs):
             pass
         return await self._event_bus.final_result()
 
