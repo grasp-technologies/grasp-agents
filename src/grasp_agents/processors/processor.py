@@ -1,4 +1,3 @@
-import contextlib
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import Any, ClassVar, Generic, TypeVar, cast, final
@@ -19,7 +18,6 @@ from ..run_context import CtxT, RunContext
 from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..typing.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
-from ..utils.streaming import wrap_with_aclosing
 from .base_processor import BaseProcessor, with_retry
 
 logger = logging.getLogger(__name__)
@@ -205,11 +203,9 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         return Packet(sender=self.name, payloads=outputs, routing=joined_routing)
 
-    @workflow(name="processor")  # type: ignore
     @final
     @with_retry
-    @wrap_with_aclosing
-    async def run_stream(
+    async def _run_stream(
         self,
         chat_inputs: Any | None = None,
         *,
@@ -253,6 +249,27 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         )
 
     @final
+    @workflow(name="processor")  # type: ignore
+    async def run_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | list[InT] | None = None,
+        call_id: str | None = None,
+        ctx: RunContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        async for event in self._run_stream(
+            chat_inputs=chat_inputs,
+            in_packet=in_packet,
+            in_args=in_args,
+            call_id=call_id,
+            ctx=ctx,
+        ):
+            yield event
+
+    @final
+    @workflow(name="processor")  # type: ignore
     async def run(
         self,
         chat_inputs: Any | None = None,
@@ -263,7 +280,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         result = None
-        async for event in self.run_stream(
+        async for event in self._run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,

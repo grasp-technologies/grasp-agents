@@ -150,8 +150,7 @@ class Runner(Generic[OutT, CtxT]):
             f"Posted output packet to recipients: {route}\n"
         )
 
-    @workflow(name="runner_run")  # type: ignore
-    async def run_stream(
+    async def _run_stream(
         self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
         async with self._event_bus:
@@ -166,8 +165,16 @@ class Runner(Generic[OutT, CtxT]):
             async for event in self._event_bus.stream_events():
                 yield event
 
+    @workflow(name="runner_run")  # type: ignore
+    async def run_stream(
+        self, chat_inputs: Any = "start", **run_kwargs: Any
+    ) -> AsyncIterator[Event[Any]]:
+        async for event in self._run_stream(chat_inputs=chat_inputs, **run_kwargs):
+            yield event
+
+    @workflow(name="runner_run")  # type: ignore
     async def run(self, chat_inputs: Any = "start", **run_kwargs: Any) -> Packet[OutT]:
-        async for _ in self.run_stream(chat_inputs=chat_inputs, **run_kwargs):
+        async for _ in self._run_stream(chat_inputs=chat_inputs, **run_kwargs):
             pass
         return await self._event_bus.final_result()
 
