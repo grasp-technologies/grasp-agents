@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from copy import deepcopy
 from functools import wraps
 from typing import Any, ClassVar, Generic, Self, TypeVar, cast, final
@@ -55,9 +55,15 @@ def with_retry(func: F) -> F:
                     f"Processor run failed [proc_name={self.name}; call_id={call_id}]"
                 )
                 if n_attempt > self.max_retries:
-                    raise ProcRunError(proc_name=self.name, call_id=call_id) from err
+                    raise ProcRunError(
+                        proc_name=self.name,
+                        call_id=call_id,
+                        message=err_message + f" after {n_attempt - 1} retries",
+                    ) from err
 
-                logger.warning(f"{err_message} (retry attempt {n_attempt}):\n{err}")
+                logger.warning(
+                    f"{err_message} -> retrying (attempt {n_attempt}):\n{err}"
+                )
 
     return cast("F", wrapper)
 
@@ -135,7 +141,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-    ) -> AsyncGenerator[Event[Any], None]:
+    ) -> AsyncIterator[Event[Any]]:
         yield DummyEvent()
 
     @final
