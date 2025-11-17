@@ -12,7 +12,6 @@ from typing import Any, TypeVar, cast
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
-from opentelemetry.context import _RUNTIME_CONTEXT  # type: ignore
 from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.trace.status import Status, StatusCode
 from pydantic import BaseModel
@@ -241,40 +240,29 @@ def entity_method(
                     span_name = _get_span_name(
                         entity_name, tlp_span_kind, instance=instance, kwargs=kwargs
                     )
-
                     tracer = trace.get_tracer(__name__)
 
-                    span = tracer.start_span(span_name)
-                    ctx = trace.set_span_in_context(span)
-                    token = context_api.attach(ctx)
+                    with tracer.start_as_current_span(span_name) as span:
+                        _set_span_attributes(span, entity_name, tlp_span_kind, version)
+                        _handle_span_input(span, args, kwargs, cls=JSONEncoder)
+                        items: list[Any] = []
 
-                    _set_span_attributes(span, entity_name, tlp_span_kind, version)
-                    _handle_span_input(span, args, kwargs, cls=JSONEncoder)
-
-                    items: list[Any] = []
-                    try:
-                        async for item in fn(*args, **kwargs):
-                            items.append(item)
-                            yield item
-
-                    except Exception as e:
-                        span.set_status(Status(StatusCode.ERROR, str(e)))
-                        span.record_exception(
-                            e,
-                            attributes={"tb": traceback.format_exc()},
-                        )
-                        raise
-
-                    finally:
-                        if items:
-                            _handle_span_output(span, items[-1], cls=JSONEncoder)
-                        span.end()
                         try:
-                            _RUNTIME_CONTEXT.detach(token)
+                            async for item in fn(*args, **kwargs):
+                                items.append(item)
+                                yield item
+
                         except Exception as e:
-                            logger.warning(
-                                f"Failed to detach context in tracing decorator:\n{e!r}"
+                            span.set_status(Status(StatusCode.ERROR, str(e)))
+                            span.record_exception(
+                                e,
+                                attributes={"tb": traceback.format_exc()},
                             )
+                            raise
+
+                        finally:
+                            if items:
+                                _handle_span_output(span, items[-1], cls=JSONEncoder)
 
                 return cast("F", async_gen_wrap)
 
