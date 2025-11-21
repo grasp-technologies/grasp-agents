@@ -246,10 +246,20 @@ class LLMPolicyExecutor(Generic[CtxT]):
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         completion: Completion | None = None
-
+        send_messages = self.memory.messages
+        previous_response_id, last_idx = (
+            self.memory.get_last_assistant_response_anchor()
+        )
+        if (
+            previous_response_id is not None
+            and last_idx is not None
+            and last_idx < len(send_messages) - 1
+        ):
+            send_messages = send_messages[(last_idx + 1) :]
+            extra_llm_settings["response_id"] = previous_response_id
         if self._stream_llm_responses:
             llm_stream = self.llm.generate_completion_stream(
-                self.memory.messages,
+                send_messages,
                 response_schema=self.response_schema,
                 response_schema_by_xml_tag=self.response_schema_by_xml_tag,
                 tools=self.tools,
@@ -266,7 +276,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         else:
             completion = await self.llm.generate_completion(
-                self.memory.messages,
+                send_messages,
                 response_schema=self.response_schema,
                 response_schema_by_xml_tag=self.response_schema_by_xml_tag,
                 tools=self.tools,

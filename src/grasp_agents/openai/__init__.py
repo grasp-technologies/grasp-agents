@@ -3,6 +3,13 @@
 from openai._streaming import (
     AsyncStream as OpenAIAsyncStream,  # type: ignore[import] # noqa: PLC2701
 )
+from openai.lib.streaming.chat import (
+    AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
+)
+from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
+from openai.lib.streaming.responses._responses import (
+    AsyncResponseStreamManager as OpenAIAsyncResponseStreamManager,
+)
 from openai.types import CompletionUsage as OpenAIUsage
 from openai.types.chat.chat_completion import ChatCompletion as OpenAICompletion
 from openai.types.chat.chat_completion import (
@@ -103,6 +110,29 @@ from openai.types.chat.parsed_chat_completion import (
 )
 from openai.types.chat.parsed_chat_completion import (
     ParsedChoice as OpenAIParsedChoice,
+)
+from openai.types.responses import ParsedResponse as OpenAIParsedResponse
+from openai.types.responses import Response as OpenAIResponse
+from openai.types.responses import (
+    ResponseCompletedEvent as OpenAIResponseCompletedEvent,
+)
+from openai.types.responses import ResponseStreamEvent as OpenAIResponseStreamEvent
+from openai.types.responses import ResponseInputParam as OpenAIResponsesInputParam
+from openai.types.responses import (
+    ResponseTextConfigParam as OpenAIResponseTextConfigParam,
+)
+from openai.types.responses.response_create_params import (
+    ToolChoice as OpenAIResponseToolChoice,
+)
+from openai.types.responses.response_create_params import (
+    StreamOptions as OpenAIResponsesStreamOptionsParam,
+)
+from openai.types.responses.tool_param import (
+    ParseableToolParam as OpenAIResponsesParseableToolParam,
+)
+from openai.types.responses.tool_param import ToolParam as OpenAIResponsesToolParam
+from openai.types.shared import (
+    Reasoning as OpenAIReasoning,
 )
 from openai.types.shared_params import (
     ResponseFormatJSONObject as OpenAIResponseFormatJSONObject,
