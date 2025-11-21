@@ -52,6 +52,7 @@ class AssistantMessage(MessageBase):
     thinking_blocks: Sequence[ThinkingBlock | RedactedThinkingBlock] | None = None
     annotations: Sequence[LiteLLMAnnotation] | None = None
     provider_specific_fields: dict[str, Any] | None = None
+    response_id: str | None = None
 
 
 class UserMessage(MessageBase):
