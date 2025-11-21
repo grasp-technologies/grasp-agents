@@ -192,10 +192,12 @@ class CloudLLM(LLM):
 
         async for api_completion_chunk in api_stream:
             api_completion_chunks.append(api_completion_chunk)
-            completion_chunk = self.converters.from_completion_chunk(
-                api_completion_chunk, name=self.model_id
-            )
-
+            try:
+                completion_chunk = self.converters.from_completion_chunk(
+                    api_completion_chunk, name=self.model_id
+                )
+            except TypeError:
+                continue
             yield CompletionChunkEvent(
                 data=completion_chunk, src_name=proc_name, call_id=call_id
             )
