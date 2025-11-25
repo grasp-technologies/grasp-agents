@@ -1,7 +1,6 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
-from contextlib import nullcontext
 from copy import deepcopy
 from itertools import starmap
 from logging import getLogger
