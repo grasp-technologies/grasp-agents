@@ -107,11 +107,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
-            name=name,
-            memory=memory,
-            recipients=recipients,
-            max_retries=max_retries,
-            is_tracing_enabled=is_tracing_enabled,
+            name=name, memory=memory, recipients=recipients, max_retries=max_retries
         )
 
         # Memory

@@ -47,7 +47,7 @@ class FilteringExporter(SpanExporter):
         attrs = attrs or {}
         for name in self._filtered_attrs:
             value = attrs.get(name, "")
-            if value and value not in self._blocklist:
+            if value not in self._blocklist:
                 return True
         return False
 

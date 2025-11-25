@@ -7,7 +7,6 @@ from itertools import starmap
 from logging import getLogger
 from typing import Any, Generic, Protocol, TypedDict, cast, final
 
-from opentelemetry.instrumentation.utils import suppress_instrumentation
 from pydantic import BaseModel
 
 from grasp_agents.tracing_decorators import task
@@ -265,27 +264,16 @@ class LLMPolicyExecutor(Generic[CtxT]):
             **extra_llm_settings,
         }
 
-        def maybe_suppress():
-            return (
-                suppress_instrumentation()
-                if not self.is_tracing_enabled
-                else nullcontext()
-            )
-
         if self._stream_llm_responses:
-            with maybe_suppress():
-                llm_stream = self.llm.generate_completion_stream(**llm_params)
-                llm_stream_post = self.llm.postprocess_event_stream(llm_stream)
-                llm_stream_wrapped = EventStream[Completion](
-                    llm_stream_post, Completion
-                )
-                async for event in llm_stream_wrapped:
-                    yield event
-                completion = await llm_stream_wrapped.final_data()
+            llm_stream = self.llm.generate_completion_stream(**llm_params)
+            llm_stream_post = self.llm.postprocess_event_stream(llm_stream)
+            llm_stream_wrapped = EventStream[Completion](llm_stream_post, Completion)
+            async for event in llm_stream_wrapped:
+                yield event
+            completion = await llm_stream_wrapped.final_data()
 
         else:
-            with maybe_suppress():
-                completion = await self.llm.generate_completion(**llm_params)
+            completion = await self.llm.generate_completion(**llm_params)
 
         yield GenMessageEvent(
             src_name=self.agent_name, call_id=call_id, data=completion.message

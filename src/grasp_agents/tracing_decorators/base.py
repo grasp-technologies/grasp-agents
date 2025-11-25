@@ -6,7 +6,6 @@ import traceback
 import types
 import warnings
 from collections.abc import Callable
-from contextlib import nullcontext
 from functools import wraps
 from logging import getLogger
 from typing import Any, TypeVar, cast
