@@ -104,7 +104,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Streaming
         stream_llm_responses: bool = False,
         stream_tools: bool = False,
-        is_tracing_enabled: bool = True,
+        tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
             name=name,
@@ -119,6 +119,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Avoid narrowing the base '_memory' type (declared as 'Memory' in BaseProcessor)
         self._memory = memory or LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
+        self._tracing_enabled = tracing_enabled
 
         # Prompt builder
 
@@ -165,7 +166,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm_responses=stream_llm_responses,
             stream_tools=stream_tools,
-            is_tracing_enabled=is_tracing_enabled,
+            tracing_enabled=tracing_enabled,
         )
 
         self._register_overridden_implementations()
@@ -199,8 +200,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return self._reset_memory_on_run
 
     @property
-    def is_tracing_enabled(self) -> bool:
-        return self._is_tracing_enabled
+    def tracing_enabled(self) -> bool:
+        return self._tracing_enabled
 
     @final
     def prepare_memory(

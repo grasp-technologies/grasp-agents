@@ -33,26 +33,28 @@ class NoopExporter(SpanExporter):
 
 
 class FilteringExporter(SpanExporter):
-    def __init__(self, inner: SpanExporter, blocklist: set[str] | None = None):
+    def __init__(
+        self,
+        inner: SpanExporter,
+        blocklist: set[str] | None = None,
+        filtered_attrs: list[str] | None = None,
+    ):
         self._inner = inner
         self._blocklist = blocklist or set()
+        self._filtered_attrs = filtered_attrs or []
 
-    def _is_filter_based_on_attrs(
-        self, names_of_attrs: list[str], attrs: Attributes
-    ) -> bool:
+    def _filter_based_on_attrs(self, attrs: Attributes) -> bool:
         attrs = attrs or {}
-        for name in names_of_attrs:
+        for name in self._filtered_attrs:
             value = attrs.get(name, "")
-            if value and value in self._blocklist:
+            if value and value not in self._blocklist:
                 return True
         return False
 
     def export(self, spans: Sequence[ReadableSpan]):
         keep: list[ReadableSpan] = []
         for s in spans:
-            if self._is_filter_based_on_attrs(
-                ["gen_ai.system", "gen_ai.provider.name"], s.attributes
-            ) or self._is_filter_based_on_attrs(["http.url"], s.attributes):
+            if self._filter_based_on_attrs(s.attributes):
                 keep.append(s)
 
         return SpanExportResult.SUCCESS if not keep else self._inner.export(keep)
