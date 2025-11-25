@@ -1,11 +1,13 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
+from contextlib import nullcontext
 from copy import deepcopy
 from itertools import starmap
 from logging import getLogger
 from typing import Any, Generic, Protocol, TypedDict, cast, final
 
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from pydantic import BaseModel
 
 from grasp_agents.tracing_decorators import task
@@ -96,6 +98,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         final_answer_as_tool_call: bool = False,
         stream_llm_responses: bool = True,
         stream_tools: bool = False,
+        is_tracing_enabled: bool = True,
     ) -> None:
         super().__init__()
 
@@ -120,6 +123,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
         self._tools = {t.name: t for t in tools_list} if tools_list else None
+        self._is_tracing_enabled = is_tracing_enabled
 
     @property
     def agent_name(self) -> str:
@@ -136,6 +140,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
     @property
     def llm(self) -> LLM:
         return self._llm
+
+    @property
+    def is_tracing_enabled(self) -> bool:
+        return self._is_tracing_enabled
 
     @property
     def response_schema(self) -> Any | None:
@@ -246,45 +254,38 @@ class LLMPolicyExecutor(Generic[CtxT]):
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         completion: Completion | None = None
-        send_messages = self.memory.messages
-        previous_response_id, last_idx = (
-            self.memory.get_last_assistant_response_anchor()
-        )
-        if (
-            previous_response_id is not None
-            and last_idx is not None
-            and last_idx < len(send_messages) - 1
-        ):
-            send_messages = send_messages[(last_idx + 1) :]
-            extra_llm_settings["response_id"] = previous_response_id
-        if self._stream_llm_responses:
-            llm_stream = self.llm.generate_completion_stream(
-                send_messages,
-                response_schema=self.response_schema,
-                response_schema_by_xml_tag=self.response_schema_by_xml_tag,
-                tools=self.tools,
-                tool_choice=tool_choice,
-                proc_name=self.agent_name,
-                call_id=call_id,
-                **extra_llm_settings,
+        llm_params = {
+            "messages": self.memory.messages,
+            "response_schema": self.response_schema,
+            "response_schema_by_xml_tag": self.response_schema_by_xml_tag,
+            "tools": self.tools,
+            "tool_choice": tool_choice,
+            "proc_name": self.agent_name,
+            "call_id": call_id,
+            **extra_llm_settings,
+        }
+
+        def maybe_suppress():
+            return (
+                suppress_instrumentation()
+                if not self.is_tracing_enabled
+                else nullcontext()
             )
-            llm_stream_post = self.llm.postprocess_event_stream(llm_stream)
-            llm_stream_wrapped = EventStream[Completion](llm_stream_post, Completion)
-            async for event in llm_stream_wrapped:
-                yield event
-            completion = await llm_stream_wrapped.final_data()
+
+        if self._stream_llm_responses:
+            with maybe_suppress():
+                llm_stream = self.llm.generate_completion_stream(**llm_params)
+                llm_stream_post = self.llm.postprocess_event_stream(llm_stream)
+                llm_stream_wrapped = EventStream[Completion](
+                    llm_stream_post, Completion
+                )
+                async for event in llm_stream_wrapped:
+                    yield event
+                completion = await llm_stream_wrapped.final_data()
 
         else:
-            completion = await self.llm.generate_completion(
-                send_messages,
-                response_schema=self.response_schema,
-                response_schema_by_xml_tag=self.response_schema_by_xml_tag,
-                tools=self.tools,
-                tool_choice=tool_choice,
-                proc_name=self.agent_name,
-                call_id=call_id,
-                **extra_llm_settings,
-            )
+            with maybe_suppress():
+                completion = await self.llm.generate_completion(**llm_params)
 
         yield GenMessageEvent(
             src_name=self.agent_name, call_id=call_id, data=completion.message

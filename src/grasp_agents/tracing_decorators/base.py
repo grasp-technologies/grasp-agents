@@ -216,6 +216,17 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
     )
 
 
+def is_tracing_enabled(
+    instance: type | None = None,
+) -> bool:
+    if instance is None:
+        return True
+    flag = getattr(instance, "is_tracing_enabled", None)
+    if flag is None:
+        return True
+    return bool(flag)
+
+
 def entity_method(
     name: str | None = None,
     version: int | None = None,
@@ -237,6 +248,11 @@ def entity_method(
 
                     is_bound = is_bound_method(fn, args[0] if args else False)
                     instance = args[0] if is_bound else None
+                    is_enabled = is_tracing_enabled(instance)
+                    if not is_enabled:
+                        async for item in fn(*args, **kwargs):
+                            yield item
+                        return
                     span_name = _get_span_name(
                         entity_name, tlp_span_kind, instance=instance, kwargs=kwargs
                     )
@@ -273,6 +289,9 @@ def entity_method(
 
                 is_bound = is_bound_method(fn, args[0] if args else False)
                 instance = args[0] if is_bound else None
+                is_enabled = is_tracing_enabled(instance)
+                if not is_enabled:
+                    return await fn(*args, **kwargs)
                 span_name = _get_span_name(
                     entity_name,
                     tlp_span_kind,
@@ -307,6 +326,16 @@ def entity_method(
 
             is_bound = is_bound_method(fn, args[0] if args else False)
             instance = args[0] if is_bound else None
+            is_enabled = is_tracing_enabled(instance)
+            if not is_enabled:
+                items: list[Any] = []
+                res = fn(*args, **kwargs)
+                if isinstance(res, types.GeneratorType):
+                    for item in res:
+                        items.append(item)
+                        yield item
+                else:
+                    return
             span_name = _get_span_name(
                 entity_name,
                 tlp_span_kind,
