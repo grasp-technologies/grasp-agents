@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from opentelemetry.util.types import Attributes
 
 # Set of LLM provider names used in OpenTelemetry attributes
 # See https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/#gen-ai-provider-name
@@ -23,6 +24,8 @@ LLM_PROVIDER_NAMES = {
     "x_ai",
 }
 
+CLOUD_PROVIDERS_NAME = {"metadata.google.internal"}
+
 
 class NoopExporter(SpanExporter):
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
@@ -34,14 +37,22 @@ class FilteringExporter(SpanExporter):
         self._inner = inner
         self._blocklist = blocklist or set()
 
+    def _is_filter_based_on_attrs(
+        self, names_of_attrs: list[str], attrs: Attributes
+    ) -> bool:
+        attrs = attrs or {}
+        for name in names_of_attrs:
+            value = attrs.get(name, "")
+            if value and value in self._blocklist:
+                return True
+        return False
+
     def export(self, spans: Sequence[ReadableSpan]):
         keep: list[ReadableSpan] = []
         for s in spans:
-            attrs = s.attributes or {}
-            provider = attrs.get("gen_ai.system", "") or attrs.get(
-                "gen_ai.provider.name", ""
-            )
-            if provider not in self._blocklist:
+            if self._is_filter_based_on_attrs(
+                ["gen_ai.system", "gen_ai.provider.name"], s.attributes
+            ) or self._is_filter_based_on_attrs(["http.url"], s.attributes):
                 keep.append(s)
 
         return SpanExportResult.SUCCESS if not keep else self._inner.export(keep)

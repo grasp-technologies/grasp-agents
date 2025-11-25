@@ -104,9 +104,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Streaming
         stream_llm_responses: bool = False,
         stream_tools: bool = False,
+        is_tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
-            name=name, memory=memory, recipients=recipients, max_retries=max_retries
+            name=name,
+            memory=memory,
+            recipients=recipients,
+            max_retries=max_retries,
+            is_tracing_enabled=is_tracing_enabled,
         )
 
         # Memory
@@ -160,6 +165,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm_responses=stream_llm_responses,
             stream_tools=stream_tools,
+            is_tracing_enabled=is_tracing_enabled,
         )
 
         self._register_overridden_implementations()
@@ -191,6 +197,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     @property
     def reset_memory_on_run(self) -> bool:
         return self._reset_memory_on_run
+
+    @property
+    def is_tracing_enabled(self) -> bool:
+        return self._is_tracing_enabled
 
     @final
     def prepare_memory(

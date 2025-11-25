@@ -13,7 +13,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 from phoenix.otel import BatchSpanProcessor, HTTPSpanExporter, SimpleSpanProcessor
 
-from .exporters import LLM_PROVIDER_NAMES, FilteringExporter
+from .exporters import CLOUD_PROVIDERS_NAME, LLM_PROVIDER_NAMES, FilteringExporter
 
 logger = getLogger(__name__)
 
@@ -48,6 +48,7 @@ def init_phoenix(
     blocklist: set[str] = (
         LLM_PROVIDER_NAMES if use_llm_provider_instr or use_litellm_instr else set()
     )
+    blocklist.update(CLOUD_PROVIDERS_NAME)
     exporter = FilteringExporter(
         inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
         blocklist=blocklist,
