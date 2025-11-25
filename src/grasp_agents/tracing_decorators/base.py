@@ -241,15 +241,10 @@ def entity_method(
 
                 @wraps(fn)
                 async def async_gen_wrap(*args: Any, **kwargs: Any) -> Any:
-                    if not _tracing_initialized_quietly():
-                        async for item in fn(*args, **kwargs):
-                            yield item
-                        return
-
                     is_bound = is_bound_method(fn, args[0] if args else False)
                     instance = args[0] if is_bound else None
                     is_enabled = tracing_enabled(instance)
-                    if not is_enabled:
+                    if not (is_enabled and _tracing_initialized_quietly()):
                         with suppress_instrumentation():
                             async for item in fn(*args, **kwargs):
                                 yield item
@@ -285,13 +280,10 @@ def entity_method(
 
             @wraps(fn)
             async def async_wrap(*args: Any, **kwargs: Any) -> Any:
-                if not _tracing_initialized_quietly():
-                    return await fn(*args, **kwargs)
-
                 is_bound = is_bound_method(fn, args[0] if args else False)
                 instance = args[0] if is_bound else None
                 is_enabled = tracing_enabled(instance)
-                if not is_enabled:
+                if not (is_enabled and _tracing_initialized_quietly()):
                     with suppress_instrumentation():
                         return await fn(*args, **kwargs)
                 span_name = _get_span_name(
@@ -323,13 +315,10 @@ def entity_method(
 
         @wraps(fn)
         def sync_wrap(*args: Any, **kwargs: Any) -> Any:
-            if not _tracing_initialized_quietly():
-                return fn(*args, **kwargs)
-
             is_bound = is_bound_method(fn, args[0] if args else False)
             instance = args[0] if is_bound else None
             is_enabled = tracing_enabled(instance)
-            if not is_enabled:
+            if not (is_enabled and _tracing_initialized_quietly()):
                 with suppress_instrumentation():
                     return fn(*args, **kwargs)
             span_name = _get_span_name(
