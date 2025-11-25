@@ -52,6 +52,7 @@ def init_phoenix(
     exporter = FilteringExporter(
         inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
         blocklist=blocklist,
+        filtered_attrs=["gen_ai.system", "gen_ai.provider.name", "http.url"],
     )
     if batch:
         span_processor = BatchSpanProcessor(span_exporter=exporter)
