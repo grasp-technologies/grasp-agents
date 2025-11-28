@@ -96,7 +96,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
         final_answer_as_tool_call: bool = False,
         stream_llm_responses: bool = True,
         stream_tools: bool = False,
-        tracing_enabled: bool = True,
     ) -> None:
         super().__init__()
 
@@ -121,7 +120,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
         self._tools = {t.name: t for t in tools_list} if tools_list else None
-        self._tracing_enabled = tracing_enabled
 
     @property
     def agent_name(self) -> str:
@@ -138,10 +136,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
     @property
     def llm(self) -> LLM:
         return self._llm
-
-    @property
-    def tracing_enabled(self) -> bool:
-        return self._tracing_enabled
 
     @property
     def response_schema(self) -> Any | None:
