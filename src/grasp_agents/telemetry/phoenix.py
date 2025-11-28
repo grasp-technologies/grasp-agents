@@ -48,11 +48,10 @@ def init_phoenix(
     blocklist: set[str] = (
         LLM_PROVIDER_NAMES if use_llm_provider_instr or use_litellm_instr else set()
     )
-    blocklist.update(CLOUD_PROVIDERS_NAME)
     exporter = FilteringExporter(
         inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
-        blocklist=blocklist,
-        filtered_attrs=["gen_ai.system", "gen_ai.provider.name", "http.url"],
+        llm_provider_blocklist=blocklist,
+        attribute_filter={"http.url": CLOUD_PROVIDERS_NAME},
     )
     if batch:
         span_processor = BatchSpanProcessor(span_exporter=exporter)
