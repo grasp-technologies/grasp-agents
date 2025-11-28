@@ -80,6 +80,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         max_retries: int = 0,
         memory: Memory | None = None,
         recipients: Sequence[ProcName] | None = None,
+        tracing_enabled: bool = True,
         **kwargs: Any,
     ) -> None:
         self._in_type: type[InT]
@@ -91,6 +92,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         self._max_retries = max_retries
         self._memory: Memory = memory or DummyMemory()
         self.recipients = recipients
+        self._tracing_enabled = tracing_enabled
 
     @property
     def in_type(self) -> type[InT]:
@@ -103,6 +105,14 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
     @property
     def name(self) -> ProcName:
         return self._name
+
+    @property
+    def tracing_enabled(self) -> bool:
+        return self._tracing_enabled
+
+    @tracing_enabled.setter
+    def tracing_enabled(self, value: bool):
+        self._tracing_enabled = value
 
     @property
     def memory(self) -> Memory:

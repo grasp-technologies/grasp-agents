@@ -30,8 +30,17 @@ logger = getLogger(__name__)
 
 DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "completions"}
 
+_CTX_DISABLE_TRACING_KEY = "override_disable_tracing"
+
 T = TypeVar("T", bound=type)
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _is_tracing_globally_disabled() -> bool:
+    try:
+        return bool(context_api.get_value(_CTX_DISABLE_TRACING_KEY))
+    except Exception:
+        return False
 
 
 def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
@@ -217,9 +226,21 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
     )
 
 
+@contextlib.contextmanager
+def _suppres_tracing_globally():
+    token = context_api.attach(context_api.set_value(_CTX_DISABLE_TRACING_KEY, True))
+    try:
+        with suppress_instrumentation():
+            yield
+    finally:
+        context_api.detach(token)
+
+
 def tracing_enabled(
     instance: type | None = None,
 ) -> bool:
+    if _is_tracing_globally_disabled():
+        return False
     if instance is None:
         return True
     flag = getattr(instance, "tracing_enabled", True)
@@ -244,7 +265,7 @@ def entity_method(
                     instance = args[0] if is_bound else None
                     is_enabled = tracing_enabled(instance)
                     if not (is_enabled and _tracing_initialized_quietly()):
-                        with suppress_instrumentation():
+                        with _suppres_tracing_globally():
                             async for item in fn(*args, **kwargs):
                                 yield item
                             return
@@ -283,7 +304,7 @@ def entity_method(
                 instance = args[0] if is_bound else None
                 is_enabled = tracing_enabled(instance)
                 if not (is_enabled and _tracing_initialized_quietly()):
-                    with suppress_instrumentation():
+                    with _suppres_tracing_globally():
                         return await fn(*args, **kwargs)
                 span_name = _get_span_name(
                     entity_name,
@@ -318,7 +339,7 @@ def entity_method(
             instance = args[0] if is_bound else None
             is_enabled = tracing_enabled(instance)
             if not (is_enabled and _tracing_initialized_quietly()):
-                with suppress_instrumentation():
+                with _suppres_tracing_globally():
                     return fn(*args, **kwargs)
             span_name = _get_span_name(
                 entity_name,
