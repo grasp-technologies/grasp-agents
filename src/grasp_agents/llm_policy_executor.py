@@ -246,18 +246,19 @@ class LLMPolicyExecutor(Generic[CtxT]):
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         completion: Completion | None = None
+        llm_params = {
+            "messages": self.memory.messages,
+            "response_schema": self.response_schema,
+            "response_schema_by_xml_tag": self.response_schema_by_xml_tag,
+            "tools": self.tools,
+            "tool_choice": tool_choice,
+            "proc_name": self.agent_name,
+            "call_id": call_id,
+            **extra_llm_settings,
+        }
 
         if self._stream_llm_responses:
-            llm_stream = self.llm.generate_completion_stream(
-                self.memory.messages,
-                response_schema=self.response_schema,
-                response_schema_by_xml_tag=self.response_schema_by_xml_tag,
-                tools=self.tools,
-                tool_choice=tool_choice,
-                proc_name=self.agent_name,
-                call_id=call_id,
-                **extra_llm_settings,
-            )
+            llm_stream = self.llm.generate_completion_stream(**llm_params)
             llm_stream_post = self.llm.postprocess_event_stream(llm_stream)
             llm_stream_wrapped = EventStream[Completion](llm_stream_post, Completion)
             async for event in llm_stream_wrapped:
@@ -265,16 +266,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             completion = await llm_stream_wrapped.final_data()
 
         else:
-            completion = await self.llm.generate_completion(
-                self.memory.messages,
-                response_schema=self.response_schema,
-                response_schema_by_xml_tag=self.response_schema_by_xml_tag,
-                tools=self.tools,
-                tool_choice=tool_choice,
-                proc_name=self.agent_name,
-                call_id=call_id,
-                **extra_llm_settings,
-            )
+            completion = await self.llm.generate_completion(**llm_params)
 
         yield GenMessageEvent(
             src_name=self.agent_name, call_id=call_id, data=completion.message

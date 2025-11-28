@@ -12,6 +12,7 @@ from typing import Any, TypeVar, cast
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.trace.status import Status, StatusCode
 from pydantic import BaseModel
@@ -29,8 +30,17 @@ logger = getLogger(__name__)
 
 DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "completions"}
 
+_CTX_DISABLE_TRACING_KEY = "override_disable_tracing"
+
 T = TypeVar("T", bound=type)
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _is_tracing_globally_disabled() -> bool:
+    try:
+        return bool(context_api.get_value(_CTX_DISABLE_TRACING_KEY))
+    except Exception:
+        return False
 
 
 def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
@@ -216,6 +226,27 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
     )
 
 
+@contextlib.contextmanager
+def _suppress_tracing_globally():
+    token = context_api.attach(context_api.set_value(_CTX_DISABLE_TRACING_KEY, True))
+    try:
+        with suppress_instrumentation():
+            yield
+    finally:
+        context_api.detach(token)
+
+
+def tracing_enabled(
+    instance: type | None = None,
+) -> bool:
+    if _is_tracing_globally_disabled():
+        return False
+    if instance is None:
+        return True
+    flag = getattr(instance, "tracing_enabled", True)
+    return bool(flag)
+
+
 def entity_method(
     name: str | None = None,
     version: int | None = None,
@@ -230,13 +261,14 @@ def entity_method(
 
                 @wraps(fn)
                 async def async_gen_wrap(*args: Any, **kwargs: Any) -> Any:
-                    if not _tracing_initialized_quietly():
-                        async for item in fn(*args, **kwargs):
-                            yield item
-                        return
-
                     is_bound = is_bound_method(fn, args[0] if args else False)
                     instance = args[0] if is_bound else None
+                    is_enabled = tracing_enabled(instance)
+                    if not (is_enabled and _tracing_initialized_quietly()):
+                        with _suppress_tracing_globally():
+                            async for item in fn(*args, **kwargs):
+                                yield item
+                            return
                     span_name = _get_span_name(
                         entity_name, tlp_span_kind, instance=instance, kwargs=kwargs
                     )
@@ -268,11 +300,12 @@ def entity_method(
 
             @wraps(fn)
             async def async_wrap(*args: Any, **kwargs: Any) -> Any:
-                if not _tracing_initialized_quietly():
-                    return await fn(*args, **kwargs)
-
                 is_bound = is_bound_method(fn, args[0] if args else False)
                 instance = args[0] if is_bound else None
+                is_enabled = tracing_enabled(instance)
+                if not (is_enabled and _tracing_initialized_quietly()):
+                    with _suppress_tracing_globally():
+                        return await fn(*args, **kwargs)
                 span_name = _get_span_name(
                     entity_name,
                     tlp_span_kind,
@@ -302,11 +335,12 @@ def entity_method(
 
         @wraps(fn)
         def sync_wrap(*args: Any, **kwargs: Any) -> Any:
-            if not _tracing_initialized_quietly():
-                return fn(*args, **kwargs)
-
             is_bound = is_bound_method(fn, args[0] if args else False)
             instance = args[0] if is_bound else None
+            is_enabled = tracing_enabled(instance)
+            if not (is_enabled and _tracing_initialized_quietly()):
+                with _suppress_tracing_globally():
+                    return fn(*args, **kwargs)
             span_name = _get_span_name(
                 entity_name,
                 tlp_span_kind,
