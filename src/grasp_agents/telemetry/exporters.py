@@ -36,25 +36,34 @@ class FilteringExporter(SpanExporter):
     def __init__(
         self,
         inner: SpanExporter,
-        blocklist: set[str] | None = None,
-        filtered_attrs: list[str] | None = None,
+        llm_provider_blocklist: set[str] | None = None,
+        attribute_filter: dict[str, set[str]] | None = None,
     ):
         self._inner = inner
-        self._blocklist = blocklist or set()
-        self._filtered_attrs = filtered_attrs or []
+        self._llm_provider_blocklist = llm_provider_blocklist or set()
+        self._attribute_filter = attribute_filter or {}
+
+    def _filter_based_on_llm_provider(self, attrs: Attributes) -> bool:
+        attrs = attrs or {}
+        provider = attrs.get("gen_ai.system", "") or attrs.get(
+            "gen_ai.provider.name", ""
+        )
+        return provider not in self._llm_provider_blocklist
 
     def _filter_based_on_attrs(self, attrs: Attributes) -> bool:
         attrs = attrs or {}
-        for name in self._filtered_attrs:
-            value = attrs.get(name, "")
-            if value not in self._blocklist:
-                return True
-        return False
+        for name, values in self._attribute_filter.items():
+            atr_value = attrs.get(name, "")
+            if atr_value in values:
+                return False
+        return True
 
     def export(self, spans: Sequence[ReadableSpan]):
         keep: list[ReadableSpan] = []
         for s in spans:
-            if self._filter_based_on_attrs(s.attributes):
+            if self._filter_based_on_attrs(
+                s.attributes
+            ) and self._filter_based_on_llm_provider(s.attributes):
                 keep.append(s)
 
         return SpanExportResult.SUCCESS if not keep else self._inner.export(keep)
