@@ -24,7 +24,7 @@ LLM_PROVIDER_NAMES = {
     "x_ai",
 }
 
-CLOUD_PROVIDERS_NAME = {"metadata.google.internal"}
+CLOUD_PROVIDERS_NAMES = {"metadata.google.internal"}
 
 
 class NoopExporter(SpanExporter):
@@ -53,8 +53,8 @@ class FilteringExporter(SpanExporter):
     def _filter_based_on_attrs(self, attrs: Attributes) -> bool:
         attrs = attrs or {}
         for name, values in self._attribute_filter.items():
-            atr_value = attrs.get(name, "")
-            if atr_value in values:
+            attr_value = attrs.get(name, "")
+            if attr_value in values:
                 return False
         return True
 
