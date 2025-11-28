@@ -227,7 +227,7 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
 
 
 @contextlib.contextmanager
-def _suppres_tracing_globally():
+def _suppress_tracing_globally():
     token = context_api.attach(context_api.set_value(_CTX_DISABLE_TRACING_KEY, True))
     try:
         with suppress_instrumentation():
@@ -265,7 +265,7 @@ def entity_method(
                     instance = args[0] if is_bound else None
                     is_enabled = tracing_enabled(instance)
                     if not (is_enabled and _tracing_initialized_quietly()):
-                        with _suppres_tracing_globally():
+                        with _suppress_tracing_globally():
                             async for item in fn(*args, **kwargs):
                                 yield item
                             return
@@ -304,7 +304,7 @@ def entity_method(
                 instance = args[0] if is_bound else None
                 is_enabled = tracing_enabled(instance)
                 if not (is_enabled and _tracing_initialized_quietly()):
-                    with _suppres_tracing_globally():
+                    with _suppress_tracing_globally():
                         return await fn(*args, **kwargs)
                 span_name = _get_span_name(
                     entity_name,
@@ -339,7 +339,7 @@ def entity_method(
             instance = args[0] if is_bound else None
             is_enabled = tracing_enabled(instance)
             if not (is_enabled and _tracing_initialized_quietly()):
-                with _suppres_tracing_globally():
+                with _suppress_tracing_globally():
                     return fn(*args, **kwargs)
             span_name = _get_span_name(
                 entity_name,
