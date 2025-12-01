@@ -20,6 +20,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, CtxT]],
         recipients: list[ProcName] | None = None,
+        tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -27,6 +28,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             end_proc=subprocs[-1],
             name=name,
             recipients=recipients,
+            tracing_enabled=tracing_enabled,
         )
 
         for prev_proc, proc in pairwise(subprocs):

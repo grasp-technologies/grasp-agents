@@ -35,6 +35,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         exit_proc: Processor[Any, OutT, CtxT],
         recipients: list[ProcName] | None = None,
         max_iterations: int = 10,
+        tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -42,6 +43,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             start_proc=subprocs[0],
             end_proc=exit_proc,
             recipients=recipients,
+            tracing_enabled=tracing_enabled,
         )
 
         for prev_proc, proc in pairwise(subprocs):
