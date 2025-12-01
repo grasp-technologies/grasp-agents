@@ -112,6 +112,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def validate_output(self, out_payload: OutT, call_id: str) -> OutT:
         if out_payload is None:
             return out_payload
+
         try:
             return TypeAdapter(self.out_type).validate_python(out_payload)
         except PydanticValidationError as err:

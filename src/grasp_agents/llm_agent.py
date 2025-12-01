@@ -104,9 +104,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Streaming
         stream_llm_responses: bool = False,
         stream_tools: bool = False,
+        # Tracing
+        tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
-            name=name, memory=memory, recipients=recipients, max_retries=max_retries
+            name=name,
+            memory=memory,
+            recipients=recipients,
+            max_retries=max_retries,
+            tracing_enabled=tracing_enabled,
         )
 
         # Memory

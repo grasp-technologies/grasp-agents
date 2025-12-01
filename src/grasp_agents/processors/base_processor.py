@@ -81,7 +81,6 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         memory: Memory | None = None,
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
-        **kwargs: Any,
     ) -> None:
         self._in_type: type[InT]
         self._out_type: type[OutT]
