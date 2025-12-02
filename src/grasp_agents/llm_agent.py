@@ -40,7 +40,7 @@ _InT_contra = TypeVar("_InT_contra", contravariant=True)
 _OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
-class MemoryPreparator(Protocol[_InT_contra]):
+class MemoryBuilder(Protocol[_InT_contra]):
     def __call__(
         self,
         *,
@@ -199,7 +199,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return self._reset_memory_on_run
 
     @final
-    def prepare_memory(
+    def build_memory(
         self,
         *,
         instructions: LLMPrompt | None = None,
@@ -207,8 +207,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         ctx: RunContext[Any],
         call_id: str,
     ) -> None:
-        if is_method_overridden("prepare_memory_impl", self, LLMAgent[Any, Any, Any]):
-            return self.prepare_memory_impl(
+        if is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any]):
+            return self.build_memory_impl(
                 instructions=instructions,
                 in_args=in_args,
                 ctx=ctx,
@@ -235,7 +235,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             if formatted_sys_prompt is not None:
                 system_message = cast("SystemMessage", self.memory.messages[0])
         else:
-            self.prepare_memory(
+            self.build_memory(
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
             )
 
@@ -344,7 +344,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     # Methods that can be overridden in subclasses
 
-    def prepare_memory_impl(
+    def build_memory_impl(
         self,
         *,
         instructions: LLMPrompt | None = None,
@@ -442,10 +442,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self.parse_output_impl = func
         return func
 
-    def add_memory_preparator(
-        self, func: MemoryPreparator[InT]
-    ) -> MemoryPreparator[InT]:
-        self.prepare_memory_impl = func
+    def add_memory_builder(self, func: MemoryBuilder[InT]) -> MemoryBuilder[InT]:
+        self.build_memory_impl = func
         return func
 
     def add_system_prompt_builder(
