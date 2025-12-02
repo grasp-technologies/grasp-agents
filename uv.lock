@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11.4, <4"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -804,7 +804,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "0.6.27"
+version = "0.6.28"
 source = { editable = "." }
 dependencies = [
     { name = "dotenv" },

@@ -354,6 +354,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
                     tool.run_stream(inp=tool.in_type(**args), ctx=ctx, call_id=call_id)
                 )
 
+            # TODO: treat None outputs on stream failure
+
             outputs_map: dict[int, Any] = {}
             async for idx, event in stream_concurrent(streams):
                 if isinstance(event, ToolOutputEvent):
