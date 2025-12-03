@@ -1,7 +1,7 @@
 from grasp_agents.errors import CompletionError
 from grasp_agents.typing.completion import Usage
 
-from ..openai.completion_converters import from_api_completion_usage
+from ..openai.completions.completion_converters import from_api_completion_usage
 from ..typing.completion_chunk import (
     CompletionChunk,
     CompletionChunkDelta,

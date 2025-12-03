@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
@@ -23,7 +23,9 @@ from litellm.utils import (
 from pydantic import BaseModel
 
 from ..cloud_llm import APIProvider, CloudLLM
-from ..openai.openai_llm import OpenAILLMSettings
+from ..openai.completions import OpenAILLMSettings
+from ..typing.completion_chunk import CompletionChunk
+from ..typing.events import CompletionChunkEvent
 from ..typing.tool import BaseTool
 from . import (
     LiteLLMCompletion,
@@ -249,3 +251,19 @@ class LiteLLM(CloudLLM):
         )
 
         return combined_chunk
+
+    async def _handle_api_stream_event(
+        self,
+        event: LiteLLMCompletionChunk,
+        proc_name: str | None = None,
+        call_id: str | None = None,
+    ) -> AsyncGenerator[CompletionChunkEvent[CompletionChunk]]:
+        try:
+            completion_chunk = self.converters.from_completion_chunk(
+                event, name=self.model_id
+            )
+        except TypeError:
+            return
+        yield CompletionChunkEvent(
+            data=completion_chunk, src_name=proc_name, call_id=call_id
+        )
