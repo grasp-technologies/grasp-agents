@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "0.6.28"
+version = "0.6.29"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.11.4,<4"
@@ -32,6 +32,7 @@ dev = [
     "ruff>=0.11.8",
     "pyright>=1.1.400",
     "pip-licenses>=5.0.0",
+    "pytest>=8,<9",
 ]
 
 [project.optional-dependencies]
