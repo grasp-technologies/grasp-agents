@@ -209,7 +209,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
-    ) -> tuple[SystemMessage | None, UserMessage | None]:
+    ) -> list[Message]:
         call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
 
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
@@ -224,22 +224,18 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
             )
 
-        system_message: SystemMessage | None = None
+        messages_to_print: list[Message] = []
         if fresh_init:
-            self._print_messages(self.memory.messages, **call_kwargs)
-            if self.memory.messages and isinstance(
-                self.memory.messages[0], SystemMessage
-            ):
-                system_message = self.memory.messages[0]
+            messages_to_print.extend(self.memory.messages)
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
         )
         if input_message:
             self.memory.update([input_message])
-            self._print_messages([input_message], **call_kwargs)
+            messages_to_print.append(input_message)
 
-        return system_message, input_message
+        return messages_to_print
 
     def parse_output_default(self, final_answer: str) -> OutT:
         return validate_obj_from_json_or_py_string(
@@ -291,17 +287,20 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
 
         inp = self._extract_input_args(in_args, call_id)
-        system_message, input_message = self._memorize_inputs(
+
+        messages_to_print = self._memorize_inputs(
             chat_inputs=chat_inputs, in_args=inp, **call_kwargs
         )
-        if system_message:
-            yield SystemMessageEvent(
-                data=system_message, src_name=self.name, call_id=call_id
-            )
-        if input_message:
-            yield UserMessageEvent(
-                data=input_message, src_name=self.name, call_id=call_id
-            )
+        self._print_messages(messages_to_print, **call_kwargs)
+        for message in messages_to_print:
+            if isinstance(message, SystemMessage):
+                yield SystemMessageEvent(
+                    data=message, src_name=self.name, call_id=call_id
+                )
+            elif isinstance(message, UserMessage):
+                yield UserMessageEvent(
+                    data=message, src_name=self.name, call_id=call_id
+                )
 
         async for event in self._policy_executor.execute_stream(**call_kwargs):
             yield event
