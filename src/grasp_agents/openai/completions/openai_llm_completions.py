@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
 from openai import AsyncOpenAI, AsyncStream
-from openai._types import NOT_GIVEN  # type: ignore[import]
+from openai._types import omit  # type: ignore
 from openai.lib.streaming.chat import (
     AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
 )
@@ -167,9 +167,9 @@ class OpenAILLM(CloudLLM):
         api_response_schema: type[Any] | None = None,
         **api_llm_settings: Any,
     ) -> OpenAICompletion | OpenAIParsedCompletion[Any]:
-        tools = api_tools or NOT_GIVEN
-        tool_choice = api_tool_choice or NOT_GIVEN
-        response_format = api_response_schema or NOT_GIVEN
+        tools = api_tools or omit
+        tool_choice = api_tool_choice or omit
+        response_format = api_response_schema or omit
 
         if self.apply_response_schema_via_provider:
             return await self.client.beta.chat.completions.parse(
@@ -198,9 +198,9 @@ class OpenAILLM(CloudLLM):
         api_response_schema: type[Any] | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[OpenAICompletionChunk]:
-        tools = api_tools or NOT_GIVEN
-        tool_choice = api_tool_choice or NOT_GIVEN
-        response_format = api_response_schema or NOT_GIVEN
+        tools = api_tools or omit
+        tool_choice = api_tool_choice or omit
+        response_format = api_response_schema or omit
 
         # Ensure usage is included in the streamed responses
         stream_options = dict(api_llm_settings.get("stream_options") or {})
@@ -247,8 +247,8 @@ class OpenAILLM(CloudLLM):
         response_schema: Any | None = None,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
     ) -> OpenAICompletion:
-        response_format = NOT_GIVEN
-        input_tools = NOT_GIVEN
+        response_format = omit
+        input_tools = omit
         if self.apply_response_schema_via_provider and response_schema:
             response_format = response_schema
         if self.apply_tool_call_schema_via_provider and tools:

@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.util.types import Attributes
+from opentelemetry.util.types import Attributes
 
 # Set of LLM provider names used in OpenTelemetry attributes
 # See https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/#gen-ai-provider-name
@@ -23,6 +24,8 @@ LLM_PROVIDER_NAMES = {
     "perplexity",
     "x_ai",
 }
+
+CLOUD_PROVIDERS_NAMES = {"metadata.google.internal"}
 
 CLOUD_PROVIDERS_NAMES = {"metadata.google.internal"}
 
@@ -62,6 +65,9 @@ class FilteringExporter(SpanExporter):
     def export(self, spans: Sequence[ReadableSpan]):
         keep: list[ReadableSpan] = []
         for s in spans:
+            if self._filter_based_on_attrs(
+                s.attributes
+            ) and self._filter_based_on_llm_provider(s.attributes):
             if self._filter_based_on_attrs(
                 s.attributes
             ) and self._filter_based_on_llm_provider(s.attributes):

@@ -8,6 +8,7 @@ from ..typing.completion_chunk import (
     CompletionChunkDeltaToolCall,
 )
 from . import LiteLLMCompletionChunk
+from .completion_converters import from_api_completion_usage
 
 
 def from_api_completion_chunk(
