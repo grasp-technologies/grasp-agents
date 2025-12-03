@@ -15,7 +15,6 @@ from opentelemetry import trace
 from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.trace.status import Status, StatusCode
 from pydantic import BaseModel
-from traceloop.sdk.telemetry import Telemetry
 from traceloop.sdk.tracing import set_workflow_name
 from traceloop.sdk.tracing.tracing import (
     TracerWrapper,
@@ -188,7 +187,8 @@ def _handle_span_input(
             span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT, truncated_json)
 
     except TypeError as e:
-        Telemetry().log_exception(e)
+        span.record_exception(e)
+        span.set_status(StatusCode.ERROR, description=str(e))
 
 
 def _handle_span_output(
@@ -207,7 +207,8 @@ def _handle_span_output(
             span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_OUTPUT, truncated_json)
 
     except TypeError as e:
-        Telemetry().log_exception(e)
+        span.record_exception(e)
+        span.set_status(StatusCode.ERROR, description=str(e))
 
 
 def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:

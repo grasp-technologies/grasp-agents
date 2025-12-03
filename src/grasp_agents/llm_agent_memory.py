@@ -39,10 +39,3 @@ class LLMAgentMemory(Memory):
 
     def __repr__(self) -> str:
         return f"LLMAgentMemory with message history of length {len(self.messages)}"
-
-    def get_last_assistant_response_anchor(self) -> tuple[str, int] | tuple[None, None]:
-        for idx in range(len(self.messages) - 1, -1, -1):
-            msg = self.messages[idx]
-            if isinstance(msg, AssistantMessage) and msg.response_id:
-                return msg.response_id, idx
-        return None, None

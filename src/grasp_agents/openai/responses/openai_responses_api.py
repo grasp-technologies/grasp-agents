@@ -1,72 +1,139 @@
+import fnmatch
 import logging
-from collections.abc import AsyncIterator, Iterable, Mapping
-from dataclasses import dataclass
-from typing import Any, ClassVar
+import os
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, Literal, cast
 
-from openai._types import NOT_GIVEN
+from openai import AsyncOpenAI, AsyncStream
+from openai._types import omit
+from openai.lib.streaming.chat import ChatCompletionStreamState
+from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
+from openai.lib.streaming.responses._responses import (
+    AsyncResponseStreamManager,
+)
+from openai.types.responses import (
+    ParsedResponse,
+    Response,
+    ResponseCompletedEvent,
+    ResponseFunctionCallArgumentsDeltaEvent,
+    ResponseInputParam,
+    ResponseOutputItemAddedEvent,
+    ResponseOutputItemDoneEvent,
+    ResponseReasoningSummaryTextDeltaEvent,
+    ResponseReasoningSummaryTextDoneEvent,
+    ResponseStreamEvent,
+    ResponseTextConfigParam,
+    ResponseTextDeltaEvent,
+)
+from openai.types.responses.response_create_params import (
+    StreamOptions as ResponsesStreamOptionsParam,
+)
+from openai.types.responses.response_create_params import (
+    ToolChoice as ResponseToolChoice,
+)
+from openai.types.responses.tool_param import (
+    ParseableToolParam as ResponsesParseableToolParam,
+)
+from openai.types.responses.tool_param import (
+    ToolParam as ResponsesToolParam,
+)
+from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
+from ...cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
+from ...typing.events import CompletionChunkEvent, CompletionItemEvent
 from ...typing.message import AssistantMessage, Messages
 from ...typing.tool import BaseTool
-from .. import (
-    OpenAIAsyncResponseStreamManager,
-    OpenAILLM,
-    OpenAIParsedResponse,
-    OpenAIReasoning,
-    OpenAIResponse,
-    OpenAIResponseCompletedEvent,
-    OpenAIResponsesInputParam,
-    OpenAIResponsesStreamOptionsParam,
-    OpenAIResponsesToolParam,
-    OpenAIResponseStreamEvent,
-    OpenAIResponseTextConfigParam,
-    OpenAIResponseToolChoice,
-)
-from ..openai_llm import OpenAILLMSettings
-from .responses_converters import OpenAIResponsesConverters
-from .responses_chunk_converters import is_supported_stream_event
+from .converters import OpenAIResponsesConverters
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAIResponsesLLMSettings(OpenAILLMSettings, total=False):
+class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
     # web search should be put as a tool:
     # tools=[{
     #   "type": "web_search_preview",
     #   "search_context_size": "high",  # Options: "low", "medium", "high"
     #    "user_location": {...}
     # }]
-    reasoning: OpenAIReasoning
+    reasoning: Reasoning
+    parallel_tool_calls: bool
     max_output_tokens: int
+    top_logprobs: int | None
 
-    text: OpenAIResponseTextConfigParam
-    stream_options: OpenAIResponsesStreamOptionsParam | None
+    text: ResponseTextConfigParam
+    stream_options: ResponsesStreamOptionsParam | None
+    store: bool | None
+    user: str
 
 
 @dataclass(frozen=True)
-class OpenAIResponsesLLM(OpenAILLM):
+class OpenAIResponsesLLM(CloudLLM):
     llm_settings: OpenAIResponsesLLMSettings | None = None
     converters: ClassVar[OpenAIResponsesConverters] = OpenAIResponsesConverters()
+    openai_client_timeout: float = 120.0
+    openai_client_max_retries: int = 2
+    extra_openai_client_params: dict[str, Any] | None = None
+    client: AsyncOpenAI = field(init=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        _model_name = self.model_name
+        _api_provider = APIProvider(
+            name="openai",
+            base_url="https://api.openai.com/v1",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            response_schema_support=("*",),
+        )
+
+        response_schema_support: bool = any(
+            fnmatch.fnmatch(_model_name, pat)
+            for pat in _api_provider.get("response_schema_support") or []
+        )
+        if self.apply_response_schema_via_provider and not response_schema_support:
+            raise ValueError(
+                "Native response schema validation is not supported for model "
+                f"'{_model_name}' by the API provider '{_api_provider['name']}'. "
+                "Please set apply_response_schema_via_provider=False."
+            )
+
+        _openai_client_params = deepcopy(self.extra_openai_client_params or {})
+        _openai_client_params["timeout"] = self.openai_client_timeout
+        _openai_client_params["max_retries"] = self.openai_client_max_retries
+        if self.http_client is not None:
+            _openai_client_params["http_client"] = self.http_client
+
+        _client = AsyncOpenAI(
+            base_url=_api_provider.get("base_url"),
+            api_key=_api_provider.get("api_key"),
+            **_openai_client_params,
+        )
+
+        object.__setattr__(self, "model_name", _model_name)
+        object.__setattr__(self, "api_provider", _api_provider)
+        object.__setattr__(self, "client", _client)
 
     async def _get_api_completion(
         self,
-        api_messages: OpenAIResponsesInputParam,
+        api_messages: ResponseInputParam,
         *,
-        response_id: str | None = None,
-        api_tools: list[OpenAIResponsesToolParam] | None = None,
-        api_tool_choice: OpenAIResponseToolChoice | None = None,
+        api_tools: list[ResponsesToolParam] | None = None,
+        api_tool_choice: ResponseToolChoice | None = None,
         api_response_schema: type[Any] | None = None,
         **api_llm_settings: Any,
-    ) -> OpenAIParsedResponse[Any] | OpenAIResponse:
+    ) -> ParsedResponse[Any] | Response:
         tools = api_tools or []
-        tool_choice = api_tool_choice or NOT_GIVEN
-        text_format = api_response_schema or NOT_GIVEN
-
+        tool_choice = api_tool_choice if api_tool_choice is not None else omit
+        text_format = api_response_schema if api_response_schema is not None else omit
+        response_id = api_llm_settings.get("previous_response_id")
+        print(api_messages)
         if self.apply_response_schema_via_provider:
             return await self.client.responses.parse(
                 model=self.model_name,
-                previous_response_id=response_id or NOT_GIVEN,
-                input=api_messages,
+                input=[api_messages[-1]] if response_id else api_messages,
                 tools=tools,
                 tool_choice=tool_choice,
                 text_format=text_format,
@@ -74,8 +141,7 @@ class OpenAIResponsesLLM(OpenAILLM):
             )
         return await self.client.responses.create(
             model=self.model_name,
-            previous_response_id=response_id or NOT_GIVEN,
-            input=api_messages,
+            input=[api_messages[-1]] if response_id else api_messages,
             tools=tools,
             tool_choice=tool_choice,
             stream=False,
@@ -84,33 +150,32 @@ class OpenAIResponsesLLM(OpenAILLM):
 
     async def _get_api_completion_stream(
         self,
-        api_messages: OpenAIResponsesInputParam,
-        response_id: str | None = None,
-        api_tools: Iterable[OpenAIResponsesToolParam] | None = None,
-        api_tool_choice: OpenAIResponseToolChoice | None = None,
+        api_messages: ResponseInputParam,
+        api_tools: Iterable[ResponsesToolParam] | None = None,
+        api_tool_choice: ResponseToolChoice | None = None,
         api_response_schema: type[Any] | None = None,
         **api_llm_settings: Any,
-    ) -> AsyncIterator[OpenAIResponseStreamEvent]:
-        tools = api_tools or NOT_GIVEN
-        tool_choice = api_tool_choice or NOT_GIVEN
-        text_format = api_response_schema or NOT_GIVEN
+    ) -> AsyncIterator[ResponseStreamEvent]:
+        tools = api_tools if api_tools is not None else omit
+        response_id = api_llm_settings.get("previous_response_id")
+        tool_choice = api_tool_choice if api_tool_choice is not None else omit
+        text_format = api_response_schema if api_response_schema is not None else omit
         _api_llm_settings = dict(api_llm_settings)
         if "stream_options" in _api_llm_settings:
             so = dict(_api_llm_settings.get("stream_options") or {})
             so.pop("include_usage", None)
             _api_llm_settings["stream_options"] = so
 
-        async def iterator() -> AsyncIterator[OpenAIResponseStreamEvent]:
+        async def iterator() -> AsyncIterator[ResponseStreamEvent]:
             effective_text_format = (
-                text_format if self.apply_response_schema_via_provider else NOT_GIVEN
+                text_format if self.apply_response_schema_via_provider else omit
             )
-            stream_manager: OpenAIAsyncResponseStreamManager[Any] = (
+            stream_manager: AsyncResponseStreamManager[Any] = (
                 self.client.responses.stream(
                     model=self.model_name,
-                    input=api_messages,
+                    input=[api_messages[-1]] if response_id else api_messages,
                     tool_choice=tool_choice,
                     tools=tools,
-                    previous_response_id=response_id or NOT_GIVEN,
                     text_format=effective_text_format,
                     **_api_llm_settings,
                 )
@@ -118,24 +183,60 @@ class OpenAIResponsesLLM(OpenAILLM):
 
             async with stream_manager as stream:
                 async for response_event in stream:
-                    if isinstance(
-                        response_event, OpenAIResponseCompletedEvent
-                    ) or is_supported_stream_event(response_event):
-                        yield response_event
+                    yield response_event
 
         return iterator()
 
     def combine_completion_chunks(
         self,
-        completion_chunks: list[OpenAIResponseStreamEvent],
+        completion_chunks: list[ResponseStreamEvent],
         response_schema: Any | None = None,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-    ) -> OpenAIResponse:
+    ) -> Response:
         final_resp = None
         if len(completion_chunks) > 0:
             final_resp = completion_chunks[-1]
-        if final_resp is not None and isinstance(
-            final_resp, OpenAIResponseCompletedEvent
-        ):
-            return final_resp.response
+            if isinstance(final_resp, ResponseCompletedEvent):
+                return final_resp.response
         raise RuntimeError("No 'response.completed' event received")
+
+    async def _handle_api_stream_event(
+        self,
+        event: ResponseStreamEvent,
+        proc_name: str | None = None,
+        call_id: str | None = None,
+    ) -> AsyncGenerator[CompletionChunkEvent[Any] | CompletionItemEvent, None]:
+        if isinstance(
+            event,
+            (
+                ResponseFunctionCallArgumentsDeltaEvent,
+                ResponseOutputItemAddedEvent,
+                ResponseReasoningSummaryTextDeltaEvent,
+                ResponseTextDeltaEvent,
+            ),
+        ):
+            try:
+                completion_chunk = self.converters.from_completion_chunk(
+                    event, name=self.model_id
+                )
+            except TypeError:
+                return
+            yield CompletionChunkEvent(
+                data=completion_chunk, src_name=proc_name, call_id=call_id
+            )
+        if isinstance(
+            event,
+            (
+                ResponseReasoningSummaryTextDoneEvent,
+                ResponseOutputItemDoneEvent,
+            ),
+        ):
+            try:
+                completion_item = self.converters.from_stream_event(
+                    event, name=self.model_id
+                )
+            except TypeError:
+                return
+            yield CompletionItemEvent(
+                data=completion_item, src_name=proc_name, call_id=call_id
+            )
