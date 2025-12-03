@@ -1,12 +1,12 @@
 from typing import cast
 
-from ..errors import CompletionError
-from ..typing.completion_chunk import (
+from ...errors import CompletionError
+from ...typing.completion_chunk import (
     CompletionChunk,
     CompletionChunkDelta,
     CompletionChunkDeltaToolCall,
 )
-from ..typing.message import Role
+from ...typing.message import Role
 from . import OpenAICompletionChunk
 from .completion_converters import from_api_completion_usage
 

@@ -3,7 +3,7 @@ from typing import Any
 from openai import pydantic_function_tool
 from pydantic import BaseModel
 
-from ..typing.tool import BaseTool, NamedToolChoice, ToolChoice
+from ...typing.tool import BaseTool, NamedToolChoice, ToolChoice
 from . import (
     OpenAIFunctionDefinition,
     OpenAINamedToolChoiceFunction,
