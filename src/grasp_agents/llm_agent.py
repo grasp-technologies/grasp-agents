@@ -198,22 +198,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def reset_memory_on_run(self) -> bool:
         return self._reset_memory_on_run
 
-    @final
-    def build_memory(
-        self,
-        *,
-        instructions: LLMPrompt | None = None,
-        in_args: InT | None = None,
-        ctx: RunContext[Any],
-        call_id: str,
-    ) -> None:
-        if is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any]):
-            return self.build_memory_impl(
-                instructions=instructions,
-                in_args=in_args,
-                ctx=ctx,
-                call_id=call_id,
-            )
+    @property
+    def _has_build_memory_impl(self) -> bool:
+        return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
 
     def _memorize_inputs(
         self,
@@ -228,26 +215,28 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
             ctx=ctx, call_id=call_id
         )
+        fresh_init = self._reset_memory_on_run or self.memory.is_empty
 
-        system_message: SystemMessage | None = None
-        if self._reset_memory_on_run or self.memory.is_empty:
+        if fresh_init and not self._has_build_memory_impl:
             self.memory.reset(formatted_sys_prompt)
-            if formatted_sys_prompt is not None:
-                system_message = cast("SystemMessage", self.memory.messages[0])
-        else:
-            self.build_memory(
+        elif self._has_build_memory_impl:
+            self.build_memory_impl(
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
             )
+
+        system_message: SystemMessage | None = None
+        if fresh_init:
+            self._print_messages(self.memory.messages, **call_kwargs)
+            if self.memory.messages and isinstance(
+                self.memory.messages[0], SystemMessage
+            ):
+                system_message = self.memory.messages[0]
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
         )
         if input_message:
             self.memory.update([input_message])
-
-        if system_message:
-            self._print_messages([system_message], **call_kwargs)
-        if input_message:
             self._print_messages([input_message], **call_kwargs)
 
         return system_message, input_message
