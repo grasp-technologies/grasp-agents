@@ -16,8 +16,8 @@ def from_api_completion_usage(api_usage: LiteLLMUsage) -> Usage:
     if api_usage.prompt_tokens_details is not None:
         cached_tokens = api_usage.prompt_tokens_details.cached_tokens
 
-    input_tokens = api_usage.prompt_tokens - (cached_tokens or 0)
-    output_tokens = api_usage.completion_tokens  # - (reasoning_tokens or 0)
+    input_tokens = max(api_usage.prompt_tokens - (cached_tokens or 0), 0)
+    output_tokens = max(api_usage.completion_tokens - (reasoning_tokens or 0), 0)
 
     return Usage(
         input_tokens=input_tokens,
