@@ -1,3 +1,5 @@
+from litellm.types.utils import add_provider_specific_fields
+
 from ..typing.message import (
     AssistantMessage,
 )
@@ -15,6 +17,9 @@ def from_api_assistant_message(
                 id=tool_call.id,
                 tool_name=tool_call.function.name,  # type: ignore
                 tool_arguments=tool_call.function.arguments,
+                provider_specific_fields=getattr(
+                    tool_call, "provider_specific_fields", None
+                ),
             )
             for tool_call in api_message.tool_calls
         ]
@@ -36,8 +41,9 @@ def to_api_assistant_message(
 ) -> LiteLLMCompletionMessage:
     api_tool_calls = None
     if message.tool_calls is not None:
-        api_tool_calls = [
-            LiteLLMToolCall(
+        api_tool_calls: list[LiteLLMToolCall] = []
+        for tool_call in message.tool_calls:
+            f = LiteLLMToolCall(
                 type="function",
                 id=tool_call.id,
                 function=LiteLLMFunction(
@@ -45,8 +51,19 @@ def to_api_assistant_message(
                     arguments=tool_call.tool_arguments,
                 ),
             )
-            for tool_call in message.tool_calls
-        ]
+            if (
+                tool_call.provider_specific_fields
+                and "thought_signature" in tool_call.provider_specific_fields
+            ):
+                add_provider_specific_fields(
+                    f,
+                    {
+                        "thought_signature": tool_call.provider_specific_fields.get(
+                            "thought_signature"
+                        )
+                    },
+                )
+            api_tool_calls.append(f)
 
     api_message = LiteLLMCompletionMessage(role="assistant", content=message.content)
 
