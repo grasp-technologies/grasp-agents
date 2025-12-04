@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class ParallelProcessor(Processor[InT, OutT, CtxT]):
-    def __init__(self, subproc: Processor[InT, OutT, CtxT]) -> None:
+    def __init__(
+        self, subproc: Processor[InT, OutT, CtxT], drop_failed: bool = False
+    ) -> None:
         super().__init__(
             name=subproc.name + "_par",
             recipients=subproc.recipients,
@@ -29,9 +31,15 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         self._out_type = subproc.out_type
         self._subproc = subproc
 
+        self._drop_failed = drop_failed
+
         # This disables recipient selection in the subprocessor,
         # but preserves subproc.select_recipients_impl
         subproc.recipients = None
+
+    @property
+    def drop_failed(self) -> bool:
+        return self._drop_failed
 
     def select_recipients_impl(
         self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
@@ -129,6 +137,8 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 yield event
 
         out_packets = [out_packets_map[idx] for idx in sorted(out_packets_map)]
+        if self.drop_failed:
+            out_packets = [p for p in out_packets if p is not None]
 
         # Need to emit ProcPayloadOutputEvent in the order of in_args,
         # thus we filter them out first, then yield in order.
