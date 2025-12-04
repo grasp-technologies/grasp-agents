@@ -33,7 +33,6 @@ class ToolCall(BaseModel):
     id: str
     tool_name: str
     tool_arguments: str
-    provider_specific_fields: dict[str, Any] | None = None
 
 
 @tool(name="tool", method_name="__call__")  # type: ignore
