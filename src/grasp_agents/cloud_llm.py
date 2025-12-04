@@ -96,8 +96,7 @@ class CloudLLM(LLM):
         proc_name: str | None = None,
         call_id: str | None = None,
     ) -> AsyncGenerator[Any, None]:
-        raise NotImplementedError
-        yield
+        pass
 
     def __init_subclass__(cls, **kwargs: Any):
         super().__init_subclass__(**kwargs)

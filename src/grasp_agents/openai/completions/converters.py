@@ -141,7 +141,7 @@ class OpenAIConverters(Converters):
         return from_api_completion_chunk(raw_chunk, name=name, **kwargs)
 
     @staticmethod
-    def from_stream_event(
+    def from_api_item(
         raw_event: Any, name: str | None = None, **kwargs: Any
     ) -> CompletionItem:
         raise NotImplementedError

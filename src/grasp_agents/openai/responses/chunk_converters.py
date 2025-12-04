@@ -9,21 +9,25 @@ from openai.types.responses import (
     ResponseTextDeltaEvent,
 )
 
-from ...typing.completion_chunk import (
+from grasp_agents.typing.completion_chunk import (
     CompletionChunk,
     CompletionChunkDelta,
     CompletionChunkDeltaToolCall,
 )
-from ...typing.message import Role
+from grasp_agents.typing.message import Role
+
+from .converters import ResponseApiChunk
 
 
 def from_api_completion_chunk(
-    event: ResponseStreamEvent, name: str | None = None
+    api_chunk: ResponseApiChunk, name: str | None = None
 ) -> CompletionChunk:
-    if isinstance(event, ResponseReasoningSummaryTextDeltaEvent):
-        delta = CompletionChunkDelta(reasoning_content=event.delta, role=Role.ASSISTANT)
+    if isinstance(api_chunk, ResponseReasoningSummaryTextDeltaEvent):
+        delta = CompletionChunkDelta(
+            reasoning_content=api_chunk.delta, role=Role.ASSISTANT
+        )
         return CompletionChunk(
-            id=event.item_id,
+            item_id=api_chunk.item_id,
             model=None,
             name=name,
             system_fingerprint=None,
@@ -32,20 +36,20 @@ def from_api_completion_chunk(
             finish_reason=None,
             logprobs=None,
         )
-    if isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
+    if isinstance(api_chunk, ResponseFunctionCallArgumentsDeltaEvent):
         delta = CompletionChunkDelta(
             tool_calls=[
                 CompletionChunkDeltaToolCall(
                     id=None,
-                    index=event.output_index,
-                    tool_arguments=event.delta,
+                    index=api_chunk.output_index,
+                    tool_arguments=api_chunk.delta,
                     tool_name=None,
                 )
             ],
             role=Role.ASSISTANT,
         )
         return CompletionChunk(
-            id=event.item_id,
+            item_id=api_chunk.item_id,
             model=None,
             name=name,
             system_fingerprint=None,
@@ -54,15 +58,15 @@ def from_api_completion_chunk(
             finish_reason=None,
             logprobs=None,
         )
-    if isinstance(event, ResponseOutputItemAddedEvent) and isinstance(
-        event.item, ResponseFunctionToolCall
+    if isinstance(api_chunk, ResponseOutputItemAddedEvent) and isinstance(
+        api_chunk.item, ResponseFunctionToolCall
     ):
-        item = event.item
+        item = api_chunk.item
         func_delta = CompletionChunkDelta(
             tool_calls=[
                 CompletionChunkDeltaToolCall(
                     id=item.call_id,
-                    index=event.output_index,
+                    index=api_chunk.output_index,
                     tool_arguments=item.arguments,
                     tool_name=item.name,
                 )
@@ -70,7 +74,7 @@ def from_api_completion_chunk(
             role=Role.ASSISTANT,
         )
         return CompletionChunk(
-            id=item.id or str(uuid4())[:8],
+            item_id=item.id,
             model=None,
             name=name,
             system_fingerprint=None,
@@ -79,21 +83,21 @@ def from_api_completion_chunk(
             finish_reason=None,
             logprobs=None,
         )
-    if isinstance(event, ResponseTextDeltaEvent):
-        delta = CompletionChunkDelta(content=event.delta)
+    if isinstance(api_chunk, ResponseTextDeltaEvent):
+        delta = CompletionChunkDelta(content=api_chunk.delta)
 
         return CompletionChunk(
-            id=event.item_id,
+            id=api_chunk.item_id,
             model=None,
             name=name,
             system_fingerprint=None,
             delta=delta,
             finish_reason=None,
-            logprobs=event.logprobs,
+            logprobs=api_chunk.logprobs,
             usage=None,
         )
 
-    raise TypeError(f"Unsupported chunk event: {type(event)}")
+    raise TypeError(f"Unsupported chunk event: {type(api_chunk)}")
 
 
 def to_completion_chunk(completion_chunk: CompletionChunk) -> ResponseStreamEvent:

@@ -4,12 +4,10 @@ import os
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar
 
-from openai import AsyncOpenAI, AsyncStream
+from openai import AsyncOpenAI
 from openai._types import omit
-from openai.lib.streaming.chat import ChatCompletionStreamState
-from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
 )
@@ -17,15 +15,10 @@ from openai.types.responses import (
     ParsedResponse,
     Response,
     ResponseCompletedEvent,
-    ResponseFunctionCallArgumentsDeltaEvent,
     ResponseInputParam,
-    ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
-    ResponseReasoningSummaryTextDeltaEvent,
-    ResponseReasoningSummaryTextDoneEvent,
     ResponseStreamEvent,
     ResponseTextConfigParam,
-    ResponseTextDeltaEvent,
 )
 from openai.types.responses.response_create_params import (
     StreamOptions as ResponsesStreamOptionsParam,
@@ -34,19 +27,16 @@ from openai.types.responses.response_create_params import (
     ToolChoice as ResponseToolChoice,
 )
 from openai.types.responses.tool_param import (
-    ParseableToolParam as ResponsesParseableToolParam,
-)
-from openai.types.responses.tool_param import (
     ToolParam as ResponsesToolParam,
 )
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from ...cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
-from ...typing.events import CompletionChunkEvent, CompletionItemEvent
-from ...typing.message import AssistantMessage, Messages
-from ...typing.tool import BaseTool
-from .converters import OpenAIResponsesConverters
+from grasp_agents.cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
+from grasp_agents.typing.events import CompletionChunkEvent, CompletionItemEvent
+from grasp_agents.typing.tool import BaseTool
+
+from .converters import OpenAIResponsesConverters, ResponseApiChunk
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +119,6 @@ class OpenAIResponsesLLM(CloudLLM):
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
         text_format = api_response_schema if api_response_schema is not None else omit
         response_id = api_llm_settings.get("previous_response_id")
-        print(api_messages)
         if self.apply_response_schema_via_provider:
             return await self.client.responses.parse(
                 model=self.model_name,
@@ -206,15 +195,7 @@ class OpenAIResponsesLLM(CloudLLM):
         proc_name: str | None = None,
         call_id: str | None = None,
     ) -> AsyncGenerator[CompletionChunkEvent[Any] | CompletionItemEvent, None]:
-        if isinstance(
-            event,
-            (
-                ResponseFunctionCallArgumentsDeltaEvent,
-                ResponseOutputItemAddedEvent,
-                ResponseReasoningSummaryTextDeltaEvent,
-                ResponseTextDeltaEvent,
-            ),
-        ):
+        if isinstance(event, ResponseApiChunk):
             try:
                 completion_chunk = self.converters.from_completion_chunk(
                     event, name=self.model_id
@@ -224,15 +205,9 @@ class OpenAIResponsesLLM(CloudLLM):
             yield CompletionChunkEvent(
                 data=completion_chunk, src_name=proc_name, call_id=call_id
             )
-        if isinstance(
-            event,
-            (
-                ResponseReasoningSummaryTextDoneEvent,
-                ResponseOutputItemDoneEvent,
-            ),
-        ):
+        if isinstance(event, ResponseOutputItemDoneEvent):
             try:
-                completion_item = self.converters.from_stream_event(
+                completion_item = self.converters.from_api_item(
                     event, name=self.model_id
                 )
             except TypeError:

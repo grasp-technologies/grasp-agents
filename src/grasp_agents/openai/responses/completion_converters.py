@@ -58,6 +58,9 @@ def completion_from_response(
         tool_calls=tool_calls,
         refusal=refusal,
         response_id=raw_completion.id,
+        thinking_blocks=[
+            {"type": "thinking", "thinking": item} for item in reasoning_summary
+        ],
     )
     return Completion(
         id=raw_completion.id,

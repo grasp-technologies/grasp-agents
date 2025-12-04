@@ -1,12 +1,13 @@
 from typing import cast
 
-from ...errors import CompletionError
-from ...typing.completion_chunk import (
+from grasp_agents.errors import CompletionError
+from grasp_agents.typing.completion_chunk import (
     CompletionChunk,
     CompletionChunkDelta,
     CompletionChunkDeltaToolCall,
 )
-from ...typing.message import Role
+from grasp_agents.typing.message import Role
+
 from . import OpenAICompletionChunk
 from .completion_converters import from_api_completion_usage
 

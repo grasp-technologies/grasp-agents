@@ -112,5 +112,5 @@ class Converters(ABC):
 
     @staticmethod
     @abstractmethod
-    def from_stream_event(raw_event: Any, **kwargs: Any) -> CompletionItem:
+    def from_api_item(raw_event: Any, **kwargs: Any) -> CompletionItem:
         pass

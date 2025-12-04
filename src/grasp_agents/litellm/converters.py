@@ -144,7 +144,7 @@ class LiteLLMConverters(Converters):
         return from_api_content(raw_content, **kwargs)
 
     @staticmethod
-    def from_stream_event(
+    def from_api_item(
         raw_event: Any, name: str | None = None, **kwargs: Any
     ) -> CompletionItem:
         raise NotImplementedError

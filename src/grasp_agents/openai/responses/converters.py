@@ -7,8 +7,12 @@ from openai.types.chat.chat_completion_tool_param import (
 )
 from openai.types.responses import (
     ParsedResponse,
+    ResponseFunctionCallArgumentsDeltaEvent,
     ResponseInputItemParam,
-    ResponseStreamEvent,
+    ResponseOutputItemAddedEvent,
+    ResponseOutputItemDoneEvent,
+    ResponseReasoningSummaryTextDeltaEvent,
+    ResponseTextDeltaEvent,
     ResponseUsage,
 )
 from openai.types.responses import Response as OpenAIResponse
@@ -25,18 +29,19 @@ from openai.types.responses.response_output_message import (
 from openai.types.responses.tool_param import ToolParam as OpenAIResponseToolParam
 from pydantic import BaseModel
 
-from ...typing.completion import Completion, Usage
-from ...typing.completion_chunk import CompletionChunk
-from ...typing.completion_item import CompletionItem
-from ...typing.content import Content
-from ...typing.converters import Converters
-from ...typing.message import (
+from grasp_agents.typing.completion import Completion, Usage
+from grasp_agents.typing.completion_chunk import CompletionChunk
+from grasp_agents.typing.completion_item import CompletionItem
+from grasp_agents.typing.content import Content
+from grasp_agents.typing.converters import Converters
+from grasp_agents.typing.message import (
     AssistantMessage,
     SystemMessage,
     ToolMessage,
     UserMessage,
 )
-from ...typing.tool import BaseTool, ToolChoice
+from grasp_agents.typing.tool import BaseTool, ToolChoice
+
 from .chunk_converters import from_api_completion_chunk, to_completion_chunk
 from .completion_converters import (
     completion_from_response,
@@ -56,6 +61,13 @@ from .message_converters import (
     to_api_user_message,
 )
 from .tool_converters import to_api_tool, to_api_tool_choice
+
+ResponseApiChunk = (
+    ResponseReasoningSummaryTextDeltaEvent
+    | ResponseFunctionCallArgumentsDeltaEvent
+    | ResponseOutputItemAddedEvent
+    | ResponseTextDeltaEvent
+)
 
 
 class OpenAIResponsesConverters(Converters):
@@ -131,7 +143,6 @@ class OpenAIResponsesConverters(Converters):
     @staticmethod
     def to_completion(completion: Completion, **kwargs: Any) -> Any:
         return to_api_completion(completion, **kwargs)
-        raise NotImplementedError
 
     @staticmethod
     def from_completion(
@@ -151,12 +162,12 @@ class OpenAIResponsesConverters(Converters):
 
     @staticmethod
     def from_completion_chunk(
-        raw_chunk: ResponseStreamEvent, name: str | None = None, **kwargs: Any
+        raw_chunk: ResponseApiChunk, name: str | None = None, **kwargs: Any
     ) -> CompletionChunk:
         return from_api_completion_chunk(raw_chunk, name=name, **kwargs)
 
     @staticmethod
-    def from_stream_event(
-        raw_event: ResponseStreamEvent, name: str | None = None, **kwargs: Any
+    def from_api_item(
+        raw_event: ResponseOutputItemDoneEvent, name: str | None = None, **kwargs: Any
     ) -> CompletionItem:
         return from_api_completion_item(raw_event, name=name, **kwargs)
