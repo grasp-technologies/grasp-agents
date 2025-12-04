@@ -224,18 +224,18 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
             )
 
-        messages_to_print: list[Message] = []
+        messages_to_expose: list[Message] = []
         if fresh_init:
-            messages_to_print.extend(self.memory.messages)
+            messages_to_expose.extend(self.memory.messages)
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
         )
         if input_message:
             self.memory.update([input_message])
-            messages_to_print.append(input_message)
+            messages_to_expose.append(input_message)
 
-        return messages_to_print
+        return messages_to_expose
 
     def parse_output_default(self, final_answer: str) -> OutT:
         return validate_obj_from_json_or_py_string(
@@ -288,11 +288,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         inp = self._extract_input_args(in_args, call_id)
 
-        messages_to_print = self._memorize_inputs(
+        messages_to_expose = self._memorize_inputs(
             chat_inputs=chat_inputs, in_args=inp, **call_kwargs
         )
-        self._print_messages(messages_to_print, **call_kwargs)
-        for message in messages_to_print:
+        self._print_messages(messages_to_expose, **call_kwargs)
+        for message in messages_to_expose:
             if isinstance(message, SystemMessage):
                 yield SystemMessageEvent(
                     data=message, src_name=self.name, call_id=call_id
@@ -405,7 +405,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             num_turns=num_turns,
         )
 
-    def tool_outputs_to_messages_impl(
+    async def tool_outputs_to_messages_impl(
         self,
         tool_outputs: Sequence[Any],
         tool_calls: Sequence[ToolCall],
@@ -413,7 +413,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT],
         call_id: str,
     ):
-        return self._policy_executor.tool_outputs_to_messages_impl(
+        return await self._policy_executor.tool_outputs_to_messages_impl(
             tool_outputs=tool_outputs,
             tool_calls=tool_calls,
             ctx=ctx,
