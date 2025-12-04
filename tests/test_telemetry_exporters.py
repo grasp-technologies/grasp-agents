@@ -16,14 +16,14 @@ class _DummyInnerExporter:
     def __init__(self) -> None:
         self.exported_spans: list[Any] | None = None
 
-    def export(self, spans):  # type: ignore[no-untyped-def]
+    def export(self, spans: list[Any]) -> str:
         self.exported_spans = list(spans)
         return "OK"
 
-    def shutdown(self):  # type: ignore[no-untyped-def]
+    def shutdown(self) -> None:
         return None
 
-    def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: ARG002
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
         return True
 
 
