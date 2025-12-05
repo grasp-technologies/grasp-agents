@@ -224,6 +224,7 @@ async def print_event_stream(
     event_generator: AsyncIterator[Event[Any]],
     color_by: ColoringMode = "role",
     trunc_len: int = 10000,
+    exclude_packet_events: bool = False,
 ) -> AsyncIterator[Event[Any]]:
     def _make_chunk_text(event: CompletionChunkEvent[CompletionChunk]) -> str:
         color = get_color(
@@ -338,8 +339,6 @@ async def print_event_stream(
     # ------ Wrap event generator -------
 
     async for event in event_generator:
-        yield event
-
         if isinstance(event, CompletionChunkEvent) and isinstance(
             event.data, CompletionChunk
         ):
@@ -348,8 +347,13 @@ async def print_event_stream(
         if isinstance(event, MessageEvent) and not isinstance(event, GenMessageEvent):
             stream_colored_text(_make_message_text(event))
 
-        if isinstance(event, (ProcPacketOutEvent, RunPacketOutEvent)):
+        if (
+            isinstance(event, (ProcPacketOutEvent, RunPacketOutEvent))
+            and not exclude_packet_events
+        ):
             stream_colored_text(_make_packet_text(event))  # type: ignore
 
         # if isinstance(event, ToolOutputEvent):
         #     stream_colored_text(_make_packet_text(event))  # type: ignore
+
+        yield event
