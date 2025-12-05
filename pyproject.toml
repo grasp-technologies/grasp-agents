@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "0.6.31"
+version = "0.6.36"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.11.4,<4"
@@ -11,7 +11,7 @@ dependencies = [
     "tqdm>=4.66.2,<5",
     "pyyaml>=6.0.2",
     "pydantic>=2",
-    "litellm>=1.76.3",
+    "litellm>=1.76.3,<1.77",
     "opentelemetry-sdk>=1.37.0",
     "traceloop-sdk>=0.47.2",
     "termcolor>=2.4.0,<3",
