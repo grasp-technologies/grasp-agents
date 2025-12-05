@@ -16,6 +16,7 @@ class _DummyInnerExporter:
     def __init__(self) -> None:
         self.exported_spans: list[Any] | None = None
 
+<<<<<<< HEAD
     def export(self, spans: list[Any]) -> str:
         self.exported_spans = list(spans)
         return "OK"
@@ -24,6 +25,16 @@ class _DummyInnerExporter:
         return None
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
+=======
+    def export(self, spans):  # type: ignore[no-untyped-def]
+        self.exported_spans = list(spans)
+        return "OK"
+
+    def shutdown(self):  # type: ignore[no-untyped-def]
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: ARG002
+>>>>>>> 1fed115 (update version)
         return True
 
 
