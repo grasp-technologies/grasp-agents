@@ -13,6 +13,8 @@ from grasp_agents.typing.completion import Completion, Usage
 from grasp_agents.typing.message import AssistantMessage
 from grasp_agents.typing.tool import ToolCall
 
+from .message_converters import from_api_assistant_message
+
 
 def from_response_usage(raw_usage: ResponseUsage) -> Usage:
     return Usage(
@@ -27,44 +29,7 @@ def completion_from_response(
     *,
     name: str | None = None,
 ) -> Completion:
-    outputs = raw_completion.output
-    content: list[str] = []
-    refusal: str | None = None
-    encrypted_content = None
-    reasoning_summary: list[str] = []
-    tool_calls: list[ToolCall] = []
-    for output in outputs:
-        if isinstance(output, ResponseOutputMessage):
-            raw_contents = output.content
-            # TODO:add annotation convertion
-            for raw_content in raw_contents:
-                if isinstance(raw_content, ResponseOutputText):
-                    content.append(raw_content.text)
-                else:
-                    refusal = raw_content.refusal
-        elif isinstance(output, ResponseReasoningItem):
-            raw_summaries = output.summary
-            encrypted_content = output.encrypted_content
-            for raw_summary in raw_summaries:
-                reasoning_summary.append(raw_summary.text)
-        elif isinstance(output, ResponseFunctionToolCall):
-            tool = ToolCall(
-                id=output.call_id,
-                tool_arguments=output.arguments,
-                tool_name=output.name,
-            )
-            tool_calls.append(tool)
-    message = AssistantMessage(
-        content=" ".join(content),
-        reasoning_content=" ".join(reasoning_summary),
-        tool_calls=tool_calls,
-        refusal=refusal,
-        response_id=raw_completion.id,
-        encrypted_content=encrypted_content,
-        thinking_blocks=[
-            {"type": "thinking", "thinking": item} for item in reasoning_summary
-        ],
-    )
+    message = from_api_assistant_message(raw_completion)
     return Completion(
         id=raw_completion.id,
         model=raw_completion.model,
