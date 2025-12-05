@@ -54,8 +54,9 @@ class FilteringExporter(SpanExporter):
         attrs = attrs or {}
         for name, values in self._attribute_filter.items():
             attr_value = attrs.get(name, "")
-            if attr_value in values:
-                return False
+            for pattern in values:
+                if pattern in str(attr_value):
+                    return False
         return True
 
     def export(self, spans: Sequence[ReadableSpan]):
