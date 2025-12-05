@@ -97,6 +97,8 @@ class Runner(Generic[OutT, CtxT]):
         call_id = self._generate_call_id(proc)
         out_packet: Packet[Any] | None = None
 
+        finalized: bool = False
+
         async for out_event in proc.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
@@ -104,6 +106,10 @@ class Runner(Generic[OutT, CtxT]):
             call_id=call_id,
             **run_kwargs,
         ):
+            if finalized:
+                # Need to drain the async generator for OTel to work properly
+                continue
+
             if (
                 isinstance(out_event, ProcPacketOutEvent)
                 and out_event.src_name == proc.name
@@ -120,7 +126,8 @@ class Runner(Generic[OutT, CtxT]):
                     )
                     await self._event_bus.push_to_stream(final_event)
                     await self._event_bus.finalize(final_event.data)
-                    break
+                    finalized = True
+                    continue
 
                 for sub_out_packet in out_packet.split_by_recipient() or []:
                     if not sub_out_packet.routing or not sub_out_packet.routing[0]:

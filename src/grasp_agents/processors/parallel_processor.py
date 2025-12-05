@@ -17,18 +17,29 @@ logger = logging.getLogger(__name__)
 
 
 class ParallelProcessor(Processor[InT, OutT, CtxT]):
-    def __init__(self, subproc: Processor[InT, OutT, CtxT]) -> None:
+    def __init__(
+        self, subproc: Processor[InT, OutT, CtxT], drop_failed: bool = False
+    ) -> None:
         super().__init__(
-            name=subproc.name + "_par", recipients=subproc.recipients, max_retries=0
+            name=subproc.name + "_par",
+            recipients=subproc.recipients,
+            max_retries=0,
+            tracing_enabled=subproc.tracing_enabled,
         )
 
         self._in_type = subproc.in_type
         self._out_type = subproc.out_type
         self._subproc = subproc
 
+        self._drop_failed = drop_failed
+
         # This disables recipient selection in the subprocessor,
         # but preserves subproc.select_recipients_impl
         subproc.recipients = None
+
+    @property
+    def drop_failed(self) -> bool:
+        return self._drop_failed
 
     def select_recipients_impl(
         self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
@@ -64,13 +75,12 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         return in_args
 
     def _join_payloads_from_packets(
-        self, packets: Sequence[Packet[OutT]]
-    ) -> list[OutT]:
+        self, packets: Sequence[Packet[OutT] | None]
+    ) -> list[OutT | None]:
         return list(
-            Packet(
-                payloads=list(chain.from_iterable(p.payloads for p in packets)),
-                sender=self.name,
-            ).payloads
+            chain.from_iterable(
+                p.payloads if p is not None else [None] for p in packets
+            )
         )
 
     async def _process(
@@ -93,7 +103,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         ]
         out_packets = await asyncio.gather(*corouts)
 
-        return self._join_payloads_from_packets(out_packets)
+        return self._join_payloads_from_packets(out_packets)  # type: ignore[return-value]
 
     async def _process_stream(
         self,
@@ -114,7 +124,9 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 zip(in_args, subproc_replicas, strict=True)
             )
         ]
-        out_packets_map: dict[int, Packet[OutT]] = {}
+        out_packets_map: dict[int, Packet[OutT] | None] = dict.fromkeys(
+            range(len(in_args)), None
+        )
         async for idx, event in stream_concurrent(streams):
             if (
                 isinstance(event, ProcPacketOutEvent)
@@ -125,6 +137,8 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 yield event
 
         out_packets = [out_packets_map[idx] for idx in sorted(out_packets_map)]
+        if self.drop_failed:
+            out_packets = [p for p in out_packets if p is not None]
 
         # Need to emit ProcPayloadOutputEvent in the order of in_args,
         # thus we filter them out first, then yield in order.

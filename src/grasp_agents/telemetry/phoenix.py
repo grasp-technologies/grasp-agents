@@ -10,10 +10,9 @@ from openinference.instrumentation.openai import (
 from openinference.instrumentation.openllmetry import OpenInferenceSpanProcessor
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
-
 from phoenix.otel import BatchSpanProcessor, HTTPSpanExporter, SimpleSpanProcessor
 
-from .exporters import LLM_PROVIDER_NAMES, FilteringExporter
+from .exporters import CLOUD_PROVIDERS_NAMES, LLM_PROVIDER_NAMES, FilteringExporter
 
 logger = getLogger(__name__)
 
@@ -50,7 +49,8 @@ def init_phoenix(
     )
     exporter = FilteringExporter(
         inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
-        blocklist=blocklist,
+        llm_provider_blocklist=blocklist,
+        attribute_filter={"http.url": CLOUD_PROVIDERS_NAMES},
     )
     if batch:
         span_processor = BatchSpanProcessor(span_exporter=exporter)

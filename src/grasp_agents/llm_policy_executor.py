@@ -64,7 +64,7 @@ class AfterGenerateHook(Protocol[CtxT]):
 
 
 class ToolOutputConverter(Protocol[CtxT]):
-    def __call__(
+    async def __call__(
         self,
         tool_outputs: Sequence[Any],
         tool_calls: Sequence[ToolCall],
@@ -246,18 +246,19 @@ class LLMPolicyExecutor(Generic[CtxT]):
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         completion: Completion | None = None
+        llm_params = {
+            "messages": self.memory.messages,
+            "response_schema": self.response_schema,
+            "response_schema_by_xml_tag": self.response_schema_by_xml_tag,
+            "tools": self.tools,
+            "tool_choice": tool_choice,
+            "proc_name": self.agent_name,
+            "call_id": call_id,
+            **extra_llm_settings,
+        }
 
         if self._stream_llm_responses:
-            llm_stream = self.llm.generate_completion_stream(
-                self.memory.messages,
-                response_schema=self.response_schema,
-                response_schema_by_xml_tag=self.response_schema_by_xml_tag,
-                tools=self.tools,
-                tool_choice=tool_choice,
-                proc_name=self.agent_name,
-                call_id=call_id,
-                **extra_llm_settings,
-            )
+            llm_stream = self.llm.generate_completion_stream(**llm_params)  # type: ignore
             llm_stream_post = self.llm.postprocess_event_stream(llm_stream)
             llm_stream_wrapped = EventStream[Completion](llm_stream_post, Completion)
             async for event in llm_stream_wrapped:
@@ -265,16 +266,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
             completion = await llm_stream_wrapped.final_data()
 
         else:
-            completion = await self.llm.generate_completion(
-                self.memory.messages,
-                response_schema=self.response_schema,
-                response_schema_by_xml_tag=self.response_schema_by_xml_tag,
-                tools=self.tools,
-                tool_choice=tool_choice,
-                proc_name=self.agent_name,
-                call_id=call_id,
-                **extra_llm_settings,
-            )
+            completion = await self.llm.generate_completion(**llm_params)  # type: ignore
 
         yield GenMessageEvent(
             src_name=self.agent_name, call_id=call_id, data=completion.message
@@ -302,7 +294,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         return cast("AssistantMessage", gen_message)
 
-    def tool_outputs_to_messages_impl(
+    async def tool_outputs_to_messages_impl(
         self,
         tool_outputs: Sequence[Any],
         tool_calls: Sequence[ToolCall],
@@ -322,7 +314,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         )
 
     @final
-    def tool_outputs_to_messages(
+    async def tool_outputs_to_messages(
         self,
         tool_outputs: Sequence[Any],
         tool_calls: Sequence[ToolCall],
@@ -331,7 +323,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         call_id: str,
     ) -> Sequence[ToolMessage | UserMessage]:
         if is_method_overridden("tool_outputs_to_messages_impl", self):
-            return self.tool_outputs_to_messages_impl(
+            return await self.tool_outputs_to_messages_impl(
                 tool_outputs, tool_calls, ctx=ctx, call_id=call_id
             )
         return self.tool_outputs_to_messages_default(tool_outputs, tool_calls)
@@ -362,6 +354,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
                     tool.run_stream(inp=tool.in_type(**args), ctx=ctx, call_id=call_id)
                 )
 
+            # TODO: treat None outputs on stream failure
+
             outputs_map: dict[int, Any] = {}
             async for idx, event in stream_concurrent(streams):
                 if isinstance(event, ToolOutputEvent):
@@ -373,7 +367,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         else:
             outputs = await self._get_tool_outputs(calls, ctx=ctx, call_id=call_id)
 
-        tool_messages = self.tool_outputs_to_messages(
+        tool_messages = await self.tool_outputs_to_messages(
             outputs, calls, ctx=ctx, call_id=call_id
         )
 

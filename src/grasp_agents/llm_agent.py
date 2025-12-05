@@ -40,7 +40,7 @@ _InT_contra = TypeVar("_InT_contra", contravariant=True)
 _OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
-class MemoryPreparator(Protocol[_InT_contra]):
+class MemoryBuilder(Protocol[_InT_contra]):
     def __call__(
         self,
         *,
@@ -104,9 +104,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Streaming
         stream_llm_responses: bool = False,
         stream_tools: bool = False,
+        # Tracing
+        tracing_enabled: bool = True,
     ) -> None:
         super().__init__(
-            name=name, memory=memory, recipients=recipients, max_retries=max_retries
+            name=name,
+            memory=memory,
+            recipients=recipients,
+            max_retries=max_retries,
+            tracing_enabled=tracing_enabled,
         )
 
         # Memory
@@ -192,22 +198,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def reset_memory_on_run(self) -> bool:
         return self._reset_memory_on_run
 
-    @final
-    def prepare_memory(
-        self,
-        *,
-        instructions: LLMPrompt | None = None,
-        in_args: InT | None = None,
-        ctx: RunContext[Any],
-        call_id: str,
-    ) -> None:
-        if is_method_overridden("prepare_memory_impl", self, LLMAgent[Any, Any, Any]):
-            return self.prepare_memory_impl(
-                instructions=instructions,
-                in_args=in_args,
-                ctx=ctx,
-                call_id=call_id,
-            )
+    @property
+    def _has_build_memory_impl(self) -> bool:
+        return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
 
     def _memorize_inputs(
         self,
@@ -216,35 +209,33 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
-    ) -> tuple[SystemMessage | None, UserMessage | None]:
+    ) -> list[Message]:
         call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
 
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
             ctx=ctx, call_id=call_id
         )
+        fresh_init = self._reset_memory_on_run or self.memory.is_empty
 
-        system_message: SystemMessage | None = None
-        if self._reset_memory_on_run or self.memory.is_empty:
+        if fresh_init and not self._has_build_memory_impl:
             self.memory.reset(formatted_sys_prompt)
-            if formatted_sys_prompt is not None:
-                system_message = cast("SystemMessage", self.memory.messages[0])
-        else:
-            self.prepare_memory(
+        elif self._has_build_memory_impl:
+            self.build_memory_impl(
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
             )
+
+        messages_to_expose: list[Message] = []
+        if fresh_init:
+            messages_to_expose.extend(self.memory.messages)
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
         )
         if input_message:
             self.memory.update([input_message])
+            messages_to_expose.append(input_message)
 
-        if system_message:
-            self._print_messages([system_message], **call_kwargs)
-        if input_message:
-            self._print_messages([input_message], **call_kwargs)
-
-        return system_message, input_message
+        return messages_to_expose
 
     def parse_output_default(self, final_answer: str) -> OutT:
         return validate_obj_from_json_or_py_string(
@@ -296,17 +287,20 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
 
         inp = self._extract_input_args(in_args, call_id)
-        system_message, input_message = self._memorize_inputs(
+
+        messages_to_expose = self._memorize_inputs(
             chat_inputs=chat_inputs, in_args=inp, **call_kwargs
         )
-        if system_message:
-            yield SystemMessageEvent(
-                data=system_message, src_name=self.name, call_id=call_id
-            )
-        if input_message:
-            yield UserMessageEvent(
-                data=input_message, src_name=self.name, call_id=call_id
-            )
+        self._print_messages(messages_to_expose, **call_kwargs)
+        for message in messages_to_expose:
+            if isinstance(message, SystemMessage):
+                yield SystemMessageEvent(
+                    data=message, src_name=self.name, call_id=call_id
+                )
+            elif isinstance(message, UserMessage):
+                yield UserMessageEvent(
+                    data=message, src_name=self.name, call_id=call_id
+                )
 
         async for event in self._policy_executor.execute_stream(**call_kwargs):
             yield event
@@ -338,7 +332,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     # Methods that can be overridden in subclasses
 
-    def prepare_memory_impl(
+    def build_memory_impl(
         self,
         *,
         instructions: LLMPrompt | None = None,
@@ -411,7 +405,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             num_turns=num_turns,
         )
 
-    def tool_outputs_to_messages_impl(
+    async def tool_outputs_to_messages_impl(
         self,
         tool_outputs: Sequence[Any],
         tool_calls: Sequence[ToolCall],
@@ -419,7 +413,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT],
         call_id: str,
     ):
-        return self._policy_executor.tool_outputs_to_messages_impl(
+        return await self._policy_executor.tool_outputs_to_messages_impl(
             tool_outputs=tool_outputs,
             tool_calls=tool_calls,
             ctx=ctx,
@@ -436,10 +430,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self.parse_output_impl = func
         return func
 
-    def add_memory_preparator(
-        self, func: MemoryPreparator[InT]
-    ) -> MemoryPreparator[InT]:
-        self.prepare_memory_impl = func
+    def add_memory_builder(self, func: MemoryBuilder[InT]) -> MemoryBuilder[InT]:
+        self.build_memory_impl = func
         return func
 
     def add_system_prompt_builder(

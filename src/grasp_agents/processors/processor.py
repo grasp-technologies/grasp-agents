@@ -112,6 +112,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def validate_output(self, out_payload: OutT, call_id: str) -> OutT:
         if out_payload is None:
             return out_payload
+
         try:
             return TypeAdapter(self.out_type).validate_python(out_payload)
         except PydanticValidationError as err:
@@ -203,8 +204,8 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         return Packet(sender=self.name, payloads=outputs, routing=joined_routing)
 
-    @workflow(name="processor")  # type: ignore
     @final
+    @workflow(name="processor")  # type: ignore
     @with_retry
     async def run_stream(
         self,
@@ -249,7 +250,6 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             id=out_packet.id, data=out_packet, src_name=self.name, call_id=call_id
         )
 
-    @final
     async def run(
         self,
         chat_inputs: Any | None = None,
@@ -259,6 +259,8 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         call_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
+        result = None
+
         async for event in self.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
@@ -266,6 +268,14 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             call_id=call_id,
             ctx=ctx,
         ):
+            if result is not None:
+                # Need to drain the event stream for OTel to work properly
+                continue
+
             if isinstance(event, ProcPacketOutEvent) and event.src_name == self.name:
-                return event.data
-        raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
+                result = event.data
+
+        if result is None:
+            raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
+
+        return result

@@ -41,6 +41,9 @@ class LiteLLMSettings(OpenAILLMSettings, total=False):
     thinking: AnthropicThinkingParam | None
 
 
+LiteLLMModelName = str
+
+
 @dataclass(frozen=True)
 class LiteLLM(CloudLLM):
     llm_settings: LiteLLMSettings | None = None
@@ -55,6 +58,10 @@ class LiteLLM(CloudLLM):
     allowed_openai_params: list[str] | None = None
     # Mock LLM response for testing
     mock_response: str | None = None
+    # Fallback models to use if the main model fails
+    fallbacks: list[LiteLLMModelName] = field(default_factory=list[LiteLLMModelName])
+    # Mock falling back to other models in the fallbacks list for testing
+    mock_testing_fallbacks: bool = False
 
     router: Router = field(init=False)
 
@@ -71,6 +78,7 @@ class LiteLLM(CloudLLM):
                 "additional_drop_params": self.additional_drop_params,
                 "allowed_openai_params": self.allowed_openai_params,
                 "mock_response": self.mock_response,
+                "mock_testing_fallbacks": self.mock_testing_fallbacks,
                 # "max_retries": self.max_client_retries,
                 # "timeout": self.client_timeout,
                 # "deployment_id": deployment_id,
@@ -114,13 +122,17 @@ class LiteLLM(CloudLLM):
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
+        main_litellm_model = {
+            "model_name": self.model_name,
+            "litellm_params": {"model": self.model_name},
+        }
+        fallback_litellm_models = [
+            {"model_name": fb, "litellm_params": {"model": fb}} for fb in self.fallbacks
+        ]
+
         _router = Router(
-            model_list=[
-                {
-                    "model_name": self.model_name,
-                    "litellm_params": {"model": self.model_name},
-                }
-            ],
+            model_list=[main_litellm_model, *fallback_litellm_models],
+            fallbacks=[{self.model_name: self.fallbacks}],
             num_retries=self.max_client_retries,
             timeout=self.client_timeout,
         )
