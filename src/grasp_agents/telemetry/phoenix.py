@@ -10,7 +10,6 @@ from openinference.instrumentation.openai import (
 from openinference.instrumentation.openllmetry import OpenInferenceSpanProcessor
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
-
 from phoenix.otel import BatchSpanProcessor, HTTPSpanExporter, SimpleSpanProcessor
 
 from .exporters import CLOUD_PROVIDERS_NAMES, LLM_PROVIDER_NAMES, FilteringExporter
