@@ -9,9 +9,9 @@ from openai.types.responses import (
     ResponseUsage,
 )
 
-from ...typing.completion import Completion, Usage
-from ...typing.message import AssistantMessage
-from ...typing.tool import ToolCall
+from grasp_agents.typing.completion import Completion, Usage
+from grasp_agents.typing.message import AssistantMessage
+from grasp_agents.typing.tool import ToolCall
 
 
 def from_response_usage(raw_usage: ResponseUsage) -> Usage:
@@ -30,12 +30,13 @@ def completion_from_response(
     outputs = raw_completion.output
     content: list[str] = []
     refusal: str | None = None
+    encrypted_content = None
     reasoning_summary: list[str] = []
     tool_calls: list[ToolCall] = []
     for output in outputs:
         if isinstance(output, ResponseOutputMessage):
             raw_contents = output.content
-            # TODO: add refusal and annotation convertion
+            # TODO:add annotation convertion
             for raw_content in raw_contents:
                 if isinstance(raw_content, ResponseOutputText):
                     content.append(raw_content.text)
@@ -43,6 +44,7 @@ def completion_from_response(
                     refusal = raw_content.refusal
         elif isinstance(output, ResponseReasoningItem):
             raw_summaries = output.summary
+            encrypted_content = output.encrypted_content
             for raw_summary in raw_summaries:
                 reasoning_summary.append(raw_summary.text)
         elif isinstance(output, ResponseFunctionToolCall):
@@ -58,6 +60,7 @@ def completion_from_response(
         tool_calls=tool_calls,
         refusal=refusal,
         response_id=raw_completion.id,
+        encrypted_content=encrypted_content,
         thinking_blocks=[
             {"type": "thinking", "thinking": item} for item in reasoning_summary
         ],

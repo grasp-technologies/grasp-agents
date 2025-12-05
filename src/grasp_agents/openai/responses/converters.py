@@ -42,7 +42,11 @@ from grasp_agents.typing.message import (
 )
 from grasp_agents.typing.tool import BaseTool, ToolChoice
 
-from .chunk_converters import from_api_completion_chunk, to_completion_chunk
+from .chunk_converters import (
+    from_api_completion_chunk,
+    to_completion_chunk,
+    ResponseApiChunk,
+)
 from .completion_converters import (
     completion_from_response,
     from_response_usage,
@@ -61,13 +65,6 @@ from .message_converters import (
     to_api_user_message,
 )
 from .tool_converters import to_api_tool, to_api_tool_choice
-
-ResponseApiChunk = (
-    ResponseReasoningSummaryTextDeltaEvent
-    | ResponseFunctionCallArgumentsDeltaEvent
-    | ResponseOutputItemAddedEvent
-    | ResponseTextDeltaEvent
-)
 
 
 class OpenAIResponsesConverters(Converters):

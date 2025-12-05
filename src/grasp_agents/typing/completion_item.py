@@ -8,7 +8,7 @@ from ..typing.tool import ToolCall
 
 class Reasoning(BaseModel):
     summaries: list[str]
-    content: list[str]
+    encrypted_content: str | None = None
 
 
 class CompletionItem(BaseModel):

@@ -1,11 +1,23 @@
-from openai.types.responses.easy_input_message_param import EasyInputMessageParam
+from litellm.types.llms.openai import (
+    ChatCompletionAnnotation,
+    ChatCompletionAnnotationURLCitation,
+)
+from openai.types.responses import (
+    EasyInputMessageParam,
+    ResponseFunctionToolCall,
+    ResponseFunctionToolCallParam,
+    ResponseInputParam,
+    ResponseOutputMessage,
+    ResponseOutputText,
+    ResponseReasoningItem,
+    ResponseReasoningItemParam,
+)
+from openai.types.responses import Response as OpenAIResponse
 from openai.types.responses.response_input_item_param import FunctionCallOutput
 from openai.types.responses.response_input_message_item import (
     ResponseInputMessageItem as OpenAIResponseInputMessage,
 )
-from openai.types.responses.response_output_message import (
-    ResponseOutputMessage as OpenAIResponseOutputMessage,
-)
+from openai.types.responses.response_reasoning_item_param import Summary
 
 from grasp_agents.typing.content import Content, ContentPartText
 from grasp_agents.typing.message import (
@@ -14,6 +26,7 @@ from grasp_agents.typing.message import (
     ToolMessage,
     UserMessage,
 )
+from grasp_agents.typing.tool import ToolCall
 
 from .content_converters import from_api_content, to_api_content
 
@@ -25,42 +38,110 @@ def from_api_user_message(
     return UserMessage(content=content, name=name)
 
 
-def to_api_user_message(message: UserMessage) -> EasyInputMessageParam:
+def to_api_user_message(message: UserMessage) -> ResponseInputParam:
+    input_message: ResponseInputParam = []
     api_content = (
         to_api_content(message.content)
         if isinstance(message.content, Content)
         else message.content
     )
-    return EasyInputMessageParam(role="user", content=api_content, type="message")
+    usr_message = EasyInputMessageParam(
+        role="user", content=api_content, type="message"
+    )
+    input_message.append(usr_message)
+    return input_message
 
 
 def from_api_assistant_message(
-    api_message: OpenAIResponseOutputMessage, name: str | None = None
+    raw_completion: OpenAIResponse, name: str | None = None
 ) -> AssistantMessage:
-    items = api_message.content
-
-    text_parts: list[str] = []
+    outputs = raw_completion.output
+    content: list[str] = []
     refusal: str | None = None
-
-    for item in items or []:
-        if item.type == "output_text":
-            text_parts.append(item.text)
-        elif item.type == "refusal":
-            refusal = item.refusal
-
-    content_str = "".join(text_parts) if text_parts else None
-
-    return AssistantMessage(content=content_str, refusal=refusal, name=name)
+    reasoning_id: str | None = None
+    encrypted_content = None
+    reasoning_summary: list[str] = []
+    tool_calls: list[ToolCall] = []
+    annotations = None
+    for output in outputs:
+        if isinstance(output, ResponseOutputMessage):
+            raw_contents = output.content
+            for raw_content in raw_contents:
+                if isinstance(raw_content, ResponseOutputText):
+                    content.append(raw_content.text)
+                    if raw_content.annotations:
+                        annotations = [
+                            ChatCompletionAnnotation(
+                                type="url_citation",
+                                url_citation=ChatCompletionAnnotationURLCitation(
+                                    **api_annotation.model_dump()
+                                ),
+                            )
+                            for api_annotation in raw_content.annotations
+                        ]
+                else:
+                    refusal = raw_content.refusal
+        elif isinstance(output, ResponseReasoningItem):
+            raw_summaries = output.summary
+            encrypted_content = output.encrypted_content
+            reasoning_id = output.id
+            for raw_summary in raw_summaries:
+                reasoning_summary.append(raw_summary.text)
+        elif isinstance(output, ResponseFunctionToolCall):
+            tool = ToolCall(
+                id=output.call_id,
+                tool_arguments=output.arguments,
+                tool_name=output.name,
+            )
+            tool_calls.append(tool)
+    return AssistantMessage(
+        content=" ".join(content),
+        annotations=annotations,
+        reasoning_content=" ".join(reasoning_summary),
+        tool_calls=tool_calls,
+        refusal=refusal,
+        response_id=raw_completion.id,
+        encrypted_content=encrypted_content,
+        thinking_blocks=[
+            {"type": "thinking", "thinking": item} for item in reasoning_summary
+        ],
+        reasoning_id=reasoning_id,
+    )
 
 
 def to_api_assistant_message(
     message: AssistantMessage,
-) -> EasyInputMessageParam:
-    if isinstance(message.content, str):
-        api_content = message.content
-    else:
-        api_content = "<empty>" if message.content is None else str(message.content)
-    return EasyInputMessageParam(role="assistant", content=api_content, type="message")
+) -> ResponseInputParam:
+    input_message: ResponseInputParam = []
+    if message.content:
+        text_message = EasyInputMessageParam(
+            role="assistant", content=message.content or "", type="message"
+        )
+        input_message.append(text_message)
+    if message.tool_calls:
+        tool_calls = [
+            ResponseFunctionToolCallParam(
+                arguments=item.tool_arguments,
+                call_id=item.id,
+                name=item.tool_name,
+                type="function_call",
+            )
+            for item in message.tool_calls
+        ]
+        input_message.extend(tool_calls)
+    if message.reasoning_id:
+        reasoning = ResponseReasoningItemParam(
+            id=message.reasoning_id,
+            summary=[
+                Summary(text=item.get("thinking", ""), type="summary_text")
+                for item in message.thinking_blocks or {}
+                if "type" in item and item["type"] == "thinking"
+            ],
+            type="reasoning",
+            encrypted_content=message.encrypted_content,
+        )
+        input_message.append(reasoning)
+    return input_message
 
 
 def from_api_system_message(
@@ -73,8 +154,13 @@ def from_api_system_message(
     return SystemMessage(content=content_str, name=name)
 
 
-def to_api_system_message(message: SystemMessage) -> EasyInputMessageParam:
-    return EasyInputMessageParam(role="system", content=message.content, type="message")
+def to_api_system_message(message: SystemMessage) -> ResponseInputParam:
+    input_message: ResponseInputParam = []
+    sys_message = EasyInputMessageParam(
+        role="system", content=message.content or "", type="message"
+    )
+    input_message.append(sys_message)
+    return input_message
 
 
 def from_api_tool_message(
@@ -87,9 +173,14 @@ def from_api_tool_message(
     )
 
 
-def to_api_tool_message(message: ToolMessage) -> FunctionCallOutput:
-    return FunctionCallOutput(
-        type="function_call_output",
-        output=message.content,
-        call_id=message.tool_call_id,
+# this is conversion form call output result
+def to_api_tool_message(message: ToolMessage) -> ResponseInputParam:
+    input_message: ResponseInputParam = []
+    input_message.append(
+        FunctionCallOutput(
+            type="function_call_output",
+            output=message.content,
+            call_id=message.tool_call_id,
+        )
     )
+    return input_message

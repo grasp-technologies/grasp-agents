@@ -53,6 +53,8 @@ class AssistantMessage(MessageBase):
     annotations: Sequence[LiteLLMAnnotation] | None = None
     provider_specific_fields: dict[str, Any] | None = None
     response_id: str | None = None
+    encrypted_content: str | None = None
+    reasoning_id: str | None = None
 
 
 class UserMessage(MessageBase):

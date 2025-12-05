@@ -3,8 +3,10 @@ from collections.abc import Iterable
 from openai.types.responses import (
     ResponseInputContent,
     ResponseInputImage,
-    ResponseInputMessageContentList,
+    ResponseInputImageParam,
+    ResponseInputMessageContentListParam,
     ResponseInputText,
+    ResponseInputTextParam,
 )
 
 from ...typing.content import (
@@ -48,16 +50,15 @@ def from_api_content(
     return Content(parts=content_parts)
 
 
-def to_api_content(content: Content) -> ResponseInputMessageContentList:
-    api_content: ResponseInputMessageContentList = []
+def to_api_content(content: Content) -> ResponseInputMessageContentListParam:
+    api_content: ResponseInputMessageContentListParam = []
     for content_part in content.parts:
-        api_content_part: ResponseInputContent
         if isinstance(content_part, ContentPartText):
-            api_content_part = ResponseInputText(
+            api_content_part = ResponseInputTextParam(
                 type="input_text", text=content_part.data
             )
         else:
-            api_content_part = ResponseInputImage(
+            api_content_part = ResponseInputImageParam(
                 type="input_image",
                 detail=content_part.data.detail,
                 image_url=image_data_to_str(content_part.data),

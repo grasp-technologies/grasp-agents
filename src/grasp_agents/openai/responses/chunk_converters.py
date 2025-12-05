@@ -16,7 +16,14 @@ from grasp_agents.typing.completion_chunk import (
 )
 from grasp_agents.typing.message import Role
 
-from .converters import ResponseApiChunk
+# Union of response chunk event variants produced by OpenAI's Responses API.
+# Kept here to avoid circular imports between converters and chunk_converters.
+ResponseApiChunk = (
+    ResponseReasoningSummaryTextDeltaEvent
+    | ResponseFunctionCallArgumentsDeltaEvent
+    | ResponseOutputItemAddedEvent
+    | ResponseTextDeltaEvent
+)
 
 
 def from_api_completion_chunk(

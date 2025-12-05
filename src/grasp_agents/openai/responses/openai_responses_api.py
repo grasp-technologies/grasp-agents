@@ -108,13 +108,14 @@ class OpenAIResponsesLLM(CloudLLM):
 
     async def _get_api_completion(
         self,
-        api_messages: ResponseInputParam,
+        api_messages: list[ResponseInputParam],
         *,
         api_tools: list[ResponsesToolParam] | None = None,
         api_tool_choice: ResponseToolChoice | None = None,
         api_response_schema: type[Any] | None = None,
         **api_llm_settings: Any,
     ) -> ParsedResponse[Any] | Response:
+        messages = [subitem for item in api_messages for subitem in item]
         tools = api_tools or []
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
         text_format = api_response_schema if api_response_schema is not None else omit
@@ -122,7 +123,7 @@ class OpenAIResponsesLLM(CloudLLM):
         if self.apply_response_schema_via_provider:
             return await self.client.responses.parse(
                 model=self.model_name,
-                input=[api_messages[-1]] if response_id else api_messages,
+                input=[messages[-1]] if response_id else messages,
                 tools=tools,
                 tool_choice=tool_choice,
                 text_format=text_format,
@@ -130,7 +131,7 @@ class OpenAIResponsesLLM(CloudLLM):
             )
         return await self.client.responses.create(
             model=self.model_name,
-            input=[api_messages[-1]] if response_id else api_messages,
+            input=[messages[-1]] if response_id else messages,
             tools=tools,
             tool_choice=tool_choice,
             stream=False,
@@ -139,12 +140,13 @@ class OpenAIResponsesLLM(CloudLLM):
 
     async def _get_api_completion_stream(
         self,
-        api_messages: ResponseInputParam,
+        api_messages: list[ResponseInputParam],
         api_tools: Iterable[ResponsesToolParam] | None = None,
         api_tool_choice: ResponseToolChoice | None = None,
         api_response_schema: type[Any] | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[ResponseStreamEvent]:
+        messages = [subitem for item in api_messages for subitem in item]
         tools = api_tools if api_tools is not None else omit
         response_id = api_llm_settings.get("previous_response_id")
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
@@ -162,7 +164,7 @@ class OpenAIResponsesLLM(CloudLLM):
             stream_manager: AsyncResponseStreamManager[Any] = (
                 self.client.responses.stream(
                     model=self.model_name,
-                    input=[api_messages[-1]] if response_id else api_messages,
+                    input=[messages[-1]] if response_id else messages,
                     tool_choice=tool_choice,
                     tools=tools,
                     text_format=effective_text_format,
