@@ -1,4 +1,4 @@
-# Grasp Agents Hello App (uv)
+# Grasp Agents Hello App (UV)
 
 ## Overview
 
