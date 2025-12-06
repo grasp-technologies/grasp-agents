@@ -111,6 +111,7 @@ class CompletionChunkDelta(BaseModel):
 class CompletionChunk(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     created: int = Field(default_factory=lambda: int(time.time()))
+    item_id: str | None = None
     model: str | None
     name: str | None = None
     system_fingerprint: str | None = None

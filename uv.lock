@@ -808,7 +808,6 @@ wheels = [
 ]
 
 [[package]]
-name = "grasp-agents"
 version = "0.6.36"
 source = { editable = "." }
 dependencies = [

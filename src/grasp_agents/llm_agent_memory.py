@@ -6,7 +6,7 @@ from pydantic import Field
 from .memory import Memory
 from .run_context import RunContext
 from .typing.io import LLMPrompt
-from .typing.message import Message, Messages, SystemMessage
+from .typing.message import AssistantMessage, Message, Messages, SystemMessage
 
 
 class LLMAgentMemory(Memory):

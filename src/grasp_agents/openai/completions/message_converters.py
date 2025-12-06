@@ -5,14 +5,14 @@ from litellm.types.llms.openai import (
     ChatCompletionAnnotationURLCitation,
 )
 
-from ..typing.content import Content
-from ..typing.message import (
+from ...typing.content import Content
+from ...typing.message import (
     AssistantMessage,
     SystemMessage,
     ToolMessage,
     UserMessage,
 )
-from ..typing.tool import ToolCall
+from ...typing.tool import ToolCall
 from . import (
     OpenAIAssistantMessageParam,
     OpenAICompletionMessage,

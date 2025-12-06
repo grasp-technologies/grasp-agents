@@ -1,5 +1,5 @@
-from ..errors import CompletionError
-from ..typing.completion import Completion, Usage
+from ...errors import CompletionError
+from ...typing.completion import Completion, Usage
 from . import OpenAICompletion, OpenAIUsage
 from .message_converters import from_api_assistant_message
 
@@ -22,6 +22,9 @@ def from_api_completion_usage(api_usage: OpenAIUsage) -> Usage:
         reasoning_tokens=reasoning_tokens,
         cached_tokens=cached_tokens,
     )
+
+
+# response completed event and then only we can get response class
 
 
 def from_api_completion(

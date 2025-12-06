@@ -1,6 +1,6 @@
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Required
@@ -89,6 +89,15 @@ class CloudLLM(LLM):
     ) -> AsyncIterator[Any]:
         pass
 
+    @abstractmethod
+    async def _handle_api_stream_event(
+        self,
+        event: Any,
+        proc_name: str | None = None,
+        call_id: str | None = None,
+    ) -> AsyncGenerator[Any, None]:
+        pass
+
     def __init_subclass__(cls, **kwargs: Any):
         super().__init_subclass__(**kwargs)
 
@@ -119,7 +128,9 @@ class CloudLLM(LLM):
                 api_tool_choice = self.converters.to_tool_choice(tool_choice)
 
         api_llm_settings = deepcopy((self.llm_settings or {}) | extra_llm_settings)
-
+        previous_response_id = self._get_previous_response_id(messages)
+        if previous_response_id:
+            api_llm_settings["previous_response_id"] = previous_response_id
         return dict(
             api_messages=api_messages,
             api_tools=api_tools,
@@ -127,6 +138,12 @@ class CloudLLM(LLM):
             api_response_schema=response_schema,
             **api_llm_settings,
         )
+
+    def _get_previous_response_id(self, messages: Messages) -> str | None:
+        for message in reversed(messages):
+            if isinstance(message, AssistantMessage) and message.response_id:
+                return message.response_id
+        return None
 
     async def _generate_completion_once(
         self,
@@ -192,13 +209,10 @@ class CloudLLM(LLM):
 
         async for api_completion_chunk in api_stream:
             api_completion_chunks.append(api_completion_chunk)
-            completion_chunk = self.converters.from_completion_chunk(
-                api_completion_chunk, name=self.model_id
-            )
-
-            yield CompletionChunkEvent(
-                data=completion_chunk, src_name=proc_name, call_id=call_id
-            )
+            async for out_event in self._handle_api_stream_event(
+                api_completion_chunk, proc_name=proc_name, call_id=call_id
+            ):
+                yield out_event
 
         api_completion = self.combine_completion_chunks(
             api_completion_chunks, response_schema=response_schema, tools=tools

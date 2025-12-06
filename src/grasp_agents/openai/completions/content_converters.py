@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 
-from ..typing.content import (
+from ...typing.content import (
     Content,
     ContentPart,
     ContentPartImage,

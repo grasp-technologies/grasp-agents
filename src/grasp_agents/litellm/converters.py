@@ -3,8 +3,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..openai.content_converters import from_api_content, to_api_content
-from ..openai.message_converters import (
+from ..openai.completions.content_converters import (
+    from_api_content,
+    to_api_content,
+)
+from ..openai.completions.message_converters import (
     from_api_system_message,
     from_api_tool_message,
     from_api_user_message,
@@ -12,9 +15,10 @@ from ..openai.message_converters import (
     to_api_tool_message,
     to_api_user_message,
 )
-from ..openai.tool_converters import to_api_tool, to_api_tool_choice
+from ..openai.completions.tool_converters import to_api_tool, to_api_tool_choice
 from ..typing.completion import Completion, Usage
 from ..typing.completion_chunk import CompletionChunk
+from ..typing.completion_item import CompletionItem
 from ..typing.content import Content
 from ..typing.converters import Converters
 from ..typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
@@ -138,3 +142,9 @@ class LiteLLMConverters(Converters):
         raw_content: str | Iterable[OpenAIContentPartParam], **kwargs: Any
     ) -> Content:
         return from_api_content(raw_content, **kwargs)
+
+    @staticmethod
+    def from_api_item(
+        raw_event: Any, name: str | None = None, **kwargs: Any
+    ) -> CompletionItem:
+        raise NotImplementedError
