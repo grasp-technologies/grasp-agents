@@ -50,6 +50,8 @@ class BaseTool(
     name: str
     description: str
 
+    tracing_exclude_input_fields: set[str] | None = None
+
     _in_type: type[_InT] = PrivateAttr()
     _out_type: type[_OutT_co] = PrivateAttr()
 

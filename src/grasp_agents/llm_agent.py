@@ -117,6 +117,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
+        if tracing_exclude_input_fields:
+            for tool in tools or []:
+                tool.tracing_exclude_input_fields = tracing_exclude_input_fields
+
         # Memory
 
         # Avoid narrowing the base '_memory' type (declared as 'Memory' in BaseProcessor)
