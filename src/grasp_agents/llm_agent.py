@@ -168,6 +168,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm_responses=stream_llm_responses,
             stream_tools=stream_tools,
+            tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
         self._register_overridden_implementations()
