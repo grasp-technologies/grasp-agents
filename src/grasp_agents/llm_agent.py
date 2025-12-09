@@ -106,6 +106,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         stream_tools: bool = False,
         # Tracing
         tracing_enabled: bool = True,
+        tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -113,6 +114,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             recipients=recipients,
             max_retries=max_retries,
             tracing_enabled=tracing_enabled,
+            tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
         # Memory

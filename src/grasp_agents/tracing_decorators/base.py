@@ -2,6 +2,7 @@ import contextlib
 import inspect
 import json
 import os
+import pathlib
 import traceback
 import types
 import warnings
@@ -16,11 +17,11 @@ from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.trace.status import Status, StatusCode
 from pydantic import BaseModel
-from traceloop.sdk.tracing import set_workflow_name
 from traceloop.sdk.tracing.tracing import (
     TracerWrapper,
     get_chained_entity_path,
     set_entity_path,
+    set_workflow_name,
 )
 from traceloop.sdk.utils import camel_to_snake  # type: ignore[import]
 from traceloop.sdk.utils.json_encoder import JSONEncoder
@@ -28,18 +29,10 @@ from traceloop.sdk.utils.json_encoder import JSONEncoder
 logger = getLogger(__name__)
 
 DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "completions"}
-
 _CTX_DISABLE_TRACING_KEY = "override_disable_tracing"
 
 T = TypeVar("T", bound=type)
 F = TypeVar("F", bound=Callable[..., Any])
-
-
-def _is_tracing_globally_disabled() -> bool:
-    try:
-        return bool(context_api.get_value(_CTX_DISABLE_TRACING_KEY))
-    except Exception:
-        return False
 
 
 def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
@@ -50,12 +43,10 @@ def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
     - dict/list/tuple/set -> recurse (sets become lists)
     - other objects -> returned as-is (left to JSONEncoder)
     """
+    all_exclude_fields = DEFAULT_EXCLUDE_FIELDS.union(exclude_fields or set())
     if isinstance(obj, BaseModel):
         try:
-            # TODO: remove this temporary hack
-            return obj.model_dump(
-                exclude=DEFAULT_EXCLUDE_FIELDS.union(exclude_fields or set())
-            )
+            return obj.model_dump(exclude=all_exclude_fields)
         except Exception:
             return str(obj)
 
@@ -63,7 +54,8 @@ def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
         items_dict = cast("dict[Any, Any]", obj)
         result: dict[str, Any] = {}
         for k, v in items_dict.items():
-            result[str(k)] = _to_plain(v)
+            if str(k) not in all_exclude_fields:
+                result[str(k)] = _to_plain(v)
         return result
 
     if isinstance(obj, (tuple, list, set)):
@@ -98,25 +90,6 @@ def _should_send_prompts():
     return (
         os.getenv("TRACELOOP_TRACE_CONTENT") or "true"
     ).lower() == "true" or context_api.get_value("override_enable_content_tracing")
-
-
-# Quiet wrapper that suppresses prints and warnings from TracerWrapper.verify_initialized
-def _tracing_initialized_quietly() -> bool:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            with (
-                open(os.devnull, "w") as devnull,
-                contextlib.redirect_stdout(devnull),
-                contextlib.redirect_stderr(devnull),
-            ):
-                return TracerWrapper.verify_initialized()
-        except Exception:
-            return False
-
-
-def _is_async_method(fn: Callable[..., Any]) -> bool:
-    return inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)
 
 
 def _get_span_name(
@@ -227,6 +200,32 @@ def is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
     )
 
 
+def _is_async_method(fn: Callable[..., Any]) -> bool:
+    return inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)
+
+
+# Quiet wrapper that suppresses prints and warnings from TracerWrapper.verify_initialized
+def _tracing_initialized_quietly() -> bool:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            with (
+                pathlib.Path(os.devnull).open("w") as devnull,
+                contextlib.redirect_stdout(devnull),
+                contextlib.redirect_stderr(devnull),
+            ):
+                return TracerWrapper.verify_initialized()
+        except Exception:
+            return False
+
+
+def _is_tracing_globally_disabled() -> bool:
+    try:
+        return bool(context_api.get_value(_CTX_DISABLE_TRACING_KEY))
+    except Exception:
+        return False
+
+
 @contextlib.contextmanager
 def _suppress_tracing_globally():
     token = context_api.attach(context_api.set_value(_CTX_DISABLE_TRACING_KEY, True))
@@ -237,7 +236,7 @@ def _suppress_tracing_globally():
         context_api.detach(token)
 
 
-def tracing_enabled(
+def _tracing_enabled(
     instance: type | None = None,
 ) -> bool:
     if _is_tracing_globally_disabled():
@@ -246,6 +245,17 @@ def tracing_enabled(
         return True
     flag = getattr(instance, "tracing_enabled", True)
     return bool(flag)
+
+
+def _exclude_fields_from_instance(
+    instance: type | None = None,
+) -> set[str] | None:
+    if instance is None:
+        return None
+    exclude_fields = getattr(instance, "tracing_exclude_input_fields", None)
+    if exclude_fields is not None and isinstance(exclude_fields, (list, set, tuple)):
+        return set(exclude_fields)
+    return None
 
 
 def entity_method(
@@ -264,12 +274,17 @@ def entity_method(
                 async def async_gen_wrap(*args: Any, **kwargs: Any) -> Any:
                     is_bound = is_bound_method(fn, args[0] if args else False)
                     instance = args[0] if is_bound else None
-                    is_enabled = tracing_enabled(instance)
+                    input_args = args[1:] if is_bound else args
+
+                    exclude_fields = _exclude_fields_from_instance(instance)
+                    is_enabled = _tracing_enabled(instance)
+
                     if not (is_enabled and _tracing_initialized_quietly()):
                         with _suppress_tracing_globally():
                             async for item in fn(*args, **kwargs):
                                 yield item
                             return
+
                     span_name = _get_span_name(
                         entity_name, tlp_span_kind, instance=instance, kwargs=kwargs
                     )
@@ -277,7 +292,13 @@ def entity_method(
 
                     with tracer.start_as_current_span(span_name) as span:
                         _set_span_attributes(span, entity_name, tlp_span_kind, version)
-                        _handle_span_input(span, args, kwargs, cls=JSONEncoder)
+                        _handle_span_input(
+                            span,
+                            input_args,
+                            kwargs,
+                            cls=JSONEncoder,
+                            exclude_fields=exclude_fields,
+                        )
                         items: list[Any] = []
 
                         try:
@@ -303,7 +324,11 @@ def entity_method(
             async def async_wrap(*args: Any, **kwargs: Any) -> Any:
                 is_bound = is_bound_method(fn, args[0] if args else False)
                 instance = args[0] if is_bound else None
-                is_enabled = tracing_enabled(instance)
+                input_args = args[1:] if is_bound else args
+
+                exclude_fields = _exclude_fields_from_instance(instance)
+                is_enabled = _tracing_enabled(instance)
+
                 if not (is_enabled and _tracing_initialized_quietly()):
                     with _suppress_tracing_globally():
                         return await fn(*args, **kwargs)
@@ -318,7 +343,13 @@ def entity_method(
 
                 with tracer.start_as_current_span(span_name) as span:
                     _set_span_attributes(span, entity_name, tlp_span_kind, version)
-                    _handle_span_input(span, args, kwargs, cls=JSONEncoder)
+                    _handle_span_input(
+                        span,
+                        input_args,
+                        kwargs,
+                        cls=JSONEncoder,
+                        exclude_fields=exclude_fields,
+                    )
 
                     try:
                         res = await fn(*args, **kwargs)
@@ -338,7 +369,11 @@ def entity_method(
         def sync_wrap(*args: Any, **kwargs: Any) -> Any:
             is_bound = is_bound_method(fn, args[0] if args else False)
             instance = args[0] if is_bound else None
-            is_enabled = tracing_enabled(instance)
+
+            exclude_fields = _exclude_fields_from_instance(instance)
+            is_enabled = _tracing_enabled(instance)
+            input_args = args[1:] if is_bound else args
+
             if not (is_enabled and _tracing_initialized_quietly()):
                 with _suppress_tracing_globally():
                     return fn(*args, **kwargs)
@@ -353,7 +388,13 @@ def entity_method(
 
             with tracer.start_as_current_span(span_name) as span:
                 _set_span_attributes(span, entity_name, tlp_span_kind, version)
-                _handle_span_input(span, args, kwargs, cls=JSONEncoder)
+                _handle_span_input(
+                    span,
+                    input_args,
+                    kwargs,
+                    cls=JSONEncoder,
+                    exclude_fields=exclude_fields,
+                )
                 items: list[Any] = []
 
                 try:

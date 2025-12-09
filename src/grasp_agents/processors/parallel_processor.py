@@ -25,6 +25,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             recipients=subproc.recipients,
             max_retries=0,
             tracing_enabled=subproc.tracing_enabled,
+            tracing_exclude_input_fields=subproc.tracing_exclude_input_fields,
         )
 
         self._in_type = subproc.in_type
