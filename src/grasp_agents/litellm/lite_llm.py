@@ -176,7 +176,7 @@ class LiteLLM(CloudLLM):
         completion = await self.router.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
             messages=api_messages,  # type: ignore[arg-type]
-            tools=api_tools,
+            tools=api_tools or [],
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
             stream=False,
@@ -206,7 +206,7 @@ class LiteLLM(CloudLLM):
         stream = await self.router.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
             messages=api_messages,  # type: ignore[arg-type]
-            tools=api_tools,
+            tools=api_tools or [],
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
             stream=True,
