@@ -55,14 +55,14 @@ def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
         result: dict[str, Any] = {}
         for k, v in items_dict.items():
             if str(k) not in all_exclude_fields:
-                result[str(k)] = _to_plain(v)
+                result[str(k)] = _to_plain(v, exclude_fields)
         return result
 
     if isinstance(obj, (tuple, list, set)):
         items = cast("tuple[Any, ...] | list[Any] | set[Any]", obj)
         lst: list[Any] = []
         for v in items:
-            lst.append(_to_plain(v))
+            lst.append(_to_plain(v, exclude_fields))
         return lst
 
     return obj
