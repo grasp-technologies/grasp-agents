@@ -94,7 +94,7 @@ def from_api_completion_chunk(
         delta = CompletionChunkDelta(content=api_chunk.delta)
 
         return CompletionChunk(
-            id=api_chunk.item_id,
+            item_id=api_chunk.item_id,
             model=None,
             name=name,
             system_fingerprint=None,

@@ -34,6 +34,11 @@ def from_api_content(
             content_part = ContentPartText(data=text_data)
 
         elif isinstance(api_content_part, ResponseInputImage):
+            if (
+                api_content_part.image_url is None
+                or not api_content_part.image_url.startswith(BASE64_PREFIX)
+            ):
+                raise ValueError(f"Unsupported image url: {api_content_part.image_url}")
             url = api_content_part.image_url or ""
             detail = api_content_part.detail
             if url.startswith(BASE64_PREFIX):

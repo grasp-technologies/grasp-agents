@@ -2,29 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from openai.types.chat.chat_completion_tool_param import (
-    ChatCompletionToolParam as OpenAIChatToolParam,
-)
+from openai.types.responses import Response as OpenAIResponse
 from openai.types.responses import (
-    ParsedResponse,
-    ResponseFunctionCallArgumentsDeltaEvent,
-    ResponseInputItemParam,
-    ResponseOutputItemAddedEvent,
+    ResponseInputParam,
     ResponseOutputItemDoneEvent,
-    ResponseReasoningSummaryTextDeltaEvent,
-    ResponseTextDeltaEvent,
     ResponseUsage,
 )
-from openai.types.responses import Response as OpenAIResponse
 from openai.types.responses.response_create_params import (
     ToolChoice as OpenAIResponseToolChoice,
 )
 from openai.types.responses.response_input_item_param import FunctionCallOutput
 from openai.types.responses.response_input_message_item import (
     ResponseInputMessageItem as OpenAIResponseInputMessage,
-)
-from openai.types.responses.response_output_message import (
-    ResponseOutputMessage as OpenAIResponseOutputMessage,
 )
 from openai.types.responses.tool_param import ToolParam as OpenAIResponseToolParam
 from pydantic import BaseModel
@@ -43,9 +32,9 @@ from grasp_agents.typing.message import (
 from grasp_agents.typing.tool import BaseTool, ToolChoice
 
 from .chunk_converters import (
+    ResponseApiChunk,
     from_api_completion_chunk,
     to_completion_chunk,
-    ResponseApiChunk,
 )
 from .completion_converters import (
     completion_from_response,
@@ -71,19 +60,17 @@ class OpenAIResponsesConverters(Converters):
     @staticmethod
     def to_system_message(
         system_message: SystemMessage, **kwargs: Any
-    ) -> ResponseInputItemParam:
+    ) -> ResponseInputParam:
         return to_api_system_message(system_message, **kwargs)
 
     @staticmethod
-    def to_user_message(
-        user_message: UserMessage, **kwargs: Any
-    ) -> ResponseInputItemParam:
+    def to_user_message(user_message: UserMessage, **kwargs: Any) -> ResponseInputParam:
         return to_api_user_message(user_message, **kwargs)
 
     @staticmethod
     def to_assistant_message(
         assistant_message: AssistantMessage, **kwargs: Any
-    ) -> ResponseInputItemParam:
+    ) -> ResponseInputParam:
         return to_api_assistant_message(assistant_message, **kwargs)
 
     @staticmethod
@@ -102,7 +89,7 @@ class OpenAIResponsesConverters(Converters):
 
     @staticmethod
     def from_assistant_message(
-        raw_message: OpenAIResponseOutputMessage,
+        raw_message: OpenAIResponse,
         **kwargs: Any,
     ) -> AssistantMessage:
         return from_api_assistant_message(raw_message, **kwargs)
@@ -110,7 +97,7 @@ class OpenAIResponsesConverters(Converters):
     @staticmethod
     def to_tool(
         tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None, **kwargs: Any
-    ) -> OpenAIResponseToolParam | OpenAIChatToolParam:
+    ) -> OpenAIResponseToolParam:
         return to_api_tool(tool=tool, strict=strict, **kwargs)
 
     @staticmethod
@@ -120,7 +107,7 @@ class OpenAIResponsesConverters(Converters):
         return to_api_tool_choice(tool_choice=tool_choice, **kwargs)
 
     @staticmethod
-    def to_tool_message(tool_message: ToolMessage, **kwargs: Any) -> FunctionCallOutput:
+    def to_tool_message(tool_message: ToolMessage, **kwargs: Any) -> ResponseInputParam:
         return to_api_tool_message(tool_message, **kwargs)
 
     @staticmethod
@@ -143,7 +130,7 @@ class OpenAIResponsesConverters(Converters):
 
     @staticmethod
     def from_completion(
-        raw_completion: ParsedResponse[Any] | OpenAIResponse,
+        raw_completion: OpenAIResponse,
         name: str | None = None,
         **kwargs: Any,
     ) -> Completion:

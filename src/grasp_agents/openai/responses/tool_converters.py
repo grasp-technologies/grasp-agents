@@ -16,11 +16,7 @@ from ...typing.tool import BaseTool, NamedToolChoice, ToolChoice
 
 def to_api_tool(
     tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None
-) -> OpenAIResponseToolParam | OpenAIChatToolParam:
-    if strict:
-        return pydantic_function_tool(
-            model=tool.in_type, name=tool.name, description=tool.description
-        )
+) -> OpenAIResponseToolParam:
     return {
         "type": "function",
         "name": tool.name,

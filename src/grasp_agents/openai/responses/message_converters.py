@@ -22,13 +22,42 @@ from openai.types.responses.response_reasoning_item_param import Summary
 from grasp_agents.typing.content import Content, ContentPartText
 from grasp_agents.typing.message import (
     AssistantMessage,
+    RedactedThinkingBlock,
     SystemMessage,
+    ThinkingBlock,
     ToolMessage,
     UserMessage,
 )
 from grasp_agents.typing.tool import ToolCall
 
 from .content_converters import from_api_content, to_api_content
+
+
+def from_api_responses_output_message(
+    output: ResponseOutputMessage,
+) -> tuple[list[str], list[ChatCompletionAnnotation], str | None]:
+    content: list[str] = []
+    refusal: str | None = None
+    annotations: list[ChatCompletionAnnotation] = []
+    raw_contents = output.content
+    for raw_content in raw_contents:
+        if isinstance(raw_content, ResponseOutputText):
+            content.append(raw_content.text)
+            if raw_content.annotations:
+                annotations.extend(
+                    [
+                        ChatCompletionAnnotation(
+                            type="url_citation",
+                            url_citation=ChatCompletionAnnotationURLCitation(
+                                **api_annotation.model_dump()
+                            ),
+                        )
+                        for api_annotation in raw_content.annotations
+                    ]
+                )
+        else:
+            refusal = raw_content.refusal
+    return content, annotations, refusal
 
 
 def from_api_user_message(
@@ -55,45 +84,41 @@ def to_api_user_message(message: UserMessage) -> ResponseInputParam:
 def from_api_assistant_message(
     raw_completion: OpenAIResponse, name: str | None = None
 ) -> AssistantMessage:
-    outputs = raw_completion.output
+    output_items = raw_completion.output
     content: list[str] = []
     refusal: str | None = None
     reasoning_id: str | None = None
     encrypted_content = None
     reasoning_summary: list[str] = []
     tool_calls: list[ToolCall] = []
-    annotations = None
-    for output in outputs:
+    annotations: list[ChatCompletionAnnotation] = []
+    for output in output_items:
         if isinstance(output, ResponseOutputMessage):
-            raw_contents = output.content
-            for raw_content in raw_contents:
-                if isinstance(raw_content, ResponseOutputText):
-                    content.append(raw_content.text)
-                    if raw_content.annotations:
-                        annotations = [
-                            ChatCompletionAnnotation(
-                                type="url_citation",
-                                url_citation=ChatCompletionAnnotationURLCitation(
-                                    **api_annotation.model_dump()
-                                ),
-                            )
-                            for api_annotation in raw_content.annotations
-                        ]
-                else:
-                    refusal = raw_content.refusal
-        elif isinstance(output, ResponseReasoningItem):
+            content_output, annotation_output, refusal = (
+                from_api_responses_output_message(output)
+            )
+            content.extend(content_output)
+            annotations.extend(annotation_output)
+        if isinstance(output, ResponseReasoningItem):
             raw_summaries = output.summary
             encrypted_content = output.encrypted_content
             reasoning_id = output.id
             for raw_summary in raw_summaries:
                 reasoning_summary.append(raw_summary.text)
-        elif isinstance(output, ResponseFunctionToolCall):
+        if isinstance(output, ResponseFunctionToolCall):
             tool = ToolCall(
                 id=output.call_id,
                 tool_arguments=output.arguments,
                 tool_name=output.name,
             )
             tool_calls.append(tool)
+    thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [
+        ThinkingBlock(type="thinking", thinking=item) for item in reasoning_summary
+    ]
+    if encrypted_content:
+        thinking_blocks.append(
+            RedactedThinkingBlock(type="redacted_thinking", data=encrypted_content)
+        )
     return AssistantMessage(
         content=" ".join(content),
         annotations=annotations,
@@ -101,10 +126,7 @@ def from_api_assistant_message(
         tool_calls=tool_calls,
         refusal=refusal,
         response_id=raw_completion.id,
-        encrypted_content=encrypted_content,
-        thinking_blocks=[
-            {"type": "thinking", "thinking": item} for item in reasoning_summary
-        ],
+        thinking_blocks=thinking_blocks,
         reasoning_id=reasoning_id,
     )
 
@@ -115,7 +137,7 @@ def to_api_assistant_message(
     input_message: ResponseInputParam = []
     if message.content:
         text_message = EasyInputMessageParam(
-            role="assistant", content=message.content or "", type="message"
+            role="assistant", content=message.content, type="message"
         )
         input_message.append(text_message)
     if message.tool_calls:
@@ -133,9 +155,8 @@ def to_api_assistant_message(
         reasoning = ResponseReasoningItemParam(
             id=message.reasoning_id,
             summary=[
-                Summary(text=item.get("thinking", ""), type="summary_text")
-                for item in message.thinking_blocks or {}
-                if "type" in item and item["type"] == "thinking"
+                Summary(text=text, type="summary_text")
+                for text in message.thinking_summaries
             ],
             type="reasoning",
             encrypted_content=message.encrypted_content,
@@ -173,7 +194,7 @@ def from_api_tool_message(
     )
 
 
-# this is conversion form call output result
+# this is conversion from call output result
 def to_api_tool_message(message: ToolMessage) -> ResponseInputParam:
     input_message: ResponseInputParam = []
     input_message.append(

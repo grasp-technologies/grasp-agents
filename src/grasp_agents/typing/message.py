@@ -53,8 +53,26 @@ class AssistantMessage(MessageBase):
     annotations: Sequence[LiteLLMAnnotation] | None = None
     provider_specific_fields: dict[str, Any] | None = None
     response_id: str | None = None
-    encrypted_content: str | None = None
     reasoning_id: str | None = None
+
+    @property
+    def encrypted_content(self) -> str | None:
+        if not self.thinking_blocks:
+            return None
+        for block in self.thinking_blocks:
+            if block.get("type") == "redacted_thinking":
+                return block.get("data")
+        return None
+
+    @property
+    def thinking_summaries(self) -> list[str]:
+        if not self.thinking_blocks:
+            return []
+        return [
+            block.get("thinking", "")
+            for block in self.thinking_blocks
+            if block.get("type") == "thinking"
+        ]
 
 
 class UserMessage(MessageBase):

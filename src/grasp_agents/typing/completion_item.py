@@ -1,8 +1,9 @@
+from collections.abc import Sequence
 from uuid import uuid4
 
+from litellm.types.llms.openai import ChatCompletionAnnotation
 from pydantic import BaseModel, Field
 
-from ..typing.message import AssistantMessage, Role
 from ..typing.tool import ToolCall
 
 
@@ -11,8 +12,11 @@ class Reasoning(BaseModel):
     encrypted_content: str | None = None
 
 
-class CompletionItem(BaseModel):
+class TextOutput(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
-    item: AssistantMessage | ToolCall | Reasoning
-    role: Role | None = None
-    name: str | None = None
+    content: str
+    annotations: Sequence[ChatCompletionAnnotation] | None = None
+    refusal: str | None = None
+
+
+CompletionItem = ToolCall | Reasoning | TextOutput

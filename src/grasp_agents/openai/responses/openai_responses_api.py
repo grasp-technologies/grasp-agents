@@ -72,24 +72,6 @@ class OpenAIResponsesLLM(CloudLLM):
         super().__post_init__()
 
         _model_name = self.model_name
-        _api_provider = APIProvider(
-            name="openai",
-            base_url="https://api.openai.com/v1",
-            api_key=os.getenv("OPENAI_API_KEY"),
-            response_schema_support=("*",),
-        )
-
-        response_schema_support: bool = any(
-            fnmatch.fnmatch(_model_name, pat)
-            for pat in _api_provider.get("response_schema_support") or []
-        )
-        if self.apply_response_schema_via_provider and not response_schema_support:
-            raise ValueError(
-                "Native response schema validation is not supported for model "
-                f"'{_model_name}' by the API provider '{_api_provider['name']}'. "
-                "Please set apply_response_schema_via_provider=False."
-            )
-
         _openai_client_params = deepcopy(self.extra_openai_client_params or {})
         _openai_client_params["timeout"] = self.openai_client_timeout
         _openai_client_params["max_retries"] = self.openai_client_max_retries
@@ -97,13 +79,12 @@ class OpenAIResponsesLLM(CloudLLM):
             _openai_client_params["http_client"] = self.http_client
 
         _client = AsyncOpenAI(
-            base_url=_api_provider.get("base_url"),
-            api_key=_api_provider.get("api_key"),
+            base_url="https://api.openai.com/v1",
+            api_key=os.getenv("OPENAI_API_KEY"),
             **_openai_client_params,
         )
 
         object.__setattr__(self, "model_name", _model_name)
-        object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
 
     async def _get_api_completion(
@@ -191,7 +172,7 @@ class OpenAIResponsesLLM(CloudLLM):
                 return final_resp.response
         raise RuntimeError("No 'response.completed' event received")
 
-    async def _handle_api_stream_event(
+    async def _handle_api_stream_event(  # type: ignore
         self,
         event: ResponseStreamEvent,
         proc_name: str | None = None,
@@ -202,7 +183,12 @@ class OpenAIResponsesLLM(CloudLLM):
                 completion_chunk = self.converters.from_completion_chunk(
                     event, name=self.model_id
                 )
-            except TypeError:
+            except TypeError as e:
+                logger.debug(
+                    "Skipping chunk conversion for event type %s: %s",
+                    type(event).__name__,
+                    e,
+                )
                 return
             yield CompletionChunkEvent(
                 data=completion_chunk, src_name=proc_name, call_id=call_id
@@ -213,6 +199,11 @@ class OpenAIResponsesLLM(CloudLLM):
                     event, name=self.model_id
                 )
             except TypeError:
+                logger.exception(
+                    "Failed to convert ResponseOutputItemDoneEvent "
+                    "to CompletionItem (item type: %s)",
+                    getattr(event.item, "type", "unknown"),
+                )
                 return
             yield CompletionItemEvent(
                 data=completion_item, src_name=proc_name, call_id=call_id

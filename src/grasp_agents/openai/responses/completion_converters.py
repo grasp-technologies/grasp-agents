@@ -1,17 +1,9 @@
 from __future__ import annotations
 
 from openai.types.responses import Response as OpenAIResponse
-from openai.types.responses import (
-    ResponseFunctionToolCall,
-    ResponseOutputMessage,
-    ResponseOutputText,
-    ResponseReasoningItem,
-    ResponseUsage,
-)
+from openai.types.responses import ResponseUsage
 
 from grasp_agents.typing.completion import Completion, Usage
-from grasp_agents.typing.message import AssistantMessage
-from grasp_agents.typing.tool import ToolCall
 
 from .message_converters import from_api_assistant_message
 
@@ -19,8 +11,11 @@ from .message_converters import from_api_assistant_message
 def from_response_usage(raw_usage: ResponseUsage) -> Usage:
     return Usage(
         input_tokens=raw_usage.input_tokens,
-        output_tokens=raw_usage.output_tokens,
+        output_tokens=raw_usage.output_tokens
+        - raw_usage.output_tokens_details.reasoning_tokens
+        - raw_usage.input_tokens_details.cached_tokens,
         reasoning_tokens=raw_usage.output_tokens_details.reasoning_tokens,
+        cached_tokens=raw_usage.input_tokens_details.cached_tokens,
     )
 
 
