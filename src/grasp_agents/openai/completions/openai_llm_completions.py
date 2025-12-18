@@ -274,6 +274,14 @@ class OpenAILLM(CloudLLM):
                 event, name=self.model_id
             )
         except TypeError:
+            logger.exception(
+                "Failed to convert OpenAI completion chunk to internal format "
+                "for model '%s' (proc_name=%r, call_id=%r, event_type=%s)",
+                getattr(self, "model_id", None),
+                proc_name,
+                call_id,
+                type(event).__name__,
+            )
             return
         yield CompletionChunkEvent(
             data=completion_chunk, src_name=proc_name, call_id=call_id

@@ -12,8 +12,7 @@ def from_response_usage(raw_usage: ResponseUsage) -> Usage:
     return Usage(
         input_tokens=raw_usage.input_tokens,
         output_tokens=raw_usage.output_tokens
-        - raw_usage.output_tokens_details.reasoning_tokens
-        - raw_usage.input_tokens_details.cached_tokens,
+        - raw_usage.output_tokens_details.reasoning_tokens,
         reasoning_tokens=raw_usage.output_tokens_details.reasoning_tokens,
         cached_tokens=raw_usage.input_tokens_details.cached_tokens,
     )

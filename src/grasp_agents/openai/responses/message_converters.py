@@ -117,7 +117,7 @@ def from_api_assistant_message(
     ]
     if encrypted_content:
         thinking_blocks.append(
-            RedactedThinkingBlock(type="redacted_thinking", data=encrypted_content)
+            ThinkingBlock(type="thinking", signature=encrypted_content)
         )
     return AssistantMessage(
         content=" ".join(content),

@@ -60,8 +60,8 @@ class AssistantMessage(MessageBase):
         if not self.thinking_blocks:
             return None
         for block in self.thinking_blocks:
-            if block.get("type") == "redacted_thinking":
-                return block.get("data")
+            if block["type"] == "thinking":
+                return block.get("signature")
         return None
 
     @property
