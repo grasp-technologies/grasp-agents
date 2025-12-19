@@ -57,12 +57,9 @@ class AssistantMessage(MessageBase):
 
     @property
     def encrypted_content(self) -> str | None:
-        if not self.thinking_blocks:
-            return None
-        for block in self.thinking_blocks:
-            if block["type"] == "thinking":
-                return block.get("signature")
-        return None
+        return (
+            self.thinking_blocks[0].get("signature") if self.thinking_blocks else None
+        )
 
     @property
     def thinking_summaries(self) -> list[str]:

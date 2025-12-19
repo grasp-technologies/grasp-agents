@@ -112,13 +112,11 @@ def from_api_assistant_message(
                 tool_name=output.name,
             )
             tool_calls.append(tool)
-    thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [
+    thinking_blocks: list[ThinkingBlock] = [
         ThinkingBlock(type="thinking", thinking=item) for item in reasoning_summary
     ]
-    if encrypted_content:
-        thinking_blocks.append(
-            ThinkingBlock(type="thinking", signature=encrypted_content)
-        )
+    if encrypted_content and thinking_blocks:
+        thinking_blocks[0]["signature"] = encrypted_content
     return AssistantMessage(
         content=" ".join(content),
         annotations=annotations,
