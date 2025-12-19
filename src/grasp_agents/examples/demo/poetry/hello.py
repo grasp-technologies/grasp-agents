@@ -4,8 +4,10 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from grasp_agents import BaseTool, LLMAgent, Printer, RunContext
+from grasp_agents import BaseTool, LLMAgent, RunContext
 from grasp_agents.litellm import LiteLLM, LiteLLMSettings
+from grasp_agents.printer import print_event_stream
+from grasp_agents.typing.events import ProcPacketOutEvent
 
 load_dotenv()
 
@@ -21,7 +23,6 @@ You should first ask the student about their education, interests, and preferenc
 """
 
 
-# Tool input must be a Pydantic model to infer the JSON schema used by the LLM APIs
 class TeacherQuestion(BaseModel):
     question: str
 
@@ -56,20 +57,22 @@ class Problem(BaseModel):
 teacher = LLMAgent[None, Problem, None](
     name="teacher",
     llm=LiteLLM(
-        model_name="claude-sonnet-4-20250514",
+        model_name="claude-sonnet-4-5",
         llm_settings=LiteLLMSettings(reasoning_effort="low"),
     ),
     tools=[AskStudentTool()],
     final_answer_as_tool_call=True,
     sys_prompt=sys_prompt,
+    stream_llm_responses=True,
 )
 
 
 async def main():
-    ctx = RunContext[None](printer=Printer())
-    out = await teacher.run("start", ctx=ctx)
-    print(out.payloads[0])
-    print(ctx.usage_tracker.total_usage)
+    ctx = RunContext[None]()
+    async for event in print_event_stream(teacher.run_stream("start", ctx=ctx)):
+        if isinstance(event, ProcPacketOutEvent):
+            result = event.data.payloads[0]
+            print(f"\n<Suggested Problem>:\n\n{result.problem}\n")
 
 
 asyncio.run(main())

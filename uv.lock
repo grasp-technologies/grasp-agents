@@ -812,7 +812,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "0.6.40"
+version = "0.6.41"
 source = { editable = "." }
 dependencies = [
     { name = "dotenv" },
@@ -859,7 +859,7 @@ requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "google-genai", specifier = ">=1.45.0" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
-    { name = "litellm", git = "https://github.com/BerriAI/litellm.git?rev=v1.80.10.rc.4" },
+    { name = "litellm", specifier = "==1.80.10" },
     { name = "numpy", specifier = "<2" },
     { name = "openai", specifier = ">=1.68.2,<2.9.0" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'observability'", specifier = ">=0.1.25" },
@@ -1419,7 +1419,7 @@ wheels = [
 [[package]]
 name = "litellm"
 version = "1.80.10"
-source = { git = "https://github.com/BerriAI/litellm.git?rev=v1.80.10.rc.4#2fd78a804be3a7cf0ee88ad426f024bc1d1eacb2" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "click" },
@@ -1435,6 +1435,10 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "tiktoken" },
     { name = "tokenizers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/44/0aaa7449e7c4aa05668ec03f1f68a01b1e476591071d9659a68db19371a2/litellm-1.80.10.tar.gz", hash = "sha256:4a4aff7558945c2f7e5c6523e67c1b5525a46b10b0e1ad6b8f847cb13b16779e", size = 12764777, upload-time = "2025-12-14T02:07:05.362Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/a9/4814b6aa58f6705df2831eaadeb5bc8240684c8c9d5964245212f85049d1/litellm-1.80.10-py3-none-any.whl", hash = "sha256:9b3e561efaba0eb1291cb1555d3dcb7283cf7f3cb65aadbcdb42e2a8765898c8", size = 11264240, upload-time = "2025-12-14T02:07:02.414Z" },
 ]
 
 [[package]]
