@@ -103,8 +103,20 @@ def from_api_completion_chunk(
             logprobs=api_chunk.logprobs,
             usage=None,
         )
-
-    raise TypeError(f"Unsupported chunk event: {type(api_chunk)}")
+    supported_types = (
+        ResponseReasoningSummaryTextDeltaEvent,
+        ResponseFunctionCallArgumentsDeltaEvent,
+        ResponseOutputItemAddedEvent,
+        ResponseTextDeltaEvent,
+    )
+    supported_type_names = ", ".join(t.__name__ for t in supported_types)
+    raise TypeError(
+        f"Unsupported chunk event type: {type(api_chunk)!r}. "
+        f"Supported chunk event types are: {supported_type_names}. "
+        "Ensure that you pass a chunk produced by the OpenAI Responses API "
+        "streaming interface (for example, a text, reasoning summary, function "
+        "call arguments delta, or function tool call output item event)."
+    )
 
 
 def to_completion_chunk(completion_chunk: CompletionChunk) -> ResponseStreamEvent:

@@ -183,11 +183,10 @@ class OpenAIResponsesLLM(CloudLLM):
                 completion_chunk = self.converters.from_completion_chunk(
                     event, name=self.model_id
                 )
-            except TypeError as e:
-                logger.debug(
-                    "Skipping chunk conversion for event type %s: %s",
+            except TypeError:
+                logger.exception(
+                    "Skipping chunk conversion for event type %s",
                     type(event).__name__,
-                    e,
                 )
                 return
             yield CompletionChunkEvent(

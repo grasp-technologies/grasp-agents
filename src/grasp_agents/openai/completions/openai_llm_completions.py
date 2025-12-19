@@ -275,11 +275,7 @@ class OpenAILLM(CloudLLM):
             )
         except TypeError:
             logger.exception(
-                "Failed to convert OpenAI completion chunk to internal format "
-                "for model '%s' (proc_name=%r, call_id=%r, event_type=%s)",
-                getattr(self, "model_id", None),
-                proc_name,
-                call_id,
+                "Skipping chunk conversion for event type %s",
                 type(event).__name__,
             )
             return
