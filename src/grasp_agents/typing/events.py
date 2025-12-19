@@ -15,6 +15,7 @@ from .completion_chunk import (
     ThinkingChunk,
     ToolCallChunk,
 )
+from .completion_item import CompletionItem
 from .message import (
     AssistantMessage,
     MessageBase,
@@ -42,6 +43,7 @@ class EventType(StrEnum):
     GEN_MSG = "gen_message"
 
     COMP = "completion"
+    COMP_ITEM = "completion_item"
     COMP_START = "completion_start"
     COMP_END = "completion_end"
 
@@ -104,6 +106,11 @@ class DummyEvent(Event[Any], frozen=True):
 
 class CompletionEvent(Event[Completion], frozen=True):
     type: Literal[EventType.COMP] = EventType.COMP
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
+
+
+class CompletionItemEvent(Event[CompletionItem], frozen=True):
+    type: Literal[EventType.COMP_ITEM] = EventType.COMP_ITEM
     src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 

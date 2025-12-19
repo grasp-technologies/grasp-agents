@@ -52,6 +52,24 @@ class AssistantMessage(MessageBase):
     thinking_blocks: Sequence[ThinkingBlock | RedactedThinkingBlock] | None = None
     annotations: Sequence[LiteLLMAnnotation] | None = None
     provider_specific_fields: dict[str, Any] | None = None
+    response_id: str | None = None
+    reasoning_id: str | None = None
+
+    @property
+    def encrypted_content(self) -> str | None:
+        return (
+            self.thinking_blocks[0].get("signature") if self.thinking_blocks else None
+        )
+
+    @property
+    def thinking_summaries(self) -> list[str]:
+        if not self.thinking_blocks:
+            return []
+        return [
+            block.get("thinking", "")
+            for block in self.thinking_blocks
+            if block.get("type") == "thinking"
+        ]
 
 
 class UserMessage(MessageBase):

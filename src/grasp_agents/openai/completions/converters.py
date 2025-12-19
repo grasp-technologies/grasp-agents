@@ -3,12 +3,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..typing.completion import Completion, Usage
-from ..typing.completion_chunk import CompletionChunk
-from ..typing.content import Content
-from ..typing.converters import Converters
-from ..typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
-from ..typing.tool import BaseTool, ToolChoice
+from ...typing.completion import Completion, Usage
+from ...typing.completion_chunk import CompletionChunk
+from ...typing.completion_item import CompletionItem
+from ...typing.content import Content
+from ...typing.converters import Converters
+from ...typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
+from ...typing.tool import BaseTool, ToolChoice
 from . import (
     OpenAIAssistantMessageParam,
     OpenAICompletion,
@@ -22,7 +23,7 @@ from . import (
     OpenAIUsage,
     OpenAIUserMessageParam,
 )
-from .completion_chunk_converters import from_api_completion_chunk
+from .chunk_converters import from_api_completion_chunk
 from .completion_converters import (
     from_api_completion,
     from_api_completion_usage,
@@ -138,3 +139,9 @@ class OpenAIConverters(Converters):
         raw_chunk: OpenAICompletionChunk, name: str | None = None, **kwargs: Any
     ) -> CompletionChunk:
         return from_api_completion_chunk(raw_chunk, name=name, **kwargs)
+
+    @staticmethod
+    def from_api_item(
+        raw_event: Any, name: str | None = None, **kwargs: Any
+    ) -> CompletionItem:
+        raise NotImplementedError

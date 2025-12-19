@@ -1,7 +1,7 @@
 import fnmatch
 import logging
 import os
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
@@ -15,8 +15,10 @@ from openai.lib.streaming.chat import ChatCompletionStreamState
 from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
-from ..cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
-from ..typing.tool import BaseTool
+from ...cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
+from ...typing.completion_chunk import CompletionChunk
+from ...typing.events import CompletionChunkEvent
+from ...typing.tool import BaseTool
 from . import (
     OpenAICompletion,
     OpenAICompletionChunk,
@@ -260,3 +262,23 @@ class OpenAILLM(CloudLLM):
             state.handle_chunk(chunk)
 
         return state.get_final_completion()
+
+    async def _handle_api_stream_event(
+        self,
+        event: OpenAICompletionChunk,
+        proc_name: str | None = None,
+        call_id: str | None = None,
+    ) -> AsyncGenerator[CompletionChunkEvent[CompletionChunk], None]:
+        try:
+            completion_chunk = self.converters.from_completion_chunk(
+                event, name=self.model_id
+            )
+        except TypeError:
+            logger.exception(
+                "Skipping chunk conversion for event type %s",
+                type(event).__name__,
+            )
+            return
+        yield CompletionChunkEvent(
+            data=completion_chunk, src_name=proc_name, call_id=call_id
+        )
