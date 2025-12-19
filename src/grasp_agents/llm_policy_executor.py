@@ -96,6 +96,7 @@ class LLMPolicyExecutor(Generic[CtxT]):
         final_answer_as_tool_call: bool = False,
         stream_llm_responses: bool = True,
         stream_tools: bool = False,
+        tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__()
 
@@ -120,6 +121,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
         self._tools = {t.name: t for t in tools_list} if tools_list else None
+
+        self._tracing_exclude_input_fields = tracing_exclude_input_fields
 
     @property
     def agent_name(self) -> str:
@@ -156,6 +159,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
     @property
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
         return self._tools or {}
+
+    @property
+    def tracing_exclude_input_fields(self) -> set[str] | None:
+        return self._tracing_exclude_input_fields
 
     def check_for_final_answer_impl(
         self,

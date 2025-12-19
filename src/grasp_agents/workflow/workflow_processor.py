@@ -18,12 +18,14 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         end_proc: Processor[Any, OutT, CtxT],
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
+        tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__(
             name=name,
             recipients=(recipients or end_proc.recipients),
             max_retries=0,
             tracing_enabled=tracing_enabled,
+            tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
         self._in_type = start_proc.in_type
