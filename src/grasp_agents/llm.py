@@ -15,6 +15,7 @@ from grasp_agents.utils.validation import (
 )
 
 from .errors import (
+    CompletionError,
     JSONSchemaValidationError,
     LLMResponseValidationError,
     LLMToolCallValidationError,
@@ -144,7 +145,11 @@ class LLM(ABC):
                     **extra_llm_settings,
                 )
 
-            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+            except (
+                LLMResponseValidationError,
+                LLMToolCallValidationError,
+                CompletionError,
+            ) as err:
                 n_attempt += 1
                 if n_attempt <= self.max_response_retries:
                     logger.warning(
@@ -193,7 +198,11 @@ class LLM(ABC):
                     yield event
                 return
 
-            except (LLMResponseValidationError, LLMToolCallValidationError) as err:
+            except (
+                LLMResponseValidationError,
+                LLMToolCallValidationError,
+                CompletionError,
+            ) as err:
                 n_attempt += 1
                 err_data = LLMStreamingErrorData(
                     error=err, model_name=self.model_name, model_id=self.model_id

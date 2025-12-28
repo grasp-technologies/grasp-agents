@@ -21,8 +21,12 @@ def from_api_completion_chunk(
             f"{getattr(api_completion_chunk, 'error', None)}"
         )
 
+    if not api_completion_chunk.choices:
+        raise CompletionError("No choices in completion")
+
     if len(api_completion_chunk.choices) > 1:
         raise CompletionError("Multiple choices are not supported")
+
     api_choice = api_completion_chunk.choices[0]
 
     # Some providers return None for the message when finish_reason is other than "stop"

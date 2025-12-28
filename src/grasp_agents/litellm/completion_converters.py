@@ -30,8 +30,12 @@ def from_api_completion_usage(api_usage: LiteLLMUsage) -> Usage:
 def from_api_completion(
     api_completion: LiteLLMCompletion, name: str | None = None
 ) -> Completion:
+    if not api_completion.choices:
+        raise CompletionError("No choices in completion")
+
     if len(api_completion.choices) > 1:
         raise CompletionError("Multiple choices are not supported")
+
     api_choice = cast("LiteLLMChoice", api_completion.choices[0])
 
     message = from_api_assistant_message(api_choice.message, name=name)

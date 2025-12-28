@@ -37,8 +37,12 @@ def from_api_completion(
             f"Completion API error: {getattr(api_completion, 'error', None)}"
         )
 
+    if not api_completion.choices:
+        raise CompletionError("No choices in completion")
+
     if len(api_completion.choices) > 1:
         raise CompletionError("Multiple choices are not supported")
+
     api_choice = api_completion.choices[0]
 
     # Some providers return None for the message when finish_reason is other than "stop"
