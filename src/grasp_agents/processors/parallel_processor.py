@@ -131,7 +131,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         async for idx, event in stream_concurrent(streams):
             if (
                 isinstance(event, ProcPacketOutEvent)
-                and event.src_name == self._subproc.name
+                and event.src_name == subproc_replicas[idx].name
             ):
                 out_packets_map[idx] = event.data
             else:

@@ -599,8 +599,17 @@ class LLMPolicyExecutor(Generic[CtxT]):
         self, completion: Completion, *, ctx: RunContext[CtxT], call_id: str
     ) -> None:
         ctx.completions[self.agent_name].append(completion)
+        parts = call_id.split("/")
+        lesson_idx = None
+        for i, part in enumerate(parts[:-1]):
+            if (part == "lesson") and parts[i + 1].isdigit():
+                lesson_idx = parts[i + 1]
+                break
+        if lesson_idx is None and parts[-1].isdigit():
+            lesson_idx = parts[-1]
+        usage_key = f"{self.agent_name}/{lesson_idx}" if lesson_idx else self.agent_name
         ctx.usage_tracker.update(
-            agent_name=self.agent_name,
+            agent_name=usage_key,
             completions=[completion],
             model_name=self.llm.model_name,
         )

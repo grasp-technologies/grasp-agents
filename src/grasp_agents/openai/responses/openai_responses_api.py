@@ -44,14 +44,14 @@ logger = logging.getLogger(__name__)
 class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
     # web search should be put as a tool:
     # tools=[{
-    #   "type": "web_search_preview",
-    #   "search_context_size": "high",  # Options: "low", "medium", "high"
+    #   "type": "web_search",
     #    "user_location": {...}
     # }]
     reasoning: Reasoning
     parallel_tool_calls: bool
     max_output_tokens: int
     top_logprobs: int | None
+    builtin_tools: list[ResponsesToolParam]
 
     text: ResponseTextConfigParam
     stream_options: ResponsesStreamOptionsParam | None
@@ -97,7 +97,8 @@ class OpenAIResponsesLLM(CloudLLM):
         **api_llm_settings: Any,
     ) -> ParsedResponse[Any] | Response:
         messages = [subitem for item in api_messages for subitem in item]
-        tools = api_tools or []
+        builtin_tools = api_llm_settings.pop("builtin_tools", [])
+        tools = (api_tools or []) + (builtin_tools)
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
         text_format = api_response_schema if api_response_schema is not None else omit
         response_id = api_llm_settings.get("previous_response_id")
@@ -128,7 +129,9 @@ class OpenAIResponsesLLM(CloudLLM):
         **api_llm_settings: Any,
     ) -> AsyncIterator[ResponseStreamEvent]:
         messages = [subitem for item in api_messages for subitem in item]
-        tools = api_tools if api_tools is not None else omit
+        builtin_tools = api_llm_settings.pop("builtin_tools", [])
+        all_tools = [*builtin_tools, *(api_tools or [])]
+        tools = all_tools if all_tools != [] else omit
         response_id = api_llm_settings.get("previous_response_id")
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
         text_format = api_response_schema if api_response_schema is not None else omit
