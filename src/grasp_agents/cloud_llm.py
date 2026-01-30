@@ -176,7 +176,7 @@ class CloudLLM(LLM):
             response_schema_by_xml_tag=response_schema_by_xml_tag,
         )
         # if not self.apply_tool_call_schema_via_provider and tools is not None:
-        if tools is not None:
+        if tools:
             self._validate_tool_calls(completion, tools=tools)
 
         return completion
