@@ -1,22 +1,18 @@
-import fnmatch
 import logging
 import os
-from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from openai import AsyncOpenAI
-from openai._types import omit
+from openai._types import omit  # noqa: PLC2701
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
 )
 from openai.types.responses import (
     ParsedResponse,
     Response,
-    ResponseCompletedEvent,
-    ResponseInputParam,
-    ResponseOutputItemDoneEvent,
     ResponseStreamEvent,
     ResponseTextConfigParam,
 )
@@ -30,15 +26,19 @@ from openai.types.responses.tool_param import (
     ToolParam as ResponsesToolParam,
 )
 from openai.types.shared import Reasoning
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.cloud_llm import APIProvider, CloudLLM, CloudLLMSettings
-from grasp_agents.typing.events import CompletionChunkEvent, CompletionItemEvent
-from grasp_agents.typing.tool import BaseTool
+from grasp_agents.cloud_llm import CloudLLM, CloudLLMSettings
+from grasp_agents.typing.response import Response as InternalResponse
+from grasp_agents.typing.stream_events import StreamEvent
+from grasp_agents.typing.tool import BaseTool, ToolChoice
 
-from .converters import OpenAIResponsesConverters, ResponseApiChunk
+from .converters import OpenAIResponsesConverters
+from .response_converters import from_openai_response
 
 logger = logging.getLogger(__name__)
+
+_STREAM_EVENT_ADAPTER: TypeAdapter[StreamEvent] = TypeAdapter(StreamEvent)
 
 
 class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
@@ -87,22 +87,58 @@ class OpenAIResponsesLLM(CloudLLM):
         object.__setattr__(self, "model_name", _model_name)
         object.__setattr__(self, "client", _client)
 
-    async def _get_api_completion(
+    # --- Input preparation ---
+
+    def _make_api_input(
         self,
-        api_messages: list[ResponseInputParam],
+        input: list[Any],  # noqa: A002
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        tool_choice: ToolChoice | None = None,
+        response_schema: Any | None = None,
+        **extra_llm_settings: Any,
+    ) -> dict[str, Any]:
+        api_tools: list[ResponsesToolParam] | None = None
+        if tools:
+            strict = self.apply_tool_call_schema_via_provider
+            api_tools = [
+                self.converters.to_tool(tool, strict=strict)
+                for tool in tools.values()
+            ]
+
+        api_tool_choice: ResponseToolChoice | None = None
+        if tool_choice is not None:
+            api_tool_choice = self.converters.to_tool_choice(tool_choice)
+
+        merged: dict[str, Any] = dict(self.llm_settings or {})
+        merged.update(extra_llm_settings)
+
+        return {
+            "api_input": input,
+            "api_tools": api_tools,
+            "api_tool_choice": api_tool_choice,
+            "api_response_schema": response_schema,
+            **merged,
+        }
+
+    # --- Provider API layer ---
+
+    async def _get_api_response(
+        self,
+        api_input: list[Any],
         *,
-        api_tools: list[ResponsesToolParam] | None = None,
-        api_tool_choice: ResponseToolChoice | None = None,
-        api_response_schema: type[Any] | None = None,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_response_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> ParsedResponse[Any] | Response:
-        messages = [subitem for item in api_messages for subitem in item]
+        messages = [subitem for item in api_input for subitem in item]
         tools = api_tools or []
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
         text_format = api_response_schema if api_response_schema is not None else omit
         response_id = api_llm_settings.get("previous_response_id")
+
         if self.apply_response_schema_via_provider:
-            return await self.client.responses.parse(
+            return await self.client.responses.parse(  # type: ignore[reportUnknownVariableType]
                 model=self.model_name,
                 input=[messages[-1]] if response_id else messages,
                 tools=tools,
@@ -119,15 +155,16 @@ class OpenAIResponsesLLM(CloudLLM):
             **api_llm_settings,
         )
 
-    async def _get_api_completion_stream(
+    async def _get_api_stream(
         self,
-        api_messages: list[ResponseInputParam],
-        api_tools: Iterable[ResponsesToolParam] | None = None,
-        api_tool_choice: ResponseToolChoice | None = None,
-        api_response_schema: type[Any] | None = None,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_response_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[ResponseStreamEvent]:
-        messages = [subitem for item in api_messages for subitem in item]
+        messages = [subitem for item in api_input for subitem in item]
         tools = api_tools if api_tools is not None else omit
         response_id = api_llm_settings.get("previous_response_id")
         tool_choice = api_tool_choice if api_tool_choice is not None else omit
@@ -159,51 +196,13 @@ class OpenAIResponsesLLM(CloudLLM):
 
         return iterator()
 
-    def combine_completion_chunks(
-        self,
-        completion_chunks: list[ResponseStreamEvent],
-        response_schema: Any | None = None,
-        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-    ) -> Response:
-        final_resp = None
-        if len(completion_chunks) > 0:
-            final_resp = completion_chunks[-1]
-            if isinstance(final_resp, ResponseCompletedEvent):
-                return final_resp.response
-        raise RuntimeError("No 'response.completed' event received")
+    # --- Conversion layer ---
 
-    async def _handle_api_stream_event(  # type: ignore
-        self,
-        event: ResponseStreamEvent,
-        proc_name: str | None = None,
-        call_id: str | None = None,
-    ) -> AsyncGenerator[CompletionChunkEvent[Any] | CompletionItemEvent, None]:
-        if isinstance(event, ResponseApiChunk):
-            try:
-                completion_chunk = self.converters.from_completion_chunk(
-                    event, name=self.model_id
-                )
-            except TypeError:
-                logger.exception(
-                    "Skipping chunk conversion for event type %s",
-                    type(event).__name__,
-                )
-                return
-            yield CompletionChunkEvent(
-                data=completion_chunk, src_name=proc_name, call_id=call_id
-            )
-        if isinstance(event, ResponseOutputItemDoneEvent):
-            try:
-                completion_item = self.converters.from_api_item(
-                    event, name=self.model_id
-                )
-            except TypeError:
-                logger.exception(
-                    "Failed to convert ResponseOutputItemDoneEvent "
-                    "to CompletionItem (item type: %s)",
-                    getattr(event.item, "type", "unknown"),
-                )
-                return
-            yield CompletionItemEvent(
-                data=completion_item, src_name=proc_name, call_id=call_id
-            )
+    def _convert_api_response(self, raw: Any) -> InternalResponse:
+        return from_openai_response(raw)
+
+    async def _convert_api_stream(
+        self, api_stream: AsyncIterator[Any]
+    ) -> AsyncIterator[StreamEvent]:
+        async for sdk_event in api_stream:
+            yield _STREAM_EVENT_ADAPTER.validate_python(sdk_event.model_dump())

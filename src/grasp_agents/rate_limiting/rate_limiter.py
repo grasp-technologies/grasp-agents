@@ -13,8 +13,6 @@ from .utils import split_pos_args
 logger = logging.getLogger(__name__)
 
 
-MAX_RPM = 1e10
-
 RateLimDecorator = Callable[[AsyncCallable[P, R]], AsyncCallable[P, R]]
 
 

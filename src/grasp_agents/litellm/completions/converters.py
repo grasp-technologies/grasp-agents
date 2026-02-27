@@ -3,11 +3,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..openai.completions.content_converters import (
+from grasp_agents.openai.completions.content_converters import (
     from_api_content,
     to_api_content,
 )
-from ..openai.completions.message_converters import (
+from grasp_agents.openai.completions.message_converters import (
     from_api_system_message,
     from_api_tool_message,
     from_api_user_message,
@@ -15,14 +15,23 @@ from ..openai.completions.message_converters import (
     to_api_tool_message,
     to_api_user_message,
 )
-from ..openai.completions.tool_converters import to_api_tool, to_api_tool_choice
-from ..typing.completion import Completion, Usage
-from ..typing.completion_chunk import CompletionChunk
-from ..typing.completion_item import CompletionItem
-from ..typing.content import Content
-from ..typing.converters import Converters
-from ..typing.message import AssistantMessage, SystemMessage, ToolMessage, UserMessage
-from ..typing.tool import BaseTool, ToolChoice
+from grasp_agents.openai.completions.tool_converters import (
+    to_api_tool,
+    to_api_tool_choice,
+)
+from grasp_agents.typing.completion import Completion, Usage
+from grasp_agents.typing.completion_chunk import CompletionChunk
+from grasp_agents.typing.completion_item import CompletionItem
+from grasp_agents.typing.content import Content
+from grasp_agents.typing.converters import Converters
+from grasp_agents.typing.message import (
+    AssistantMessage,
+    SystemMessage,
+    ToolMessage,
+    UserMessage,
+)
+from grasp_agents.typing.tool import BaseTool, ToolChoice
+
 from . import (
     LiteLLMCompletion,
     LiteLLMCompletionChunk,

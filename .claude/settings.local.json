@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:wmedia.es)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:openresponses.com)",
+      "WebFetch(domain:www.open-responses.com)",
+      "Bash(uv run pyright:*)",
+      "Bash(uv run ruff check:*)",
+      "Bash(uv run python:*)",
+      "Bash(uv run python3:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:www.openresponses.org)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:community.openai.com)"
+    ]
+  }
+}

@@ -5,7 +5,211 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
+from openai.types.responses import (
+    ResponseInputFile,
+    ResponseInputImage,
+    ResponseInputText,
+    ResponseOutputRefusal,
+    ResponseOutputText,
+)
+from openai.types.responses.response_output_text import Annotation, Logprob
+from openai.types.responses.response_reasoning_item import (
+    Content as ResponseReasoningContent,
+)
+from openai.types.responses.response_reasoning_item import (
+    Summary as ResponseReasoningSummary,
+)
 from pydantic import AnyUrl, BaseModel, Field
+
+ImageDetail: TypeAlias = Literal["low", "high", "auto"]
+
+BASE64_DATA_URL_PREFIX = "data:image/jpeg;base64,"
+
+
+class InputImageContent(ResponseInputImage):
+    """
+    Image content in a user/system/developer message.
+
+    Supports URL, base64, or file_id.
+    """
+
+    # OpenResponses fields:
+    type: Literal["input_image"] = "input_image"
+    image_url: str | None = None
+    detail: ImageDetail = "auto"
+
+    # OpenAI-specific fields:
+    file_id: str | None = None
+
+    # grasp-agents fields:
+
+    @property
+    def is_base64(self) -> bool:
+        return self.image_url is not None and self.image_url.startswith("data:")
+
+    @property
+    def is_url(self) -> bool:
+        return self.image_url is not None and not self.image_url.startswith("data:")
+
+    @property
+    def is_file_id(self) -> bool:
+        return self.file_id is not None
+
+    def to_str(self) -> str:
+        if self.file_id is not None:
+            return self.file_id
+        if self.image_url is not None:
+            return self.image_url
+        return ""
+
+    @classmethod
+    def from_base64(
+        cls, base64_encoding: str, *, detail: ImageDetail = "auto", **kwargs: Any
+    ) -> "InputImageContent":
+        return cls(
+            image_url=f"{BASE64_DATA_URL_PREFIX}{base64_encoding}",
+            detail=detail,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_path(
+        cls, img_path: str | Path, *, detail: ImageDetail = "auto", **kwargs: Any
+    ) -> "InputImageContent":
+        img_bytes = Path(img_path).read_bytes()
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        return cls(image_url=f"{BASE64_DATA_URL_PREFIX}{b64}", detail=detail, **kwargs)
+
+    @classmethod
+    def from_url(
+        cls, img_url: str, *, detail: ImageDetail = "auto", **kwargs: Any
+    ) -> "InputImageContent":
+        return cls(image_url=img_url, detail=detail, **kwargs)
+
+    @classmethod
+    def from_file_id(
+        cls, file_id: str, *, detail: ImageDetail = "auto", **kwargs: Any
+    ) -> "InputImageContent":
+        return cls(file_id=file_id, detail=detail, **kwargs)
+
+
+class InputTextContent(ResponseInputText):
+    """Text content in a user/system/developer message."""
+
+    # OpenResponses fields:
+    type: Literal["input_text"] = "input_text"
+    text: str
+
+
+class InputFileContent(ResponseInputFile):
+    """
+    File content in a user/system/developer message.
+
+    Supports base64 data, URL, or file_id.
+    """
+
+    # OpenResponses fields:
+    type: Literal["input_file"] = "input_file"
+    filename: str | None = None
+    file_data: str | None = None
+    file_url: str | None = None
+
+    # OpenAI-specific fields:
+    file_id: str | None = None
+
+    # grasp-agents fields:
+
+    @property
+    def is_base64(self) -> bool:
+        return self.file_data is not None
+
+    @property
+    def is_url(self) -> bool:
+        return self.file_url is not None
+
+    @property
+    def is_file_id(self) -> bool:
+        return self.file_id is not None
+
+    def to_str(self) -> str:
+        if self.filename is not None:
+            return self.filename
+        if self.file_url is not None:
+            return self.file_url
+        if self.file_id is not None:
+            return self.file_id
+        return ""
+
+    @classmethod
+    def from_base64(
+        cls, data: str, *, filename: str | None = None, **kwargs: Any
+    ) -> "InputFileContent":
+        return cls(file_data=data, filename=filename, **kwargs)
+
+    @classmethod
+    def from_url(
+        cls, url: str, *, filename: str | None = None, **kwargs: Any
+    ) -> "InputFileContent":
+        return cls(file_url=url, filename=filename, **kwargs)
+
+    @classmethod
+    def from_file_id(
+        cls, file_id: str, *, filename: str | None = None, **kwargs: Any
+    ) -> "InputFileContent":
+        return cls(file_id=file_id, filename=filename, **kwargs)
+
+    @classmethod
+    def from_path(cls, file_path: str | Path, **kwargs: Any) -> "InputFileContent":
+        path = Path(file_path)
+        data = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return cls(file_data=data, filename=path.name, **kwargs)
+
+
+InputContent = Annotated[
+    InputTextContent | InputImageContent | InputFileContent, Field(discriminator="type")
+]
+
+
+class OutputTextContent(ResponseOutputText):
+    """Text content produced by the model in an output message."""
+
+    # OpenResponses fields:
+    type: Literal["output_text"] = "output_text"
+    annotations: list[Annotation] = Field(default_factory=list[Annotation])
+    logprobs: list[Logprob] | None = None
+    text: str
+
+
+class OutputRefusalContent(ResponseOutputRefusal):
+    """Refusal content when the model declines to respond."""
+
+    # OpenResponses fields:
+    type: Literal["refusal"] = "refusal"
+    refusal: str
+
+
+OutputContent = Annotated[
+    OutputTextContent | OutputRefusalContent, Field(discriminator="type")
+]
+
+
+class ReasoningTextContent(ResponseReasoningContent):
+    """Reasoning content produced by the model in an output message."""
+
+    # OpenResponses fields:
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ReasoningSummaryContent(ResponseReasoningSummary):
+    """Summary block within a reasoning item."""
+
+    # OpenResponses fields (ReasoningSummaryContentParam):
+    type: Literal["summary_text"] = "summary_text"
+    text: str
+
+
+# --- Legacy types (kept for backward compatibility) ---
 
 
 class ContentType(StrEnum):
@@ -13,15 +217,11 @@ class ContentType(StrEnum):
     IMAGE = "image"
 
 
-ImageDetail: TypeAlias = Literal["low", "high", "auto"]
-
-
 class ImageData(BaseModel):
     type: Literal["url", "base64"]
     url: AnyUrl | None = None
     base64: str | None = None
 
-    # Supported by OpenAI API
     detail: ImageDetail = "high"
 
     @classmethod

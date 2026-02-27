@@ -1,5 +1,5 @@
 import inspect
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from typing import Any
 
 from .types import AsyncFunctionOrMethod, P, R
@@ -33,19 +33,3 @@ def split_pos_args(
     remaining_args = args
 
     return self_arg, remaining_args
-
-
-def partial_callable(
-    call: Callable[..., Coroutine[Any, Any, R]],
-    self_obj: Any,
-    *args: Any,
-    **kwargs: Any,
-) -> Callable[..., Coroutine[Any, Any, R]]:
-    async def wrapper(inp: Any) -> R:
-        if self_obj is not None:
-            # `call` is a method
-            return await call(self_obj, inp, *args, **kwargs)
-        # `call` is a function
-        return await call(inp, *args, **kwargs)
-
-    return wrapper

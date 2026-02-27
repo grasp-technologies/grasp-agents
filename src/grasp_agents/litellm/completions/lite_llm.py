@@ -1,8 +1,8 @@
 import logging
 from collections import defaultdict
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 import litellm
 from litellm.litellm_core_utils.get_supported_openai_params import (
@@ -18,23 +18,22 @@ from litellm.utils import (
     supports_response_schema,
     supports_tool_choice,
 )
-
-# from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
-from ..cloud_llm import APIProvider, CloudLLM
-from ..openai.completions import OpenAILLMSettings
-from ..typing.completion_chunk import CompletionChunk
-from ..typing.events import CompletionChunkEvent
-from ..typing.tool import BaseTool
+from ...cloud_llm import APIProvider, CloudLLM
+from ...openai.completions import OpenAILLMSettings
+from ...typing.response import Response
+from ...typing.stream_events import StreamEvent
+from ...typing.tool import BaseTool, ToolChoice
 from . import (
     LiteLLMCompletion,
     LiteLLMCompletionChunk,
-    OpenAIMessageParam,
     OpenAIToolChoiceOptionParam,
     OpenAIToolParam,
 )
 from .converters import LiteLLMConverters
+from .response_converters import from_litellm_completion
+from .stream_event_converters import LiteLLMStreamConverter
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +80,6 @@ class LiteLLM(CloudLLM):
                 "allowed_openai_params": self.allowed_openai_params,
                 "mock_response": self.mock_response,
                 "mock_testing_fallbacks": self.mock_testing_fallbacks,
-                # "max_retries": self.max_client_retries,
-                # "timeout": self.client_timeout,
-                # "deployment_id": deployment_id,
-                # "api_version": api_version,
             }
         )
 
@@ -167,17 +162,53 @@ class LiteLLM(CloudLLM):
     def supports_tool_choice(self) -> bool:
         return supports_tool_choice(model=self.model_name)
 
-    async def _get_api_completion(
+    # --- Input preparation ---
+
+    def _make_api_input(
         self,
-        api_messages: list[OpenAIMessageParam],
-        api_tools: list[OpenAIToolParam] | None = None,
-        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
+        input: list[Any],  # noqa: A002
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        tool_choice: ToolChoice | None = None,
+        response_schema: Any | None = None,
+        **extra_llm_settings: Any,
+    ) -> dict[str, Any]:
+        api_tools: list[OpenAIToolParam] | None = None
+        if tools:
+            strict = self.apply_tool_call_schema_via_provider
+            api_tools = [
+                self.converters.to_tool(tool, strict=strict)
+                for tool in tools.values()
+            ]
+
+        api_tool_choice: OpenAIToolChoiceOptionParam | None = None
+        if tool_choice is not None:
+            api_tool_choice = self.converters.to_tool_choice(tool_choice)
+
+        merged: dict[str, Any] = dict(self.llm_settings or {})
+        merged.update(extra_llm_settings)
+
+        return {
+            "api_input": input,
+            "api_tools": api_tools,
+            "api_tool_choice": api_tool_choice,
+            "api_response_schema": response_schema,
+            **merged,
+        }
+
+    # --- Provider API layer ---
+
+    async def _get_api_response(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
         api_response_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
         completion = await self.router.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
-            messages=api_messages,  # type: ignore[arg-type]
+            messages=api_input,  # type: ignore[arg-type]
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
@@ -185,18 +216,17 @@ class LiteLLM(CloudLLM):
             **self._lite_llm_completion_params,
             **api_llm_settings,
         )
-        completion = cast("LiteLLMCompletion", completion)
-
         # Should not be needed in litellm>=1.74
-        completion._hidden_params["response_cost"] = litellm.completion_cost(completion)  # type: ignore[no-untyped-call]
+        completion._hidden_params["response_cost"] = litellm.completion_cost(completion)  # type: ignore[no-untyped-call]  # noqa: SLF001
 
-        return completion
+        return completion  # type: ignore[return-value]
 
-    async def _get_api_completion_stream(
+    async def _get_api_stream(
         self,
-        api_messages: list[OpenAIMessageParam],
-        api_tools: list[OpenAIToolParam] | None = None,
-        api_tool_choice: OpenAIToolChoiceOptionParam | None = None,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
         api_response_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[LiteLLMCompletionChunk]:
@@ -205,9 +235,9 @@ class LiteLLM(CloudLLM):
         stream_options["include_usage"] = True
         _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
 
-        stream = await self.router.acompletion(  # type: ignore[no-untyped-call]
+        stream: CustomStreamWrapper = await self.router.acompletion(  # type: ignore[no-untyped-call, assignment]
             model=self.model_name,
-            messages=api_messages,  # type: ignore[arg-type]
+            messages=api_input,  # type: ignore[arg-type]
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
             response_format=api_response_schema,
@@ -215,7 +245,6 @@ class LiteLLM(CloudLLM):
             **self._lite_llm_completion_params,
             **_api_llm_settings,
         )
-        stream = cast("CustomStreamWrapper", stream)
 
         tc_indices: dict[int, set[int]] = defaultdict(set)
 
@@ -223,47 +252,25 @@ class LiteLLM(CloudLLM):
         async def iterator() -> AsyncIterator[LiteLLMCompletionChunk]:
             async for completion_chunk in stream:
                 # Fix tool call indices to be unique within each choice
-                if completion_chunk is not None:
-                    for n, choice in enumerate(completion_chunk.choices):
-                        for tc in choice.delta.tool_calls or []:
-                            # Tool call ID is not None only when it is a new tool call
-                            if tc.id and tc.index in tc_indices[n]:
-                                tc.index = max(tc_indices[n]) + 1
-                            tc_indices[n].add(tc.index)
+                for n, choice in enumerate(completion_chunk.choices):
+                    for tc in choice.delta.tool_calls or []:
+                        # Tool call ID is not None only when it is a new tool call
+                        if tc.id and tc.index in tc_indices[n]:
+                            tc.index = max(tc_indices[n]) + 1
+                        tc_indices[n].add(tc.index)
 
-                    yield completion_chunk
+                yield completion_chunk
 
         return iterator()
 
-    def combine_completion_chunks(
-        self,
-        completion_chunks: list[LiteLLMCompletionChunk],
-        response_schema: Any | None = None,
-        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-    ) -> LiteLLMCompletion:
-        combined_chunk = cast(
-            "LiteLLMCompletion",
-            litellm.stream_chunk_builder(completion_chunks),  # type: ignore[no-untyped-call]
-        )
-        # Should not be needed in litellm>=1.74
-        combined_chunk._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]
-            combined_chunk
-        )
+    # --- Conversion layer ---
 
-        return combined_chunk
+    def _convert_api_response(self, raw: Any) -> Response:
+        return from_litellm_completion(raw)
 
-    async def _handle_api_stream_event(
-        self,
-        event: LiteLLMCompletionChunk,
-        proc_name: str | None = None,
-        call_id: str | None = None,
-    ) -> AsyncGenerator[CompletionChunkEvent[CompletionChunk]]:
-        try:
-            completion_chunk = self.converters.from_completion_chunk(
-                event, name=self.model_id
-            )
-        except TypeError:
-            return
-        yield CompletionChunkEvent(
-            data=completion_chunk, src_name=proc_name, call_id=call_id
-        )
+    async def _convert_api_stream(
+        self, api_stream: AsyncIterator[Any]
+    ) -> AsyncIterator[StreamEvent]:
+        converter = LiteLLMStreamConverter()
+        async for event in converter.convert(api_stream):
+            yield event

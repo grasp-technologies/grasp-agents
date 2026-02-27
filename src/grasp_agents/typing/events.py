@@ -24,6 +24,7 @@ from .message import (
     ToolMessage,
     UserMessage,
 )
+from .stream_events import StreamEvent
 
 
 class EventSourceType(StrEnum):
@@ -63,6 +64,7 @@ class EventType(StrEnum):
     ANNOT_START = "annotations_start"
     ANNOT_END = "annotations_end"
 
+    LLM_STREAM = "llm_stream"
     LLM_ERR = "llm_error"
 
     TOOL_OUT = "tool_output"
@@ -111,6 +113,11 @@ class CompletionEvent(Event[Completion], frozen=True):
 
 class CompletionItemEvent(Event[CompletionItem], frozen=True):
     type: Literal[EventType.COMP_ITEM] = EventType.COMP_ITEM
+    src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
+
+
+class LLMStreamEvent(Event[StreamEvent], frozen=True):
+    type: Literal[EventType.LLM_STREAM] = EventType.LLM_STREAM
     src_type: Literal[EventSourceType.LLM] = EventSourceType.LLM
 
 

@@ -1,8 +1,8 @@
 from typing import cast
 
 from grasp_agents.errors import CompletionError
+from grasp_agents.typing.completion import Completion, Usage
 
-from ..typing.completion import Completion, Usage
 from . import LiteLLMChoice, LiteLLMCompletion, LiteLLMUsage
 from .message_converters import from_api_assistant_message
 

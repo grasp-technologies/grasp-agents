@@ -1,7 +1,8 @@
-from ..typing.message import (
-    AssistantMessage,
-)
-from ..typing.tool import ToolCall
+from __future__ import annotations
+
+from grasp_agents.typing.message import AssistantMessage
+from grasp_agents.typing.tool import ToolCall
+
 from . import LiteLLMCompletionMessage, LiteLLMFunction, LiteLLMToolCall
 
 
