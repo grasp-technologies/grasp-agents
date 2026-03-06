@@ -1,0 +1,425 @@
+"""
+Convert Gemini GenerateContentResponse → internal output items.
+
+Handles all Part types (text, thinking, function_call, executable_code,
+code_execution_result) and candidate-level metadata (grounding, citations,
+logprobs).
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
+from openai.types.responses.response_output_text import (
+    Logprob,
+    LogprobTopLogprob,
+)
+
+from grasp_agents.types.content import (
+    OutputTextContentPart,
+    ReasoningSummaryPart,
+    UrlCitation,
+)
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    OutputItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
+from grasp_agents.types.response import WebSearchInfo, WebSearchSource
+
+from . import encode_thought_signature
+
+if TYPE_CHECKING:
+    from google.genai.types import (
+        CitationMetadata,
+        GroundingMetadata,
+        LogprobsResult,
+    )
+    from google.genai.types import (
+        GenerateContentResponse as GeminiResponse,
+    )
+
+
+@dataclass
+class _ThinkingPart:
+    text: str
+    signature: bytes | None = None
+
+
+@dataclass
+class _TextPartAccumulator:
+    """Tracks text content parts with their character offsets."""
+
+    parts: list[OutputTextContentPart] = field(
+        default_factory=list[OutputTextContentPart]
+    )
+    signature: bytes | None = None
+
+    def append(self, text: str, signature: bytes | None = None) -> None:
+        self.parts.append(OutputTextContentPart(text=text))
+        if signature is not None:
+            self.signature = signature
+
+
+def generated_message_to_items(response: GeminiResponse) -> list[OutputItem]:
+    """
+    Convert a Gemini response's parts to output items.
+
+    Consecutive text parts are merged into a single OutputMessageItem
+    (one content part per text block). Consecutive thinking parts are merged
+    into a single ReasoningItem (one summary part per thinking block).
+    Thought signatures are preserved as encrypted_content.
+    """
+    candidates = response.candidates
+    if not candidates or not candidates[0].content or not candidates[0].content.parts:
+        return []
+
+    candidate = candidates[0]
+    assert candidate.content is not None
+    parts = candidate.content.parts
+    assert parts is not None
+
+    items: list[OutputItem] = []
+    pending_text = _TextPartAccumulator()
+    pending_thinking: list[_ThinkingPart] = []
+
+    def _flush_text() -> None:
+        if pending_text.parts:
+            items.append(_merge_text_parts(pending_text))
+            pending_text.parts = []
+            pending_text.signature = None
+
+    def _flush_thinking() -> None:
+        if pending_thinking:
+            items.append(_merge_thinking_parts(pending_thinking))
+            pending_thinking.clear()
+
+    for part in parts:
+        if part.function_call:
+            _flush_text()
+            _flush_thinking()
+            fc = part.function_call
+            sig = part.thought_signature
+            items.append(
+                FunctionToolCallItem(
+                    call_id=fc.id or str(uuid4()),
+                    name=fc.name or "",
+                    arguments=json.dumps(fc.args),
+                    status="completed",
+                    provider_specific_fields=(
+                        {"thought_signature": encode_thought_signature(sig)}
+                        if sig
+                        else None
+                    ),
+                )
+            )
+
+        elif part.thought and part.text is not None:
+            _flush_text()
+            pending_thinking.append(
+                _ThinkingPart(text=part.text, signature=part.thought_signature)
+            )
+
+        elif part.text is not None:
+            _flush_thinking()
+            pending_text.append(part.text, part.thought_signature)
+
+    _flush_text()
+    _flush_thinking()
+
+    # Attach candidate-level metadata to items
+    attach_grounding_annotations(items, candidate.grounding_metadata)
+    attach_citation_annotations(items, candidate.citation_metadata)
+    attach_logprobs(items, candidate.logprobs_result)
+
+    return items
+
+
+# ==== Merging helpers ====
+
+
+def _merge_text_parts(acc: _TextPartAccumulator) -> OutputMessageItem:
+    sig = acc.signature
+    return OutputMessageItem(
+        status="completed",
+        content_parts=list(acc.parts),
+        provider_specific_fields=(
+            {"thought_signature": encode_thought_signature(sig)} if sig else None
+        ),
+    )
+
+
+def _merge_thinking_parts(blocks: list[_ThinkingPart]) -> ReasoningItem:
+    # Use signature from the last block that has one
+    signature: str | None = None
+    for block in reversed(blocks):
+        if block.signature is not None:
+            signature = encode_thought_signature(block.signature)
+            break
+
+    return ReasoningItem(
+        status="completed",
+        summary_parts=[ReasoningSummaryPart(text=b.text) for b in blocks],
+        encrypted_content=signature,
+    )
+
+
+# ==== Web search info ====
+
+
+def build_web_search_info(
+    grounding: GroundingMetadata,
+) -> WebSearchInfo | None:
+    """Build WebSearchInfo from Gemini grounding metadata."""
+    chunks = grounding.grounding_chunks or []
+    sources = [
+        WebSearchSource(url=c.web.uri, title=c.web.title or "")
+        for c in chunks
+        if c.web and c.web.uri
+    ]
+
+    queries = list(grounding.web_search_queries or [])
+
+    entry_point_html = (
+        grounding.search_entry_point.rendered_content
+        if grounding.search_entry_point
+        else None
+    )
+
+    if not queries and not sources and not entry_point_html:
+        return None
+
+    return WebSearchInfo(
+        queries=queries, sources=sources, search_entry_point_html=entry_point_html
+    )
+
+
+def extract_web_search_info(
+    response: GeminiResponse,
+) -> WebSearchInfo | None:
+    """Extract response-level web search metadata from grounding."""
+    candidates = response.candidates
+    if not candidates:
+        return None
+
+    grounding = candidates[0].grounding_metadata
+    if not grounding:
+        return None
+
+    return build_web_search_info(grounding)
+
+
+# ==== Grounding annotations ====
+
+
+def attach_grounding_annotations(
+    items: list[OutputItem],
+    grounding: GroundingMetadata | None,
+) -> None:
+    if not grounding:
+        return
+
+    chunks = grounding.grounding_chunks or []
+    supports = grounding.grounding_supports or []
+
+    # Build full text for byte → character offset conversion.
+    # Gemini Segment offsets are byte-based (UTF-8).
+    full_text = _get_full_text(items)
+    full_bytes = full_text.encode("utf-8")
+
+    annotations: list[UrlCitation] = []
+
+    for support in supports:
+        if not support.grounding_chunk_indices:
+            continue
+
+        segment = support.segment
+        byte_start = segment.start_index if segment and segment.start_index else 0
+        byte_end = segment.end_index if segment and segment.end_index else 0
+
+        # Convert byte offsets to character offsets
+        char_start = len(full_bytes[:byte_start].decode("utf-8", errors="replace"))
+        char_end = len(full_bytes[:byte_end].decode("utf-8", errors="replace"))
+        grounded_text = segment.text if segment else None
+
+        for chunk_idx in support.grounding_chunk_indices:
+            if chunk_idx >= len(chunks):
+                continue
+            chunk = chunks[chunk_idx]
+            web = chunk.web
+            if not web or not web.uri:
+                continue
+            annotations.append(
+                UrlCitation(
+                    type="url_citation",
+                    url=web.uri,
+                    title=web.title or "",
+                    start_index=char_start,
+                    end_index=char_end,
+                    grounded_text=grounded_text,
+                )
+            )
+
+    if annotations:
+        _distribute_annotations(items, annotations)
+
+
+# ==== Citation annotations ====
+
+
+def attach_citation_annotations(
+    items: list[OutputItem],
+    citation_meta: CitationMetadata | None,
+) -> None:
+    if not citation_meta or not citation_meta.citations:
+        return
+
+    annotations: list[UrlCitation] = []
+    for citation in citation_meta.citations:
+        if not citation.uri:
+            continue
+        annotations.append(
+            UrlCitation(
+                type="url_citation",
+                url=citation.uri,
+                title=citation.title or "",
+                start_index=citation.start_index or 0,
+                end_index=citation.end_index or 0,
+            )
+        )
+
+    if annotations:
+        _distribute_annotations(items, annotations)
+
+
+def _get_full_text(items: list[OutputItem]) -> str:
+    """Concatenate all text content parts into a single string."""
+    parts: list[str] = []
+    for item in items:
+        if isinstance(item, OutputMessageItem):
+            for part in item.content_parts:
+                if isinstance(part, OutputTextContentPart):
+                    parts.append(part.text)
+    return "".join(parts)
+
+
+def _distribute_annotations(
+    items: list[OutputItem],
+    annotations: list[UrlCitation],
+) -> None:
+    """Attach annotations to the correct text content parts by char offset."""
+    text_parts: list[tuple[int, int, OutputTextContentPart]] = []
+    offset = 0
+    for item in items:
+        if isinstance(item, OutputMessageItem):
+            for part in item.content_parts:
+                if isinstance(part, OutputTextContentPart):
+                    end = offset + len(part.text)
+                    text_parts.append((offset, end, part))
+                    offset = end
+
+    if not text_parts:
+        return
+
+    for ann in annotations:
+        for start, end, part in text_parts:
+            if ann.start_index < end and ann.end_index > start:
+                adjusted = UrlCitation(
+                    type="url_citation",
+                    url=ann.url,
+                    title=ann.title,
+                    start_index=max(0, ann.start_index - start),
+                    end_index=min(end - start, ann.end_index - start),
+                    grounded_text=ann.grounded_text,
+                )
+                part.annotations.append(adjusted)
+                break
+
+
+# ==== Logprobs ====
+
+
+def attach_logprobs(
+    items: list[OutputItem],
+    logprobs_result: LogprobsResult | None,
+) -> None:
+    if not logprobs_result:
+        return
+
+    chosen = logprobs_result.chosen_candidates or []
+    top = logprobs_result.top_candidates or []
+    if not chosen:
+        return
+
+    logprobs: list[Logprob] = []
+    for i, candidate in enumerate(chosen):
+        top_logprobs: list[LogprobTopLogprob] | None = None
+        if i < len(top) and top[i].candidates:
+            top_logprobs = [
+                LogprobTopLogprob(
+                    token=tc.token or "",
+                    logprob=tc.log_probability or 0.0,
+                    bytes=[],
+                )
+                for tc in (top[i].candidates or [])
+            ]
+        logprobs.append(
+            Logprob(
+                token=candidate.token or "",
+                logprob=candidate.log_probability or 0.0,
+                bytes=[],
+                top_logprobs=top_logprobs or [],
+            )
+        )
+
+    # Collect all text parts across output items
+    text_parts: list[OutputTextContentPart] = []
+    for item in items:
+        if isinstance(item, OutputMessageItem):
+            for part in item.content_parts:
+                if isinstance(part, OutputTextContentPart):
+                    text_parts.append(part)
+
+    if not text_parts:
+        return
+
+    # Distribute logprobs by matching token text against part text.
+    # Gemini logprobs cover ALL decoding steps (thinking, text, etc.)
+    # so non-matching tokens (thinking, function calls) are skipped.
+    _distribute_logprobs(text_parts, logprobs)
+
+
+def _distribute_logprobs(
+    text_parts: list[OutputTextContentPart],
+    logprobs: list[Logprob],
+) -> None:
+    token_idx = 0
+
+    for part in text_parts:
+        part_logprobs: list[Logprob] = []
+        matched_len = 0
+
+        while token_idx < len(logprobs):
+            remaining = part.text[matched_len:]
+            if not remaining:
+                break  # fully matched this part
+
+            token = logprobs[token_idx].token
+            if remaining.startswith(token):
+                part_logprobs.append(logprobs[token_idx])
+                matched_len += len(token)
+                token_idx += 1
+            elif matched_len:
+                # Already matching this part but token doesn't fit —
+                # move to next part
+                break
+            else:
+                # Haven't started matching yet — skip (thinking/other)
+                token_idx += 1
+
+        if part_logprobs:
+            part.logprobs = part_logprobs

@@ -7,8 +7,8 @@ from ..errors import WorkflowConstructionError
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
-from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..typing.io import InT, OutT, ProcName
+from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from ..types.io import InT, OutT, ProcName
 from .workflow_processor import WorkflowProcessor
 
 logger = logging.getLogger(__name__)

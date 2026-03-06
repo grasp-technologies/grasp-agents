@@ -1,15 +1,19 @@
 import json
 from collections.abc import Sequence
-from typing import ClassVar, Generic, Protocol, TypeAlias, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar, cast, final
 
 from pydantic import BaseModel, TypeAdapter
 
 from .errors import InputPromptBuilderError
 from .generics_utils import AutoInstanceAttributesMixin
 from .run_context import CtxT, RunContext
-from .typing.content import Content, ImageData
-from .typing.io import InT, LLMPrompt
-from .typing.message import UserMessage
+from .types.content import (
+    Content,
+    InputImage,
+    InputTextContentPart,
+)
+from .types.io import InT, LLMPrompt
+from .types.items import InputMessageItem
 from .utils.callbacks import is_method_overridden
 
 _InT_contra = TypeVar("_InT_contra", contravariant=True)
@@ -25,7 +29,7 @@ class InputContentBuilder(Protocol[_InT_contra, CtxT]):
     ) -> Content: ...
 
 
-PromptArgumentType: TypeAlias = str | bool | int | ImageData
+PromptArgumentType: TypeAlias = str | bool | int | InputImage
 
 
 class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
@@ -90,12 +94,12 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     @final
     def build_input_message(
         self,
-        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         *,
         in_args: InT | None = None,
         call_id: str,
         ctx: RunContext[CtxT],
-    ) -> UserMessage | None:
+    ) -> InputMessageItem | None:
         if chat_inputs is not None:
             if in_args is not None:
                 raise InputPromptBuilderError(
@@ -104,13 +108,11 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                     f"at the same time [agent_name={self._agent_name}]",
                 )
             if isinstance(chat_inputs, LLMPrompt):
-                return UserMessage.from_text(chat_inputs, name=self._agent_name)
-            return UserMessage.from_content_parts(chat_inputs, name=self._agent_name)
+                return InputMessageItem.from_text(chat_inputs, role="user")
+            return _input_message_from_parts(chat_inputs)
 
-        return UserMessage(
-            content=self.build_input_content(in_args=in_args, ctx=ctx, call_id=call_id),
-            name=self._agent_name,
-        )
+        content = self.build_input_content(in_args=in_args, ctx=ctx, call_id=call_id)
+        return _input_message_from_content(content)
 
     def _validate_input_args(self, in_args: InT) -> InT:
         val_in_args = self._in_args_type_adapter.validate_python(in_args)
@@ -119,7 +121,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
             if has_image and self.in_prompt is None:
                 raise InputPromptBuilderError(
                     proc_name=self._agent_name,
-                    message="BaseModel input arguments contain ImageData, "
+                    message="BaseModel input arguments contain InputImage, "
                     "but input prompt template is not set "
                     f"[agent_name={self._agent_name}]. Cannot format input arguments.",
                 )
@@ -136,7 +138,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     def _has_image_data(inp: BaseModel) -> bool:
         contains_image_data = False
         for field in type(inp).model_fields:
-            if isinstance(getattr(inp, field), ImageData):
+            if isinstance(getattr(inp, field), InputImage):
                 contains_image_data = True
 
         return contains_image_data
@@ -149,7 +151,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                 continue
 
             val = getattr(inp, field_name)
-            if isinstance(val, (int, str, bool, ImageData)):
+            if isinstance(val, (int, str, bool, InputImage)):
                 formatted_args[field_name] = val
             else:
                 formatted_args[field_name] = (
@@ -169,3 +171,19 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         self, in_args: InT, *, ctx: RunContext[CtxT], call_id: str
     ) -> Content:
         raise NotImplementedError
+
+
+def _input_message_from_parts(
+    parts: Sequence[str | InputImage],
+) -> InputMessageItem:
+    input_content: list[Any] = []
+    for part in parts:
+        if isinstance(part, str):
+            input_content.append(InputTextContentPart(text=part))
+        else:
+            input_content.append(part)
+    return InputMessageItem(content_ext=input_content, role="user")
+
+
+def _input_message_from_content(content: Content) -> InputMessageItem:
+    return InputMessageItem(content_ext=list(content.parts), role="user")

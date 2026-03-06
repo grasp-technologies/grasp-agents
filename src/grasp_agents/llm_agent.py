@@ -1,9 +1,10 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Protocol, TypedDict, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
 
 from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 from .errors import ProcInputValidationError
 from .llm import LLM
@@ -13,6 +14,7 @@ from .llm_policy_executor import (
     BeforeGenerateHook,
     FinalAnswerChecker,
     LLMPolicyExecutor,
+    ResponseCapture,
     ToolOutputConverter,
 )
 from .processors.processor import Processor
@@ -22,16 +24,17 @@ from .prompt_builder import (
     SystemPromptBuilder,
 )
 from .run_context import CtxT, RunContext
-from .typing.content import Content, ImageData
-from .typing.events import (
+from .types.content import Content, ImageData
+from .types.events import (
     Event,
     ProcPayloadOutEvent,
     SystemMessageEvent,
     UserMessageEvent,
 )
-from .typing.io import InT, LLMPrompt, OutT, ProcName
-from .typing.message import AssistantMessage, Message, SystemMessage, UserMessage
-from .typing.tool import BaseTool, ToolCall
+from .types.io import InT, LLMPrompt, OutT, ProcName
+from .types.items import FunctionToolCallItem, InputMessageItem
+from .types.response import Response
+from .types.tool import BaseTool
 from .utils.callbacks import is_method_overridden
 from .utils.io import get_prompt
 from .utils.validation import validate_obj_from_json_or_py_string
@@ -216,7 +219,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
-    ) -> list[Message]:
+    ) -> list[InputMessageItem]:
         call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
 
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
@@ -231,9 +234,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
             )
 
-        messages_to_expose: list[Message] = []
+        messages_to_expose: list[InputMessageItem] = []
         if fresh_init:
-            messages_to_expose.extend(self.memory.messages)
+            for msg in self.memory.messages:
+                if isinstance(msg, InputMessageItem):
+                    messages_to_expose.append(msg)
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
@@ -300,18 +305,21 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         )
         self._print_messages(messages_to_expose, **call_kwargs)
         for message in messages_to_expose:
-            if isinstance(message, SystemMessage):
+            if message.role == "system":
                 yield SystemMessageEvent(
                     data=message, src_name=self.name, call_id=call_id
                 )
-            elif isinstance(message, UserMessage):
+            elif message.role == "user":
                 yield UserMessageEvent(
                     data=message, src_name=self.name, call_id=call_id
                 )
 
-        async for event in self._policy_executor.execute_stream(**call_kwargs):
+        stream = ResponseCapture(self._policy_executor.execute_stream(**call_kwargs))
+        async for event in stream:
             yield event
-        final_answer = self._policy_executor.get_final_answer()
+
+        assert stream.response is not None
+        final_answer = self._policy_executor.get_final_answer(stream.response)
 
         output = self.parse_output(final_answer or "", in_args=inp, **call_kwargs)
         yield ProcPayloadOutEvent(data=output, src_name=self.name, call_id=call_id)
@@ -332,10 +340,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return []
 
     def _print_messages(
-        self, messages: Sequence[Message], ctx: RunContext[CtxT], call_id: str
+        self, messages: Sequence[Any], ctx: RunContext[CtxT], call_id: str
     ) -> None:
         if ctx.printer:
-            ctx.printer.print_messages(messages, agent_name=self.name, call_id=call_id)
+            ctx.printer.print_messages(
+                messages,
+                agent_name=self.name,
+                call_id=call_id,  # type: ignore[arg-type]
+            )
 
     # Methods that can be overridden in subclasses
 
@@ -399,14 +411,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     async def on_after_generate_impl(
         self,
-        gen_message: AssistantMessage,
+        response: Response,
         *,
         ctx: RunContext[CtxT],
         call_id: str,
         num_turns: int,
     ) -> None:
         return await self._policy_executor.on_after_generate_impl(
-            gen_message=gen_message,
+            response=response,
             ctx=ctx,
             call_id=call_id,
             num_turns=num_turns,
@@ -415,7 +427,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     async def tool_outputs_to_messages_impl(
         self,
         tool_outputs: Sequence[Any],
-        tool_calls: Sequence[ToolCall],
+        tool_calls: Sequence[FunctionToolCallItem],
         *,
         ctx: RunContext[CtxT],
         call_id: str,

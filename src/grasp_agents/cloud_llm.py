@@ -1,6 +1,6 @@
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Required
 
@@ -8,11 +8,12 @@ import httpx
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .llm_responses import LLM, LLMSettings
+from .llm import LLM, LLMSettings
 from .rate_limiting.rate_limiter import RateLimiter, limit_rate
-from .typing.response import Response
-from .typing.stream_events import StreamEvent
-from .typing.tool import BaseTool, ToolChoice
+from .types.items import InputItem
+from .types.llm_events import LlmEvent
+from .types.response import Response
+from .types.tool import BaseTool, ToolChoice
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,6 @@ class APIProvider(TypedDict, total=False):
     name: Required[str]
     base_url: Required[str | None]
     api_key: Required[str | None]
-    response_schema_support: tuple[str, ...] | None
 
 
 class CloudLLMSettings(LLMSettings, total=False):
@@ -30,7 +30,15 @@ class CloudLLMSettings(LLMSettings, total=False):
     extra_query: dict[str, Any] | None
 
 
-LLMRateLimiter = RateLimiter[Response | AsyncIterator[StreamEvent]]
+LLMRateLimiter = RateLimiter[Response | AsyncIterator[LlmEvent]]
+
+
+class ApiCallParams(TypedDict, total=False):
+    api_input: Required[list[Any]]
+    api_tools: list[Any] | None
+    api_tool_choice: Any
+    api_response_schema: type
+    extra_settings: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -63,8 +71,7 @@ class CloudLLM(LLM):
         api_tool_choice: Any | None = None,
         api_response_schema: type | None = None,
         **api_llm_settings: Any,
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
     @abstractmethod
     async def _get_api_stream(
@@ -75,33 +82,30 @@ class CloudLLM(LLM):
         api_tool_choice: Any | None = None,
         api_response_schema: type | None = None,
         **api_llm_settings: Any,
-    ) -> AsyncIterator[Any]:
-        ...
+    ) -> AsyncIterator[Any]: ...
 
     # --- Conversion layer (abstract) ---
 
     @abstractmethod
-    def _convert_api_response(self, raw: Any) -> Response:
-        ...
+    def _convert_api_response(self, raw: Any) -> Response: ...
 
     @abstractmethod
     async def _convert_api_stream(
         self, api_stream: AsyncIterator[Any]
-    ) -> AsyncIterator[StreamEvent]:
-        yield  # type: ignore[misc]
+    ) -> AsyncIterator[LlmEvent]:
+        yield NotImplemented
 
     # --- Input preparation ---
 
     @abstractmethod
     def _make_api_input(
         self,
-        input: list[Any],
+        input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         response_schema: Any | None = None,
         **extra_llm_settings: Any,
-    ) -> dict[str, Any]:
-        ...
+    ) -> ApiCallParams: ...
 
     # --- LLM interface implementation ---
 
@@ -116,7 +120,7 @@ class CloudLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: list[Any],
+        input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         response_schema: Any | None = None,
@@ -130,21 +134,23 @@ class CloudLLM(LLM):
             response_schema=response_schema,
             **extra_llm_settings,
         )
+        extra_settings = api_kwargs.pop("extra_settings", {})
         if not self.apply_response_schema_via_provider:
             api_kwargs.pop("api_response_schema", None)
 
-        raw = await self._get_api_response(**api_kwargs)
+        raw = await self._get_api_response(**api_kwargs, **extra_settings)
+
         return self._convert_api_response(raw)
 
     async def _generate_response_stream_once(
         self,
-        input: list[Any],
+        input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         response_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncIterator[LlmEvent]:
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -152,10 +158,12 @@ class CloudLLM(LLM):
             response_schema=response_schema,
             **extra_llm_settings,
         )
+
+        extra_settings = api_kwargs.pop("extra_settings", {})
         if not self.apply_response_schema_via_provider:
             api_kwargs.pop("api_response_schema", None)
 
-        api_stream = await self._get_api_stream(**api_kwargs)
+        api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)
 
         async for event in self._convert_api_stream(api_stream):
             yield event

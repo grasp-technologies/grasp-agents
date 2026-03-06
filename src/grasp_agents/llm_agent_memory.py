@@ -5,25 +5,30 @@ from pydantic import Field
 
 from .memory import Memory
 from .run_context import RunContext
-from .typing.io import LLMPrompt
-from .typing.message import AssistantMessage, Message, Messages, SystemMessage
+from .types.io import LLMPrompt
+from .types.items import InputItem, InputMessageItem
 
 
 class LLMAgentMemory(Memory):
-    messages: Messages = Field(default_factory=Messages)
+    messages: list[InputItem] = Field(default_factory=list[InputItem])
 
     def reset(
         self, instructions: LLMPrompt | None = None, ctx: RunContext[Any] | None = None
     ):
         self.messages = (
-            [SystemMessage(content=instructions)] if instructions is not None else []
+            [InputMessageItem.from_text(instructions, role="system")]
+            if instructions is not None
+            else []
         )
 
     def erase(self) -> None:
         self.messages = []
 
     def update(
-        self, new_messages: Sequence[Message], *, ctx: RunContext[Any] | None = None
+        self,
+        new_messages: Sequence[InputItem],
+        *,
+        ctx: RunContext[Any] | None = None,
     ):
         self.messages.extend(new_messages)
 
@@ -33,8 +38,12 @@ class LLMAgentMemory(Memory):
 
     @property
     def instructions(self) -> LLMPrompt | None:
-        if not self.is_empty and isinstance(self.messages[0], SystemMessage):
-            return self.messages[0].content
+        if (
+            not self.is_empty
+            and isinstance(self.messages[0], InputMessageItem)
+            and self.messages[0].role == "system"
+        ):
+            return self.messages[0].text or None
         return None
 
     def __repr__(self) -> str:

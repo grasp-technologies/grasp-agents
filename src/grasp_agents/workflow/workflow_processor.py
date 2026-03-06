@@ -5,8 +5,8 @@ from typing import Any
 from ..errors import WorkflowConstructionError
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
-from ..typing.events import DummyEvent, Event
-from ..typing.io import InT, OutT, ProcName
+from ..types.events import DummyEvent, Event
+from ..types.io import InT, OutT, ProcName
 
 
 class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):

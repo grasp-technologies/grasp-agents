@@ -5,7 +5,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from logging import getLogger
 from typing import Any, Generic, TypeVar
 
-from grasp_agents.typing.events import Event
+from grasp_agents.types.events import Event
 
 logger = getLogger(__name__)
 

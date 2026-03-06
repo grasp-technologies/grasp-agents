@@ -236,9 +236,7 @@ def _suppress_tracing_globally():
         context_api.detach(token)
 
 
-def _tracing_enabled(
-    instance: type | None = None,
-) -> bool:
+def _tracing_enabled(instance: type | None = None) -> bool:
     if _is_tracing_globally_disabled():
         return False
     if instance is None:
@@ -247,14 +245,12 @@ def _tracing_enabled(
     return bool(flag)
 
 
-def _exclude_fields_from_instance(
-    instance: type | None = None,
-) -> set[str] | None:
+def _exclude_fields_from_instance(instance: type | None = None) -> set[str] | None:
     if instance is None:
         return None
     exclude_fields = getattr(instance, "tracing_exclude_input_fields", None)
-    if exclude_fields is not None and isinstance(exclude_fields, (list, set, tuple)):
-        return set(exclude_fields)
+    if isinstance(exclude_fields, (list, set, tuple)):
+        return set(exclude_fields)  # type: ignore
     return None
 
 
@@ -428,12 +424,12 @@ def entity_class(
     tlp_span_kind: TraceloopSpanKindValues = TraceloopSpanKindValues.TASK,
 ) -> Callable[[T], T]:
     def decorator(cls: T) -> T:
-        task_name = name or camel_to_snake(cls.__qualname__)
+        task_name = name or camel_to_snake(cls.__qualname__)  # type: ignore
         method = getattr(cls, method_name)
         setattr(
             cls,
             method_name,
-            entity_method(name=task_name, version=version, tlp_span_kind=tlp_span_kind)(
+            entity_method(name=task_name, version=version, tlp_span_kind=tlp_span_kind)(  # type: ignore
                 method
             ),
         )

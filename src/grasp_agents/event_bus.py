@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any, Protocol, TypeVar
 
-from .typing.events import Event
+from .types.events import Event
 
 logger = logging.getLogger(__name__)
 

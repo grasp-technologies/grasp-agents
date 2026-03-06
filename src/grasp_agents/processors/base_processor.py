@@ -13,7 +13,7 @@ from ..generics_utils import AutoInstanceAttributesMixin
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
-from ..typing.events import (
+from ..types.events import (
     DummyEvent,
     Event,
     ProcPacketOutEvent,
@@ -21,8 +21,8 @@ from ..typing.events import (
     ProcStreamingErrorEvent,
     ToolOutputEvent,
 )
-from ..typing.io import InT, OutT, ProcName
-from ..typing.tool import BaseTool
+from ..types.io import InT, OutT, ProcName
+from ..types.tool import BaseTool
 
 logger = logging.getLogger(__name__)
 

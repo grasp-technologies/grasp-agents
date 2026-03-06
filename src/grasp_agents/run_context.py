@@ -3,10 +3,9 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from grasp_agents.typing.completion import Completion
-
 from .printer import Printer
-from .typing.io import ProcName
+from .types.io import ProcName
+from .types.response import Response
 from .usage_tracker import UsageTracker
 
 CtxT = TypeVar("CtxT")
@@ -15,7 +14,7 @@ CtxT = TypeVar("CtxT")
 class RunContext(BaseModel, Generic[CtxT]):
     state: CtxT = None  # type: ignore
 
-    completions: defaultdict[ProcName, list[Completion]] = Field(
+    responses: defaultdict[ProcName, list[Response]] = Field(
         default_factory=lambda: defaultdict(list)
     )
     usage_tracker: UsageTracker = Field(default_factory=UsageTracker, exclude=True)

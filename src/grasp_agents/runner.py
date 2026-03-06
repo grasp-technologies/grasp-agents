@@ -11,8 +11,8 @@ from .event_bus import EventBus
 from .packet import Packet
 from .processors.base_processor import BaseProcessor
 from .run_context import CtxT, RunContext
-from .typing.events import Event, ProcPacketOutEvent, RunPacketOutEvent
-from .typing.io import OutT
+from .types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
+from .types.io import OutT
 
 logger = logging.getLogger(__name__)
 

@@ -9,8 +9,8 @@ from grasp_agents.utils.streaming import stream_concurrent
 from ..errors import ProcInputValidationError
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
-from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..typing.io import InT, OutT, ProcName
+from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from ..types.io import InT, OutT, ProcName
 from .processor import Processor
 
 logger = logging.getLogger(__name__)

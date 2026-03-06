@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .typing.io import ProcName
+from .types.io import ProcName
 
 PacketRouting = Sequence[Sequence[ProcName]]
 _PayloadT_co = TypeVar("_PayloadT_co", covariant=True)

@@ -15,8 +15,8 @@ from grasp_agents.tracing_decorators import workflow
 
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
-from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..typing.io import InT, OutT, ProcName
+from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from ..types.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
 from .base_processor import BaseProcessor, with_retry
 
