@@ -35,7 +35,7 @@ from openai.types.responses.response_text_done_event import Logprob as DoneLogpr
 from openai.types.responses.response_text_done_event import (
     LogprobTopLogprob as DoneTopLogprob,
 )
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from .content import OutputContentPart, ReasoningSummaryPart
 from .items import OutputItem
@@ -356,6 +356,33 @@ class ErrorEvent(ResponseErrorEvent):
     sequence_number: int
 
 
+class ResponseRetrying(BaseModel):
+    """
+    A response attempt failed validation; a retry will follow.
+
+    Signals to stream consumers that the preceding events belong to a failed
+    attempt and should be discarded (e.g. clear partial output in the UI).
+    """
+
+    type: Literal["response.retrying"] = "response.retrying"
+    sequence_number: int = 0
+    attempt: int
+    """Which retry is about to start (1 = first retry, 2 = second, ...)."""
+    error: str
+    """Description of the validation failure that triggered the retry."""
+
+
+class ResponseFallback(BaseModel):
+    """Emitted when falling back to another model during streaming."""
+
+    type: Literal["response.fallback"] = "response.fallback"
+    sequence_number: int = 0
+    failed_model: str
+    fallback_model: str
+    error_type: str
+    attempt: int
+
+
 # --- Union types ---
 
 
@@ -383,6 +410,8 @@ LlmEvent: TypeAlias = Annotated[
     | AnnotationAdded
     | ErrorEvent
     | ResponseCreated
-    | ResponseIncomplete,
+    | ResponseIncomplete
+    | ResponseRetrying
+    | ResponseFallback,
     Field(discriminator="type"),
 ]

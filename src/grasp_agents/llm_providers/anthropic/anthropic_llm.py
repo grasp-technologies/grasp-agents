@@ -17,6 +17,7 @@ from grasp_agents.cloud_llm import (
 )
 
 from . import WebSearchTool20250305Param, WebSearchTool20260209Param
+from .error_mapping import map_api_error
 from .llm_event_converters import AnthropicStreamConverter
 from .provider_output_to_response import provider_output_to_response
 from .response_to_provider_inputs import items_to_provider_inputs
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
+    from grasp_agents.errors import LLMError
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
@@ -57,6 +59,7 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
 
 @dataclass(frozen=True)
 class AnthropicLLM(CloudLLM):
+    litellm_provider: str | None = "anthropic"
     llm_settings: AnthropicLLMSettings | None = None
     anthropic_client_timeout: float = 60.0
     anthropic_client_max_retries: int = 2
@@ -130,6 +133,11 @@ class AnthropicLLM(CloudLLM):
             api_kwargs["extra_settings"] = extra_settings
 
         return api_kwargs
+
+    # --- Error mapping ---
+
+    def _map_api_error(self, err: Exception) -> LLMError | None:
+        return map_api_error(err)
 
     # --- Provider API layer ---
 

@@ -1,4 +1,67 @@
-# from openai import APIResponseValidationError
+# --- LLM API errors (mapped from provider SDK exceptions) ---
+
+
+class LLMError(Exception):
+    """
+    Provider API error, mapped from SDK exceptions.
+
+    By the time these reach the LLM retry loop, the SDK has already
+    exhausted its own retries (transport, rate-limit, server errors).
+    These are NOT retried by our retry loop.
+    """
+
+    status_code: int | None
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LLMConnectionError(LLMError):
+    """Network/transport failure (SDK retries exhausted)."""
+
+
+class LLMTimeoutError(LLMConnectionError):
+    """Request timed out (SDK retries exhausted)."""
+
+
+class LLMRateLimitError(LLMError):
+    """429 — rate limit exceeded (SDK retries exhausted)."""
+
+    retry_after: float | None
+
+    def __init__(
+        self, message: str, *, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message, status_code=429)
+        self.retry_after = retry_after
+
+
+class LLMServerError(LLMError):
+    """5xx / overloaded (SDK retries exhausted)."""
+
+
+class LLMAuthenticationError(LLMError):
+    """401 / 403 — bad credentials or insufficient permissions."""
+
+
+class LLMNotFoundError(LLMError):
+    """404 — wrong model name, invalid endpoint."""
+
+
+class LLMBadRequestError(LLMError):
+    """400 — malformed request, unsupported params."""
+
+
+class LLMContextWindowError(LLMBadRequestError):
+    """Input exceeds model context window."""
+
+
+class LLMContentFilterError(LLMError):
+    """Content policy violation / safety filter rejection."""
+
+
+# --- Processor errors ---
 
 
 class ProcRunError(Exception):

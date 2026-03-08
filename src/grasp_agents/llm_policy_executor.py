@@ -691,4 +691,5 @@ class LLMPolicyExecutor(Generic[CtxT]):
             agent_name=self.agent_name,
             responses=[response],
             model_name=self.llm.model_name,
+            litellm_provider=self.llm.litellm_provider,
         )

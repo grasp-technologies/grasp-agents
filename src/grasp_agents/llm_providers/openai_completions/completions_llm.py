@@ -14,6 +14,7 @@ from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
 from ...cloud_llm import ApiCallParams, APIProvider, CloudLLM, CloudLLMSettings
+from ...errors import LLMError
 from ...types.items import InputItem
 from ...types.llm_events import LlmEvent
 from ...types.response import Response
@@ -29,6 +30,7 @@ from . import (
     OpenAIToolChoiceOptionParam,
     OpenAIToolParam,
 )
+from .error_mapping import map_api_error
 from .llm_event_converters import CompletionsStreamConverter
 from .provider_output_to_response import provider_output_to_response
 from .response_to_provider_inputs import items_to_provider_inputs
@@ -94,6 +96,7 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
 
 @dataclass(frozen=True)
 class OpenAILLM(CloudLLM):
+    litellm_provider: str | None = "openai"
     llm_settings: OpenAILLMSettings | None = None
     openai_client_timeout: float = 60.0
     openai_client_max_retries: int = 2
@@ -188,6 +191,11 @@ class OpenAILLM(CloudLLM):
             api_kwargs["extra_settings"] = merged
 
         return api_kwargs
+
+    # --- Error mapping ---
+
+    def _map_api_error(self, err: Exception) -> LLMError | None:
+        return map_api_error(err)
 
     # --- Provider API layer ---
 

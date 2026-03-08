@@ -17,6 +17,7 @@ from grasp_agents.cloud_llm import (
 )
 
 from . import GeminiConfig, GeminiGoogleSearch, GeminiGoogleSearchDict, GeminiTool
+from .error_mapping import map_api_error
 from .llm_event_converters import GeminiStreamConverter
 from .provider_output_to_response import provider_output_to_response
 from .response_to_provider_inputs import items_to_provider_inputs
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
+    from grasp_agents.errors import LLMError
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
@@ -70,6 +72,7 @@ _CONFIG_KEYS = (
 
 @dataclass(frozen=True)
 class GeminiLLM(CloudLLM):
+    litellm_provider: str | None = "vertex_ai"
     llm_settings: GeminiLLMSettings | None = None
     vertexai: bool = False
     project: str | None = None
@@ -161,6 +164,11 @@ class GeminiLLM(CloudLLM):
         config = GeminiConfig(**config_kwargs)
 
         return ApiCallParams(api_input=contents, extra_settings={"config": config})
+
+    # --- Error mapping ---
+
+    def _map_api_error(self, err: Exception) -> LLMError | None:
+        return map_api_error(err)
 
     # --- Provider API layer ---
 

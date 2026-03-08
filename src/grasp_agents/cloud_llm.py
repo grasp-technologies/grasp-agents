@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from .errors import LLMError
 from .llm import LLM, LLMSettings
 from .rate_limiting.rate_limiter import RateLimiter, limit_rate
 from .types.items import InputItem
@@ -107,6 +108,17 @@ class CloudLLM(LLM):
         **extra_llm_settings: Any,
     ) -> ApiCallParams: ...
 
+    # --- Error mapping ---
+
+    def _map_api_error(self, err: Exception) -> LLMError | None:  # noqa: ARG002
+        """
+        Map a provider SDK exception to an LLMError subclass.
+
+        Returns None for unrecognized exceptions (passed through as-is).
+        Override in provider subclasses.
+        """
+        return None
+
     # --- LLM interface implementation ---
 
     def __init_subclass__(cls, **kwargs: Any):
@@ -138,7 +150,15 @@ class CloudLLM(LLM):
         if not self.apply_response_schema_via_provider:
             api_kwargs.pop("api_response_schema", None)
 
-        raw = await self._get_api_response(**api_kwargs, **extra_settings)
+        try:
+            raw = await self._get_api_response(**api_kwargs, **extra_settings)
+        except LLMError:
+            raise
+        except Exception as err:
+            mapped = self._map_api_error(err)
+            if mapped is not None:
+                raise mapped from err
+            raise
 
         return self._convert_api_response(raw)
 
@@ -163,7 +183,15 @@ class CloudLLM(LLM):
         if not self.apply_response_schema_via_provider:
             api_kwargs.pop("api_response_schema", None)
 
-        api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)
+        try:
+            api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)
+        except LLMError:
+            raise
+        except Exception as err:
+            mapped = self._map_api_error(err)
+            if mapped is not None:
+                raise mapped from err
+            raise
 
         async for event in self._convert_api_stream(api_stream):
             yield event

@@ -135,33 +135,37 @@ class TestUpdateFromResponse:
 
 
 class TestUpdateFromResponseWithCosts:
-    def test_cost_calculation_with_model(self):
-        """Cost is calculated when model_name matches costs_dict."""
+    def test_cost_calculated_for_known_model(self):
+        """Cost is calculated via litellm for a known model name."""
         tracker = UsageTracker()
-        # Override costs_dict with a known model
-        tracker.costs_dict = {
-            "test-model": {
-                "input": 3.0,  # per million tokens
-                "output": 15.0,
-            }
-        }
-
-        usage = _make_response_usage(input_tokens=1_000_000, output_tokens=100_000)
+        usage = _make_response_usage(input_tokens=1_000_000, output_tokens=1_000_000)
         response = _make_response(usage=usage)
 
-        tracker.update("agent_a", [response], model_name="test-model")
+        tracker.update("agent_a", [response], model_name="gpt-4o")
 
         agent_usage = tracker.usages["agent_a"]
         assert agent_usage.cost is not None
-        # input: 1M * 3.0 / 1M = 3.0
-        # output: 100K * 15.0 / 1M = 1.5
-        assert abs(agent_usage.cost - 4.5) < 0.001
+        assert agent_usage.cost > 0
+
+    def test_cost_with_litellm_provider_hint(self):
+        """Provider hint helps resolve model for cost lookup."""
+        tracker = UsageTracker()
+        usage = _make_response_usage(input_tokens=1_000_000, output_tokens=1_000_000)
+        response = _make_response(usage=usage)
+
+        tracker.update(
+            "agent_a", [response],
+            model_name="gemini-2.0-flash",
+            litellm_provider="vertex_ai",
+        )
+
+        agent_usage = tracker.usages["agent_a"]
+        assert agent_usage.cost is not None
+        assert agent_usage.cost > 0
 
     def test_no_cost_without_model(self):
         """No cost is calculated when model_name is None."""
         tracker = UsageTracker()
-        tracker.costs_dict = {"test-model": {"input": 3.0, "output": 15.0}}
-
         usage = _make_response_usage(input_tokens=1000, output_tokens=500)
         response = _make_response(usage=usage)
 
@@ -170,13 +174,22 @@ class TestUpdateFromResponseWithCosts:
         assert tracker.usages["agent_a"].cost is None
 
     def test_no_cost_unknown_model(self):
-        """No cost when model not in costs_dict."""
+        """No cost for unknown model — gracefully returns None."""
         tracker = UsageTracker()
-        tracker.costs_dict = {"other-model": {"input": 3.0, "output": 15.0}}
-
         usage = _make_response_usage(input_tokens=1000, output_tokens=500)
         response = _make_response(usage=usage)
 
-        tracker.update("agent_a", [response], model_name="test-model")
+        tracker.update("agent_a", [response], model_name="nonexistent-model-xyz")
 
         assert tracker.usages["agent_a"].cost is None
+
+    def test_preexisting_cost_not_overwritten(self):
+        """If usage.cost is already set, litellm is not called."""
+        tracker = UsageTracker()
+        usage = _make_response_usage(input_tokens=1000, output_tokens=500)
+        usage.cost = 0.42
+        response = _make_response(usage=usage)
+
+        tracker.update("agent_a", [response], model_name="gpt-4o")
+
+        assert tracker.usages["agent_a"].cost == pytest.approx(0.42)

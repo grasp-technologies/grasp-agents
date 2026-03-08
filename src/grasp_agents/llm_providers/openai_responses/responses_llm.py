@@ -34,11 +34,13 @@ from grasp_agents.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
+from grasp_agents.errors import LLMError
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_events import LlmEvent
 from grasp_agents.types.response import Response as InternalResponse
 from grasp_agents.types.tool import BaseTool, ToolChoice
 
+from .error_mapping import map_api_error
 from .tool_converters import to_api_tool, to_api_tool_choice
 
 # Fields added by grasp-agents that are NOT part of the OpenAI Responses API
@@ -79,6 +81,7 @@ class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
 
 @dataclass(frozen=True)
 class OpenAIResponsesLLM(CloudLLM):
+    litellm_provider: str | None = "openai"
     llm_settings: OpenAIResponsesLLMSettings | None = None
     openai_client_timeout: float = 120.0
     openai_client_max_retries: int = 2
@@ -142,6 +145,11 @@ class OpenAIResponsesLLM(CloudLLM):
             api_kwargs["extra_settings"] = merged
 
         return api_kwargs
+
+    # --- Error mapping ---
+
+    def _map_api_error(self, err: Exception) -> LLMError | None:
+        return map_api_error(err)
 
     # --- Provider API layer ---
 

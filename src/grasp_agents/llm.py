@@ -2,20 +2,28 @@
 LLM base interface using OpenResponses types.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, final
 from uuid import uuid4
 
-# from openai.types.responses import ResponseError
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .errors import LLMToolCallValidationError
+from .errors import (
+    JSONSchemaValidationError,
+    LLMError,
+    LLMResponseValidationError,
+    LLMToolCallValidationError,
+)
+from .model_info import ModelCapabilities, get_model_capabilities
+from .resilience import RetryPolicy
 from .types.items import InputItem
-from .types.llm_events import LlmEvent, ResponseCompleted  # , ResponseFailed
+from .types.llm_events import LlmEvent, ResponseCompleted, ResponseRetrying
 from .types.response import Response
 from .types.tool import BaseTool, ToolChoice
 from .utils.validation import (
@@ -25,8 +33,7 @@ from .utils.validation import (
 
 logger = logging.getLogger(__name__)
 
-
-ResponseStreamGenerator = AsyncIterator[LlmEvent]
+_RETRYABLE_ERRORS = (LLMToolCallValidationError, LLMResponseValidationError)
 
 
 class LLMSettings(TypedDict, total=False):
@@ -39,7 +46,13 @@ class LLM(ABC):
     model_name: str
     llm_settings: LLMSettings | None = None
     model_id: str = field(default_factory=lambda: str(uuid4())[:8])
-    max_response_retries: int = 0
+    litellm_provider: str | None = None
+    retry_policy: RetryPolicy | None = None
+
+    @cached_property
+    def capabilities(self) -> ModelCapabilities:
+        """Model capabilities from LiteLLM's database."""
+        return get_model_capabilities(self.model_name, self.litellm_provider)
 
     # --- Abstract methods for subclasses ---
 
@@ -66,6 +79,111 @@ class LLM(ABC):
     ) -> AsyncIterator[LlmEvent]:
         yield NotImplemented
 
+    # --- API retry layer ---
+
+    async def _generate_with_api_retries(
+        self,
+        input: Sequence[InputItem],  # noqa: A002
+        *,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        response_schema: Any | None = None,
+        tool_choice: ToolChoice | None = None,
+        **extra_llm_settings: Any,
+    ) -> Response:
+        """Inner retry loop for transient API errors."""
+        policy = self.retry_policy
+        if not policy:
+            return await self._generate_response_once(
+                input,
+                tools=tools,
+                response_schema=response_schema,
+                tool_choice=tool_choice,
+                **extra_llm_settings,
+            )
+
+        attempt = 0
+        while True:
+            try:
+                return await self._generate_response_once(
+                    input,
+                    tools=tools,
+                    response_schema=response_schema,
+                    tool_choice=tool_choice,
+                    **extra_llm_settings,
+                )
+            except LLMError as err:
+                attempt += 1
+                if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
+                    delay = policy.api_delay_for(attempt - 1, err)
+                    logger.warning(
+                        "Model %s: %s (attempt %d/%d, retrying in %.1fs)",
+                        self.model_name,
+                        type(err).__name__,
+                        attempt,
+                        policy.api_retries,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
+    async def _generate_stream_with_api_retries(
+        self,
+        input: Sequence[InputItem],  # noqa: A002
+        *,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        response_schema: Any | None = None,
+        tool_choice: ToolChoice | None = None,
+        **extra_llm_settings: Any,
+    ) -> AsyncIterator[LlmEvent]:
+        """Streaming variant of API retry loop. Yields ResponseRetrying on retry."""
+        policy = self.retry_policy
+
+        if not policy:
+            async for event in self._generate_response_stream_once(
+                input,
+                tools=tools,
+                response_schema=response_schema,
+                tool_choice=tool_choice,
+                **extra_llm_settings,
+            ):
+                yield event
+            return
+
+        attempt = 0
+        last_seq = 0
+
+        while True:
+            try:
+                async for event in self._generate_response_stream_once(
+                    input,
+                    tools=tools,
+                    response_schema=response_schema,
+                    tool_choice=tool_choice,
+                    **extra_llm_settings,
+                ):
+                    last_seq = event.sequence_number
+                    yield event
+                return
+            except LLMError as err:
+                attempt += 1
+                if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
+                    delay = policy.api_delay_for(attempt - 1, err)
+                    logger.warning(
+                        "Model %s: %s (attempt %d/%d, retrying in %.1fs)",
+                        self.model_name,
+                        type(err).__name__,
+                        attempt,
+                        policy.api_retries,
+                        delay,
+                    )
+                    yield ResponseRetrying(
+                        attempt=attempt, error=str(err), sequence_number=last_seq + 1
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
     # --- Public interface ---
 
     @final
@@ -79,11 +197,13 @@ class LLM(ABC):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
+        max_validation = (
+            self.retry_policy.validation_retries if self.retry_policy else 0
+        )
         n_attempt = 0
-        last_err: BaseException | None = None
-        while n_attempt <= self.max_response_retries:
+        while n_attempt <= max_validation:
             try:
-                response = await self._generate_response_once(
+                response = await self._generate_with_api_retries(
                     input,
                     tools=tools,
                     response_schema=response_schema,
@@ -98,15 +218,19 @@ class LLM(ABC):
                 )
                 return response
 
-            except Exception as err:
-                last_err = err
+            except _RETRYABLE_ERRORS as err:
                 n_attempt += 1
-                if n_attempt <= self.max_response_retries:
-                    logger.warning(f"\nLLM response failed (retry {n_attempt}): {err}")
+                if n_attempt <= max_validation:
+                    logger.warning(
+                        "LLM response failed [%s] (retry %d): %s",
+                        self.model_name,
+                        n_attempt,
+                        err,
+                    )
                 else:
                     raise
 
-        raise last_err or RuntimeError("Unexpected: retry loop exited")
+        raise RuntimeError("Unexpected: retry loop exited without return or raise")
 
     @final
     async def generate_response_stream(
@@ -119,10 +243,14 @@ class LLM(ABC):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
+        max_validation = (
+            self.retry_policy.validation_retries if self.retry_policy else 0
+        )
         n_attempt = 0
-        while n_attempt <= self.max_response_retries:
+        last_seq = 0
+        while n_attempt <= max_validation:
             try:
-                async for event in self._generate_response_stream_once(
+                async for event in self._generate_stream_with_api_retries(
                     input,
                     tools=tools,
                     response_schema=response_schema,
@@ -130,6 +258,7 @@ class LLM(ABC):
                     **extra_llm_settings,
                 ):
                     yield event
+                    last_seq = event.sequence_number
 
                     if isinstance(event, ResponseCompleted):
                         self._validate_response(
@@ -140,19 +269,20 @@ class LLM(ABC):
                         )
                 return
 
-            except Exception as err:
+            except _RETRYABLE_ERRORS as err:
                 n_attempt += 1
-                if n_attempt <= self.max_response_retries:
-                    logger.warning(f"\nLLM response failed (retry {n_attempt}): {err}")
-                    # TODO: is it still needed?
-                    # yield ResponseFailed(
-                    #     response=Response(
-                    #         model=self.model_name,
-                    #         status="failed",
-                    #         error=ResponseError(code="server_error", message=str(err)), # noqa: E501
-                    #     ),
-                    #     sequence_number=sequence_number + 1,
-                    # )
+                if n_attempt <= max_validation:
+                    logger.warning(
+                        "LLM response failed [%s] (retry %d): %s",
+                        self.model_name,
+                        n_attempt,
+                        err,
+                    )
+                    yield ResponseRetrying(
+                        attempt=n_attempt,
+                        error=str(err),
+                        sequence_number=last_seq + 1,
+                    )
                 else:
                     raise
 
@@ -170,23 +300,33 @@ class LLM(ABC):
             self._validate_tool_calls(response, tools)
 
         if response_schema is not None and not response.tool_call_items:
-            validate_obj_from_json_or_py_string(
-                response.output_text, schema=response_schema
-            )
+            try:
+                validate_obj_from_json_or_py_string(
+                    response.output_text, schema=response_schema
+                )
+            except JSONSchemaValidationError as exc:
+                raise LLMResponseValidationError(
+                    response.output_text, response_schema
+                ) from exc
 
         if response_schema_by_xml_tag and not response.tool_call_items:
-            validate_tagged_objs_from_json_or_py_string(
-                response.output_text,
-                schema_by_xml_tag=response_schema_by_xml_tag,
-            )
+            try:
+                validate_tagged_objs_from_json_or_py_string(
+                    response.output_text,
+                    schema_by_xml_tag=response_schema_by_xml_tag,
+                )
+            except JSONSchemaValidationError as exc:
+                raise LLMResponseValidationError(
+                    response.output_text, response_schema_by_xml_tag
+                ) from exc
 
     def _validate_tool_calls(
         self,
         response: Response,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]],
     ) -> None:
+        available_tool_names = list(tools)
         for tc in response.tool_call_items:
-            available_tool_names = list(tools)
             if tc.name not in available_tool_names:
                 raise LLMToolCallValidationError(
                     tc.name,
@@ -195,4 +335,11 @@ class LLM(ABC):
                     f"(available: {available_tool_names})",
                 )
             tool = tools[tc.name]
-            validate_obj_from_json_or_py_string(tc.arguments, schema=tool.in_type)
+            try:
+                validate_obj_from_json_or_py_string(tc.arguments, schema=tool.in_type)
+            except JSONSchemaValidationError as exc:
+                raise LLMToolCallValidationError(
+                    tc.name,
+                    tc.arguments,
+                    message=f"Tool '{tc.name}' arguments failed validation: {exc}",
+                ) from exc

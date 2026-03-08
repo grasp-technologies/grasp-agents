@@ -8,10 +8,10 @@ from pydantic import BaseModel
 
 import litellm
 from grasp_agents.cloud_llm import ApiCallParams, APIProvider, CloudLLM
+from grasp_agents.errors import LLMError
 from litellm.litellm_core_utils.get_supported_openai_params import (
     get_supported_openai_params,  # type: ignore[no-redef]
 )
-from litellm.router import Router
 from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.utils import (
     supports_parallel_function_calling,
@@ -34,6 +34,7 @@ from . import (
     OpenAIToolChoiceOptionParam,
     OpenAIToolParam,
 )
+from .error_mapping import map_api_error
 from .llm_event_converters import LiteLLMStreamConverter
 from .provider_output_to_response import provider_output_to_response
 
@@ -45,9 +46,6 @@ logger = logging.getLogger(__name__)
 
 class LiteLLMSettings(OpenAILLMSettings, total=False):
     thinking: AnthropicThinkingParam | None
-
-
-LiteLLMModelName = str
 
 
 @dataclass(frozen=True)
@@ -63,12 +61,6 @@ class LiteLLM(CloudLLM):
     allowed_openai_params: list[str] | None = None
     # Mock LLM response for testing
     mock_response: str | None = None
-    # Fallback models to use if the main model fails
-    fallbacks: list[LiteLLMModelName] = field(default_factory=list[LiteLLMModelName])
-    # Mock falling back to other models in the fallbacks list for testing
-    mock_testing_fallbacks: bool = False
-
-    router: Router = field(init=False)
 
     _lite_llm_completion_params: dict[str, Any] = field(
         default_factory=dict[str, Any], init=False, repr=False, compare=False
@@ -83,7 +75,8 @@ class LiteLLM(CloudLLM):
                 "additional_drop_params": self.additional_drop_params,
                 "allowed_openai_params": self.allowed_openai_params,
                 "mock_response": self.mock_response,
-                "mock_testing_fallbacks": self.mock_testing_fallbacks,
+                "num_retries": self.max_client_retries,
+                "timeout": self.client_timeout,
             }
         )
 
@@ -123,22 +116,6 @@ class LiteLLM(CloudLLM):
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
-        main_litellm_model = {
-            "model_name": self.model_name,
-            "litellm_params": {"model": self.model_name},
-        }
-        fallback_litellm_models = [
-            {"model_name": fb, "litellm_params": {"model": fb}} for fb in self.fallbacks
-        ]
-
-        _router = Router(
-            model_list=[main_litellm_model, *fallback_litellm_models],
-            fallbacks=[{self.model_name: self.fallbacks}],
-            num_retries=self.max_client_retries,
-            timeout=self.client_timeout,
-        )
-
-        object.__setattr__(self, "router", _router)
         object.__setattr__(self, "api_provider", _api_provider)
 
     def get_supported_openai_params(self) -> list[Any] | None:
@@ -165,6 +142,11 @@ class LiteLLM(CloudLLM):
     @property
     def supports_tool_choice(self) -> bool:
         return supports_tool_choice(model=self.model_name)
+
+    # --- Error mapping ---
+
+    def _map_api_error(self, err: Exception) -> LLMError | None:
+        return map_api_error(err)
 
     # --- Input preparation ---
 
@@ -213,7 +195,7 @@ class LiteLLM(CloudLLM):
         api_response_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
-        completion = await self.router.acompletion(  # type: ignore[no-untyped-call]
+        completion = await litellm.acompletion(  # type: ignore[no-untyped-call]
             model=self.model_name,
             messages=api_input,  # type: ignore[arg-type]
             tools=api_tools,
@@ -242,7 +224,7 @@ class LiteLLM(CloudLLM):
         stream_options["include_usage"] = True
         _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
 
-        stream: CustomStreamWrapper = await self.router.acompletion(  # type: ignore[no-untyped-call, assignment]
+        stream: CustomStreamWrapper = await litellm.acompletion(  # type: ignore[no-untyped-call, assignment]
             model=self.model_name,
             messages=api_input,  # type: ignore[arg-type]
             tools=api_tools,
