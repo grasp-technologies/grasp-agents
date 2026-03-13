@@ -859,7 +859,7 @@ requires-dist = [
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "google-genai", specifier = ">=1.45.0" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
-    { name = "litellm", specifier = "==1.81.13" },
+    { name = "litellm", specifier = "==1.82.0" },
     { name = "numpy", specifier = "<2" },
     { name = "openai", specifier = ">=1.68.2,<2.9.0" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'observability'", specifier = ">=0.1.25" },
@@ -1418,7 +1418,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.81.13"
+version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1434,9 +1434,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/80/b6cb799e7100953d848e106d0575db34c75bc3b57f31f2eefdfb1e23655f/litellm-1.81.13.tar.gz", hash = "sha256:083788d9c94e3371ff1c42e40e0e8198c497772643292a65b1bc91a3b3b537ea", size = 16562861, upload-time = "2026-02-17T02:00:47.466Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/00/49bb5c28e0dea0f5086229a2a08d5fdc6c8dc0d8e2acb2a2d1f7dd9f4b70/litellm-1.82.0.tar.gz", hash = "sha256:d388f52447daccbcaafa19a3e68d17b75f1374b5bf2cde680d65e1cd86e50d22", size = 16800355, upload-time = "2026-03-01T02:35:30.363Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/f3/fffb7932870163cea7addc392165647a9a8a5489967de486c854226f1141/litellm-1.81.13-py3-none-any.whl", hash = "sha256:ae4aea2a55e85993f5f6dd36d036519422d24812a1a3e8540d9e987f2d7a4304", size = 14587505, upload-time = "2026-02-17T02:00:44.22Z" },
+    { url = "https://files.pythonhosted.org/packages/28/89/eb28bfcf97d6b045c400e72eb047c381594467048c237dbb6c227764084c/litellm-1.82.0-py3-none-any.whl", hash = "sha256:5496b5d4532cccdc7a095c21cbac4042f7662021c57bc1d17be4e39838929e80", size = 14911978, upload-time = "2026-03-01T02:35:26.844Z" },
 ]
 
 [[package]]

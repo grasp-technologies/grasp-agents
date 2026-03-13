@@ -11,7 +11,7 @@ dependencies = [
     "tqdm>=4.66.2,<5",
     "pyyaml>=6.0.2",
     "pydantic>=2",
-    "litellm==1.81.13",
+    "litellm==1.82.0",
     "opentelemetry-sdk>=1.37.0",
     "traceloop-sdk>=0.47.2",
     "termcolor>=2.4.0,<3",
