@@ -14,7 +14,7 @@ from ...types.content import (
     ContentPart,
     ContentPartImage,
     ContentPartText,
-    ImageData,
+    InputImage,
 )
 from ..openai_completions.content_converters import BASE64_PREFIX, image_data_to_str
 
@@ -42,12 +42,12 @@ def from_api_content(
             url = api_content_part.image_url or ""
             detail = api_content_part.detail
             if url.startswith(BASE64_PREFIX):
-                image_data = ImageData.from_base64(
+                image_data = InputImage.from_base64(
                     base64_encoding=url.removeprefix(BASE64_PREFIX),
                     detail=detail,
                 )
             else:
-                image_data = ImageData.from_url(img_url=url, detail=detail)
+                image_data = InputImage.from_url(img_url=url, detail=detail)
             content_part = ContentPartImage(data=image_data)
 
         content_parts.append(content_part)  # type: ignore

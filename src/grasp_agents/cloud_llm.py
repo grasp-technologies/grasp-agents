@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .errors import LLMError
+from .types.llm_errors import LlmError, LlmErrorTuple
 from .llm import LLM, LLMSettings
 from .rate_limiting.rate_limiter import RateLimiter, limit_rate
 from .types.items import InputItem
@@ -110,9 +110,9 @@ class CloudLLM(LLM):
 
     # --- Error mapping ---
 
-    def _map_api_error(self, err: Exception) -> LLMError | None:  # noqa: ARG002
+    def _map_api_error(self, err: Exception) -> LlmError | None:  # noqa: ARG002
         """
-        Map a provider SDK exception to an LLMError subclass.
+        Map a provider SDK exception to an LlmError subclass.
 
         Returns None for unrecognized exceptions (passed through as-is).
         Override in provider subclasses.
@@ -152,7 +152,7 @@ class CloudLLM(LLM):
 
         try:
             raw = await self._get_api_response(**api_kwargs, **extra_settings)
-        except LLMError:
+        except LlmErrorTuple:
             raise
         except Exception as err:
             mapped = self._map_api_error(err)
@@ -185,7 +185,7 @@ class CloudLLM(LLM):
 
         try:
             api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)
-        except LLMError:
+        except LlmErrorTuple:
             raise
         except Exception as err:
             mapped = self._map_api_error(err)

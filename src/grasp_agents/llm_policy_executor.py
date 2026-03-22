@@ -3,9 +3,9 @@ import json
 from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
 from copy import deepcopy
 from logging import getLogger
-from typing import Any, Generic, Protocol, final
+from typing import Any, Generic, Protocol, cast, final
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 from typing_extensions import TypedDict
 
 from grasp_agents.tracing_decorators import task
@@ -18,6 +18,8 @@ from .types.events import (
     Event,
     LLMStreamEvent,
     ToolCallEvent,
+    ToolErrorEvent,
+    ToolErrorInfo,
     ToolMessageEvent,
     ToolOutputEvent,
     UserMessageEvent,
@@ -85,6 +87,16 @@ class ToolOutputConverter(Protocol[CtxT]):
     ) -> Sequence[FunctionToolOutputItem | InputMessageItem]: ...
 
 
+class ToolInputConverter(Protocol[CtxT]):
+    async def __call__(
+        self,
+        llm_args: BaseModel,
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str | None,
+    ) -> BaseModel: ...
+
+
 class ResponseCapture:
     """Wraps an event stream, capturing the final Response."""
 
@@ -145,6 +157,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         self._stream_llm_responses = stream_llm_responses
         self._stream_tools = stream_tools
+
+        self.tool_input_converters: dict[str, ToolInputConverter[CtxT]] = {}
 
         tools_list: list[BaseTool[BaseModel, Any, CtxT]] | None = tools
         if tools and final_answer_as_tool_call:
@@ -408,6 +422,20 @@ class LLMPolicyExecutor(Generic[CtxT]):
             )
         return self.tool_outputs_to_messages_default(tool_outputs, tool_calls)
 
+    async def _resolve_tool_input(
+        self,
+        tool: BaseTool[BaseModel, Any, CtxT],
+        args: dict[str, Any],
+        *,
+        ctx: RunContext[CtxT],
+        call_id: str,
+    ) -> BaseModel:
+        llm_args = TypeAdapter(tool.in_type).validate_python(args)
+        converter = self.tool_input_converters.get(tool.name)
+        if converter is not None:
+            return await converter(llm_args, ctx=ctx, call_id=call_id)
+        return llm_args
+
     async def _get_tool_outputs(
         self,
         calls: Sequence[FunctionToolCallItem],
@@ -418,7 +446,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
         for call in calls:
             tool = self.tools[call.name]
             args = json.loads(call.arguments)
-            corouts.append(tool(ctx=ctx, call_id=call_id, **args))
+            inp = await self._resolve_tool_input(tool, args, ctx=ctx, call_id=call_id)
+            corouts.append(
+                tool._run_with_timeout(inp, ctx=ctx, call_id=call_id)  # pyright: ignore[reportPrivateUsage]
+            )
 
         return await asyncio.gather(*corouts)
 
@@ -436,9 +467,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
             for call in calls:
                 tool = self.tools[call.name]
                 args = json.loads(call.arguments)
-                streams.append(
-                    tool.run_stream(inp=tool.in_type(**args), ctx=ctx, call_id=call_id)
+                inp = await self._resolve_tool_input(
+                    tool, args, ctx=ctx, call_id=call_id
                 )
+                streams.append(tool.run_stream(inp=inp, ctx=ctx, call_id=call_id))
 
             # TODO: treat None outputs on stream failure
 
@@ -452,6 +484,23 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
         else:
             outputs = await self._get_tool_outputs(calls, ctx=ctx, call_id=call_id)
+
+        # Emit ToolErrorEvents for any tool that returned an error dict
+        for output, call in zip(outputs, calls, strict=True):
+            if isinstance(output, dict):
+                err_dict = cast("dict[str, Any]", output)
+                if err_dict.get("error") is not True:
+                    continue
+                msg = str(err_dict.get("message", ""))
+                yield ToolErrorEvent(
+                    src_name=call.name,
+                    call_id=call_id,
+                    data=ToolErrorInfo(
+                        tool_name=call.name,
+                        error=msg,
+                        timed_out="Timed out" in msg,
+                    ),
+                )
 
         tool_messages = await self.tool_outputs_to_messages(
             outputs, calls, ctx=ctx, call_id=call_id
@@ -666,18 +715,22 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
     def get_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self._final_answer_type, None, Any]):
-            name: str = "final_answer"
-            description: str = (
-                "You must call this tool to provide the final answer. "
-                "DO NOT output your answer before calling the tool. "
-            )
+            def __init__(self) -> None:
+                super().__init__(
+                    name="final_answer",
+                    description=(
+                        "You must call this tool to provide the final answer. "
+                        "DO NOT output your answer before calling the tool. "
+                    ),
+                )
 
-            async def run(
+            async def _run(
                 self,
                 inp: BaseModel,
                 *,
                 ctx: RunContext[Any] | None = None,
                 call_id: str | None = None,
+                progress_callback: Any = None,  # noqa: ARG002
             ) -> None:
                 return None
 

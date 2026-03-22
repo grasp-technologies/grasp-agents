@@ -1,19 +1,8 @@
 # pyright: reportUnusedImport=false
 
 
-from .errors import (
-    LLMAuthenticationError,
-    LLMBadRequestError,
-    LLMConnectionError,
-    LLMContentFilterError,
-    LLMContextWindowError,
-    LLMError,
-    LLMNotFoundError,
-    LLMRateLimitError,
-    LLMServerError,
-    LLMTimeoutError,
-)
 from .fallback_llm import FallbackLLM
+from .function_tool import FunctionTool, function_tool
 from .llm import LLM, LLMSettings
 from .llm_agent import LLMAgent
 from .llm_agent_memory import LLMAgentMemory
@@ -40,8 +29,26 @@ from .types.items import (
     UserMessage,
     WebSearchCallItem,
 )
+from .types.llm_errors import (
+    LlmApiConnectionError,
+    LlmApiError,
+    LlmApiTimeoutError,
+    LlmAuthenticationError,
+    LlmBadRequestError,
+    LlmContentFilterError,
+    LlmContextWindowError,
+    LlmInternalServerError,
+    LlmNotFoundError,
+    LlmPermissionDeniedError,
+    LlmRateLimitError,
+)
 from .types.response import Response
-from .types.tool import BaseTool
+from .types.tool import BaseTool, ToolProgressCallback
+
+try:
+    from .mcp import MCPClient, MCPServerSSE, MCPServerStdio, MCPTool
+except ImportError:
+    pass
 
 __all__ = [
     "LLM",
@@ -51,21 +58,26 @@ __all__ = [
     "Content",
     "DeveloperMessage",
     "FallbackLLM",
+    "FunctionTool",
     "InputImage",
     "LLMAgent",
     "LLMAgentMemory",
-    "LLMAuthenticationError",
-    "LLMBadRequestError",
-    "LLMConnectionError",
-    "LLMContentFilterError",
-    "LLMContextWindowError",
-    "LLMError",
-    "LLMNotFoundError",
     "LLMPrompt",
-    "LLMRateLimitError",
-    "LLMServerError",
     "LLMSettings",
-    "LLMTimeoutError",
+    "LlmApiConnectionError",
+    "LlmApiError",
+    "LlmApiTimeoutError",
+    "LlmAuthenticationError",
+    "LlmBadRequestError",
+    "LlmContentFilterError",
+    "LlmContextWindowError",
+    "LlmInternalServerError",
+    "LlmNotFoundError",
+    "LlmRateLimitError",
+    "MCPClient",
+    "MCPServerSSE",
+    "MCPServerStdio",
+    "MCPTool",
     "Memory",
     "Packet",
     "ParallelProcessor",
@@ -76,9 +88,11 @@ __all__ = [
     "RetryPolicy",
     "RunContext",
     "SystemMessage",
+    "ToolProgressCallback",
     "UserMessage",
     "WebSearchCallItem",
     "count_tokens",
+    "function_tool",
     "get_context_window",
     "get_model_capabilities",
     "print_event_stream",

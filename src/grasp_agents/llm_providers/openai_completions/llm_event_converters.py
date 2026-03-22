@@ -1,8 +1,8 @@
 """
 Stateful converter: ChatCompletionChunk stream → LlmEvent stream.
 
-Synthesizes OpenResponses lifecycle events (OutputItemAdded, ContentPartAdded,
-TextDelta, OutputItemDone, ResponseCompleted, etc.) from flat Chat Completions
+Synthesizes OpenResponses lifecycle events (OutputItemAdded, OutputContentPartAdded,
+OutputMessageTextDelta, OutputItemDone, ResponseCompleted, etc.) from flat Chat Completions
 chunk deltas. Instantiate once per stream.
 """
 
@@ -12,16 +12,16 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
+    convert_usage,
+)
 from pydantic import TypeAdapter, ValidationError
 
-from grasp_agents.llm_providers.openai_completions.items_extraction import (
+from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
     convert_annotations,
 )
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs,
-)
-from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
-    convert_usage,
 )
 from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.reasoning import OpenRouterReasoningDetails

@@ -3,21 +3,21 @@
 import random
 from dataclasses import dataclass
 
-from .errors import (
-    LLMAuthenticationError,
-    LLMBadRequestError,
-    LLMContentFilterError,
-    LLMContextWindowError,
-    LLMError,
-    LLMRateLimitError,
+from .types.llm_errors import (
+    LlmAuthenticationError,
+    LlmBadRequestError,
+    LlmContentFilterError,
+    LlmContextWindowError,
+    LlmErrorTuple,
+    LlmRateLimitError,
 )
 
 # Deterministic errors — retrying the same request won't help.
-_NON_RETRYABLE: tuple[type[LLMError], ...] = (
-    LLMAuthenticationError,
-    LLMBadRequestError,
-    LLMContextWindowError,
-    LLMContentFilterError,
+_NON_RETRYABLE = (
+    LlmAuthenticationError,
+    LlmBadRequestError,
+    LlmContextWindowError,
+    LlmContentFilterError,
 )
 
 
@@ -49,7 +49,9 @@ class RetryPolicy:
 
     def is_retryable_api_error(self, error: Exception) -> bool:
         """Return whether this API error is retryable (transient)."""
-        return isinstance(error, LLMError) and not isinstance(error, _NON_RETRYABLE)
+        return isinstance(error, LlmErrorTuple) and not isinstance(
+            error, _NON_RETRYABLE
+        )
 
     def api_delay_for(self, attempt: int, error: Exception) -> float:
         """Compute delay for an API retry attempt (0-indexed)."""
@@ -59,7 +61,7 @@ class RetryPolicy:
         )
         jittered = base + random.uniform(0, base * self.jitter)  # noqa: S311
 
-        if isinstance(error, LLMRateLimitError) and error.retry_after:
+        if isinstance(error, LlmRateLimitError) and error.retry_after:
             return max(error.retry_after, base) + random.uniform(  # noqa: S311
                 0, base * self.jitter
             )

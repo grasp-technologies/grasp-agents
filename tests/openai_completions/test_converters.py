@@ -10,6 +10,8 @@ from openai.types import CompletionUsage
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import (
     Annotation as ChatCompletionAnnotation,
+)
+from openai.types.chat.chat_completion_message import (
     AnnotationURLCitation,
     ChatCompletionMessage,
 )
@@ -18,27 +20,23 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
     Function,
 )
 
-from grasp_agents.types.content import OutputRefusal, OutputTextContentPart, UrlCitation
-from grasp_agents.types.items import (
-    FunctionToolCallItem,
-    OutputMessageItem,
-    ReasoningItem,
-)
-
-from grasp_agents.llm_providers.openai_completions.items_extraction import (
-    convert_annotations,
-    generated_message_to_items,
-)
 from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
+    convert_annotations,
     convert_usage,
+    _chat_completion_to_items,
     provider_output_to_response,
 )
 from grasp_agents.llm_providers.openai_completions.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
+from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText, UrlCitation
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
 from grasp_agents.types.tool import NamedToolChoice
-
 
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #
@@ -71,9 +69,8 @@ def _make_completion(
         model="gpt-4.1-nano",
         object="chat.completion",
         choices=[Choice(index=0, finish_reason=finish_reason, message=msg)],
-        usage=usage or CompletionUsage(
-            prompt_tokens=10, completion_tokens=5, total_tokens=15
-        ),
+        usage=usage
+        or CompletionUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
 
 
@@ -85,7 +82,7 @@ def _make_completion(
 class TestGeneratedMessageToItems:
     def test_text_only(self) -> None:
         msg = ChatCompletionMessage(role="assistant", content="Hello world")
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -95,36 +92,35 @@ class TestGeneratedMessageToItems:
         msg = ChatCompletionMessage(
             role="assistant", content=None, refusal="I can't do that"
         )
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
         out_msg = items[0]
         assert len(out_msg.content_parts) == 1
-        assert isinstance(out_msg.content_parts[0], OutputRefusal)
+        assert isinstance(out_msg.content_parts[0], OutputMessageRefusal)
         assert out_msg.content_parts[0].refusal == "I can't do that"
 
     def test_text_and_refusal(self) -> None:
         msg = ChatCompletionMessage(
             role="assistant", content="Partial answer", refusal="But also refusing"
         )
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
         assert len(items[0].content_parts) == 2
-        assert isinstance(items[0].content_parts[0], OutputTextContentPart)
-        assert isinstance(items[0].content_parts[1], OutputRefusal)
+        assert isinstance(items[0].content_parts[0], OutputMessageText)
+        assert isinstance(items[0].content_parts[1], OutputMessageRefusal)
 
     def test_tool_calls(self) -> None:
         tc = ChatCompletionMessageFunctionToolCall(
-            id="call_abc", type="function",
+            id="call_abc",
+            type="function",
             function=Function(name="add", arguments='{"a": 1, "b": 2}'),
         )
-        msg = ChatCompletionMessage(
-            role="assistant", content=None, tool_calls=[tc]
-        )
-        items = generated_message_to_items(msg, output_message_status="completed")
+        msg = ChatCompletionMessage(role="assistant", content=None, tool_calls=[tc])
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -134,13 +130,14 @@ class TestGeneratedMessageToItems:
 
     def test_text_and_tool_calls(self) -> None:
         tc = ChatCompletionMessageFunctionToolCall(
-            id="call_xyz", type="function",
+            id="call_xyz",
+            type="function",
             function=Function(name="add", arguments='{"a": 3, "b": 4}'),
         )
         msg = ChatCompletionMessage(
             role="assistant", content="Let me add those", tool_calls=[tc]
         )
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         assert len(items) == 2
         assert isinstance(items[0], OutputMessageItem)
@@ -148,7 +145,7 @@ class TestGeneratedMessageToItems:
 
     def test_empty_message(self) -> None:
         msg = ChatCompletionMessage(role="assistant", content=None)
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         assert items == []
 
@@ -160,7 +157,7 @@ class TestGeneratedMessageToItems:
         # Patch getattr to work
         msg.__dict__["reasoning_content"] = "Let me think..."
 
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         reasoning = [i for i in items if isinstance(i, ReasoningItem)]
         assert len(reasoning) == 1
@@ -173,7 +170,7 @@ class TestGeneratedMessageToItems:
             {"type": "reasoning.text", "text": "Step 1: think", "signature": "sig123"}
         ]
 
-        items = generated_message_to_items(msg, output_message_status="completed")
+        items = _chat_completion_to_items(msg, output_message_status="completed")
 
         reasoning = [i for i in items if isinstance(i, ReasoningItem)]
         assert len(reasoning) == 1
@@ -294,9 +291,7 @@ class TestProviderOutputToResponse:
         assert response.usage_with_cost.output_tokens == 5
 
     def test_length_finish_reason(self) -> None:
-        completion = _make_completion(
-            content="Partial...", finish_reason="length"
-        )
+        completion = _make_completion(content="Partial...", finish_reason="length")
         response = provider_output_to_response(completion)
 
         assert response.status == "incomplete"
@@ -331,9 +326,7 @@ class TestProviderOutputToResponse:
         assert response.usage_with_cost.output_tokens_details.reasoning_tokens == 20
 
     def test_convert_usage_no_details(self) -> None:
-        usage = CompletionUsage(
-            prompt_tokens=10, completion_tokens=5, total_tokens=15
-        )
+        usage = CompletionUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
         result = convert_usage(usage)
 
         assert result.input_tokens_details.cached_tokens == 0

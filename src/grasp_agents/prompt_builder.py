@@ -10,7 +10,7 @@ from .run_context import CtxT, RunContext
 from .types.content import (
     Content,
     InputImage,
-    InputTextContentPart,
+    InputText,
 )
 from .types.io import InT, LLMPrompt
 from .types.items import InputMessageItem
@@ -179,7 +179,7 @@ def _input_message_from_parts(
     input_content: list[Any] = []
     for part in parts:
         if isinstance(part, str):
-            input_content.append(InputTextContentPart(text=part))
+            input_content.append(InputText(text=part))
         else:
             input_content.append(part)
     return InputMessageItem(content_ext=input_content, role="user")

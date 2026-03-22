@@ -3,7 +3,7 @@
 import pytest
 
 from grasp_agents.llm_agent_memory import LLMAgentMemory
-from grasp_agents.types.content import OutputTextContentPart
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -71,7 +71,7 @@ class TestMemoryUpdate:
 
         user_msg = InputMessageItem.from_text("Hello", role="user")
         output_msg = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Hi!")],
+            content_parts=[OutputMessageText(text="Hi!")],
             status="completed",
         )
         mem.update([user_msg, output_msg])
@@ -98,7 +98,7 @@ class TestMemoryUpdate:
         items = [
             InputMessageItem.from_text("Hello", role="user"),
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="Hi")],
+                content_parts=[OutputMessageText(text="Hi")],
                 status="completed",
             ),
             FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
@@ -152,7 +152,7 @@ class TestMemoryFullConversation:
         # First LLM response (with tool call)
         first_response_output = [
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="Let me calculate.")],
+                content_parts=[OutputMessageText(text="Let me calculate.")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -170,7 +170,7 @@ class TestMemoryFullConversation:
         # Second LLM response (final answer)
         final_output = [
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="2 + 2 = 4")],
+                content_parts=[OutputMessageText(text="2 + 2 = 4")],
                 status="completed",
             ),
         ]

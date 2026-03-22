@@ -12,24 +12,25 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.errors import (
-    LLMAuthenticationError,
-    LLMBadRequestError,
-    LLMConnectionError,
-    LLMContentFilterError,
-    LLMContextWindowError,
-    LLMError,
-    LLMRateLimitError,
-    LLMServerError,
-    LLMTimeoutError,
+from grasp_agents.types.llm_errors import (
+    LlmApiConnectionError,
+    LlmApiTimeoutError,
+    LlmAuthenticationError,
+    LlmBadRequestError,
+    LlmContentFilterError,
+    LlmContextWindowError,
+    LlmError,
+    LlmInternalServerError,
+    LlmRateLimitError,
 )
 from grasp_agents.fallback_llm import FallbackLLM
 from grasp_agents.llm import LLM
 from grasp_agents.resilience import RetryPolicy
-from grasp_agents.types.content import OutputTextContentPart
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import InputItem, InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_events import (
     LlmEvent,
@@ -43,6 +44,13 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.response import Response
 from grasp_agents.types.tool import BaseTool
 
+_REQ = httpx.Request("POST", "https://test")
+
+
+def _R(status_code: int) -> httpx.Response:
+    return httpx.Response(status_code, request=_REQ)
+
+
 # ---------- Helpers ----------
 
 
@@ -51,7 +59,7 @@ def _text_response(text: str, model: str = "mock") -> Response:
         model=model,
         output_items=[
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text=text)],
+                content_parts=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
@@ -117,7 +125,7 @@ class ErrorLLM(LLM):
     """Always raises a given error. Tracks call count."""
 
     error_to_raise: Exception = field(
-        default_factory=lambda: LLMServerError("500", status_code=500)
+        default_factory=lambda: LlmInternalServerError("500", response=_R(500), body=None)
     )
 
     def __post_init__(self) -> None:
@@ -152,15 +160,15 @@ class ErrorLLM(LLM):
         count: int = self._call_count  # type: ignore[attr-defined]
         object.__setattr__(self, "_call_count", count + 1)
         raise self.error_to_raise
-        yield  # noqa: RET503
+        yield
 
 
 @dataclass(frozen=True)
 class FailThenSucceedLLM(LLM):
     """Fails with given error N times, then returns success."""
 
-    error: LLMError = field(
-        default_factory=lambda: LLMServerError("500", status_code=500)
+    error: LlmError = field(
+        default_factory=lambda: LlmInternalServerError("500", response=_R(500), body=None)
     )
     fail_count: int = 2
     success_response: Response = field(default_factory=lambda: _text_response("ok"))
@@ -218,8 +226,8 @@ class FailThenSucceedLLM(LLM):
 class FailMidStreamLLM(LLM):
     """Yields partial events then raises — simulates mid-stream connection drop."""
 
-    error_to_raise: LLMError = field(
-        default_factory=lambda: LLMServerError("connection reset", status_code=502)
+    error_to_raise: LlmError = field(
+        default_factory=lambda: LlmInternalServerError("connection reset", response=_R(502), body=None)
     )
 
     async def _generate_response_once(
@@ -244,9 +252,7 @@ class FailMidStreamLLM(LLM):
     ) -> AsyncIterator[LlmEvent]:
         resp = _text_response("partial", model="failing-model")
         yield ResponseCreated(response=resp, sequence_number=1)  # type: ignore[arg-type]
-        yield OutputItemAdded(
-            item=resp.output[0], output_index=0, sequence_number=2
-        )
+        yield OutputItemAdded(item=resp.output[0], output_index=0, sequence_number=2)
         raise self.error_to_raise
 
 
@@ -259,9 +265,7 @@ class TestFallbackLLM:
     @pytest.mark.asyncio
     async def test_primary_succeeds_no_fallback_called(self) -> None:
         """When primary works, fallback LLMs are never touched."""
-        primary = StubLLM(
-            model_name="primary", response=_text_response("from primary")
-        )
+        primary = StubLLM(model_name="primary", response=_text_response("from primary"))
         fallback = StubLLM(
             model_name="fallback", response=_text_response("from fallback")
         )
@@ -278,11 +282,9 @@ class TestFallbackLLM:
         """Primary error → first fallback tried and succeeds."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LLMServerError("overloaded", status_code=503),
+            error_to_raise=LlmInternalServerError("overloaded", response=_R(503), body=None),
         )
-        fallback = StubLLM(
-            model_name="fallback", response=_text_response("recovered")
-        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
 
         llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
         result = await llm._generate_response_once(_USER_MSG)
@@ -294,16 +296,16 @@ class TestFallbackLLM:
         """All fail → last error raised, not first. Matters for debugging."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LLMRateLimitError("rate limited"),
+            error_to_raise=LlmRateLimitError("rate limited", response=_R(429), body=None),
         )
         fallback = ErrorLLM(
             model_name="fallback",
-            error_to_raise=LLMServerError("server down", status_code=500),
+            error_to_raise=LlmInternalServerError("server down", response=_R(500), body=None),
         )
 
         llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
 
-        with pytest.raises(LLMServerError, match="server down"):
+        with pytest.raises(LlmInternalServerError, match="server down"):
             await llm._generate_response_once(_USER_MSG)
 
     @pytest.mark.asyncio
@@ -339,11 +341,9 @@ class TestFallbackLLM:
         """
         primary = FailMidStreamLLM(
             model_name="primary",
-            error_to_raise=LLMServerError("mid-stream crash", status_code=502),
+            error_to_raise=LlmInternalServerError("mid-stream crash", response=_R(502), body=None),
         )
-        fallback = StubLLM(
-            model_name="fallback", response=_text_response("recovered")
-        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
 
         llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
 
@@ -359,7 +359,7 @@ class TestFallbackLLM:
         fb = next(e for e in events if isinstance(e, ResponseFallback))
         assert fb.failed_model == "primary"
         assert fb.fallback_model == "fallback"
-        assert fb.error_type == "LLMServerError"
+        assert fb.error_type == "LlmInternalServerError"
 
         # Fallback stream follows and completes
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
@@ -371,17 +371,17 @@ class TestFallbackLLM:
         """All candidates fail → ResponseFallback events emitted, then last error raised."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LLMRateLimitError("rate limited"),
+            error_to_raise=LlmRateLimitError("rate limited", response=_R(429), body=None),
         )
         fallback = ErrorLLM(
             model_name="fallback",
-            error_to_raise=LLMServerError("down", status_code=500),
+            error_to_raise=LlmInternalServerError("down", response=_R(500), body=None),
         )
 
         llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
 
         events: list[LlmEvent] = []
-        with pytest.raises(LLMServerError, match="down"):
+        with pytest.raises(LlmInternalServerError, match="down"):
             async for event in llm._generate_response_stream_once(_USER_MSG):
                 events.append(event)
 
@@ -405,7 +405,7 @@ class TestAPIRetries:
         """Server error retried with backoff, eventual success."""
         llm = FailThenSucceedLLM(
             model_name="mock",
-            error=LLMServerError("overloaded", status_code=503),
+            error=LlmInternalServerError("overloaded", response=_R(503), body=None),
             fail_count=2,
             success_response=_text_response("ok"),
             retry_policy=RetryPolicy(api_retries=3),
@@ -422,11 +422,11 @@ class TestAPIRetries:
         """Authentication error propagates immediately regardless of api_retries."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LLMAuthenticationError("bad key", status_code=401),
+            error_to_raise=LlmAuthenticationError("bad key", response=_R(401), body=None),
             retry_policy=RetryPolicy(api_retries=5),
         )
 
-        with pytest.raises(LLMAuthenticationError):
+        with pytest.raises(LlmAuthenticationError):
             await llm.generate_response(_USER_MSG)
         assert llm.call_count == 1
 
@@ -435,11 +435,11 @@ class TestAPIRetries:
         """Context window exceeded is deterministic — no retry."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LLMContextWindowError("too long", status_code=400),
+            error_to_raise=LlmContextWindowError("too long", response=_R(400), body=None),
             retry_policy=RetryPolicy(api_retries=5),
         )
 
-        with pytest.raises(LLMContextWindowError):
+        with pytest.raises(LlmContextWindowError):
             await llm.generate_response(_USER_MSG)
         assert llm.call_count == 1
 
@@ -449,11 +449,11 @@ class TestAPIRetries:
         """All retries fail → error propagated, not swallowed."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LLMServerError("persistent failure", status_code=500),
+            error_to_raise=LlmInternalServerError("persistent failure", response=_R(500), body=None),
             retry_policy=RetryPolicy(api_retries=2),
         )
 
-        with pytest.raises(LLMServerError, match="persistent failure"):
+        with pytest.raises(LlmInternalServerError, match="persistent failure"):
             await llm.generate_response(_USER_MSG)
         assert llm.call_count == 3  # 1 initial + 2 retries
 
@@ -465,7 +465,7 @@ class TestAPIRetries:
         """Stream: transient error → ResponseRetrying emitted before retry attempt."""
         llm = FailThenSucceedLLM(
             model_name="mock",
-            error=LLMServerError("blip", status_code=500),
+            error=LlmInternalServerError("blip", response=_R(500), body=None),
             fail_count=1,
             success_response=_text_response("recovered"),
             retry_policy=RetryPolicy(api_retries=2),
@@ -491,11 +491,11 @@ class TestAPIRetries:
         """
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LLMAuthenticationError("expired", status_code=401),
+            error_to_raise=LlmAuthenticationError("expired", response=_R(401), body=None),
             retry_policy=RetryPolicy(api_retries=3, validation_retries=3),
         )
 
-        with pytest.raises(LLMAuthenticationError):
+        with pytest.raises(LlmAuthenticationError):
             await llm.generate_response(_USER_MSG)
         assert llm.call_count == 1
 
@@ -508,27 +508,23 @@ class TestRetryPolicy:
 
     def test_transient_errors_are_retryable(self) -> None:
         policy = RetryPolicy()
-        assert policy.is_retryable_api_error(LLMRateLimitError("429"))
-        assert policy.is_retryable_api_error(
-            LLMServerError("500", status_code=500)
-        )
-        assert policy.is_retryable_api_error(LLMTimeoutError("timeout"))
-        assert policy.is_retryable_api_error(LLMConnectionError("reset"))
+        assert policy.is_retryable_api_error(LlmRateLimitError("429", response=_R(429), body=None))
+        assert policy.is_retryable_api_error(LlmInternalServerError("500", response=_R(500), body=None))
+        assert policy.is_retryable_api_error(LlmApiTimeoutError(request=_REQ))
+        assert policy.is_retryable_api_error(LlmApiConnectionError(request=_REQ))
 
     def test_deterministic_errors_not_retryable(self) -> None:
         policy = RetryPolicy()
         assert not policy.is_retryable_api_error(
-            LLMAuthenticationError("bad key", status_code=401)
+            LlmAuthenticationError("bad key", response=_R(401), body=None)
         )
         assert not policy.is_retryable_api_error(
-            LLMBadRequestError("malformed", status_code=400)
+            LlmBadRequestError("malformed", response=_R(400), body=None)
         )
         assert not policy.is_retryable_api_error(
-            LLMContextWindowError("too long", status_code=400)
+            LlmContextWindowError("too long", response=_R(400), body=None)
         )
-        assert not policy.is_retryable_api_error(
-            LLMContentFilterError("blocked")
-        )
+        assert not policy.is_retryable_api_error(LlmContentFilterError())
 
     def test_non_llm_error_not_retryable(self) -> None:
         policy = RetryPolicy()
@@ -537,10 +533,8 @@ class TestRetryPolicy:
 
     def test_exponential_backoff(self) -> None:
         """Delay grows exponentially (jitter=0 for determinism)."""
-        policy = RetryPolicy(
-            initial_delay=1.0, exponential_base=2.0, jitter=0.0
-        )
-        err = LLMServerError("500", status_code=500)
+        policy = RetryPolicy(initial_delay=1.0, exponential_base=2.0, jitter=0.0)
+        err = LlmInternalServerError("500", response=_R(500), body=None)
 
         assert policy.api_delay_for(0, err) == pytest.approx(1.0)
         assert policy.api_delay_for(1, err) == pytest.approx(2.0)
@@ -551,12 +545,12 @@ class TestRetryPolicy:
         policy = RetryPolicy(
             initial_delay=10.0, max_delay=15.0, exponential_base=10.0, jitter=0.0
         )
-        err = LLMServerError("500", status_code=500)
+        err = LlmInternalServerError("500", response=_R(500), body=None)
         assert policy.api_delay_for(5, err) == pytest.approx(15.0)
 
     def test_rate_limit_retry_after_used_as_floor(self) -> None:
         """Rate limit with retry_after=30 → delay >= 30, not just backoff."""
         policy = RetryPolicy(initial_delay=1.0, jitter=0.0)
-        err = LLMRateLimitError("429", retry_after=30.0)
+        err = LlmRateLimitError("429", response=_R(429), body=None, retry_after=30.0)
         delay = policy.api_delay_for(0, err)
         assert delay >= 30.0

@@ -25,6 +25,9 @@ from openai.types.responses import (
     ResponseRefusalDoneEvent,
     ResponseTextDeltaEvent,
     ResponseTextDoneEvent,
+    ResponseWebSearchCallCompletedEvent,
+    ResponseWebSearchCallInProgressEvent,
+    ResponseWebSearchCallSearchingEvent,
 )
 from openai.types.responses.response_output_text import Logprob
 from openai.types.responses.response_text_delta_event import Logprob as DeltaLogprob
@@ -37,7 +40,7 @@ from openai.types.responses.response_text_done_event import (
 )
 from pydantic import BaseModel, Field
 
-from .content import OutputContentPart, ReasoningSummaryPart
+from .content import OutputContentPart, ReasoningSummary
 from .items import OutputItem
 from .response import Response
 
@@ -116,7 +119,7 @@ class OutputItemDone(ResponseOutputItemDoneEvent):
 # Content part events
 
 
-class ContentPartAdded(ResponseContentPartAddedEvent):
+class OutputContentPartAdded(ResponseContentPartAddedEvent):
     """A new content part started within an output message."""
 
     type: Literal["response.content_part.added"] = "response.content_part.added"
@@ -127,7 +130,7 @@ class ContentPartAdded(ResponseContentPartAddedEvent):
     part: OutputContentPart  # type: ignore[assignment]
 
 
-class ContentPartDone(ResponseContentPartDoneEvent):
+class OutputContentPartDone(ResponseContentPartDoneEvent):
     """A content part is complete with its final content."""
 
     type: Literal["response.content_part.done"] = "response.content_part.done"
@@ -138,87 +141,10 @@ class ContentPartDone(ResponseContentPartDoneEvent):
     part: OutputContentPart  # type: ignore[assignment]
 
 
-# Reasoning events
-
-
-class ReasoningSummaryPartAdded(ResponseReasoningSummaryPartAddedEvent):
-    """A new reasoning summary part started."""
-
-    type: Literal["response.reasoning_summary_part.added"] = (
-        "response.reasoning_summary_part.added"
-    )
-    item_id: str
-    summary_index: int
-    output_index: int
-    sequence_number: int
-    part: ReasoningSummaryPart  # type: ignore[assignment]
-
-
-class ReasoningSummaryDelta(ResponseReasoningSummaryTextDeltaEvent):
-    """Incremental reasoning summary token."""
-
-    type: Literal["response.reasoning_summary_text.delta"] = (
-        "response.reasoning_summary_text.delta"
-    )
-    item_id: str
-    summary_index: int
-    output_index: int
-    sequence_number: int
-    delta: str
-
-
-class ReasoningSummaryTextDone(ResponseReasoningSummaryTextDoneEvent):
-    """Final reasoning summary with the complete text."""
-
-    type: Literal["response.reasoning_summary_text.done"] = (
-        "response.reasoning_summary_text.done"
-    )
-    item_id: str
-    summary_index: int
-    output_index: int
-    sequence_number: int
-    text: str
-
-
-class ReasoningSummaryPartDone(ResponseReasoningSummaryPartDoneEvent):
-    """A reasoning summary part is complete."""
-
-    type: Literal["response.reasoning_summary_part.done"] = (
-        "response.reasoning_summary_part.done"
-    )
-    item_id: str
-    summary_index: int
-    output_index: int
-    sequence_number: int
-    part: ReasoningSummaryPart  # type: ignore[assignment]
-
-
-class ReasoningDelta(ResponseReasoningTextDeltaEvent):
-    """Incremental reasoning/thinking token."""
-
-    type: Literal["response.reasoning_text.delta"] = "response.reasoning_text.delta"
-    item_id: str
-    content_index: int
-    output_index: int
-    sequence_number: int
-    delta: str
-
-
-class ReasoningTextDone(ResponseReasoningTextDoneEvent):
-    """Final reasoning content with the complete text."""
-
-    type: Literal["response.reasoning_text.done"] = "response.reasoning_text.done"
-    item_id: str
-    content_index: int
-    output_index: int
-    sequence_number: int
-    text: str
-
-
 # Output text events
 
 
-class TextDelta(ResponseTextDeltaEvent):
+class OutputMessageTextDelta(ResponseTextDeltaEvent):
     """Incremental text token from the model."""
 
     type: Literal["response.output_text.delta"] = "response.output_text.delta"
@@ -230,7 +156,7 @@ class TextDelta(ResponseTextDeltaEvent):
     logprobs: list[DeltaLogprob] = Field(default_factory=list[DeltaLogprob])
 
 
-class TextDone(ResponseTextDoneEvent):
+class OutputMessageTextDone(ResponseTextDoneEvent):
     """Final text content part with the complete text."""
 
     type: Literal["response.output_text.done"] = "response.output_text.done"
@@ -279,7 +205,7 @@ def output_to_done_logprobs(logprobs: list[Logprob]) -> list[DoneLogprob]:
 # Refusal events
 
 
-class RefusalDelta(ResponseRefusalDeltaEvent):
+class OutputMessageRefusalDelta(ResponseRefusalDeltaEvent):
     """Incremental refusal token."""
 
     type: Literal["response.refusal.delta"] = "response.refusal.delta"
@@ -290,7 +216,7 @@ class RefusalDelta(ResponseRefusalDeltaEvent):
     delta: str
 
 
-class RefusalDone(ResponseRefusalDoneEvent):
+class OutputMessageRefusalDone(ResponseRefusalDoneEvent):
     """Final refusal content with the complete refusal text."""
 
     type: Literal["response.refusal.done"] = "response.refusal.done"
@@ -299,6 +225,31 @@ class RefusalDone(ResponseRefusalDoneEvent):
     output_index: int
     sequence_number: int
     refusal: str
+
+
+# Reasoning content events
+
+
+class ReasoningTextDelta(ResponseReasoningTextDeltaEvent):
+    """Incremental reasoning/thinking token."""
+
+    type: Literal["response.reasoning_text.delta"] = "response.reasoning_text.delta"
+    item_id: str
+    content_index: int
+    output_index: int
+    sequence_number: int
+    delta: str
+
+
+class ReasoningTextDone(ResponseReasoningTextDoneEvent):
+    """Final reasoning content with the complete text."""
+
+    type: Literal["response.reasoning_text.done"] = "response.reasoning_text.done"
+    item_id: str
+    content_index: int
+    output_index: int
+    sequence_number: int
+    text: str
 
 
 # Annotation events
@@ -316,6 +267,61 @@ class AnnotationAdded(ResponseOutputTextAnnotationAddedEvent):
     output_index: int
     sequence_number: int
     annotation: object
+
+
+# Reasoning summary events
+
+
+class ReasoningSummaryPartAdded(ResponseReasoningSummaryPartAddedEvent):
+    """A new reasoning summary part started."""
+
+    type: Literal["response.reasoning_summary_part.added"] = (
+        "response.reasoning_summary_part.added"
+    )
+    item_id: str
+    summary_index: int
+    output_index: int
+    sequence_number: int
+    part: ReasoningSummary  # type: ignore[assignment]
+
+
+class ReasoningSummaryPartDone(ResponseReasoningSummaryPartDoneEvent):
+    """A reasoning summary part is complete."""
+
+    type: Literal["response.reasoning_summary_part.done"] = (
+        "response.reasoning_summary_part.done"
+    )
+    item_id: str
+    summary_index: int
+    output_index: int
+    sequence_number: int
+    part: ReasoningSummary  # type: ignore[assignment]
+
+
+class ReasoningSummaryDelta(ResponseReasoningSummaryTextDeltaEvent):
+    """Incremental reasoning summary token."""
+
+    type: Literal["response.reasoning_summary_text.delta"] = (
+        "response.reasoning_summary_text.delta"
+    )
+    item_id: str
+    summary_index: int
+    output_index: int
+    sequence_number: int
+    delta: str
+
+
+class ReasoningSummaryDone(ResponseReasoningSummaryTextDoneEvent):
+    """Final reasoning summary with the complete text."""
+
+    type: Literal["response.reasoning_summary_text.done"] = (
+        "response.reasoning_summary_text.done"
+    )
+    item_id: str
+    summary_index: int
+    output_index: int
+    sequence_number: int
+    text: str
 
 
 # Tool call events
@@ -346,7 +352,46 @@ class FunctionCallArgumentsDone(ResponseFunctionCallArgumentsDoneEvent):
     sequence_number: int
 
 
-class ErrorEvent(ResponseErrorEvent):
+# Web search events
+
+
+class WebSearchCallInProgress(ResponseWebSearchCallInProgressEvent):
+    """A web search call has been initiated."""
+
+    type: Literal["response.web_search_call.in_progress"] = (
+        "response.web_search_call.in_progress"
+    )
+    item_id: str
+    output_index: int
+    sequence_number: int
+
+
+class WebSearchCallSearching(ResponseWebSearchCallSearchingEvent):
+    """A web search call is executing."""
+
+    type: Literal["response.web_search_call.searching"] = (
+        "response.web_search_call.searching"
+    )
+    item_id: str
+    output_index: int
+    sequence_number: int
+
+
+class WebSearchCallCompleted(ResponseWebSearchCallCompletedEvent):
+    """A web search call has completed."""
+
+    type: Literal["response.web_search_call.completed"] = (
+        "response.web_search_call.completed"
+    )
+    item_id: str
+    output_index: int
+    sequence_number: int
+
+
+# Error events
+
+
+class LlmError(ResponseErrorEvent):
     """An error occurred during streaming."""
 
     type: Literal["error"] = "error"
@@ -387,31 +432,34 @@ class ResponseFallback(BaseModel):
 
 
 LlmEvent: TypeAlias = Annotated[
-    TextDelta
-    | TextDone
-    | FunctionCallArgumentsDelta
-    | OutputItemAdded
-    | OutputItemDone
-    | ContentPartAdded
-    | ContentPartDone
+    ResponseCreated
+    | ResponseIncomplete
+    | ResponseRetrying
+    | ResponseFallback
     | ResponseQueued
     | ResponseInProgress
     | ResponseCompleted
     | ResponseFailed
-    | FunctionCallArgumentsDone
-    | ReasoningDelta
+    | OutputItemAdded
+    | OutputItemDone
+    | OutputContentPartAdded
+    | OutputContentPartDone
+    | OutputMessageTextDelta
+    | OutputMessageTextDone
+    | OutputMessageRefusalDelta
+    | OutputMessageRefusalDone
+    | AnnotationAdded
+    | ReasoningTextDelta
     | ReasoningTextDone
-    | ReasoningSummaryDelta
-    | ReasoningSummaryTextDone
     | ReasoningSummaryPartAdded
     | ReasoningSummaryPartDone
-    | RefusalDelta
-    | RefusalDone
-    | AnnotationAdded
-    | ErrorEvent
-    | ResponseCreated
-    | ResponseIncomplete
-    | ResponseRetrying
-    | ResponseFallback,
+    | ReasoningSummaryDelta
+    | ReasoningSummaryDone
+    | FunctionCallArgumentsDelta
+    | FunctionCallArgumentsDone
+    | WebSearchCallInProgress
+    | WebSearchCallSearching
+    | WebSearchCallCompleted
+    | LlmError,
     Field(discriminator="type"),
 ]

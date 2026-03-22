@@ -16,13 +16,13 @@ from typing_extensions import TypedDict
 
 from .errors import (
     JSONSchemaValidationError,
-    LLMError,
     LLMResponseValidationError,
     LLMToolCallValidationError,
 )
 from .model_info import ModelCapabilities, get_model_capabilities
 from .resilience import RetryPolicy
 from .types.items import InputItem
+from .types.llm_errors import LlmErrorTuple
 from .types.llm_events import LlmEvent, ResponseCompleted, ResponseRetrying
 from .types.response import Response
 from .types.tool import BaseTool, ToolChoice
@@ -111,7 +111,7 @@ class LLM(ABC):
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
-            except LLMError as err:
+            except LlmErrorTuple as err:
                 attempt += 1
                 if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
                     delay = policy.api_delay_for(attempt - 1, err)
@@ -165,7 +165,7 @@ class LLM(ABC):
                     last_seq = event.sequence_number
                     yield event
                 return
-            except LLMError as err:
+            except LlmErrorTuple as err:
                 attempt += 1
                 if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
                     delay = policy.api_delay_for(attempt - 1, err)

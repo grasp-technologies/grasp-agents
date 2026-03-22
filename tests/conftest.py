@@ -55,11 +55,20 @@ class AddInput(BaseModel):
 
 
 class AddTool(BaseTool[AddInput, int, Any]):
-    name: str = "add"
-    description: str = "Add two integers and return their sum."
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(
+            name="add",
+            description="Add two integers and return their sum.",
+            **kwargs,
+        )
 
-    async def run(
-        self, inp: AddInput, *, ctx: Any = None, call_id: str | None = None  # noqa: ARG002
+    async def _run(
+        self,
+        inp: AddInput,
+        *,
+        ctx: Any = None,
+        call_id: str | None = None,
+        progress_callback: Any = None,  # noqa: ARG002
     ) -> int:
         return inp.a + inp.b
 

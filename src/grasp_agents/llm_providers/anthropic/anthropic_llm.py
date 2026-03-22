@@ -9,6 +9,11 @@ from typing import TYPE_CHECKING, Any
 
 from anthropic import AsyncAnthropic
 from anthropic._types import omit  # type: ignore[import]
+from anthropic.types import (
+    WebFetchTool20260209Param,
+    WebSearchTool20250305Param,
+    WebSearchTool20260209Param,
+)
 from grasp_agents.cloud_llm import (
     ApiCallParams,
     APIProvider,
@@ -16,7 +21,6 @@ from grasp_agents.cloud_llm import (
     CloudLLMSettings,
 )
 
-from . import WebSearchTool20250305Param, WebSearchTool20260209Param
 from .error_mapping import map_api_error
 from .llm_event_converters import AnthropicStreamConverter
 from .provider_output_to_response import provider_output_to_response
@@ -28,8 +32,8 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
-    from grasp_agents.errors import LLMError
     from grasp_agents.types.items import InputItem
+    from grasp_agents.types.llm_errors import LlmError
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
     from grasp_agents.types.tool import BaseTool, ToolChoice
@@ -47,6 +51,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TOKENS = 65536
 
 WebSearchToolParam = WebSearchTool20260209Param | WebSearchTool20250305Param
+WebFetchToolParam = WebFetchTool20260209Param
 
 
 class AnthropicLLMSettings(CloudLLMSettings, total=False):
@@ -55,6 +60,7 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
     stop_sequences: list[str] | None
     top_k: int | None
     web_search: WebSearchToolParam | None
+    web_fetch: WebFetchToolParam | None
 
 
 @dataclass(frozen=True)
@@ -107,13 +113,18 @@ class AnthropicLLM(CloudLLM):
         merged: dict[str, Any] = dict(self.llm_settings or {})
         merged.update(extra_llm_settings)
 
-        # Web search: server-side tool, goes into the tools list
+        # Server-side tools: go into the tools list
         web_search_tool_param: WebSearchToolParam | None = merged.pop(
             "web_search", None
         )
         if web_search_tool_param is not None:
             api_tools = api_tools or []
             api_tools.append(web_search_tool_param)
+
+        web_fetch_tool_param: WebFetchToolParam | None = merged.pop("web_fetch", None)
+        if web_fetch_tool_param is not None:
+            api_tools = api_tools or []
+            api_tools.append(web_fetch_tool_param)
 
         extra_settings: dict[str, Any] = {}
         if system is not None:
@@ -136,7 +147,7 @@ class AnthropicLLM(CloudLLM):
 
     # --- Error mapping ---
 
-    def _map_api_error(self, err: Exception) -> LLMError | None:
+    def _map_api_error(self, err: Exception) -> LlmError | None:
         return map_api_error(err)
 
     # --- Provider API layer ---

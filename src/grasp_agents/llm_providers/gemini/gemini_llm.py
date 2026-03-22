@@ -16,6 +16,8 @@ from grasp_agents.cloud_llm import (
     CloudLLMSettings,
 )
 
+from google.genai.types import UrlContext
+
 from . import GeminiConfig, GeminiGoogleSearch, GeminiGoogleSearchDict, GeminiTool
 from .error_mapping import map_api_error
 from .llm_event_converters import GeminiStreamConverter
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
-    from grasp_agents.errors import LLMError
+    from grasp_agents.types.llm_errors import LlmError
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
@@ -56,13 +58,16 @@ class GeminiLLMSettings(CloudLLMSettings, total=False):
     thinking_config: GeminiThinkingConfigDict | dict[str, Any] | None
     safety_settings: list[GeminiSafetySettingDict] | None
     google_search: GeminiGoogleSearchDict | None
+    url_context: bool | None
 
 
 # Keys with no Gemini equivalent (silently dropped)
 _UNSUPPORTED_BASE_KEYS = frozenset({"extra_query"})
 
 # Keys requiring special handling (not forwarded to GeminiConfig directly)
-_SPECIAL_KEYS = frozenset({"google_search", "extra_headers", "extra_body"})
+_SPECIAL_KEYS = frozenset(
+    {"google_search", "url_context", "extra_headers", "extra_body"}
+)
 
 # Keys forwarded directly to GenerateContentConfig
 _CONFIG_KEYS = (
@@ -161,13 +166,19 @@ class GeminiLLM(CloudLLM):
                 )
             )
 
+        # URL context tool (no settings — URLs come from message content)
+        if merged.pop("url_context", None):
+            config_kwargs.setdefault("tools", []).append(
+                GeminiTool(url_context=UrlContext())
+            )
+
         config = GeminiConfig(**config_kwargs)
 
         return ApiCallParams(api_input=contents, extra_settings={"config": config})
 
     # --- Error mapping ---
 
-    def _map_api_error(self, err: Exception) -> LLMError | None:
+    def _map_api_error(self, err: Exception) -> LlmError | None:
         return map_api_error(err)
 
     # --- Provider API layer ---

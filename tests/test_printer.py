@@ -14,8 +14,8 @@ from grasp_agents.printer import (
 )
 from grasp_agents.types.content import (
     InputImage,
-    InputTextContentPart,
-    OutputTextContentPart,
+    InputText,
+    OutputMessageText,
 )
 from grasp_agents.types.events import (
     LLMStreamEvent,
@@ -36,7 +36,7 @@ from grasp_agents.types.llm_events import (
     OutputItemDone,
     ReasoningSummaryDelta,
     ResponseCreated,
-    TextDelta,
+    OutputMessageTextDelta,
 )
 from grasp_agents.types.response import Response
 
@@ -75,7 +75,7 @@ class TestInputMessageText:
         """Image URLs are included in text output."""
         msg = InputMessageItem(
             content_parts=[
-                InputTextContentPart(text="Look at this"),
+                InputText(text="Look at this"),
                 InputImage.from_url("https://example.com/pic.jpg"),
             ],
             role="user",
@@ -88,7 +88,7 @@ class TestInputMessageText:
         """Base64 images show placeholder."""
         msg = InputMessageItem(
             content_parts=[
-                InputTextContentPart(text="Describe"),
+                InputText(text="Describe"),
                 InputImage.from_base64("abc123"),
             ],
             role="user",
@@ -166,7 +166,7 @@ class TestPrintEventStream:
             model="test-model",
             output_items=[
                 OutputMessageItem(
-                    content_parts=[OutputTextContentPart(text="Hello")],
+                    content_parts=[OutputMessageText(text="Hello")],
                     status="completed",
                 )
             ],
@@ -198,11 +198,11 @@ class TestPrintEventStream:
 
     @pytest.mark.asyncio
     async def test_text_delta_event(self, capsys):
-        """TextDelta events stream text content."""
+        """OutputMessageTextDelta events stream text content."""
 
         async def gen():
             yield LLMStreamEvent(
-                data=TextDelta(
+                data=OutputMessageTextDelta(
                     content_index=0,
                     delta="Hello ",
                     output_index=0,
@@ -214,7 +214,7 @@ class TestPrintEventStream:
                 call_id="c1",
             )
             yield LLMStreamEvent(
-                data=TextDelta(
+                data=OutputMessageTextDelta(
                     content_index=0,
                     delta="world!",
                     output_index=0,
@@ -239,7 +239,7 @@ class TestPrintEventStream:
     async def test_output_item_added_response(self, capsys):
         """OutputItemAdded with OutputMessageItem prints <response> tag."""
         item = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="test")],
+            content_parts=[OutputMessageText(text="test")],
             status="in_progress",
         )
 
@@ -297,7 +297,7 @@ class TestPrintEventStream:
     async def test_output_item_done_closing_tags(self, capsys):
         """OutputItemDone events print closing tags."""
         msg_item = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="done")],
+            content_parts=[OutputMessageText(text="done")],
             status="completed",
         )
         tc_item = FunctionToolCallItem(call_id="tc_1", name="search", arguments="{}")
@@ -396,7 +396,7 @@ class TestPrintEventStream:
         async def gen():
             yield UserMessageEvent(data=msg, src_name="a", call_id="c1")
             yield LLMStreamEvent(
-                data=TextDelta(
+                data=OutputMessageTextDelta(
                     content_index=0,
                     delta="Hi",
                     output_index=0,

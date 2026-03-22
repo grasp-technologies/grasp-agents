@@ -1,8 +1,8 @@
 """
-Anthropic integration tests that call real LLM APIs.
+Gemini integration tests that call real LLM APIs.
 
 Skipped by default. Run with:
-    uv run pytest -m integration -k anthropic
+    uv run pytest -m integration -k gemini
 """
 
 from __future__ import annotations
@@ -13,19 +13,20 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel, Field
 
+from openai.types.responses.response_function_web_search import ActionOpenPage
+
 from grasp_agents.cloud_llm import APIProvider
-from grasp_agents.types.content import OutputTextContentPart, UrlCitation
+from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import (
+    FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
     OutputMessageItem,
-    ReasoningItem,
     WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
-    OutputItemDone,
+    OutputMessageTextDelta,
     ResponseCompleted,
-    TextDelta,
 )
 
 if TYPE_CHECKING:
@@ -39,19 +40,19 @@ class Capital(BaseModel):
 
 
 @pytest.mark.integration
-class TestAnthropicIntegration:
+class TestGeminiIntegration:
     @pytest.fixture
-    def llm(self, anthropic_api_key: str) -> CloudLLM:
-        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
-        return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+        return GeminiLLM(
+            model_name="gemini-2.0-flash",
             api_provider=APIProvider(
-                name="anthropic",
+                name="google",
                 base_url=None,
-                api_key=anthropic_api_key,
+                api_key=google_api_key,
             ),
-            llm_settings={"max_tokens": 100},
+            llm_settings={"max_output_tokens": 100},
         )
 
     @pytest.mark.asyncio
@@ -71,7 +72,7 @@ class TestAnthropicIntegration:
     async def test_stream_text(self, llm: CloudLLM) -> None:
         input_items = [InputMessageItem.from_text("Say 'hello' and nothing else.")]
         events = [event async for event in llm.generate_response_stream(input_items)]
-        text_deltas = [e for e in events if isinstance(e, TextDelta)]
+        text_deltas = [e for e in events if isinstance(e, OutputMessageTextDelta)]
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
 
         assert len(text_deltas) > 0
@@ -103,28 +104,32 @@ class TestAnthropicIntegration:
 
 
 @pytest.mark.integration
-class TestAnthropicReasoningContinuity:
+class TestGeminiReasoningContinuity:
     """
-    Reasoning traces (thinking blocks) must survive tool-call round-trips.
+    Reasoning traces (thought parts with signatures) must survive
+    tool-call round-trips. Gemini requires thought_signature to be
+    passed back for reasoning continuity.
 
-    Anthropic requires thinking blocks with signatures to be passed back
-    in the assistant message for the next turn.
+    Gemini >=3.0 enforces signature validation (corrupted → error).
     """
 
     @pytest.fixture
-    def llm(self, anthropic_api_key: str) -> CloudLLM:
-        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
-        return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+        return GeminiLLM(
+            model_name="gemini-3.1-pro-preview",
             api_provider=APIProvider(
-                name="anthropic",
+                name="google",
                 base_url=None,
-                api_key=anthropic_api_key,
+                api_key=google_api_key,
             ),
             llm_settings={
-                "max_tokens": 4096,
-                "thinking": {"type": "enabled", "budget_tokens": 1024},
+                "max_output_tokens": 4096,
+                "thinking_config": {
+                    "thinking_level": "medium",
+                    "include_thoughts": True,
+                },
             },
         )
 
@@ -133,11 +138,11 @@ class TestAnthropicReasoningContinuity:
         self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
     ) -> None:
         user_msg = InputMessageItem.from_text(
-            "From the set {6, 11, 17, 19, 25, 33}, find the unique pair "
-            "whose sum is exactly 42. Work through the combinations, "
-            "then use the add tool to verify your answer."
+            "Think carefully step by step through ALL combinations. "
+            "From the set {3, 7, 11, 14, 19, 23, 28, 31, 37, 42}, find ALL pairs "
+            "whose sum is exactly 45. List each pair you check and whether it works. "
+            "Then use the add tool to verify EACH valid pair you found."
         )
-        # Anthropic does not allow tool_choice="required" with thinking
         r1 = await llm.generate_response([user_msg], tools=tools)
 
         # First turn: reasoning + tool call
@@ -157,19 +162,19 @@ class TestAnthropicReasoningContinuity:
         r2 = await llm.generate_response(full_input, tools=tools)
 
         assert r2.status == "completed"
-        assert "42" in r2.output_text
+        assert "45" in r2.output_text
 
     @pytest.mark.asyncio
     async def test_stream_reasoning_continuity_across_tool_call(
         self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
     ) -> None:
         user_msg = InputMessageItem.from_text(
-            "From the set {6, 11, 17, 19, 25, 33}, find the unique pair "
-            "whose sum is exactly 42. Work through the combinations, "
-            "then use the add tool to verify your answer."
+            "Think carefully step by step through ALL combinations. "
+            "From the set {3, 7, 11, 14, 19, 23, 28, 31, 37, 42}, find ALL pairs "
+            "whose sum is exactly 45. List each pair you check and whether it works. "
+            "Then use the add tool to verify EACH valid pair you found."
         )
         # First turn: streaming
-        # Anthropic does not allow tool_choice="required" with thinking
         events1 = [
             event
             async for event in llm.generate_response_stream([user_msg], tools=tools)
@@ -200,22 +205,56 @@ class TestAnthropicReasoningContinuity:
         assert len(completed2) == 1
         r2 = completed2[0].response
         assert r2.status == "completed"
-        assert "42" in r2.output_text
+        assert "45" in r2.output_text
+
+
+@pytest.mark.integration
+class TestGeminiCorruptedSignature:
+    """Corrupting thought_signature must cause an API error."""
+
+    @pytest.fixture
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+
+        return GeminiLLM(
+            model_name="gemini-3.1-pro-preview",
+            api_provider=APIProvider(
+                name="google",
+                base_url=None,
+                api_key=google_api_key,
+            ),
+            llm_settings={
+                "max_output_tokens": 4096,
+                "thinking_config": {
+                    "thinking_level": "medium",
+                    "include_thoughts": True,
+                },
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_corrupted_signature_causes_api_error(
         self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
     ) -> None:
-        """Corrupting thinking block signature must cause an API error."""
+        """Corrupting thought_signature on function call items must error."""
         user_msg = InputMessageItem.from_text(
-            "From the set {6, 11, 17, 19, 25, 33}, find the unique pair "
-            "whose sum is exactly 42. Work through the combinations, "
-            "then use the add tool to verify your answer."
+            "Think carefully step by step through ALL combinations. "
+            "From the set {3, 7, 11, 14, 19, 23, 28, 31, 37, 42}, find ALL pairs "
+            "whose sum is exactly 45. List each pair you check and whether it works. "
+            "Then use the add tool to verify EACH valid pair you found."
         )
         r1 = await llm.generate_response([user_msg], tools=tools)
 
-        assert len(r1.reasoning_items) >= 1
+        assert len(r1.reasoning_items) >= 1, "First turn must produce reasoning"
         assert len(r1.tool_call_items) >= 1
+
+        # Verify tool calls carry thought signatures
+        signed_tcs = [
+            tc
+            for tc in r1.tool_call_items
+            if (tc.provider_specific_fields or {}).get("thought_signature")
+        ]
+        assert len(signed_tcs) >= 1, "Tool calls must have thought_signature"
 
         tool_outputs = [
             FunctionToolOutputItem.from_tool_result(
@@ -225,10 +264,13 @@ class TestAnthropicReasoningContinuity:
             for tc in r1.tool_call_items
         ]
 
-        # Corrupt the signature on reasoning items
+        # Corrupt the thought_signature on function call items
         corrupted_items = [
-            item.model_copy(update={"encrypted_content": "CORRUPTED"})
-            if isinstance(item, ReasoningItem) and item.encrypted_content
+            item.model_copy(
+                update={"provider_specific_fields": {"thought_signature": "CORRUPTED"}}
+            )
+            if isinstance(item, FunctionToolCallItem)
+            and (item.provider_specific_fields or {}).get("thought_signature")
             else item
             for item in r1.output_items
         ]
@@ -242,16 +284,24 @@ class TestAnthropicReasoningContinuity:
     async def test_missing_signature_causes_api_error(
         self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
     ) -> None:
-        """Stripping encrypted_content from reasoning items must error."""
+        """Stripping thought_signature from function call items must error."""
         user_msg = InputMessageItem.from_text(
-            "From the set {6, 11, 17, 19, 25, 33}, find the unique pair "
-            "whose sum is exactly 42. Work through the combinations, "
-            "then use the add tool to verify your answer."
+            "Think carefully step by step through ALL combinations. "
+            "From the set {3, 7, 11, 14, 19, 23, 28, 31, 37, 42}, find ALL pairs "
+            "whose sum is exactly 45. List each pair you check and whether it works. "
+            "Then use the add tool to verify EACH valid pair you found."
         )
         r1 = await llm.generate_response([user_msg], tools=tools)
 
-        assert len(r1.reasoning_items) >= 1
+        assert len(r1.reasoning_items) >= 1, "First turn must produce reasoning"
         assert len(r1.tool_call_items) >= 1
+
+        signed_tcs = [
+            tc
+            for tc in r1.tool_call_items
+            if (tc.provider_specific_fields or {}).get("thought_signature")
+        ]
+        assert len(signed_tcs) >= 1, "Tool calls must have thought_signature"
 
         tool_outputs = [
             FunctionToolOutputItem.from_tool_result(
@@ -261,10 +311,10 @@ class TestAnthropicReasoningContinuity:
             for tc in r1.tool_call_items
         ]
 
-        # Strip encrypted_content from reasoning items
+        # Strip thought_signature from function call items
         stripped_items = [
-            item.model_copy(update={"encrypted_content": None})
-            if isinstance(item, ReasoningItem)
+            item.model_copy(update={"provider_specific_fields": None})
+            if isinstance(item, FunctionToolCallItem)
             else item
             for item in r1.output_items
         ]
@@ -275,30 +325,28 @@ class TestAnthropicReasoningContinuity:
             await llm.generate_response(full_input, tools=tools)
 
 
-
 @pytest.mark.integration
-class TestAnthropicWebSearch:
+class TestGeminiWebSearch:
     @pytest.fixture
-    def llm(self, anthropic_api_key: str) -> CloudLLM:
-        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
-        return AnthropicLLM(
-            model_name="claude-sonnet-4-6",
+        return GeminiLLM(
+            model_name="gemini-2.5-flash",
             api_provider=APIProvider(
-                name="anthropic",
+                name="google",
                 base_url=None,
-                api_key=anthropic_api_key,
+                api_key=google_api_key,
             ),
             llm_settings={
-                "max_tokens": 1024,
-                "web_search": {"type": "web_search_20250305", "name": "web_search"},
+                "max_output_tokens": 4096,
+                "google_search": {},
             },
-            anthropic_client_timeout=120.0,
         )
 
     @pytest.mark.asyncio
     async def test_web_search(self, llm: CloudLLM) -> None:
-        """Web search should produce WebSearchCallItem, sources, and citations."""
+        """Google Search grounding should produce sources and annotations."""
         input_items = [
             InputMessageItem.from_text(
                 "What were the major tech news headlines this week?"
@@ -310,47 +358,27 @@ class TestAnthropicWebSearch:
         assert response.web_search is not None
         assert len(response.web_search.sources) > 0
 
-        # WebSearchCallItem should appear in output_items
-        ws_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
-        assert len(ws_items) >= 1
-        ws = ws_items[0]
-        assert ws.status == "completed"
-        assert ws.provider_specific_fields is not None
-        encrypted = ws.provider_specific_fields.get("web_search_encrypted_content", {})
-        assert len(encrypted) > 0
-
         msg = response.message_items[0]
         all_annotations = [
             ann
             for part in msg.content_parts
-            if isinstance(part, OutputTextContentPart)
+            if isinstance(part, OutputMessageText)
             for ann in part.annotations
         ]
         assert len(all_annotations) > 0
         assert all_annotations[0].type == "url_citation"
         assert isinstance(all_annotations[0], UrlCitation)
-        assert all_annotations[0].cited_text
+        assert all_annotations[0].provider_specific_fields["gemini:grounded_text"]
 
     @pytest.mark.asyncio
     async def test_stream_web_search(self, llm: CloudLLM) -> None:
-        """Streaming web search should produce WebSearchCallItem events."""
+        """Streaming Google Search: sources, annotations, grounded_text."""
         input_items = [
             InputMessageItem.from_text(
                 "What were the major tech news headlines this week?"
             )
         ]
         events = [event async for event in llm.generate_response_stream(input_items)]
-
-        # WebSearchCallItem should appear via OutputItemDone
-        ws_done = [
-            e
-            for e in events
-            if isinstance(e, OutputItemDone) and isinstance(e.item, WebSearchCallItem)
-        ]
-        assert len(ws_done) >= 1
-        assert ws_done[0].item.provider_specific_fields is not None
 
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
         assert len(completed) == 1
@@ -359,79 +387,33 @@ class TestAnthropicWebSearch:
         assert response.web_search is not None
         assert len(response.web_search.sources) > 0
 
-        # Citations should be captured from citations_delta events
         msg = response.message_items[0]
         all_annotations = [
             ann
             for part in msg.content_parts
-            if isinstance(part, OutputTextContentPart)
+            if isinstance(part, OutputMessageText)
             for ann in part.annotations
         ]
         assert len(all_annotations) > 0
         assert all_annotations[0].type == "url_citation"
         assert isinstance(all_annotations[0], UrlCitation)
-        assert all_annotations[0].cited_text
-
-    @pytest.mark.asyncio
-    async def test_web_search_multi_turn(self, llm: CloudLLM) -> None:
-        """WebSearchCallItem round-trips: 2nd turn receives prior search context."""
-        user_msg = InputMessageItem.from_text(
-            "What is the latest Python release version? Be brief."
-        )
-        r1 = await llm.generate_response([user_msg])
-
-        ws_items = [i for i in r1.output_items if isinstance(i, WebSearchCallItem)]
-        assert len(ws_items) >= 1, "First turn should produce web search items"
-
-        # Round-trip: pass all output_items (including WebSearchCallItem) back
-        follow_up = InputMessageItem.from_text("What was the release date?")
-        full_input = [user_msg, *r1.output_items, follow_up]
-        r2 = await llm.generate_response(full_input)
-
-        assert r2.output_text
-        assert r2.status == "completed"
-
-    @pytest.mark.asyncio
-    async def test_stream_web_search_multi_turn(self, llm: CloudLLM) -> None:
-        """Streaming multi-turn: 2nd streamed turn receives prior search context."""
-        user_msg = InputMessageItem.from_text(
-            "What is the latest Python release version? Be brief."
-        )
-        # First turn: non-streaming to get output_items
-        r1 = await llm.generate_response([user_msg])
-
-        ws_items = [i for i in r1.output_items if isinstance(i, WebSearchCallItem)]
-        assert len(ws_items) >= 1, "First turn should produce web search items"
-
-        # Second turn: streaming with prior context
-        follow_up = InputMessageItem.from_text("What was the release date?")
-        full_input = [user_msg, *r1.output_items, follow_up]
-        events = [event async for event in llm.generate_response_stream(full_input)]
-
-        completed = [e for e in events if isinstance(e, ResponseCompleted)]
-        assert len(completed) == 1
-        response = completed[0].response
-        assert response.output_text
-        assert response.status == "completed"
+        assert all_annotations[0].provider_specific_fields["gemini:grounded_text"]
 
 
 @pytest.mark.integration
-class TestAnthropicStructuredOutput:
+class TestGeminiStructuredOutput:
     @pytest.fixture
-    def llm(self, anthropic_api_key: str) -> CloudLLM:
-        from grasp_agents.llm_providers.anthropic.anthropic_llm import (
-            AnthropicLLM,
-        )
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
-        return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+        return GeminiLLM(
+            model_name="gemini-2.5-flash",
             api_provider=APIProvider(
-                name="anthropic",
+                name="google",
                 base_url=None,
-                api_key=anthropic_api_key,
+                api_key=google_api_key,
             ),
-            llm_settings={"max_tokens": 200},
-            apply_response_schema_via_provider=True,
+            llm_settings={"max_output_tokens": 200},
         )
 
     @pytest.mark.asyncio
@@ -459,3 +441,88 @@ class TestAnthropicStructuredOutput:
         parsed = Capital.model_validate_json(response.output_text)
         assert parsed.capital.lower() == "paris"
         assert parsed.country.lower() == "france"
+
+
+@pytest.mark.integration
+class TestGeminiUrlContext:
+    @pytest.fixture
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+
+        return GeminiLLM(
+            model_name="gemini-2.5-flash",
+            api_provider=APIProvider(
+                name="google",
+                base_url=None,
+                api_key=google_api_key,
+            ),
+            llm_settings={
+                "max_output_tokens": 4096,
+                "url_context": True,
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_url_context(self, llm: CloudLLM) -> None:
+        """UrlContext should produce WebSearchCallItem with ActionOpenPage."""
+        input_items = [
+            InputMessageItem.from_text(
+                "Read https://httpbin.org/html and summarize the content."
+            )
+        ]
+        response = await llm.generate_response(input_items)
+
+        assert response.output_text
+        wf_items = [
+            i
+            for i in response.output_items
+            if isinstance(i, WebSearchCallItem)
+            and isinstance(i.action, ActionOpenPage)
+        ]
+        assert len(wf_items) >= 1
+        assert wf_items[0].action.url  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_stream_url_context(self, llm: CloudLLM) -> None:
+        """Streaming UrlContext should produce WebSearchCallItem events."""
+        input_items = [
+            InputMessageItem.from_text(
+                "Read https://httpbin.org/html and summarize the content."
+            )
+        ]
+        events = [
+            event async for event in llm.generate_response_stream(input_items)
+        ]
+
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        response = completed[0].response
+        assert response.output_text
+
+        wf_items = [
+            i
+            for i in response.output_items
+            if isinstance(i, WebSearchCallItem)
+            and isinstance(i.action, ActionOpenPage)
+        ]
+        assert len(wf_items) >= 1
+
+    @pytest.mark.asyncio
+    async def test_url_context_unreachable(self, llm: CloudLLM) -> None:
+        """Unreachable URL should produce a failed WebSearchCallItem."""
+        input_items = [
+            InputMessageItem.from_text(
+                "Read https://this-domain-does-not-exist-abc123xyz.invalid/page "
+                "and tell me what it says."
+            )
+        ]
+        response = await llm.generate_response(input_items)
+
+        wf_items = [
+            i
+            for i in response.output_items
+            if isinstance(i, WebSearchCallItem)
+            and isinstance(i.action, ActionOpenPage)
+        ]
+        assert len(wf_items) >= 1
+        assert any(wf.status == "failed" for wf in wf_items)

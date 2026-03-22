@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 import litellm
 from grasp_agents.cloud_llm import ApiCallParams, APIProvider, CloudLLM
-from grasp_agents.errors import LLMError
+from grasp_agents.types.llm_errors import LlmError
 from litellm.litellm_core_utils.get_supported_openai_params import (
     get_supported_openai_params,  # type: ignore[no-redef]
 )
@@ -145,7 +145,7 @@ class LiteLLM(CloudLLM):
 
     # --- Error mapping ---
 
-    def _map_api_error(self, err: Exception) -> LLMError | None:
+    def _map_api_error(self, err: Exception) -> LlmError | None:
         return map_api_error(err)
 
     # --- Input preparation ---
@@ -172,7 +172,7 @@ class LiteLLM(CloudLLM):
 
         api_kwargs: ApiCallParams = {
             "api_input": items_to_provider_inputs(
-                input, reasoning_format="thinking_blocks"
+                input, reasoning_block_format="anthropic"
             ),
             "api_tools": api_tools,
             "api_tool_choice": api_tool_choice,

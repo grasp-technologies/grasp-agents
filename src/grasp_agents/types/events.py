@@ -1,4 +1,4 @@
-import time
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -30,6 +30,7 @@ class EventType(StrEnum):
     LLM_ERR = "llm_error"
 
     TOOL_OUT = "tool_output"
+    TOOL_ERR = "tool_error"
     PACKET_OUT = "packet_output"
     PAYLOAD_OUT = "payload_output"
     PROC_ERR = "processor_error"
@@ -46,7 +47,7 @@ class Event(BaseModel, Generic[_T_co], frozen=True):
     type: EventType
     src_type: EventSourceType
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
-    created: int = Field(default_factory=lambda: int(time.time()))
+    created_at: float = Field(default_factory=lambda: datetime.now(UTC).timestamp())
     src_name: str | None = None
     dst_name: str | None = None
     call_id: str | None = None
@@ -87,6 +88,17 @@ class ToolOutputEvent(Event[Any], frozen=True):
 
 class ToolMessageEvent(Event[FunctionToolOutputItem], frozen=True):
     type: Literal[EventType.TOOL_MSG] = EventType.TOOL_MSG
+    src_type: Literal[EventSourceType.TOOL] = EventSourceType.TOOL
+
+
+class ToolErrorInfo(BaseModel):
+    tool_name: str
+    error: str
+    timed_out: bool = False
+
+
+class ToolErrorEvent(Event[ToolErrorInfo], frozen=True):
+    type: Literal[EventType.TOOL_ERR] = EventType.TOOL_ERR
     src_type: Literal[EventSourceType.TOOL] = EventSourceType.TOOL
 
 

@@ -14,7 +14,7 @@ from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
 from ...cloud_llm import ApiCallParams, APIProvider, CloudLLM, CloudLLMSettings
-from ...errors import LLMError
+from ...types.llm_errors import LlmError
 from ...types.items import InputItem
 from ...types.llm_events import LlmEvent
 from ...types.response import Response
@@ -174,13 +174,13 @@ class OpenAILLM(CloudLLM):
         merged.update(extra_llm_settings)
 
         reasoning_fmt = (
-            "reasoning_details"
+            "openrouter"
             if self.api_provider and self.api_provider["name"] == "openrouter"
-            else "thinking_blocks"
+            else "anthropic"
         )
         api_kwargs: ApiCallParams = {
             "api_input": items_to_provider_inputs(
-                input, reasoning_format=reasoning_fmt
+                input, reasoning_block_format=reasoning_fmt
             ),
             "api_tools": api_tools,
             "api_tool_choice": api_tool_choice,
@@ -194,7 +194,7 @@ class OpenAILLM(CloudLLM):
 
     # --- Error mapping ---
 
-    def _map_api_error(self, err: Exception) -> LLMError | None:
+    def _map_api_error(self, err: Exception) -> LlmError | None:
         return map_api_error(err)
 
     # --- Provider API layer ---

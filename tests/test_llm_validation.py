@@ -11,17 +11,18 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import BaseModel
 
 from grasp_agents.errors import (
     LLMResponseValidationError,
-    LLMServerError,
     LLMToolCallValidationError,
 )
+from grasp_agents.types.llm_errors import LlmInternalServerError
 from grasp_agents.llm import LLM
 from grasp_agents.resilience import RetryPolicy
-from grasp_agents.types.content import OutputTextContentPart
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     InputItem,
@@ -47,7 +48,7 @@ def _text_response(text: str) -> Response:
         model="mock",
         output_items=[
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text=text)],
+                content_parts=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
@@ -69,11 +70,10 @@ class AddInput(BaseModel):
 
 
 class AddTool(BaseTool[AddInput, Any, Any]):
-    name: str = "add"
-    description: str = "Add two numbers"
-    in_type: type[AddInput] = AddInput
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(name="add", description="Add two numbers", **kwargs)
 
-    async def run(self, inp: AddInput, **kwargs: Any) -> int:
+    async def _run(self, inp: AddInput, **kwargs: Any) -> int:
         return inp.a + inp.b
 
 
@@ -132,9 +132,7 @@ class MockLLM(LLM):
 class ErrorLLM(LLM):
     """Always raises a given error — used to test propagation behavior."""
 
-    error_to_raise: Exception = field(
-        default_factory=lambda: RuntimeError("boom")
-    )
+    error_to_raise: Exception = field(default_factory=lambda: RuntimeError("boom"))
 
     def __post_init__(self):
         object.__setattr__(self, "_call_count", 0)
@@ -168,7 +166,7 @@ class ErrorLLM(LLM):
         count = self._call_count  # type: ignore[attr-defined]
         object.__setattr__(self, "_call_count", count + 1)
         raise self.error_to_raise
-        yield  # noqa: RET503 — unreachable, but makes this an async generator
+        yield
 
 
 _USER_MSG = [InputMessageItem.from_text("go", role="user")]
@@ -223,25 +221,25 @@ class TestRetryBehavior:
 
     @pytest.mark.asyncio
     async def test_api_error_not_retried_by_validation_loop(self):
-        """LLMServerError propagates immediately — validation retries don't catch it."""
+        """LlmInternalServerError propagates immediately — validation retries don't catch it."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LLMServerError("server down", status_code=500),
+            error_to_raise=LlmInternalServerError("server down", response=httpx.Response(500, request=httpx.Request("POST", "https://test")), body=None),
             retry_policy=RetryPolicy(api_retries=0, validation_retries=3),
         )
-        with pytest.raises(LLMServerError):
+        with pytest.raises(LlmInternalServerError):
             await llm.generate_response(_USER_MSG)
         assert llm.call_count == 1
 
     @pytest.mark.asyncio
     async def test_api_error_not_retried_by_validation_loop_stream(self):
-        """LLMServerError propagates from stream path — validation retries don't catch it."""
+        """LlmInternalServerError propagates from stream path — validation retries don't catch it."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LLMServerError("server down", status_code=500),
+            error_to_raise=LlmInternalServerError("server down", response=httpx.Response(500, request=httpx.Request("POST", "https://test")), body=None),
             retry_policy=RetryPolicy(api_retries=0, validation_retries=3),
         )
-        with pytest.raises(LLMServerError):
+        with pytest.raises(LlmInternalServerError):
             async for _ in llm.generate_response_stream(_USER_MSG):
                 pass
         assert llm.call_count == 1
@@ -298,9 +296,7 @@ class TestStreamRetry:
             v: int
 
         events: list[LlmEvent] = []
-        async for event in llm.generate_response_stream(
-            _USER_MSG, response_schema=M
-        ):
+        async for event in llm.generate_response_stream(_USER_MSG, response_schema=M):
             events.append(event)
 
         retrying = [e for e in events if isinstance(e, ResponseRetrying)]
@@ -324,9 +320,7 @@ class TestStreamRetry:
             v: int
 
         events: list[LlmEvent] = []
-        async for event in llm.generate_response_stream(
-            _USER_MSG, response_schema=M
-        ):
+        async for event in llm.generate_response_stream(_USER_MSG, response_schema=M):
             events.append(event)
 
         retrying_idx = next(

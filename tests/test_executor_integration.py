@@ -20,7 +20,7 @@ from grasp_agents.llm import LLM
 from grasp_agents.llm_agent_memory import LLMAgentMemory
 from grasp_agents.llm_policy_executor import LLMPolicyExecutor
 from grasp_agents.run_context import RunContext
-from grasp_agents.types.content import OutputTextContentPart
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     Event,
     LLMStreamEvent,
@@ -113,11 +113,10 @@ class AddInput(BaseModel):
 
 
 class AddTool(BaseTool[AddInput, Any, Any]):
-    name: str = "add"
-    description: str = "Add two numbers"
-    in_type: type[AddInput] = AddInput
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(name="add", description="Add two numbers", **kwargs)
 
-    async def run(
+    async def _run(
         self, inp: AddInput, ctx: RunContext[Any] | None = None, **kwargs: Any
     ) -> int:
         return inp.a + inp.b
@@ -141,7 +140,7 @@ def _make_text_response(text: str) -> Response:
         model="mock",
         output_items=[
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text=text)],
+                content_parts=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
@@ -159,7 +158,7 @@ def _make_tool_call_response(
     if text:
         output.append(
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text=text)],
+                content_parts=[OutputMessageText(text=text)],
                 status="completed",
             )
         )
@@ -476,5 +475,3 @@ class TestExecutorMemoryIntegrity:
         # After second LLM call: OutputMessageItem (final answer)
         # Last message should be the final answer
         assert isinstance(memory.messages[-1], OutputMessageItem)
-
-

@@ -1,4 +1,5 @@
 import base64
+import mimetypes
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -23,10 +24,30 @@ from openai.types.responses.response_reasoning_item import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-ImageDetail = Literal["low", "high", "auto"]
+ImageDetail = Literal["low", "medium", "high", "ultra_high", "auto"]
 
 
-BASE64_DATA_PREFIX = "data:image/jpeg;base64,"
+BASE64_DATA_PREFIX = "data:{mime_type};base64,"
+
+_MAGIC_BYTES: list[tuple[bytes, str]] = [
+    (b"\x89PNG", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),  # RIFF....WEBP
+    (b"<svg", "image/svg+xml"),
+]
+
+
+def _detect_mime_from_base64(base64_encoding: str) -> str:
+    try:
+        header = base64.b64decode(base64_encoding[:16] + "==")
+    except Exception:
+        return "image/jpeg"
+    for magic, mime in _MAGIC_BYTES:
+        if header.startswith(magic):
+            return mime
+    return "image/jpeg"
 
 
 class InputImage(ResponseInputImage):
@@ -36,27 +57,37 @@ class InputImage(ResponseInputImage):
     Supports URL, base64, or file_id.
     """
 
-    # OpenResponses fields:
+    # OpenResponses fields (InputImageContent):
     type: Literal["input_image"] = "input_image"
     image_url: str | None = None
-    detail: ImageDetail = "auto"
+    detail: ImageDetail = "auto"  # pyright: ignore[reportIncompatibleVariableOverride] — extended with "medium", "ultra_high"
 
     # OpenAI-specific fields:
     file_id: str | None = None
 
     # grasp-agents fields:
 
+    mime_type: str | None = None
+
+    def model_post_init(self, _context: Any) -> None:
+        if self.mime_type is None and self.image_url is not None:
+            match = re.match(r"data:([^;]+);base64,", self.image_url)
+            if match:
+                self.mime_type = match.group(1)
+
     @property
     def is_base64(self) -> bool:
-        return self.image_url is not None and self.image_url.startswith(
-            BASE64_DATA_PREFIX
+        return (
+            self.image_url is not None
+            and self.mime_type is not None
+            and self.image_url.startswith(
+                BASE64_DATA_PREFIX.format(mime_type=self.mime_type)
+            )
         )
 
     @property
     def is_url(self) -> bool:
-        return self.image_url is not None and not self.image_url.startswith(
-            BASE64_DATA_PREFIX
-        )
+        return self.image_url is not None and not self.image_url.startswith("data:")
 
     @property
     def is_file_id(self) -> bool:
@@ -73,17 +104,37 @@ class InputImage(ResponseInputImage):
 
     @classmethod
     def from_base64(
-        cls, base64_encoding: str, *, detail: ImageDetail = "auto"
+        cls,
+        b64_encoding: str,
+        *,
+        mime_type: str | None = None,
+        detail: ImageDetail = "auto",
     ) -> "InputImage":
-        return cls(image_url=f"{BASE64_DATA_PREFIX}{base64_encoding}", detail=detail)
+        if mime_type is None:
+            mime_type = _detect_mime_from_base64(b64_encoding)
+
+        return cls(
+            image_url=f"{BASE64_DATA_PREFIX.format(mime_type=mime_type)}{b64_encoding}",
+            mime_type=mime_type,
+            detail=detail,
+        )
 
     @classmethod
     def from_path(
         cls, img_path: str | Path, *, detail: ImageDetail = "auto"
     ) -> "InputImage":
         img_bytes = Path(img_path).read_bytes()
-        base64_encoding = base64.b64encode(img_bytes).decode("utf-8")
-        return cls(image_url=f"{BASE64_DATA_PREFIX}{base64_encoding}", detail=detail)
+        mime_type, _ = mimetypes.guess_type(str(img_path))
+        if mime_type is None:
+            mime_type = "image/jpeg"
+
+        b64_encoding = base64.b64encode(img_bytes).decode("utf-8")
+
+        return cls(
+            image_url=f"{BASE64_DATA_PREFIX.format(mime_type=mime_type)}{b64_encoding}",
+            mime_type=mime_type,
+            detail=detail,
+        )
 
     @classmethod
     def from_url(cls, img_url: str, *, detail: ImageDetail = "auto") -> "InputImage":
@@ -96,13 +147,10 @@ class InputImage(ResponseInputImage):
         return cls(file_id=file_id, detail=detail)
 
 
-ImageData = InputImage
-
-
-class InputTextContentPart(ResponseInputText):
+class InputText(ResponseInputText):
     """Text content in a user/system/developer message."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (InputTextContent):
     type: Literal["input_text"] = "input_text"
     text: str
 
@@ -114,7 +162,7 @@ class InputFile(ResponseInputFile):
     Supports base64 data, URL, or file_id.
     """
 
-    # OpenResponses fields:
+    # OpenResponses fields (InputFileContent):
     type: Literal["input_file"] = "input_file"
     filename: str | None = None
     file_data: str | None = None
@@ -170,21 +218,40 @@ class InputFile(ResponseInputFile):
 class UrlCitation(ResponseAnnotationURLCitation):
     """URL citation with source excerpt and/or grounded response text."""
 
+    # OpenResponses fields (UrlCitationBody):
+
     type: Literal["url_citation"] = "url_citation"
 
-    # Text excerpted from the source (Anthropic web search citations)
-    cited_text: str | None = None
-    # Part of the generated response grounded by this source (Gemini)
-    grounded_text: str | None = None
+    start_index: int
+    """The index of the first character of the URL citation in the message."""
+
+    end_index: int
+    """The index of the last character of the URL citation in the message."""
+
+    title: str
+    """The title of the web resource."""
+
+    # grasp-agents fields:
+
+    provider_specific_fields: dict[str, Any] | None = None
+
+    # cited_text: str | None = None
+    # """Text excerpted from the source (Anthropic web search citations)"""
+
+    # grounded_text: str | None = None
+    # """Part of the generated response grounded by this source (Gemini)"""
+
+    # encrypted_index: str | None = None
+    # """Anthropic-specific"""
 
 
 Citation = Annotated[UrlCitation, Field(discriminator="type")]
 
 
-class OutputTextContentPart(ResponseOutputText):
+class OutputMessageText(ResponseOutputText):
     """Text content produced by the model in an output message."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (OutputTextContent):
 
     type: Literal["output_text"] = "output_text"
     annotations: list[Annotation] = Field(default_factory=list[Annotation])
@@ -202,26 +269,27 @@ class OutputTextContentPart(ResponseOutputText):
             data["annotations"] = data["citations"]
         elif "annotations" in data and "citations" not in data:
             data["citations"] = data["annotations"]
+
         return data
 
 
-class OutputRefusal(ResponseOutputRefusal):
+class OutputMessageRefusal(ResponseOutputRefusal):
     """Refusal content when the model declines to respond."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (RefusalContent):
     type: Literal["refusal"] = "refusal"
     refusal: str
 
 
-class ReasoningContentPart(ResponseReasoningContent):
+class ReasoningText(ResponseReasoningContent):
     """Reasoning content produced by the model."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (ReasoningText):
     type: Literal["reasoning_text"] = "reasoning_text"
     text: str
 
 
-class ReasoningSummaryPart(ResponseReasoningSummary):
+class ReasoningSummary(ResponseReasoningSummary):
     """Summary block within a reasoning item."""
 
     # OpenResponses fields (ReasoningSummaryContentParam):
@@ -229,22 +297,25 @@ class ReasoningSummaryPart(ResponseReasoningSummary):
     text: str
 
 
-InputContentPart = Annotated[
-    InputTextContentPart | InputImage | InputFile, Field(discriminator="type")
-]
+InputPart = Annotated[InputText | InputImage | InputFile, Field(discriminator="type")]
 
-OutputMessageContentPart = Annotated[
-    OutputTextContentPart | OutputRefusal, Field(discriminator="type")
+OutputMessagePart = Annotated[
+    OutputMessageText | OutputMessageRefusal, Field(discriminator="type")
 ]
 
 OutputContentPart = Annotated[
-    OutputTextContentPart | OutputRefusal | ReasoningContentPart | ReasoningSummaryPart,
+    OutputMessageText | OutputMessageRefusal | ReasoningText,
+    Field(discriminator="type"),
+]
+
+OutputPart = Annotated[
+    OutputMessageText | OutputMessageRefusal | ReasoningText | ReasoningSummary,
     Field(discriminator="type"),
 ]
 
 
 class Content(BaseModel):
-    parts: list[InputContentPart]
+    parts: list[InputPart]
 
     @classmethod
     def from_formatted_prompt(
@@ -267,26 +338,26 @@ class Content(BaseModel):
 
         if not image_args:
             prompt_with_args = prompt_template.format(**text_args)
-            return cls(parts=[InputTextContentPart(text=prompt_with_args)])
+            return cls(parts=[InputText(text=prompt_with_args)])
 
         pattern = r"({})".format("|".join([r"\{" + s + r"\}" for s in image_args]))
         input_prompt_chunks = re.split(pattern, prompt_template)
 
-        content_parts: list[InputContentPart] = []
+        content_parts: list[InputPart] = []
         for chunk in input_prompt_chunks:
             stripped_chunk = chunk.strip(" \n")
             if re.match(pattern, stripped_chunk):
                 content_part = image_args[stripped_chunk[1:-1]]
             else:
                 text_data = stripped_chunk.format(**text_args)
-                content_part = InputTextContentPart(text=text_data)
+                content_part = InputText(text=text_data)
             content_parts.append(content_part)
 
         return cls(parts=content_parts)
 
     @classmethod
     def from_text(cls, text: str) -> "Content":
-        return cls(parts=[InputTextContentPart(text=text)])
+        return cls(parts=[InputText(text=text)])
 
     @classmethod
     def from_image(cls, image: InputImage) -> "Content":
@@ -298,10 +369,10 @@ class Content(BaseModel):
 
     @classmethod
     def from_content_parts(cls, content_parts: Iterable[str | InputImage]) -> "Content":
-        parts: list[InputContentPart] = []
+        parts: list[InputPart] = []
         for part in content_parts:
             if isinstance(part, str):
-                parts.append(InputTextContentPart(text=part))
+                parts.append(InputText(text=part))
             else:
                 parts.append(part)
 

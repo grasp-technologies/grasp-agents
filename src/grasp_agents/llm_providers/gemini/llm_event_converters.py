@@ -23,12 +23,16 @@ from grasp_agents.types.items import prefixed_id
 from grasp_agents.types.response import ResponseUsage
 
 from . import encode_thought_signature
-from .items_extraction import attach_grounding_annotations, build_web_search_info
+from .provider_output_to_response import (
+    attach_grounding_annotations,
+    extract_url_context_data,
+    extract_web_search_data,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
-    from google.genai.types import GroundingMetadata
+    from google.genai.types import GroundingMetadata, UrlContextMetadata
     from openai.types.responses import ResponseStatus
 
     from grasp_agents.types.llm_events import LlmEvent
@@ -51,6 +55,7 @@ class GeminiStreamConverter(BaseLlmStreamConverter):
         self._model = model
         self._tool_call_idx: int = 0
         self._grounding: GroundingMetadata | None = None
+        self._url_context: UrlContextMetadata | None = None
 
     async def convert(
         self, chunk_stream: AsyncIterator[GeminiResponse]
@@ -82,6 +87,8 @@ class GeminiStreamConverter(BaseLlmStreamConverter):
 
         if candidate and candidate.grounding_metadata:
             self._grounding = candidate.grounding_metadata
+        if candidate and candidate.url_context_metadata:
+            self._url_context = candidate.url_context_metadata
 
         um = chunk.usage_metadata
         if um is not None:
@@ -174,12 +181,18 @@ class GeminiStreamConverter(BaseLlmStreamConverter):
         if self._grounding:
             attach_grounding_annotations(self._items, self._grounding)
 
+        # NOTE: add citations_metadata
+
+        # Emit url_context items via web search lifecycle events
+        for url_item in extract_url_context_data(self._url_context):
+            yield from self._open_web_search(url_item.id)
+            yield from self._close_web_search(url_item)
+
         response_completed = super()._build_response_completed()
 
         if self._grounding:
-            response_completed.response.web_search = build_web_search_info(
-                self._grounding
-            )
+            _, web_search_info = extract_web_search_data(self._grounding)
+            response_completed.response.web_search = web_search_info
 
         yield response_completed
 

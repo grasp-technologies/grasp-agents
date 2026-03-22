@@ -6,7 +6,7 @@ from openai.types.responses.response_usage import (
     OutputTokensDetails,
 )
 
-from grasp_agents.types.content import OutputTextContentPart
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import OutputMessageItem
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.usage_tracker import UsageTracker
@@ -35,7 +35,7 @@ def _make_response(
         model="test-model",
         output_items=[
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text=text)],
+                content_parts=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
@@ -154,7 +154,8 @@ class TestUpdateFromResponseWithCosts:
         response = _make_response(usage=usage)
 
         tracker.update(
-            "agent_a", [response],
+            "agent_a",
+            [response],
             model_name="gemini-2.0-flash",
             litellm_provider="vertex_ai",
         )

@@ -4,41 +4,56 @@
 from __future__ import annotations
 
 import litellm
-from grasp_agents.errors import (
-    LLMAuthenticationError,
-    LLMBadRequestError,
-    LLMConnectionError,
-    LLMContentFilterError,
-    LLMContextWindowError,
-    LLMError,
-    LLMNotFoundError,
-    LLMRateLimitError,
-    LLMServerError,
-    LLMTimeoutError,
+from grasp_agents.types.llm_errors import (
+    LlmApiConnectionError,
+    LlmApiTimeoutError,
+    LlmAuthenticationError,
+    LlmBadRequestError,
+    LlmContentFilterError,
+    LlmContextWindowError,
+    LlmError,
+    LlmInternalServerError,
+    LlmNotFoundError,
+    LlmPermissionDeniedError,
+    LlmRateLimitError,
+    LlmUnprocessableEntityError,
 )
 
 
-def map_api_error(err: Exception) -> LLMError | None:
+def map_api_error(err: Exception) -> LlmError | None:
     msg = str(err)
 
     if isinstance(err, litellm.Timeout):
-        return LLMTimeoutError(msg, status_code=408)
+        return LlmApiTimeoutError(request=err.request)
+
     if isinstance(err, litellm.APIConnectionError):
-        return LLMConnectionError(msg)
+        return LlmApiConnectionError(message=msg, request=err.request)
+
     if isinstance(err, litellm.RateLimitError):
-        return LLMRateLimitError(msg)
-    if isinstance(err, litellm.ContextWindowExceededError):
-        return LLMContextWindowError(msg, status_code=400)
+        return LlmRateLimitError(message=msg, response=err.response, body=err.body)
+
     if isinstance(err, litellm.ContentPolicyViolationError):
-        return LLMContentFilterError(msg, status_code=400)
+        return LlmContentFilterError()
+
     if isinstance(err, litellm.AuthenticationError):
-        return LLMAuthenticationError(msg, status_code=401)
+        return LlmAuthenticationError(msg, response=err.response, body=err.body)
+
+    if isinstance(err, litellm.PermissionDeniedError):
+        return LlmPermissionDeniedError(msg, response=err.response, body=err.body)
+
     if isinstance(err, litellm.NotFoundError):
-        return LLMNotFoundError(msg, status_code=404)
+        return LlmNotFoundError(msg, response=err.response, body=err.body)
+
     if isinstance(err, litellm.BadRequestError):
-        return LLMBadRequestError(msg, status_code=400)
+        return LlmBadRequestError(msg, response=err.response, body=err.body)
+
+    if isinstance(err, litellm.exceptions.UnprocessableEntityError):
+        return LlmUnprocessableEntityError(msg, response=err.response, body=err.body)
+
     if isinstance(err, (litellm.InternalServerError, litellm.ServiceUnavailableError)):
-        code = getattr(err, "status_code", 500)
-        return LLMServerError(msg, status_code=code)
+        return LlmInternalServerError(msg, response=err.response, body=err.body)
+
+    if isinstance(err, litellm.ContextWindowExceededError):
+        return LlmContextWindowError(msg, response=err.response, body=err.body)
 
     return None

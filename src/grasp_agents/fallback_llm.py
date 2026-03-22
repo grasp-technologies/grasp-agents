@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .errors import LLMError
+from .types.llm_errors import LlmErrorTuple
 from .llm import LLM
 from .types.items import InputItem
 from .types.llm_events import LlmEvent, ResponseFallback
@@ -54,7 +54,7 @@ class FallbackLLM(LLM):
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
-            except LLMError as e:
+            except LlmErrorTuple as e:
                 last_error = e
                 logger.warning(
                     "Model %s failed (%s), trying next fallback",
@@ -92,7 +92,7 @@ class FallbackLLM(LLM):
                     yield event
                 return
 
-            except LLMError as e:
+            except LlmErrorTuple as e:
                 last_error = e
                 attempt += 1
 

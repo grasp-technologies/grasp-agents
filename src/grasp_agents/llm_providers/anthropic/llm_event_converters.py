@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_function_web_search import (
+    ActionOpenPage,
     ActionSearch,
     ActionSearchSource,
 )
@@ -25,10 +26,13 @@ from openai.types.responses.response_usage import (
 from anthropic.types import (
     CitationsWebSearchResultLocation as _AnthropicWebSearchCitation,
 )
+from anthropic.types import WebFetchBlock as _AnthropicWebFetchBlock
+from anthropic.types import (
+    WebFetchToolResultBlock as _AnthropicWebFetchToolResultBlock,
+)
 from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.content import Citation, UrlCitation
 from grasp_agents.types.items import WebSearchCallItem
-from grasp_agents.types.llm_events import OutputItemAdded, OutputItemDone
 from grasp_agents.types.response import ResponseUsage, WebSearchInfo, WebSearchSource
 
 
@@ -185,11 +189,14 @@ class AnthropicStreamConverter(BaseLlmStreamConverter):
                 )
                 self._server_tool_block_idx[idx] = tool_id
 
+                if "web_search" in name or "web_fetch" in name:
+                    yield from self._open_web_search(tool_id)
+
             case "web_search_tool_result":
                 yield from self._on_web_search_result(block)
 
             case "web_fetch_tool_result":
-                pass
+                yield from self._on_web_fetch_result(block)
             case "code_execution_tool_result":
                 pass
             case "bash_code_execution_tool_result":
@@ -226,7 +233,11 @@ class AnthropicStreamConverter(BaseLlmStreamConverter):
                             title=citation.title or "",
                             start_index=0,
                             end_index=len(self._text or ""),
-                            cited_text=citation.cited_text,
+                            provider_specific_fields=(
+                                {"anthropic:cited_text": citation.cited_text}
+                                if citation.cited_text
+                                else None
+                            ),
                         )
                     )
 
@@ -238,9 +249,12 @@ class AnthropicStreamConverter(BaseLlmStreamConverter):
                 elif block_type == "server_tool_use":
                     tool_id = self._server_tool_block_idx.get(idx)
                     if tool_id and tool_id in self._pending_server_tools:
-                        self._pending_server_tools[
-                            tool_id
-                        ].input_json += delta.partial_json
+                        state = self._pending_server_tools[tool_id]
+                        is_first = not state.input_json
+                        state.input_json += delta.partial_json
+
+                        if is_first and "web_search" in state.name:
+                            yield from self._on_web_search_searching(tool_id)
 
     def _on_block_stop(
         self, event: AnthropicContentBlockStopEvent
@@ -313,24 +327,55 @@ class AnthropicStreamConverter(BaseLlmStreamConverter):
                 sources=sources or None,
             ),
             provider_specific_fields=(
-                {"web_search_encrypted_content": encrypted} if encrypted else None
+                {"anthropic:encrypted_content": encrypted} if encrypted else None
             ),
         )
 
-        output_index = self._item_count
-        self._item_count += 1
+        yield from self._close_web_search(item)
 
-        yield OutputItemAdded(
-            item=item,
-            output_index=output_index,
-            sequence_number=self._next_seq(),
-        )
-        self._items.append(item)
-        yield OutputItemDone(
-            item=item,
-            output_index=output_index,
-            sequence_number=self._next_seq(),
-        )
+    def _on_web_fetch_result(
+        self, block: _AnthropicWebFetchToolResultBlock
+    ) -> Iterator[LlmEvent]:
+        """Handle web_fetch_tool_result block: create WebSearchCallItem."""
+        tool_use_id: str = block.tool_use_id
+        server_state = self._pending_server_tools.pop(tool_use_id, None)
+        item_id = server_state.tool_id if server_state else tool_use_id
+        content = block.content
+
+        if isinstance(content, _AnthropicWebFetchBlock):
+            psf: dict[str, Any] = {}
+            if content.retrieved_at:
+                psf["anthropic:retrieved_at"] = content.retrieved_at
+            doc = content.content
+            psf["anthropic:title"] = doc.title or ""
+            psf["anthropic:media_type"] = doc.source.media_type
+            psf["anthropic:data"] = doc.source.data
+
+            item = WebSearchCallItem(
+                id=item_id,
+                status="completed",
+                action=ActionOpenPage(type="open_page", url=content.url),
+                provider_specific_fields=psf or None,
+            )
+        else:
+            # WebFetchToolResultErrorBlock
+            call_url = ""
+            if server_state and server_state.input_json:
+                try:
+                    parsed = json.loads(server_state.input_json)
+                    call_url = str(parsed.get("url", ""))
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            item = WebSearchCallItem(
+                id=item_id,
+                status="failed",
+                action=ActionOpenPage(type="open_page", url=call_url),
+                provider_specific_fields={
+                    "anthropic:error_code": content.error_code,
+                },
+            )
+
+        yield from self._close_web_search(item)
 
     def _build_text_citations(self) -> list[Citation]:
         return list(self._citations)  # type: ignore[list-item]

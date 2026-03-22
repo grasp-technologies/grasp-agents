@@ -1,24 +1,186 @@
-"""Convert OpenAI Chat Completions API wire format → internal Response type."""
+"""Convert OpenAI Chat Completions message fields → internal item types."""
 
-from __future__ import annotations
+from typing import Any
 
-from typing import TYPE_CHECKING
-
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletionMessage
+from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat.chat_completion import (
+    ChoiceLogprobs as ChatCompletionChoiceLogprobs,
+)
+from openai.types.chat.chat_completion_message import (
+    Annotation as ChatCompletionAnnotation,
+)
+from openai.types.chat.chat_completion_message_function_tool_call import (
+    ChatCompletionMessageFunctionToolCall,
+)
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_status import ResponseStatus
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
 )
+from pydantic import TypeAdapter, ValidationError
 
+from grasp_agents.types.content import (
+    OutputMessagePart,
+    OutputMessageRefusal,
+    OutputMessageText,
+    UrlCitation,
+)
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    ItemStatus,
+    OutputItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
+from grasp_agents.types.reasoning import OpenRouterReasoningDetails
 from grasp_agents.types.response import Response, ResponseUsage
 
-from .items_extraction import generated_message_to_items
+from .logprob_converters import convert_logprobs
 from .utils import validate_completion
 
-if TYPE_CHECKING:
-    from openai.types import CompletionUsage
-    from openai.types.chat.chat_completion import ChatCompletion
+_REASONING_DETAILS_ADAPTER: TypeAdapter[OpenRouterReasoningDetails] = TypeAdapter(
+    OpenRouterReasoningDetails
+)
+
+
+def _chat_completion_to_items(
+    raw_message: ChatCompletionMessage,
+    output_message_status: ItemStatus,
+    raw_logprobs: ChatCompletionChoiceLogprobs | None = None,
+) -> list[OutputItem]:
+    output_items: list[OutputItem] = []
+
+    output_items.extend(_extract_reasoning_items(raw_message=raw_message))
+
+    output_message = _extract_output_message_item(
+        raw_message=raw_message, raw_logprobs=raw_logprobs, status=output_message_status
+    )
+    if output_message is not None:
+        output_items.append(output_message)
+
+    output_items.extend(_extract_tool_call_items(raw_message=raw_message))
+
+    return output_items
+
+
+def convert_annotations(
+    raw_annotations: list[ChatCompletionAnnotation] | list[dict[str, Any]],
+) -> list[UrlCitation]:
+    """Convert raw annotation dicts or Pydantic models to typed Citation objects."""
+    citations: list[UrlCitation] = []
+    for ann in raw_annotations:
+        if isinstance(ann, ChatCompletionAnnotation):
+            citation = ann.url_citation
+            citations.append(
+                UrlCitation(
+                    end_index=citation.end_index,
+                    start_index=citation.start_index,
+                    title=citation.title,
+                    url=citation.url,
+                )
+            )
+        elif "url_citation" in ann:
+            uc = ann["url_citation"]
+            end_index = uc.get("end_index")
+            start_index = uc.get("start_index")
+            title = uc.get("title")
+            url = uc.get("url")
+            if (
+                end_index is not None
+                and start_index is not None
+                and title is not None
+                and url is not None
+            ):
+                citations.append(
+                    UrlCitation(
+                        end_index=end_index,
+                        start_index=start_index,
+                        title=title,
+                        url=url,
+                    )
+                )
+
+    return citations
+
+
+def _extract_output_message_item(
+    raw_message: ChatCompletionMessage,
+    status: ItemStatus,
+    raw_logprobs: ChatCompletionChoiceLogprobs | None = None,
+) -> OutputMessageItem | None:
+    content_parts: list[OutputMessagePart] = []
+
+    logprobs = convert_logprobs(raw_logprobs) if raw_logprobs is not None else None
+
+    citations = convert_annotations(raw_message.annotations or [])
+
+    if raw_message.content:
+        content_parts.append(
+            OutputMessageText(
+                text=raw_message.content, citations=citations, logprobs=logprobs
+            )
+        )
+
+    if raw_message.refusal:
+        content_parts.append(OutputMessageRefusal(refusal=raw_message.refusal))
+
+    return (
+        OutputMessageItem(status=status, content_parts=content_parts)
+        if content_parts
+        else None
+    )
+
+
+def _extract_reasoning_items(raw_message: ChatCompletionMessage) -> list[ReasoningItem]:
+    """
+    Try to extract reasoning from `message.reasoning_content`
+    or by assuming the OpenRouter-specific format
+    """
+    reasoning_items: list[ReasoningItem] = []
+    reasoning_details = getattr(raw_message, "reasoning_details", [])
+
+    for block_dict in reasoning_details:
+        try:
+            block = _REASONING_DETAILS_ADAPTER.validate_python(block_dict)
+        except ValidationError:
+            continue
+
+        reasoning_items.append(ReasoningItem.from_open_router_reasoning_details(block))
+
+    if not reasoning_items:
+        reasoning_content = getattr(raw_message, "reasoning_content", None) or getattr(
+            raw_message, "reasoning", None
+        )
+        if reasoning_content is not None:
+            reasoning_items.append(
+                ReasoningItem.from_reasoning_content(reasoning_content)
+            )
+
+    return reasoning_items
+
+
+def _extract_tool_call_items(
+    raw_message: ChatCompletionMessage,
+) -> list[FunctionToolCallItem]:
+    output_items: list[FunctionToolCallItem] = []
+
+    if raw_message.tool_calls:
+        for tc in raw_message.tool_calls:
+            if isinstance(tc, ChatCompletionMessageFunctionToolCall):
+                output_items.append(
+                    FunctionToolCallItem(
+                        call_id=tc.id,
+                        name=tc.function.name,
+                        arguments=tc.function.arguments,
+                        status="completed",
+                    )
+                )
+            # TODO: handle other tool call type when supported by grasp-agents
+
+    return output_items
 
 
 def convert_usage(raw_usage: CompletionUsage) -> ResponseUsage:
@@ -57,7 +219,7 @@ def provider_output_to_response(provider_output: ChatCompletion) -> Response:
 
     raw_choice = provider_output.choices[0]
     finish_reason = raw_choice.finish_reason
-    logprobs = raw_choice.logprobs
+    raw_logprobs = raw_choice.logprobs
 
     incomplete_details: IncompleteDetails | None = None
     status: ResponseStatus = "completed"
@@ -73,9 +235,9 @@ def provider_output_to_response(provider_output: ChatCompletion) -> Response:
 
     raw_message = raw_choice.message
 
-    output_items = generated_message_to_items(
+    output_items = _chat_completion_to_items(
         raw_message=raw_message,
-        raw_logprobs=logprobs,
+        raw_logprobs=raw_logprobs,
         output_message_status=status,
     )
 

@@ -32,15 +32,15 @@ from pydantic.json import pydantic_encoder
 
 from .content import (
     Citation,
-    InputContentPart,
     InputFile,
     InputImage,
-    InputTextContentPart,
-    OutputMessageContentPart,
-    OutputRefusal,
-    OutputTextContentPart,
-    ReasoningContentPart,
-    ReasoningSummaryPart,
+    InputPart,
+    InputText,
+    OutputMessagePart,
+    OutputMessageRefusal,
+    OutputMessageText,
+    ReasoningSummary,
+    ReasoningText,
 )
 
 if TYPE_CHECKING:
@@ -48,25 +48,36 @@ if TYPE_CHECKING:
 
     from .reasoning import OpenRouterReasoningDetails
 
+# --- Enum types ---
+
 ItemStatus = Literal["in_progress", "completed", "incomplete"]
 
 InputMessageRole = Literal["user", "system", "developer"]
+
 OutputMessageRole = Literal["assistant"]
+
 MessageRole = Literal["user", "system", "developer", "assistant"]
 
+
+# --- Union types ---
+
 ToolOutputPart = Annotated[
-    InputTextContentPart | InputImage | InputFile, Field(discriminator="type")
+    InputText | InputImage | InputFile, Field(discriminator="type")
 ]
 
 ResponseInputPart = ResponseInputText | ResponseInputImage | ResponseInputFile
+
 ResponseOutputPart = ResponseOutputText | ResponseOutputRefusal
+
 ResponseToolOutputPart = ResponseInputText | ResponseInputImage | ResponseInputFile
 
+
+# --- Item types ---
 
 """
 Responses API reserves a special meaning for output "content" fields: they come from
 the raw LLM token stream. Everything that is not "content" is derived artifacts that can
-be generated after the fact (e.g. tool calls, reasoning summaries, annotations, etc).
+be produced/parsed after the fact (e.g. tool calls, reasoning summaries, annotations, etc).
 """
 
 
@@ -78,7 +89,7 @@ def prefixed_id(prefix: str) -> str:
 class InputMessageItem(ResponseInputMessageItem):
     """User/system/developer message sent as input. Auto-generates an id."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (Message):
 
     type: Literal["message"] = "message"  # type: ignore[assignment]
     id: str = Field(default_factory=lambda: prefixed_id("msg"))
@@ -88,9 +99,7 @@ class InputMessageItem(ResponseInputMessageItem):
 
     # grasp-agents fields:
 
-    content_parts: list[InputContentPart] = Field(
-        default_factory=list[InputContentPart], frozen=True
-    )
+    content_parts: list[InputPart] = Field(default_factory=list[InputPart], frozen=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -103,15 +112,11 @@ class InputMessageItem(ResponseInputMessageItem):
 
     @property
     def texts(self) -> list[str]:
-        return [
-            part.text
-            for part in self.content_parts
-            if isinstance(part, InputTextContentPart)
-        ]
+        return [part.text for part in self.content_parts if isinstance(part, InputText)]
 
     @property
     def text(self) -> str:
-        """Concatenated text from all InputTextContentPart parts."""
+        """Concatenated text from all InputText parts."""
         return "".join(self.texts)
 
     @property
@@ -124,13 +129,14 @@ class InputMessageItem(ResponseInputMessageItem):
 
     @classmethod
     def from_text(cls, text: str, role: InputMessageRole = "user") -> InputMessageItem:
-        return cls(content_parts=[InputTextContentPart(text=text)], role=role)
+        return cls(content_parts=[InputText(text=text)], role=role)
 
 
 class OutputMessageItem(ResponseOutputMessage):
     """Assistant message produced by the model."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (Message):
+
     type: Literal["message"] = "message"
     id: str = Field(default_factory=lambda: prefixed_id("msg"))
     role: OutputMessageRole = "assistant"
@@ -139,8 +145,8 @@ class OutputMessageItem(ResponseOutputMessage):
 
     # grasp-agents fields:
 
-    content_parts: list[OutputMessageContentPart] = Field(
-        default_factory=list[OutputMessageContentPart], frozen=True
+    content_parts: list[OutputMessagePart] = Field(
+        default_factory=list[OutputMessagePart], frozen=True
     )
 
     # Provider-specific opaque data for round-trip fidelity
@@ -158,36 +164,36 @@ class OutputMessageItem(ResponseOutputMessage):
 
     @property
     def text(self) -> str:
-        """Concatenated text from all OutputTextContentPart parts."""
+        """Concatenated text from all OutputText parts."""
         return "".join(
             part.text
             for part in self.content_parts
-            if isinstance(part, OutputTextContentPart)
+            if isinstance(part, OutputMessageText)
         )
 
     @property
     def refusal(self) -> str | None:
-        """Refusal string if any OutputRefusal part exists."""
+        """Refusal string if any OutputMessageRefusal part exists."""
         for part in self.content_parts:
-            if isinstance(part, OutputRefusal):
+            if isinstance(part, OutputMessageRefusal):
                 return part.refusal
         return None
 
     @property
     def annotations(self) -> list[Annotation]:
-        """Aggregated annotations from all OutputTextContentPart parts."""
+        """Aggregated annotations from all OutputMessageText parts."""
         annotations: list[Annotation] = []
         for part in self.content_parts:
-            if isinstance(part, OutputTextContentPart):
+            if isinstance(part, OutputMessageText):
                 annotations.extend(part.annotations)
         return annotations
 
     @property
     def citations(self) -> list[Citation]:
-        """Aggregated citations from all OutputTextContentPart parts."""
+        """Aggregated citations from all OutputMessageText parts."""
         citations: list[Citation] = []
         for part in self.content_parts:
-            if isinstance(part, OutputTextContentPart):
+            if isinstance(part, OutputMessageText):
                 citations.extend(part.citations)
         return citations
 
@@ -195,7 +201,8 @@ class OutputMessageItem(ResponseOutputMessage):
 class FunctionToolCallItem(ResponseFunctionToolCall):
     """A tool call issued by the model (name + JSON arguments)."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (FunctionCall):
+
     type: Literal["function_call"] = "function_call"
     id: str | None = Field(default_factory=lambda: prefixed_id("fc"))
     status: ItemStatus | None = None
@@ -211,7 +218,8 @@ class FunctionToolCallItem(ResponseFunctionToolCall):
 class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
     """Result of a tool call, sent back as input for the next turn."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (FunctionCallOutput):
+
     type: Literal["function_call_output"] = "function_call_output"
     id: str = Field(default_factory=lambda: prefixed_id("fco"))
     call_id: str
@@ -231,9 +239,7 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
         if isinstance(self.output_parts, str):
             return self.output_parts
         return "".join(
-            part.text
-            for part in self.output_parts
-            if isinstance(part, InputTextContentPart)
+            part.text for part in self.output_parts if isinstance(part, InputText)
         )
 
     @property
@@ -265,14 +271,26 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
         *,
         indent: int = 2,
     ) -> FunctionToolOutputItem:
+        if isinstance(output, list):
+            typed: list[InputText | InputImage | InputFile] = []
+            for p in output:  # type: ignore[union-attr]
+                if isinstance(p, InputText | InputImage | InputFile):
+                    typed.append(p)
+                else:
+                    typed = []
+                    break
+            if typed:
+                return cls(call_id=call_id, output_parts=typed)
+
         serialized = json.dumps(output, default=pydantic_encoder, indent=indent)
+
         return cls(call_id=call_id, output_parts=serialized)
 
 
 class ReasoningItem(ResponseReasoningItem):
     """Model reasoning/thinking output."""
 
-    # OpenResponses fields:
+    # OpenResponses fields (ReasoningBody):
 
     type: Literal["reasoning"] = "reasoning"
     id: str = Field(default_factory=lambda: prefixed_id("rs"))
@@ -289,9 +307,9 @@ class ReasoningItem(ResponseReasoningItem):
     cache_control: dict[str, Any] | None = None
     redacted: bool = False
 
-    content_parts: list[ReasoningContentPart] | None = Field(default=None, frozen=True)
-    summary_parts: list[ReasoningSummaryPart] = Field(
-        default_factory=list[ReasoningSummaryPart], frozen=True
+    content_parts: list[ReasoningText] | None = Field(default=None, frozen=True)
+    summary_parts: list[ReasoningSummary] = Field(
+        default_factory=list[ReasoningSummary], frozen=True
     )
 
     @model_validator(mode="before")
@@ -301,10 +319,12 @@ class ReasoningItem(ResponseReasoningItem):
             data["content"] = data["content_parts"]
         elif "content" in data and "content_parts" not in data:
             data["content_parts"] = data["content"]
+
         if "summary_parts" in data and "summary" not in data:
             data["summary"] = data["summary_parts"]
         elif "summary" in data and "summary_parts" not in data:
             data["summary_parts"] = data["summary"]
+
         return data
 
     @property
@@ -315,7 +335,6 @@ class ReasoningItem(ResponseReasoningItem):
 
     @property
     def summary_text(self) -> str:
-        """Concatenated text from all summary blocks."""
         return "".join(s.text for s in self.summary_parts)
 
     @classmethod
@@ -323,7 +342,7 @@ class ReasoningItem(ResponseReasoningItem):
         cls, reasoning_content: str, encrypted_content: str | None = None
     ) -> ReasoningItem:
         return cls(
-            summary_parts=[ReasoningSummaryPart(text=reasoning_content)],
+            summary_parts=[ReasoningSummary(text=reasoning_content)],
             encrypted_content=encrypted_content,
             redacted=False,
             status="completed",
@@ -333,11 +352,11 @@ class ReasoningItem(ResponseReasoningItem):
     def from_thinking_block(cls, block: Mapping[str, Any]) -> ReasoningItem:
         block_type = block.get("type")
         match block_type:
+            # TODO: Do we assign to content_parts or summary_parts?
             case "thinking":
                 return cls(
-                    content_parts=[
-                        ReasoningContentPart(text=block.get("thinking", ""))
-                    ],
+                    content_parts=None,
+                    summary_parts=[ReasoningSummary(text=block.get("thinking", ""))],
                     encrypted_content=block.get("signature"),
                     cache_control=block.get("cache_control"),
                     redacted=False,
@@ -345,7 +364,8 @@ class ReasoningItem(ResponseReasoningItem):
                 )
             case "redacted_thinking":
                 return cls(
-                    content_parts=[ReasoningContentPart(text=block.get("data", ""))],
+                    content_parts=None,
+                    summary_parts=[],
                     encrypted_content=block.get("data"),
                     cache_control=block.get("cache_control"),
                     redacted=True,
@@ -362,21 +382,23 @@ class ReasoningItem(ResponseReasoningItem):
         match detail.type:
             case "reasoning.summary":
                 return cls(
-                    summary_parts=[ReasoningSummaryPart(text=detail.summary)],
+                    summary_parts=[ReasoningSummary(text=detail.summary)],
                     redacted=False,
                     status="completed",
                 )
+
             case "reasoning.text":
                 # NOTE: always assume summarized reasoning
                 return cls(
-                    summary_parts=[ReasoningSummaryPart(text=detail.text or "")],
+                    summary_parts=[ReasoningSummary(text=detail.text or "")],
                     encrypted_content=detail.signature,
                     redacted=False,
                     status="completed",
                 )
+
             case "reasoning.encrypted":
                 return cls(
-                    content_parts=[],
+                    content_parts=None,
                     encrypted_content=detail.data,
                     redacted=True,
                     status="completed",
@@ -385,6 +407,9 @@ class ReasoningItem(ResponseReasoningItem):
 
 class WebSearchCallItem(ResponseFunctionWebSearch):
     """A server-side web search call record."""
+
+    # NOTE: ResponseFunctionWebSearch is Responses API-specific.
+    # Not sure if we need to inherit from it
 
     type: Literal["web_search_call"] = "web_search_call"
     id: str = Field(default_factory=lambda: prefixed_id("ws"))
@@ -397,7 +422,6 @@ class WebSearchCallItem(ResponseFunctionWebSearch):
 
 
 AssistantMessage = OutputMessageItem
-ToolMessage = FunctionToolCallItem
 
 
 class SystemMessage(InputMessageItem):
@@ -427,4 +451,7 @@ OutputItem: TypeAlias = Annotated[
 ]
 
 ToolCallItem = Annotated[FunctionToolCallItem, Field(discriminator="type")]
+
 ToolOutputItem = Annotated[FunctionToolOutputItem, Field(discriminator="type")]
+
+ToolMessage = ToolOutputItem

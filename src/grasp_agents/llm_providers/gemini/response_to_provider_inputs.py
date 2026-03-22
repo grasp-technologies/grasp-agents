@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from grasp_agents.types.content import (
     BASE64_DATA_PREFIX,
     InputImage,
-    InputTextContentPart,
+    InputText,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -33,6 +33,8 @@ from . import (
     GeminiFileData,
     GeminiFunctionCall,
     GeminiFunctionResponse,
+    GeminiMediaResolution,
+    GeminiMediaResolutionLevel,
     GeminiPart,
 )
 
@@ -51,6 +53,11 @@ def items_to_provider_inputs(
     """
     system_parts: list[str] = []
     contents: list[GeminiContent] = []
+    call_id_to_name: dict[str, str] = {
+        item.call_id: item.name
+        for item in items
+        if isinstance(item, FunctionToolCallItem)
+    }
     i = 0
     n = len(items)
 
@@ -66,7 +73,9 @@ def items_to_provider_inputs(
                 i += 1
 
         elif isinstance(item, FunctionToolOutputItem):
-            contents.append(_tool_output_to_content(item))
+            contents.append(
+                _tool_output_to_content(item, call_id_to_name=call_id_to_name)
+            )
             i += 1
 
         else:
@@ -97,7 +106,7 @@ def _input_to_user_content(item: InputMessageItem) -> GeminiContent:
     parts: list[GeminiPart] = []
 
     for part in item.content_parts:
-        if isinstance(part, InputTextContentPart):
+        if isinstance(part, InputText):
             parts.append(GeminiPart(text=part.text))
 
         elif isinstance(part, InputImage):
@@ -109,31 +118,54 @@ def _input_to_user_content(item: InputMessageItem) -> GeminiContent:
     return GeminiContent(role="user", parts=parts)
 
 
+_DETAIL_TO_MEDIA_RESOLUTION = {
+    "low": GeminiMediaResolutionLevel.MEDIA_RESOLUTION_LOW,
+    "medium": GeminiMediaResolutionLevel.MEDIA_RESOLUTION_MEDIUM,
+    "high": GeminiMediaResolutionLevel.MEDIA_RESOLUTION_HIGH,
+    "ultra_high": GeminiMediaResolutionLevel.MEDIA_RESOLUTION_ULTRA_HIGH,
+}
+
+
 def _image_to_part(img: InputImage) -> GeminiPart:
+    level = _DETAIL_TO_MEDIA_RESOLUTION.get(img.detail)
+    resolution = GeminiMediaResolution(level=level) if level else None
+
     if img.is_base64 and img.image_url:
-        raw = img.image_url.removeprefix(BASE64_DATA_PREFIX)
-        return GeminiPart(
-            inline_data=GeminiBlob(
-                data=base64.b64decode(raw),
-                mime_type="image/jpeg",
-            )
+        raw = img.image_url.removeprefix(
+            BASE64_DATA_PREFIX.format(mime_type=img.mime_type)
         )
+        return GeminiPart(
+            inline_data=GeminiBlob(data=base64.b64decode(raw), mime_type=img.mime_type),
+            media_resolution=resolution,
+        )
+
     if img.is_url and img.image_url:
         return GeminiPart(
-            file_data=GeminiFileData(file_uri=img.image_url),
+            file_data=GeminiFileData(file_uri=img.image_url, mime_type=img.mime_type),
+            media_resolution=resolution,
         )
-    raise ValueError("InputImage must have either a URL or base64 data")
+
+    if img.is_file_id and img.file_id:
+        return GeminiPart(
+            file_data=GeminiFileData(file_uri=img.file_id, mime_type=img.mime_type),
+            media_resolution=resolution,
+        )
+
+    raise ValueError("InputImage must have a URL, base64 data, or file_id")
 
 
-def _tool_output_to_content(item: FunctionToolOutputItem) -> GeminiContent:
+def _tool_output_to_content(
+    item: FunctionToolOutputItem,
+    call_id_to_name: dict[str, str] | None = None,
+) -> GeminiContent:
     if isinstance(item.output_parts, list):
         output_str = "\n".join(
-            part.text
-            for part in item.output_parts
-            if isinstance(part, InputTextContentPart)
+            part.text for part in item.output_parts if isinstance(part, InputText)
         )
     else:
         output_str = item.output_parts
+
+    name = (call_id_to_name or {}).get(item.call_id, item.call_id)
 
     return GeminiContent(
         role="user",
@@ -141,7 +173,7 @@ def _tool_output_to_content(item: FunctionToolOutputItem) -> GeminiContent:
             GeminiPart(
                 function_response=GeminiFunctionResponse(
                     id=item.call_id,
-                    name=item.call_id,  # Gemini requires name; use call_id
+                    name=name,
                     response={"result": output_str},
                 )
             )

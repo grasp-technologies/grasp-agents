@@ -11,9 +11,8 @@ Two public functions:
   single assistant message.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Sequence
+from typing import Any, Literal
 
 from openai.types.chat.chat_completion_assistant_message_param import (
     ChatCompletionAssistantMessageParam,
@@ -45,7 +44,7 @@ from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
 
-from grasp_agents.types.content import InputImage, InputTextContentPart
+from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -61,13 +60,9 @@ from grasp_agents.types.reasoning import (
     OpenRouterReasoningSummary,
     OpenRouterReasoningText,
 )
+from grasp_agents.types.response import Response
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from grasp_agents.types.response import Response
-
-ReasoningFormat = Literal["thinking_blocks", "reasoning_details"]
+ReasoningBlockFormat = Literal["anthropic", "openrouter"]
 
 
 class ChatCompletionAssistantMessageParamExt(
@@ -85,31 +80,10 @@ class ChatCompletionAssistantMessageParamExt(
     provider_specific_fields: dict[str, Any] | None
 
 
-def response_to_provider_input(
-    response: Response, *, reasoning_format: ReasoningFormat | None = "thinking_blocks"
-) -> ChatCompletionAssistantMessageParamExt:
-    """Convert a ``Response`` to a Chat Completions assistant message param."""
-    msg = ChatCompletionAssistantMessageParamExt(
-        role="assistant", content=response.output_text or ""
-    )
-
-    tool_calls = response.tool_call_items
-    if tool_calls:
-        msg["tool_calls"] = [_tool_call_to_param(tc) for tc in tool_calls]
-
-    reasoning = response.reasoning_items
-    if reasoning:
-        _add_reasoning(msg, reasoning, reasoning_format)
-
-    msg["provider_specific_fields"] = response.provider_specific_fields
-
-    return msg
-
-
 def items_to_provider_inputs(
     items: Sequence[InputItem],
     *,
-    reasoning_format: ReasoningFormat | None = "thinking_blocks",
+    reasoning_block_format: ReasoningBlockFormat | None = "anthropic",
 ) -> list[ChatCompletionMessageParam]:
     """Convert a sequence of memory items to Chat Completions messages."""
     messages: list[ChatCompletionMessageParam] = []
@@ -120,11 +94,11 @@ def items_to_provider_inputs(
         item = items[i]
 
         if isinstance(item, InputMessageItem):
-            messages.append(_input_item_to_message(item))
+            messages.append(_input_message_to_message_param(item))
             i += 1
 
         elif isinstance(item, FunctionToolOutputItem):
-            messages.append(_tool_output_to_message(item))
+            messages.append(_tool_output_to_message_param(item))
             i += 1
 
         else:
@@ -136,12 +110,16 @@ def items_to_provider_inputs(
             ):
                 group.append(items[i])  # type: ignore[arg-type]
                 i += 1
-            messages.append(_output_group_to_message(group, reasoning_format))
+            messages.append(
+                _output_items_to_message_param(group, reasoning_block_format)
+            )
 
     return messages
 
 
-def _input_item_to_message(item: InputMessageItem) -> ChatCompletionMessageParam:
+def _input_message_to_message_param(
+    item: InputMessageItem,
+) -> ChatCompletionMessageParam:
     """Convert an InputMessageItem to a user/system/developer message param."""
     if item.role == "system":
         return ChatCompletionSystemMessageParam(role="system", content=item.text)
@@ -157,7 +135,7 @@ def _input_item_to_message(item: InputMessageItem) -> ChatCompletionMessageParam
     ] = []
 
     for part in item.content_parts:
-        if isinstance(part, InputTextContentPart):
+        if isinstance(part, InputText):
             content.append(
                 ChatCompletionContentPartTextParam(type="text", text=part.text)
             )
@@ -172,20 +150,16 @@ def _input_item_to_message(item: InputMessageItem) -> ChatCompletionMessageParam
     return ChatCompletionUserMessageParam(role="user", content=content)
 
 
-def _tool_output_to_message(
+def _tool_output_to_message_param(
     item: FunctionToolOutputItem,
 ) -> ChatCompletionToolMessageParam:
     """Convert a FunctionToolOutputItem to a tool message param."""
     if isinstance(item.output_parts, list):
         has_images = any(isinstance(part, InputImage) for part in item.output_parts)
         if has_images:
-            raise ValueError(
-                "Tool outputs with images are not supported in the Completions API."
-            )
+            raise ValueError("Image tool outputs are not supported by Completions API")
         content = "\n".join(
-            part.text
-            for part in item.output_parts
-            if isinstance(part, InputTextContentPart)
+            part.text for part in item.output_parts if isinstance(part, InputText)
         )
     else:
         content = item.output_parts
@@ -195,96 +169,151 @@ def _tool_output_to_message(
     )
 
 
-def _output_group_to_message(
-    group: Sequence[OutputItem],
-    reasoning_format: ReasoningFormat | None = "thinking_blocks",
+def _output_items_to_message_param(
+    output_items: Sequence[OutputItem],
+    reasoning_block_format: ReasoningBlockFormat | None = "anthropic",
 ) -> ChatCompletionAssistantMessageParamExt:
     """Convert a group of consecutive output items to an assistant message param."""
-    reasoning_items: list[ReasoningItem] = []
-    output_messages: list[OutputMessageItem] = []
-    tool_calls: list[FunctionToolCallItem] = []
+    msg = ChatCompletionAssistantMessageParamExt(role="assistant")
 
-    for item in group:
+    reasoning_items: list[ReasoningItem] = []
+    output_message_items: list[OutputMessageItem] = []
+    tool_call_items: list[FunctionToolCallItem] = []
+
+    for item in output_items:
         if isinstance(item, ReasoningItem):
             reasoning_items.append(item)
+
         elif isinstance(item, OutputMessageItem):
-            output_messages.append(item)
+            output_message_items.append(item)
+
         elif isinstance(item, FunctionToolCallItem):
-            tool_calls.append(item)
+            tool_call_items.append(item)
         # NOTE: skipping WebSearchCallItem
 
-    # Build content from all OutputMessageItems
-    text_parts = [msg.text for msg in output_messages if msg.text]
-    content = "\n".join(text_parts) or ""
+    thought_sigs: list[str] = []
 
-    msg = ChatCompletionAssistantMessageParamExt(role="assistant", content=content)
+    if output_message_items:
+        message_thought_sigs = _add_output_message_items(msg, output_message_items)
+        thought_sigs.extend(message_thought_sigs)
 
-    if tool_calls:
-        msg["tool_calls"] = [_tool_call_to_param(tc) for tc in tool_calls]
+    if tool_call_items:
+        tool_thought_sigs = _add_tool_call_items(msg, tool_call_items)
+        thought_sigs.extend(tool_thought_sigs)
 
     if reasoning_items:
-        _add_reasoning(msg, reasoning_items, reasoning_format)
+        reasoning_thought_sigs = _add_reasoning_items(
+            msg, reasoning_items, reasoning_block_format
+        )
+        thought_sigs.extend(reasoning_thought_sigs)
 
-    # Collect thought_signatures from individual items for provider round-trip
-    thought_sigs: list[str] = [
-        item.encrypted_content
-        for item in reasoning_items
-        if item.encrypted_content
-    ]
-    thought_sigs.extend(
-        tc.provider_specific_fields["thought_signature"]
-        for tc in tool_calls
-        if tc.provider_specific_fields
-        and "thought_signature" in tc.provider_specific_fields
-    )
-    if thought_sigs:
-        msg["provider_specific_fields"] = {
-            "thought_signatures": thought_sigs,
-        }
+    # NOTE: Do we need this?
+
+    # if (
+    #     "provider_specific_fields" in msg
+    #     and isinstance(msg["provider_specific_fields"], dict)
+    #     and "thought_signatures" in msg["provider_specific_fields"]
+    # ):
+    #     msg["provider_specific_fields"]["thought_signatures"] = thought_sigs
 
     return msg
 
 
-def _add_reasoning(
+def response_to_provider_input(
+    response: Response,
+    *,
+    reasoning_block_format: ReasoningBlockFormat | None = "anthropic",
+) -> ChatCompletionAssistantMessageParamExt:
+    # NOTE: Do we need response-level provider_specific_fields?
+    return _output_items_to_message_param(response.output_items, reasoning_block_format)
+
+
+def _add_output_message_items(
+    msg: ChatCompletionAssistantMessageParamExt,
+    output_message_items: list[OutputMessageItem],
+) -> list[str]:
+    thought_sigs: list[str] = []
+    text_parts: list[str] = []
+
+    for item in output_message_items:
+        if item.text:
+            text_parts.append(item.text)
+
+        if item.provider_specific_fields:
+            msg["provider_specific_fields"] = item.provider_specific_fields
+
+            _thought_sigs = item.provider_specific_fields.get("thought_signatures", [])
+            thought_sigs.extend(_thought_sigs)
+
+    # NOTE: Empty content may not be allowed by some providers
+    msg["content"] = "\n".join(text_parts)
+
+    return thought_sigs
+
+
+def _add_tool_call_items(
+    msg: ChatCompletionAssistantMessageParamExt,
+    tool_call_items: list[FunctionToolCallItem],
+) -> list[str]:
+    thought_sigs: list[str] = []
+    tc_message_params: list[ChatCompletionMessageToolCallParam] = []
+
+    for tc in tool_call_items:
+        if (
+            tc.provider_specific_fields
+            and "thought_signature" in tc.provider_specific_fields
+        ):
+            thought_sig = tc.provider_specific_fields["thought_signature"]
+            thought_sigs.append(thought_sig)
+
+        tc_message_params.append(
+            ChatCompletionMessageToolCallParam(
+                id=tc.call_id,
+                type="function",
+                function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
+            )
+        )
+
+    if tc_message_params:
+        msg["tool_calls"] = tc_message_params
+
+    return thought_sigs
+
+
+def _add_reasoning_items(
     msg: ChatCompletionAssistantMessageParamExt,
     reasoning_items: list[ReasoningItem],
-    reasoning_format: ReasoningFormat | None,
-) -> None:
-    """Add reasoning items to an assistant message in the appropriate format."""
-    if not reasoning_items:
-        return
+    reasoning_block_format: ReasoningBlockFormat | None,
+) -> list[str]:
+    thought_sigs = [
+        item.encrypted_content for item in reasoning_items if item.encrypted_content
+    ]
 
-    # Plain-text reasoning (DeepSeek, generic LiteLLM providers)
-    _add_reasoning_content(msg, reasoning_items)
+    # NOTE: Pass either plain reasoning or summaries, not both
 
-    # Structured format (provider-specific)
-    if reasoning_format == "thinking_blocks":
-        msg["thinking_blocks"] = [
-            _reasoning_to_thinking_block(r) for r in reasoning_items
-        ]
-    elif reasoning_format == "reasoning_details":
-        msg["reasoning_details"] = [
-            _reasoning_to_openrouter_details(r).model_dump(exclude_none=True)
-            for r in reasoning_items
-        ]
-
-
-def _add_reasoning_content(
-    msg: ChatCompletionAssistantMessageParamExt,
-    reasoning_items: list[ReasoningItem],
-) -> None:
-    """Set ``reasoning_content`` — the plain-text reasoning string."""
     contents = [r.content_text for r in reasoning_items if r.content_text]
     summaries = [r.summary_text for r in reasoning_items if r.summary_text]
 
     reasoning_text = "\n".join(contents or summaries)
     if reasoning_text:
         msg["reasoning_content"] = reasoning_text
-        msg["reasoning"] = reasoning_text
+        if reasoning_block_format == "openrouter":
+            msg["reasoning"] = reasoning_text
+
+    if reasoning_block_format == "anthropic":
+        msg["thinking_blocks"] = [
+            _reasoning_item_to_thinking_block(r) for r in reasoning_items
+        ]
+    elif reasoning_block_format == "openrouter":
+        msg["reasoning_details"] = [
+            _reasoning_item_to_openrouter_details(r).model_dump(exclude_none=True)
+            for r in reasoning_items
+        ]
+
+    return thought_sigs
 
 
-def _reasoning_to_thinking_block(r: ReasoningItem) -> dict[str, Any]:
-    """Convert a ReasoningItem to an Anthropic-style thinking block."""
+def _reasoning_item_to_thinking_block(r: ReasoningItem) -> dict[str, Any]:
     if r.redacted:
         return {"type": "redacted_thinking", "data": r.encrypted_content or ""}
 
@@ -292,11 +321,13 @@ def _reasoning_to_thinking_block(r: ReasoningItem) -> dict[str, Any]:
     block = {"type": "thinking", "thinking": text}
     if r.encrypted_content:
         block["signature"] = r.encrypted_content
+
     return block
 
 
-def _reasoning_to_openrouter_details(r: ReasoningItem) -> OpenRouterReasoningDetails:
-    """Convert a ReasoningItem to an OpenRouter reasoning_details entry."""
+def _reasoning_item_to_openrouter_details(
+    r: ReasoningItem,
+) -> OpenRouterReasoningDetails:
     if r.redacted and r.encrypted_content:
         return OpenRouterReasoningEncrypted(data=r.encrypted_content)
 
@@ -306,14 +337,3 @@ def _reasoning_to_openrouter_details(r: ReasoningItem) -> OpenRouterReasoningDet
         return OpenRouterReasoningText(text=text, signature=r.encrypted_content)
 
     return OpenRouterReasoningSummary(summary=text)
-
-
-def _tool_call_to_param(
-    tc: FunctionToolCallItem,
-) -> ChatCompletionMessageToolCallParam:
-    """Convert a FunctionToolCallItem to a typed tool call param."""
-    return ChatCompletionMessageToolCallParam(
-        id=tc.call_id,
-        type="function",
-        function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
-    )

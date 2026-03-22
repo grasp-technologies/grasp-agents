@@ -60,6 +60,12 @@ from google.genai.types import (
     Part as GeminiPart,
 )
 from google.genai.types import (
+    PartMediaResolution as GeminiMediaResolution,
+)
+from google.genai.types import (
+    PartMediaResolutionLevel as GeminiMediaResolutionLevel,
+)
+from google.genai.types import (
     SafetySettingDict as GeminiSafetySettingDict,
 )
 from google.genai.types import (

@@ -11,9 +11,10 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from openai.types.responses.response_function_web_search import ActionOpenPage
 from pydantic import BaseModel, Field
 
-from grasp_agents.types.content import OutputTextContentPart, UrlCitation
+from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
     InputMessageItem,
@@ -22,8 +23,9 @@ from grasp_agents.types.items import (
     WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
+    OutputItemDone,
+    OutputMessageTextDelta,
     ResponseCompleted,
-    TextDelta,
 )
 
 if TYPE_CHECKING:
@@ -65,7 +67,7 @@ class TestOpenAIResponsesIntegration:
     async def test_stream_text(self, llm: CloudLLM) -> None:
         input_items = [InputMessageItem.from_text("Say 'hello' and nothing else.")]
         events = [event async for event in llm.generate_response_stream(input_items)]
-        text_deltas = [e for e in events if isinstance(e, TextDelta)]
+        text_deltas = [e for e in events if isinstance(e, OutputMessageTextDelta)]
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
 
         assert len(text_deltas) > 0
@@ -157,9 +159,7 @@ class TestOpenAIResponsesWebSearch:
     async def test_web_search(self, llm: CloudLLM) -> None:
         """Responses API web search should produce WebSearchCallItem and citations."""
         input_items = [
-            InputMessageItem.from_text(
-                "Tell me the current NASDAQ Composite index."
-            )
+            InputMessageItem.from_text("Tell me the current NASDAQ Composite index.")
         ]
         response = await llm.generate_response(input_items)
 
@@ -175,7 +175,7 @@ class TestOpenAIResponsesWebSearch:
         all_citations = [
             c
             for part in msg.content_parts
-            if isinstance(part, OutputTextContentPart)
+            if isinstance(part, OutputMessageText)
             for c in part.citations
         ]
         assert len(all_citations) > 0
@@ -186,9 +186,7 @@ class TestOpenAIResponsesWebSearch:
     async def test_stream_web_search(self, llm: CloudLLM) -> None:
         """Streaming web search should produce WebSearchCallItem and citations."""
         input_items = [
-            InputMessageItem.from_text(
-                "Tell me the current NASDAQ Composite index."
-            )
+            InputMessageItem.from_text("Tell me the current NASDAQ Composite index.")
         ]
         events = [event async for event in llm.generate_response_stream(input_items)]
 
@@ -206,7 +204,7 @@ class TestOpenAIResponsesWebSearch:
         all_citations = [
             c
             for part in msg.content_parts
-            if isinstance(part, OutputTextContentPart)
+            if isinstance(part, OutputMessageText)
             for c in part.citations
         ]
         assert len(all_citations) > 0
@@ -426,3 +424,139 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
         with pytest.raises(Exception):  # noqa: B017, PT011
             await llm.generate_response(full_input, tools=tools)
 
+
+@pytest.mark.integration
+class TestOpenAIResponsesWebFetch:
+    """Web search with browsing can produce ActionOpenPage items."""
+
+    @pytest.fixture
+    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+        from grasp_agents.llm_providers.openai_responses.responses_llm import (
+            OpenAIResponsesLLM,
+        )
+
+        return OpenAIResponsesLLM(
+            model_name="gpt-5.4",
+            llm_settings={
+                "max_output_tokens": 4096,
+                "web_search": {"type": "web_search_preview"},
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_via_search(self, llm: CloudLLM) -> None:
+        """Ask to read a specific URL — web search should browse it."""
+        input_items = [
+            InputMessageItem.from_text(
+                "Go to https://httpbin.org/html and tell me the author's name "
+                "mentioned on that page."
+            )
+        ]
+        response = await llm.generate_response(input_items)
+
+        assert response.output_text
+        ws_items = [
+            i for i in response.output_items if isinstance(i, WebSearchCallItem)
+        ]
+        assert len(ws_items) >= 1
+
+        open_page_items = [i for i in ws_items if isinstance(i.action, ActionOpenPage)]
+        assert len(open_page_items) >= 1
+        assert open_page_items[0].action.url
+
+    @pytest.mark.asyncio
+    async def test_stream_web_fetch_via_search(self, llm: CloudLLM) -> None:
+        """Streaming: ActionOpenPage items appear in stream events."""
+        input_items = [
+            InputMessageItem.from_text(
+                "Go to https://httpbin.org/html and tell me the author's name "
+                "mentioned on that page."
+            )
+        ]
+        events = [event async for event in llm.generate_response_stream(input_items)]
+
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        response = completed[0].response
+        assert response.output_text
+
+        open_page_items = [
+            i
+            for i in response.output_items
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+        ]
+        assert len(open_page_items) >= 1
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_unreachable(self, llm: CloudLLM) -> None:
+        """Unreachable URL — OpenAI returns ActionOpenPage with url=None."""
+        input_items = [
+            InputMessageItem.from_text(
+                "Go to https://this-domain-does-not-exist-abc123xyz.invalid/page "
+                "and tell me what it says."
+            )
+        ]
+        response = await llm.generate_response(input_items)
+
+        open_page_items = [
+            i
+            for i in response.output_items
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+        ]
+        # OpenAI still produces ActionOpenPage but with url=None for unreachable
+        assert len(open_page_items) >= 1
+        assert any(op.action.url is None for op in open_page_items)
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_multi_turn(self, llm: CloudLLM) -> None:
+        """Multi-turn: browse a page, then ask a follow-up about it."""
+        user_msg = InputMessageItem.from_text(
+            "Go to https://httpbin.org/html and tell me the author's name."
+        )
+        r1 = await llm.generate_response([user_msg])
+
+        open_page_items = [
+            i
+            for i in r1.output_items
+            if isinstance(i, WebSearchCallItem)
+            and isinstance(i.action, ActionOpenPage)
+        ]
+        assert len(open_page_items) >= 1
+
+        follow_up = InputMessageItem.from_text(
+            "What was the title of the page you visited?"
+        )
+        full_input = [user_msg, *r1.output_items, follow_up]
+        r2 = await llm.generate_response(full_input)
+
+        assert r2.output_text
+        assert r2.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_stream_web_fetch_multi_turn(self, llm: CloudLLM) -> None:
+        """Streaming multi-turn: browse then follow up."""
+        user_msg = InputMessageItem.from_text(
+            "Go to https://httpbin.org/html and tell me the author's name."
+        )
+        r1 = await llm.generate_response([user_msg])
+
+        open_page_items = [
+            i
+            for i in r1.output_items
+            if isinstance(i, WebSearchCallItem)
+            and isinstance(i.action, ActionOpenPage)
+        ]
+        assert len(open_page_items) >= 1
+
+        follow_up = InputMessageItem.from_text(
+            "What was the title of the page you visited?"
+        )
+        full_input = [user_msg, *r1.output_items, follow_up]
+        events = [
+            event async for event in llm.generate_response_stream(full_input)
+        ]
+
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        assert completed[0].response.output_text
+        assert completed[0].response.status == "completed"

@@ -24,37 +24,41 @@ from grasp_agents.logprob_converters import (
 )
 from grasp_agents.types.content import (
     Citation,
-    OutputMessageContentPart,
-    OutputRefusal,
-    OutputTextContentPart,
-    ReasoningSummaryPart,
+    OutputMessagePart,
+    OutputMessageRefusal,
+    OutputMessageText,
+    ReasoningSummary,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
     prefixed_id,
 )
 from grasp_agents.types.llm_events import (
-    ContentPartAdded,
-    ContentPartDone,
     FunctionCallArgumentsDelta,
     FunctionCallArgumentsDone,
     LlmEvent,
+    OutputContentPartAdded,
+    OutputContentPartDone,
     OutputItemAdded,
     OutputItemDone,
+    OutputMessageRefusalDelta,
+    OutputMessageRefusalDone,
+    OutputMessageTextDelta,
+    OutputMessageTextDone,
     ReasoningSummaryDelta,
+    ReasoningSummaryDone,
     ReasoningSummaryPartAdded,
     ReasoningSummaryPartDone,
-    ReasoningSummaryTextDone,
-    RefusalDelta,
-    RefusalDone,
     ResponseCompleted,
     ResponseCreated,
     ResponseInProgress,
-    TextDelta,
-    TextDone,
+    WebSearchCallCompleted,
+    WebSearchCallInProgress,
+    WebSearchCallSearching,
 )
 from grasp_agents.types.response import Response, ResponseUsage
 
@@ -107,7 +111,7 @@ class BaseLlmStreamConverter:
         # == Output Message ==
 
         # Content parts (built once in close methods, reused in message item)
-        self._message_content_parts: list[OutputMessageContentPart] = []
+        self._message_content_parts: list[OutputMessagePart] = []
         self._message_content_part_count = 0
         self._message_content_part_index: int = 0
 
@@ -138,7 +142,7 @@ class BaseLlmStreamConverter:
         self._reasoning_id: str | None = None
         self._reasoning_item_index: int = 0
 
-        self._reasoning_summary_parts: list[ReasoningSummaryPart] = []
+        self._reasoning_summary_parts: list[ReasoningSummary] = []
         self._reasoning_summary_part_count: int = 0
         self._reasoning_summary_part_index: int = 0
 
@@ -151,6 +155,9 @@ class BaseLlmStreamConverter:
 
         # Tool calls (keyed by chunk tool_call index)
         self._tool_calls: dict[int, ToolCallState] = {}
+
+        # Web search (item_id → output_index)
+        self._web_search_indices: dict[str, int] = {}
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -257,7 +264,7 @@ class BaseLlmStreamConverter:
         yield ReasoningSummaryPartAdded(
             item_id=self._reasoning_id,
             output_index=self._reasoning_item_index,
-            part=ReasoningSummaryPart(text=""),  # type: ignore[arg-type]
+            part=ReasoningSummary(text=""),  # type: ignore[arg-type]
             summary_index=self._reasoning_summary_part_index,
             sequence_number=self._next_seq(),
         )
@@ -285,7 +292,7 @@ class BaseLlmStreamConverter:
         assert self._reasoning_id is not None  # for mypy
 
         if self._reasoning_summary_part_text:
-            yield ReasoningSummaryTextDone(
+            yield ReasoningSummaryDone(
                 item_id=self._reasoning_id,
                 output_index=self._reasoning_item_index,
                 summary_index=self._reasoning_summary_part_index,
@@ -293,7 +300,7 @@ class BaseLlmStreamConverter:
                 text=self._reasoning_summary_part_text,
             )
 
-            summary_part = ReasoningSummaryPart(
+            summary_part = ReasoningSummary(
                 text=self._reasoning_summary_part_text,
             )
             self._reasoning_summary_parts.append(summary_part)
@@ -366,12 +373,12 @@ class BaseLlmStreamConverter:
         self._message_content_part_index = self._message_content_part_count
         self._message_content_part_count += 1
 
-        yield ContentPartAdded(
+        yield OutputContentPartAdded(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
             item_id=self._message_id or "",
-            part=OutputTextContentPart(text="", citations=[]),
+            part=OutputMessageText(text="", citations=[]),
         )
 
     def _on_text(
@@ -387,7 +394,7 @@ class BaseLlmStreamConverter:
         if logprobs:
             self._logprobs.extend(logprobs)
 
-        yield TextDelta(
+        yield OutputMessageTextDelta(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -402,7 +409,7 @@ class BaseLlmStreamConverter:
         assert self._text is not None  # for mypy
         assert self._message_id is not None  # for mypy
 
-        yield TextDone(
+        yield OutputMessageTextDone(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -411,14 +418,14 @@ class BaseLlmStreamConverter:
             logprobs=to_done_logprobs(self._logprobs),
         )
 
-        part = OutputTextContentPart(
+        part = OutputMessageText(
             text=self._text,
             citations=self._build_text_citations(),
             logprobs=self._logprobs or None,
         )
         self._message_content_parts.append(part)
 
-        yield ContentPartDone(
+        yield OutputContentPartDone(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -437,12 +444,12 @@ class BaseLlmStreamConverter:
         self._message_content_part_index = self._message_content_part_count
         self._message_content_part_count += 1
 
-        yield ContentPartAdded(
+        yield OutputContentPartAdded(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
             item_id=self._message_id or "",
-            part=OutputRefusal(refusal=""),
+            part=OutputMessageRefusal(refusal=""),
         )
 
     def _on_refusal(self, refusal: str) -> Iterator[LlmEvent]:
@@ -451,7 +458,7 @@ class BaseLlmStreamConverter:
 
         self._refusal += refusal
 
-        yield RefusalDelta(
+        yield OutputMessageRefusalDelta(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -465,7 +472,7 @@ class BaseLlmStreamConverter:
         assert self._refusal is not None  # for mypy
         assert self._message_id is not None  # for mypy
 
-        yield RefusalDone(
+        yield OutputMessageRefusalDone(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -473,10 +480,10 @@ class BaseLlmStreamConverter:
             refusal=self._refusal,
         )
 
-        part = OutputRefusal(refusal=self._refusal)
+        part = OutputMessageRefusal(refusal=self._refusal)
         self._message_content_parts.append(part)
 
-        yield ContentPartDone(
+        yield OutputContentPartDone(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -574,3 +581,56 @@ class BaseLlmStreamConverter:
                 output_index=state.item_index,
                 sequence_number=self._next_seq(),
             )
+
+    # ==== Web search ====
+
+    def _open_web_search(self, item_id: str) -> Iterator[LlmEvent]:
+        """Emit OutputItemAdded + WebSearchCallInProgress for a new web search."""
+        output_index = self._item_count
+        self._item_count += 1
+
+        self._web_search_indices[item_id] = output_index
+
+        yield OutputItemAdded(
+            item=WebSearchCallItem(
+                id=item_id,
+                status="in_progress",
+                action={"type": "search", "query": ""},  # type: ignore[arg-type]
+            ),
+            output_index=output_index,
+            sequence_number=self._next_seq(),
+        )
+        yield WebSearchCallInProgress(
+            item_id=item_id,
+            output_index=output_index,
+            sequence_number=self._next_seq(),
+        )
+
+    def _on_web_search_searching(self, item_id: str) -> Iterator[LlmEvent]:
+        """Emit WebSearchCallSearching when the search is actively executing."""
+        output_index = self._web_search_indices[item_id]
+        yield WebSearchCallSearching(
+            item_id=item_id,
+            output_index=output_index,
+            sequence_number=self._next_seq(),
+        )
+
+    def _close_web_search(
+        self, item: WebSearchCallItem
+    ) -> Iterator[LlmEvent]:
+        """Emit WebSearchCallCompleted + OutputItemDone with final item."""
+        output_index = self._web_search_indices.pop(item.id, self._item_count)
+
+        yield WebSearchCallCompleted(
+            item_id=item.id,
+            output_index=output_index,
+            sequence_number=self._next_seq(),
+        )
+
+        self._items.append(item)
+
+        yield OutputItemDone(
+            item=item,
+            output_index=output_index,
+            sequence_number=self._next_seq(),
+        )

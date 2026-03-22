@@ -12,12 +12,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from grasp_agents.llm_providers.litellm.llm_event_converters import (
-    LiteLLMStreamConverter,
-)
-from grasp_agents.llm_providers.openai_completions.llm_event_converters import (
-    CompletionsStreamConverter,
-)
 from openai.types import CompletionUsage
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
@@ -32,13 +26,19 @@ from openai.types.chat.chat_completion_token_logprob import (
     TopLogprob,
 )
 
+from grasp_agents.llm_providers.litellm.llm_event_converters import (
+    LiteLLMStreamConverter,
+)
+from grasp_agents.llm_providers.openai_completions.llm_event_converters import (
+    CompletionsStreamConverter,
+)
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs as convert_completion_logprobs,
 )
 from grasp_agents.types.content import (
-    OutputRefusal,
-    OutputTextContentPart,
-    ReasoningSummaryPart,
+    OutputMessageRefusal,
+    OutputMessageText,
+    ReasoningSummary,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -46,24 +46,24 @@ from grasp_agents.types.items import (
     ReasoningItem,
 )
 from grasp_agents.types.llm_events import (
-    ContentPartAdded,
-    ContentPartDone,
+    OutputContentPartAdded,
+    OutputContentPartDone,
     FunctionCallArgumentsDelta,
     FunctionCallArgumentsDone,
     LlmEvent,
     OutputItemAdded,
     OutputItemDone,
-    ReasoningSummaryDelta,
-    ReasoningSummaryTextDone,
     ReasoningSummaryPartAdded,
     ReasoningSummaryPartDone,
-    RefusalDelta,
-    RefusalDone,
+    ReasoningSummaryDelta,
+    ReasoningSummaryDone,
+    OutputMessageRefusalDelta,
+    OutputMessageRefusalDone,
     ResponseCompleted,
     ResponseCreated,
     ResponseInProgress,
-    TextDelta,
-    TextDone,
+    OutputMessageTextDelta,
+    OutputMessageTextDone,
 )
 
 # ------------------------------------------------------------------ #
@@ -166,6 +166,8 @@ def _litellm_chunk(
     """Build a LiteLLM-style chunk using real LiteLLM types."""
     from litellm.types.utils import (
         Delta as LiteLLMDelta,
+    )
+    from litellm.types.utils import (
         ModelResponseStream,
         StreamingChoices,
     )
@@ -234,11 +236,11 @@ class TestTextStream:
                 ],
             )
         )
-        deltas = _events_of_type(events, TextDelta)
+        deltas = _events_of_type(events, OutputMessageTextDelta)
         assert len(deltas) == 1
         assert deltas[0].delta == "Hello"
 
-        dones = _events_of_type(events, TextDone)
+        dones = _events_of_type(events, OutputMessageTextDone)
         assert len(dones) == 1
         assert dones[0].text == "Hello"
 
@@ -254,11 +256,11 @@ class TestTextStream:
                 ],
             )
         )
-        deltas = _events_of_type(events, TextDelta)
+        deltas = _events_of_type(events, OutputMessageTextDelta)
         assert len(deltas) == 3
         assert "".join(d.delta for d in deltas) == "Hello world"
 
-        done = _events_of_type(events, TextDone)[0]
+        done = _events_of_type(events, OutputMessageTextDone)[0]
         assert done.text == "Hello world"
 
     def test_final_response_output(self):
@@ -288,13 +290,13 @@ class TestTextStream:
                 ],
             )
         )
-        added = _events_of_type(events, ContentPartAdded)
+        added = _events_of_type(events, OutputContentPartAdded)
         assert len(added) == 1
-        assert isinstance(added[0].part, OutputTextContentPart)
+        assert isinstance(added[0].part, OutputMessageText)
 
-        done = _events_of_type(events, ContentPartDone)
+        done = _events_of_type(events, OutputContentPartDone)
         assert len(done) == 1
-        assert isinstance(done[0].part, OutputTextContentPart)
+        assert isinstance(done[0].part, OutputMessageText)
         assert done[0].part.text == "x"
 
 
@@ -396,11 +398,11 @@ class TestRefusalStream:
                 ],
             )
         )
-        deltas = _events_of_type(events, RefusalDelta)
+        deltas = _events_of_type(events, OutputMessageRefusalDelta)
         assert len(deltas) == 2
         assert "".join(d.delta for d in deltas) == "I can't do that"
 
-        dones = _events_of_type(events, RefusalDone)
+        dones = _events_of_type(events, OutputMessageRefusalDone)
         assert len(dones) == 1
         assert dones[0].refusal == "I can't do that"
 
@@ -424,7 +426,7 @@ class TestReasoningContentStream:
         assert len(r_deltas) == 2
         assert "".join(d.delta for d in r_deltas) == "Thinking..."
 
-        r_dones = _events_of_type(events, ReasoningSummaryTextDone)
+        r_dones = _events_of_type(events, ReasoningSummaryDone)
         assert len(r_dones) == 1
         assert r_dones[0].text == "Thinking..."
 
@@ -597,7 +599,7 @@ class TestReasoningDetailsStream:
         assert reasoning[0].redacted is True
 
     def test_interleaved_text_and_encrypted(self):
-        """text → encrypted → text across chunks → 3 separate ReasoningItems."""
+        """Text → encrypted → text across chunks → 3 separate ReasoningItems."""
         events = asyncio.get_event_loop().run_until_complete(
             _collect(
                 CompletionsStreamConverter(),
@@ -661,7 +663,7 @@ class TestReasoningDetailsStream:
         assert msgs[0].text == "answer"
 
     def test_interleaved_summary_and_encrypted(self):
-        """summary → encrypted → summary produces 3 items (summary variant)."""
+        """Summary → encrypted → summary produces 3 items (summary variant)."""
         events = asyncio.get_event_loop().run_until_complete(
             _collect(
                 CompletionsStreamConverter(),
@@ -779,7 +781,7 @@ class TestLogprobs:
                 ],
             )
         )
-        deltas = _events_of_type(events, TextDelta)
+        deltas = _events_of_type(events, OutputMessageTextDelta)
         assert len(deltas) == 1
         assert len(deltas[0].logprobs) == 1
 
@@ -796,7 +798,7 @@ class TestLogprobs:
                 ],
             )
         )
-        dones = _events_of_type(events, TextDone)
+        dones = _events_of_type(events, OutputMessageTextDone)
         assert len(dones) == 1
         assert len(dones[0].logprobs) == 2
 
@@ -815,7 +817,7 @@ class TestLogprobs:
         msg = resp.output_items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is not None
         assert len(text_part.logprobs) == 1
 
@@ -829,14 +831,14 @@ class TestLogprobs:
                 ],
             )
         )
-        deltas = _events_of_type(events, TextDelta)
+        deltas = _events_of_type(events, OutputMessageTextDelta)
         assert deltas[0].logprobs == []
 
         resp = _final_response(events).response
         msg = resp.output_items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is None
 
 
@@ -919,7 +921,6 @@ class TestFinishReasons:
         assert resp.status == "incomplete"
         assert resp.incomplete_details is not None
         assert resp.incomplete_details.reason == "max_output_tokens"
-
 
 
 # ================================================================== #
@@ -1369,7 +1370,7 @@ class TestLiteLLMAnnotations:
         msg = resp.output_items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 1
 
 
@@ -1478,7 +1479,7 @@ class TestLiteLLMLogprobs:
                 ],
             )
         )
-        deltas = _events_of_type(events, TextDelta)
+        deltas = _events_of_type(events, OutputMessageTextDelta)
         assert len(deltas) == 1
         assert len(deltas[0].logprobs) == 1
 
@@ -1486,5 +1487,5 @@ class TestLiteLLMLogprobs:
         msg = resp.output_items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is not None

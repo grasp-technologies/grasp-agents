@@ -15,6 +15,7 @@ from .llm_policy_executor import (
     FinalAnswerChecker,
     LLMPolicyExecutor,
     ResponseCapture,
+    ToolInputConverter,
     ToolOutputConverter,
 )
 from .processors.processor import Processor
@@ -24,7 +25,7 @@ from .prompt_builder import (
     SystemPromptBuilder,
 )
 from .run_context import CtxT, RunContext
-from .types.content import Content, ImageData
+from .types.content import Content, InputImage
 from .types.events import (
     Event,
     ProcPayloadOutEvent,
@@ -215,7 +216,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def _memorize_inputs(
         self,
         *,
-        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
         call_id: str,
@@ -290,7 +291,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     async def _process_stream(
         self,
-        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         *,
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
@@ -326,7 +327,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     async def _process(
         self,
-        chat_inputs: LLMPrompt | Sequence[str | ImageData] | None = None,
+        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         *,
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
@@ -482,6 +483,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> AfterGenerateHook[CtxT]:
         self._policy_executor.on_after_generate_impl = func
         return func
+
+    def add_tool_input_converter(self, tool_name: str) -> Any:
+        def decorator(
+            func: ToolInputConverter[CtxT],
+        ) -> ToolInputConverter[CtxT]:
+            self._policy_executor.tool_input_converters[tool_name] = func
+            return func
+
+        return decorator
 
     def add_tool_output_converter(
         self, func: ToolOutputConverter[CtxT]

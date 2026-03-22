@@ -20,10 +20,10 @@ from openai.types.responses.response_usage import (
     OutputTokensDetails,
 )
 from openai.types.responses.response_usage import ResponseUsage as _SDKResponseUsage
-from openai.types.shared import Metadata, Reasoning, ResponsesModel
+from openai.types.shared import Metadata, Reasoning
 from pydantic import BaseModel, Field, model_validator
 
-from .content import OutputTextContentPart
+from .content import OutputMessageText
 from .items import (
     FunctionToolCallItem,
     OutputItem,
@@ -46,7 +46,9 @@ class WebSearchInfo(BaseModel):
 
     queries: list[str] = Field(default_factory=list[str])
     sources: list[WebSearchSource] = Field(default_factory=list[WebSearchSource])
-    search_entry_point_html: str | None = None  # Gemini compliance
+
+    provider_specific_fields: dict[str, Any] | None = None
+    # search_entry_point_html: str | None = None  # Gemini compliance
 
 
 class ResponseUsage(_SDKResponseUsage):
@@ -97,7 +99,9 @@ class Response(_SDKResponse):
     output: list[ResponseOutputItem] = Field(default_factory=list[ResponseOutputItem])
     usage: _SDKResponseUsage | None = None
 
-    model: ResponsesModel
+    # --- Request params ---
+
+    model: str
     temperature: float | None = None
     top_p: float | None = None
     max_output_tokens: int | None = None
@@ -129,10 +133,14 @@ class Response(_SDKResponse):
 
     previous_response_id: str | None = None
 
+    # ----
+
     # grasp-agents fields:
 
     response_ms: float | None = None
+
     web_search: WebSearchInfo | None = None
+
     provider_specific_fields: dict[str, Any] | None = None
     hidden_params: dict[str, Any] | None = None
     response_headers: dict[str, Any] | None = None
@@ -140,6 +148,7 @@ class Response(_SDKResponse):
     output_items: list[OutputItem] = Field(
         default_factory=list[OutputItem], frozen=True
     )
+
     usage_with_cost: ResponseUsage | None = Field(default=None, frozen=True)
 
     # OpenAI-specific fields:
@@ -156,6 +165,7 @@ class Response(_SDKResponse):
             data["output"] = data["output_items"]
         elif "output" in data and "output_items" not in data:
             data["output_items"] = data["output"]
+
         if "usage_with_cost" in data and "usage" not in data:
             data["usage"] = data["usage_with_cost"]
         elif "usage" in data and "usage_with_cost" not in data:
@@ -169,7 +179,7 @@ class Response(_SDKResponse):
             for item in self.output_items
             if isinstance(item, OutputMessageItem)
             for part in item.content_parts
-            if isinstance(part, OutputTextContentPart)
+            if isinstance(part, OutputMessageText)
         )
 
     @property

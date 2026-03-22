@@ -163,15 +163,16 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
             )
 
         class ProcessorTool(BaseTool[in_type, out_type, Any]):
-            name: str = tool_name
-            description: str = tool_description
+            def __init__(self) -> None:
+                super().__init__(name=tool_name, description=tool_description)
 
-            async def run(
+            async def _run(
                 self,
                 inp: InT,
                 *,
                 call_id: str | None = None,
                 ctx: RunContext[CtxT] | None = None,
+                progress_callback: Any = None,
             ) -> OutT:
                 if reset_memory_on_run:
                     processor_instance.memory.reset()
@@ -188,6 +189,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
                 *,
                 call_id: str | None = None,
                 ctx: RunContext[CtxT] | None = None,
+                progress: Any = None,
             ) -> AsyncIterator[Event[Any]]:
                 if reset_memory_on_run:
                     processor_instance.memory.reset()

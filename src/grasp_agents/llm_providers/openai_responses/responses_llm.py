@@ -34,7 +34,7 @@ from grasp_agents.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
-from grasp_agents.errors import LLMError
+from grasp_agents.types.llm_errors import LlmError
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_events import LlmEvent
 from grasp_agents.types.response import Response as InternalResponse
@@ -148,7 +148,7 @@ class OpenAIResponsesLLM(CloudLLM):
 
     # --- Error mapping ---
 
-    def _map_api_error(self, err: Exception) -> LLMError | None:
+    def _map_api_error(self, err: Exception) -> LlmError | None:
         return map_api_error(err)
 
     # --- Provider API layer ---

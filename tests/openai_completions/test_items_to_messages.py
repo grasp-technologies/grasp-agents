@@ -8,16 +8,18 @@ to Chat Completions message format for the Completions API providers.
 import json
 
 import pytest
+
 from grasp_agents.llm_providers.openai_completions.response_to_provider_inputs import (
     items_to_provider_inputs as items_to_completions_messages,
+)
+from grasp_agents.llm_providers.openai_completions.response_to_provider_inputs import (
     response_to_provider_input as response_to_completions_message,
 )
-
 from grasp_agents.types.content import (
     InputImage,
-    InputTextContentPart,
-    OutputTextContentPart,
-    ReasoningContentPart,
+    InputText,
+    OutputMessageText,
+    ReasoningText,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -54,7 +56,7 @@ class TestInputMessageConversion:
         """User message with text + image → list of content parts."""
         img = InputImage.from_url("https://example.com/img.png", detail="high")
         item = InputMessageItem(
-            content_parts=[InputTextContentPart(text="Describe this"), img],
+            content_parts=[InputText(text="Describe this"), img],
             role="user",
         )
         msgs = items_to_completions_messages([item])
@@ -87,7 +89,7 @@ class TestOutputMessageConversion:
     def test_output_message_text_only(self):
         """OutputMessageItem without tool calls → assistant with content."""
         item = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="The answer is 42.")],
+            content_parts=[OutputMessageText(text="The answer is 42.")],
             status="completed",
         )
         msgs = items_to_completions_messages([item])
@@ -100,7 +102,7 @@ class TestOutputMessageConversion:
     def test_output_message_with_tool_calls(self):
         """OutputMessageItem + FunctionToolCallItems → grouped assistant msg."""
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Let me search.")],
+            content_parts=[OutputMessageText(text="Let me search.")],
             status="completed",
         )
         tc1 = FunctionToolCallItem(
@@ -200,12 +202,10 @@ class TestToolOutputConversion:
 class TestReasoningConversion:
     def test_reasoning_grouped_with_output(self):
         """ReasoningItem + OutputMessageItem → single assistant message with thinking_blocks."""
-        reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Let me think...")]
-        )
+        reasoning = ReasoningItem(content_parts=[ReasoningText(text="Let me think...")])
         user = InputMessageItem.from_text("What is 2+2?", role="user")
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="4")],
+            content_parts=[OutputMessageText(text="4")],
             status="completed",
         )
 
@@ -224,11 +224,11 @@ class TestReasoningConversion:
     def test_reasoning_with_signature(self):
         """ReasoningItem with encrypted_content → thinking block has signature."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Deep thought")],
+            content_parts=[ReasoningText(text="Deep thought")],
             encrypted_content="sig_abc123",
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Result")],
+            content_parts=[OutputMessageText(text="Result")],
             status="completed",
         )
 
@@ -247,7 +247,7 @@ class TestReasoningConversion:
             redacted=True,
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Answer")],
+            content_parts=[OutputMessageText(text="Answer")],
             status="completed",
         )
 
@@ -261,7 +261,7 @@ class TestReasoningConversion:
     def test_multiple_reasoning_items_grouped(self):
         """Multiple consecutive ReasoningItems are all included in thinking_blocks."""
         r1 = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Step 1")],
+            content_parts=[ReasoningText(text="Step 1")],
             encrypted_content="sig_1",
         )
         r2 = ReasoningItem(
@@ -269,10 +269,10 @@ class TestReasoningConversion:
             redacted=True,
         )
         r3 = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Step 3")],
+            content_parts=[ReasoningText(text="Step 3")],
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Final answer")],
+            content_parts=[OutputMessageText(text="Final answer")],
             status="completed",
         )
 
@@ -293,7 +293,7 @@ class TestReasoningConversion:
     def test_reasoning_with_tool_calls_no_output(self):
         """ReasoningItem followed by tool calls (no OutputMessageItem) → assistant msg."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="I need to search")],
+            content_parts=[ReasoningText(text="I need to search")],
         )
         tc = FunctionToolCallItem(
             call_id="call_1", name="search", arguments='{"q": "test"}'
@@ -303,33 +303,31 @@ class TestReasoningConversion:
 
         assert len(msgs) == 1
         assert msgs[0]["role"] == "assistant"
-        assert msgs[0]["content"] == ""  # No output message
+        assert "content" not in msgs[0]
         assert len(msgs[0]["tool_calls"]) == 1
         assert msgs[0]["thinking_blocks"][0]["thinking"] == "I need to search"
 
     def test_reasoning_standalone(self):
         """ReasoningItem not followed by output or tool calls → standalone assistant msg."""
-        reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Just thinking")]
-        )
+        reasoning = ReasoningItem(content_parts=[ReasoningText(text="Just thinking")])
         user = InputMessageItem.from_text("Next question", role="user")
 
         msgs = items_to_completions_messages([reasoning, user])
 
         assert len(msgs) == 2
         assert msgs[0]["role"] == "assistant"
-        assert msgs[0]["content"] == ""
+        assert "content" not in msgs[0]
         assert "thinking_blocks" in msgs[0]
         assert msgs[1]["role"] == "user"
 
     def test_reasoning_output_tool_calls_all_grouped(self):
         """ReasoningItem + OutputMessageItem + FunctionToolCallItems → single message."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Let me check two things")],
+            content_parts=[ReasoningText(text="Let me check two things")],
             encrypted_content="sig_xyz",
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Checking...")],
+            content_parts=[OutputMessageText(text="Checking...")],
             status="completed",
         )
         tc1 = FunctionToolCallItem(call_id="c1", name="tool_a", arguments="{}")
@@ -356,7 +354,7 @@ class TestFullConversation:
             InputMessageItem.from_text("You are a calculator.", role="system"),
             InputMessageItem.from_text("What is 15 * 7?", role="user"),
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="I'll calculate that.")],
+                content_parts=[OutputMessageText(text="I'll calculate that.")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -368,7 +366,7 @@ class TestFullConversation:
                 call_id="calc_1", output={"result": 105}
             ),
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="15 * 7 = 105")],
+                content_parts=[OutputMessageText(text="15 * 7 = 105")],
                 status="completed",
             ),
         ]
@@ -408,7 +406,7 @@ class TestFullConversation:
             FunctionToolOutputItem.from_tool_result(call_id="w1", output="Sunny, 72F"),
             FunctionToolOutputItem.from_tool_result(call_id="w2", output="Cloudy, 65F"),
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="NYC is warmer.")],
+                content_parts=[OutputMessageText(text="NYC is warmer.")],
                 status="completed",
             ),
         ]
@@ -441,7 +439,7 @@ class TestFullConversation:
             InputMessageItem.from_text("Hello", role="user"),
             {"type": "unknown", "data": "something"},  # not a recognized item
             OutputMessageItem(
-                content_parts=[OutputTextContentPart(text="Hi!")],
+                content_parts=[OutputMessageText(text="Hi!")],
                 status="completed",
             ),
         ]
@@ -458,16 +456,14 @@ class TestFullConversation:
 class TestReasoningDetailsFormat:
     def test_reasoning_summary_format(self):
         """Normal reasoning → reasoning.summary entry."""
-        reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Let me think...")]
-        )
+        reasoning = ReasoningItem(content_parts=[ReasoningText(text="Let me think...")])
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="4")],
+            content_parts=[OutputMessageText(text="4")],
             status="completed",
         )
 
         msgs = items_to_completions_messages(
-            [reasoning, output], reasoning_format="reasoning_details"
+            [reasoning, output], reasoning_block_format="openrouter"
         )
 
         assert len(msgs) == 1
@@ -481,16 +477,16 @@ class TestReasoningDetailsFormat:
     def test_reasoning_with_signature_format(self):
         """Reasoning with signature → reasoning.text entry."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Deep thought")],
+            content_parts=[ReasoningText(text="Deep thought")],
             encrypted_content="sig_abc123",
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Result")],
+            content_parts=[OutputMessageText(text="Result")],
             status="completed",
         )
 
         msgs = items_to_completions_messages(
-            [reasoning, output], reasoning_format="reasoning_details"
+            [reasoning, output], reasoning_block_format="openrouter"
         )
 
         detail = msgs[0]["reasoning_details"][0]
@@ -505,12 +501,12 @@ class TestReasoningDetailsFormat:
             redacted=True,
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Answer")],
+            content_parts=[OutputMessageText(text="Answer")],
             status="completed",
         )
 
         msgs = items_to_completions_messages(
-            [reasoning, output], reasoning_format="reasoning_details"
+            [reasoning, output], reasoning_block_format="openrouter"
         )
 
         detail = msgs[0]["reasoning_details"][0]
@@ -520,7 +516,7 @@ class TestReasoningDetailsFormat:
     def test_multiple_reasoning_items(self):
         """Multiple reasoning items → multiple reasoning_details entries."""
         r1 = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Step 1")],
+            content_parts=[ReasoningText(text="Step 1")],
             encrypted_content="sig_1",
         )
         r2 = ReasoningItem(
@@ -528,15 +524,15 @@ class TestReasoningDetailsFormat:
             redacted=True,
         )
         r3 = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Step 3")],
+            content_parts=[ReasoningText(text="Step 3")],
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Done")],
+            content_parts=[OutputMessageText(text="Done")],
             status="completed",
         )
 
         msgs = items_to_completions_messages(
-            [r1, r2, r3, output], reasoning_format="reasoning_details"
+            [r1, r2, r3, output], reasoning_block_format="openrouter"
         )
 
         details = msgs[0]["reasoning_details"]
@@ -550,16 +546,16 @@ class TestReasoningDetailsFormat:
         assert details[2]["summary"] == "Step 3"
 
     def test_reasoning_format_none_omits_reasoning(self):
-        """reasoning_format=None omits reasoning entirely."""
+        """reasoning_block_format=None omits reasoning entirely."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningContentPart(text="Thinking...")],
+            content_parts=[ReasoningText(text="Thinking...")],
         )
         output = OutputMessageItem(
-            content_parts=[OutputTextContentPart(text="Answer")],
+            content_parts=[OutputMessageText(text="Answer")],
             status="completed",
         )
 
-        msgs = items_to_completions_messages([reasoning, output], reasoning_format=None)
+        msgs = items_to_completions_messages([reasoning, output], reasoning_block_format=None)
 
         assert len(msgs) == 1
         assert msgs[0]["content"] == "Answer"
@@ -577,7 +573,7 @@ class TestResponseToCompletionsMessage:
             model="test-model",
             output_items=[
                 OutputMessageItem(
-                    content_parts=[OutputTextContentPart(text="Hello!")],
+                    content_parts=[OutputMessageText(text="Hello!")],
                     status="completed",
                 )
             ],
@@ -618,11 +614,11 @@ class TestResponseToCompletionsMessage:
             model="test-model",
             output_items=[
                 ReasoningItem(
-                    content_parts=[ReasoningContentPart(text="Let me think")],
+                    content_parts=[ReasoningText(text="Let me think")],
                     encrypted_content="sig_123",
                 ),
                 OutputMessageItem(
-                    content_parts=[OutputTextContentPart(text="Answer")],
+                    content_parts=[OutputMessageText(text="Answer")],
                     status="completed",
                 ),
             ],
@@ -636,22 +632,22 @@ class TestResponseToCompletionsMessage:
         assert msg["thinking_blocks"][0]["signature"] == "sig_123"
 
     def test_response_with_reasoning_openrouter_format(self):
-        """Response with reasoning + reasoning_format="reasoning_details"."""
+        """Response with reasoning + reasoning_block_format="openrouter"."""
         response = Response(
             model="test-model",
             output_items=[
                 ReasoningItem(
-                    content_parts=[ReasoningContentPart(text="Thinking")],
+                    content_parts=[ReasoningText(text="Thinking")],
                 ),
                 OutputMessageItem(
-                    content_parts=[OutputTextContentPart(text="Result")],
+                    content_parts=[OutputMessageText(text="Result")],
                     status="completed",
                 ),
             ],
         )
 
         msg = response_to_completions_message(
-            response, reasoning_format="reasoning_details"
+            response, reasoning_block_format="openrouter"
         )
 
         assert "thinking_blocks" not in msg

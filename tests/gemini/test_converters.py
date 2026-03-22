@@ -30,16 +30,18 @@ from google.genai.types import (
     LogprobsResultTopCandidates,
     Part,
     Segment,
+    UrlContextMetadata,
+    UrlMetadata,
+    UrlRetrievalStatus,
 )
+from openai.types.responses.response_function_web_search import ActionOpenPage
 from pydantic import BaseModel
 
-from grasp_agents.llm_providers.gemini.items_extraction import (
-    generated_message_to_items,
-)
 from grasp_agents.llm_providers.gemini.llm_event_converters import (
     GeminiStreamConverter,
 )
 from grasp_agents.llm_providers.gemini.provider_output_to_response import (
+    _gemini_response_to_items_and_web_search_info,
     provider_output_to_response,
 )
 from grasp_agents.llm_providers.gemini.response_to_provider_inputs import (
@@ -49,13 +51,14 @@ from grasp_agents.llm_providers.gemini.tool_converters import (
     to_api_tool_config,
     to_api_tools,
 )
-from grasp_agents.types.content import OutputTextContentPart
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
@@ -64,10 +67,10 @@ from grasp_agents.types.llm_events import (
     OutputItemDone,
     ReasoningSummaryDelta,
     ResponseCompleted,
-    TextDone,
+    OutputMessageTextDone,
 )
 from grasp_agents.types.llm_events import (
-    TextDelta as LlmTextDelta,
+    OutputMessageTextDelta as LlmTextDelta,
 )
 from grasp_agents.types.tool import BaseTool, NamedToolChoice
 
@@ -84,6 +87,7 @@ def _make_response(
     grounding_metadata: GroundingMetadata | None = None,
     citation_metadata: CitationMetadata | None = None,
     logprobs_result: LogprobsResult | None = None,
+    url_context_metadata: UrlContextMetadata | None = None,
 ) -> GenerateContentResponse:
     return GenerateContentResponse(
         response_id=response_id,
@@ -94,6 +98,7 @@ def _make_response(
                 grounding_metadata=grounding_metadata,
                 citation_metadata=citation_metadata,
                 logprobs_result=logprobs_result,
+                url_context_metadata=url_context_metadata,
             )
         ],
         usage_metadata=GenerateContentResponseUsageMetadata(
@@ -124,7 +129,7 @@ class TestItemsExtraction:
     def test_simple_text(self):
         """Single text part → OutputMessageItem."""
         resp = _make_response([Part(text="Hello world")])
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -138,7 +143,7 @@ class TestItemsExtraction:
                 Part(text="Second"),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -153,7 +158,7 @@ class TestItemsExtraction:
                 Part(text="The answer is 42"),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
@@ -170,7 +175,7 @@ class TestItemsExtraction:
                 Part(text="The answer"),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
@@ -188,7 +193,7 @@ class TestItemsExtraction:
                 Part(text="Answer"),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert isinstance(items[0], ReasoningItem)
         assert items[0].encrypted_content is not None
@@ -203,7 +208,7 @@ class TestItemsExtraction:
                 Part(text="Answer"),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert isinstance(items[0], ReasoningItem)
         assert items[0].encrypted_content == base64.b64encode(b"sig_2").decode("ascii")
@@ -221,7 +226,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -241,7 +246,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -261,7 +266,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], OutputMessageItem)
@@ -284,7 +289,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 3
         assert isinstance(items[0], ReasoningItem)
@@ -294,7 +299,7 @@ class TestItemsExtraction:
     def test_empty_response(self):
         """Response with no candidates returns empty list."""
         resp = GenerateContentResponse(response_id="empty")
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
         assert items == []
 
     def test_grounding_annotations(self):
@@ -322,18 +327,22 @@ class TestItemsExtraction:
             [Part(text="Hello world")],
             grounding_metadata=grounding,
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
-        assert len(items) == 1
+        assert len(items) == 2
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 1
         ann = text_part.annotations[0]
         assert ann.type == "url_citation"
         assert ann.url == "https://example.com/article"
         assert ann.title == "Example Article"
+
+        # Grounding also produces a WebSearchCallItem
+        ws = items[1]
+        assert isinstance(ws, WebSearchCallItem)
 
     def test_citation_annotations(self):
         """Citation metadata → URL citation annotations on text parts."""
@@ -351,13 +360,13 @@ class TestItemsExtraction:
             [Part(text="Check the docs for details")],
             citation_metadata=citation_meta,
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 1
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 1
         ann = text_part.annotations[0]
         assert ann.url == "https://docs.example.com"
@@ -373,19 +382,13 @@ class TestItemsExtraction:
             top_candidates=[
                 LogprobsResultTopCandidates(
                     candidates=[
-                        LogprobsResultCandidate(
-                            token="Hello", log_probability=-0.1
-                        ),
-                        LogprobsResultCandidate(
-                            token="Hi", log_probability=-0.5
-                        ),
+                        LogprobsResultCandidate(token="Hello", log_probability=-0.1),
+                        LogprobsResultCandidate(token="Hi", log_probability=-0.5),
                     ]
                 ),
                 LogprobsResultTopCandidates(
                     candidates=[
-                        LogprobsResultCandidate(
-                            token=" world", log_probability=-0.2
-                        ),
+                        LogprobsResultCandidate(token=" world", log_probability=-0.2),
                     ]
                 ),
             ],
@@ -394,13 +397,13 @@ class TestItemsExtraction:
             [Part(text="Hello world")],
             logprobs_result=logprobs_result,
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         assert len(items) == 1
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is not None
         assert len(text_part.logprobs) == 2
         assert text_part.logprobs[0].token == "Hello"
@@ -440,12 +443,12 @@ class TestItemsExtraction:
             [Part(text="Hello world")],
             grounding_metadata=grounding,
         )
-        items = generated_message_to_items(resp)
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
 
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
         text_part = msg.content_parts[0]
-        assert isinstance(text_part, OutputTextContentPart)
+        assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 2
         assert text_part.annotations[0].url == "https://a.com"
         assert text_part.annotations[1].url == "https://b.com"
@@ -567,7 +570,7 @@ class TestResponseToProviderInputs:
             InputMessageItem.from_text("Hi"),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputTextContentPart(text="Hello!")],
+                content_parts=[OutputMessageText(text="Hello!")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -594,7 +597,7 @@ class TestResponseToProviderInputs:
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputTextContentPart(text="It's sunny in Paris!")],
+                content_parts=[OutputMessageText(text="It's sunny in Paris!")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -630,7 +633,7 @@ class TestResponseToProviderInputs:
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputTextContentPart(text="Done")],
+                content_parts=[OutputMessageText(text="Done")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -654,7 +657,7 @@ class TestResponseToProviderInputs:
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputTextContentPart(text="Result")],
+                content_parts=[OutputMessageText(text="Result")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -673,15 +676,19 @@ class _WeatherInput(BaseModel):
 
 
 class _WeatherTool(BaseTool[_WeatherInput, str, None]):
-    name: str = "get_weather"
-    description: str = "Get current weather for a city"
+    def __init__(self) -> None:
+        super().__init__(
+            name="get_weather",
+            description="Get current weather for a city",
+        )
 
-    async def run(
+    async def _run(
         self,
         inp: _WeatherInput,
         *,
         ctx: Any = None,  # noqa: ARG002
         call_id: str | None = None,  # noqa: ARG002
+        progress_callback: Any = None,  # noqa: ARG002
     ) -> str:
         return f"Weather in {inp.city}"
 
@@ -802,10 +809,16 @@ def _final_chunk(
     finish_reason: FinishReason = FinishReason.STOP,
     prompt_tokens: int = 10,
     output_tokens: int = 20,
+    url_context_metadata: UrlContextMetadata | None = None,
 ) -> GenerateContentResponse:
     return GenerateContentResponse(
         response_id=response_id,
-        candidates=[Candidate(finish_reason=finish_reason)],
+        candidates=[
+            Candidate(
+                finish_reason=finish_reason,
+                url_context_metadata=url_context_metadata,
+            )
+        ],
         usage_metadata=GenerateContentResponseUsageMetadata(
             prompt_token_count=prompt_tokens,
             candidates_token_count=output_tokens,
@@ -837,7 +850,7 @@ class TestGeminiStreamConverter:
         assert text_deltas[1].delta == " world"
         assert text_deltas[2].delta == "!"
 
-        text_dones = [e for e in events if isinstance(e, TextDone)]
+        text_dones = [e for e in events if isinstance(e, OutputMessageTextDone)]
         assert len(text_dones) == 1
         assert text_dones[0].text == "Hello world!"
 
@@ -851,7 +864,9 @@ class TestGeminiStreamConverter:
         ]
         events = self._run(chunks)
 
-        reasoning_deltas = [e for e in events if isinstance(e, ReasoningSummaryDelta)]
+        reasoning_deltas = [
+            e for e in events if isinstance(e, ReasoningSummaryDelta)
+        ]
         assert len(reasoning_deltas) == 2
         assert reasoning_deltas[0].delta == "Let me "
         assert reasoning_deltas[1].delta == "think..."
@@ -984,3 +999,202 @@ class TestGeminiStreamConverter:
         assert len(arg_dones) == 2
         assert arg_dones[0].name == "search"
         assert arg_dones[1].name == "fetch"
+
+
+# ==== URL Context extraction ====
+
+
+class TestUrlContextExtraction:
+    """UrlContextMetadata on candidate → WebSearchCallItem(ActionOpenPage)."""
+
+    def test_success(self):
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://example.com/page",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS,
+                ),
+            ]
+        )
+        resp = _make_response(
+            [Part(text="Page content here")],
+            url_context_metadata=url_ctx,
+        )
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+
+        assert len(items) == 2
+        assert isinstance(items[0], OutputMessageItem)
+        wf = items[1]
+        assert isinstance(wf, WebSearchCallItem)
+        assert wf.status == "completed"
+        assert isinstance(wf.action, ActionOpenPage)
+        assert wf.action.url == "https://example.com/page"
+        assert wf.provider_specific_fields is None
+
+    def test_multiple_urls(self):
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://a.com",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS,
+                ),
+                UrlMetadata(
+                    retrieved_url="https://b.com",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS,
+                ),
+            ]
+        )
+        resp = _make_response(
+            [Part(text="Content")],
+            url_context_metadata=url_ctx,
+        )
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+
+        wf_items = [i for i in items if isinstance(i, WebSearchCallItem)]
+        assert len(wf_items) == 2
+        assert wf_items[0].action.url == "https://a.com"  # type: ignore[union-attr]
+        assert wf_items[1].action.url == "https://b.com"  # type: ignore[union-attr]
+
+    def test_error_status(self):
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://unreachable.invalid",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_ERROR,
+                ),
+            ]
+        )
+        resp = _make_response(
+            [Part(text="Could not fetch")],
+            url_context_metadata=url_ctx,
+        )
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+
+        wf = [i for i in items if isinstance(i, WebSearchCallItem)][0]
+        assert wf.status == "failed"
+        assert isinstance(wf.action, ActionOpenPage)
+        assert wf.provider_specific_fields is not None
+        assert "gemini:url_retrieval_status" in wf.provider_specific_fields
+
+    def test_paywall_status(self):
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://paywalled.com",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_PAYWALL,
+                ),
+            ]
+        )
+        resp = _make_response(
+            [Part(text="Paywalled")],
+            url_context_metadata=url_ctx,
+        )
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+
+        wf = [i for i in items if isinstance(i, WebSearchCallItem)][0]
+        assert wf.status == "failed"
+
+    def test_empty(self):
+        resp = _make_response([Part(text="No url context")])
+        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+
+        wf_items = [i for i in items if isinstance(i, WebSearchCallItem)]
+        assert len(wf_items) == 0
+
+    def test_with_grounding(self):
+        """url_context + grounding_metadata → both produce items."""
+        grounding = GroundingMetadata(
+            grounding_chunks=[
+                GroundingChunk(
+                    web=GroundingChunkWeb(
+                        uri="https://search-result.com",
+                        title="Search Result",
+                    )
+                ),
+            ],
+            web_search_queries=["test query"],
+        )
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://fetched.com",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS,
+                ),
+            ]
+        )
+        resp = _make_response(
+            [Part(text="Combined results")],
+            grounding_metadata=grounding,
+            url_context_metadata=url_ctx,
+        )
+        items, web_search_info = _gemini_response_to_items_and_web_search_info(resp)
+
+        ws_items = [i for i in items if isinstance(i, WebSearchCallItem)]
+        assert len(ws_items) == 2
+        assert web_search_info is not None
+
+
+# ==== URL Context streaming ====
+
+
+class TestUrlContextStream:
+    """Streaming url_context → WebSearchCallItem events."""
+
+    def _run(self, chunks: list[GenerateContentResponse]) -> list[Any]:
+        return asyncio.get_event_loop().run_until_complete(_collect_events(chunks))
+
+    def test_success(self):
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://example.com/streamed",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS,
+                ),
+            ]
+        )
+        chunks = [
+            _text_chunk("Hello"),
+            _final_chunk(url_context_metadata=url_ctx),
+        ]
+        events = self._run(chunks)
+
+        ws_done = [
+            e
+            for e in events
+            if isinstance(e, OutputItemDone)
+            and isinstance(e.item, WebSearchCallItem)
+        ]
+        assert len(ws_done) == 1
+        wf = ws_done[0].item
+        assert isinstance(wf, WebSearchCallItem)
+        assert isinstance(wf.action, ActionOpenPage)
+        assert wf.action.url == "https://example.com/streamed"
+        assert wf.status == "completed"
+
+    def test_error(self):
+        url_ctx = UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://bad.invalid",
+                    url_retrieval_status=UrlRetrievalStatus.URL_RETRIEVAL_STATUS_ERROR,
+                ),
+            ]
+        )
+        chunks = [
+            _text_chunk("Failed"),
+            _final_chunk(url_context_metadata=url_ctx),
+        ]
+        events = self._run(chunks)
+
+        ws_done = [
+            e
+            for e in events
+            if isinstance(e, OutputItemDone)
+            and isinstance(e.item, WebSearchCallItem)
+        ]
+        assert len(ws_done) == 1
+        wf = ws_done[0].item
+        assert isinstance(wf, WebSearchCallItem)
+        assert wf.status == "failed"
+        assert isinstance(wf.action, ActionOpenPage)
+        assert wf.provider_specific_fields is not None

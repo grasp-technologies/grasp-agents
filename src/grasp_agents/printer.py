@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from termcolor import colored
 from termcolor._types import Color
 
-from .types.content import InputImage, InputTextContentPart
+from .types.content import InputImage, InputText
 from .types.events import (
     Event,
     LLMStreamEvent,
@@ -30,10 +30,10 @@ from .types.llm_events import (
     FunctionCallArgumentsDelta,
     OutputItemAdded,
     OutputItemDone,
-    ReasoningDelta,
+    OutputMessageTextDelta,
     ReasoningSummaryDelta,
+    ReasoningTextDelta,
     ResponseCreated,
-    TextDelta,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def prettify_json_str(json_str: str) -> str:
 def _input_message_text(msg: InputMessageItem) -> str:
     parts: list[str] = []
     for part in msg.content_parts:
-        if isinstance(part, InputTextContentPart):
+        if isinstance(part, InputText):
             parts.append(part.text.strip(" \n"))
         elif isinstance(part, InputImage):
             if part.is_url:
@@ -210,9 +210,9 @@ async def print_event_stream(
 
         elif isinstance(
             se,
-            TextDelta
+            OutputMessageTextDelta
             | ReasoningSummaryDelta
-            | ReasoningDelta
+            | ReasoningTextDelta
             | FunctionCallArgumentsDelta,
         ):
             text += se.delta
