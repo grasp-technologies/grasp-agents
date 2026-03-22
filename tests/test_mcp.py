@@ -80,6 +80,351 @@ class TestJsonSchemaToPydantic:
         instance = model()
         assert instance.model_dump() == {}
 
+    def test_enum_field(self) -> None:
+        from enum import StrEnum
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "inactive", "pending"],
+                },
+                "name": {"type": "string"},
+            },
+            "required": ["status", "name"],
+        }
+        model = json_schema_to_pydantic(schema, "WithEnum")
+        instance = model(status="active", name="test")
+        assert isinstance(instance.status, StrEnum)
+        assert instance.status == "active"
+        assert instance.model_dump(mode="json") == {
+            "status": "active",
+            "name": "test",
+        }
+
+    def test_union_field(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "integer"},
+                    ],
+                },
+            },
+            "required": ["value"],
+        }
+        model = json_schema_to_pydantic(schema, "WithUnion")
+        assert model(value="hello").value == "hello"
+        assert model(value=42).value == 42
+
+    def test_nested_object(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "point": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                    },
+                    "required": ["x", "y"],
+                },
+            },
+            "required": ["point"],
+        }
+        model = json_schema_to_pydantic(schema, "WithNested")
+        instance = model(point={"x": 1.0, "y": 2.0})
+        assert isinstance(instance.point, BaseModel)
+        assert instance.model_dump() == {"point": {"x": 1.0, "y": 2.0}}
+
+    def test_ref_and_defs(self) -> None:
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Filter": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string"},
+                        "op": {
+                            "type": "string",
+                            "enum": ["eq", "gt", "lt"],
+                        },
+                    },
+                    "required": ["field", "op"],
+                },
+            },
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/Filter"},
+                },
+            },
+            "required": ["filters"],
+        }
+        model = json_schema_to_pydantic(schema, "WithRefs")
+        instance = model(filters=[{"field": "age", "op": "gt"}])
+        assert len(instance.filters) == 1
+        assert instance.filters[0].field == "age"
+        assert instance.filters[0].op == "gt"
+
+    def test_default_value(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10},
+                "query": {"type": "string"},
+            },
+            "required": ["query"],
+        }
+        model = json_schema_to_pydantic(schema, "WithDefault")
+        instance = model(query="test")
+        assert instance.limit == 10
+        assert instance.query == "test"
+
+    def test_field_descriptions_preserved(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query string",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return",
+                },
+            },
+            "required": ["query"],
+        }
+        model = json_schema_to_pydantic(schema, "WithDesc")
+        fields = model.model_fields
+        assert fields["query"].description == "The search query string"
+        assert fields["limit"].description == "Max results to return"
+
+    def test_const_field(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "type": {"const": "point"},
+                "x": {"type": "number"},
+            },
+            "required": ["type", "x"],
+        }
+        model = json_schema_to_pydantic(schema, "WithConst")
+        instance = model(type="point", x=1.0)
+        assert instance.type == "point"
+        assert instance.model_dump() == {"type": "point", "x": 1.0}
+
+    def test_allof_merge(self) -> None:
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Base": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+                "Extra": {
+                    "type": "object",
+                    "properties": {"age": {"type": "integer"}},
+                    "required": ["age"],
+                },
+            },
+            "properties": {
+                "person": {
+                    "allOf": [
+                        {"$ref": "#/$defs/Base"},
+                        {"$ref": "#/$defs/Extra"},
+                    ],
+                },
+            },
+            "required": ["person"],
+        }
+        model = json_schema_to_pydantic(schema, "WithAllOf")
+        instance = model(person={"name": "Alice", "age": 30})
+        assert instance.person.name == "Alice"
+        assert instance.person.age == 30
+
+    def test_allof_inline(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {"id": {"type": "integer"}},
+                            "required": ["id"],
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                            },
+                        },
+                    ],
+                },
+            },
+            "required": ["item"],
+        }
+        model = json_schema_to_pydantic(schema, "InlineAllOf")
+        instance = model(item={"id": 1, "label": "test"})
+        assert instance.item.id == 1
+        assert instance.item.label == "test"
+
+    def test_recursive_ref_does_not_crash(self) -> None:
+        schema = {
+            "type": "object",
+            "$defs": {
+                "TreeNode": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                        "children": {
+                            "type": "array",
+                            "items": {"$ref": "#/$defs/TreeNode"},
+                        },
+                    },
+                    "required": ["value"],
+                },
+            },
+            "properties": {
+                "root": {"$ref": "#/$defs/TreeNode"},
+            },
+            "required": ["root"],
+        }
+        model = json_schema_to_pydantic(schema, "WithRecursion")
+        # Should not crash — recursive ref degrades to dict[str, Any]
+        instance = model(root={"value": "top"})
+        assert instance.root.value == "top"
+
+    def test_enum_unsafe_member_names(self) -> None:
+        """Enum values like 'in-progress' or '123' become valid identifiers."""
+        from enum import StrEnum
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["in-progress", "done", "123"],
+                },
+            },
+            "required": ["status"],
+        }
+        model = json_schema_to_pydantic(schema, "UnsafeEnum")
+        instance = model(status="in-progress")
+        assert isinstance(instance.status, StrEnum)
+        assert instance.status == "in-progress"
+        assert model(status="123").status == "123"
+
+    def test_integer_enum(self) -> None:
+        from enum import IntEnum
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "priority": {"enum": [1, 2, 3]},
+            },
+            "required": ["priority"],
+        }
+        model = json_schema_to_pydantic(schema, "IntEnumModel")
+        instance = model(priority=2)
+        assert isinstance(instance.priority, IntEnum)
+        assert instance.priority == 2
+
+    def test_mixed_enum(self) -> None:
+        from enum import Enum
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "value": {"enum": ["auto", 1, True]},
+            },
+            "required": ["value"],
+        }
+        model = json_schema_to_pydantic(schema, "MixedEnumModel")
+        instance = model(value="auto")
+        assert isinstance(instance.value, Enum)
+
+    def test_ref_cache_returns_same_type(self) -> None:
+        """Repeated $ref to the same definition reuses the same class."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Point": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                    },
+                    "required": ["x", "y"],
+                },
+            },
+            "properties": {
+                "start": {"$ref": "#/$defs/Point"},
+                "end": {"$ref": "#/$defs/Point"},
+            },
+            "required": ["start", "end"],
+        }
+        model = json_schema_to_pydantic(schema, "TwoPoints")
+        instance = model(
+            start={"x": 0, "y": 0},
+            end={"x": 1, "y": 1},
+        )
+        assert type(instance.start) is type(instance.end)
+
+    def test_default_null(self) -> None:
+        """'default': null is distinct from no default."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "default": None},
+                "tag": {"type": "string"},
+            },
+            "required": [],
+        }
+        model = json_schema_to_pydantic(schema, "DefaultNull")
+        instance = model()
+        assert instance.label is None
+        assert instance.tag is None
+
+    def test_enum_member_collision(self) -> None:
+        """Values that sanitize to the same name get disambiguated."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "sep": {
+                    "type": "string",
+                    "enum": ["a-b", "a b"],
+                },
+            },
+            "required": ["sep"],
+        }
+        model = json_schema_to_pydantic(schema, "Collision")
+        # Both values must be representable
+        assert model(sep="a-b").sep == "a-b"
+        assert model(sep="a b").sep == "a b"
+
+    def test_enum_keyword_member(self) -> None:
+        """Python keywords in enum values get suffixed."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["class", "return", "normal"],
+                },
+            },
+            "required": ["mode"],
+        }
+        model = json_schema_to_pydantic(schema, "KeywordEnum")
+        assert model(mode="class").mode == "class"
+        assert model(mode="return").mode == "return"
+
 
 # ---------- MCPClient integration tests ----------
 
