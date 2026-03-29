@@ -97,14 +97,19 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         ctx: RunContext[CtxT],
     ) -> UserMessage | None:
         if chat_inputs is not None:
+            if not chat_inputs:
+                return None
+
             if in_args is not None:
                 raise InputPromptBuilderError(
                     proc_name=self._agent_name,
                     message="Cannot use both chat inputs and input arguments "
                     f"at the same time [agent_name={self._agent_name}]",
                 )
+
             if isinstance(chat_inputs, LLMPrompt):
                 return UserMessage.from_text(chat_inputs, name=self._agent_name)
+
             return UserMessage.from_content_parts(chat_inputs, name=self._agent_name)
 
         return UserMessage(

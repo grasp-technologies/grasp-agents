@@ -378,6 +378,8 @@ class LLMPolicyExecutor(Generic[CtxT]):
             outputs, calls, ctx=ctx, call_id=call_id
         )
 
+        self.memory.update(tool_messages)
+
         for tool_message, call in zip(tool_messages, calls, strict=True):
             if isinstance(tool_message, UserMessage):
                 yield UserMessageEvent(
@@ -387,8 +389,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 yield ToolMessageEvent(
                     src_name=call.tool_name, call_id=call_id, data=tool_message
                 )
-
-        self.memory.update(tool_messages)
 
         if ctx.printer:
             ctx.printer.print_messages(
