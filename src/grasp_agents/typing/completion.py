@@ -49,6 +49,35 @@ class Usage(BaseModel):
             cost=cost,
         )
 
+    def __sub__(self, sub_usage: "Usage") -> "Usage":
+        input_tokens = self.input_tokens - sub_usage.input_tokens
+        output_tokens = self.output_tokens - sub_usage.output_tokens
+
+        if self.reasoning_tokens is not None or sub_usage.reasoning_tokens is not None:
+            reasoning_tokens = (self.reasoning_tokens or 0) - (
+                sub_usage.reasoning_tokens or 0
+            )
+        else:
+            reasoning_tokens = None
+
+        if self.cached_tokens is not None or sub_usage.cached_tokens is not None:
+            cached_tokens = (self.cached_tokens or 0) - (sub_usage.cached_tokens or 0)
+        else:
+            cached_tokens = None
+
+        if self.cost is not None or sub_usage.cost is not None:
+            cost = (self.cost or 0.0) - (sub_usage.cost or 0.0)
+        else:
+            cost = None
+
+        return Usage(
+            input_tokens=max(0, input_tokens),
+            output_tokens=max(0, output_tokens),
+            reasoning_tokens=max(0, reasoning_tokens) if reasoning_tokens else None,
+            cached_tokens=max(0, cached_tokens) if cached_tokens else None,
+            cost=max(0, cost) if cost else None,
+        )
+
 
 class CompletionError(BaseModel):
     message: str
