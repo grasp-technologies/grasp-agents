@@ -69,6 +69,19 @@ class InputImage(ResponseInputImage):
 
     mime_type: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _check_exclusive_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        image_url = data.get("image_url")
+        file_id = data.get("file_id")
+
+        if (image_url is not None) and (file_id is not None):
+            raise ValueError("InputImageContent cannot have both image_url and file_id")
+        if (image_url is None) and (file_id is None):
+            raise ValueError("InputImageContent must have either image_url or file_id")
+
+        return data
+
     def model_post_init(self, _context: Any) -> None:
         if self.mime_type is None and self.image_url is not None:
             match = re.match(r"data:([^;]+);base64,", self.image_url)
@@ -125,10 +138,10 @@ class InputImage(ResponseInputImage):
     ) -> "InputImage":
         img_bytes = Path(img_path).read_bytes()
         mime_type, _ = mimetypes.guess_type(str(img_path))
-        if mime_type is None:
-            mime_type = "image/jpeg"
-
         b64_encoding = base64.b64encode(img_bytes).decode("utf-8")
+
+        if mime_type is None:
+            mime_type = _detect_mime_from_base64(b64_encoding)
 
         return cls(
             image_url=f"{BASE64_DATA_PREFIX.format(mime_type=mime_type)}{b64_encoding}",
@@ -172,6 +185,23 @@ class InputFile(ResponseInputFile):
     file_id: str | None = None
 
     # grasp-agents fields:
+
+    # check if only one of file_data, file_url, or file_id is provided
+    @model_validator(mode="before")
+    @classmethod
+    def _check_exclusive_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        file_data = data.get("file_data")
+        file_url = data.get("file_url")
+        file_id = data.get("file_id")
+
+        provided_fields = [f for f in [file_data, file_url, file_id] if f is not None]
+        if len(provided_fields) != 1:
+            raise ValueError(
+                "InputFileContent must have exactly one of file_data, "
+                "file_url, or file_id"
+            )
+
+        return data
 
     @property
     def is_base64(self) -> bool:
@@ -222,14 +252,17 @@ class UrlCitation(ResponseAnnotationURLCitation):
 
     type: Literal["url_citation"] = "url_citation"
 
+    url: str
+    """The URL of the web resource."""
+
+    title: str
+    """The title of the web resource."""
+
     start_index: int
     """The index of the first character of the URL citation in the message."""
 
     end_index: int
     """The index of the last character of the URL citation in the message."""
-
-    title: str
-    """The title of the web resource."""
 
     # grasp-agents fields:
 
@@ -302,6 +335,11 @@ InputPart = Annotated[InputText | InputImage | InputFile, Field(discriminator="t
 OutputMessagePart = Annotated[
     OutputMessageText | OutputMessageRefusal, Field(discriminator="type")
 ]
+
+# "Content" in OpenResponses / Responses API is taken to be anything an LLM generates
+# directly, token by token. Anything derived from the generated tokens that underwent
+# parsing (e.g. tool calls, annotations) or other post-processing (e.g. reasoning
+# summaries) is not considered "Content" in this sense.
 
 OutputContentPart = Annotated[
     OutputMessageText | OutputMessageRefusal | ReasoningText,

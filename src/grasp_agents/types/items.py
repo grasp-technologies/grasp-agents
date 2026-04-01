@@ -74,12 +74,6 @@ ResponseToolOutputPart = ResponseInputText | ResponseInputImage | ResponseInputF
 
 # --- Item types ---
 
-"""
-Responses API reserves a special meaning for output "content" fields: they come from
-the raw LLM token stream. Everything that is not "content" is derived artifacts that can
-be produced/parsed after the fact (e.g. tool calls, reasoning summaries, annotations, etc).
-"""
-
 
 def prefixed_id(prefix: str) -> str:
     """Generate an API-compatible prefixed ID (e.g. msg_, fc_, rs_)."""
@@ -87,7 +81,7 @@ def prefixed_id(prefix: str) -> str:
 
 
 class InputMessageItem(ResponseInputMessageItem):
-    """User/system/developer message sent as input. Auto-generates an id."""
+    """User/system/developer message sent as input."""
 
     # OpenResponses fields (Message):
 
