@@ -73,6 +73,35 @@ class AddTool(BaseTool[AddInput, int, Any]):
         return inp.a + inp.b
 
 
+class MultiplyInput(BaseModel):
+    a: int = Field(description="First integer")
+    b: int = Field(description="Second integer")
+
+
+class MultiplyTool(BaseTool[MultiplyInput, int, Any]):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(
+            name="multiply",
+            description="Multiply two integers and return their product.",
+            **kwargs,
+        )
+
+    async def _run(
+        self,
+        inp: MultiplyInput,
+        *,
+        ctx: Any = None,
+        call_id: str | None = None,
+        progress_callback: Any = None,  # noqa: ARG002
+    ) -> int:
+        return inp.a * inp.b
+
+
 @pytest.fixture
 def tools() -> dict[str, BaseTool[Any, Any, Any]]:
     return {"add": AddTool()}
+
+
+@pytest.fixture
+def parallel_tools() -> dict[str, BaseTool[Any, Any, Any]]:
+    return {"add": AddTool(), "multiply": MultiplyTool()}

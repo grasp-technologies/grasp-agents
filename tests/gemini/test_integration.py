@@ -21,6 +21,7 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OpenPageAction,
     OutputMessageItem,
+    ReasoningItem,
     WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
@@ -518,3 +519,108 @@ class TestGeminiUrlContext:
         ]
         assert len(wf_items) >= 1
         assert any(wf.status == "failed" for wf in wf_items)
+
+
+def _execute_parallel_tools(
+    tool_calls: list[FunctionToolCallItem],
+) -> list[FunctionToolOutputItem]:
+    tool_outputs: list[FunctionToolOutputItem] = []
+    for tc in tool_calls:
+        args = json.loads(tc.arguments)
+        if tc.name == "add":
+            result = args["a"] + args["b"]
+        else:
+            result = args["a"] * args["b"]
+        tool_outputs.append(
+            FunctionToolOutputItem.from_tool_result(
+                call_id=tc.call_id, output=result
+            )
+        )
+    return tool_outputs
+
+
+@pytest.mark.integration
+class TestGeminiParallelToolUse:
+    @pytest.fixture
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+
+        return GeminiLLM(
+            model_name="gemini-2.0-flash",
+            api_provider=APIProvider(
+                name="google",
+                base_url=None,
+                api_key=google_api_key,
+            ),
+            llm_settings={"max_output_tokens": 256},
+        )
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls(
+        self,
+        llm: CloudLLM,
+        parallel_tools: dict[str, BaseTool[Any, Any, Any]],
+    ) -> None:
+        """Model should call add and multiply in parallel, then answer."""
+        user_msg = InputMessageItem.from_text(
+            "I need two results: (1) add 17 and 25, (2) multiply 6 and 7. "
+            "Use both tools in parallel, then report both results."
+        )
+        r1 = await llm.generate_response(
+            [user_msg], tools=parallel_tools, tool_choice="required"
+        )
+
+        assert len(r1.tool_call_items) == 2, (
+            f"Expected 2 parallel tool calls, got {len(r1.tool_call_items)}"
+        )
+        tool_names = {tc.name for tc in r1.tool_call_items}
+        assert tool_names == {"add", "multiply"}
+
+        tool_outputs = _execute_parallel_tools(r1.tool_call_items)
+        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        r2 = await llm.generate_response(full_input, tools=parallel_tools)
+
+        assert r2.status == "completed"
+        assert "42" in r2.output_text
+
+    @pytest.mark.asyncio
+    async def test_stream_parallel_tool_calls(
+        self,
+        llm: CloudLLM,
+        parallel_tools: dict[str, BaseTool[Any, Any, Any]],
+    ) -> None:
+        """Streaming: parallel tool calls should round-trip correctly."""
+        user_msg = InputMessageItem.from_text(
+            "I need two results: (1) add 17 and 25, (2) multiply 6 and 7. "
+            "Use both tools in parallel, then report both results."
+        )
+        events1 = [
+            event
+            async for event in llm.generate_response_stream(
+                [user_msg],
+                tools=parallel_tools,
+                tool_choice="required",
+            )
+        ]
+        completed1 = [e for e in events1 if isinstance(e, ResponseCompleted)]
+        assert len(completed1) == 1
+        r1 = completed1[0].response
+
+        assert len(r1.tool_call_items) == 2
+        tool_names = {tc.name for tc in r1.tool_call_items}
+        assert tool_names == {"add", "multiply"}
+
+        tool_outputs = _execute_parallel_tools(r1.tool_call_items)
+        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        events2 = [
+            event
+            async for event in llm.generate_response_stream(
+                full_input, tools=parallel_tools
+            )
+        ]
+        completed2 = [e for e in events2 if isinstance(e, ResponseCompleted)]
+        assert len(completed2) == 1
+        r2 = completed2[0].response
+
+        assert r2.status == "completed"
+        assert "42" in r2.output_text

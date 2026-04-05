@@ -391,6 +391,62 @@ class TestResponseToMessage:
         # Final assistant response
         assert messages[3]["role"] == "assistant"
 
+    def test_parallel_tool_results_grouped(self):
+        """Consecutive tool outputs should be grouped into one user message."""
+        items = [
+            InputMessageItem.from_text("Compute both."),
+            FunctionToolCallItem(
+                call_id="toolu_1",
+                name="add",
+                arguments='{"a": 1, "b": 2}',
+                status="completed",
+            ),
+            FunctionToolCallItem(
+                call_id="toolu_2",
+                name="multiply",
+                arguments='{"a": 3, "b": 4}',
+                status="completed",
+            ),
+            FunctionToolOutputItem(
+                call_id="toolu_1",
+                output_parts="3",
+            ),
+            FunctionToolOutputItem(
+                call_id="toolu_2",
+                output_parts="12",
+            ),
+            OutputMessageItem(
+                status="completed",
+                content_parts=[OutputMessageText(text="Done")],
+            ),
+        ]
+        _, messages = items_to_anthropic_messages(items)
+
+        # user, assistant (2 tool_use), user (2 tool_result), assistant
+        assert len(messages) == 4
+        assert messages[0]["role"] == "user"
+
+        # Assistant message has both tool_use blocks
+        assistant_content = messages[1]["content"]
+        assert isinstance(assistant_content, list)
+        assert len(assistant_content) == 2
+        assert assistant_content[0]["type"] == "tool_use"
+        assert assistant_content[1]["type"] == "tool_use"
+
+        # Single user message with both tool results
+        tool_result_msg = messages[2]
+        assert tool_result_msg["role"] == "user"
+        tool_results = tool_result_msg["content"]
+        assert isinstance(tool_results, list)
+        assert len(tool_results) == 2
+        assert tool_results[0]["type"] == "tool_result"
+        assert tool_results[0]["tool_use_id"] == "toolu_1"
+        assert tool_results[1]["type"] == "tool_result"
+        assert tool_results[1]["tool_use_id"] == "toolu_2"
+
+        # Final response
+        assert messages[3]["role"] == "assistant"
+
     def test_redacted_thinking_roundtrip(self):
         """Redacted thinking should produce RedactedThinkingBlockParam."""
         items = [

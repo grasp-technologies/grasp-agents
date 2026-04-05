@@ -104,22 +104,23 @@ def items_to_provider_inputs(
                 i += 1
 
         elif isinstance(item, FunctionToolOutputItem):
-            messages.append(
-                MessageParam(
-                    role="user",
-                    content=[
-                        ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=item.call_id,
-                            content=_convert_content_parts(item.output_parts),  # type: ignore[assignment]
-                            cache_control=_get_cache_control(
-                                item.provider_specific_fields
-                            ),
-                        )
-                    ],
+            # Group consecutive tool results into a single user message
+            # (required for parallel tool use to work correctly)
+            tool_results: list[ToolResultBlockParam] = []
+            while i < n and isinstance(items[i], FunctionToolOutputItem):
+                tool_item: FunctionToolOutputItem = items[i]  # type: ignore[assignment]
+                tool_results.append(
+                    ToolResultBlockParam(
+                        type="tool_result",
+                        tool_use_id=tool_item.call_id,
+                        content=_convert_content_parts(tool_item.output_parts),  # type: ignore[assignment]
+                        cache_control=_get_cache_control(
+                            tool_item.provider_specific_fields
+                        ),
+                    )
                 )
-            )
-            i += 1
+                i += 1
+            messages.append(MessageParam(role="user", content=tool_results))
 
         else:
             # Collect consecutive assistant-side items into one message
@@ -197,11 +198,7 @@ def _convert_content_parts(
             content.append(_image_to_block(part))
 
     # String shortcut only when there's no cache_control to carry
-    if (
-        not has_cache_control
-        and len(content) == 1
-        and content[0]["type"] == "text"
-    ):
+    if not has_cache_control and len(content) == 1 and content[0]["type"] == "text":
         return content[0]["text"]
 
     return content
@@ -231,9 +228,7 @@ def _output_group_to_message_param(output_items: Sequence[OutputItem]) -> Messag
                     id=item.call_id,
                     name=item.name,
                     input=json.loads(item.arguments),
-                    cache_control=_get_cache_control(
-                        item.provider_specific_fields
-                    ),
+                    cache_control=_get_cache_control(item.provider_specific_fields),
                 )
             )
 
@@ -319,9 +314,7 @@ def _web_search_to_blocks(
         id=item.id,
         name=_WS_TOOL_NAME,
         input={"query": action.queries[0] if action.queries else ""},
-        cache_control=_get_cache_control(
-            item.provider_specific_fields
-        ),
+        cache_control=_get_cache_control(item.provider_specific_fields),
     )
 
     psf = item.provider_specific_fields or {}
