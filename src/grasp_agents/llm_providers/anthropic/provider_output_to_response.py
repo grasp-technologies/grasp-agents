@@ -1,7 +1,7 @@
 """Convert Anthropic Message content blocks → internal item types."""
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from openai.types.responses import ResponseStatus
 from openai.types.responses.response import IncompleteDetails
@@ -54,11 +54,6 @@ from grasp_agents.types.response import (
     WebSearchInfo,
     WebSearchSource,
 )
-
-if TYPE_CHECKING:
-    from anthropic.types.citations_web_search_result_location import (
-        CitationsWebSearchResultLocation as AnthropicWebSearchCitation,
-    )
 
 
 def _anthropic_message_to_items_and_web_search_info(
@@ -150,16 +145,15 @@ def _extract_citations(block: AnthropicTextBlock) -> list[UrlCitation]:
     citations: list[UrlCitation] = []
     for cit in block.citations:
         if cit.type == "web_search_result_location":
-            cit_ws: AnthropicWebSearchCitation = cit  # type: ignore[assignment]
             provide_specific_fields = {
-                "anthropic:cited_text": cit_ws.cited_text,
-                "anthropic:encrypted_index": cit_ws.encrypted_index,
+                "anthropic:cited_text": cit.cited_text,
+                "anthropic:encrypted_index": cit.encrypted_index,
             }
             citations.append(
                 UrlCitation(
                     type="url_citation",
-                    url=cit_ws.url,
-                    title=cit_ws.title or "",
+                    url=cit.url,
+                    title=cit.title or "",
                     start_index=0,
                     end_index=len(block.text),
                     provider_specific_fields=provide_specific_fields,
@@ -236,12 +230,13 @@ def _extract_web_fetch_data(
 
     if isinstance(content, AnthropicWebFetchBlock):
         psf: dict[str, Any] = {}
-        if content.retrieved_at:
-            psf["anthropic:retrieved_at"] = content.retrieved_at
         doc = content.content
-        psf["anthropic:title"] = doc.title or ""
         psf["anthropic:media_type"] = doc.source.media_type
         psf["anthropic:data"] = doc.source.data
+        if content.retrieved_at:
+            psf["anthropic:retrieved_at"] = content.retrieved_at
+        if doc.title:
+            psf["anthropic:title"] = doc.title
 
         return WebSearchCallItem(
             id=item_id,
@@ -250,7 +245,6 @@ def _extract_web_fetch_data(
             provider_specific_fields=psf or None,
         )
 
-    # WebFetchToolResultErrorBlock
     call_url = str(call_block.input.get("url", "")) if call_block else ""
     return WebSearchCallItem(
         id=item_id,

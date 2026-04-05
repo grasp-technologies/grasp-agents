@@ -43,7 +43,7 @@ from anthropic.types import (
 )
 from anthropic.types.raw_message_delta_event import Delta as MessageDelta
 from openai.types.responses.response_function_web_search import (
-    ActionOpenPage,  # noqa: F811
+    ActionOpenPage,
     ActionSearch,
     ActionSearchSource,
 )
@@ -79,12 +79,12 @@ from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDone,
     OutputItemAdded,
     OutputItemDone,
-    ReasoningSummaryDelta,
+    OutputMessageTextPartTextDone,
+    ReasoningSummaryPartTextDelta,
     ResponseCompleted,
-    OutputMessageTextDone,
 )
 from grasp_agents.types.llm_events import (
-    OutputMessageTextDelta as LlmTextDelta,
+    OutputMessageTextPartTextDelta as LlmTextDelta,
 )
 from grasp_agents.types.tool import BaseTool, NamedToolChoice
 
@@ -567,7 +567,9 @@ class TestAnthropicStreamConverter:
         assert text_deltas[1].delta == "world"
 
         # Check final text
-        text_dones = [e for e in llm_events if isinstance(e, OutputMessageTextDone)]
+        text_dones = [
+            e for e in llm_events if isinstance(e, OutputMessageTextPartTextDone)
+        ]
         assert len(text_dones) == 1
         assert text_dones[0].text == "Hello world"
 
@@ -601,7 +603,7 @@ class TestAnthropicStreamConverter:
 
         # Reasoning events
         reasoning_deltas = [
-            e for e in llm_events if isinstance(e, ReasoningSummaryDelta)
+            e for e in llm_events if isinstance(e, ReasoningSummaryPartTextDelta)
         ]
         assert len(reasoning_deltas) == 2
         assert reasoning_deltas[0].delta == "Let me "
@@ -1222,9 +1224,9 @@ class TestWebSearchStream:
 # ==== Web Fetch helpers ====
 
 
-def _web_fetch_blocks() -> (
-    tuple[ServerToolUseBlock, WebFetchToolResultBlock, TextBlock]
-):
+def _web_fetch_blocks() -> tuple[
+    ServerToolUseBlock, WebFetchToolResultBlock, TextBlock
+]:
     server = ServerToolUseBlock(
         type="server_tool_use",
         id="srvtoolu_wf1",
@@ -1253,9 +1255,9 @@ def _web_fetch_blocks() -> (
     return server, result, text
 
 
-def _web_fetch_error_blocks() -> (
-    tuple[ServerToolUseBlock, WebFetchToolResultBlock, TextBlock]
-):
+def _web_fetch_error_blocks() -> tuple[
+    ServerToolUseBlock, WebFetchToolResultBlock, TextBlock
+]:
     server = ServerToolUseBlock(
         type="server_tool_use",
         id="srvtoolu_wf_err",
@@ -1315,8 +1317,7 @@ class TestWebFetchExtraction:
         assert wf.action.url == "https://unreachable.invalid"
         assert wf.provider_specific_fields is not None
         assert (
-            wf.provider_specific_fields["anthropic:error_code"]
-            == "url_not_accessible"
+            wf.provider_specific_fields["anthropic:error_code"] == "url_not_accessible"
         )
 
     def test_interleaved_with_tool_calls(self):
@@ -1328,9 +1329,7 @@ class TestWebFetchExtraction:
             input={"text": "hello"},
         )
         text = TextBlock(type="text", text="Here's the summary.")
-        msg = _make_message(
-            [server, result, text, tool], stop_reason="tool_use"
-        )
+        msg = _make_message([server, result, text, tool], stop_reason="tool_use")
         items, _ = items_from_anthropic_message(msg)
 
         assert len(items) == 3
@@ -1366,10 +1365,7 @@ class TestWebFetchRoundtrip:
         wf_content = content[1]["content"]
         assert wf_content["type"] == "web_fetch_result"
         assert wf_content["url"] == "https://example.com/page"
-        assert (
-            wf_content["content"]["source"]["data"]
-            == "This is the page content."
-        )
+        assert wf_content["content"]["source"]["data"] == "This is the page content."
 
     def test_error_roundtrip(self):
         server, result, text = _web_fetch_error_blocks()
@@ -1389,9 +1385,7 @@ class TestWebFetchRoundtrip:
         wf_item = WebSearchCallItem(
             id="srvtoolu_wf_mt",
             status="completed",
-            action=ActionOpenPage(
-                type="open_page", url="https://example.com"
-            ),
+            action=ActionOpenPage(type="open_page", url="https://example.com"),
             provider_specific_fields={
                 "anthropic:title": "Example",
                 "anthropic:media_type": "text/plain",
@@ -1481,8 +1475,7 @@ class TestWebFetchStream:
         ws_done = [
             e
             for e in llm_events
-            if isinstance(e, OutputItemDone)
-            and isinstance(e.item, WebSearchCallItem)
+            if isinstance(e, OutputItemDone) and isinstance(e.item, WebSearchCallItem)
         ]
         assert len(ws_done) == 1
         wf = ws_done[0].item
@@ -1533,8 +1526,7 @@ class TestWebFetchStream:
         ws_done = [
             e
             for e in llm_events
-            if isinstance(e, OutputItemDone)
-            and isinstance(e.item, WebSearchCallItem)
+            if isinstance(e, OutputItemDone) and isinstance(e.item, WebSearchCallItem)
         ]
         assert len(ws_done) == 1
         wf = ws_done[0].item
@@ -1544,6 +1536,5 @@ class TestWebFetchStream:
         assert wf.action.url == "https://bad.invalid"
         assert wf.provider_specific_fields is not None
         assert (
-            wf.provider_specific_fields["anthropic:error_code"]
-            == "url_not_accessible"
+            wf.provider_specific_fields["anthropic:error_code"] == "url_not_accessible"
         )

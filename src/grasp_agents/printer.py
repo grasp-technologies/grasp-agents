@@ -30,9 +30,9 @@ from .types.llm_events import (
     FunctionCallArgumentsDelta,
     OutputItemAdded,
     OutputItemDone,
-    OutputMessageTextDelta,
-    ReasoningSummaryDelta,
-    ReasoningTextDelta,
+    OutputMessageTextPartTextDelta,
+    ReasoningContentPartTextDelta,
+    ReasoningSummaryPartTextDelta,
     ResponseCreated,
 )
 
@@ -210,9 +210,9 @@ async def print_event_stream(
 
         elif isinstance(
             se,
-            OutputMessageTextDelta
-            | ReasoningSummaryDelta
-            | ReasoningTextDelta
+            OutputMessageTextPartTextDelta
+            | ReasoningSummaryPartTextDelta
+            | ReasoningContentPartTextDelta
             | FunctionCallArgumentsDelta,
         ):
             text += se.delta

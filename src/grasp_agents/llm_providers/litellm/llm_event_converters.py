@@ -13,6 +13,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from openai.types.chat import ChatCompletionChunk
+
 from grasp_agents.llm_providers.openai_completions.llm_event_converters import (
     CompletionsStreamConverter,
 )
@@ -28,16 +30,16 @@ from litellm.types.llms.openai import (
     ChatCompletionRedactedThinkingBlock,
     ChatCompletionThinkingBlock,
 )
+from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 
 from .utils import patch_thought_signatures, validate_chunk
 
 LiteLLMThinkingBlock = ChatCompletionThinkingBlock | ChatCompletionRedactedThinkingBlock
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import Iterator
 
     from grasp_agents.types.llm_events import LlmEvent
-    from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 
 
 class LiteLLMStreamConverter(CompletionsStreamConverter):
@@ -57,24 +59,18 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
         self._response_ms: float | None = None
         self._cost: float | None = None
 
-    async def convert(  # type: ignore[override]
-        self, chunk_stream: AsyncIterator[LiteLLMCompletionChunk]
-    ) -> AsyncIterator[LlmEvent]:
-        async for chunk in chunk_stream:
-            for event in self._process_litellm_chunk(chunk):
-                yield event
-
-        for event in self._close_response():
-            yield event
-
     # ==== Per-chunk dispatch ====
 
-    def _process_litellm_chunk(
-        self, chunk: LiteLLMCompletionChunk
+    def _process_event(
+        self, raw_event: ChatCompletionChunk | LiteLLMCompletionChunk
     ) -> Iterator[LlmEvent]:
-        # LiteLLM fields fall into two categories:
-        # - Pydantic fields / always set in __init__: direct access
-        # - Dynamic attrs or deleted-when-None in Delta.__init__: getattr
+        chunk = raw_event
+
+        if not isinstance(chunk, LiteLLMCompletionChunk):
+            raise TypeError(
+                f"Unsupported chunk type: {type(chunk)}. "
+                f"Expected LiteLLMCompletionChunk."
+            )
 
         validate_chunk(chunk)
 

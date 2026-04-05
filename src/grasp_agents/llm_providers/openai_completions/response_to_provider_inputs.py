@@ -143,7 +143,7 @@ def _input_message_to_message_param(
             content.append(
                 ChatCompletionContentPartImageParam(
                     type="image_url",
-                    image_url=ImageURL(url=part.to_str(), detail=part.detail),
+                    image_url=ImageURL(url=part.to_str(), detail=part.detail),  # type: ignore[call-arg]
                 )
             )
 

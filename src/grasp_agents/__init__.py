@@ -46,7 +46,14 @@ from .types.response import Response
 from .types.tool import BaseTool, ToolProgressCallback
 
 try:
-    from .mcp import MCPClient, MCPServerSSE, MCPServerStdio, MCPTool
+    from .mcp import (
+        MCPClient,
+        MCPListResourcesTool,
+        MCPReadResourceTool,
+        MCPServerSSE,
+        MCPServerStdio,
+        MCPTool,
+    )
 except ImportError:
     pass
 
@@ -75,6 +82,8 @@ __all__ = [
     "LlmNotFoundError",
     "LlmRateLimitError",
     "MCPClient",
+    "MCPListResourcesTool",
+    "MCPReadResourceTool",
     "MCPServerSSE",
     "MCPServerStdio",
     "MCPTool",

@@ -34,9 +34,9 @@ from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
     OutputItemAdded,
     OutputItemDone,
-    ReasoningSummaryDelta,
+    OutputMessageTextPartTextDelta,
+    ReasoningSummaryPartTextDelta,
     ResponseCreated,
-    OutputMessageTextDelta,
 )
 from grasp_agents.types.response import Response
 
@@ -198,11 +198,11 @@ class TestPrintEventStream:
 
     @pytest.mark.asyncio
     async def test_text_delta_event(self, capsys):
-        """OutputMessageTextDelta events stream text content."""
+        """OutputMessageTextPartTextDelta events stream text content."""
 
         async def gen():
             yield LLMStreamEvent(
-                data=OutputMessageTextDelta(
+                data=OutputMessageTextPartTextDelta(
                     content_index=0,
                     delta="Hello ",
                     output_index=0,
@@ -214,7 +214,7 @@ class TestPrintEventStream:
                 call_id="c1",
             )
             yield LLMStreamEvent(
-                data=OutputMessageTextDelta(
+                data=OutputMessageTextPartTextDelta(
                     content_index=0,
                     delta="world!",
                     output_index=0,
@@ -396,7 +396,7 @@ class TestPrintEventStream:
         async def gen():
             yield UserMessageEvent(data=msg, src_name="a", call_id="c1")
             yield LLMStreamEvent(
-                data=OutputMessageTextDelta(
+                data=OutputMessageTextPartTextDelta(
                     content_index=0,
                     delta="Hi",
                     output_index=0,

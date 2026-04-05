@@ -46,24 +46,24 @@ from grasp_agents.types.items import (
     ReasoningItem,
 )
 from grasp_agents.types.llm_events import (
-    OutputContentPartAdded,
-    OutputContentPartDone,
     FunctionCallArgumentsDelta,
     FunctionCallArgumentsDone,
     LlmEvent,
+    OutputContentPartAdded,
+    OutputContentPartDone,
     OutputItemAdded,
     OutputItemDone,
+    OutputMessageRefusalPartDelta,
+    OutputMessageRefusalPartDone,
+    OutputMessageTextPartTextDelta,
+    OutputMessageTextPartTextDone,
     ReasoningSummaryPartAdded,
     ReasoningSummaryPartDone,
-    ReasoningSummaryDelta,
-    ReasoningSummaryDone,
-    OutputMessageRefusalDelta,
-    OutputMessageRefusalDone,
+    ReasoningSummaryPartTextDelta,
+    ReasoningSummaryPartTextDone,
     ResponseCompleted,
     ResponseCreated,
     ResponseInProgress,
-    OutputMessageTextDelta,
-    OutputMessageTextDone,
 )
 
 # ------------------------------------------------------------------ #
@@ -236,11 +236,11 @@ class TestTextStream:
                 ],
             )
         )
-        deltas = _events_of_type(events, OutputMessageTextDelta)
+        deltas = _events_of_type(events, OutputMessageTextPartTextDelta)
         assert len(deltas) == 1
         assert deltas[0].delta == "Hello"
 
-        dones = _events_of_type(events, OutputMessageTextDone)
+        dones = _events_of_type(events, OutputMessageTextPartTextDone)
         assert len(dones) == 1
         assert dones[0].text == "Hello"
 
@@ -256,11 +256,11 @@ class TestTextStream:
                 ],
             )
         )
-        deltas = _events_of_type(events, OutputMessageTextDelta)
+        deltas = _events_of_type(events, OutputMessageTextPartTextDelta)
         assert len(deltas) == 3
         assert "".join(d.delta for d in deltas) == "Hello world"
 
-        done = _events_of_type(events, OutputMessageTextDone)[0]
+        done = _events_of_type(events, OutputMessageTextPartTextDone)[0]
         assert done.text == "Hello world"
 
     def test_final_response_output(self):
@@ -398,11 +398,11 @@ class TestRefusalStream:
                 ],
             )
         )
-        deltas = _events_of_type(events, OutputMessageRefusalDelta)
+        deltas = _events_of_type(events, OutputMessageRefusalPartDelta)
         assert len(deltas) == 2
         assert "".join(d.delta for d in deltas) == "I can't do that"
 
-        dones = _events_of_type(events, OutputMessageRefusalDone)
+        dones = _events_of_type(events, OutputMessageRefusalPartDone)
         assert len(dones) == 1
         assert dones[0].refusal == "I can't do that"
 
@@ -422,11 +422,11 @@ class TestReasoningContentStream:
                 ],
             )
         )
-        r_deltas = _events_of_type(events, ReasoningSummaryDelta)
+        r_deltas = _events_of_type(events, ReasoningSummaryPartTextDelta)
         assert len(r_deltas) == 2
         assert "".join(d.delta for d in r_deltas) == "Thinking..."
 
-        r_dones = _events_of_type(events, ReasoningSummaryDone)
+        r_dones = _events_of_type(events, ReasoningSummaryPartTextDone)
         assert len(r_dones) == 1
         assert r_dones[0].text == "Thinking..."
 
@@ -493,7 +493,7 @@ class TestReasoningDetailsStream:
                 ],
             )
         )
-        r_deltas = _events_of_type(events, ReasoningSummaryDelta)
+        r_deltas = _events_of_type(events, ReasoningSummaryPartTextDelta)
         assert "".join(d.delta for d in r_deltas) == "Deep thought continues"
 
         resp = _final_response(events).response
@@ -525,7 +525,7 @@ class TestReasoningDetailsStream:
         assert isinstance(item_events[1].item, ReasoningItem)  # Done (completed)
         assert item_events[1].item.redacted is True
         # No ReasoningSummary events for encrypted blocks
-        assert len(_events_of_type(events, ReasoningSummaryDelta)) == 0
+        assert len(_events_of_type(events, ReasoningSummaryPartTextDelta)) == 0
 
         resp = _final_response(events).response
         reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
@@ -547,7 +547,7 @@ class TestReasoningDetailsStream:
                 ],
             )
         )
-        r_deltas = _events_of_type(events, ReasoningSummaryDelta)
+        r_deltas = _events_of_type(events, ReasoningSummaryPartTextDelta)
         assert r_deltas[0].delta == "Brief thought"
 
         resp = _final_response(events).response
@@ -781,7 +781,7 @@ class TestLogprobs:
                 ],
             )
         )
-        deltas = _events_of_type(events, OutputMessageTextDelta)
+        deltas = _events_of_type(events, OutputMessageTextPartTextDelta)
         assert len(deltas) == 1
         assert len(deltas[0].logprobs) == 1
 
@@ -798,7 +798,7 @@ class TestLogprobs:
                 ],
             )
         )
-        dones = _events_of_type(events, OutputMessageTextDone)
+        dones = _events_of_type(events, OutputMessageTextPartTextDone)
         assert len(dones) == 1
         assert len(dones[0].logprobs) == 2
 
@@ -831,7 +831,7 @@ class TestLogprobs:
                 ],
             )
         )
-        deltas = _events_of_type(events, OutputMessageTextDelta)
+        deltas = _events_of_type(events, OutputMessageTextPartTextDelta)
         assert deltas[0].logprobs == []
 
         resp = _final_response(events).response
@@ -1479,7 +1479,7 @@ class TestLiteLLMLogprobs:
                 ],
             )
         )
-        deltas = _events_of_type(events, OutputMessageTextDelta)
+        deltas = _events_of_type(events, OutputMessageTextPartTextDelta)
         assert len(deltas) == 1
         assert len(deltas[0].logprobs) == 1
 

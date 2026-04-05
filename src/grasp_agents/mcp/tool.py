@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import timedelta
+from functools import cached_property
 from typing import Any
 
 from pydantic import BaseModel
@@ -56,24 +57,23 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         )
         self._session = session
         self._tool_def = tool_def
-        self._struct_output_schema: type[BaseModel] | None = None
 
-        # Build input model from MCP tool's JSON schema
-        self._in_type: type[BaseModel] = json_schema_to_pydantic(
-            dict(tool_def.inputSchema), f"{tool_def.name}_input"
+        self._in_type = json_schema_to_pydantic(
+            tool_def.inputSchema, f"{tool_def.name}_input"
         )
-        self._out_type: type[McpToolResult] = McpToolResult
+        self._out_type = McpToolResult
 
-    @property
+    @cached_property
+    def input_json_schema(self) -> str:
+        return json.dumps(self._tool_def.inputSchema)
+
+    @cached_property
     def struct_output_schema(self) -> type[BaseModel] | None:
-        if self._tool_def.outputSchema is None:
-            return None
-        if self._struct_output_schema is None:
-            self._struct_output_schema = json_schema_to_pydantic(
-                dict(self._tool_def.outputSchema), f"{self.name}_output"
-            )
-
-        return self._struct_output_schema
+        return (
+            json_schema_to_pydantic(self._tool_def.outputSchema, f"{self.name}_output")
+            if self._tool_def.outputSchema is not None
+            else None
+        )
 
     async def _run(
         self,

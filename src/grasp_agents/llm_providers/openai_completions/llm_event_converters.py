@@ -2,8 +2,8 @@
 Stateful converter: ChatCompletionChunk stream → LlmEvent stream.
 
 Synthesizes OpenResponses lifecycle events (OutputItemAdded, OutputContentPartAdded,
-OutputMessageTextDelta, OutputItemDone, ResponseCompleted, etc.) from flat Chat Completions
-chunk deltas. Instantiate once per stream.
+OutputMessageTextPartTextDelta, OutputItemDone, ResponseCompleted, etc.) from flat Chat
+Completions chunk deltas. Instantiate once per stream.
 """
 
 from __future__ import annotations
@@ -12,16 +12,15 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
-    convert_usage,
-)
+from openai.types.chat import ChatCompletionChunk
 from pydantic import TypeAdapter, ValidationError
 
-from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
-    convert_annotations,
-)
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs,
+)
+from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
+    convert_annotations,
+    convert_usage,
 )
 from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.reasoning import OpenRouterReasoningDetails
@@ -29,9 +28,9 @@ from grasp_agents.types.reasoning import OpenRouterReasoningDetails
 from .utils import validate_chunk
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import Iterator
 
-    from openai.types.chat import ChatCompletionChunk
+    from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 
     from grasp_agents.types.content import Citation
     from grasp_agents.types.llm_events import LlmEvent
@@ -58,7 +57,7 @@ def _validate_reasoning_details(
     return validated_details
 
 
-class CompletionsStreamConverter(BaseLlmStreamConverter):
+class CompletionsStreamConverter(BaseLlmStreamConverter[ChatCompletionChunk]):
     """
     Converts a ChatCompletionChunk async stream into a LlmEvent stream.
 
@@ -71,18 +70,16 @@ class CompletionsStreamConverter(BaseLlmStreamConverter):
         super().__init__()
         self._has_reasoning_details = False
 
-    async def convert(
-        self, chunk_stream: AsyncIterator[ChatCompletionChunk]
-    ) -> AsyncIterator[LlmEvent]:
-        """Consume *chunk_stream* and yield ``LlmEvent`` instances."""
-        async for chunk in chunk_stream:
-            for event in self._process_chunk(chunk):
-                yield event
+    def _process_event(
+        self, raw_event: ChatCompletionChunk | LiteLLMCompletionChunk
+    ) -> Iterator[LlmEvent]:
+        chunk = raw_event
 
-        for event in self._close_response():
-            yield event
+        if not isinstance(chunk, ChatCompletionChunk):
+            raise TypeError(
+                f"Unsupported chunk type: {type(chunk)}. Expected ChatCompletionChunk."
+            )
 
-    def _process_chunk(self, chunk: ChatCompletionChunk) -> Iterator[LlmEvent]:
         if not validate_chunk(chunk):
             # Usage-only chunk (no choices) — capture usage and skip
             if chunk.usage:

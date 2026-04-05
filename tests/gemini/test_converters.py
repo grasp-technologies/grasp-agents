@@ -65,12 +65,12 @@ from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDone,
     OutputItemAdded,
     OutputItemDone,
-    ReasoningSummaryDelta,
+    OutputMessageTextPartTextDone,
+    ReasoningSummaryPartTextDelta,
     ResponseCompleted,
-    OutputMessageTextDone,
 )
 from grasp_agents.types.llm_events import (
-    OutputMessageTextDelta as LlmTextDelta,
+    OutputMessageTextPartTextDelta as LlmTextDelta,
 )
 from grasp_agents.types.tool import BaseTool, NamedToolChoice
 
@@ -850,7 +850,7 @@ class TestGeminiStreamConverter:
         assert text_deltas[1].delta == " world"
         assert text_deltas[2].delta == "!"
 
-        text_dones = [e for e in events if isinstance(e, OutputMessageTextDone)]
+        text_dones = [e for e in events if isinstance(e, OutputMessageTextPartTextDone)]
         assert len(text_dones) == 1
         assert text_dones[0].text == "Hello world!"
 
@@ -865,7 +865,7 @@ class TestGeminiStreamConverter:
         events = self._run(chunks)
 
         reasoning_deltas = [
-            e for e in events if isinstance(e, ReasoningSummaryDelta)
+            e for e in events if isinstance(e, ReasoningSummaryPartTextDelta)
         ]
         assert len(reasoning_deltas) == 2
         assert reasoning_deltas[0].delta == "Let me "
@@ -1161,8 +1161,7 @@ class TestUrlContextStream:
         ws_done = [
             e
             for e in events
-            if isinstance(e, OutputItemDone)
-            and isinstance(e.item, WebSearchCallItem)
+            if isinstance(e, OutputItemDone) and isinstance(e.item, WebSearchCallItem)
         ]
         assert len(ws_done) == 1
         wf = ws_done[0].item
@@ -1189,8 +1188,7 @@ class TestUrlContextStream:
         ws_done = [
             e
             for e in events
-            if isinstance(e, OutputItemDone)
-            and isinstance(e.item, WebSearchCallItem)
+            if isinstance(e, OutputItemDone) and isinstance(e.item, WebSearchCallItem)
         ]
         assert len(ws_done) == 1
         wf = ws_done[0].item

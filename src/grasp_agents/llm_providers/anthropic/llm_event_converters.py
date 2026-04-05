@@ -35,18 +35,10 @@ from grasp_agents.types.content import Citation, UrlCitation
 from grasp_agents.types.items import WebSearchCallItem
 from grasp_agents.types.response import ResponseUsage, WebSearchInfo, WebSearchSource
 
-
-@dataclass
-class ServerToolState:
-    """Accumulated state for a server_tool_use block being streamed."""
-
-    tool_id: str
-    name: str
-    input_json: str = ""
-
+from . import AnthropicStreamEvent
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import Iterator
 
     from openai.types.responses import ResponseStatus
 
@@ -58,12 +50,20 @@ if TYPE_CHECKING:
         AnthropicContentBlockStopEvent,
         AnthropicMessageDeltaEvent,
         AnthropicMessageStartEvent,
-        AnthropicStreamEvent,
         AnthropicWebSearchToolResultBlock,
     )
 
 
-class AnthropicStreamConverter(BaseLlmStreamConverter):
+@dataclass
+class ServerToolState:
+    """Accumulated state for a server_tool_use block being streamed."""
+
+    tool_id: str
+    name: str
+    input_json: str = ""
+
+
+class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
     """
     Converts an Anthropic RawMessageStreamEvent async stream into LlmEvents.
 
@@ -85,30 +85,19 @@ class AnthropicStreamConverter(BaseLlmStreamConverter):
         # Accumulated citations for current text block
         self._citations: list[UrlCitation] = []
 
-    async def convert(
-        self, event_stream: AsyncIterator[AnthropicStreamEvent]
-    ) -> AsyncIterator[LlmEvent]:
-        """Consume Anthropic event stream and yield LlmEvent instances."""
-        async for event in event_stream:
-            for llm_event in self._process_event(event):
-                yield llm_event
-
-        for llm_event in self._close_response():
-            yield llm_event
-
-    def _process_event(self, event: AnthropicStreamEvent) -> Iterator[LlmEvent]:
-        event_type = event.type
+    def _process_event(self, raw_event: AnthropicStreamEvent) -> Iterator[LlmEvent]:
+        event_type = raw_event.type
 
         if event_type == "message_start":
-            yield from self._on_message_start(event)  # type: ignore[arg-type]
+            yield from self._on_message_start(raw_event)  # type: ignore[arg-type]
         elif event_type == "content_block_start":
-            yield from self._on_block_start(event)  # type: ignore[arg-type]
+            yield from self._on_block_start(raw_event)  # type: ignore[arg-type]
         elif event_type == "content_block_delta":
-            yield from self._on_block_delta(event)  # type: ignore[arg-type]
+            yield from self._on_block_delta(raw_event)  # type: ignore[arg-type]
         elif event_type == "content_block_stop":
-            yield from self._on_block_stop(event)  # type: ignore[arg-type]
+            yield from self._on_block_stop(raw_event)  # type: ignore[arg-type]
         elif event_type == "message_delta":
-            self._on_message_delta(event)  # type: ignore[arg-type]
+            self._on_message_delta(raw_event)  # type: ignore[arg-type]
         # message_stop: no action needed, _close_response runs after loop
 
     # ==== Event handlers ====

@@ -9,8 +9,9 @@ provider-specific behavior.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_output_text import Annotation
@@ -45,14 +46,14 @@ from grasp_agents.types.llm_events import (
     OutputContentPartDone,
     OutputItemAdded,
     OutputItemDone,
-    OutputMessageRefusalDelta,
-    OutputMessageRefusalDone,
-    OutputMessageTextDelta,
-    OutputMessageTextDone,
-    ReasoningSummaryDelta,
-    ReasoningSummaryDone,
+    OutputMessageRefusalPartDelta,
+    OutputMessageRefusalPartDone,
+    OutputMessageTextPartTextDelta,
+    OutputMessageTextPartTextDone,
     ReasoningSummaryPartAdded,
     ReasoningSummaryPartDone,
+    ReasoningSummaryPartTextDelta,
+    ReasoningSummaryPartTextDone,
     ResponseCompleted,
     ResponseCreated,
     ResponseInProgress,
@@ -63,9 +64,11 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.response import Response, ResponseUsage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
     from openai.types.responses import ResponseStatus
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -80,7 +83,7 @@ class ToolCallState:
     provider_specific_fields: dict[str, Any] | None = None
 
 
-class BaseLlmStreamConverter:
+class BaseLlmStreamConverter(ABC, Generic[_T]):
     """
     Provider-agnostic base for streaming LLM response → LlmEvent converters.
 
@@ -110,14 +113,14 @@ class BaseLlmStreamConverter:
 
         # == Output Message ==
 
-        # Content parts (built once in close methods, reused in message item)
-        self._message_content_parts: list[OutputMessagePart] = []
-        self._message_content_part_count = 0
-        self._message_content_part_index: int = 0
-
         self._message_open = False
         self._message_id: str | None = None
         self._message_item_index: int = 0
+
+        # Content parts (built once in close methods, reused in message item)
+        self._output_message_parts: list[OutputMessagePart] = []
+        self._message_content_part_count = 0
+        self._message_content_part_index: int = 0
 
         # Text content part
         self._text_open: bool = False
@@ -162,6 +165,21 @@ class BaseLlmStreamConverter:
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    async def convert(
+        self, raw_event_stream: AsyncIterator[_T]
+    ) -> AsyncIterator[LlmEvent]:
+        """Consume *raw_event_stream* and yield ``LlmEvent`` instances."""
+        async for raw_event in raw_event_stream:
+            for event in self._process_event(raw_event):
+                yield event
+
+        for event in self._close_response():
+            yield event
+
+    @abstractmethod
+    def _process_event(self, raw_event: _T) -> Iterator[LlmEvent]:
+        pass
 
     # ==== Response lifecycle ====
 
@@ -216,9 +234,7 @@ class BaseLlmStreamConverter:
 
         return ResponseCompleted(response=response, sequence_number=self._next_seq())
 
-    def _map_finish_reason(
-        self,
-    ) -> tuple[ResponseStatus, IncompleteDetails | None]:
+    def _map_finish_reason(self) -> tuple[ResponseStatus, IncompleteDetails | None]:
         """Map provider finish_reason to ResponseStatus. Override per provider."""
         if self._finish_reason == "length":
             return "incomplete", IncompleteDetails(reason="max_output_tokens")
@@ -228,9 +244,9 @@ class BaseLlmStreamConverter:
 
     # ==== Reasoning ====
 
-    def _open_reasoning(self) -> Iterator[LlmEvent]:
+    def _open_reasoning(self, item_id: str | None = None) -> Iterator[LlmEvent]:
         self._reasoning_open = True
-        self._reasoning_id = prefixed_id("rs")
+        self._reasoning_id = item_id or prefixed_id("rs")
         self._reasoning_encrypted_content = None
         self._reasoning_cache_control = None
         self._reasoning_redacted = False
@@ -264,7 +280,7 @@ class BaseLlmStreamConverter:
         yield ReasoningSummaryPartAdded(
             item_id=self._reasoning_id,
             output_index=self._reasoning_item_index,
-            part=ReasoningSummary(text=""),  # type: ignore[arg-type]
+            part=ReasoningSummary(text=""),
             summary_index=self._reasoning_summary_part_index,
             sequence_number=self._next_seq(),
         )
@@ -278,7 +294,7 @@ class BaseLlmStreamConverter:
 
         self._reasoning_summary_part_text += text
 
-        yield ReasoningSummaryDelta(
+        yield ReasoningSummaryPartTextDelta(
             delta=text,
             item_id=self._reasoning_id,
             output_index=self._reasoning_item_index,
@@ -292,7 +308,7 @@ class BaseLlmStreamConverter:
         assert self._reasoning_id is not None  # for mypy
 
         if self._reasoning_summary_part_text:
-            yield ReasoningSummaryDone(
+            yield ReasoningSummaryPartTextDone(
                 item_id=self._reasoning_id,
                 output_index=self._reasoning_item_index,
                 summary_index=self._reasoning_summary_part_index,
@@ -339,18 +355,18 @@ class BaseLlmStreamConverter:
 
     # ==== Output message ====
 
-    def _open_message(self) -> Iterator[LlmEvent]:
+    def _open_message(self, item_id: str | None = None) -> Iterator[LlmEvent]:
         # if self._reasoning_open:
         #     yield from self._close_reasoning()
 
         self._message_open = True
-        self._message_id = prefixed_id("msg")
+        self._message_id = item_id or prefixed_id("msg")
 
         self._message_item_index = self._item_count
         self._item_count += 1
 
         self._text_open = False
-        self._message_content_parts = []
+        self._output_message_parts = []
         self._message_content_part_count = 0
         self._message_provider_specific_fields = None
 
@@ -394,7 +410,7 @@ class BaseLlmStreamConverter:
         if logprobs:
             self._logprobs.extend(logprobs)
 
-        yield OutputMessageTextDelta(
+        yield OutputMessageTextPartTextDelta(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -409,7 +425,7 @@ class BaseLlmStreamConverter:
         assert self._text is not None  # for mypy
         assert self._message_id is not None  # for mypy
 
-        yield OutputMessageTextDone(
+        yield OutputMessageTextPartTextDone(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -423,7 +439,7 @@ class BaseLlmStreamConverter:
             citations=self._build_text_citations(),
             logprobs=self._logprobs or None,
         )
-        self._message_content_parts.append(part)
+        self._output_message_parts.append(part)
 
         yield OutputContentPartDone(
             content_index=self._message_content_part_index,
@@ -458,7 +474,7 @@ class BaseLlmStreamConverter:
 
         self._refusal += refusal
 
-        yield OutputMessageRefusalDelta(
+        yield OutputMessageRefusalPartDelta(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -472,7 +488,7 @@ class BaseLlmStreamConverter:
         assert self._refusal is not None  # for mypy
         assert self._message_id is not None  # for mypy
 
-        yield OutputMessageRefusalDone(
+        yield OutputMessageRefusalPartDone(
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -481,7 +497,7 @@ class BaseLlmStreamConverter:
         )
 
         part = OutputMessageRefusal(refusal=self._refusal)
-        self._message_content_parts.append(part)
+        self._output_message_parts.append(part)
 
         yield OutputContentPartDone(
             content_index=self._message_content_part_index,
@@ -504,7 +520,7 @@ class BaseLlmStreamConverter:
         item = OutputMessageItem(
             id=self._message_id,
             status="completed",
-            content_parts=self._message_content_parts,
+            content_parts=self._output_message_parts,
             provider_specific_fields=self._message_provider_specific_fields,
         )
         self._items.append(item)
@@ -518,9 +534,14 @@ class BaseLlmStreamConverter:
     # ==== Tool calls ====
 
     def _open_tool_call(
-        self, *, call_id: str, name: str, idx: int
+        self,
+        *,
+        call_id: str,
+        name: str,
+        idx: int,
+        item_id: str | None = None,
     ) -> Iterator[LlmEvent]:
-        item_id = prefixed_id("fc")
+        item_id = item_id or prefixed_id("fc")
 
         item_index = self._item_count
         self._item_count += 1
@@ -584,8 +605,9 @@ class BaseLlmStreamConverter:
 
     # ==== Web search ====
 
-    def _open_web_search(self, item_id: str) -> Iterator[LlmEvent]:
+    def _open_web_search(self, item_id: str | None = None) -> Iterator[LlmEvent]:
         """Emit OutputItemAdded + WebSearchCallInProgress for a new web search."""
+        item_id = item_id or prefixed_id("ws")
         output_index = self._item_count
         self._item_count += 1
 
@@ -615,9 +637,7 @@ class BaseLlmStreamConverter:
             sequence_number=self._next_seq(),
         )
 
-    def _close_web_search(
-        self, item: WebSearchCallItem
-    ) -> Iterator[LlmEvent]:
+    def _close_web_search(self, item: WebSearchCallItem) -> Iterator[LlmEvent]:
         """Emit WebSearchCallCompleted + OutputItemDone with final item."""
         output_index = self._web_search_indices.pop(item.id, self._item_count)
 

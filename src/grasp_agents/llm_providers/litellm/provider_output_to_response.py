@@ -54,7 +54,7 @@ LiteLLMThinkingBlock = (
 )
 
 
-def _litellm_chat_completion_to_items(
+def _litellm_chat_completion_message_to_items(
     raw_message: LiteLLMChatCompletionMessage,
     output_message_status: ItemStatus,
     model: str,
@@ -259,7 +259,7 @@ def provider_output_to_response(provider_output: LiteLLMCompletion) -> Response:
 
     # Message-level fields
 
-    output_items = _litellm_chat_completion_to_items(
+    output_items = _litellm_chat_completion_message_to_items(
         raw_message=raw_choice.message,
         raw_logprobs=raw_logprobs,
         model=model,

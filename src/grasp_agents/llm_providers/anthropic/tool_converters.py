@@ -6,9 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
-
-from . import (
+from anthropic.types import (
     ToolChoiceAnyParam,
     ToolChoiceAutoParam,
     ToolChoiceNoneParam,
@@ -16,6 +14,7 @@ from . import (
     ToolChoiceToolParam,
     ToolParam,
 )
+from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
 
 
 def to_api_tool(tool: BaseTool[BaseModel, Any, Any]) -> ToolParam:

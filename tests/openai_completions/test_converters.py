@@ -21,16 +21,20 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
 )
 
 from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
+    _chat_completion_message_to_items,
     convert_annotations,
     convert_usage,
-    _chat_completion_to_items,
     provider_output_to_response,
 )
 from grasp_agents.llm_providers.openai_completions.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
-from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText, UrlCitation
+from grasp_agents.types.content import (
+    OutputMessageRefusal,
+    OutputMessageText,
+    UrlCitation,
+)
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     OutputMessageItem,
@@ -82,7 +86,9 @@ def _make_completion(
 class TestGeneratedMessageToItems:
     def test_text_only(self) -> None:
         msg = ChatCompletionMessage(role="assistant", content="Hello world")
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -92,7 +98,9 @@ class TestGeneratedMessageToItems:
         msg = ChatCompletionMessage(
             role="assistant", content=None, refusal="I can't do that"
         )
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -105,7 +113,9 @@ class TestGeneratedMessageToItems:
         msg = ChatCompletionMessage(
             role="assistant", content="Partial answer", refusal="But also refusing"
         )
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -120,7 +130,9 @@ class TestGeneratedMessageToItems:
             function=Function(name="add", arguments='{"a": 1, "b": 2}'),
         )
         msg = ChatCompletionMessage(role="assistant", content=None, tool_calls=[tc])
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -137,7 +149,9 @@ class TestGeneratedMessageToItems:
         msg = ChatCompletionMessage(
             role="assistant", content="Let me add those", tool_calls=[tc]
         )
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         assert len(items) == 2
         assert isinstance(items[0], OutputMessageItem)
@@ -145,7 +159,9 @@ class TestGeneratedMessageToItems:
 
     def test_empty_message(self) -> None:
         msg = ChatCompletionMessage(role="assistant", content=None)
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         assert items == []
 
@@ -157,7 +173,9 @@ class TestGeneratedMessageToItems:
         # Patch getattr to work
         msg.__dict__["reasoning_content"] = "Let me think..."
 
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         reasoning = [i for i in items if isinstance(i, ReasoningItem)]
         assert len(reasoning) == 1
@@ -170,7 +188,9 @@ class TestGeneratedMessageToItems:
             {"type": "reasoning.text", "text": "Step 1: think", "signature": "sig123"}
         ]
 
-        items = _chat_completion_to_items(msg, output_message_status="completed")
+        items = _chat_completion_message_to_items(
+            msg, output_message_status="completed"
+        )
 
         reasoning = [i for i in items if isinstance(i, ReasoningItem)]
         assert len(reasoning) == 1

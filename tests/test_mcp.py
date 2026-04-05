@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from grasp_agents.mcp.client import MCPClient, MCPServerStdio
 from grasp_agents.mcp.json_schema import json_schema_to_pydantic
+from grasp_agents.mcp.resource import MCPListResourcesTool, MCPReadResourceTool
 from grasp_agents.mcp.tool import MCPTool
 
 _SERVER_PATH = str(Path(__file__).parent / "mcp_test_server.py")
@@ -442,11 +443,17 @@ class TestMCPClient:
             assert "slow_tool" in tool_names
 
     @pytest.mark.asyncio
-    async def test_tools_are_mcp_tool_instances(self) -> None:
+    async def test_tools_include_mcp_and_resource_tools(self) -> None:
         async with MCPClient("test", server=_SERVER_CONFIG) as client:
             tools = client.tools()
-            for tool in tools:
-                assert isinstance(tool, MCPTool)
+            mcp_tools = [t for t in tools if isinstance(t, MCPTool)]
+            resource_tools = [
+                t
+                for t in tools
+                if isinstance(t, (MCPListResourcesTool, MCPReadResourceTool))
+            ]
+            assert len(mcp_tools) >= 1
+            assert len(resource_tools) == 2
 
     @pytest.mark.asyncio
     async def test_tool_has_description(self) -> None:
@@ -551,3 +558,97 @@ class TestMCPClient:
             await client.connect()  # second call
             tools = client.tools()
             assert len(tools) > 0
+
+    @pytest.mark.asyncio
+    async def test_server_capabilities_exposed(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            caps = client.server_capabilities
+            assert caps is not None
+            assert caps.tools is not None
+            assert caps.resources is not None
+            assert caps.prompts is not None
+
+
+# ---------- Resource tools ----------
+
+
+class TestMCPResources:
+    @pytest.mark.asyncio
+    async def test_resource_tools_auto_generated(self) -> None:
+        """Resource tools are added when server supports resources."""
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            tool_names = {t.name for t in client.tools()}
+            assert "test_list_resources" in tool_names
+            assert "test_read_resource" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_list_resources_returns_resources(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            tools = {t.name: t for t in client.tools()}
+            result = await tools["test_list_resources"]()
+            assert "docs://readme" in result
+            assert "Project readme" in result
+
+    @pytest.mark.asyncio
+    async def test_list_resources_includes_templates(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            tools = {t.name: t for t in client.tools()}
+            result = await tools["test_list_resources"]()
+            assert "Resource Templates:" in result
+            assert "{item_id}" in result
+
+    @pytest.mark.asyncio
+    async def test_read_static_resource(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            tools = {t.name: t for t in client.tools()}
+            result = await tools["test_read_resource"](
+                uri="docs://readme"
+            )
+            assert "# Test Project" in result
+
+    @pytest.mark.asyncio
+    async def test_read_template_resource(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            tools = {t.name: t for t in client.tools()}
+            result = await tools["test_read_resource"](
+                uri="docs://items/42"
+            )
+            assert '"id": "42"' in result
+
+
+# ---------- Prompts (developer API) ----------
+
+
+class TestMCPPrompts:
+    @pytest.mark.asyncio
+    async def test_list_prompts(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            result = await client.list_prompts()
+            prompt_names = {p.name for p in result.prompts}
+            assert "greet" in prompt_names
+            assert "summarize" in prompt_names
+
+    @pytest.mark.asyncio
+    async def test_get_prompt(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            result = await client.get_prompt("greet", {"name": "Alice"})
+            assert len(result.messages) >= 1
+            text = result.messages[0].content.text
+            assert "Alice" in text
+
+    @pytest.mark.asyncio
+    async def test_get_prompt_with_default_arg(self) -> None:
+        async with MCPClient("test", server=_SERVER_CONFIG) as client:
+            result = await client.get_prompt(
+                "summarize", {"text": "Hello world"}
+            )
+            assert len(result.messages) >= 1
+            text = result.messages[0].content.text
+            assert "Hello world" in text
+            assert "brief" in text
+
+    @pytest.mark.asyncio
+    async def test_prompts_not_connected_raises(self) -> None:
+        client = MCPClient("test", server=_SERVER_CONFIG)
+        with pytest.raises(RuntimeError, match="Not connected"):
+            await client.list_prompts()

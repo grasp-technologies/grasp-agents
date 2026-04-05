@@ -144,7 +144,7 @@ class OutputContentPartDone(ResponseContentPartDoneEvent):
 # Output text events
 
 
-class OutputMessageTextDelta(ResponseTextDeltaEvent):
+class OutputMessageTextPartTextDelta(ResponseTextDeltaEvent):
     """Incremental text token from the model."""
 
     type: Literal["response.output_text.delta"] = "response.output_text.delta"
@@ -156,7 +156,7 @@ class OutputMessageTextDelta(ResponseTextDeltaEvent):
     logprobs: list[DeltaLogprob] = Field(default_factory=list[DeltaLogprob])
 
 
-class OutputMessageTextDone(ResponseTextDoneEvent):
+class OutputMessageTextPartTextDone(ResponseTextDoneEvent):
     """Final text content part with the complete text."""
 
     type: Literal["response.output_text.done"] = "response.output_text.done"
@@ -205,7 +205,7 @@ def output_to_done_logprobs(logprobs: list[Logprob]) -> list[DoneLogprob]:
 # Refusal events
 
 
-class OutputMessageRefusalDelta(ResponseRefusalDeltaEvent):
+class OutputMessageRefusalPartDelta(ResponseRefusalDeltaEvent):
     """Incremental refusal token."""
 
     type: Literal["response.refusal.delta"] = "response.refusal.delta"
@@ -216,7 +216,7 @@ class OutputMessageRefusalDelta(ResponseRefusalDeltaEvent):
     delta: str
 
 
-class OutputMessageRefusalDone(ResponseRefusalDoneEvent):
+class OutputMessageRefusalPartDone(ResponseRefusalDoneEvent):
     """Final refusal content with the complete refusal text."""
 
     type: Literal["response.refusal.done"] = "response.refusal.done"
@@ -230,7 +230,7 @@ class OutputMessageRefusalDone(ResponseRefusalDoneEvent):
 # Reasoning content events
 
 
-class ReasoningTextDelta(ResponseReasoningTextDeltaEvent):
+class ReasoningContentPartTextDelta(ResponseReasoningTextDeltaEvent):
     """Incremental reasoning/thinking token."""
 
     type: Literal["response.reasoning_text.delta"] = "response.reasoning_text.delta"
@@ -241,7 +241,7 @@ class ReasoningTextDelta(ResponseReasoningTextDeltaEvent):
     delta: str
 
 
-class ReasoningTextDone(ResponseReasoningTextDoneEvent):
+class ReasoningContentPartTextDone(ResponseReasoningTextDoneEvent):
     """Final reasoning content with the complete text."""
 
     type: Literal["response.reasoning_text.done"] = "response.reasoning_text.done"
@@ -298,7 +298,7 @@ class ReasoningSummaryPartDone(ResponseReasoningSummaryPartDoneEvent):
     part: ReasoningSummary  # type: ignore[assignment]
 
 
-class ReasoningSummaryDelta(ResponseReasoningSummaryTextDeltaEvent):
+class ReasoningSummaryPartTextDelta(ResponseReasoningSummaryTextDeltaEvent):
     """Incremental reasoning summary token."""
 
     type: Literal["response.reasoning_summary_text.delta"] = (
@@ -311,7 +311,7 @@ class ReasoningSummaryDelta(ResponseReasoningSummaryTextDeltaEvent):
     delta: str
 
 
-class ReasoningSummaryDone(ResponseReasoningSummaryTextDoneEvent):
+class ReasoningSummaryPartTextDone(ResponseReasoningSummaryTextDoneEvent):
     """Final reasoning summary with the complete text."""
 
     type: Literal["response.reasoning_summary_text.done"] = (
@@ -444,17 +444,17 @@ LlmEvent: TypeAlias = Annotated[
     | OutputItemDone
     | OutputContentPartAdded
     | OutputContentPartDone
-    | OutputMessageTextDelta
-    | OutputMessageTextDone
-    | OutputMessageRefusalDelta
-    | OutputMessageRefusalDone
+    | OutputMessageTextPartTextDelta
+    | OutputMessageTextPartTextDone
+    | OutputMessageRefusalPartDelta
+    | OutputMessageRefusalPartDone
     | AnnotationAdded
-    | ReasoningTextDelta
-    | ReasoningTextDone
+    | ReasoningContentPartTextDelta
+    | ReasoningContentPartTextDone
     | ReasoningSummaryPartAdded
     | ReasoningSummaryPartDone
-    | ReasoningSummaryDelta
-    | ReasoningSummaryDone
+    | ReasoningSummaryPartTextDelta
+    | ReasoningSummaryPartTextDone
     | FunctionCallArgumentsDelta
     | FunctionCallArgumentsDone
     | WebSearchCallInProgress

@@ -46,7 +46,7 @@ _REASONING_DETAILS_ADAPTER: TypeAdapter[OpenRouterReasoningDetails] = TypeAdapte
 )
 
 
-def _chat_completion_to_items(
+def _chat_completion_message_to_items(
     raw_message: ChatCompletionMessage,
     output_message_status: ItemStatus,
     raw_logprobs: ChatCompletionChoiceLogprobs | None = None,
@@ -73,13 +73,13 @@ def convert_annotations(
     citations: list[UrlCitation] = []
     for ann in raw_annotations:
         if isinstance(ann, ChatCompletionAnnotation):
-            citation = ann.url_citation
+            raw_citation = ann.url_citation
             citations.append(
                 UrlCitation(
-                    end_index=citation.end_index,
-                    start_index=citation.start_index,
-                    title=citation.title,
-                    url=citation.url,
+                    end_index=raw_citation.end_index,
+                    start_index=raw_citation.start_index,
+                    title=raw_citation.title,
+                    url=raw_citation.url,
                 )
             )
         elif "url_citation" in ann:
@@ -235,7 +235,7 @@ def provider_output_to_response(provider_output: ChatCompletion) -> Response:
 
     raw_message = raw_choice.message
 
-    output_items = _chat_completion_to_items(
+    output_items = _chat_completion_message_to_items(
         raw_message=raw_message,
         raw_logprobs=raw_logprobs,
         output_message_status=status,

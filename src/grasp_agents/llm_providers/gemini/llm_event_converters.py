@@ -22,7 +22,7 @@ from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.items import prefixed_id
 from grasp_agents.types.response import ResponseUsage
 
-from . import encode_thought_signature
+from . import GeminiResponse, encode_thought_signature
 from .provider_output_to_response import (
     attach_grounding_annotations,
     extract_url_context_data,
@@ -30,17 +30,17 @@ from .provider_output_to_response import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import Iterator
 
     from google.genai.types import GroundingMetadata, UrlContextMetadata
     from openai.types.responses import ResponseStatus
 
     from grasp_agents.types.llm_events import LlmEvent
 
-    from . import GeminiPart, GeminiResponse
+    from . import GeminiPart
 
 
-class GeminiStreamConverter(BaseLlmStreamConverter):
+class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
     """
     Converts a Gemini GenerateContentResponse async stream into LlmEvents.
 
@@ -57,18 +57,9 @@ class GeminiStreamConverter(BaseLlmStreamConverter):
         self._grounding: GroundingMetadata | None = None
         self._url_context: UrlContextMetadata | None = None
 
-    async def convert(
-        self, chunk_stream: AsyncIterator[GeminiResponse]
-    ) -> AsyncIterator[LlmEvent]:
-        """Consume Gemini chunk stream and yield LlmEvent instances."""
-        async for chunk in chunk_stream:
-            for llm_event in self._process_chunk(chunk):
-                yield llm_event
+    def _process_raw_event(self, raw_event: GeminiResponse) -> Iterator[LlmEvent]:
+        chunk = raw_event
 
-        for llm_event in self._close_response():
-            yield llm_event
-
-    def _process_chunk(self, chunk: GeminiResponse) -> Iterator[LlmEvent]:
         # Start response on first chunk
         if not self._started:
             created_at = (

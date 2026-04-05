@@ -25,7 +25,7 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.llm_events import (
     OutputItemDone,
-    OutputMessageTextDelta,
+    OutputMessageTextPartTextDelta,
     ResponseCompleted,
 )
 
@@ -72,7 +72,9 @@ class TestAnthropicIntegration:
     async def test_stream_text(self, llm: CloudLLM) -> None:
         input_items = [InputMessageItem.from_text("Say 'hello' and nothing else.")]
         events = [event async for event in llm.generate_response_stream(input_items)]
-        text_deltas = [e for e in events if isinstance(e, OutputMessageTextDelta)]
+        text_deltas = [
+            e for e in events if isinstance(e, OutputMessageTextPartTextDelta)
+        ]
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
 
         assert len(text_deltas) > 0

@@ -24,7 +24,7 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.llm_events import (
     OutputItemDone,
-    OutputMessageTextDelta,
+    OutputMessageTextPartTextDelta,
     ResponseCompleted,
 )
 
@@ -67,7 +67,9 @@ class TestOpenAIResponsesIntegration:
     async def test_stream_text(self, llm: CloudLLM) -> None:
         input_items = [InputMessageItem.from_text("Say 'hello' and nothing else.")]
         events = [event async for event in llm.generate_response_stream(input_items)]
-        text_deltas = [e for e in events if isinstance(e, OutputMessageTextDelta)]
+        text_deltas = [
+            e for e in events if isinstance(e, OutputMessageTextPartTextDelta)
+        ]
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
 
         assert len(text_deltas) > 0
@@ -518,8 +520,7 @@ class TestOpenAIResponsesWebFetch:
         open_page_items = [
             i
             for i in r1.output_items
-            if isinstance(i, WebSearchCallItem)
-            and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
         ]
         assert len(open_page_items) >= 1
 
@@ -543,8 +544,7 @@ class TestOpenAIResponsesWebFetch:
         open_page_items = [
             i
             for i in r1.output_items
-            if isinstance(i, WebSearchCallItem)
-            and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
         ]
         assert len(open_page_items) >= 1
 
@@ -552,9 +552,7 @@ class TestOpenAIResponsesWebFetch:
             "What was the title of the page you visited?"
         )
         full_input = [user_msg, *r1.output_items, follow_up]
-        events = [
-            event async for event in llm.generate_response_stream(full_input)
-        ]
+        events = [event async for event in llm.generate_response_stream(full_input)]
 
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
         assert len(completed) == 1
