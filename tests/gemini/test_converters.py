@@ -34,14 +34,13 @@ from google.genai.types import (
     UrlMetadata,
     UrlRetrievalStatus,
 )
-from openai.types.responses.response_function_web_search import ActionOpenPage
 from pydantic import BaseModel
 
 from grasp_agents.llm_providers.gemini.llm_event_converters import (
     GeminiStreamConverter,
 )
 from grasp_agents.llm_providers.gemini.provider_output_to_response import (
-    _gemini_response_to_items_and_web_search_info,
+    _gemini_response_to_items,
     provider_output_to_response,
 )
 from grasp_agents.llm_providers.gemini.response_to_provider_inputs import (
@@ -56,6 +55,7 @@ from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
+    OpenPageAction,
     OutputMessageItem,
     ReasoningItem,
     WebSearchCallItem,
@@ -129,7 +129,7 @@ class TestItemsExtraction:
     def test_simple_text(self):
         """Single text part → OutputMessageItem."""
         resp = _make_response([Part(text="Hello world")])
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -143,7 +143,7 @@ class TestItemsExtraction:
                 Part(text="Second"),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -158,7 +158,7 @@ class TestItemsExtraction:
                 Part(text="The answer is 42"),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
@@ -175,7 +175,7 @@ class TestItemsExtraction:
                 Part(text="The answer"),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
@@ -193,7 +193,7 @@ class TestItemsExtraction:
                 Part(text="Answer"),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert isinstance(items[0], ReasoningItem)
         assert items[0].encrypted_content is not None
@@ -208,7 +208,7 @@ class TestItemsExtraction:
                 Part(text="Answer"),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert isinstance(items[0], ReasoningItem)
         assert items[0].encrypted_content == base64.b64encode(b"sig_2").decode("ascii")
@@ -226,7 +226,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -246,7 +246,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -266,7 +266,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], OutputMessageItem)
@@ -289,7 +289,7 @@ class TestItemsExtraction:
                 ),
             ]
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 3
         assert isinstance(items[0], ReasoningItem)
@@ -299,7 +299,7 @@ class TestItemsExtraction:
     def test_empty_response(self):
         """Response with no candidates returns empty list."""
         resp = GenerateContentResponse(response_id="empty")
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
         assert items == []
 
     def test_grounding_annotations(self):
@@ -327,7 +327,7 @@ class TestItemsExtraction:
             [Part(text="Hello world")],
             grounding_metadata=grounding,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 2
         msg = items[0]
@@ -360,7 +360,7 @@ class TestItemsExtraction:
             [Part(text="Check the docs for details")],
             citation_metadata=citation_meta,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 1
         msg = items[0]
@@ -397,7 +397,7 @@ class TestItemsExtraction:
             [Part(text="Hello world")],
             logprobs_result=logprobs_result,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 1
         msg = items[0]
@@ -443,7 +443,7 @@ class TestItemsExtraction:
             [Part(text="Hello world")],
             grounding_metadata=grounding,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
@@ -1005,7 +1005,7 @@ class TestGeminiStreamConverter:
 
 
 class TestUrlContextExtraction:
-    """UrlContextMetadata on candidate → WebSearchCallItem(ActionOpenPage)."""
+    """UrlContextMetadata on candidate → WebSearchCallItem(OpenPageAction)."""
 
     def test_success(self):
         url_ctx = UrlContextMetadata(
@@ -1020,14 +1020,14 @@ class TestUrlContextExtraction:
             [Part(text="Page content here")],
             url_context_metadata=url_ctx,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         assert len(items) == 2
         assert isinstance(items[0], OutputMessageItem)
         wf = items[1]
         assert isinstance(wf, WebSearchCallItem)
         assert wf.status == "completed"
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.action.url == "https://example.com/page"
         assert wf.provider_specific_fields is None
 
@@ -1048,7 +1048,7 @@ class TestUrlContextExtraction:
             [Part(text="Content")],
             url_context_metadata=url_ctx,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         wf_items = [i for i in items if isinstance(i, WebSearchCallItem)]
         assert len(wf_items) == 2
@@ -1068,11 +1068,11 @@ class TestUrlContextExtraction:
             [Part(text="Could not fetch")],
             url_context_metadata=url_ctx,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         wf = [i for i in items if isinstance(i, WebSearchCallItem)][0]
         assert wf.status == "failed"
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.provider_specific_fields is not None
         assert "gemini:url_retrieval_status" in wf.provider_specific_fields
 
@@ -1089,14 +1089,14 @@ class TestUrlContextExtraction:
             [Part(text="Paywalled")],
             url_context_metadata=url_ctx,
         )
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         wf = [i for i in items if isinstance(i, WebSearchCallItem)][0]
         assert wf.status == "failed"
 
     def test_empty(self):
         resp = _make_response([Part(text="No url context")])
-        items, _ = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         wf_items = [i for i in items if isinstance(i, WebSearchCallItem)]
         assert len(wf_items) == 0
@@ -1127,11 +1127,10 @@ class TestUrlContextExtraction:
             grounding_metadata=grounding,
             url_context_metadata=url_ctx,
         )
-        items, web_search_info = _gemini_response_to_items_and_web_search_info(resp)
+        items = _gemini_response_to_items(resp)
 
         ws_items = [i for i in items if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) == 2
-        assert web_search_info is not None
 
 
 # ==== URL Context streaming ====
@@ -1166,7 +1165,7 @@ class TestUrlContextStream:
         assert len(ws_done) == 1
         wf = ws_done[0].item
         assert isinstance(wf, WebSearchCallItem)
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.action.url == "https://example.com/streamed"
         assert wf.status == "completed"
 
@@ -1194,5 +1193,5 @@ class TestUrlContextStream:
         wf = ws_done[0].item
         assert isinstance(wf, WebSearchCallItem)
         assert wf.status == "failed"
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.provider_specific_fields is not None

@@ -11,13 +11,13 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from openai.types.responses.response_function_web_search import ActionOpenPage
 from pydantic import BaseModel, Field
 
 from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
     InputMessageItem,
+    OpenPageAction,
     OutputMessageItem,
     ReasoningItem,
     WebSearchCallItem,
@@ -429,7 +429,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
 
 @pytest.mark.integration
 class TestOpenAIResponsesWebFetch:
-    """Web search with browsing can produce ActionOpenPage items."""
+    """Web search with browsing can produce OpenPageAction items."""
 
     @pytest.fixture
     def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
@@ -462,13 +462,13 @@ class TestOpenAIResponsesWebFetch:
         ]
         assert len(ws_items) >= 1
 
-        open_page_items = [i for i in ws_items if isinstance(i.action, ActionOpenPage)]
+        open_page_items = [i for i in ws_items if isinstance(i.action, OpenPageAction)]
         assert len(open_page_items) >= 1
         assert open_page_items[0].action.url
 
     @pytest.mark.asyncio
     async def test_stream_web_fetch_via_search(self, llm: CloudLLM) -> None:
-        """Streaming: ActionOpenPage items appear in stream events."""
+        """Streaming: OpenPageAction items appear in stream events."""
         input_items = [
             InputMessageItem.from_text(
                 "Go to https://httpbin.org/html and tell me the author's name "
@@ -485,13 +485,13 @@ class TestOpenAIResponsesWebFetch:
         open_page_items = [
             i
             for i in response.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(open_page_items) >= 1
 
     @pytest.mark.asyncio
     async def test_web_fetch_unreachable(self, llm: CloudLLM) -> None:
-        """Unreachable URL — OpenAI returns ActionOpenPage with url=None."""
+        """Unreachable URL — OpenAI returns OpenPageAction with url=None."""
         input_items = [
             InputMessageItem.from_text(
                 "Go to https://this-domain-does-not-exist-abc123xyz.invalid/page "
@@ -503,9 +503,9 @@ class TestOpenAIResponsesWebFetch:
         open_page_items = [
             i
             for i in response.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
-        # OpenAI still produces ActionOpenPage but with url=None for unreachable
+        # OpenAI still produces OpenPageAction but with url=None for unreachable
         assert len(open_page_items) >= 1
         assert any(op.action.url is None for op in open_page_items)
 
@@ -520,7 +520,7 @@ class TestOpenAIResponsesWebFetch:
         open_page_items = [
             i
             for i in r1.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(open_page_items) >= 1
 
@@ -544,7 +544,7 @@ class TestOpenAIResponsesWebFetch:
         open_page_items = [
             i
             for i in r1.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(open_page_items) >= 1
 

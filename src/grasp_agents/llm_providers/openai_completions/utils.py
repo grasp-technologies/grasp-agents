@@ -35,9 +35,7 @@ def validate_chunk(chunk: ChatCompletionChunk) -> bool:
         return False
 
     if len(chunk.choices) > 1:
-        raise CompletionError(
-            "Multiple choices are not supported in completion chunk"
-        )
+        raise CompletionError("Multiple choices are not supported in completion chunk")
 
     choice = chunk.choices[0]
     if choice.delta is None:  # type: ignore[union-attr]

@@ -21,7 +21,7 @@ from openai.types.responses.response_usage import (
 )
 from openai.types.responses.response_usage import ResponseUsage as _SDKResponseUsage
 from openai.types.shared import Metadata, Reasoning
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from .content import OutputMessageText
 from .items import (
@@ -29,26 +29,9 @@ from .items import (
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
     prefixed_id,
 )
-
-
-class WebSearchSource(BaseModel):
-    """A source found during web search grounding."""
-
-    url: str
-    title: str
-    page_age: str | None = None  # Anthropic
-
-
-class WebSearchInfo(BaseModel):
-    """Response-level web search metadata (Gemini grounding, Anthropic web search)."""
-
-    queries: list[str] = Field(default_factory=list[str])
-    sources: list[WebSearchSource] = Field(default_factory=list[WebSearchSource])
-
-    provider_specific_fields: dict[str, Any] | None = None
-    # search_entry_point_html: str | None = None  # Gemini compliance
 
 
 class ResponseUsage(_SDKResponseUsage):
@@ -139,8 +122,6 @@ class Response(_SDKResponse):
 
     response_ms: float | None = None
 
-    web_search: WebSearchInfo | None = None
-
     provider_specific_fields: dict[str, Any] | None = None
     hidden_params: dict[str, Any] | None = None
     response_headers: dict[str, Any] | None = None
@@ -162,7 +143,10 @@ class Response(_SDKResponse):
     @classmethod
     def _sync_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
         if "output_items" in data and "output" not in data:
-            data["output"] = data["output_items"]
+            # Filter out WebSearchCallItem for SDK-compat `output` field
+            data["output"] = [
+                i for i in data["output_items"] if not isinstance(i, WebSearchCallItem)
+            ]
         elif "output" in data and "output_items" not in data:
             data["output_items"] = data["output"]
 

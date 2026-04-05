@@ -11,9 +11,7 @@ if TYPE_CHECKING:
 def validate_response(response: GeminiResponse) -> None:
     """Raise if the response has no candidates or content."""
     if not response.candidates:
-        raise ValueError(
-            f"Gemini response {response.response_id} has no candidates"
-        )
+        raise ValueError(f"Gemini response {response.response_id} has no candidates")
     candidate = response.candidates[0]
     if not candidate.content or not candidate.content.parts:
         raise ValueError(

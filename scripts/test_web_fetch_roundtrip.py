@@ -21,7 +21,10 @@ async def main():
             {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2},
         ],
         messages=[
-            {"role": "user", "content": "Fetch https://httpbin.org/html and summarize it briefly."}
+            {
+                "role": "user",
+                "content": "Fetch https://httpbin.org/html and summarize it briefly.",
+            }
         ],
     )
 
@@ -38,9 +41,15 @@ async def main():
             model="claude-sonnet-4-6",
             max_tokens=256,
             messages=[
-                {"role": "user", "content": "Fetch https://httpbin.org/html and summarize it briefly."},
+                {
+                    "role": "user",
+                    "content": "Fetch https://httpbin.org/html and summarize it briefly.",
+                },
                 {"role": "assistant", "content": msg1.content},
-                {"role": "user", "content": "What was the author's name mentioned on that page?"},
+                {
+                    "role": "user",
+                    "content": "What was the author's name mentioned on that page?",
+                },
             ],
         )
         print(f"  OK - {msg2a.content[0].text[:200]}")
@@ -50,7 +59,16 @@ async def main():
 
     # Turn 2b: strip web_fetch_tool_result content entirely (replace with minimal)
     print("=== Turn 2b: without web_fetch blocks ===")
-    stripped = [b for b in msg1.content if b.type not in ("web_fetch_tool_result", "server_tool_use", "code_execution_tool_result")]
+    stripped = [
+        b
+        for b in msg1.content
+        if b.type
+        not in (
+            "web_fetch_tool_result",
+            "server_tool_use",
+            "code_execution_tool_result",
+        )
+    ]
     if not stripped:
         stripped = msg1.content  # fallback if everything was stripped
         print("  (nothing left after stripping, using original)")
@@ -59,9 +77,15 @@ async def main():
             model="claude-sonnet-4-6",
             max_tokens=256,
             messages=[
-                {"role": "user", "content": "Fetch https://httpbin.org/html and summarize it briefly."},
+                {
+                    "role": "user",
+                    "content": "Fetch https://httpbin.org/html and summarize it briefly.",
+                },
                 {"role": "assistant", "content": stripped},
-                {"role": "user", "content": "What was the author's name mentioned on that page?"},
+                {
+                    "role": "user",
+                    "content": "What was the author's name mentioned on that page?",
+                },
             ],
         )
         print(f"  OK - {msg2b.content[0].text[:200]}")

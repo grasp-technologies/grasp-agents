@@ -10,7 +10,6 @@ from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import ToolErrorInfo
 from grasp_agents.types.tool import BaseTool
 
-
 # ---------- Basic usage ----------
 
 

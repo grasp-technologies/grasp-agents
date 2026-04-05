@@ -25,11 +25,6 @@ from google.genai.types import (
 from google.genai.types import GenerateContentResponse as GeminiResponse
 from openai.types.responses import ResponseStatus
 from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_function_web_search import (
-    ActionOpenPage,
-    ActionSearch,
-    ActionSearchSource,
-)
 from openai.types.responses.response_output_text import Logprob, LogprobTopLogprob
 from openai.types.responses.response_usage import (
     InputTokensDetails,
@@ -39,17 +34,18 @@ from openai.types.responses.response_usage import (
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary, UrlCitation
 from grasp_agents.types.items import (
     FunctionToolCallItem,
+    OpenPageAction,
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
+    SearchSource,
     WebSearchCallItem,
     prefixed_id,
 )
 from grasp_agents.types.response import (
     Response,
     ResponseUsage,
-    WebSearchInfo,
-    WebSearchSource,
 )
 
 from . import encode_thought_signature
@@ -85,9 +81,9 @@ class _TextPartAccumulator:
         self.signature = None
 
 
-def _gemini_response_to_items_and_web_search_info(
+def _gemini_response_to_items(
     response: GeminiResponse,
-) -> tuple[list[OutputItem], WebSearchInfo | None]:
+) -> list[OutputItem]:
     """
     Convert a Gemini response's parts to output items.
 
@@ -98,7 +94,7 @@ def _gemini_response_to_items_and_web_search_info(
     """
     candidates = response.candidates
     if not candidates or not candidates[0].content or not candidates[0].content.parts:
-        return [], None
+        return []
 
     candidate = candidates[0]
     assert candidate.content is not None
@@ -148,15 +144,13 @@ def _gemini_response_to_items_and_web_search_info(
     attach_citation_annotations(items, candidate.citation_metadata)
     attach_logprobs(items, candidate.logprobs_result)
 
-    web_search_item, web_search_info = extract_web_search_data(
-        candidate.grounding_metadata
-    )
+    web_search_item = extract_web_search_data(candidate.grounding_metadata)
     if web_search_item:
         items.append(web_search_item)
 
     items.extend(extract_url_context_data(candidate.url_context_metadata))
 
-    return items, web_search_info
+    return items
 
 
 def _merge_text_parts(acc: _TextPartAccumulator) -> OutputMessageItem:
@@ -199,55 +193,40 @@ def _function_call_to_tool_call_item(
 
 def extract_web_search_data(
     grounding: GroundingMetadata | None,
-) -> tuple[WebSearchCallItem | None, WebSearchInfo | None]:
+) -> WebSearchCallItem | None:
     if not grounding:
-        return None, None
+        return None
 
     queries = list(grounding.web_search_queries or [])
 
     sources = [
-        WebSearchSource(url=c.web.uri, title=c.web.title or "")
+        SearchSource(url=c.web.uri, title=c.web.title or "")
         for c in grounding.grounding_chunks or []
         if c.web and c.web.uri
     ]
 
     if not queries and not sources:
-        return None, None
-
-    action_search_sources = [
-        ActionSearchSource(type="url", url=s.url) for s in sources if s.url
-    ]
-    web_search_item = WebSearchCallItem(
-        status="completed",
-        action=ActionSearch(
-            type="search",
-            query="",
-            queries=queries,
-            sources=action_search_sources or None,
-        ),
-    )
+        return None
 
     entry_point_html = (
         grounding.search_entry_point.rendered_content
         if grounding.search_entry_point
         else None
     )
-    provider_specific_fields = (
-        {"gemini:entry_point_html": entry_point_html} if entry_point_html else None
-    )
-    web_search_info = WebSearchInfo(
-        queries=queries,
-        sources=sources,
-        provider_specific_fields=provider_specific_fields,
-    )
 
-    return web_search_item, web_search_info
+    return WebSearchCallItem(
+        status="completed",
+        action=SearchAction(queries=queries, sources=sources),
+        provider_specific_fields=(
+            {"gemini:entry_point_html": entry_point_html} if entry_point_html else None
+        ),
+    )
 
 
 def extract_url_context_data(
     url_context: UrlContextMetadata | None,
 ) -> list[WebSearchCallItem]:
-    """Convert UrlContextMetadata → WebSearchCallItem(ActionOpenPage) per URL."""
+    """Convert UrlContextMetadata → WebSearchCallItem(OpenPageAction) per URL."""
     if not url_context or not url_context.url_metadata:
         return []
 
@@ -259,11 +238,9 @@ def extract_url_context_data(
 
         item = WebSearchCallItem(
             status="failed" if failed else "completed",
-            action=ActionOpenPage(type="open_page", url=url),
+            action=OpenPageAction(url=url),
             provider_specific_fields=(
-                {"gemini:url_retrieval_status": str(status)}
-                if failed
-                else None
+                {"gemini:url_retrieval_status": str(status)} if failed else None
             ),
         )
         items.append(item)
@@ -533,9 +510,7 @@ def _map_finish_reason(
 
 def provider_output_to_response(provider_output: GenerateContentResponse) -> Response:
     """Convert a Gemini ``GenerateContentResponse`` to a ``Response``."""
-    output_items, web_search_info = _gemini_response_to_items_and_web_search_info(
-        provider_output
-    )
+    output_items = _gemini_response_to_items(provider_output)
 
     usage = _convert_usage(provider_output.usage_metadata)
     status, incomplete_details = _map_finish_reason(provider_output)
@@ -554,5 +529,4 @@ def provider_output_to_response(provider_output: GenerateContentResponse) -> Res
         incomplete_details=incomplete_details,
         output_items=output_items,
         usage_with_cost=usage,
-        web_search=web_search_info,
     )

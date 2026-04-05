@@ -19,7 +19,6 @@ from grasp_agents.errors import (
     LLMResponseValidationError,
     LLMToolCallValidationError,
 )
-from grasp_agents.types.llm_errors import LlmInternalServerError
 from grasp_agents.llm import LLM
 from grasp_agents.resilience import RetryPolicy
 from grasp_agents.types.content import OutputMessageText
@@ -29,6 +28,7 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OutputMessageItem,
 )
+from grasp_agents.types.llm_errors import LlmInternalServerError
 from grasp_agents.types.llm_events import (
     LlmEvent,
     OutputItemAdded,
@@ -224,7 +224,13 @@ class TestRetryBehavior:
         """LlmInternalServerError propagates immediately — validation retries don't catch it."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LlmInternalServerError("server down", response=httpx.Response(500, request=httpx.Request("POST", "https://test")), body=None),
+            error_to_raise=LlmInternalServerError(
+                "server down",
+                response=httpx.Response(
+                    500, request=httpx.Request("POST", "https://test")
+                ),
+                body=None,
+            ),
             retry_policy=RetryPolicy(api_retries=0, validation_retries=3),
         )
         with pytest.raises(LlmInternalServerError):
@@ -236,7 +242,13 @@ class TestRetryBehavior:
         """LlmInternalServerError propagates from stream path — validation retries don't catch it."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LlmInternalServerError("server down", response=httpx.Response(500, request=httpx.Request("POST", "https://test")), body=None),
+            error_to_raise=LlmInternalServerError(
+                "server down",
+                response=httpx.Response(
+                    500, request=httpx.Request("POST", "https://test")
+                ),
+                body=None,
+            ),
             retry_policy=RetryPolicy(api_retries=0, validation_retries=3),
         )
         with pytest.raises(LlmInternalServerError):

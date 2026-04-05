@@ -1,10 +1,13 @@
 """Tests for model_info facade: graceful fallback for unknown models."""
 
-from grasp_agents.model_info import count_tokens, get_context_window, get_model_capabilities
+from grasp_agents.model_info import (
+    count_tokens,
+    get_context_window,
+    get_model_capabilities,
+)
 
 
 class TestModelInfo:
-
     def test_unknown_model_gets_permissive_defaults(self) -> None:
         """Model not in LiteLLM database → all capabilities True, no limits."""
         caps = get_model_capabilities("totally-fake-model-xyz-999")

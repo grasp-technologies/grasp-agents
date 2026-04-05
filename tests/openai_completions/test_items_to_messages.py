@@ -555,7 +555,9 @@ class TestReasoningDetailsFormat:
             status="completed",
         )
 
-        msgs = items_to_completions_messages([reasoning, output], reasoning_block_format=None)
+        msgs = items_to_completions_messages(
+            [reasoning, output], reasoning_block_format=None
+        )
 
         assert len(msgs) == 1
         assert msgs[0]["content"] == "Answer"

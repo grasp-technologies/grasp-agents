@@ -14,8 +14,8 @@ from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
 from ...cloud_llm import ApiCallParams, APIProvider, CloudLLM, CloudLLMSettings
-from ...types.llm_errors import LlmError
 from ...types.items import InputItem
+from ...types.llm_errors import LlmError
 from ...types.llm_events import LlmEvent
 from ...types.response import Response
 from ...types.tool import BaseTool, ToolChoice

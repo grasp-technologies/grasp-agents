@@ -68,6 +68,7 @@ class InputImage(ResponseInputImage):
     # grasp-agents fields:
 
     mime_type: str | None = None
+    provider_specific_fields: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -167,6 +168,10 @@ class InputText(ResponseInputText):
     type: Literal["input_text"] = "input_text"
     text: str
 
+    # grasp-agents fields:
+
+    provider_specific_fields: dict[str, Any] | None = None
+
 
 class InputFile(ResponseInputFile):
     """
@@ -185,6 +190,8 @@ class InputFile(ResponseInputFile):
     file_id: str | None = None
 
     # grasp-agents fields:
+
+    provider_specific_fields: dict[str, Any] | None = None
 
     # check if only one of file_data, file_url, or file_id is provided
     @model_validator(mode="before")
@@ -294,6 +301,7 @@ class OutputMessageText(ResponseOutputText):
     # grasp-agents fields:
 
     citations: list[Citation] = Field(default_factory=list[Citation])
+    provider_specific_fields: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod

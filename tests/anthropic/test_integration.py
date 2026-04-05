@@ -11,7 +11,6 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from openai.types.responses.response_function_web_search import ActionOpenPage
 from pydantic import BaseModel, Field
 
 from grasp_agents.cloud_llm import APIProvider
@@ -19,6 +18,7 @@ from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
     InputMessageItem,
+    OpenPageAction,
     OutputMessageItem,
     ReasoningItem,
     WebSearchCallItem,
@@ -309,8 +309,6 @@ class TestAnthropicWebSearch:
         response = await llm.generate_response(input_items)
 
         assert response.output_text
-        assert response.web_search is not None
-        assert len(response.web_search.sources) > 0
 
         # WebSearchCallItem should appear in output_items
         ws_items = [
@@ -358,8 +356,6 @@ class TestAnthropicWebSearch:
         assert len(completed) == 1
         response = completed[0].response
         assert response.output_text
-        assert response.web_search is not None
-        assert len(response.web_search.sources) > 0
 
         # Citations should be captured from citations_delta events
         msg = response.message_items[0]
@@ -489,7 +485,7 @@ class TestAnthropicWebFetch:
 
     @pytest.mark.asyncio
     async def test_web_fetch(self, llm: CloudLLM) -> None:
-        """Web fetch should produce WebSearchCallItem with ActionOpenPage."""
+        """Web fetch should produce WebSearchCallItem with OpenPageAction."""
         input_items = [
             InputMessageItem.from_text(
                 "Fetch https://httpbin.org/html and summarize it briefly."
@@ -503,7 +499,7 @@ class TestAnthropicWebFetch:
         ]
         assert len(wf_items) >= 1
         wf = wf_items[0]
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.status == "completed"
         assert wf.action.url
 
@@ -522,7 +518,7 @@ class TestAnthropicWebFetch:
             for e in events
             if isinstance(e, OutputItemDone)
             and isinstance(e.item, WebSearchCallItem)
-            and isinstance(e.item.action, ActionOpenPage)
+            and isinstance(e.item.action, OpenPageAction)
         ]
         assert len(ws_done) >= 1
 
@@ -566,6 +562,6 @@ class TestAnthropicWebFetch:
         ]
         assert len(wf_items) >= 1
         assert any(
-            wf.status == "failed" and isinstance(wf.action, ActionOpenPage)
+            wf.status == "failed" and isinstance(wf.action, OpenPageAction)
             for wf in wf_items
         )

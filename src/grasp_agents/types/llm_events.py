@@ -25,9 +25,6 @@ from openai.types.responses import (
     ResponseRefusalDoneEvent,
     ResponseTextDeltaEvent,
     ResponseTextDoneEvent,
-    ResponseWebSearchCallCompletedEvent,
-    ResponseWebSearchCallInProgressEvent,
-    ResponseWebSearchCallSearchingEvent,
 )
 from openai.types.responses.response_output_text import Logprob
 from openai.types.responses.response_text_delta_event import Logprob as DeltaLogprob
@@ -355,7 +352,7 @@ class FunctionCallArgumentsDone(ResponseFunctionCallArgumentsDoneEvent):
 # Web search events
 
 
-class WebSearchCallInProgress(ResponseWebSearchCallInProgressEvent):
+class WebSearchCallInProgress(BaseModel):
     """A web search call has been initiated."""
 
     type: Literal["response.web_search_call.in_progress"] = (
@@ -366,7 +363,7 @@ class WebSearchCallInProgress(ResponseWebSearchCallInProgressEvent):
     sequence_number: int
 
 
-class WebSearchCallSearching(ResponseWebSearchCallSearchingEvent):
+class WebSearchCallSearching(BaseModel):
     """A web search call is executing."""
 
     type: Literal["response.web_search_call.searching"] = (
@@ -377,7 +374,7 @@ class WebSearchCallSearching(ResponseWebSearchCallSearchingEvent):
     sequence_number: int
 
 
-class WebSearchCallCompleted(ResponseWebSearchCallCompletedEvent):
+class WebSearchCallCompleted(BaseModel):
     """A web search call has completed."""
 
     type: Literal["response.web_search_call.completed"] = (

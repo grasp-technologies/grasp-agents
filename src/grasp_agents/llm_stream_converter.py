@@ -35,6 +35,7 @@ from grasp_agents.types.items import (
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
     WebSearchCallItem,
     prefixed_id,
 )
@@ -153,7 +154,6 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
         self._reasoning_summary_part_text: str | None = None
 
         self._reasoning_encrypted_content: str | None = None
-        self._reasoning_cache_control: dict[str, Any] | None = None
         self._reasoning_redacted: bool = False
 
         # Tool calls (keyed by chunk tool_call index)
@@ -248,7 +248,6 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
         self._reasoning_open = True
         self._reasoning_id = item_id or prefixed_id("rs")
         self._reasoning_encrypted_content = None
-        self._reasoning_cache_control = None
         self._reasoning_redacted = False
 
         self._reasoning_summary_part_open = False
@@ -342,7 +341,6 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
             status="completed",
             summary_parts=list(self._reasoning_summary_parts),
             encrypted_content=self._reasoning_encrypted_content,
-            cache_control=self._reasoning_cache_control,
             redacted=self._reasoning_redacted,
         )
         self._items.append(reasoning_item)
@@ -386,6 +384,8 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
         self._text = ""
         self._logprobs = []
 
+        assert self._message_id is not None  # for mypy
+
         self._message_content_part_index = self._message_content_part_count
         self._message_content_part_count += 1
 
@@ -393,7 +393,7 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
-            item_id=self._message_id or "",
+            item_id=self._message_id,
             part=OutputMessageText(text="", citations=[]),
         )
 
@@ -454,6 +454,8 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
         return []
 
     def _open_refusal(self) -> Iterator[LlmEvent]:
+        assert self._message_id is not None  # for mypy
+
         self._refusal_open = True
         self._refusal = ""
 
@@ -464,7 +466,7 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
             content_index=self._message_content_part_index,
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
-            item_id=self._message_id or "",
+            item_id=self._message_id,
             part=OutputMessageRefusal(refusal=""),
         )
 
@@ -617,7 +619,7 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
             item=WebSearchCallItem(
                 id=item_id,
                 status="in_progress",
-                action={"type": "search", "query": ""},  # type: ignore[arg-type]
+                action=SearchAction(),
             ),
             output_index=output_index,
             sequence_number=self._next_seq(),

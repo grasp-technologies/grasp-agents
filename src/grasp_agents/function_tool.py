@@ -1,4 +1,5 @@
-"""Decorator to create a BaseTool from a plain function.
+"""
+Decorator to create a BaseTool from a plain function.
 
 Usage::
 
@@ -130,7 +131,8 @@ def function_tool(
     description: str | None = None,
     timeout: float | None = None,
 ) -> Any:
-    """Create a BaseTool from a function.
+    """
+    Create a BaseTool from a function.
 
     Can be used as a bare decorator or with keyword arguments::
 
@@ -168,10 +170,6 @@ def function_tool(
 def _get_type_hints_safe(fn: Any) -> dict[str, Any]:
     """Get type hints, handling forward references gracefully."""
     try:
-        return {
-            k: v
-            for k, v in fn.__annotations__.items()
-            if k != "return"
-        }
+        return {k: v for k, v in fn.__annotations__.items() if k != "return"}
     except Exception:
         return {}

@@ -1,13 +1,5 @@
 # pyright: reportUnusedImport=false
 
-from litellm.types.utils import ChatCompletionMessageToolCall as LiteLLMToolCall
-from litellm.types.utils import Choices as LiteLLMChoice
-from litellm.types.utils import Function as LiteLLMFunction
-from litellm.types.utils import Message as LiteLLMCompletionMessage
-from litellm.types.utils import ModelResponse as LiteLLMCompletion
-from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
-from litellm.types.utils import StreamingChoices as LiteLLMChunkChoice
-from litellm.types.utils import Usage as LiteLLMUsage
 from openai._streaming import (
     AsyncStream as OpenAIAsyncStream,  # type: ignore[import] # noqa: PLC2701
 )
@@ -100,6 +92,15 @@ from openai.types.chat.parsed_chat_completion import (
 from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
+
+from litellm.types.utils import ChatCompletionMessageToolCall as LiteLLMToolCall
+from litellm.types.utils import Choices as LiteLLMChoice
+from litellm.types.utils import Function as LiteLLMFunction
+from litellm.types.utils import Message as LiteLLMCompletionMessage
+from litellm.types.utils import ModelResponse as LiteLLMCompletion
+from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
+from litellm.types.utils import StreamingChoices as LiteLLMChunkChoice
+from litellm.types.utils import Usage as LiteLLMUsage
 
 from .lite_llm import LiteLLM, LiteLLMSettings
 

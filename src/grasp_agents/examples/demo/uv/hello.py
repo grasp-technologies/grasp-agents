@@ -44,9 +44,7 @@ Returns:
 
 class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, None]):
     def __init__(self) -> None:
-        super().__init__(
-            name="ask_student", description=ask_student_tool_description
-        )
+        super().__init__(name="ask_student", description=ask_student_tool_description)
 
     async def _run(self, inp: TeacherQuestion, **kwargs: Any) -> StudentReply:
         return input(inp.question)

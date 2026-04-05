@@ -57,7 +57,7 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
         self._grounding: GroundingMetadata | None = None
         self._url_context: UrlContextMetadata | None = None
 
-    def _process_raw_event(self, raw_event: GeminiResponse) -> Iterator[LlmEvent]:
+    def _process_event(self, raw_event: GeminiResponse) -> Iterator[LlmEvent]:
         chunk = raw_event
 
         # Start response on first chunk
@@ -179,13 +179,14 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
             yield from self._open_web_search(url_item.id)
             yield from self._close_web_search(url_item)
 
-        response_completed = super()._build_response_completed()
-
+        # Emit web search item from grounding metadata
         if self._grounding:
-            _, web_search_info = extract_web_search_data(self._grounding)
-            response_completed.response.web_search = web_search_info
+            web_search_item = extract_web_search_data(self._grounding)
+            if web_search_item:
+                yield from self._open_web_search(web_search_item.id)
+                yield from self._close_web_search(web_search_item)
 
-        yield response_completed
+        yield super()._build_response_completed()
 
     def _map_finish_reason(
         self,

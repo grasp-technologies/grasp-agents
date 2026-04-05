@@ -13,11 +13,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_function_web_search import (
-    ActionOpenPage,
-    ActionSearch,
-    ActionSearchSource,
-)
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
@@ -32,8 +27,13 @@ from anthropic.types import (
 )
 from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.content import Citation, UrlCitation
-from grasp_agents.types.items import WebSearchCallItem
-from grasp_agents.types.response import ResponseUsage, WebSearchInfo, WebSearchSource
+from grasp_agents.types.items import (
+    OpenPageAction,
+    SearchAction,
+    SearchSource,
+    WebSearchCallItem,
+)
+from grasp_agents.types.response import ResponseUsage
 
 from . import AnthropicStreamEvent
 
@@ -77,7 +77,7 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         # Track block type by index for content_block_stop dispatch
         self._block_types: dict[int, str] = {}
         # Web search sources from web_search_tool_result blocks
-        self._web_search_sources: list[WebSearchSource] = []
+        self._web_search_sources: list[SearchSource] = []
         # Pending server_tool_use blocks keyed by tool id
         self._pending_server_tools: dict[str, ServerToolState] = {}
         # Map block index → server tool id for input_json_delta buffering
@@ -291,29 +291,27 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
             except (json.JSONDecodeError, AttributeError):
                 pass
 
-        sources: list[ActionSearchSource] = []
+        sources: list[SearchSource] = []
         encrypted: dict[str, str] = {}
 
         if isinstance(block.content, list):
             for result in block.content:
-                sources.append(ActionSearchSource(type="url", url=result.url))
-                self._web_search_sources.append(
-                    WebSearchSource(
-                        url=result.url,
-                        title=result.title,
-                        page_age=result.page_age,
-                    )
+                source = SearchSource(
+                    url=result.url,
+                    title=result.title,
+                    page_age=result.page_age,
                 )
+                sources.append(source)
+                self._web_search_sources.append(source)
                 if result.encrypted_content:
                     encrypted[result.url] = result.encrypted_content
 
         item = WebSearchCallItem(
             id=server_state.tool_id if server_state else tool_use_id,
             status="completed",
-            action=ActionSearch(
-                type="search",
-                query=query,
-                sources=sources or None,
+            action=SearchAction(
+                queries=[query] if query else [],
+                sources=sources,
             ),
             provider_specific_fields=(
                 {"anthropic:encrypted_content": encrypted} if encrypted else None
@@ -343,7 +341,7 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
             item = WebSearchCallItem(
                 id=item_id,
                 status="completed",
-                action=ActionOpenPage(type="open_page", url=content.url),
+                action=OpenPageAction(url=content.url),
                 provider_specific_fields=psf or None,
             )
         else:
@@ -358,7 +356,7 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
             item = WebSearchCallItem(
                 id=item_id,
                 status="failed",
-                action=ActionOpenPage(type="open_page", url=call_url),
+                action=OpenPageAction(url=call_url),
                 provider_specific_fields={
                     "anthropic:error_code": content.error_code,
                 },
@@ -370,12 +368,7 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         return list(self._citations)  # type: ignore[list-item]
 
     def _build_response_completed(self) -> ResponseCompleted:
-        completed = super()._build_response_completed()
-        if self._web_search_sources:
-            completed.response.web_search = WebSearchInfo(
-                sources=list(self._web_search_sources),
-            )
-        return completed
+        return super()._build_response_completed()
 
     # ==== Hooks ====
 

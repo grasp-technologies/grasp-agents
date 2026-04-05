@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from google.genai import Client
+from google.genai.types import UrlContext
 
 from grasp_agents.cloud_llm import (
     ApiCallParams,
@@ -15,8 +16,6 @@ from grasp_agents.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
-
-from google.genai.types import UrlContext
 
 from . import GeminiConfig, GeminiGoogleSearch, GeminiGoogleSearchDict, GeminiTool
 from .error_mapping import map_api_error
@@ -30,8 +29,8 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
-    from grasp_agents.types.llm_errors import LlmError
     from grasp_agents.types.items import InputItem
+    from grasp_agents.types.llm_errors import LlmError
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
     from grasp_agents.types.tool import BaseTool, ToolChoice

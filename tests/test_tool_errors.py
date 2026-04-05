@@ -10,7 +10,6 @@ from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import ToolErrorEvent, ToolErrorInfo, ToolOutputEvent
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 
-
 # ---------- Test tools ----------
 
 
@@ -92,9 +91,7 @@ class CustomErrorTool(BaseTool[AddInput, str, Any]):
 
 class ReraisingTool(BaseTool[AddInput, int, Any]):
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(
-            name="reraising", description="Re-raises errors", **kwargs
-        )
+        super().__init__(name="reraising", description="Re-raises errors", **kwargs)
 
     async def _run(
         self,

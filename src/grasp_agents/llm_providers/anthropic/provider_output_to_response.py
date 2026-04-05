@@ -5,11 +5,6 @@ from typing import Any
 
 from openai.types.responses import ResponseStatus
 from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_function_web_search import (
-    ActionOpenPage,
-    ActionSearch,
-    ActionSearchSource,
-)
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
@@ -43,29 +38,30 @@ from grasp_agents.types.content import (
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
+    OpenPageAction,
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
+    SearchSource,
     WebSearchCallItem,
 )
 from grasp_agents.types.response import (
     Response,
     ResponseUsage,
-    WebSearchInfo,
-    WebSearchSource,
 )
 
 
-def _anthropic_message_to_items_and_web_search_info(
+def _anthropic_message_to_items(
     message: AnthropicMessage,
-) -> tuple[list[OutputItem], WebSearchInfo | None]:
+) -> list[OutputItem]:
     """
     Convert an Anthropic Message's content blocks to output items.
 
-    Returns (items, web_search_info). Consecutive TextBlocks are merged into
-    a single OutputMessageItem with citation annotations extracted.
-    Server tool blocks (server_tool_use + web_search_tool_result) are converted
-    to WebSearchCallItem with encrypted_content for round-trip.
+    Consecutive TextBlocks are merged into a single OutputMessageItem with
+    citation annotations extracted.  Server tool blocks (server_tool_use +
+    web_search_tool_result / web_fetch_tool_result) are converted to
+    WebSearchCallItem with encrypted_content for round-trip.
     """
     items: list[OutputItem] = []
 
@@ -74,9 +70,6 @@ def _anthropic_message_to_items_and_web_search_info(
 
     # Track server_tool_use blocks to pair with web_search_tool_result
     pending_server_tools: dict[str, AnthropicServerToolUseBlock] = {}
-
-    web_search_queries: list[str] = []
-    web_search_sources: list[WebSearchSource] = []
 
     def _flush_text() -> None:
         if pending_text_blocks:
@@ -114,12 +107,9 @@ def _anthropic_message_to_items_and_web_search_info(
 
         elif block.type == "web_search_tool_result":
             call_block = pending_server_tools.pop(block.tool_use_id, None)
-            search_item, queries, sources = _extract_web_search_data(
-                call_block=call_block, result_block=block
+            items.append(
+                _extract_web_search_data(call_block=call_block, result_block=block)
             )
-            items.append(search_item)
-            web_search_queries.extend(queries)
-            web_search_sources.extend(sources)
 
         elif block.type == "web_fetch_tool_result":
             call_block = pending_server_tools.pop(block.tool_use_id, None)
@@ -128,13 +118,7 @@ def _anthropic_message_to_items_and_web_search_info(
     _flush_text()
     _flush_thinking()
 
-    web_search_info = (
-        WebSearchInfo(queries=web_search_queries, sources=web_search_sources)
-        if web_search_sources
-        else None
-    )
-
-    return items, web_search_info
+    return items
 
 
 def _extract_citations(block: AnthropicTextBlock) -> list[UrlCitation]:
@@ -168,22 +152,32 @@ def _extract_citations(block: AnthropicTextBlock) -> list[UrlCitation]:
 def _extract_web_search_data(
     call_block: AnthropicServerToolUseBlock | None,
     result_block: AnthropicWebSearchToolResultBlock,
-) -> tuple[WebSearchCallItem, list[str], list[WebSearchSource]]:
+) -> WebSearchCallItem:
     """Convert server_tool_use + web_search_tool_result pair to a WebSearchCallItem."""
     query = ""
     if call_block is not None:
         query = str(call_block.input.get("query", ""))
         _ = call_block.caller
 
-    action_search_sources: list[ActionSearchSource] = []
-    web_search_sources: list[WebSearchSource] = []
+    item_id = call_block.id if call_block else result_block.tool_use_id
+
+    if isinstance(result_block.content, AnthropicWebSearchToolResultError):  # type: ignore[unreachable]
+        return WebSearchCallItem(
+            id=item_id,
+            status="failed",
+            action=SearchAction(queries=[query] if query else []),
+            provider_specific_fields={
+                "anthropic:error_code": result_block.content.error_code,
+            },
+        )
+
+    sources: list[SearchSource] = []
     encrypted: dict[str, str] = {}
 
     if isinstance(result_block.content, list):
         for result in result_block.content:
-            action_search_sources.append(ActionSearchSource(type="url", url=result.url))
-            web_search_sources.append(
-                WebSearchSource(
+            sources.append(
+                SearchSource(
                     url=result.url,
                     title=result.title,
                     page_age=result.page_age,
@@ -192,32 +186,17 @@ def _extract_web_search_data(
             if result.encrypted_content:
                 encrypted[result.url] = result.encrypted_content
 
-    elif isinstance(result_block.content, AnthropicWebSearchToolResultError):  # type: ignore[unreachable]
-        item = WebSearchCallItem(
-            id=call_block.id if call_block else result_block.tool_use_id,
-            status="failed",
-            action=ActionSearch(type="search", query=query),
-            provider_specific_fields={
-                "anthropic:error_code": result_block.content.error_code,
-            },
-        )
-        return item, [query], []
-
-    item = WebSearchCallItem(
-        id=call_block.id if call_block else result_block.tool_use_id,
+    return WebSearchCallItem(
+        id=item_id,
         status="completed",
-        action=ActionSearch(
-            type="search",
-            query=query,
-            queries=[query],
-            sources=action_search_sources or None,
+        action=SearchAction(
+            queries=[query] if query else [],
+            sources=sources,
         ),
         provider_specific_fields=(
             {"anthropic:encrypted_content": encrypted} if encrypted else None
         ),
     )
-
-    return item, [query], web_search_sources
 
 
 def _extract_web_fetch_data(
@@ -241,7 +220,7 @@ def _extract_web_fetch_data(
         return WebSearchCallItem(
             id=item_id,
             status="completed",
-            action=ActionOpenPage(type="open_page", url=content.url),
+            action=OpenPageAction(url=content.url),
             provider_specific_fields=psf or None,
         )
 
@@ -249,7 +228,7 @@ def _extract_web_fetch_data(
     return WebSearchCallItem(
         id=item_id,
         status="failed",
-        action=ActionOpenPage(type="open_page", url=call_url),
+        action=OpenPageAction(url=call_url),
         provider_specific_fields={
             "anthropic:error_code": content.error_code,
         },
@@ -332,9 +311,7 @@ def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
     """Convert an Anthropic ``Message`` to a grasp-agents ``Response``."""
     # NOTE: ignored AnthropicMessage fields: `container`, `model``, `stop_sequence`
 
-    output_items, web_search_info = _anthropic_message_to_items_and_web_search_info(
-        provider_output
-    )
+    output_items = _anthropic_message_to_items(provider_output)
     usage = _convert_usage(provider_output.usage)
     status, incomplete_details = _map_stop_reason(provider_output.stop_reason)
 
@@ -345,5 +322,4 @@ def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
         incomplete_details=incomplete_details,
         output_items=output_items,
         usage_with_cost=usage,
-        web_search=web_search_info,
     )

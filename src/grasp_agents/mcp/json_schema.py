@@ -83,9 +83,7 @@ def _resolve_type(
     """Resolve a JSON Schema property to a Python type annotation."""
     # $ref
     if "$ref" in prop_schema:
-        return _resolve_ref(
-            prop_schema["$ref"], defs, parent_name, resolving, cache
-        )
+        return _resolve_ref(prop_schema["$ref"], defs, parent_name, resolving, cache)
 
     # const → Literal
     if "const" in prop_schema:
@@ -110,8 +108,12 @@ def _resolve_type(
     # allOf → merge into single model
     if "allOf" in prop_schema:
         return _resolve_allof(
-            field_name, prop_schema["allOf"], defs, parent_name,
-            resolving, cache,
+            field_name,
+            prop_schema["allOf"],
+            defs,
+            parent_name,
+            resolving,
+            cache,
         )
 
     return _resolve_schema_node(
@@ -158,9 +160,7 @@ def _resolve_schema_node(
     """Resolve a schema node (not a field — could be a $ref target, etc.)."""
     # $ref
     if "$ref" in schema:
-        return _resolve_ref(
-            schema["$ref"], defs, parent_name, resolving, cache
-        )
+        return _resolve_ref(schema["$ref"], defs, parent_name, resolving, cache)
 
     # const → Literal
     if "const" in schema:
@@ -185,9 +185,7 @@ def _resolve_schema_node(
             return dict[str, Any]
         resolving.add(nested_name)
         try:
-            return _schema_to_model(
-                nested_name, schema, defs, resolving, cache
-            )
+            return _schema_to_model(nested_name, schema, defs, resolving, cache)
         finally:
             resolving.discard(nested_name)
 
@@ -195,8 +193,12 @@ def _resolve_schema_node(
     if json_type == "array":
         items_schema = schema.get("items", {"type": "string"})
         item_type = _resolve_schema_node(
-            f"{name}_item", items_schema, defs, parent_name,
-            resolving, cache,
+            f"{name}_item",
+            items_schema,
+            defs,
+            parent_name,
+            resolving,
+            cache,
         )
         return list[item_type]  # type: ignore[valid-type]
 
@@ -266,9 +268,7 @@ def _make_enum(name: str, values: list[Any]) -> type[Enum]:
     enum_name = _to_pascal(name)
 
     all_str = all(isinstance(v, str) for v in values)
-    all_int = all(
-        isinstance(v, int) and not isinstance(v, bool) for v in values
-    )
+    all_int = all(isinstance(v, int) and not isinstance(v, bool) for v in values)
 
     members: dict[str, Any] = {}
     for i, v in enumerate(values):
@@ -287,6 +287,4 @@ def _make_enum(name: str, values: list[Any]) -> type[Enum]:
 
 def _to_pascal(name: str) -> str:
     """Convert snake_case or kebab-case to PascalCase."""
-    return "".join(
-        part.capitalize() for part in name.replace("-", "_").split("_")
-    )
+    return "".join(part.capitalize() for part in name.replace("-", "_").split("_"))

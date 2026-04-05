@@ -42,18 +42,13 @@ from anthropic.types import (
     WebSearchToolResultBlock,
 )
 from anthropic.types.raw_message_delta_event import Delta as MessageDelta
-from openai.types.responses.response_function_web_search import (
-    ActionOpenPage,
-    ActionSearch,
-    ActionSearchSource,
-)
 from pydantic import BaseModel
 
 from grasp_agents.llm_providers.anthropic.llm_event_converters import (
     AnthropicStreamConverter,
 )
 from grasp_agents.llm_providers.anthropic.provider_output_to_response import (
-    _anthropic_message_to_items_and_web_search_info as items_from_anthropic_message,
+    _anthropic_message_to_items as items_from_anthropic_message,
 )
 from grasp_agents.llm_providers.anthropic.provider_output_to_response import (
     provider_output_to_response as from_anthropic_message,
@@ -70,8 +65,11 @@ from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
+    OpenPageAction,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
+    SearchSource,
     WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
@@ -130,7 +128,7 @@ async def _collect_events(
 class TestAssistantMessageToItems:
     def test_text_only(self):
         msg = _make_message([TextBlock(type="text", text="Hello world")])
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -145,7 +143,7 @@ class TestAssistantMessageToItems:
                 TextBlock(type="text", text="Second"),
             ]
         )
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
@@ -163,7 +161,7 @@ class TestAssistantMessageToItems:
                 TextBlock(type="text", text="The answer is 42"),
             ]
         )
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
@@ -183,7 +181,7 @@ class TestAssistantMessageToItems:
                 TextBlock(type="text", text="Answer"),
             ]
         )
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
@@ -203,7 +201,7 @@ class TestAssistantMessageToItems:
             ],
             stop_reason="tool_use",
         )
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 1
         assert isinstance(items[0], FunctionToolCallItem)
@@ -225,7 +223,7 @@ class TestAssistantMessageToItems:
             ],
             stop_reason="tool_use",
         )
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 2
         assert isinstance(items[0], OutputMessageItem)
@@ -252,7 +250,7 @@ class TestAssistantMessageToItems:
             ],
             stop_reason="tool_use",
         )
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 3
         assert isinstance(items[0], ReasoningItem)
@@ -934,7 +932,7 @@ class TestWebSearchExtraction:
     def test_extracts_web_search_call_item(self):
         server, result, text = _web_search_blocks()
         msg = _make_message([server, result, text])
-        items, web_search = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         # Should produce WebSearchCallItem + OutputMessageItem
         assert len(items) == 2
@@ -944,9 +942,8 @@ class TestWebSearchExtraction:
         assert ws_item.status == "completed"
 
         # Action carries query + sources
-        assert isinstance(ws_item.action, ActionSearch)
-        assert ws_item.action.query == "python 3.13 release date"
-        assert ws_item.action.sources is not None
+        assert isinstance(ws_item.action, SearchAction)
+        assert ws_item.action.queries[0] == "python 3.13 release date"
         assert len(ws_item.action.sources) == 2
         assert ws_item.action.sources[0].url == "https://python.org/downloads/"
         assert ws_item.action.sources[1].url == "https://blog.python.org/new"
@@ -961,12 +958,6 @@ class TestWebSearchExtraction:
         assert isinstance(items[1], OutputMessageItem)
         assert "3.13" in items[1].text
 
-        # WebSearchInfo backward compat
-        assert web_search is not None
-        assert len(web_search.sources) == 2
-        assert web_search.sources[0].title == "Python Releases"
-        assert web_search.sources[1].page_age is None
-
     def test_web_search_interleaved_with_tool_calls(self):
         """Web search + user tool call in same message → both extracted correctly."""
         server, result, _ = _web_search_blocks()
@@ -978,14 +969,13 @@ class TestWebSearchExtraction:
         )
         text = TextBlock(type="text", text="Here's what I found.")
         msg = _make_message([server, result, text, tool], stop_reason="tool_use")
-        items, web_search = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 3
         assert isinstance(items[0], WebSearchCallItem)
         assert isinstance(items[1], OutputMessageItem)
         assert isinstance(items[2], FunctionToolCallItem)
         assert items[2].name == "get_date"
-        assert web_search is not None
 
 
 class TestWebSearchRoundtrip:
@@ -995,7 +985,7 @@ class TestWebSearchRoundtrip:
         """Extract → reconstruct → verify block types and encrypted_content."""
         server, result, text = _web_search_blocks()
         msg = _make_message([server, result, text])
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         # Now convert back to Anthropic messages
         _, messages = items_to_anthropic_messages(items)
@@ -1025,11 +1015,10 @@ class TestWebSearchRoundtrip:
         ws_item = WebSearchCallItem(
             id="srvtoolu_multi",
             status="completed",
-            action=ActionSearch(
-                type="search",
-                query="latest news",
+            action=SearchAction(
+                queries=["latest news"],
                 sources=[
-                    ActionSearchSource(type="url", url="https://example.com"),
+                    SearchSource(url="https://example.com"),
                 ],
             ),
             provider_specific_fields={
@@ -1132,18 +1121,12 @@ class TestWebSearchStream:
         ws_item = ws_done[0].item
         assert isinstance(ws_item, WebSearchCallItem)
         assert ws_item.id == "srvtoolu_stream1"
-        assert isinstance(ws_item.action, ActionSearch)
-        assert ws_item.action.query == "test query"
-        assert ws_item.action.sources is not None
+        assert isinstance(ws_item.action, SearchAction)
+        assert ws_item.action.queries[0] == "test query"
         assert len(ws_item.action.sources) == 1
         assert ws_item.provider_specific_fields == {
             "anthropic:encrypted_content": {"https://example.com/a": "enc_stream_a"}
         }
-
-        # WebSearchInfo on ResponseCompleted (backward compat)
-        completed = [e for e in llm_events if isinstance(e, ResponseCompleted)]
-        assert completed[0].response.web_search is not None
-        assert len(completed[0].response.web_search.sources) == 1
 
         # Output ordering: web_search (0), message (1)
         added_indices = [
@@ -1280,19 +1263,19 @@ def _web_fetch_error_blocks() -> tuple[
 
 
 class TestWebFetchExtraction:
-    """server_tool_use + web_fetch_tool_result → WebSearchCallItem(ActionOpenPage)."""
+    """server_tool_use + web_fetch_tool_result → WebSearchCallItem(OpenPageAction)."""
 
     def test_success(self):
         server, result, text = _web_fetch_blocks()
         msg = _make_message([server, result, text])
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 2
         wf = items[0]
         assert isinstance(wf, WebSearchCallItem)
         assert wf.id == "srvtoolu_wf1"
         assert wf.status == "completed"
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.action.url == "https://example.com/page"
 
         psf = wf.provider_specific_fields
@@ -1307,13 +1290,13 @@ class TestWebFetchExtraction:
     def test_error(self):
         server, result, text = _web_fetch_error_blocks()
         msg = _make_message([server, result, text])
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 2
         wf = items[0]
         assert isinstance(wf, WebSearchCallItem)
         assert wf.status == "failed"
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.action.url == "https://unreachable.invalid"
         assert wf.provider_specific_fields is not None
         assert (
@@ -1330,11 +1313,11 @@ class TestWebFetchExtraction:
         )
         text = TextBlock(type="text", text="Here's the summary.")
         msg = _make_message([server, result, text, tool], stop_reason="tool_use")
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         assert len(items) == 3
         assert isinstance(items[0], WebSearchCallItem)
-        assert isinstance(items[0].action, ActionOpenPage)
+        assert isinstance(items[0].action, OpenPageAction)
         assert isinstance(items[1], OutputMessageItem)
         assert isinstance(items[2], FunctionToolCallItem)
 
@@ -1343,12 +1326,12 @@ class TestWebFetchExtraction:
 
 
 class TestWebFetchRoundtrip:
-    """WebSearchCallItem(ActionOpenPage) → server_tool_use + web_fetch_tool_result."""
+    """WebSearchCallItem(OpenPageAction) → server_tool_use + web_fetch_tool_result."""
 
     def test_success_roundtrip(self):
         server, result, text = _web_fetch_blocks()
         msg = _make_message([server, result, text])
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         _, messages = items_to_anthropic_messages(items)
         assert len(messages) == 1
@@ -1370,7 +1353,7 @@ class TestWebFetchRoundtrip:
     def test_error_roundtrip(self):
         server, result, text = _web_fetch_error_blocks()
         msg = _make_message([server, result, text])
-        items, _ = items_from_anthropic_message(msg)
+        items = items_from_anthropic_message(msg)
 
         _, messages = items_to_anthropic_messages(items)
         content: list[Any] = messages[0]["content"]  # type: ignore[assignment]
@@ -1385,7 +1368,7 @@ class TestWebFetchRoundtrip:
         wf_item = WebSearchCallItem(
             id="srvtoolu_wf_mt",
             status="completed",
-            action=ActionOpenPage(type="open_page", url="https://example.com"),
+            action=OpenPageAction(url="https://example.com"),
             provider_specific_fields={
                 "anthropic:title": "Example",
                 "anthropic:media_type": "text/plain",
@@ -1480,7 +1463,7 @@ class TestWebFetchStream:
         assert len(ws_done) == 1
         wf = ws_done[0].item
         assert isinstance(wf, WebSearchCallItem)
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.action.url == "https://example.com/streamed"
         assert wf.status == "completed"
         psf = wf.provider_specific_fields
@@ -1532,7 +1515,7 @@ class TestWebFetchStream:
         wf = ws_done[0].item
         assert isinstance(wf, WebSearchCallItem)
         assert wf.status == "failed"
-        assert isinstance(wf.action, ActionOpenPage)
+        assert isinstance(wf.action, OpenPageAction)
         assert wf.action.url == "https://bad.invalid"
         assert wf.provider_specific_fields is not None
         assert (

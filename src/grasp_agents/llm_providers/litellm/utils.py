@@ -62,7 +62,8 @@ def patch_thought_signatures(
     items: list[OutputItem],
     tool_calls: dict[int, ToolCallState],
 ) -> None:
-    """Distribute thought_signatures from provider_specific_fields onto items.
+    """
+    Distribute thought_signatures from provider_specific_fields onto items.
 
     Fallback for providers that send plain reasoning_content without
     thinking_blocks.  Signatures are matched positionally: first to

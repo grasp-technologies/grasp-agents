@@ -1,4 +1,5 @@
-"""Map OpenAI Responses SDK exceptions to LLMError types.
+"""
+Map OpenAI Responses SDK exceptions to LLMError types.
 
 Same SDK as OpenAI Completions — reuses its mapping.
 """

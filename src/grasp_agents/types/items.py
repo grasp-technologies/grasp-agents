@@ -7,7 +7,6 @@ from uuid import uuid4
 from openai.types.responses import (
     ResponseFunctionToolCall,
     ResponseFunctionToolCallOutputItem,
-    ResponseFunctionWebSearch,
     ResponseInputFile,
     ResponseInputImage,
     ResponseInputMessageItem,
@@ -17,9 +16,6 @@ from openai.types.responses import (
     ResponseOutputText,
     ResponseReasoningItem,
 )
-from openai.types.responses.response_function_web_search import (
-    Action as WebSearchAction,
-)
 from openai.types.responses.response_output_text import Annotation
 from openai.types.responses.response_reasoning_item import (
     Content as ResponseReasoningContent,
@@ -27,7 +23,7 @@ from openai.types.responses.response_reasoning_item import (
 from openai.types.responses.response_reasoning_item import (
     Summary as ResponseReasoningSummary,
 )
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic.json import pydantic_encoder
 
 from .content import (
@@ -228,6 +224,9 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
         default_factory=list[ToolOutputPart], frozen=True
     )
 
+    # Provider-specific opaque data for round-trip fidelity
+    provider_specific_fields: dict[str, Any] | None = None
+
     @property
     def text(self) -> str:
         if isinstance(self.output_parts, str):
@@ -298,7 +297,6 @@ class ReasoningItem(ResponseReasoningItem):
 
     # grasp-agents fields:
 
-    cache_control: dict[str, Any] | None = None
     redacted: bool = False
 
     content_parts: list[ReasoningText] | None = Field(default=None, frozen=True)
@@ -352,7 +350,6 @@ class ReasoningItem(ResponseReasoningItem):
                     content_parts=None,
                     summary_parts=[ReasoningSummary(text=block.get("thinking", ""))],
                     encrypted_content=block.get("signature"),
-                    cache_control=block.get("cache_control"),
                     redacted=False,
                     status="completed",
                 )
@@ -361,7 +358,6 @@ class ReasoningItem(ResponseReasoningItem):
                     content_parts=None,
                     summary_parts=[],
                     encrypted_content=block.get("data"),
-                    cache_control=block.get("cache_control"),
                     redacted=True,
                     status="completed",
                 )
@@ -399,11 +395,34 @@ class ReasoningItem(ResponseReasoningItem):
                 )
 
 
-class WebSearchCallItem(ResponseFunctionWebSearch):
-    """A server-side web search call record."""
+class SearchSource(BaseModel):
+    """A source found during a web search."""
 
-    # NOTE: ResponseFunctionWebSearch is Responses API-specific.
-    # Not sure if we need to inherit from it
+    url: str
+    title: str = ""
+    page_age: str | None = None
+
+
+class SearchAction(BaseModel):
+    """A web search action with queries and resulting sources."""
+
+    type: Literal["search"] = "search"
+    queries: list[str] | None = None
+    sources: list[SearchSource] | None = None
+
+
+class OpenPageAction(BaseModel):
+    """An action that opens/fetches a specific URL."""
+
+    type: Literal["open_page"] = "open_page"
+    url: str | None = None
+
+
+WebSearchAction: TypeAlias = SearchAction | OpenPageAction
+
+
+class WebSearchCallItem(BaseModel):
+    """A server-side web search or web fetch call record."""
 
     type: Literal["web_search_call"] = "web_search_call"
     id: str = Field(default_factory=lambda: prefixed_id("ws"))

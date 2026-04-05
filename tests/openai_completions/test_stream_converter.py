@@ -1317,7 +1317,8 @@ class TestLiteLLMThinkingBlocks:
         assert len(msgs) == 1
         assert msgs[0].text == "answer"
 
-    def test_cache_control_preserved(self):
+    def test_cache_control_on_thinking_block_ignored(self):
+        """Anthropic ThinkingBlockParam does not support cache_control."""
         events = asyncio.get_event_loop().run_until_complete(
             _collect_litellm(
                 LiteLLMStreamConverter(),
@@ -1340,7 +1341,8 @@ class TestLiteLLMThinkingBlocks:
         resp = _final_response(events).response
         reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
-        assert reasoning[0].cache_control == {"type": "ephemeral"}
+        # cache_control is no longer stored on ReasoningItem
+        assert not hasattr(reasoning[0], "cache_control")
 
 
 class TestLiteLLMAnnotations:

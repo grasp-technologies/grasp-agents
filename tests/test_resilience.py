@@ -16,6 +16,11 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from grasp_agents.fallback_llm import FallbackLLM
+from grasp_agents.llm import LLM
+from grasp_agents.resilience import RetryPolicy
+from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.items import InputItem, InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
     LlmApiTimeoutError,
@@ -27,11 +32,6 @@ from grasp_agents.types.llm_errors import (
     LlmInternalServerError,
     LlmRateLimitError,
 )
-from grasp_agents.fallback_llm import FallbackLLM
-from grasp_agents.llm import LLM
-from grasp_agents.resilience import RetryPolicy
-from grasp_agents.types.content import OutputMessageText
-from grasp_agents.types.items import InputItem, InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_events import (
     LlmEvent,
     OutputItemAdded,
@@ -125,7 +125,9 @@ class ErrorLLM(LLM):
     """Always raises a given error. Tracks call count."""
 
     error_to_raise: Exception = field(
-        default_factory=lambda: LlmInternalServerError("500", response=_R(500), body=None)
+        default_factory=lambda: LlmInternalServerError(
+            "500", response=_R(500), body=None
+        )
     )
 
     def __post_init__(self) -> None:
@@ -168,7 +170,9 @@ class FailThenSucceedLLM(LLM):
     """Fails with given error N times, then returns success."""
 
     error: LlmError = field(
-        default_factory=lambda: LlmInternalServerError("500", response=_R(500), body=None)
+        default_factory=lambda: LlmInternalServerError(
+            "500", response=_R(500), body=None
+        )
     )
     fail_count: int = 2
     success_response: Response = field(default_factory=lambda: _text_response("ok"))
@@ -227,7 +231,9 @@ class FailMidStreamLLM(LLM):
     """Yields partial events then raises — simulates mid-stream connection drop."""
 
     error_to_raise: LlmError = field(
-        default_factory=lambda: LlmInternalServerError("connection reset", response=_R(502), body=None)
+        default_factory=lambda: LlmInternalServerError(
+            "connection reset", response=_R(502), body=None
+        )
     )
 
     async def _generate_response_once(
@@ -282,7 +288,9 @@ class TestFallbackLLM:
         """Primary error → first fallback tried and succeeds."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LlmInternalServerError("overloaded", response=_R(503), body=None),
+            error_to_raise=LlmInternalServerError(
+                "overloaded", response=_R(503), body=None
+            ),
         )
         fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
 
@@ -296,11 +304,15 @@ class TestFallbackLLM:
         """All fail → last error raised, not first. Matters for debugging."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LlmRateLimitError("rate limited", response=_R(429), body=None),
+            error_to_raise=LlmRateLimitError(
+                "rate limited", response=_R(429), body=None
+            ),
         )
         fallback = ErrorLLM(
             model_name="fallback",
-            error_to_raise=LlmInternalServerError("server down", response=_R(500), body=None),
+            error_to_raise=LlmInternalServerError(
+                "server down", response=_R(500), body=None
+            ),
         )
 
         llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
@@ -341,7 +353,9 @@ class TestFallbackLLM:
         """
         primary = FailMidStreamLLM(
             model_name="primary",
-            error_to_raise=LlmInternalServerError("mid-stream crash", response=_R(502), body=None),
+            error_to_raise=LlmInternalServerError(
+                "mid-stream crash", response=_R(502), body=None
+            ),
         )
         fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
 
@@ -371,7 +385,9 @@ class TestFallbackLLM:
         """All candidates fail → ResponseFallback events emitted, then last error raised."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LlmRateLimitError("rate limited", response=_R(429), body=None),
+            error_to_raise=LlmRateLimitError(
+                "rate limited", response=_R(429), body=None
+            ),
         )
         fallback = ErrorLLM(
             model_name="fallback",
@@ -422,7 +438,9 @@ class TestAPIRetries:
         """Authentication error propagates immediately regardless of api_retries."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LlmAuthenticationError("bad key", response=_R(401), body=None),
+            error_to_raise=LlmAuthenticationError(
+                "bad key", response=_R(401), body=None
+            ),
             retry_policy=RetryPolicy(api_retries=5),
         )
 
@@ -435,7 +453,9 @@ class TestAPIRetries:
         """Context window exceeded is deterministic — no retry."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LlmContextWindowError("too long", response=_R(400), body=None),
+            error_to_raise=LlmContextWindowError(
+                "too long", response=_R(400), body=None
+            ),
             retry_policy=RetryPolicy(api_retries=5),
         )
 
@@ -449,7 +469,9 @@ class TestAPIRetries:
         """All retries fail → error propagated, not swallowed."""
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LlmInternalServerError("persistent failure", response=_R(500), body=None),
+            error_to_raise=LlmInternalServerError(
+                "persistent failure", response=_R(500), body=None
+            ),
             retry_policy=RetryPolicy(api_retries=2),
         )
 
@@ -491,7 +513,9 @@ class TestAPIRetries:
         """
         llm = ErrorLLM(
             model_name="mock",
-            error_to_raise=LlmAuthenticationError("expired", response=_R(401), body=None),
+            error_to_raise=LlmAuthenticationError(
+                "expired", response=_R(401), body=None
+            ),
             retry_policy=RetryPolicy(api_retries=3, validation_retries=3),
         )
 
@@ -508,8 +532,12 @@ class TestRetryPolicy:
 
     def test_transient_errors_are_retryable(self) -> None:
         policy = RetryPolicy()
-        assert policy.is_retryable_api_error(LlmRateLimitError("429", response=_R(429), body=None))
-        assert policy.is_retryable_api_error(LlmInternalServerError("500", response=_R(500), body=None))
+        assert policy.is_retryable_api_error(
+            LlmRateLimitError("429", response=_R(429), body=None)
+        )
+        assert policy.is_retryable_api_error(
+            LlmInternalServerError("500", response=_R(500), body=None)
+        )
         assert policy.is_retryable_api_error(LlmApiTimeoutError(request=_REQ))
         assert policy.is_retryable_api_error(LlmApiConnectionError(request=_REQ))
 

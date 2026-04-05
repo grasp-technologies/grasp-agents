@@ -11,7 +11,6 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from openai.types.responses.response_function_web_search import ActionOpenPage
 from pydantic import BaseModel, Field
 
 from grasp_agents.cloud_llm import APIProvider
@@ -20,6 +19,7 @@ from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
+    OpenPageAction,
     OutputMessageItem,
     WebSearchCallItem,
 )
@@ -356,8 +356,6 @@ class TestGeminiWebSearch:
         response = await llm.generate_response(input_items)
 
         assert response.output_text
-        assert response.web_search is not None
-        assert len(response.web_search.sources) > 0
 
         msg = response.message_items[0]
         all_annotations = [
@@ -385,8 +383,6 @@ class TestGeminiWebSearch:
         assert len(completed) == 1
         response = completed[0].response
         assert response.output_text
-        assert response.web_search is not None
-        assert len(response.web_search.sources) > 0
 
         msg = response.message_items[0]
         all_annotations = [
@@ -465,7 +461,7 @@ class TestGeminiUrlContext:
 
     @pytest.mark.asyncio
     async def test_url_context(self, llm: CloudLLM) -> None:
-        """UrlContext should produce WebSearchCallItem with ActionOpenPage."""
+        """UrlContext should produce WebSearchCallItem with OpenPageAction."""
         input_items = [
             InputMessageItem.from_text(
                 "Read https://httpbin.org/html and summarize the content."
@@ -477,7 +473,7 @@ class TestGeminiUrlContext:
         wf_items = [
             i
             for i in response.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(wf_items) >= 1
         assert wf_items[0].action.url  # type: ignore[union-attr]
@@ -500,7 +496,7 @@ class TestGeminiUrlContext:
         wf_items = [
             i
             for i in response.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(wf_items) >= 1
 
@@ -518,7 +514,7 @@ class TestGeminiUrlContext:
         wf_items = [
             i
             for i in response.output_items
-            if isinstance(i, WebSearchCallItem) and isinstance(i.action, ActionOpenPage)
+            if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(wf_items) >= 1
         assert any(wf.status == "failed" for wf in wf_items)

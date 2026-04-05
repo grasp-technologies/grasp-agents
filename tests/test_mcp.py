@@ -1,9 +1,11 @@
-"""Tests for MCP client integration.
+"""
+Tests for MCP client integration.
 
 Uses the test MCP server at tests/mcp_test_server.py via stdio transport.
 """
 
 import asyncio
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -72,8 +74,8 @@ class TestJsonSchemaToPydantic:
             "required": ["active", "score"],
         }
         model = json_schema_to_pydantic(schema, "Record")
-        instance = model(active=True, score=3.14)
-        assert instance.model_dump() == {"active": True, "score": 3.14}
+        instance = model(active=True, score=math.pi)
+        assert instance.model_dump() == {"active": True, "score": math.pi}
 
     def test_empty_schema(self) -> None:
         schema: dict[str, Any] = {"type": "object", "properties": {}}
@@ -601,18 +603,14 @@ class TestMCPResources:
     async def test_read_static_resource(self) -> None:
         async with MCPClient("test", server=_SERVER_CONFIG) as client:
             tools = {t.name: t for t in client.tools()}
-            result = await tools["test_read_resource"](
-                uri="docs://readme"
-            )
+            result = await tools["test_read_resource"](uri="docs://readme")
             assert "# Test Project" in result
 
     @pytest.mark.asyncio
     async def test_read_template_resource(self) -> None:
         async with MCPClient("test", server=_SERVER_CONFIG) as client:
             tools = {t.name: t for t in client.tools()}
-            result = await tools["test_read_resource"](
-                uri="docs://items/42"
-            )
+            result = await tools["test_read_resource"](uri="docs://items/42")
             assert '"id": "42"' in result
 
 
@@ -639,9 +637,7 @@ class TestMCPPrompts:
     @pytest.mark.asyncio
     async def test_get_prompt_with_default_arg(self) -> None:
         async with MCPClient("test", server=_SERVER_CONFIG) as client:
-            result = await client.get_prompt(
-                "summarize", {"text": "Hello world"}
-            )
+            result = await client.get_prompt("summarize", {"text": "Hello world"})
             assert len(result.messages) >= 1
             text = result.messages[0].content.text
             assert "Hello world" in text

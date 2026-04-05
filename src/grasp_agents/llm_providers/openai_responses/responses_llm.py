@@ -34,32 +34,15 @@ from grasp_agents.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
-from grasp_agents.types.llm_errors import LlmError
 from grasp_agents.types.items import InputItem
+from grasp_agents.types.llm_errors import LlmError
 from grasp_agents.types.llm_events import LlmEvent
 from grasp_agents.types.response import Response as InternalResponse
 from grasp_agents.types.tool import BaseTool, ToolChoice
 
 from .error_mapping import map_api_error
+from .response_to_provider_inputs import items_to_provider_inputs
 from .tool_converters import to_api_tool, to_api_tool_choice
-
-# Fields added by grasp-agents that are NOT part of the OpenAI Responses API
-_GRASP_EXTENSION_FIELDS = {
-    "content_parts",
-    "output_parts",
-    "summary_parts",
-    "cache_control",
-    "redacted",
-    "provider_specific_fields",
-}
-
-
-def _sanitize_for_api(items: Sequence[InputItem]) -> list[dict[str, Any]]:
-    return [
-        item.model_dump(exclude=_GRASP_EXTENSION_FIELDS, exclude_none=True, mode="json")
-        for item in items
-    ]
-
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +118,7 @@ class OpenAIResponsesLLM(CloudLLM):
             api_tools.append(web_search_tool_param)
 
         api_kwargs: ApiCallParams = ApiCallParams(
-            api_input=_sanitize_for_api(input),
+            api_input=items_to_provider_inputs(input),
             api_tools=api_tools,
             api_tool_choice=api_tool_choice,
         )

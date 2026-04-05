@@ -32,9 +32,7 @@ def map_api_error(err: Exception) -> LlmError | None:
     resp, body = err.response, err.body
     if code == 429:
         retry_after = _parse_retry_after(err)
-        return LlmRateLimitError(
-            msg, response=resp, body=body, retry_after=retry_after
-        )
+        return LlmRateLimitError(msg, response=resp, body=body, retry_after=retry_after)
 
     if code in {401, 403}:
         return LlmAuthenticationError(msg, response=resp, body=body)

@@ -8,10 +8,10 @@ import httpx
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .types.llm_errors import LlmError, LlmErrorTuple
 from .llm import LLM, LLMSettings
 from .rate_limiting.rate_limiter import RateLimiter, limit_rate
 from .types.items import InputItem
+from .types.llm_errors import LlmError, LlmErrorTuple
 from .types.llm_events import LlmEvent
 from .types.response import Response
 from .types.tool import BaseTool, ToolChoice

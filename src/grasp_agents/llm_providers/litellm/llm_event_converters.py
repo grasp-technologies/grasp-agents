@@ -2,7 +2,7 @@
 Stateful converter: LiteLLM ModelResponseStream → LlmEvent stream.
 
 Extends the base CompletionsStreamConverter with:
-- structured thinking_blocks (signatures, redacted blocks, cache_control)
+- structured thinking_blocks (signatures, redacted blocks)
 - annotations (URL citations from web search)
 - provider-specific metadata (hidden_params, response_ms, cost,
   provider_specific_fields)
@@ -212,8 +212,6 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
                 # New redacted block → separate item
                 yield from self._open_reasoning()
                 self._reasoning_encrypted_content = block.get("data")  # type: ignore[reportUnknownMemberType]
-                cc = block.get("cache_control")  # type: ignore[reportUnknownMemberType]
-                self._reasoning_cache_control = cc  # type: ignore[assignment]
                 self._reasoning_redacted = True
                 yield from self._close_reasoning()
 
@@ -231,10 +229,6 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
                 sig = block.get("signature")  # type: ignore[reportUnknownMemberType]
                 if sig:
                     self._reasoning_encrypted_content = sig
-
-                cc = block.get("cache_control")  # type: ignore[reportUnknownMemberType]
-                if cc:
-                    self._reasoning_cache_control = cc  # type: ignore[assignment]
 
                 if text:
                     yield from self._on_reasoning_content(text)
