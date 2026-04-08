@@ -1,4 +1,5 @@
 import asyncio
+import copy as copy_mod
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -8,6 +9,7 @@ from typing import (
     Generic,
     Literal,
     Protocol,
+    Self,
     TypeVar,
     runtime_checkable,
 )
@@ -54,11 +56,14 @@ class BaseTool(
         1: "_out_type",
     }
 
+    name: str = ""
+    description: str = ""
+
     def __init__(
         self,
         *,
-        name: str,
-        description: str,
+        name: str | None = None,
+        description: str | None = None,
         timeout: float | None = None,
         background: bool = False,
         tracing_exclude_input_fields: set[str] | None = None,
@@ -68,11 +73,19 @@ class BaseTool(
 
         super().__init__()
 
-        self.name = name
-        self.description = description
+        if name is not None:
+            self.name = name
+
+        if description is not None:
+            self.description = description
+
+        if not self.name:
+            raise ValueError(f"{type(self).__name__} must have a non-empty name")
+
         self.timeout = timeout
         self.background = background
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
+        self._llm_in_type: type[BaseModel] | None = None
 
     @property
     def in_type(self) -> type[_InT]:
@@ -82,6 +95,17 @@ class BaseTool(
     def out_type(self) -> type[_OutT_co]:
         return self._out_type
 
+    @property
+    def llm_in_type(self) -> type[BaseModel]:
+        """Schema the LLM sees for tool calls. Defaults to ``in_type``."""
+        return self._llm_in_type or self._in_type
+
+    @llm_in_type.setter
+    def llm_in_type(self, value: type[BaseModel]) -> None:
+        self._llm_in_type = value
+
+    # --- Internal execution (implemented by subclasses) ---
+
     @abstractmethod
     async def _run(
         self,
@@ -90,6 +114,7 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
     ) -> _OutT_co:
         pass
 
@@ -100,13 +125,20 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from .events import ToolOutputEvent  # avoid circular import
 
         out = await self._run(
-            inp, ctx=ctx, exec_id=exec_id, progress_callback=progress_callback
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            progress_callback=progress_callback,
+            session_id=session_id,
         )
         yield ToolOutputEvent(data=out, source=self.name, exec_id=exec_id)
+
+    # --- Error handling ---
 
     def _on_error_impl(self, error: Exception) -> ToolErrorInfo:
         logger.warning("Tool '%s' failed: %s", self.name, error)
@@ -124,54 +156,16 @@ class BaseTool(
 
         return self._on_error_impl(error)
 
-    async def _run_with_timeout(
-        self,
-        inp: _InT,
-        *,
-        ctx: RunContext[CtxT] | None = None,
-        exec_id: str | None = None,
-        progress_callback: ToolProgressCallback | None = None,
-        _validated: bool = False,
-    ) -> _OutT_co | ToolErrorInfo:
-        if _validated:
-            input_args = inp
-        else:
-            input_args = TypeAdapter(self.in_type).validate_python(inp)
-        try:
-            coro = self._run(
-                input_args,
-                ctx=ctx,
-                exec_id=exec_id,
-                progress_callback=progress_callback,
-            )
-            if self.timeout is not None:
-                result = await asyncio.wait_for(coro, timeout=self.timeout)
-            else:
-                result = await coro
-            return TypeAdapter(self.out_type).validate_python(result)
-        except Exception as e:
-            return self._on_error(e)
+    # --- Timeout wrappers ---
 
-    async def _run_stream_with_timeout(
+    async def _stream_with_timeout(
         self,
-        inp: _InT,
+        stream: AsyncIterator[Event[Any]],
         *,
-        ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        progress_callback: ToolProgressCallback | None = None,
-        _validated: bool = False,
     ) -> AsyncIterator[Event[Any]]:
-        if _validated:
-            input_args = inp
-        else:
-            input_args = TypeAdapter(self.in_type).validate_python(inp)
+        """Yield events from *stream*, applying timeout and error handling."""
         try:
-            stream = self._run_stream(
-                input_args,
-                ctx=ctx,
-                exec_id=exec_id,
-                progress_callback=progress_callback,
-            )
             if self.timeout is not None:
                 while True:
                     try:
@@ -188,6 +182,52 @@ class BaseTool(
             error_data = self._on_error(e)
             yield ToolErrorEvent(data=error_data, source=self.name, exec_id=exec_id)
 
+    async def _run_with_timeout(
+        self,
+        inp: _InT,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
+    ) -> _OutT_co | ToolErrorInfo:
+        try:
+            coro = self._run(
+                inp,
+                ctx=ctx,
+                exec_id=exec_id,
+                progress_callback=progress_callback,
+                session_id=session_id,
+            )
+            if self.timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=self.timeout)
+            else:
+                result = await coro
+            return result  # type: ignore[return-value]
+        except Exception as e:
+            return self._on_error(e)
+
+    async def _run_stream_with_timeout(
+        self,
+        inp: _InT,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        stream = self._run_stream(
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            progress_callback=progress_callback,
+            session_id=session_id,
+        )
+        async for event in self._stream_with_timeout(stream, exec_id=exec_id):
+            yield event
+
+    # --- Public API ---
+
     async def __call__(
         self,
         *,
@@ -196,8 +236,9 @@ class BaseTool(
         progress_callback: ToolProgressCallback | None = None,
         **kwargs: Any,
     ) -> _OutT_co | ToolErrorInfo:
+        inp = TypeAdapter(self.in_type).validate_python(kwargs)
         return await self._run_with_timeout(
-            kwargs,  # type: ignore[arg-type]
+            inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
@@ -210,14 +251,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        _validated: bool = False,
+        session_id: str | None = None,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            _validated=_validated,
+            session_id=session_id,
         )
 
     async def run_stream(
@@ -227,13 +268,57 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        _validated: bool = False,
+        session_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            _validated=_validated,
+            session_id=session_id,
         ):
             yield event
+
+    # --- Session persistence (overridden by resumable tools) ---
+
+    @property
+    def resumable(self) -> bool:
+        return False
+
+    async def resume_stream(
+        self,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+        session_id: str | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        """Resume from a session checkpoint. Override in resumable tools."""
+        raise NotImplementedError(f"{type(self).__name__} does not support resume")
+        yield  # type: ignore[unreachable]  # makes this an async generator
+
+    # --- Copy ---
+
+    # Attributes that should be shared (not deepcopied) across copies.
+    # Subclasses add entries for shared resources like network sessions.
+    _copy_shared_attrs: ClassVar[frozenset[str]] = frozenset()
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        for attr in self._copy_shared_attrs:
+            val = getattr(self, attr, None)
+            if val is not None:
+                memo[id(val)] = val
+        cls = type(self)
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        for k, v in copy_mod.deepcopy(dict(self.__dict__), memo).items():
+            object.__setattr__(new, k, v)
+        return new
+
+    def copy(self) -> Self:
+        """
+        Deep copy with shared attributes preserved by reference.
+
+        Attributes listed in ``_copy_shared_attrs`` are kept as-is
+        (via ``__deepcopy__``); everything else is deep-copied.
+        """
+        return copy_mod.deepcopy(self)

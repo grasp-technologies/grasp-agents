@@ -492,6 +492,7 @@ class _WeatherTool(BaseTool[_WeatherInput, str, None]):
         ctx: Any = None,  # noqa: ARG002
         exec_id: str | None = None,  # noqa: ARG002
         progress_callback: Any = None,  # noqa: ARG002
+        session_id: str | None = None,  # noqa: ARG002
     ) -> str:
         return f"Weather in {inp.city}"
 

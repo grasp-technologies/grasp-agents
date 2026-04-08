@@ -56,7 +56,7 @@ from .utils.streaming import stream_concurrent
 logger = getLogger(__name__)
 
 
-CheckpointCallback = Callable[[], Awaitable[None]]
+CheckpointCallback = Callable[[RunContext[Any]], Awaitable[None]]
 
 
 class ResponseCapture:
@@ -190,10 +190,10 @@ class AgentLoop(Generic[CtxT]):
     def tracing_exclude_input_fields(self) -> set[str] | None:
         return self._tracing_exclude_input_fields
 
-    async def checkpoint(self) -> None:
+    async def checkpoint(self, ctx: RunContext[CtxT]) -> None:
         """Persist session state if a checkpoint callback is configured."""
         if self.checkpoint_callback:
-            await self.checkpoint_callback()
+            await self.checkpoint_callback(ctx)
 
     # --- Hook dispatch ---
 
@@ -282,7 +282,7 @@ class AgentLoop(Generic[CtxT]):
     ) -> BaseModel:
         tool = self.tools[call.name]
         args = json.loads(call.arguments)
-        llm_args = TypeAdapter(tool.in_type).validate_python(args)
+        llm_args = TypeAdapter(tool.llm_in_type).validate_python(args)
         converter = self.tool_input_converters.get(tool.name)
 
         if converter is not None:
@@ -338,13 +338,14 @@ class AgentLoop(Generic[CtxT]):
 
         if self._stream_llm_responses:
             async for se in self.llm.generate_response_stream(**llm_params):
-                item = getattr(se, "item", None)
-                if isinstance(
-                    item, (OutputMessageItem, FunctionToolCallItem, ReasoningItem)
-                ):
-                    self.memory.update([item], ctx=ctx)
-
                 if isinstance(se, OutputItemDone):
+                    item = se.item
+                    if isinstance(
+                        item,
+                        (OutputMessageItem, FunctionToolCallItem, ReasoningItem),
+                    ):
+                        self.memory.update([item], ctx=ctx)
+
                     if isinstance(item, FunctionToolCallItem):
                         yield ToolCallItemEvent(
                             source=self.agent_name,
@@ -443,7 +444,6 @@ class AgentLoop(Generic[CtxT]):
                     inp=inp,
                     ctx=ctx,
                     exec_id=exec_id,
-                    _validated=True,
                 )
                 for _, t, inp in immediate
             ]
@@ -460,7 +460,6 @@ class AgentLoop(Generic[CtxT]):
                         inp,
                         ctx=ctx,
                         exec_id=exec_id,
-                        _validated=True,
                     )
                     for _, t, inp in immediate
                 ],
@@ -628,7 +627,7 @@ class AgentLoop(Generic[CtxT]):
                     turn > 0 and not had_tool_calls and self.bg_tasks.has_pending
                 )
                 async for event in self.bg_tasks.drain(
-                    wait=should_wait, exec_id=exec_id
+                    wait=should_wait, exec_id=exec_id, ctx=ctx
                 ):
                     yield event
 
@@ -678,7 +677,7 @@ class AgentLoop(Generic[CtxT]):
                 stop = self._check_stop(response, turn, ctx=ctx, exec_id=exec_id)
 
                 if stop == StopReason.FINAL_ANSWER:
-                    await self.checkpoint()
+                    await self.checkpoint(ctx)
 
                     yield TurnEndEvent(
                         source=self.agent_name,
@@ -692,7 +691,7 @@ class AgentLoop(Generic[CtxT]):
                     return
 
                 if stop == StopReason.MAX_TURNS:
-                    await self.bg_tasks.cancel_all()
+                    await self.bg_tasks.cancel_all(ctx=ctx)
                     self._close_dangling_tool_calls(response)
 
                     async for event in self._force_generate_final_answer_stream(
@@ -702,7 +701,7 @@ class AgentLoop(Generic[CtxT]):
                     ):
                         yield event
 
-                    await self.checkpoint()
+                    await self.checkpoint(ctx)
 
                     yield TurnEndEvent(
                         source=self.agent_name,
@@ -744,7 +743,7 @@ class AgentLoop(Generic[CtxT]):
                         exec_id=exec_id,
                     )
 
-                    await self.checkpoint()
+                    await self.checkpoint(ctx)
 
                 yield TurnEndEvent(
                     source=self.agent_name,
@@ -755,18 +754,15 @@ class AgentLoop(Generic[CtxT]):
                 had_tool_calls = bool(tool_calls)
 
         finally:
-            await self.bg_tasks.cancel_all()
+            await self.bg_tasks.cancel_all(ctx=ctx)
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self._final_answer_type, None, Any]):
-            def __init__(self) -> None:
-                super().__init__(
-                    name="final_answer",
-                    description=(
-                        "You must call this tool to provide the final answer. "
-                        "DO NOT output your answer before calling the tool. "
-                    ),
-                )
+            name = "final_answer"
+            description = (
+                "You must call this tool to provide the final answer. "
+                "DO NOT output your answer before calling the tool. "
+            )
 
             async def _run(
                 self,
@@ -775,6 +771,7 @@ class AgentLoop(Generic[CtxT]):
                 ctx: RunContext[Any] | None = None,
                 exec_id: str | None = None,
                 progress_callback: Any = None,
+                session_id: str | None = None,
             ) -> None:
                 return None
 

@@ -1,15 +1,14 @@
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, Generic
+from typing import Any, Generic
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from .llm_agent_memory import LLMAgentMemory
-from .processors.processor_tool import ProcessorTool
 from .run_context import CtxT, RunContext
 from .sessions.task_record import TaskRecord, TaskStatus
 from .types.events import (
@@ -17,16 +16,39 @@ from .types.events import (
     BackgroundTaskInfo,
     BackgroundTaskLaunchedEvent,
     Event,
+    ToolErrorEvent,
     ToolErrorInfo,
+    ToolOutputEvent,
     UserMessageEvent,
 )
 from .types.items import FunctionToolCallItem, InputMessageItem
 from .types.tool import BaseTool
 
-if TYPE_CHECKING:
-    from .sessions.store import CheckpointStore
-
 logger = getLogger(__name__)
+
+
+def _task_notification(
+    *,
+    task_id: str,
+    tool_name: str,
+    status: str,
+    result: str | None = None,
+    error: str | None = None,
+) -> str:
+    """Build an XML-tagged task notification for LLM consumption."""
+    parts = [
+        "<task_notification>",
+        f"<task_id>{task_id}</task_id>",
+        f"<tool_name>{tool_name}</tool_name>",
+        f"<status>{status}</status>",
+    ]
+    if result is not None:
+        parts.append(f"<result>\n{result}\n</result>")
+    if error is not None:
+        parts.append(f"<error>\n{error}\n</error>")
+    parts.append("</task_notification>")
+
+    return "\n".join(parts)
 
 
 @dataclass
@@ -38,6 +60,25 @@ class PendingTask:
     exec_id: str
     tool_call_id: str
     task: asyncio.Task[Any]
+    events: asyncio.Queue[Event[Any] | None] = field(
+        default_factory=lambda: asyncio.Queue[Event[Any] | None]()
+    )
+
+
+async def _stream_to_result(
+    stream: AsyncIterator[Event[Any]],
+    queue: asyncio.Queue[Event[Any] | None],
+) -> Any:
+    """Run a tool's run_stream, forwarding events to queue. Return result."""
+    result: Any = None
+    async for event in stream:
+        if isinstance(event, ToolOutputEvent):
+            result = event.data
+        elif isinstance(event, ToolErrorEvent):
+            result = event.data  # ToolErrorInfo
+        await queue.put(event)
+    await queue.put(None)  # sentinel: stream finished
+    return result
 
 
 class BackgroundTaskManager(Generic[CtxT]):
@@ -56,7 +97,6 @@ class BackgroundTaskManager(Generic[CtxT]):
         self._tasks: dict[str, PendingTask] = {}
 
         # Session persistence — set by LLMAgent when enabled
-        self.store: CheckpointStore | None = None
         self.session_id: str | None = None
 
     @property
@@ -75,38 +115,30 @@ class BackgroundTaskManager(Generic[CtxT]):
         task_id = str(uuid4())[:8]
         child_session_id: str | None = None
 
-        # Session-capable processor tools get their own child session
-        is_session_tool = (
-            isinstance(tool, ProcessorTool)
-            and tool.resumable
-            and self.store
-            and self.session_id
-        )
-        if is_session_tool:
+        # Resumable tools get their own child session
+        if tool.resumable and ctx.store and self.session_id:
             child_session_id = f"child/{self.session_id}/{task_id}"
 
         # Persist task record BEFORE spawning — survives crashes
-        if self.store and self.session_id:
+        if ctx.store and self.session_id:
             record = TaskRecord(
                 task_id=task_id,
                 parent_session_id=self.session_id,
                 tool_call_id=call.call_id,
                 tool_name=call.name,
+                tool_call_arguments=call.arguments,
                 child_session_id=child_session_id,
             )
-            await self.store.save(record.store_key, record.model_dump_json().encode())
+            await ctx.store.save(record.store_key, record.model_dump_json().encode())
 
-        async_task: asyncio.Task[Any]
-        if child_session_id and isinstance(tool, ProcessorTool) and self.store:
-            child_proc = tool.processor.copy()
-            child_proc.configure_session(child_session_id, self.store)  # LLMAgent
-            async_task = asyncio.create_task(
-                child_proc.run(in_args=inp, exec_id=exec_id, ctx=ctx)
-            )
-        else:
-            async_task = asyncio.create_task(
-                tool.run(inp, ctx=ctx, exec_id=exec_id, _validated=True)
-            )
+        queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
+        stream = tool.run_stream(
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            session_id=child_session_id,
+        )
+        async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
         self._tasks[task_id] = PendingTask(
             task_id=task_id,
@@ -114,6 +146,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             exec_id=exec_id,
             tool_call_id=call.call_id,
             task=async_task,
+            events=queue,
         )
 
         event = BackgroundTaskLaunchedEvent(
@@ -129,7 +162,9 @@ class BackgroundTaskManager(Generic[CtxT]):
 
     # --- Drain ---
 
-    async def drain(self, *, wait: bool, exec_id: str) -> AsyncIterator[Event[Any]]:
+    async def drain(
+        self, *, wait: bool, exec_id: str, ctx: RunContext[CtxT]
+    ) -> AsyncIterator[Event[Any]]:
         """Check for completed background tasks, optionally waiting."""
         if not self._tasks:
             return
@@ -138,6 +173,14 @@ class BackgroundTaskManager(Generic[CtxT]):
             pending = {pt.task for pt in self._tasks.values()}
             await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
+        # Yield buffered subagent events from all tasks
+        for pt in self._tasks.values():
+            while not pt.events.empty():
+                event = pt.events.get_nowait()
+                if event is not None:
+                    yield event
+
+        # Handle completed tasks
         completed_ids = [tid for tid, pt in self._tasks.items() if pt.task.done()]
 
         for tid in completed_ids:
@@ -149,18 +192,22 @@ class BackgroundTaskManager(Generic[CtxT]):
                 result = exc
                 failed = True
 
-            status = "failed" if failed else "completed"
             notification = InputMessageItem.from_text(
-                f"[Background tool '{pt.tool_name}' {status}"
-                f" (id: {pt.task_id})]\n\n{result}",
+                _task_notification(
+                    task_id=pt.task_id,
+                    tool_name=pt.tool_name,
+                    status="failed" if failed else "completed",
+                    result=None if failed else str(result),
+                    error=str(result) if failed else None,
+                ),
                 role="user",
             )
             self._memory.update([notification])
 
-            # Mark record as DELIVERED — notification reached memory
-            if self.store and self.session_id:
+            # Mark record as DELIVERED
+            if ctx.store and self.session_id:
                 key = f"task/{self.session_id}/{pt.task_id}"
-                existing = await self.store.load(key)
+                existing = await ctx.store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
                     record = record.model_copy(
@@ -171,7 +218,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                             "updated_at": datetime.now(UTC),
                         }
                     )
-                    await self.store.save(key, record.model_dump_json().encode())
+                    await ctx.store.save(key, record.model_dump_json().encode())
 
             yield BackgroundTaskCompletedEvent(
                 source=self._agent_name,
@@ -190,12 +237,14 @@ class BackgroundTaskManager(Generic[CtxT]):
 
     # --- Cancel ---
 
-    async def cancel_all(self) -> None:
+    async def cancel_all(self, ctx: RunContext[CtxT] | None = None) -> None:
         """Cancel all pending background tasks and wait for cleanup."""
-        if self.store and self.session_id:
+        store = ctx.store if ctx else None
+
+        if store and self.session_id:
             for pt in self._tasks.values():
                 key = f"task/{self.session_id}/{pt.task_id}"
-                existing = await self.store.load(key)
+                existing = await store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
                     record = record.model_copy(
@@ -205,7 +254,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                             "updated_at": datetime.now(UTC),
                         }
                     )
-                    await self.store.save(key, record.model_dump_json().encode())
+                    await store.save(key, record.model_dump_json().encode())
 
         tasks = [pt.task for pt in self._tasks.values()]
         for t in tasks:
@@ -223,12 +272,13 @@ class BackgroundTaskManager(Generic[CtxT]):
         exec_id: str | None = None,
     ) -> None:
         """On resume, re-spawn or notify about interrupted background tasks."""
-        if not self.store or not self.session_id:
+        store = ctx.store if ctx else None
+        if not store or not self.session_id:
             return
 
-        keys = await self.store.list_keys(f"task/{self.session_id}/")
+        keys = await store.list_keys(f"task/{self.session_id}/")
         for key in keys:
-            data = await self.store.load(key)
+            data = await store.load(key)
             if data is None:
                 continue
 
@@ -247,8 +297,12 @@ class BackgroundTaskManager(Generic[CtxT]):
                     continue
 
                 notification = InputMessageItem.from_text(
-                    f"[Background tool '{record.tool_name}' was interrupted "
-                    f"(id: {record.task_id}) and did not complete]",
+                    _task_notification(
+                        task_id=record.task_id,
+                        tool_name=record.tool_name,
+                        status="interrupted",
+                        error="Session restarted before completion",
+                    ),
                     role="user",
                 )
                 record = record.model_copy(
@@ -261,8 +315,12 @@ class BackgroundTaskManager(Generic[CtxT]):
             elif record.status == TaskStatus.COMPLETED:
                 # Completed between drain and checkpoint — re-inject
                 notification = InputMessageItem.from_text(
-                    f"[Background tool '{record.tool_name}' completed "
-                    f"(id: {record.task_id})]\n\n{record.result}",
+                    _task_notification(
+                        task_id=record.task_id,
+                        tool_name=record.tool_name,
+                        status="completed",
+                        result=record.result,
+                    ),
                     role="user",
                 )
                 record = record.model_copy(
@@ -275,7 +333,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                 continue
 
             self._memory.update([notification])
-            await self.store.save(record.store_key, record.model_dump_json().encode())
+            await store.save(record.store_key, record.model_dump_json().encode())
 
         logger.info(
             "Handled %d task records for session %s",
@@ -290,28 +348,31 @@ class BackgroundTaskManager(Generic[CtxT]):
         ctx: RunContext[CtxT] | None,
         exec_id: str | None,
     ) -> bool:
-        """Re-spawn a child task from its checkpoint if possible."""
+        """Re-spawn a child task from its session checkpoint."""
         if not record.child_session_id or not ctx or not exec_id:
             return False
-        if not self.store:
+        if not ctx.store:
             return False
 
         tool = self._tools.get(record.tool_name) if self._tools else None
-        if not isinstance(tool, ProcessorTool) or not tool.resumable:
+        if not tool or not tool.resumable:
             return False
 
-        child_proc = tool.processor.copy()
-        child_proc.configure_session(record.child_session_id, self.store)
-
-        async_task: asyncio.Task[Any] = asyncio.create_task(
-            child_proc.resume(ctx=ctx, exec_id=exec_id)
+        queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
+        stream = tool.resume_stream(
+            ctx=ctx,
+            exec_id=exec_id,
+            session_id=record.child_session_id,
         )
+        async_task = asyncio.create_task(_stream_to_result(stream, queue))
+
         self._tasks[record.task_id] = PendingTask(
             task_id=record.task_id,
             tool_name=record.tool_name,
             exec_id=exec_id,
             tool_call_id=record.tool_call_id,
             task=async_task,
+            events=queue,
         )
         logger.info(
             "Re-spawned child task %s (%s) from session %s",

@@ -43,10 +43,10 @@ Returns:
 
 
 class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, None]):
-    def __init__(self) -> None:
-        super().__init__(name="ask_student", description=ask_student_tool_description)
+    name = "ask_student"
+    description = ask_student_tool_description
 
-    async def _run(self, inp: TeacherQuestion, **kwargs: Any) -> StudentReply:
+    async def _run(self, inp: TeacherQuestion, **kwargs: Any) -> StudentReply:  # type: ignore[override]
         return input(inp.question)
 
 

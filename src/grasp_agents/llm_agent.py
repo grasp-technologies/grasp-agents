@@ -17,9 +17,6 @@ from .prompt_builder import PromptBuilder
 from .run_context import CtxT, RunContext
 from .sessions.resume import prepare_messages_for_resume
 from .sessions.snapshot import SessionSnapshot
-from .sessions.store import CheckpointStore
-
-logger = logging.getLogger(__name__)
 from .types.content import Content, InputImage
 from .types.events import (
     Event,
@@ -47,6 +44,8 @@ from .types.tool import BaseTool
 from .utils.callbacks import is_method_overridden
 from .utils.io import get_prompt
 from .utils.validation import validate_obj_from_json_or_py_string
+
+logger = logging.getLogger(__name__)
 
 
 class CallArgs(TypedDict):
@@ -96,7 +95,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         tracing_exclude_input_fields: set[str] | None = None,
         # Session persistence (opt-in)
         session_id: str | None = None,
-        store: CheckpointStore | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
@@ -106,7 +104,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             max_retries=max_retries,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            store=store,
         )
 
         if tracing_exclude_input_fields:
@@ -126,6 +123,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Don't narrow the base '_memory' type (Memory in BaseProcessor)
         self._memory = memory or LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
+
+        # Wire parent context for AgentTool instances (after memory init)
+        from .agent_tool import AgentTool  # local: avoid circular
+
+        for tool in tools or []:
+            if isinstance(tool, AgentTool):
+                tool.set_parent_memory(self._memory)  # type: ignore[arg-type]
+                if tool.inherit_tools:
+                    tool.set_parent_tools(tools or [])
 
         # Prompt builder
 
@@ -175,10 +181,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
-        # Wire persistence callbacks if enabled
-        if self._store and self._session_id:
+        # Wire persistence callbacks if session_id provided
+        if self._session_id:
             self._loop.checkpoint_callback = self._save_checkpoint
-            self._loop.bg_tasks.store = self._store
             self._loop.bg_tasks.session_id = self._session_id
 
         self._register_overridden_implementations()
@@ -229,55 +234,34 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def resumable(self) -> bool:
         return True
 
-    def configure_session(self, session_id: str, store: CheckpointStore) -> None:
-        """Dynamically set up session persistence for this agent."""
-        self._session_id: str | None = session_id
-        self._store: CheckpointStore | None = store
+    def reset_session(self, session_id: str) -> None:
+        """
+        Dynamically set up session persistence for this agent.
+
+        Store is read from ``ctx.store`` at runtime.
+        """
+        self._session_id = session_id
         self._session_loaded = False
         self._session_snapshot = None
         self._session_turn_number = 0
-        # Re-wire loop persistence
         self._loop.checkpoint_callback = self._save_checkpoint
-        self._loop.bg_tasks.store = store
         self._loop.bg_tasks.session_id = session_id
-
-    async def resume(
-        self,
-        *,
-        ctx: RunContext[CtxT] | None = None,
-        exec_id: str | None = None,
-    ) -> OutT:
-        """Resume from a persisted session checkpoint (no new input)."""
-        assert ctx is not None
-        assert exec_id is not None
-        await self._maybe_load_session(ctx=ctx, exec_id=exec_id)
-
-        call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
-        stream = ResponseCapture(self._loop.execute_stream(**call_kwargs))
-        async for _ in stream:
-            pass
-
-        assert self._loop.final_answer is not None
-        return self.parse_output(
-            self._loop.final_answer,
-            in_args=None,
-            **call_kwargs,
-        )
 
     async def _maybe_load_session(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT],
         exec_id: str | None = None,
     ) -> None:
         """Load session snapshot from store on first run (if available)."""
-        if self._store is None or self._session_id is None:
+        store = ctx.store
+        if store is None or self._session_id is None:
             return
         if not self.memory.is_empty:
             return  # Already has messages — don't reload
 
         assert self._session_store_key is not None
-        data = await self._store.load(self._session_store_key)
+        data = await store.load(self._session_store_key)
         if data is None:
             return  # Fresh session
 
@@ -301,9 +285,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         await self._loop.bg_tasks.handle_pending(ctx=ctx, exec_id=exec_id)
 
-    async def _save_checkpoint(self) -> None:
+    async def _save_checkpoint(self, ctx: RunContext[CtxT]) -> None:
         """Persist current conversation state to the store."""
-        if self._store is None or self._session_id is None:
+        store = ctx.store
+        if store is None or self._session_id is None:
             return
 
         now = datetime.now(UTC)
@@ -323,7 +308,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._session_snapshot = snapshot
 
         assert self._session_store_key is not None
-        await self._store.save(
+        await store.save(
             self._session_store_key,
             snapshot.model_dump_json().encode("utf-8"),
         )
@@ -343,7 +328,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         )
         # If store is set, don't reset — the store manages memory lifetime.
         # If a session was just loaded, also skip reset (one-time flag).
-        has_store = self._store is not None and self._session_id is not None
+        has_store = ctx.store is not None and self._session_id is not None
         fresh_init = (
             (self._reset_memory_on_run and not has_store) or self.memory.is_empty
         ) and not self._session_loaded
@@ -398,6 +383,24 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         return self.parse_output_default(final_answer)
 
+    def validate_inputs(
+        self,
+        exec_id: str,
+        chat_inputs: Any = None,
+        in_packet: Any = None,
+        in_args: Any = None,
+    ) -> list[InT] | None:
+        # Allow no inputs when a session is configured (resume case)
+        has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
+        if not has_input and self._session_id is not None:
+            return None
+        return super().validate_inputs(
+            exec_id=exec_id,
+            chat_inputs=chat_inputs,
+            in_packet=in_packet,
+            in_args=in_args,
+        )
+
     def _extract_input_args(
         self, in_args: list[InT] | None, exec_id: str
     ) -> InT | None:
@@ -425,26 +428,32 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Auto-load session from store on first run
         await self._maybe_load_session(ctx=ctx, exec_id=exec_id)
 
-        messages_to_expose = self._memorize_inputs(
-            chat_inputs=chat_inputs, in_args=inp, **call_kwargs
-        )
-        self._print_messages(messages_to_expose, **call_kwargs)
-        for message in messages_to_expose:
-            if message.role == "system":
-                yield SystemMessageEvent(
-                    data=message,
-                    source=self.name,
-                    exec_id=exec_id,
-                )
-            elif message.role == "user":
-                yield UserMessageEvent(
-                    data=message,
-                    source=self.name,
-                    exec_id=exec_id,
-                )
+        # Resume detection: no new inputs + session was loaded → skip memorization
+        is_resume = inp is None and chat_inputs is None and self._session_loaded
+        if is_resume:
+            self._session_loaded = False  # Consumed
 
-        # Checkpoint after user message — survives crash before LLM responds
-        await self._loop.checkpoint()
+        if not is_resume:
+            messages_to_expose = self._memorize_inputs(
+                chat_inputs=chat_inputs, in_args=inp, **call_kwargs
+            )
+            self._print_messages(messages_to_expose, **call_kwargs)
+            for message in messages_to_expose:
+                if message.role == "system":
+                    yield SystemMessageEvent(
+                        data=message,
+                        source=self.name,
+                        exec_id=exec_id,
+                    )
+                elif message.role == "user":
+                    yield UserMessageEvent(
+                        data=message,
+                        source=self.name,
+                        exec_id=exec_id,
+                    )
+
+            # Checkpoint after user message — survives crash before LLM responds
+            await self._loop.checkpoint(ctx)
 
         stream = ResponseCapture(self._loop.execute_stream(**call_kwargs))
         async for event in stream:
@@ -661,24 +670,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             self._loop.after_tool_hook = self.on_after_tool_impl
 
     def copy(self) -> "LLMAgent[InT, OutT, CtxT]":
-        # Share LLM, tools, and store — deepcopy everything else
-
-        cls = self.__class__
-        new_obj = cls.__new__(cls)
-        memo: dict[int, Any] = {id(self): new_obj}
-
-        pe = getattr(self, "_loop", None)
-        if pe is not None:
-            if getattr(pe, "llm", None) is not None:
-                memo[id(pe.llm)] = pe.llm
-            if getattr(pe, "tools", None) is not None:
-                memo[id(pe.tools)] = pe.tools
-
-        # Store is a shared resource (DB pool, etc.) — never deepcopy
-        if getattr(self, "_store", None) is not None:
-            memo[id(self._store)] = self._store
-
-        state = deepcopy(self.__dict__, memo)
-        new_obj.__dict__.update(state)
-
-        return new_obj
+        # LLM sharing: handled by LLM.__deepcopy__ (returns self)
+        # Tool sharing: handled by BaseTool.__deepcopy__ (_copy_shared_attrs)
+        return deepcopy(self)

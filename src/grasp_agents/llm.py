@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, final
+from typing import Any, Self, final
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -48,6 +48,10 @@ class LLM(ABC):
     model_id: str = field(default_factory=lambda: str(uuid4())[:8])
     litellm_provider: str | None = None
     retry_policy: RetryPolicy | None = None
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        # Frozen + non-copyable SDK clients (AsyncOpenAI, etc.) — share by ref
+        return self
 
     @cached_property
     def capabilities(self) -> ModelCapabilities:
@@ -336,7 +340,7 @@ class LLM(ABC):
                 )
             tool = tools[tc.name]
             try:
-                validate_obj_from_json_or_py_string(tc.arguments, schema=tool.in_type)
+                validate_obj_from_json_or_py_string(tc.arguments, schema=tool.llm_in_type)
             except JSONSchemaValidationError as exc:
                 raise LLMToolCallValidationError(
                     tc.name,

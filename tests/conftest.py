@@ -69,6 +69,7 @@ class AddTool(BaseTool[AddInput, int, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,  # noqa: ARG002
+        session_id: str | None = None,  # noqa: ARG002
     ) -> int:
         return inp.a + inp.b
 
@@ -93,6 +94,7 @@ class MultiplyTool(BaseTool[MultiplyInput, int, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,  # noqa: ARG002
+        session_id: str | None = None,  # noqa: ARG002
     ) -> int:
         return inp.a * inp.b
 

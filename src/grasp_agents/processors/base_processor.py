@@ -13,7 +13,6 @@ from ..generics_utils import AutoInstanceAttributesMixin
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
-from ..sessions.store import CheckpointStore
 from ..types.events import (
     DummyEvent,
     Event,
@@ -85,7 +84,6 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        store: CheckpointStore | None = None,
     ) -> None:
         self._in_type: type[InT]
         self._out_type: type[OutT]
@@ -96,7 +94,6 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         self._max_retries = max_retries
         self._memory: Memory = memory or DummyMemory()
         self.recipients = recipients
-        self._store = store
 
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
@@ -118,10 +115,6 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         return self._memory
 
     @property
-    def store(self) -> CheckpointStore | None:
-        return self._store
-
-    @property
     def max_retries(self) -> int:
         return self._max_retries
 
@@ -139,15 +132,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
     def resumable(self) -> bool:
         return False
 
-    def configure_session(self, session_id: str, store: CheckpointStore) -> None:
-        raise NotImplementedError
-
-    async def resume(
-        self,
-        *,
-        ctx: RunContext[CtxT] | None = None,
-        exec_id: str | None = None,
-    ) -> Any:
+    def reset_session(self, session_id: str) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -173,6 +158,15 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         yield DummyEvent()
+
+    async def resume_stream(
+        self,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        raise NotImplementedError
+        yield  # type: ignore[unreachable]  # makes this an async generator
 
     @final
     def as_tool(

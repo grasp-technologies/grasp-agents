@@ -24,13 +24,13 @@ def to_api_tool(
 ) -> ChatCompletionToolParam:
     if strict:
         return pydantic_function_tool(
-            model=tool.in_type, name=tool.name, description=tool.description
+            model=tool.llm_in_type, name=tool.name, description=tool.description
         )
 
     function = ChatCompletionFunctionDefinition(
         name=tool.name,
         description=tool.description,
-        parameters=tool.in_type.model_json_schema(),
+        parameters=tool.llm_in_type.model_json_schema(),
         strict=strict,
     )
     if strict is None:

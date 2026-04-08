@@ -4,6 +4,7 @@ from typing import Generic, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from .printer import Printer
+from .sessions.store import CheckpointStore
 from .types.io import ProcName
 from .types.response import Response
 from .usage_tracker import UsageTracker
@@ -19,5 +20,6 @@ class RunContext(BaseModel, Generic[CtxT]):
     )
     usage_tracker: UsageTracker = Field(default_factory=UsageTracker, exclude=True)
     printer: Printer | None = Field(default=None, exclude=True)
+    store: CheckpointStore | None = Field(default=None, exclude=True)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)

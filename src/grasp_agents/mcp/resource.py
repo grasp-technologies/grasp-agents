@@ -36,6 +36,8 @@ class ReadResourceInput(BaseModel):
 class MCPListResourcesTool(BaseTool[ListResourcesInput, str, None]):
     """Lists available resources and resource templates from an MCP server."""
 
+    _copy_shared_attrs = frozenset({"_session"})
+
     def __init__(self, *, session: ClientSession, server_name: str) -> None:
         super().__init__(
             name=f"{server_name}_list_resources",
@@ -54,7 +56,9 @@ class MCPListResourcesTool(BaseTool[ListResourcesInput, str, None]):
         ctx: RunContext[None] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
     ) -> str:
+
         params = PaginatedRequestParams(cursor=inp.cursor) if inp.cursor else None
         resources_result = await self._session.list_resources(params=params)
         templates_result = await self._session.list_resource_templates()
@@ -90,6 +94,8 @@ class MCPListResourcesTool(BaseTool[ListResourcesInput, str, None]):
 class MCPReadResourceTool(BaseTool[ReadResourceInput, str, None]):
     """Reads a resource from an MCP server by URI."""
 
+    _copy_shared_attrs = frozenset({"_session"})
+
     def __init__(
         self,
         *,
@@ -113,7 +119,9 @@ class MCPReadResourceTool(BaseTool[ReadResourceInput, str, None]):
         ctx: RunContext[None] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
     ) -> str:
+
         result = await self._session.read_resource(inp.uri)
 
         parts: list[str] = []

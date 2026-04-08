@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from grasp_agents.llm import LLM
 from grasp_agents.llm_agent import LLMAgent
+from grasp_agents.run_context import RunContext
 from grasp_agents.sessions import (
     InMemoryCheckpointStore,
     InterruptionType,
@@ -166,6 +167,7 @@ class EchoTool(BaseTool[EchoInput, str, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
+        session_id: str | None = None,  # noqa: ARG002
     ) -> str:
         return f"echo: {inp.text}"
 
@@ -180,17 +182,18 @@ def _make_agent(
     session_id: str | None = None,
     store: InMemoryCheckpointStore | None = None,
     reset_memory_on_run: bool = False,
-) -> LLMAgent[str, str, None]:
+) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
     llm = MockLLM(responses_queue=responses)
-    return LLMAgent[str, str, None](
+    agent = LLMAgent[str, str, None](
         name="test_agent",
         llm=llm,
         tools=tools,
         reset_memory_on_run=reset_memory_on_run,
         stream_llm_responses=True,
         session_id=session_id,
-        store=store,
     )
+    ctx: RunContext[None] = RunContext(store=store)
+    return agent, ctx
 
 
 async def _drain_stream(
@@ -355,15 +358,9 @@ class TestResumeCleanup:
                 content_parts=[OutputMessageText(text="searching")],
                 status="completed",
             ),
-            FunctionToolCallItem(
-                call_id="fc_1", name="search", arguments='{"q":"a"}'
-            ),
-            FunctionToolCallItem(
-                call_id="fc_2", name="search", arguments='{"q":"b"}'
-            ),
-            FunctionToolOutputItem.from_tool_result(
-                call_id="fc_1", output="result a"
-            ),
+            FunctionToolCallItem(call_id="fc_1", name="search", arguments='{"q":"a"}'),
+            FunctionToolCallItem(call_id="fc_2", name="search", arguments='{"q":"b"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="result a"),
             # fc_2 has no output -- crash during tool execution
         ]
         state = prepare_messages_for_resume(messages)
@@ -376,12 +373,8 @@ class TestResumeCleanup:
         """All tool calls have outputs -> nothing stripped."""
         messages: list[Any] = [
             InputMessageItem.from_text("hi", role="user"),
-            FunctionToolCallItem(
-                call_id="fc_1", name="echo", arguments='{"text":"a"}'
-            ),
-            FunctionToolOutputItem.from_tool_result(
-                call_id="fc_1", output="echo: a"
-            ),
+            FunctionToolCallItem(call_id="fc_1", name="echo", arguments='{"text":"a"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="echo: a"),
         ]
         state = prepare_messages_for_resume(messages)
         assert len(state.messages) == 3
@@ -421,20 +414,14 @@ class TestResumeCleanup:
         messages: list[Any] = [
             InputMessageItem.from_text("hi", role="user"),
             # Turn 1: resolved
-            FunctionToolCallItem(
-                call_id="fc_1", name="echo", arguments='{"text":"a"}'
-            ),
-            FunctionToolOutputItem.from_tool_result(
-                call_id="fc_1", output="echo: a"
-            ),
+            FunctionToolCallItem(call_id="fc_1", name="echo", arguments='{"text":"a"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="echo: a"),
             # Turn 2: unresolved
             OutputMessageItem(
                 content_parts=[OutputMessageText(text="more work")],
                 status="completed",
             ),
-            FunctionToolCallItem(
-                call_id="fc_2", name="echo", arguments='{"text":"b"}'
-            ),
+            FunctionToolCallItem(call_id="fc_2", name="echo", arguments='{"text":"b"}'),
         ]
         state = prepare_messages_for_resume(messages)
         # Keeps: user + fc_1 call + fc_1 output = 3
@@ -453,13 +440,13 @@ class TestAgentSessionPersistence:
     async def test_fresh_session_saves_snapshot(self):
         """First run with store saves state via checkpoint callback."""
         store = InMemoryCheckpointStore()
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("hello")],
             session_id="s1",
             store=store,
         )
 
-        result = await agent.run("hi")
+        result = await agent.run("hi", ctx=ctx)
         assert result.payloads[0] == "hello"
 
         # Snapshot should be persisted
@@ -476,12 +463,12 @@ class TestAgentSessionPersistence:
         store = InMemoryCheckpointStore()
 
         # First run
-        agent1 = _make_agent(
+        agent1, ctx = _make_agent(
             [_text_response("hello")],
             session_id="s1",
             store=store,
         )
-        await agent1.run("hi")
+        await agent1.run("hi", ctx=ctx)
 
         # Get saved message count
         data = await store.load("session/s1")
@@ -491,12 +478,12 @@ class TestAgentSessionPersistence:
         assert saved_msg_count > 0
 
         # Second run -- new agent, same session
-        agent2 = _make_agent(
+        agent2, ctx = _make_agent(
             [_text_response("world")],
             session_id="s1",
             store=store,
         )
-        await agent2.run("follow up")
+        await agent2.run("follow up", ctx=ctx)
 
         # Snapshot should have more messages now
         data2 = await store.load("session/s1")
@@ -518,7 +505,7 @@ class TestAgentSessionPersistence:
 
         store.save = counting_save  # type: ignore[assignment]
 
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [
                 _tool_call_response("echo", '{"text":"test"}', "fc_1"),
                 _text_response("done"),
@@ -528,7 +515,7 @@ class TestAgentSessionPersistence:
             store=store,
         )
 
-        await agent.run("use echo")
+        await agent.run("use echo", ctx=ctx)
 
         # At least 2 checkpoints: after tool turn + after final answer
         assert checkpoint_count >= 2
@@ -539,23 +526,23 @@ class TestAgentSessionPersistence:
         store = InMemoryCheckpointStore()
 
         # First run -- saves session
-        agent1 = _make_agent(
+        agent1, ctx = _make_agent(
             [_text_response("first")],
             reset_memory_on_run=True,
             session_id="s1",
             store=store,
         )
-        await agent1.run("hi")
+        await agent1.run("hi", ctx=ctx)
 
         # Second run -- agent has reset_memory_on_run=True but store overrides
-        agent2 = _make_agent(
+        agent2, ctx = _make_agent(
             [_text_response("second")],
             reset_memory_on_run=True,
             session_id="s1",
             store=store,
         )
         # Before run, memory is empty. Run will load session first.
-        await agent2.run("follow up")
+        await agent2.run("follow up", ctx=ctx)
 
         # Check the snapshot has messages from BOTH runs
         data = await store.load("session/s1")
@@ -568,8 +555,8 @@ class TestAgentSessionPersistence:
     @pytest.mark.anyio
     async def test_no_store_works_normally(self):
         """Agent without store/session_id works exactly as before."""
-        agent = _make_agent([_text_response("hello")])
-        result = await agent.run("hi")
+        agent, ctx = _make_agent([_text_response("hello")])
+        result = await agent.run("hi", ctx=ctx)
         assert result.payloads[0] == "hello"
 
     @pytest.mark.anyio
@@ -581,10 +568,10 @@ class TestAgentSessionPersistence:
             llm=MockLLM(responses_queue=[_text_response("ok")]),
             stream_llm_responses=True,
             session_id="s1",
-            store=store,
             session_metadata={"pathway_id": "pw_123"},
         )
-        await agent.run("hi")
+        ctx: RunContext[None] = RunContext(store=store)
+        await agent.run("hi", ctx=ctx)
 
         data = await store.load("session/s1")
         assert data is not None
@@ -595,7 +582,7 @@ class TestAgentSessionPersistence:
     async def test_turn_number_increments(self):
         """Turn number increases with each checkpoint."""
         store = InMemoryCheckpointStore()
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [
                 _tool_call_response("echo", '{"text":"a"}', "fc_1"),
                 _text_response("done"),
@@ -605,7 +592,7 @@ class TestAgentSessionPersistence:
             store=store,
         )
 
-        await agent.run("go")
+        await agent.run("go", ctx=ctx)
 
         data = await store.load("session/s1")
         assert data is not None
@@ -616,13 +603,13 @@ class TestAgentSessionPersistence:
     async def test_stream_interface(self):
         """run_stream with session persistence works."""
         store = InMemoryCheckpointStore()
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("streamed")],
             session_id="s1",
             store=store,
         )
 
-        events = await _drain_stream(agent.run_stream("hi"))
+        events = await _drain_stream(agent.run_stream("hi", ctx=ctx))
         assert len(events) > 0
 
         # Should have persisted
@@ -689,12 +676,14 @@ class SlowTool(BaseTool[EchoInput, str, Any]):
 
     async def _run(
         self,
-        inp: EchoInput,
+        inp: EchoInput | None = None,
         *,
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
+        **_kwargs: Any,
     ) -> str:
+        assert inp is not None
         await asyncio.sleep(self._delay)
         return f"slow: {inp.text}"
 
@@ -709,7 +698,7 @@ class TestTaskRecordPersistence:
     async def test_bg_task_creates_task_record(self):
         """Spawning a background tool persists a PENDING TaskRecord."""
         store = InMemoryCheckpointStore()
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [
                 _tool_call_response("slow", '{"text":"data"}', "fc_1"),
                 _text_response("waiting"),
@@ -720,7 +709,7 @@ class TestTaskRecordPersistence:
             store=store,
         )
 
-        await agent.run("go")
+        await agent.run("go", ctx=ctx)
 
         # Should have a task record under task/s1/
         keys = await store.list_keys("task/s1/")
@@ -737,7 +726,7 @@ class TestTaskRecordPersistence:
     async def test_bg_task_completion_updates_record(self):
         """Completed background task is marked DELIVERED after drain."""
         store = InMemoryCheckpointStore()
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [
                 _tool_call_response("slow", '{"text":"research"}', "fc_1"),
                 _text_response("waiting"),
@@ -748,7 +737,7 @@ class TestTaskRecordPersistence:
             store=store,
         )
 
-        await agent.run("go")
+        await agent.run("go", ctx=ctx)
 
         keys = await store.list_keys("task/s1/")
         assert len(keys) == 1
@@ -779,10 +768,10 @@ class TestTaskRecordPersistence:
             max_turns=1,
             stream_llm_responses=True,
             session_id="s1",
-            store=store,
         )
+        ctx: RunContext[None] = RunContext(store=store)
 
-        await agent.run("go")
+        await agent.run("go", ctx=ctx)
 
         keys = await store.list_keys("task/s1/")
         assert len(keys) == 1
@@ -796,7 +785,7 @@ class TestTaskRecordPersistence:
     @pytest.mark.anyio
     async def test_no_task_records_without_store(self):
         """Without store, no TaskRecords are created."""
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [
                 _tool_call_response("slow", '{"text":"data"}', "fc_1"),
                 _text_response("waiting"),
@@ -805,7 +794,7 @@ class TestTaskRecordPersistence:
             tools=[SlowTool(delay=0.05)],
         )
 
-        await agent.run("go")
+        await agent.run("go", ctx=ctx)
         # No store → nothing to check, just verify no errors
 
 
@@ -854,12 +843,12 @@ class TestPendingTaskResume:
         await store.save(record.store_key, record.model_dump_json().encode())
 
         # 3. Resume: new agent loads session
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("recovered")],
             session_id="s1",
             store=store,
         )
-        await agent.run("continue")
+        await agent.run("continue", ctx=ctx)
 
         # The interruption notification should be in memory
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -910,18 +899,16 @@ class TestPendingTaskResume:
         await store.save(record.store_key, record.model_dump_json().encode())
 
         # Resume
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("got it")],
             session_id="s1",
             store=store,
         )
-        await agent.run("continue")
+        await agent.run("continue", ctx=ctx)
 
         # Result notification should be in memory
         memory_texts = [str(m) for m in agent.memory.messages]
-        result_msgs = [
-            t for t in memory_texts if "completed" in t and "xyz789" in t
-        ]
+        result_msgs = [t for t in memory_texts if "completed" in t and "xyz789" in t]
         assert len(result_msgs) >= 1
 
         # Record should now be DELIVERED
@@ -969,18 +956,16 @@ class TestPendingTaskResume:
         )
         await store.save(record.store_key, record.model_dump_json().encode())
 
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("ok")],
             session_id="s1",
             store=store,
         )
-        await agent.run("continue")
+        await agent.run("continue", ctx=ctx)
 
         # Should NOT have duplicate notification
         memory_texts = [str(m) for m in agent.memory.messages]
-        completed_msgs = [
-            t for t in memory_texts if "completed" in t and "done1" in t
-        ]
+        completed_msgs = [t for t in memory_texts if "completed" in t and "done1" in t]
         assert len(completed_msgs) == 1
 
     @pytest.mark.anyio
@@ -1009,12 +994,12 @@ class TestPendingTaskResume:
         )
         await store.save(record.store_key, record.model_dump_json().encode())
 
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("ok")],
             session_id="s1",
             store=store,
         )
-        await agent.run("continue")
+        await agent.run("continue", ctx=ctx)
 
         # No interruption notification injected for already-failed records
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1061,12 +1046,12 @@ class TestPendingTaskResume:
             )
             await store.save(record.store_key, record.model_dump_json().encode())
 
-        agent = _make_agent(
+        agent, ctx = _make_agent(
             [_text_response("recovered")],
             session_id="s1",
             store=store,
         )
-        await agent.run("continue")
+        await agent.run("continue", ctx=ctx)
 
         # Both should have interruption notifications
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1099,7 +1084,6 @@ def _make_child_tool(
         name="child",
         llm=MockLLM(responses_queue=responses),
         stream_llm_responses=True,
-        store=store,
     )
     tool = child.as_tool(
         tool_name=tool_name,
@@ -1114,15 +1098,11 @@ class TestChildTaskResume:
     async def test_bg_agent_tool_creates_child_session(self):
         """Background agent-as-tool spawns with its own child_session_id."""
         store = InMemoryCheckpointStore()
-        _child, tool = _make_child_tool(
-            [_text_response("child done")], store=store
-        )
+        _child, tool = _make_child_tool([_text_response("child done")], store=store)
 
-        parent = _make_agent(
+        parent, ctx = _make_agent(
             [
-                _tool_call_response(
-                    "child_agent", '{"text":"work"}', "fc_1"
-                ),
+                _tool_call_response("child_agent", '{"text":"work"}', "fc_1"),
                 _text_response("waiting"),
                 _text_response("parent done"),
             ],
@@ -1130,7 +1110,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("go")
+        await parent.run("go", ctx=ctx)
 
         # TaskRecord should have a child_session_id
         keys = await store.list_keys("task/parent_s1/")
@@ -1181,6 +1161,7 @@ class TestChildTaskResume:
             parent_session_id="parent_s1",
             tool_call_id="fc_1",
             tool_name="child_agent",
+            tool_call_arguments='{"text": "hello"}',
             child_session_id="child/parent_s1/ch1",
         )
         await store.save(
@@ -1207,7 +1188,7 @@ class TestChildTaskResume:
         _child, tool = _make_child_tool(
             [_text_response("child resumed ok")], store=store
         )
-        parent = _make_agent(
+        parent, ctx = _make_agent(
             [
                 # Turn 1: waiting (child still running)
                 _text_response("waiting for child"),
@@ -1218,7 +1199,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue")
+        await parent.run("continue", ctx=ctx)
 
         # Should NOT have "interrupted" in memory — child was re-spawned
         memory_texts = [str(m) for m in parent.memory.messages]
@@ -1226,9 +1207,7 @@ class TestChildTaskResume:
         assert len(interrupted) == 0
 
         # Should have the child's completion notification
-        completed = [
-            t for t in memory_texts if "completed" in t and "ch1" in t
-        ]
+        completed = [t for t in memory_texts if "completed" in t and "ch1" in t]
         assert len(completed) >= 1
 
         # TaskRecord should be DELIVERED (drain completed + notified)
@@ -1276,19 +1255,17 @@ class TestChildTaskResume:
             task_record.model_dump_json().encode(),
         )
 
-        parent = _make_agent(
+        parent, ctx = _make_agent(
             [_text_response("recovered")],
             tools=[SlowTool()],
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue")
+        await parent.run("continue", ctx=ctx)
 
         # Should have "interrupted" notification (not re-spawned)
         memory_texts = [str(m) for m in parent.memory.messages]
-        interrupted = [
-            t for t in memory_texts if "interrupted" in t and "t1" in t
-        ]
+        interrupted = [t for t in memory_texts if "interrupted" in t and "t1" in t]
         assert len(interrupted) >= 1
 
     @pytest.mark.anyio
@@ -1337,11 +1314,10 @@ class TestChildTaskResume:
                 parent_session_id="parent_s1",
                 tool_call_id=cid,
                 tool_name="child_agent",
+                tool_call_arguments='{"text": "hello"}',
                 child_session_id=sid,
             )
-            await store.save(
-                rec.store_key, rec.model_dump_json().encode()
-            )
+            await store.save(rec.store_key, rec.model_dump_json().encode())
             # Each child has its own snapshot
             snap = SessionSnapshot(
                 session_id=sid,
@@ -1362,7 +1338,7 @@ class TestChildTaskResume:
             ],
             store=store,
         )
-        parent = _make_agent(
+        parent, ctx = _make_agent(
             [
                 _text_response("waiting"),
                 _text_response("parent done"),
@@ -1371,7 +1347,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue")
+        await parent.run("continue", ctx=ctx)
 
         # Both children should have completed (not interrupted)
         memory_texts = [str(m) for m in parent.memory.messages]

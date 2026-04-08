@@ -297,11 +297,11 @@ class TestBackgroundToolLaunch:
         assert len(completed) == 1
         assert completed[0].data.tool_name == "slow"
 
-        # Notification should be in memory
+        # Notification should be in memory (XML-tagged format)
         user_msgs = [
             e
             for e in events
-            if isinstance(e, UserMessageEvent) and "Background tool" in str(e.data)
+            if isinstance(e, UserMessageEvent) and "task_notification" in str(e.data)
         ]
         assert len(user_msgs) >= 1
         assert "slow: research" in str(user_msgs[0].data)

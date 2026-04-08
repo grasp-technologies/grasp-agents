@@ -43,6 +43,8 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
     is validated and available via :pyattr:`last_structured_result`.
     """
 
+    _copy_shared_attrs = frozenset({"_session"})
+
     def __init__(
         self,
         *,
@@ -83,6 +85,7 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         meta: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> McpToolResult:
         timeout_delta = (
             timedelta(seconds=self.timeout) if self.timeout is not None else None

@@ -122,9 +122,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                     proc_name=self.name,
                     exec_id=exec_id,
                     selected_recipient=r,
-                    allowed_recipients=cast(
-                        "list[str]", self.recipients
-                    ),
+                    allowed_recipients=cast("list[str]", self.recipients),
                 )
 
     def select_recipients_impl(
@@ -144,9 +142,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self, output: OutT, ctx: RunContext[CtxT], exec_id: str
     ) -> Sequence[ProcName]:
         base_cls = BaseProcessor[Any, Any, Any]
-        if is_method_overridden(
-            "select_recipients_impl", self, base_cls
-        ):
+        if is_method_overridden("select_recipients_impl", self, base_cls):
             recipients = self.select_recipients_impl(
                 output=output, ctx=ctx, exec_id=exec_id
             )
@@ -184,9 +180,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             ctx=ctx,
         )
         for output in outputs:
-            yield ProcPayloadOutEvent(
-                data=output, source=self.name, exec_id=exec_id
-            )
+            yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 
     def _build_packet(
         self,
@@ -201,18 +195,12 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         if self.recipients is not None:
             for output in outputs:
                 routings.append(
-                    self.select_recipients(
-                        output=output, ctx=ctx, exec_id=exec_id
-                    )
+                    self.select_recipients(output=output, ctx=ctx, exec_id=exec_id)
                 )
 
         joined_routing = [r for r in routings] if routings else None
 
-        return Packet(
-            sender=self.name,
-            payloads=outputs,
-            routing=joined_routing,
-        )
+        return Packet(sender=self.name, payloads=outputs, routing=joined_routing)
 
     @final
     @workflow(name="processor")  # type: ignore
@@ -243,17 +231,12 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             exec_id=exec_id,
             ctx=ctx,
         ):
-            if (
-                isinstance(event, ProcPayloadOutEvent)
-                and event.source == self.name
-            ):
+            if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
                 outputs.append(event.data)
             else:
                 yield event
 
-        out_packet = self._build_packet(
-            outputs=outputs, exec_id=exec_id, ctx=ctx
-        )
+        out_packet = self._build_packet(outputs=outputs, exec_id=exec_id, ctx=ctx)
         yield ProcPacketOutEvent(
             id=out_packet.id,
             data=out_packet,
@@ -282,15 +265,10 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             if result is not None:
                 continue
 
-            if (
-                isinstance(event, ProcPacketOutEvent)
-                and event.source == self.name
-            ):
+            if isinstance(event, ProcPacketOutEvent) and event.source == self.name:
                 result = event.data
 
         if result is None:
-            raise RuntimeError(
-                "Processor run did not yield a ProcPacketOutputEvent"
-            )
+            raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
 
         return result

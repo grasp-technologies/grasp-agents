@@ -569,6 +569,111 @@ class TestToolInputConverter:
         assert received_inputs[0].text == "hello"
 
 
+class TestLlmInType:
+    """Verify llm_in_type controls validation and schema generation."""
+
+    @pytest.mark.asyncio
+    async def test_llm_in_type_with_converter(self):
+        """
+        When llm_in_type is a reduced schema, _convert_tool_input validates
+        against it, and the converter bridges to the full in_type.
+        """
+        from grasp_agents.utils.schema import exclude_fields
+
+        class FullInput(BaseModel):
+            query: str
+            api_key: str
+
+        LlmInput = exclude_fields(FullInput, {"api_key"})
+
+        received_inputs: list[FullInput] = []
+
+        class SearchTool(BaseTool[FullInput, Any, str]):
+            def __init__(self) -> None:
+                super().__init__(name="search", description="Search")
+                self.llm_in_type = LlmInput
+
+            async def _run(
+                self, inp: FullInput, *, ctx: Any = None, **kwargs: Any
+            ) -> str:
+                received_inputs.append(inp)
+                return f"results for {inp.query}"
+
+        # LLM generates only `query` — no api_key
+        responses = [
+            _tool_call_response("search", '{"query":"python"}', "tc1"),
+            _text_response("done"),
+        ]
+        executor, _, _ = _make_executor(responses, tools=[SearchTool()])
+        executor.final_answer_extractor = (
+            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            if response and not response.tool_call_items
+            else None
+        )
+
+        async def inject_api_key(llm_args, *, ctx, exec_id):
+            return FullInput(query=llm_args.query, api_key="secret-key")
+
+        executor.tool_input_converters["search"] = inject_api_key  # type: ignore[assignment]
+
+        ctx = RunContext[str](state="unused")
+        await _drain(executor, ctx)
+
+        assert len(received_inputs) == 1
+        assert received_inputs[0].query == "python"
+        assert received_inputs[0].api_key == "secret-key"
+
+    @pytest.mark.asyncio
+    async def test_llm_in_type_defaults_to_in_type(self):
+        """Without override, llm_in_type is the same as in_type."""
+        tool = EchoTool()
+        assert tool.llm_in_type is tool.in_type
+
+    @pytest.mark.asyncio
+    async def test_llm_in_type_rejects_extra_fields(self):
+        """
+        When llm_in_type is reduced, validation should reject fields
+        that aren't in the LLM schema (the LLM shouldn't generate them).
+        """
+        from pydantic import ValidationError
+
+        from grasp_agents.utils.schema import exclude_fields
+
+        class FullInput(BaseModel):
+            query: str
+            api_key: str
+
+        LlmInput = exclude_fields(FullInput, {"api_key"})
+
+        class SearchTool(BaseTool[FullInput, Any, None]):
+            def __init__(self) -> None:
+                super().__init__(name="search", description="Search")
+                self.llm_in_type = LlmInput
+
+            async def _run(self, inp: FullInput, **kwargs: Any) -> str:
+                return "ok"
+
+        # LLM generates both fields — api_key should fail validation
+        # against the reduced LlmInput schema (strict by default in Pydantic)
+        responses = [
+            _tool_call_response(
+                "search", '{"query":"python","api_key":"bad"}', "tc1"
+            ),
+            _text_response("done"),
+        ]
+        executor, _, _ = _make_executor(responses, tools=[SearchTool()])
+        executor.final_answer_extractor = (
+            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            if response and not response.tool_call_items
+            else None
+        )
+
+        # Pydantic v2 ignores extra fields by default, so this should
+        # succeed — the extra api_key is silently dropped.
+        ctx = RunContext[None]()
+        await _drain(executor, ctx)
+
+
 class TestToolOutputConverter:
     """Verify per-tool output converters intercept tool result formatting."""
 

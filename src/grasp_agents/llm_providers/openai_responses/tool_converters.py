@@ -19,7 +19,7 @@ def to_api_tool(
         type="function",
         name=tool.name,
         description=tool.description,
-        parameters=to_strict_json_schema(tool.in_type),
+        parameters=to_strict_json_schema(tool.llm_in_type),
         strict=True if strict is None else strict,
     )
 

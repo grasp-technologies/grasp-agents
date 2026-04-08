@@ -1,6 +1,7 @@
 # pyright: reportUnusedImport=false
 
 
+from .agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
 from .fallback_llm import FallbackLLM
 from .function_tool import FunctionTool, function_tool
 from .llm import LLM, LLMSettings
@@ -20,6 +21,13 @@ from .processors.parallel_processor import ParallelProcessor
 from .processors.processor import Processor
 from .resilience import RetryPolicy
 from .run_context import RunContext
+from .sessions import (
+    CheckpointStore,
+    InMemoryCheckpointStore,
+    SessionSnapshot,
+    TaskRecord,
+    TaskStatus,
+)
 from .types.content import Content, InputImage, InputRenderable
 from .types.events import (
     BackgroundTaskCompletedEvent,
@@ -57,15 +65,9 @@ from .types.llm_errors import (
     LlmPermissionDeniedError,
     LlmRateLimitError,
 )
-from .sessions import (
-    CheckpointStore,
-    InMemoryCheckpointStore,
-    SessionSnapshot,
-    TaskRecord,
-    TaskStatus,
-)
 from .types.response import Response
 from .types.tool import BaseTool, ToolProgressCallback
+from .utils.schema import exclude_fields
 
 try:
     from .mcp import (
@@ -80,6 +82,10 @@ except ImportError:
     pass
 
 __all__ = [
+    "LLM",
+    "AgentPromptBuilder",
+    "AgentTool",
+    "AgentToolInput",
     "AssistantMessage",
     "BackgroundTaskCompletedEvent",
     "BackgroundTaskInfo",
@@ -96,7 +102,6 @@ __all__ = [
     "InMemoryCheckpointStore",
     "InputImage",
     "InputRenderable",
-    "LLM",
     "LLMAgent",
     "LLMAgentMemory",
     "LLMPrompt",
@@ -143,6 +148,7 @@ __all__ = [
     "UserMessage",
     "WebSearchCallItem",
     "count_tokens",
+    "exclude_fields",
     "function_tool",
     "get_context_window",
     "get_model_capabilities",

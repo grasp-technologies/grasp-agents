@@ -104,6 +104,7 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_id: str | None = None,
     ) -> Any:
         kwargs = inp.model_dump()
         if self._has_ctx:

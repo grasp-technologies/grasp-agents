@@ -30,7 +30,7 @@ def to_api_tools(
         GeminiFunctionDeclaration(
             name=tool.name,
             description=tool.description,
-            parameters_json_schema=tool.in_type.model_json_schema(),
+            parameters_json_schema=tool.llm_in_type.model_json_schema(),
         )
         for tool in tools.values()
     ]

@@ -21,7 +21,7 @@ def to_api_tool(tool: BaseTool[BaseModel, Any, Any]) -> ToolParam:
     return ToolParam(
         name=tool.name,
         description=tool.description,
-        input_schema=tool.in_type.model_json_schema(),
+        input_schema=tool.llm_in_type.model_json_schema(),
     )
 
 

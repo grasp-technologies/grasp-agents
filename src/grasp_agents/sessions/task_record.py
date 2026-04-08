@@ -27,6 +27,7 @@ class TaskRecord(BaseModel):
     parent_session_id: str
     tool_call_id: str  # FunctionToolCallItem.call_id that spawned this
     tool_name: str
+    tool_call_arguments: str | None = None  # Serialized tool input for resume replay
     status: TaskStatus = TaskStatus.PENDING
     child_session_id: str | None = None  # If set, child agent checkpoints here
     result: str | None = None
