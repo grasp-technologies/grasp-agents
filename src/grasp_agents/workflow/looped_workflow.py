@@ -3,10 +3,10 @@ from itertools import pairwise
 from logging import getLogger
 from typing import Any, cast, final
 
-from ..errors import WorkflowConstructionError
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..types.errors import WorkflowConstructionError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.hooks import WorkflowLoopTerminator
 from ..types.io import InT, OutT, ProcName

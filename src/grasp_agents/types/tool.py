@@ -16,9 +16,9 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.generics_utils import AutoInstanceAttributesMixin
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.tracing_decorators import tool
+from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
 from .events import Event, ToolErrorEvent, ToolErrorInfo
 

@@ -3,10 +3,10 @@ from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
 from typing import Any, cast
 
-from ..errors import WorkflowConstructionError
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..types.errors import WorkflowConstructionError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.io import InT, OutT, ProcName
 from .workflow_processor import WorkflowProcessor
@@ -95,9 +95,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             if subproc is self.end_proc:
                 out_packet = cast("Packet[OutT]", packet)
                 for p in out_packet.payloads:
-                    yield ProcPayloadOutEvent(
-                        data=p, source=self.name, exec_id=exec_id
-                    )
+                    yield ProcPayloadOutEvent(data=p, source=self.name, exec_id=exec_id)
 
             chat_inputs = None
 

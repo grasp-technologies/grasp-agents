@@ -2,7 +2,7 @@
 
 import pytest
 
-from grasp_agents.llm_agent_memory import LLMAgentMemory
+from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,

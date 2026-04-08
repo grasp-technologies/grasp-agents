@@ -8,11 +8,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from ..errors import ProcRunError
-from ..generics_utils import AutoInstanceAttributesMixin
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
+from ..types.errors import ProcRunError
 from ..types.events import (
     DummyEvent,
     Event,
@@ -20,9 +19,10 @@ from ..types.events import (
     ProcStreamingErrorEvent,
 )
 from ..types.io import InT, OutT, ProcName
+from ..utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
-    from .processor_tool import ProcessorTool
+    from ..agent.processor_tool import ProcessorTool
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         reset_memory_on_run: bool = True,
         background: bool = False,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
-        from .processor_tool import ProcessorTool as _ProcessorTool
+        from ..agent.processor_tool import ProcessorTool as _ProcessorTool
 
         if not issubclass(self.in_type, BaseModel):
             raise TypeError(

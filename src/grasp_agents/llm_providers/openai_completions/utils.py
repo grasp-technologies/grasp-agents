@@ -1,6 +1,6 @@
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
-from grasp_agents.errors import CompletionError
+from grasp_agents.types.errors import CompletionError
 
 
 def validate_completion(completion: ChatCompletion) -> None:

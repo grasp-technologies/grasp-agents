@@ -6,9 +6,9 @@ from typing import Any
 
 from grasp_agents.utils.streaming import stream_concurrent
 
-from ..errors import ProcInputValidationError
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
+from ..types.errors import ProcInputValidationError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.io import InT, OutT, ProcName
 from .processor import Processor

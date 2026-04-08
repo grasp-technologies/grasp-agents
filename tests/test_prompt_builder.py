@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from grasp_agents.prompt_builder import PromptBuilder
+from grasp_agents.agent.prompt_builder import PromptBuilder
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import (
     Content,
@@ -31,7 +31,6 @@ from grasp_agents.types.content import (
     InputRenderable,
     InputText,
 )
-
 
 # ---------- Test models ----------
 
@@ -109,9 +108,7 @@ class TestInputRenderableResolution:
         builder = _make_builder(RenderableInput)
         inp = RenderableInput(title="Hello", body="World")
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         assert len(content.parts) == 1
         text = content.parts[0]
@@ -125,9 +122,7 @@ class TestInputRenderableResolution:
             description="A cat", image_url="https://example.com/cat.jpg"
         )
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         assert len(content.parts) == 2
         assert isinstance(content.parts[0], InputImage)
@@ -143,9 +138,7 @@ class TestInputRenderableResolution:
         )
         inp = RenderableInput(title="Hello", body="World")
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         # Should use to_input_parts(), NOT the template
         text = content.parts[0]
@@ -171,9 +164,7 @@ class TestInputContentBuilderHookPriority:
         builder.input_content_builder = custom_builder  # type: ignore[assignment]
 
         inp = RenderableInput(title="Hello", body="World")
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         text = content.parts[0]
         assert isinstance(text, InputText)
@@ -191,9 +182,7 @@ class TestInputContentBuilderHookPriority:
         builder.input_content_builder = custom_builder  # type: ignore[assignment]
 
         inp = SimpleInput(query="test", context="ctx")
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         assert content.parts[0].text == "OVERRIDE: test"  # type: ignore[union-attr]
 
@@ -208,9 +197,7 @@ class TestInPromptTemplate:
         )
         inp = SimpleInput(query="What is AI?", context="CS course")
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         assert len(content.parts) == 1
         text = content.parts[0]
@@ -226,9 +213,7 @@ class TestInPromptTemplate:
         )
         inp = NestedInput(name="test", tags=["a", "b", "c"])
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "Name: test" in text
@@ -243,9 +228,7 @@ class TestInPromptTemplate:
         )
         inp = ExcludedFieldInput(visible="shown", hidden="secret")
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "shown" in text
@@ -259,9 +242,7 @@ class TestJSONFallback:
         builder = _make_builder(SimpleInput)
         inp = SimpleInput(query="hello", context="world")
 
-        content = builder.build_input_content(
-            in_args=inp, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert '"query"' in text
@@ -281,9 +262,7 @@ class TestJSONFallback:
     def test_int_input_gives_json(self):
         builder = _make_builder(int)
 
-        content = builder.build_input_content(
-            in_args=42, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=42, ctx=_ctx(), exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "42" in text
@@ -296,18 +275,14 @@ class TestNoneInputType:
         builder = _make_builder(type(None))
 
         # Should not raise — None is valid when InT is type(None)
-        content = builder.build_input_content(
-            in_args=None, ctx=_ctx(), exec_id="c1"
-        )
+        content = builder.build_input_content(in_args=None, ctx=_ctx(), exec_id="c1")
         assert content is not None
 
     def test_non_none_input_type_with_none_args_raises(self):
         builder = _make_builder(str)
 
         with pytest.raises(Exception, match="input arguments must be provided"):
-            builder.build_input_content(
-                in_args=None, ctx=_ctx(), exec_id="c1"
-            )
+            builder.build_input_content(in_args=None, ctx=_ctx(), exec_id="c1")
 
 
 class TestBuildInputMessage:

@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.function_tool import FunctionTool, function_tool
+from grasp_agents.agent.function_tool import FunctionTool, function_tool
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import ToolErrorInfo
 from grasp_agents.types.tool import BaseTool

@@ -5,12 +5,12 @@ from typing import Any, ClassVar, Generic, cast, final
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from grasp_agents.errors import (
+from grasp_agents.tracing_decorators import workflow
+from grasp_agents.types.errors import (
     PacketRoutingError,
     ProcInputValidationError,
     ProcOutputValidationError,
 )
-from grasp_agents.tracing_decorators import workflow
 
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
