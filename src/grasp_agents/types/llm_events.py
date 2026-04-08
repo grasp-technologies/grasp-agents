@@ -165,40 +165,6 @@ class OutputMessageTextPartTextDone(ResponseTextDoneEvent):
     logprobs: list[DoneLogprob] = Field(default_factory=list[DoneLogprob])
 
 
-def output_to_delta_logprobs(logprobs: list[Logprob]) -> list[DeltaLogprob]:
-    """Convert by skipping the 'bytes' field which is not needed for delta logprobs."""
-    return [
-        DeltaLogprob(
-            token=lp.token,
-            logprob=lp.logprob,
-            top_logprobs=[
-                DeltaTopLogprob(token=tlp.token, logprob=tlp.logprob)
-                for tlp in lp.top_logprobs
-            ]
-            if lp.top_logprobs
-            else None,
-        )
-        for lp in logprobs
-    ]
-
-
-def output_to_done_logprobs(logprobs: list[Logprob]) -> list[DoneLogprob]:
-    """Convert by skipping the 'bytes' field which is not needed for done logprobs."""
-    return [
-        DoneLogprob(
-            token=lp.token,
-            logprob=lp.logprob,
-            top_logprobs=[
-                DoneTopLogprob(token=tlp.token, logprob=tlp.logprob)
-                for tlp in lp.top_logprobs
-            ]
-            if lp.top_logprobs
-            else None,
-        )
-        for lp in logprobs
-    ]
-
-
 # Refusal events
 
 

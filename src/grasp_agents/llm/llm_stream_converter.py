@@ -19,10 +19,6 @@ from openai.types.responses.response_output_text import (
     Logprob as OutputLogprob,
 )
 
-from grasp_agents.logprob_converters import (
-    to_delta_logprobs,
-    to_done_logprobs,
-)
 from grasp_agents.types.content import (
     Citation,
     OutputMessagePart,
@@ -61,6 +57,10 @@ from grasp_agents.types.llm_events import (
     WebSearchCallCompleted,
     WebSearchCallInProgress,
     WebSearchCallSearching,
+)
+from grasp_agents.types.logprob_converters import (
+    to_delta_logprobs,
+    to_done_logprobs,
 )
 from grasp_agents.types.response import Response, ResponseUsage
 

@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel, Field
 
-from grasp_agents.agent_tool import AgentTool, AgentToolInput
-from grasp_agents.function_tool import function_tool
-from grasp_agents.llm_agent import LLMAgent
+from grasp_agents.agent.agent_tool import AgentTool, AgentToolInput
+from grasp_agents.agent.function_tool import function_tool
+from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -31,7 +31,7 @@ from grasp_agents.types.events import (
 )
 
 if TYPE_CHECKING:
-    from grasp_agents.cloud_llm import CloudLLM
+    from grasp_agents.llm.cloud_llm import CloudLLM
 
 
 @pytest.mark.integration
@@ -73,9 +73,7 @@ class TestAgentToolIntegration:
             stream_llm_responses=True,
         )
 
-        result = await parent.run(
-            chat_inputs="What is photosynthesis?"
-        )
+        result = await parent.run(chat_inputs="What is photosynthesis?")
         answer = result.payloads[0]
         assert isinstance(answer, str)
         assert len(answer) > 10
@@ -113,15 +111,11 @@ class TestAgentToolIntegration:
             events.append(event)
 
         # Should have events from both parent and child
-        turn_starts = [
-            e for e in events if isinstance(e, TurnStartEvent)
-        ]
+        turn_starts = [e for e in events if isinstance(e, TurnStartEvent)]
         assert len(turn_starts) >= 2  # At least parent turn + child turn
 
         # Should have LLM stream events (from child agent)
-        llm_events = [
-            e for e in events if isinstance(e, LLMStreamEvent)
-        ]
+        llm_events = [e for e in events if isinstance(e, LLMStreamEvent)]
         assert len(llm_events) > 0
 
     @pytest.mark.asyncio
@@ -156,9 +150,7 @@ class TestAgentToolIntegration:
             max_turns=3,
         )
 
-        result = await parent.run(
-            chat_inputs="What is 7 times 8?"
-        )
+        result = await parent.run(chat_inputs="What is 7 times 8?")
         answer = result.payloads[0]
         assert "56" in answer
 
@@ -195,21 +187,12 @@ class TestAgentToolIntegration:
         ):
             events.append(event)
 
-        launched = [
-            e
-            for e in events
-            if isinstance(e, BackgroundTaskLaunchedEvent)
-        ]
-        completed = [
-            e
-            for e in events
-            if isinstance(e, BackgroundTaskCompletedEvent)
-        ]
+        launched = [e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)]
+        completed = [e for e in events if isinstance(e, BackgroundTaskCompletedEvent)]
         notifications = [
             e
             for e in events
-            if isinstance(e, UserMessageEvent)
-            and "researcher" in str(e.data)
+            if isinstance(e, UserMessageEvent) and "researcher" in str(e.data)
         ]
 
         assert len(launched) == 1, "Should launch one background task"

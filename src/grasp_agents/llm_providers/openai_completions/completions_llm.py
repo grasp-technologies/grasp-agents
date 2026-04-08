@@ -13,7 +13,7 @@ from openai.lib.streaming.chat import (
 from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
 from pydantic import BaseModel
 
-from ...cloud_llm import ApiCallParams, APIProvider, CloudLLM, CloudLLMSettings
+from ...llm.cloud_llm import ApiCallParams, APIProvider, CloudLLM, CloudLLMSettings
 from ...types.items import InputItem
 from ...types.llm_errors import LlmError
 from ...types.llm_events import LlmEvent

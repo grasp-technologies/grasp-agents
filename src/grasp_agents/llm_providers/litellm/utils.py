@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from grasp_agents.errors import CompletionError
+from grasp_agents.types.errors import CompletionError
 from grasp_agents.types.items import ReasoningItem
 from litellm.types.utils import Choices as LiteLLMChoice
 from litellm.types.utils import ModelResponse as LiteLLMCompletion
@@ -10,7 +10,7 @@ from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 from litellm.types.utils import StreamingChoices as LiteLLMChunkChoice
 
 if TYPE_CHECKING:
-    from grasp_agents.llm_stream_converter import ToolCallState
+    from grasp_agents.llm.llm_stream_converter import ToolCallState
     from grasp_agents.types.items import OutputItem
 
 

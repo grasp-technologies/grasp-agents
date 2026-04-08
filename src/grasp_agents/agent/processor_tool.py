@@ -3,10 +3,10 @@ from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel
 
+from ..processors.base_processor import BaseProcessor
 from ..run_context import CtxT, RunContext
 from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from ..types.tool import BaseTool, ToolProgressCallback
-from .base_processor import BaseProcessor
 
 _InT = TypeVar("_InT", bound=BaseModel)
 _OutT = TypeVar("_OutT")
@@ -113,9 +113,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        async for event in proc.run_stream(
-            in_args=in_args, exec_id=exec_id, ctx=ctx
-        ):
+        async for event in proc.run_stream(in_args=in_args, exec_id=exec_id, ctx=ctx):
             if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
                 yield ToolOutputEvent(
                     data=event.data.payloads[0], source=proc.name, exec_id=exec_id

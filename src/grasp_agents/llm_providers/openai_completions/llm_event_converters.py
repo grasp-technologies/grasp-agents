@@ -12,6 +12,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from openai.types.chat import ChatCompletionChunk
 from pydantic import TypeAdapter, ValidationError
 
@@ -22,7 +23,6 @@ from grasp_agents.llm_providers.openai_completions.provider_output_to_response i
     convert_annotations,
     convert_usage,
 )
-from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.reasoning import OpenRouterReasoningDetails
 
 from .utils import validate_chunk

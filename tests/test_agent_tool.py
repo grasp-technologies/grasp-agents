@@ -21,11 +21,11 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
-from grasp_agents.llm_agent_memory import LLMAgentMemory
-from grasp_agents.function_tool import function_tool
-from grasp_agents.llm import LLM
-from grasp_agents.llm_agent import LLMAgent
+from grasp_agents.agent.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
+from grasp_agents.agent.function_tool import function_tool
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
+from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -519,9 +519,7 @@ class TestAgentPromptBuilders:
         agent_tool.set_parent_memory(parent_mem)
 
         ctx: RunContext[None] = RunContext()
-        await agent_tool._run(
-            AgentToolInput(prompt="go"), ctx=ctx, exec_id="x"
-        )
+        await agent_tool._run(AgentToolInput(prompt="go"), ctx=ctx, exec_id="x")
         assert len(received_memory) == 1
         assert received_memory[0] is parent_mem
         assert len(received_memory[0].messages) == 1
@@ -572,9 +570,7 @@ class TestAgentPromptBuilders:
     async def test_parent_agent_wires_memory(self) -> None:
         """LLMAgent.__init__ automatically wires parent memory to AgentTool."""
         child_llm = _make_child_llm("ok")
-        agent_tool = AgentTool[None](
-            name="sub", description="d", llm=child_llm
-        )
+        agent_tool = AgentTool[None](name="sub", description="d", llm=child_llm)
 
         parent_llm = MockLLM(responses_queue=[_text_response("done")])
         parent = LLMAgent[str, str, None](
@@ -588,9 +584,7 @@ class TestToolCopy:
     def test_deepcopy_isolates_mutable_state(self) -> None:
         """BaseTool.copy() deep-copies, isolating mutable state."""
         child_llm = _make_child_llm("ok")
-        original = AgentTool[None](
-            name="t", description="d", llm=child_llm
-        )
+        original = AgentTool[None](name="t", description="d", llm=child_llm)
         copied = original.copy()
 
         assert copied is not original
@@ -634,13 +628,14 @@ class TestToolCopy:
 
     def test_empty_name_raises(self) -> None:
         """Tool with no name raises ValueError."""
-
         with pytest.raises(ValueError, match="non-empty name"):
 
             class BadTool(BaseTool[BaseModel, str, None]):
                 description = "no name"
 
-                async def _run(self, inp: BaseModel | None = None, **kwargs: Any) -> str:  # type: ignore[override]
+                async def _run(
+                    self, inp: BaseModel | None = None, **kwargs: Any
+                ) -> str:  # type: ignore[override]
                     return "ok"
 
             BadTool()

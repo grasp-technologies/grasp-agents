@@ -4,21 +4,21 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeAlias, cast, final
 
 from pydantic import BaseModel, TypeAdapter
 
-from .errors import InputPromptBuilderError
-from .generics_utils import AutoInstanceAttributesMixin
-from .run_context import CtxT, RunContext
-from .types.content import (
+from ..run_context import CtxT, RunContext
+from ..types.content import (
     Content,
     InputImage,
     InputPart,
     InputRenderable,
     InputText,
 )
+from ..types.errors import InputPromptBuilderError
+from ..utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
-    from .types.hooks import InputContentBuilder, SystemPromptBuilder
-from .types.io import InT, LLMPrompt
-from .types.items import InputMessageItem
+    from ..types.hooks import InputContentBuilder, SystemPromptBuilder
+from ..types.io import InT, LLMPrompt
+from ..types.items import InputMessageItem
 
 PromptArgumentType: TypeAlias = str | bool | int
 
@@ -50,9 +50,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         return self._in_prompt
 
     @final
-    def build_system_prompt(
-        self, *, ctx: RunContext[CtxT], exec_id: str
-    ) -> str | None:
+    def build_system_prompt(self, *, ctx: RunContext[CtxT], exec_id: str) -> str | None:
         if self.system_prompt_builder is not None:
             return self.system_prompt_builder(ctx=ctx, exec_id=exec_id)
 
@@ -84,9 +82,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
             ]
             return InputMessageItem(content_parts=input_parts, role="user")
 
-        content = self.build_input_content(
-            in_args=in_args, ctx=ctx, exec_id=exec_id
-        )
+        content = self.build_input_content(in_args=in_args, ctx=ctx, exec_id=exec_id)
 
         return InputMessageItem(content_parts=content.parts, role="user")
 

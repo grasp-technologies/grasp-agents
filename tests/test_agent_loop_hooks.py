@@ -21,9 +21,9 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel
 
-from grasp_agents.agent_loop import AgentLoop, ResponseCapture
-from grasp_agents.llm import LLM
-from grasp_agents.llm_agent_memory import LLMAgentMemory
+from grasp_agents.agent.agent_loop import AgentLoop, ResponseCapture
+from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
+from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import Event, LLMStreamEvent
@@ -517,7 +517,9 @@ class TestToolInputConverter:
                 return f"results for {inp.query}"
 
         responses = [
-            _tool_call_response("search", '{"query":"python","api_key":"wrong"}', "tc1"),
+            _tool_call_response(
+                "search", '{"query":"python","api_key":"wrong"}', "tc1"
+            ),
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[SearchTool()])
@@ -542,12 +544,13 @@ class TestToolInputConverter:
     @pytest.mark.asyncio
     async def test_no_converter_passes_validated_input(self):
         """Without a converter, the tool receives the validated LLM args directly."""
-
         received_inputs: list[EchoInput] = []
         original_run = EchoTool._run
 
         class CapturingEchoTool(EchoTool):
-            async def _run(self, inp: EchoInput, *, ctx: Any = None, **kwargs: Any) -> str:  # type: ignore[override]
+            async def _run(
+                self, inp: EchoInput, *, ctx: Any = None, **kwargs: Any
+            ) -> str:  # type: ignore[override]
                 received_inputs.append(inp)
                 return await original_run(self, inp, ctx=ctx, **kwargs)
 
@@ -656,9 +659,7 @@ class TestLlmInType:
         # LLM generates both fields — api_key should fail validation
         # against the reduced LlmInput schema (strict by default in Pydantic)
         responses = [
-            _tool_call_response(
-                "search", '{"query":"python","api_key":"bad"}', "tc1"
-            ),
+            _tool_call_response("search", '{"query":"python","api_key":"bad"}', "tc1"),
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[SearchTool()])

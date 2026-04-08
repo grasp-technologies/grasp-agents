@@ -8,7 +8,7 @@ Verifies that:
 - Multi-turn sessions maintain conversation across run() calls
 - Sessions survive simulated restarts (save -> new agent -> load -> continue)
 - InMemoryCheckpointStore operations work correctly
-- SessionSnapshot round-trips through JSON serialization
+- AgentCheckpoint round-trips through JSON serialization
 - TaskRecord lifecycle: created on bg spawn, updated on completion/failure
 - Pending TaskRecords inject interruption notifications on session resume
 """
@@ -25,17 +25,17 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel
 
-from grasp_agents.llm import LLM
-from grasp_agents.llm_agent import LLMAgent
-from grasp_agents.run_context import RunContext
-from grasp_agents.sessions import (
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.durability import (
+    AgentCheckpoint,
     InMemoryCheckpointStore,
     InterruptionType,
-    SessionSnapshot,
     TaskRecord,
     TaskStatus,
     prepare_messages_for_resume,
 )
+from grasp_agents.llm.llm import LLM
+from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import Event
 from grasp_agents.types.items import (
@@ -250,19 +250,19 @@ class TestInMemoryCheckpointStore:
 
 
 # ================================================================== #
-#  SessionSnapshot serialization                                       #
+#  AgentCheckpoint serialization                                       #
 # ================================================================== #
 
 
-class TestSessionSnapshot:
+class TestAgentCheckpoint:
     def test_round_trip_empty(self):
-        snap = SessionSnapshot(
+        snap = AgentCheckpoint(
             session_id="s1",
-            agent_name="agent",
+            processor_name="agent",
             messages=[],
         )
         json_bytes = snap.model_dump_json().encode()
-        restored = SessionSnapshot.model_validate_json(json_bytes)
+        restored = AgentCheckpoint.model_validate_json(json_bytes)
         assert restored.session_id == "s1"
         assert restored.messages == []
         assert restored.turn_number == 0
@@ -282,15 +282,15 @@ class TestSessionSnapshot:
                 call_id="fc_1", output="echo: test"
             ),
         ]
-        snap = SessionSnapshot(
+        snap = AgentCheckpoint(
             session_id="s1",
-            agent_name="agent",
+            processor_name="agent",
             messages=messages,
             turn_number=3,
             metadata={"parent_id": "p1"},
         )
         json_bytes = snap.model_dump_json().encode()
-        restored = SessionSnapshot.model_validate_json(json_bytes)
+        restored = AgentCheckpoint.model_validate_json(json_bytes)
         assert restored.turn_number == 3
         assert len(restored.messages) == 5
         assert restored.metadata == {"parent_id": "p1"}
@@ -452,9 +452,9 @@ class TestAgentSessionPersistence:
         # Snapshot should be persisted
         data = await store.load("session/s1")
         assert data is not None
-        snap = SessionSnapshot.model_validate_json(data)
+        snap = AgentCheckpoint.model_validate_json(data)
         assert snap.session_id == "s1"
-        assert snap.agent_name == "test_agent"
+        assert snap.processor_name == "test_agent"
         assert len(snap.messages) > 0
 
     @pytest.mark.anyio
@@ -473,7 +473,7 @@ class TestAgentSessionPersistence:
         # Get saved message count
         data = await store.load("session/s1")
         assert data is not None
-        snap = SessionSnapshot.model_validate_json(data)
+        snap = AgentCheckpoint.model_validate_json(data)
         saved_msg_count = len(snap.messages)
         assert saved_msg_count > 0
 
@@ -488,7 +488,7 @@ class TestAgentSessionPersistence:
         # Snapshot should have more messages now
         data2 = await store.load("session/s1")
         assert data2 is not None
-        snap2 = SessionSnapshot.model_validate_json(data2)
+        snap2 = AgentCheckpoint.model_validate_json(data2)
         assert len(snap2.messages) > saved_msg_count
 
     @pytest.mark.anyio
@@ -547,7 +547,7 @@ class TestAgentSessionPersistence:
         # Check the snapshot has messages from BOTH runs
         data = await store.load("session/s1")
         assert data is not None
-        snap = SessionSnapshot.model_validate_json(data)
+        snap = AgentCheckpoint.model_validate_json(data)
         # Should have: sys prompt + "hi" + response1 + "follow up" + response2
         # (not just "follow up" + response2, which would happen with reset)
         assert len(snap.messages) > 3
@@ -575,7 +575,7 @@ class TestAgentSessionPersistence:
 
         data = await store.load("session/s1")
         assert data is not None
-        snap = SessionSnapshot.model_validate_json(data)
+        snap = AgentCheckpoint.model_validate_json(data)
         assert snap.metadata == {"pathway_id": "pw_123"}
 
     @pytest.mark.anyio
@@ -596,7 +596,7 @@ class TestAgentSessionPersistence:
 
         data = await store.load("session/s1")
         assert data is not None
-        snap = SessionSnapshot.model_validate_json(data)
+        snap = AgentCheckpoint.model_validate_json(data)
         assert snap.turn_number > 0
 
     @pytest.mark.anyio
@@ -811,9 +811,9 @@ class TestPendingTaskResume:
 
         # Simulate: agent ran, bg task was spawned, process crashed before completion
         # 1. Save a session snapshot (parent had placeholder in memory)
-        snapshot = SessionSnapshot(
+        snapshot = AgentCheckpoint(
             session_id="s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -869,9 +869,9 @@ class TestPendingTaskResume:
         store = InMemoryCheckpointStore()
 
         # Snapshot from before the drain notification was checkpointed
-        snapshot = SessionSnapshot(
+        snapshot = AgentCheckpoint(
             session_id="s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -923,9 +923,9 @@ class TestPendingTaskResume:
         store = InMemoryCheckpointStore()
 
         # Snapshot has the notification (drained + checkpointed)
-        snapshot = SessionSnapshot(
+        snapshot = AgentCheckpoint(
             session_id="s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -973,9 +973,9 @@ class TestPendingTaskResume:
         """FAILED records are skipped on resume (already handled)."""
         store = InMemoryCheckpointStore()
 
-        snapshot = SessionSnapshot(
+        snapshot = AgentCheckpoint(
             session_id="s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -1011,9 +1011,9 @@ class TestPendingTaskResume:
         """Multiple pending TaskRecords all get interruption notifications."""
         store = InMemoryCheckpointStore()
 
-        snapshot = SessionSnapshot(
+        snapshot = AgentCheckpoint(
             session_id="s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -1124,8 +1124,8 @@ class TestChildTaskResume:
         # Child should have its own session snapshot
         child_snap_data = await store.load(f"session/{record.child_session_id}")
         assert child_snap_data is not None
-        child_snap = SessionSnapshot.model_validate_json(child_snap_data)
-        assert child_snap.agent_name == "child"
+        child_snap = AgentCheckpoint.model_validate_json(child_snap_data)
+        assert child_snap.processor_name == "child"
 
     @pytest.mark.anyio
     async def test_child_resumes_from_checkpoint(self):
@@ -1133,9 +1133,9 @@ class TestChildTaskResume:
         store = InMemoryCheckpointStore()
 
         # 1. Simulate: parent ran, child was spawned but crashed mid-execution
-        parent_snapshot = SessionSnapshot(
+        parent_snapshot = AgentCheckpoint(
             session_id="parent_s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -1170,9 +1170,9 @@ class TestChildTaskResume:
         )
 
         # 3. Child's own session snapshot (checkpointed mid-execution)
-        child_snapshot = SessionSnapshot(
+        child_snapshot = AgentCheckpoint(
             session_id="child/parent_s1/ch1",
-            agent_name="child",
+            processor_name="child",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("work", role="user"),
@@ -1221,9 +1221,9 @@ class TestChildTaskResume:
         """Regular bg tools without child session still get interrupted msg."""
         store = InMemoryCheckpointStore()
 
-        parent_snapshot = SessionSnapshot(
+        parent_snapshot = AgentCheckpoint(
             session_id="parent_s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -1273,9 +1273,9 @@ class TestChildTaskResume:
         """Two children from the same tool both resume independently."""
         store = InMemoryCheckpointStore()
 
-        parent_snapshot = SessionSnapshot(
+        parent_snapshot = AgentCheckpoint(
             session_id="parent_s1",
-            agent_name="test_agent",
+            processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
@@ -1319,9 +1319,9 @@ class TestChildTaskResume:
             )
             await store.save(rec.store_key, rec.model_dump_json().encode())
             # Each child has its own snapshot
-            snap = SessionSnapshot(
+            snap = AgentCheckpoint(
                 session_id=sid,
-                agent_name="child",
+                processor_name="child",
                 messages=[
                     InputMessageItem.from_text("prompt", role="system"),
                     InputMessageItem.from_text(tid, role="user"),

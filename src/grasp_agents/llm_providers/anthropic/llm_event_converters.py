@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_usage import (
     InputTokensDetails,
@@ -25,7 +26,6 @@ from anthropic.types import WebFetchBlock as _AnthropicWebFetchBlock
 from anthropic.types import (
     WebFetchToolResultBlock as _AnthropicWebFetchToolResultBlock,
 )
-from grasp_agents.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.content import Citation, UrlCitation
 from grasp_agents.types.items import (
     OpenPageAction,

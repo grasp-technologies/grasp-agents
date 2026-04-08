@@ -1,12 +1,17 @@
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from ..errors import WorkflowConstructionError
+from ..durability.workflow_checkpoint import WorkflowCheckpoint
+from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..types.errors import WorkflowConstructionError
 from ..types.events import DummyEvent, Event
 from ..types.io import InT, OutT, ProcName
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
@@ -48,6 +53,85 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
 
         for subproc in subprocs:
             subproc.recipients = None
+
+        # Session persistence (set via reset_session)
+        self._session_id: str | None = None
+
+    # --- Session persistence ---
+
+    @property
+    def resumable(self) -> bool:
+        return True
+
+    def reset_session(self, session_id: str) -> None:
+        self._session_id = session_id
+
+    def validate_inputs(
+        self,
+        exec_id: str,
+        chat_inputs: Any | None = None,
+        in_packet: Packet[InT] | None = None,
+        in_args: InT | list[InT] | None = None,
+    ) -> list[InT] | None:
+        has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
+        if not has_input and self._session_id is not None:
+            return None
+        return super().validate_inputs(
+            exec_id=exec_id,
+            chat_inputs=chat_inputs,
+            in_packet=in_packet,
+            in_args=in_args,
+        )
+
+    @property
+    def _checkpoint_store_key(self) -> str | None:
+        if self._session_id is None:
+            return None
+        return f"workflow/{self._session_id}"
+
+    async def _load_checkpoint(
+        self, ctx: RunContext[CtxT]
+    ) -> WorkflowCheckpoint | None:
+        store = ctx.store
+        if store is None or self._checkpoint_store_key is None:
+            return None
+        data = await store.load(self._checkpoint_store_key)
+        if data is None:
+            return None
+        checkpoint = WorkflowCheckpoint.model_validate_json(data)
+        logger.info(
+            "Loaded workflow checkpoint %s (step=%d, iter=%d)",
+            self._session_id,
+            checkpoint.completed_step,
+            checkpoint.iteration,
+        )
+        return checkpoint
+
+    async def _save_checkpoint(
+        self,
+        ctx: RunContext[CtxT],
+        *,
+        completed_step: int,
+        packet: Packet[Any],
+        iteration: int = 0,
+    ) -> None:
+        store = ctx.store
+        if store is None or self._session_id is None:
+            return
+        assert self._checkpoint_store_key is not None
+        checkpoint = WorkflowCheckpoint(
+            session_id=self._session_id,
+            processor_name=self.name,
+            completed_step=completed_step,
+            iteration=iteration,
+            packet=packet.model_dump(),
+        )
+        await store.save(
+            self._checkpoint_store_key,
+            checkpoint.model_dump_json().encode("utf-8"),
+        )
+
+    # --- Routing ---
 
     def select_recipients_impl(
         self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str

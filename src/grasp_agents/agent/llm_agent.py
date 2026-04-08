@@ -8,23 +8,20 @@ from typing import Any, ClassVar, Generic, cast, final
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .agent_loop import AgentLoop, ResponseCapture
-from .errors import ProcInputValidationError
-from .llm import LLM
-from .llm_agent_memory import LLMAgentMemory
-from .processors.processor import Processor
-from .prompt_builder import PromptBuilder
-from .run_context import CtxT, RunContext
-from .sessions.resume import prepare_messages_for_resume
-from .sessions.snapshot import SessionSnapshot
-from .types.content import Content, InputImage
-from .types.events import (
+from ..durability import AgentCheckpoint
+from ..durability.resume import prepare_messages_for_resume
+from ..llm.llm import LLM
+from ..processors.processor import Processor
+from ..run_context import CtxT, RunContext
+from ..types.content import Content, InputImage
+from ..types.errors import ProcInputValidationError
+from ..types.events import (
     Event,
     ProcPayloadOutEvent,
     SystemMessageEvent,
     UserMessageEvent,
 )
-from .types.hooks import (
+from ..types.hooks import (
     AfterLlmHook,
     AfterToolHook,
     BeforeLlmHook,
@@ -37,13 +34,16 @@ from .types.hooks import (
     ToolInputConverter,
     ToolOutputConverter,
 )
-from .types.io import InT, LLMPrompt, OutT, ProcName
-from .types.items import FunctionToolCallItem, InputMessageItem
-from .types.response import Response
-from .types.tool import BaseTool
-from .utils.callbacks import is_method_overridden
-from .utils.io import get_prompt
-from .utils.validation import validate_obj_from_json_or_py_string
+from ..types.io import InT, LLMPrompt, OutT, ProcName
+from ..types.items import FunctionToolCallItem, InputMessageItem
+from ..types.response import Response
+from ..types.tool import BaseTool
+from ..utils.callbacks import is_method_overridden
+from ..utils.io import get_prompt
+from ..utils.validation import validate_obj_from_json_or_py_string
+from .agent_loop import AgentLoop, ResponseCapture
+from .llm_agent_memory import LLMAgentMemory
+from .prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         self._session_id = session_id
         self._session_metadata = session_metadata or {}
-        self._session_snapshot: SessionSnapshot | None = None
+        self._session_checkpoint: AgentCheckpoint | None = None
         self._session_turn_number: int = 0
         self._session_loaded: bool = False
 
@@ -242,7 +242,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         """
         self._session_id = session_id
         self._session_loaded = False
-        self._session_snapshot = None
+        self._session_checkpoint = None
         self._session_turn_number = 0
         self._loop.checkpoint_callback = self._save_checkpoint
         self._loop.bg_tasks.session_id = session_id
@@ -253,7 +253,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT],
         exec_id: str | None = None,
     ) -> None:
-        """Load session snapshot from store on first run (if available)."""
+        """Load session checkpoint from store on first run (if available)."""
         store = ctx.store
         if store is None or self._session_id is None:
             return
@@ -265,11 +265,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         if data is None:
             return  # Fresh session
 
-        snapshot = SessionSnapshot.model_validate_json(data)
-        resume_state = prepare_messages_for_resume(snapshot.messages)
+        checkpoint = AgentCheckpoint.model_validate_json(data)
+        resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.memory.messages = resume_state.messages
-        self._session_snapshot = snapshot
-        self._session_turn_number = snapshot.turn_number
+        self._session_checkpoint = checkpoint
+        self._session_turn_number = checkpoint.turn_number
         self._session_loaded = True
 
         logger.info(
@@ -294,23 +294,23 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         now = datetime.now(UTC)
         self._session_turn_number += 1
 
-        snapshot = SessionSnapshot(
+        checkpoint = AgentCheckpoint(
             session_id=self._session_id,
-            agent_name=self.name,
+            processor_name=self.name,
             messages=list(self.memory.messages),
             turn_number=self._session_turn_number,
             created_at=(
-                self._session_snapshot.created_at if self._session_snapshot else now
+                self._session_checkpoint.created_at if self._session_checkpoint else now
             ),
             updated_at=now,
             metadata=self._session_metadata,
         )
-        self._session_snapshot = snapshot
+        self._session_checkpoint = checkpoint
 
         assert self._session_store_key is not None
         await store.save(
             self._session_store_key,
-            snapshot.model_dump_json().encode("utf-8"),
+            checkpoint.model_dump_json().encode("utf-8"),
         )
 
     def _memorize_inputs(

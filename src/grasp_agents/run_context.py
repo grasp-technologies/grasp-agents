@@ -3,8 +3,8 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .durability.checkpoint_store import CheckpointStore
 from .printer import Printer
-from .sessions.store import CheckpointStore
 from .types.io import ProcName
 from .types.response import Response
 from .usage_tracker import UsageTracker

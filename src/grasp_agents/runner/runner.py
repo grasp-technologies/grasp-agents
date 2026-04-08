@@ -6,13 +6,13 @@ from uuid import uuid4
 
 from grasp_agents.tracing_decorators import workflow
 
-from .errors import RunnerError
+from ..packet import Packet
+from ..processors.base_processor import BaseProcessor
+from ..run_context import CtxT, RunContext
+from ..types.errors import RunnerError
+from ..types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
+from ..types.io import OutT
 from .event_bus import EventBus
-from .packet import Packet
-from .processors.base_processor import BaseProcessor
-from .run_context import CtxT, RunContext
-from .types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
-from .types.io import OutT
 
 logger = logging.getLogger(__name__)
 

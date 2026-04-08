@@ -1,33 +1,33 @@
 # pyright: reportUnusedImport=false
 
 
-from .agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
-from .fallback_llm import FallbackLLM
-from .function_tool import FunctionTool, function_tool
-from .llm import LLM, LLMSettings
-from .llm_agent import LLMAgent
-from .llm_agent_memory import LLMAgentMemory
-from .memory import Memory
-from .model_info import (
+from .agent.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
+from .agent.function_tool import FunctionTool, function_tool
+from .agent.llm_agent import LLMAgent
+from .agent.llm_agent_memory import LLMAgentMemory
+from .durability import (
+    AgentCheckpoint,
+    CheckpointStore,
+    InMemoryCheckpointStore,
+    TaskRecord,
+    TaskStatus,
+)
+from .llm.fallback_llm import FallbackLLM
+from .llm.llm import LLM, LLMSettings
+from .llm.model_info import (
     ModelCapabilities,
     count_tokens,
     get_context_window,
     get_model_capabilities,
 )
+from .llm.resilience import RetryPolicy
+from .memory import Memory
 from .packet import Packet
 from .printer import Printer, print_event_stream
 from .processors.base_processor import BaseProcessor
 from .processors.parallel_processor import ParallelProcessor
 from .processors.processor import Processor
-from .resilience import RetryPolicy
 from .run_context import RunContext
-from .sessions import (
-    CheckpointStore,
-    InMemoryCheckpointStore,
-    SessionSnapshot,
-    TaskRecord,
-    TaskStatus,
-)
 from .types.content import Content, InputImage, InputRenderable
 from .types.events import (
     BackgroundTaskCompletedEvent,
@@ -83,6 +83,7 @@ except ImportError:
 
 __all__ = [
     "LLM",
+    "AgentCheckpoint",
     "AgentPromptBuilder",
     "AgentTool",
     "AgentToolInput",
@@ -135,7 +136,6 @@ __all__ = [
     "Response",
     "RetryPolicy",
     "RunContext",
-    "SessionSnapshot",
     "SystemMessage",
     "TaskRecord",
     "TaskStatus",

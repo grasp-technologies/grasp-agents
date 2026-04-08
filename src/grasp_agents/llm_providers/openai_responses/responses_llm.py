@@ -5,6 +5,11 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from grasp_agents.llm.cloud_llm import (
+    ApiCallParams,
+    CloudLLM,
+    CloudLLMSettings,
+)
 from openai import AsyncOpenAI
 from openai._types import omit  # noqa: PLC2701
 from openai.lib.streaming.responses._responses import (
@@ -29,11 +34,6 @@ from openai.types.responses.web_search_tool_param import WebSearchToolParam
 from openai.types.shared import Reasoning
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.cloud_llm import (
-    ApiCallParams,
-    CloudLLM,
-    CloudLLMSettings,
-)
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import LlmError
 from grasp_agents.types.llm_events import LlmEvent

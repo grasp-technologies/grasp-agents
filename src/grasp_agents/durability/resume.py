@@ -29,7 +29,8 @@ class ResumeState:
 
 
 def _strip_incomplete_turn(messages: list[InputItem]) -> tuple[list[InputItem], int]:
-    """Strip trailing incomplete assistant turn (unresolved tool calls + their context).
+    """
+    Strip trailing incomplete assistant turn (unresolved tool calls + their context).
 
     Walks backward from the end. If any trailing FunctionToolCallItem has no
     matching FunctionToolOutputItem, the entire assistant turn (reasoning +
@@ -40,9 +41,7 @@ def _strip_incomplete_turn(messages: list[InputItem]) -> tuple[list[InputItem], 
 
     # Collect all resolved call_ids
     resolved_ids = {
-        msg.call_id
-        for msg in messages
-        if isinstance(msg, FunctionToolOutputItem)
+        msg.call_id for msg in messages if isinstance(msg, FunctionToolOutputItem)
     }
 
     # Walk backward through trailing tool-related items
@@ -91,7 +90,8 @@ def _detect_interruption(messages: list[InputItem]) -> InterruptionType:
 def prepare_messages_for_resume(
     messages: list[InputItem],
 ) -> ResumeState:
-    """CC-style message cleanup for session resume.
+    """
+    CC-style message cleanup for session resume.
 
     1. Strip trailing incomplete assistant turn (dangling tool calls)
     2. Detect interruption type for diagnostics

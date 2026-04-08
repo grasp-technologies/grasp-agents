@@ -26,10 +26,10 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel
 
-from grasp_agents.agent_loop import AgentLoop, ResponseCapture
-from grasp_agents.function_tool import function_tool
-from grasp_agents.llm import LLM
-from grasp_agents.llm_agent_memory import LLMAgentMemory
+from grasp_agents.agent.agent_loop import AgentLoop, ResponseCapture
+from grasp_agents.agent.function_tool import function_tool
+from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
+from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
@@ -474,11 +474,12 @@ class TestMultipleBackgroundTasks:
         completed_names = {e.data.tool_name for e in completed}
         assert completed_names == {"slow_a", "slow_b"}
 
-
     @pytest.mark.asyncio
     async def test_multiple_bg_tasks_ids_match_launch_to_completion(self):
-        """Task IDs in placeholders, launched events, notifications, and
-        completed events are all consistent and allow correlation."""
+        """
+        Task IDs in placeholders, launched events, notifications, and
+        completed events are all consistent and allow correlation.
+        """
         responses = [
             _multi_tool_call_response(
                 [
@@ -505,12 +506,8 @@ class TestMultipleBackgroundTasks:
         ctx = RunContext[None]()
         events = await _collect_events(executor, ctx)
 
-        launched = [
-            e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)
-        ]
-        completed = [
-            e for e in events if isinstance(e, BackgroundTaskCompletedEvent)
-        ]
+        launched = [e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)]
+        completed = [e for e in events if isinstance(e, BackgroundTaskCompletedEvent)]
         assert len(launched) == 2
         assert len(completed) == 2
 
@@ -527,32 +524,23 @@ class TestMultipleBackgroundTasks:
         # Placeholder tool outputs contain the matching task IDs
         from grasp_agents.types.events import ToolMessageEvent
 
-        tool_msgs = [
-            e for e in events if isinstance(e, ToolMessageEvent)
-        ]
-        placeholders = [
-            m for m in tool_msgs if "background" in str(m.data).lower()
-        ]
+        tool_msgs = [e for e in events if isinstance(e, ToolMessageEvent)]
+        placeholders = [m for m in tool_msgs if "background" in str(m.data).lower()]
         assert len(placeholders) == 2
         for ph in placeholders:
             # Each placeholder should contain exactly one of the task IDs
-            matches = [
-                tid for tid in launched_ids if tid in str(ph.data)
-            ]
+            matches = [tid for tid in launched_ids if tid in str(ph.data)]
             assert len(matches) == 1
 
         # Notification user messages contain the matching task IDs
         notifications = [
             e
             for e in events
-            if isinstance(e, UserMessageEvent)
-            and "completed" in str(e.data).lower()
+            if isinstance(e, UserMessageEvent) and "completed" in str(e.data).lower()
         ]
         assert len(notifications) == 2
         for notif in notifications:
-            matches = [
-                tid for tid in launched_ids if tid in str(notif.data)
-            ]
+            matches = [tid for tid in launched_ids if tid in str(notif.data)]
             assert len(matches) == 1
             tid = matches[0]
             # The notification tool name matches the launched tool name

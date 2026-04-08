@@ -11,9 +11,9 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from grasp_agents.llm.cloud_llm import APIProvider
 from pydantic import BaseModel, Field
 
-from grasp_agents.cloud_llm import APIProvider
 from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -31,7 +31,8 @@ from grasp_agents.types.llm_events import (
 )
 
 if TYPE_CHECKING:
-    from grasp_agents.cloud_llm import CloudLLM
+    from grasp_agents.llm.cloud_llm import CloudLLM
+
     from grasp_agents.types.tool import BaseTool
 
 
@@ -579,9 +580,7 @@ def _execute_parallel_tools(
         else:
             result = args["a"] * args["b"]
         tool_outputs.append(
-            FunctionToolOutputItem.from_tool_result(
-                call_id=tc.call_id, output=result
-            )
+            FunctionToolOutputItem.from_tool_result(call_id=tc.call_id, output=result)
         )
     return tool_outputs
 

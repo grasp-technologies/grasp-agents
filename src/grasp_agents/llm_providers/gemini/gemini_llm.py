@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from google.genai import Client
 from google.genai.types import UrlContext
-
-from grasp_agents.cloud_llm import (
+from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
     APIProvider,
     CloudLLM,

@@ -1,6 +1,6 @@
 """Tests for model_info facade: graceful fallback for unknown models."""
 
-from grasp_agents.model_info import (
+from grasp_agents.llm.model_info import (
     count_tokens,
     get_context_window,
     get_model_capabilities,
