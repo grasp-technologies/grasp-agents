@@ -1,10 +1,9 @@
 import logging
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, ClassVar, Generic, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, cast, final
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
-from typing_extensions import Protocol
 
 from grasp_agents.errors import (
     PacketRoutingError,
@@ -16,20 +15,12 @@ from grasp_agents.tracing_decorators import workflow
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from ..types.hooks import RecipientSelector
 from ..types.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
 from .base_processor import BaseProcessor, with_retry
 
 logger = logging.getLogger(__name__)
-
-
-_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
-
-
-class RecipientSelector(Protocol[_OutT_contra, CtxT]):
-    def __call__(
-        self, output: _OutT_contra, *, ctx: RunContext[CtxT], call_id: str
-    ) -> Sequence[ProcName]: ...
 
 
 class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
@@ -45,12 +36,12 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     def validate_inputs(
         self,
-        call_id: str,
+        exec_id: str,
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
     ) -> list[InT] | None:
-        err_kwargs = {"proc_name": self.name, "call_id": call_id}
+        err_kwargs = {"proc_name": self.name, "exec_id": exec_id}
 
         num_non_null_inputs = sum(
             x is not None for x in [chat_inputs, in_args, in_packet]
@@ -109,7 +100,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         return resolved_args
 
-    def validate_output(self, out_payload: OutT, call_id: str) -> OutT:
+    def validate_output(self, out_payload: OutT, exec_id: str) -> OutT:
         if out_payload is None:
             return out_payload
 
@@ -117,23 +108,27 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             return TypeAdapter(self.out_type).validate_python(out_payload)
         except PydanticValidationError as err:
             raise ProcOutputValidationError(
-                schema=self.out_type, proc_name=self.name, call_id=call_id
+                schema=self.out_type,
+                proc_name=self.name,
+                exec_id=exec_id,
             ) from err
 
     def _validate_recipients(
-        self, recipients: Sequence[ProcName] | None, call_id: str
+        self, recipients: Sequence[ProcName] | None, exec_id: str
     ) -> None:
         for r in recipients or []:
             if r not in (self.recipients or []):
                 raise PacketRoutingError(
                     proc_name=self.name,
-                    call_id=call_id,
+                    exec_id=exec_id,
                     selected_recipient=r,
-                    allowed_recipients=cast("list[str]", self.recipients),
+                    allowed_recipients=cast(
+                        "list[str]", self.recipients
+                    ),
                 )
 
     def select_recipients_impl(
-        self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
+        self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str
     ) -> Sequence[ProcName]:
         raise NotImplementedError
 
@@ -146,17 +141,18 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     @final
     def select_recipients(
-        self, output: OutT, ctx: RunContext[CtxT], call_id: str
+        self, output: OutT, ctx: RunContext[CtxT], exec_id: str
     ) -> Sequence[ProcName]:
         base_cls = BaseProcessor[Any, Any, Any]
-        if is_method_overridden("select_recipients_impl", self, base_cls):
+        if is_method_overridden(
+            "select_recipients_impl", self, base_cls
+        ):
             recipients = self.select_recipients_impl(
-                output=output, ctx=ctx, call_id=call_id
+                output=output, ctx=ctx, exec_id=exec_id
             )
-            self._validate_recipients(recipients, call_id=call_id)
+            self._validate_recipients(recipients, exec_id=exec_id)
             return recipients
 
-        # self.processor is not None because otherwise we do not call this method
         return cast("list[ProcName]", self.recipients)
 
     async def _process(
@@ -164,12 +160,12 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> list[OutT]:
         """
-        Process a list of inputs and return a list of outputs. The length of the
-        output list can be different from the input list.
+        Process a list of inputs and return a list of outputs. The length of
+        the output list can be different from the input list.
         """
         return cast("list[OutT]", in_args)
 
@@ -178,31 +174,45 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         outputs = await self._process(
-            chat_inputs=chat_inputs, in_args=in_args, call_id=call_id, ctx=ctx
+            chat_inputs=chat_inputs,
+            in_args=in_args,
+            exec_id=exec_id,
+            ctx=ctx,
         )
         for output in outputs:
-            yield ProcPayloadOutEvent(data=output, src_name=self.name, call_id=call_id)
+            yield ProcPayloadOutEvent(
+                data=output, source=self.name, exec_id=exec_id
+            )
 
     def _build_packet(
-        self, outputs: list[OutT], call_id: str, ctx: RunContext[CtxT]
+        self,
+        outputs: list[OutT],
+        exec_id: str,
+        ctx: RunContext[CtxT],
     ) -> Packet[OutT]:
         for output in outputs:
-            self.validate_output(output, call_id=call_id)
+            self.validate_output(output, exec_id=exec_id)
 
         routings: list[Sequence[ProcName]] | None = []
         if self.recipients is not None:
             for output in outputs:
                 routings.append(
-                    self.select_recipients(output=output, ctx=ctx, call_id=call_id)
+                    self.select_recipients(
+                        output=output, ctx=ctx, exec_id=exec_id
+                    )
                 )
 
         joined_routing = [r for r in routings] if routings else None
 
-        return Packet(sender=self.name, payloads=outputs, routing=joined_routing)
+        return Packet(
+            sender=self.name,
+            payloads=outputs,
+            routing=joined_routing,
+        )
 
     @final
     @workflow(name="processor")  # type: ignore
@@ -213,14 +223,14 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
-        call_id = self.generate_call_id(call_id)
+        exec_id = self.generate_exec_id(exec_id)
 
         val_in_args = self.validate_inputs(
-            call_id=call_id,
+            exec_id=exec_id,
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
@@ -230,24 +240,25 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         async for event in self._process_stream(
             chat_inputs=chat_inputs,
             in_args=val_in_args,
-            call_id=call_id,
+            exec_id=exec_id,
             ctx=ctx,
         ):
-            if isinstance(event, ProcPayloadOutEvent) and event.src_name == self.name:
-                # Collect payloads of the processor's own output events
-                # This makes sure subprocessor events are yielded but their
-                # payloads are not included in the final output packet
+            if (
+                isinstance(event, ProcPayloadOutEvent)
+                and event.source == self.name
+            ):
                 outputs.append(event.data)
             else:
                 yield event
 
-        # 1) Combine payloads
-        # 2) Obtain recipients per payload
-        # 3) Form a packet
-        # 4) Yield a ProcPacketOutEvent
-        out_packet = self._build_packet(outputs=outputs, call_id=call_id, ctx=ctx)
+        out_packet = self._build_packet(
+            outputs=outputs, exec_id=exec_id, ctx=ctx
+        )
         yield ProcPacketOutEvent(
-            id=out_packet.id, data=out_packet, src_name=self.name, call_id=call_id
+            id=out_packet.id,
+            data=out_packet,
+            source=self.name,
+            exec_id=exec_id,
         )
 
     async def run(
@@ -256,7 +267,7 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         result = None
@@ -265,17 +276,21 @@ class Processor(BaseProcessor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
-            call_id=call_id,
+            exec_id=exec_id,
             ctx=ctx,
         ):
             if result is not None:
-                # Need to drain the event stream for OTel to work properly
                 continue
 
-            if isinstance(event, ProcPacketOutEvent) and event.src_name == self.name:
+            if (
+                isinstance(event, ProcPacketOutEvent)
+                and event.source == self.name
+            ):
                 result = event.data
 
         if result is None:
-            raise RuntimeError("Processor run did not yield a ProcPacketOutputEvent")
+            raise RuntimeError(
+                "Processor run did not yield a ProcPacketOutputEvent"
+            )
 
         return result

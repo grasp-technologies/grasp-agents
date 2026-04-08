@@ -52,7 +52,7 @@ class MCPListResourcesTool(BaseTool[ListResourcesInput, str, None]):
         inp: ListResourcesInput,
         *,
         ctx: RunContext[None] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> str:
         params = PaginatedRequestParams(cursor=inp.cursor) if inp.cursor else None
@@ -111,7 +111,7 @@ class MCPReadResourceTool(BaseTool[ReadResourceInput, str, None]):
         inp: ReadResourceInput,
         *,
         ctx: RunContext[None] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> str:
         result = await self._session.read_resource(inp.uri)

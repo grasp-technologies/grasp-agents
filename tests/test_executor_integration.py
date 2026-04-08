@@ -1,5 +1,5 @@
 """
-Integration tests for LLMPolicyExecutor with the new Response/StreamEvent pipeline.
+Integration tests for AgentLoop with the new Response/StreamEvent pipeline.
 
 Tests the full flow: memory → LLM → response → memory update → tool calling → repeat.
 Uses a mock LLM to avoid real API calls.
@@ -16,9 +16,9 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel
 
+from grasp_agents.agent_loop import AgentLoop
 from grasp_agents.llm import LLM
 from grasp_agents.llm_agent_memory import LLMAgentMemory
-from grasp_agents.llm_policy_executor import LLMPolicyExecutor
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
@@ -170,35 +170,34 @@ def _make_tool_call_response(
     )
 
 
-def _with_final_answer_checker(
-    executor: LLMPolicyExecutor,
-) -> LLMPolicyExecutor:
+def _with_final_answer_extractor(
+    executor: AgentLoop,
+) -> AgentLoop:
     """
-    Add a check_for_final_answer_impl that stops on text-only responses.
+    Set a final_answer_extractor that stops on text-only responses.
 
-    The default executor never returns a final answer from check_for_final_answer
-    (it's designed to be overridden by LLMAgent hooks). This helper mimics the
-    standard LLMAgent behavior: if the last response has no tool calls, treat
-    the output text as the final answer.
+    The default AgentLoop has no final_answer_extractor (returns None).
+    This helper mimics the standard LLMAgent behavior: if the last
+    response has no tool calls, treat the output text as the final answer.
     """
 
-    def _check(*, ctx, call_id, response=None, **kwargs):  # noqa: ARG001
+    def _check(*, ctx, exec_id, response=None, **kwargs):  # noqa: ARG001
         if response and not response.tool_call_items:
             return response.output_text or None
         return None
 
-    executor.check_for_final_answer_impl = _check  # type: ignore[assignment]
+    executor.final_answer_extractor = _check  # type: ignore[assignment]
     return executor
 
 
 async def _collect_events(
-    executor, ctx, call_id="test"
+    executor, ctx, exec_id="test"
 ) -> tuple[list[Event[Any]], Response | None]:
     events: list[Event[Any]] = []
     response: Response | None = None
     extra: dict[str, Any] = {}
     async for event in executor.execute_stream(
-        ctx=ctx, call_id=call_id, extra_llm_settings=extra
+        ctx=ctx, exec_id=exec_id, extra_llm_settings=extra
     ):
         events.append(event)
         if isinstance(event, LLMStreamEvent) and isinstance(
@@ -222,7 +221,7 @@ class TestExecutorTextResponse:
         memory = LLMAgentMemory()
         memory.reset(instructions="Be helpful.")
 
-        executor = LLMPolicyExecutor(
+        executor = AgentLoop(
             agent_name="test_agent",
             llm=llm,
             memory=memory,
@@ -248,7 +247,7 @@ class TestExecutorTextResponse:
 
         # Final answer should be the text
         assert last_response is not None
-        assert executor.get_final_answer(last_response) == "The answer is 42."
+        assert executor.final_answer == "The answer is 42."
 
     @pytest.mark.asyncio
     async def test_streaming_mode(self):
@@ -258,7 +257,7 @@ class TestExecutorTextResponse:
         memory = LLMAgentMemory()
         memory.reset(instructions="sys")
 
-        executor = LLMPolicyExecutor(
+        executor = AgentLoop(
             agent_name="agent",
             llm=llm,
             memory=memory,
@@ -274,7 +273,7 @@ class TestExecutorTextResponse:
         llm_events = [e for e in events if isinstance(e, LLMStreamEvent)]
         assert len(llm_events) > 0
         assert last_response is not None
-        assert executor.get_final_answer(last_response) == "Hello!"
+        assert executor.final_answer == "Hello!"
 
 
 class TestExecutorToolCalling:
@@ -299,8 +298,8 @@ class TestExecutorToolCalling:
         memory.reset(instructions="You can add numbers.")
 
         tool = AddTool()
-        executor = _with_final_answer_checker(
-            LLMPolicyExecutor(
+        executor = _with_final_answer_extractor(
+            AgentLoop(
                 agent_name="calc",
                 llm=llm,
                 memory=memory,
@@ -340,18 +339,18 @@ class TestExecutorToolCalling:
 
         # Final answer
         assert last_response is not None
-        assert executor.get_final_answer(last_response) == "2 + 3 = 5"
+        assert executor.final_answer == "2 + 3 = 5"
 
     @pytest.mark.asyncio
     async def test_max_turns_limit(self):
         """
         Executor stops after max_turns even if LLM keeps calling tools.
 
-        With max_turns=2, the flow is:
-          1. First generate (outside loop): tool_call → call 1
-          2. Loop iter 1: check→None, turns=0<2 → call_tools, generate → call 2 (tool_call), turns=1
-          3. Loop iter 2: check→None, turns=1<2 → call_tools, generate → call 3 (tool_call), turns=2
-          4. Loop iter 3: check→None, turns=2>=2 → force_generate → call 4 (text)
+        With max_turns=2, the RL-style loop runs:
+          turn 0: ACT → tool_call (call 1) → JUDGE (0<2) → OBSERVE (call_tools)
+          turn 1: ACT → tool_call (call 2) → JUDGE (1<2) → OBSERVE (call_tools)
+          turn 2: ACT → tool_call (call 3) → JUDGE (2>=2 → MAX_TURNS)
+                  → close dangling tool calls → force_generate (call 4)
         Total: 4 LLM calls (3 tool calls + 1 forced text answer).
         """
         responses: list[Response] = [
@@ -367,7 +366,7 @@ class TestExecutorToolCalling:
         memory.reset(instructions="sys")
 
         tool = AddTool()
-        executor = LLMPolicyExecutor(
+        executor = AgentLoop(
             agent_name="agent",
             llm=llm,
             memory=memory,
@@ -383,14 +382,13 @@ class TestExecutorToolCalling:
         # 4 LLM calls: first generate + 2 loop generates + force_generate
         assert llm.call_count == 4
 
-        # Only 2 tool rounds actually executed: the 3rd tool_call response
-        # is generated but its tools are never called (force_generate fires first)
+        # 3 tool call events: 2 executed + 1 generated but cancelled at max_turns
         tool_call_events = [e for e in events if isinstance(e, ToolCallEvent)]
-        assert len(tool_call_events) == 2
+        assert len(tool_call_events) == 3
 
         # Final answer was forced
         assert last_response is not None
-        assert executor.get_final_answer(last_response) == "Forced answer"
+        assert executor.final_answer == "Forced answer"
 
 
 class TestExecutorUsageTracking:
@@ -404,7 +402,7 @@ class TestExecutorUsageTracking:
         memory = LLMAgentMemory()
         memory.reset(instructions="sys")
 
-        executor = LLMPolicyExecutor(
+        executor = AgentLoop(
             agent_name="test_agent",
             llm=llm,
             memory=memory,
@@ -445,8 +443,8 @@ class TestExecutorMemoryIntegrity:
         memory = LLMAgentMemory()
         memory.reset(instructions="calc")
 
-        executor = _with_final_answer_checker(
-            LLMPolicyExecutor(
+        executor = _with_final_answer_extractor(
+            AgentLoop(
                 agent_name="agent",
                 llm=llm,
                 memory=memory,

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Sequence
 from copy import deepcopy
 from functools import wraps
-from typing import Any, ClassVar, Generic, Self, TypeVar, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypeVar, cast, final
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -13,16 +13,17 @@ from ..generics_utils import AutoInstanceAttributesMixin
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
+from ..sessions.store import CheckpointStore
 from ..types.events import (
     DummyEvent,
     Event,
-    ProcPacketOutEvent,
     ProcStreamingErrorData,
     ProcStreamingErrorEvent,
-    ToolOutputEvent,
 )
 from ..types.io import InT, OutT, ProcName
-from ..types.tool import BaseTool
+
+if TYPE_CHECKING:
+    from .processor_tool import ProcessorTool
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def with_retry(func: F) -> F:
     async def wrapper(
         self: "BaseProcessor[Any, Any, Any]", *args: Any, **kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
-        call_id = kwargs.get("call_id", "unknown")
+        exec_id: str | None = kwargs.get("exec_id")
 
         n_attempt = 0
         while n_attempt <= self.max_retries:
@@ -47,17 +48,19 @@ def with_retry(func: F) -> F:
             except Exception as err:
                 n_attempt += 1
 
-                err_data = ProcStreamingErrorData(error=err, call_id=call_id)
+                err_data = ProcStreamingErrorData(error=err, exec_id=exec_id)
                 yield ProcStreamingErrorEvent(
-                    data=err_data, src_name=self.name, call_id=call_id
+                    data=err_data,
+                    source=self.name,
+                    exec_id=exec_id,
                 )
                 err_message = (
-                    f"Processor run failed [proc_name={self.name}; call_id={call_id}]"
+                    f"Processor run failed [proc_name={self.name}; exec_id={exec_id}]"
                 )
                 if n_attempt > self.max_retries:
                     raise ProcRunError(
                         proc_name=self.name,
-                        call_id=call_id,
+                        exec_id=exec_id,
                         message=err_message + f" after {n_attempt - 1} retries",
                     ) from err
 
@@ -82,6 +85,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        store: CheckpointStore | None = None,
     ) -> None:
         self._in_type: type[InT]
         self._out_type: type[OutT]
@@ -92,6 +96,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         self._max_retries = max_retries
         self._memory: Memory = memory or DummyMemory()
         self.recipients = recipients
+        self._store = store
 
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
@@ -113,16 +118,37 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         return self._memory
 
     @property
+    def store(self) -> CheckpointStore | None:
+        return self._store
+
+    @property
     def max_retries(self) -> int:
         return self._max_retries
 
-    def generate_call_id(self, call_id: str | None) -> str:
-        if call_id is None:
+    def generate_exec_id(self, exec_id: str | None) -> str:
+        if exec_id is None:
             return str(uuid4())[:6] + "_" + self.name
-        return call_id
+        return exec_id
 
     def copy(self) -> Self:
         return deepcopy(self)
+
+    # --- Session persistence (overridden by LLMAgent) ---
+
+    @property
+    def resumable(self) -> bool:
+        return False
+
+    def configure_session(self, session_id: str, store: CheckpointStore) -> None:
+        raise NotImplementedError
+
+    async def resume(
+        self,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+    ) -> Any:
+        raise NotImplementedError
 
     @abstractmethod
     async def run(
@@ -131,7 +157,7 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         *,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> Packet[OutT]:
         pass
@@ -143,70 +169,31 @@ class BaseProcessor(AutoInstanceAttributesMixin, ABC, Generic[InT, OutT, CtxT]):
         *,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         yield DummyEvent()
 
     @final
     def as_tool(
-        self, tool_name: str, tool_description: str, reset_memory_on_run: bool = True
-    ) -> BaseTool[InT, OutT, Any]:  # type: ignore[override]
-        # TODO: stream tools
-        processor_instance = self
-        in_type = processor_instance.in_type
-        out_type = processor_instance.out_type
-        if not issubclass(in_type, BaseModel):
+        self,
+        tool_name: str,
+        tool_description: str,
+        reset_memory_on_run: bool = True,
+        background: bool = False,
+    ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
+        from .processor_tool import ProcessorTool as _ProcessorTool
+
+        if not issubclass(self.in_type, BaseModel):
             raise TypeError(
                 "Cannot create a tool from an agent with "
-                f"non-BaseModel input type: {in_type}"
+                f"non-BaseModel input type: {self.in_type}"
             )
 
-        class ProcessorTool(BaseTool[in_type, out_type, Any]):
-            def __init__(self) -> None:
-                super().__init__(name=tool_name, description=tool_description)
-
-            async def _run(
-                self,
-                inp: InT,
-                *,
-                call_id: str | None = None,
-                ctx: RunContext[CtxT] | None = None,
-                progress_callback: Any = None,
-            ) -> OutT:
-                if reset_memory_on_run:
-                    processor_instance.memory.reset()
-
-                result = await processor_instance.run(
-                    in_args=inp, call_id=call_id, ctx=ctx
-                )
-
-                return result.payloads[0]
-
-            async def run_stream(
-                self,
-                inp: InT,
-                *,
-                call_id: str | None = None,
-                ctx: RunContext[CtxT] | None = None,
-                progress: Any = None,
-            ) -> AsyncIterator[Event[Any]]:
-                if reset_memory_on_run:
-                    processor_instance.memory.reset()
-
-                async for event in processor_instance.run_stream(
-                    in_args=inp, call_id=call_id, ctx=ctx
-                ):
-                    if (
-                        isinstance(event, ProcPacketOutEvent)
-                        and event.src_name == processor_instance.name
-                    ):
-                        yield ToolOutputEvent(
-                            data=event.data.payloads[0],
-                            src_name=processor_instance.name,
-                            call_id=call_id,
-                        )
-                    else:
-                        yield event
-
-        return ProcessorTool()
+        return _ProcessorTool[InT, OutT, CtxT](  # type: ignore[type-var]
+            processor=self,  # InT bound validated above
+            name=tool_name,
+            description=tool_description,
+            background=background,
+            reset_memory_on_run=reset_memory_on_run,
+        )

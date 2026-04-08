@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any, Protocol, TypeVar
 
-from .types.events import Event
+from .types.events import Event, RoutedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +47,12 @@ class EventBus:
                 self._handle_events(dst_name), name=f"event-handler:{dst_name}"
             )
 
-    async def post(self, event: Event[Any]) -> None:
+    async def post(self, event: RoutedEvent[Any]) -> None:
         if self._stopping:
             return
 
-        if event.dst_name is not None:
-            queue = self._routed_event_queues[event.dst_name]
+        if event.destination is not None:
+            queue = self._routed_event_queues[event.destination]
             await queue.put(event)
 
     async def push_to_stream(self, event: Event[Any]) -> None:

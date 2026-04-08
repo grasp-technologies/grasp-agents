@@ -35,7 +35,7 @@ from .types.tool import BaseTool, ToolProgressCallback
 
 # Parameters with these names are passed through from the executor,
 # not included in the tool's input schema.
-_SPECIAL_PARAMS = {"ctx", "call_id"}
+_SPECIAL_PARAMS = {"ctx", "exec_id"}
 
 
 def _build_input_model(
@@ -77,15 +77,21 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         input_model: type[BaseModel],
         is_async: bool,
         has_ctx: bool,
-        has_call_id: bool,
+        has_exec_id: bool,
         timeout: float | None = None,
+        background: bool = False,
     ) -> None:
-        super().__init__(name=name, description=description, timeout=timeout)
+        super().__init__(
+            name=name,
+            description=description,
+            timeout=timeout,
+            background=background,
+        )
         self._fn = fn
         self._resolved_in_type = input_model
         self._is_async = is_async
         self._has_ctx = has_ctx
-        self._has_call_id = has_call_id
+        self._has_exec_id = has_exec_id
 
     @property
     def in_type(self) -> type[BaseModel]:
@@ -96,14 +102,14 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         inp: BaseModel,
         *,
         ctx: RunContext[Any] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> Any:
         kwargs = inp.model_dump()
         if self._has_ctx:
             kwargs["ctx"] = ctx
-        if self._has_call_id:
-            kwargs["call_id"] = call_id
+        if self._has_exec_id:
+            kwargs["exec_id"] = exec_id
 
         if self._is_async:
             return await self._fn(**kwargs)
@@ -120,6 +126,7 @@ def function_tool(
     name: str | None = None,
     description: str | None = None,
     timeout: float | None = None,
+    background: bool = False,
 ) -> Any: ...
 
 
@@ -130,6 +137,7 @@ def function_tool(
     name: str | None = None,
     description: str | None = None,
     timeout: float | None = None,
+    background: bool = False,
 ) -> Any:
     """
     Create a BaseTool from a function.
@@ -158,8 +166,9 @@ def function_tool(
             input_model=input_model,
             is_async=asyncio.iscoroutinefunction(f),
             has_ctx=_has_special_param(sig, "ctx"),
-            has_call_id=_has_special_param(sig, "call_id"),
+            has_exec_id=_has_special_param(sig, "exec_id"),
             timeout=timeout,
+            background=background,
         )
 
     if fn is not None:

@@ -20,7 +20,22 @@ from .processors.parallel_processor import ParallelProcessor
 from .processors.processor import Processor
 from .resilience import RetryPolicy
 from .run_context import RunContext
-from .types.content import Content, InputImage
+from .types.content import Content, InputImage, InputRenderable
+from .types.events import (
+    BackgroundTaskCompletedEvent,
+    BackgroundTaskInfo,
+    BackgroundTaskLaunchedEvent,
+    Event,
+    GenerationEndEvent,
+    LLMStreamEvent,
+    OutputMessageItemEvent,
+    ReasoningItemEvent,
+    ToolCallItemEvent,
+    ToolResultEvent,
+    TurnEndEvent,
+    TurnStartEvent,
+)
+from .types.hooks import ToolInputConverter
 from .types.io import LLMPrompt, ProcName
 from .types.items import (
     AssistantMessage,
@@ -42,6 +57,13 @@ from .types.llm_errors import (
     LlmPermissionDeniedError,
     LlmRateLimitError,
 )
+from .sessions import (
+    CheckpointStore,
+    InMemoryCheckpointStore,
+    SessionSnapshot,
+    TaskRecord,
+    TaskStatus,
+)
 from .types.response import Response
 from .types.tool import BaseTool, ToolProgressCallback
 
@@ -58,19 +80,28 @@ except ImportError:
     pass
 
 __all__ = [
-    "LLM",
     "AssistantMessage",
+    "BackgroundTaskCompletedEvent",
+    "BackgroundTaskInfo",
+    "BackgroundTaskLaunchedEvent",
     "BaseProcessor",
     "BaseTool",
+    "CheckpointStore",
     "Content",
     "DeveloperMessage",
+    "Event",
     "FallbackLLM",
     "FunctionTool",
+    "GenerationEndEvent",
+    "InMemoryCheckpointStore",
     "InputImage",
+    "InputRenderable",
+    "LLM",
     "LLMAgent",
     "LLMAgentMemory",
     "LLMPrompt",
     "LLMSettings",
+    "LLMStreamEvent",
     "LlmApiConnectionError",
     "LlmApiError",
     "LlmApiTimeoutError",
@@ -80,6 +111,7 @@ __all__ = [
     "LlmContextWindowError",
     "LlmInternalServerError",
     "LlmNotFoundError",
+    "LlmPermissionDeniedError",
     "LlmRateLimitError",
     "MCPClient",
     "MCPListResourcesTool",
@@ -88,16 +120,26 @@ __all__ = [
     "MCPServerStdio",
     "MCPTool",
     "Memory",
+    "OutputMessageItemEvent",
     "Packet",
     "ParallelProcessor",
     "Printer",
     "ProcName",
     "Processor",
+    "ReasoningItemEvent",
     "Response",
     "RetryPolicy",
     "RunContext",
+    "SessionSnapshot",
     "SystemMessage",
+    "TaskRecord",
+    "TaskStatus",
+    "ToolCallItemEvent",
+    "ToolInputConverter",
     "ToolProgressCallback",
+    "ToolResultEvent",
+    "TurnEndEvent",
+    "TurnStartEvent",
     "UserMessage",
     "WebSearchCallItem",
     "count_tokens",

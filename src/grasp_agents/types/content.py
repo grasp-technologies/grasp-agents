@@ -3,7 +3,7 @@ import mimetypes
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 from openai.types.responses import (
     ResponseInputFile,
@@ -25,6 +25,21 @@ from openai.types.responses.response_reasoning_item import (
 from pydantic import BaseModel, Field, model_validator
 
 ImageDetail = Literal["low", "medium", "high", "ultra_high", "auto"]
+
+
+@runtime_checkable
+class InputRenderable(Protocol):
+    """
+    Protocol for input models that know how to render themselves as LLM input.
+
+    Implement on a Pydantic BaseModel to control how it becomes an LLM
+    input message — including multimodal content (images, files).
+
+    Return a plain string for text-only inputs, or a list of InputPart
+    for multimodal content.
+    """
+
+    def to_input_parts(self) -> "list[InputPart] | str": ...
 
 
 BASE64_DATA_PREFIX = "data:{mime_type};base64,"
@@ -368,38 +383,10 @@ class Content(BaseModel):
         cls,
         prompt_template: str,
         /,
-        **prompt_args: str | int | bool | InputImage | None,
+        **prompt_args: str | int | bool | None,
     ) -> "Content":
-        prompt_args = prompt_args or {}
-        image_args = {
-            arg_name: arg_val
-            for arg_name, arg_val in prompt_args.items()
-            if isinstance(arg_val, InputImage)
-        }
-        text_args = {
-            arg_name: arg_val
-            for arg_name, arg_val in prompt_args.items()
-            if isinstance(arg_val, (str, int, float))
-        }
-
-        if not image_args:
-            prompt_with_args = prompt_template.format(**text_args)
-            return cls(parts=[InputText(text=prompt_with_args)])
-
-        pattern = r"({})".format("|".join([r"\{" + s + r"\}" for s in image_args]))
-        input_prompt_chunks = re.split(pattern, prompt_template)
-
-        content_parts: list[InputPart] = []
-        for chunk in input_prompt_chunks:
-            stripped_chunk = chunk.strip(" \n")
-            if re.match(pattern, stripped_chunk):
-                content_part = image_args[stripped_chunk[1:-1]]
-            else:
-                text_data = stripped_chunk.format(**text_args)
-                content_part = InputText(text=text_data)
-            content_parts.append(content_part)
-
-        return cls(parts=content_parts)
+        text_args = {k: v for k, v in prompt_args.items() if v is not None}
+        return cls(parts=[InputText(text=prompt_template.format(**text_args))])
 
     @classmethod
     def from_text(cls, text: str) -> "Content":

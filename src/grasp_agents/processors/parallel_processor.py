@@ -43,11 +43,11 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         return self._drop_failed
 
     def select_recipients_impl(
-        self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
+        self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str
     ) -> Sequence[ProcName]:
         # Move recipient selection to the outer ParallelProcessor
         return self._subproc.select_recipients_impl(
-            output=output, ctx=ctx, call_id=call_id
+            output=output, ctx=ctx, exec_id=exec_id
         )
 
     @property
@@ -59,9 +59,9 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         in_args: list[InT] | None = None,
         *,
-        call_id: str,
+        exec_id: str,
     ) -> list[InT]:
-        err_kwargs = {"proc_name": self.name, "call_id": call_id}
+        err_kwargs = {"proc_name": self.name, "exec_id": exec_id}
         if chat_inputs is not None:
             raise ProcInputValidationError(
                 message=f"ParallelProcessor {self.name} does not support chat_inputs",
@@ -89,15 +89,15 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> list[OutT]:
         in_args = self._validate_in_args(
-            chat_inputs=chat_inputs, in_args=in_args, call_id=call_id
+            chat_inputs=chat_inputs, in_args=in_args, exec_id=exec_id
         )
         subproc_replicas = [self._subproc.copy() for _ in in_args]
         corouts = [
-            proc.run(in_args=inp, call_id=f"{call_id}/{idx}", ctx=ctx)
+            proc.run(in_args=inp, exec_id=f"{exec_id}/{idx}", ctx=ctx)
             for idx, (inp, proc) in enumerate(
                 zip(in_args, subproc_replicas, strict=True)
             )
@@ -111,16 +111,16 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         in_args = self._validate_in_args(
-            chat_inputs=chat_inputs, in_args=in_args, call_id=call_id
+            chat_inputs=chat_inputs, in_args=in_args, exec_id=exec_id
         )
         subproc_replicas = [self._subproc.copy() for _ in in_args]
 
         streams = [
-            proc.run_stream(in_args=inp, call_id=f"{call_id}/{idx}", ctx=ctx)
+            proc.run_stream(in_args=inp, exec_id=f"{exec_id}/{idx}", ctx=ctx)
             for idx, (inp, proc) in enumerate(
                 zip(in_args, subproc_replicas, strict=True)
             )
@@ -131,7 +131,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         async for idx, event in stream_concurrent(streams):
             if (
                 isinstance(event, ProcPacketOutEvent)
-                and event.src_name == self._subproc.name
+                and event.source == self._subproc.name
             ):
                 out_packets_map[idx] = event.data
             else:
@@ -145,4 +145,4 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         # thus we filter them out first, then yield in order.
 
         for p in self._join_payloads_from_packets(out_packets):
-            yield ProcPayloadOutEvent(data=p, src_name=self.name, call_id=call_id)
+            yield ProcPayloadOutEvent(data=p, source=self.name, exec_id=exec_id)

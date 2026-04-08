@@ -60,6 +60,7 @@ class BaseTool(
         name: str,
         description: str,
         timeout: float | None = None,
+        background: bool = False,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         self._in_type: type[_InT]
@@ -70,6 +71,7 @@ class BaseTool(
         self.name = name
         self.description = description
         self.timeout = timeout
+        self.background = background
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
     @property
@@ -86,7 +88,7 @@ class BaseTool(
         inp: _InT,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> _OutT_co:
         pass
@@ -96,15 +98,15 @@ class BaseTool(
         inp: _InT,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from .events import ToolOutputEvent  # avoid circular import
 
         out = await self._run(
-            inp, ctx=ctx, call_id=call_id, progress_callback=progress_callback
+            inp, ctx=ctx, exec_id=exec_id, progress_callback=progress_callback
         )
-        yield ToolOutputEvent(data=out, src_name=self.name, call_id=call_id)
+        yield ToolOutputEvent(data=out, source=self.name, exec_id=exec_id)
 
     def _on_error_impl(self, error: Exception) -> ToolErrorInfo:
         logger.warning("Tool '%s' failed: %s", self.name, error)
@@ -127,15 +129,19 @@ class BaseTool(
         inp: _InT,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        _validated: bool = False,
     ) -> _OutT_co | ToolErrorInfo:
-        input_args = TypeAdapter(self.in_type).validate_python(inp)
+        if _validated:
+            input_args = inp
+        else:
+            input_args = TypeAdapter(self.in_type).validate_python(inp)
         try:
             coro = self._run(
                 input_args,
                 ctx=ctx,
-                call_id=call_id,
+                exec_id=exec_id,
                 progress_callback=progress_callback,
             )
             if self.timeout is not None:
@@ -151,15 +157,19 @@ class BaseTool(
         inp: _InT,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        _validated: bool = False,
     ) -> AsyncIterator[Event[Any]]:
-        input_args = TypeAdapter(self.in_type).validate_python(inp)
+        if _validated:
+            input_args = inp
+        else:
+            input_args = TypeAdapter(self.in_type).validate_python(inp)
         try:
             stream = self._run_stream(
                 input_args,
                 ctx=ctx,
-                call_id=call_id,
+                exec_id=exec_id,
                 progress_callback=progress_callback,
             )
             if self.timeout is not None:
@@ -176,20 +186,20 @@ class BaseTool(
                     yield event
         except Exception as e:
             error_data = self._on_error(e)
-            yield ToolErrorEvent(data=error_data, src_name=self.name, call_id=call_id)
+            yield ToolErrorEvent(data=error_data, source=self.name, exec_id=exec_id)
 
     async def __call__(
         self,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         **kwargs: Any,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             kwargs,  # type: ignore[arg-type]
             ctx=ctx,
-            call_id=call_id,
+            exec_id=exec_id,
             progress_callback=progress_callback,
         )
 
@@ -198,11 +208,16 @@ class BaseTool(
         inp: _InT,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        _validated: bool = False,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
-            inp, ctx=ctx, call_id=call_id, progress_callback=progress_callback
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            progress_callback=progress_callback,
+            _validated=_validated,
         )
 
     async def run_stream(
@@ -210,10 +225,15 @@ class BaseTool(
         inp: _InT,
         *,
         ctx: RunContext[CtxT] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        _validated: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
-            inp, ctx=ctx, call_id=call_id, progress_callback=progress_callback
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            progress_callback=progress_callback,
+            _validated=_validated,
         ):
             yield event

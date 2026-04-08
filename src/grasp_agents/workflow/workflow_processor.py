@@ -50,10 +50,10 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
             subproc.recipients = None
 
     def select_recipients_impl(
-        self, output: OutT, *, ctx: RunContext[CtxT], call_id: str
+        self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str
     ) -> Sequence[ProcName]:
         return self._end_proc.select_recipients_impl(
-            output=output, ctx=ctx, call_id=call_id
+            output=output, ctx=ctx, exec_id=exec_id
         )
 
     @property
@@ -75,7 +75,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         *,
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> list[OutT]:
         pass
 
@@ -86,6 +86,6 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         *,
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> AsyncIterator[Event[Any]]:
         yield DummyEvent()

@@ -46,7 +46,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> list[OutT]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
@@ -57,7 +57,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             packet = await subproc.run(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
-                call_id=f"{call_id}/{subproc.name}",
+                exec_id=f"{exec_id}/{subproc.name}",
                 ctx=ctx,
             )
             chat_inputs = None
@@ -71,7 +71,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
@@ -82,13 +82,13 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
-                call_id=f"{call_id}/{subproc.name}",
+                exec_id=f"{exec_id}/{subproc.name}",
                 ctx=ctx,
             ):
                 yield event
                 if (
                     isinstance(event, ProcPacketOutEvent)
-                    and event.src_name == subproc.name
+                    and event.source == subproc.name
                 ):
                     packet = event.data
 
@@ -96,7 +96,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 out_packet = cast("Packet[OutT]", packet)
                 for p in out_packet.payloads:
                     yield ProcPayloadOutEvent(
-                        data=p, src_name=self.name, call_id=call_id
+                        data=p, source=self.name, exec_id=exec_id
                     )
 
             chat_inputs = None

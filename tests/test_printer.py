@@ -20,7 +20,7 @@ from grasp_agents.types.content import (
 from grasp_agents.types.events import (
     LLMStreamEvent,
     SystemMessageEvent,
-    ToolMessageEvent,
+    ToolResultEvent,
     UserMessageEvent,
 )
 from grasp_agents.types.items import (
@@ -116,7 +116,7 @@ class TestPrinterMessage:
         printer = Printer(output_to="stdout")
         msg = InputMessageItem.from_text("You are helpful.", role="system")
 
-        printer.print_message(msg, agent_name="test", call_id="c1")
+        printer.print_message(msg, agent_name="test", exec_id="c1")
 
         output = capsys.readouterr().out
         assert "<system>" in output
@@ -128,7 +128,7 @@ class TestPrinterMessage:
         printer = Printer(output_to="stdout")
         msg = InputMessageItem.from_text("Hello", role="user")
 
-        printer.print_message(msg, agent_name="test", call_id="c1")
+        printer.print_message(msg, agent_name="test", exec_id="c1")
 
         output = capsys.readouterr().out
         assert "<input>" in output
@@ -141,7 +141,7 @@ class TestPrinterMessage:
             call_id="call_1", output={"status": "ok"}
         )
 
-        printer.print_message(msg, agent_name="test", call_id="c1")
+        printer.print_message(msg, agent_name="test", exec_id="c1")
 
         output = capsys.readouterr().out
         assert "<tool result>" in output
@@ -151,7 +151,7 @@ class TestPrinterMessage:
     def test_print_unknown_message_type(self, capsys):
         """Unknown message types are printed as strings."""
         printer = Printer(output_to="stdout")
-        printer.print_message("raw string", agent_name="test", call_id="c1")
+        printer.print_message("raw string", agent_name="test", exec_id="c1")
 
         output = capsys.readouterr().out
         assert "raw string" in output
@@ -174,7 +174,7 @@ class TestPrintEventStream:
 
     @pytest.mark.asyncio
     async def test_response_created_event(self, capsys):
-        """ResponseCreated event prints agent name and call_id header."""
+        """ResponseCreated event prints agent name and exec_id header."""
         response = self._make_response()
 
         async def gen():
@@ -183,8 +183,8 @@ class TestPrintEventStream:
                     response=response,
                     sequence_number=1,  # type: ignore[arg-type]
                 ),
-                src_name="my_agent",
-                call_id="call_1",
+                source="my_agent",
+                exec_id="call_1",
             )
 
         collected = []
@@ -210,8 +210,8 @@ class TestPrintEventStream:
                     item_id="item_1",
                     logprobs=[],
                 ),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
             yield LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
@@ -222,8 +222,8 @@ class TestPrintEventStream:
                     item_id="item_1",
                     logprobs=[],
                 ),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
 
         collected = []
@@ -246,8 +246,8 @@ class TestPrintEventStream:
         async def gen():
             yield LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
 
         async for _ in print_event_stream(gen()):
@@ -264,8 +264,8 @@ class TestPrintEventStream:
         async def gen():
             yield LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
 
         async for _ in print_event_stream(gen()):
@@ -283,8 +283,8 @@ class TestPrintEventStream:
         async def gen():
             yield LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
 
         async for _ in print_event_stream(gen()):
@@ -305,13 +305,13 @@ class TestPrintEventStream:
         async def gen():
             yield LLMStreamEvent(
                 data=OutputItemDone(item=msg_item, output_index=0, sequence_number=1),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
             yield LLMStreamEvent(
                 data=OutputItemDone(item=tc_item, output_index=1, sequence_number=2),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
 
         async for _ in print_event_stream(gen()):
@@ -334,8 +334,8 @@ class TestPrintEventStream:
                     sequence_number=1,
                     item_id="item_1",
                 ),
-                src_name="agent",
-                call_id="c1",
+                source="agent",
+                exec_id="c1",
             )
 
         async for _ in print_event_stream(gen()):
@@ -350,7 +350,7 @@ class TestPrintEventStream:
         msg = InputMessageItem.from_text("Be helpful.", role="system")
 
         async def gen():
-            yield SystemMessageEvent(data=msg, src_name="agent", call_id="c1")
+            yield SystemMessageEvent(data=msg, source="agent", exec_id="c1")
 
         async for _ in print_event_stream(gen()):
             pass
@@ -365,7 +365,7 @@ class TestPrintEventStream:
         msg = InputMessageItem.from_text("Hello", role="user")
 
         async def gen():
-            yield UserMessageEvent(data=msg, src_name="agent", call_id="c1")
+            yield UserMessageEvent(data=msg, source="agent", exec_id="c1")
 
         async for _ in print_event_stream(gen()):
             pass
@@ -376,11 +376,11 @@ class TestPrintEventStream:
 
     @pytest.mark.asyncio
     async def test_tool_message_event(self, capsys):
-        """ToolMessageEvent prints <tool result> tags."""
+        """ToolResultEvent prints <tool result> tags."""
         msg = FunctionToolOutputItem.from_tool_result(call_id="tc_1", output="result")
 
         async def gen():
-            yield ToolMessageEvent(data=msg, src_name="agent", call_id="c1")
+            yield ToolResultEvent(data=msg, source="agent", exec_id="c1")
 
         async for _ in print_event_stream(gen()):
             pass
@@ -394,7 +394,7 @@ class TestPrintEventStream:
         msg = InputMessageItem.from_text("Hello", role="user")
 
         async def gen():
-            yield UserMessageEvent(data=msg, src_name="a", call_id="c1")
+            yield UserMessageEvent(data=msg, source="a", exec_id="c1")
             yield LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
                     content_index=0,
@@ -404,8 +404,8 @@ class TestPrintEventStream:
                     item_id="item_1",
                     logprobs=[],
                 ),
-                src_name="a",
-                call_id="c1",
+                source="a",
+                exec_id="c1",
             )
 
         collected = []

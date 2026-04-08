@@ -1,30 +1,19 @@
 from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
 from logging import getLogger
-from typing import Any, Protocol, TypeVar, cast, final
+from typing import Any, cast, final
 
 from ..errors import WorkflowConstructionError
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from ..types.hooks import WorkflowLoopTerminator
 from ..types.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
 from .workflow_processor import WorkflowProcessor
 
 logger = getLogger(__name__)
-
-_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
-
-
-class WorkflowLoopTerminator(Protocol[_OutT_contra, CtxT]):
-    def __call__(
-        self,
-        out_packet: Packet[_OutT_contra],
-        *,
-        ctx: RunContext[CtxT],
-        **kwargs: Any,
-    ) -> bool: ...
 
 
 class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
@@ -95,7 +84,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> list[OutT]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
@@ -107,7 +96,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 packet = await subproc.run(
                     chat_inputs=chat_inputs,
                     in_packet=packet,
-                    call_id=f"{call_id}/{subproc.name}/iter_{iteration_num}",
+                    exec_id=f"{exec_id}/{subproc.name}/iter_{iteration_num}",
                     ctx=ctx,
                 )
 
@@ -134,7 +123,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
+        exec_id: str,
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
@@ -146,13 +135,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 async for event in subproc.run_stream(
                     chat_inputs=chat_inputs,
                     in_packet=packet,
-                    call_id=f"{call_id}/{subproc.name}/iter_{iteration_num}",
+                    exec_id=f"{exec_id}/{subproc.name}/iter_{iteration_num}",
                     ctx=ctx,
                 ):
                     yield event
                     if (
                         isinstance(event, ProcPacketOutEvent)
-                        and event.src_name == subproc.name
+                        and event.source == subproc.name
                     ):
                         packet = event.data
 
@@ -164,7 +153,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     if self.terminate_workflow_loop(exit_packet, ctx=ctx):
                         for p in exit_packet.payloads:
                             yield ProcPayloadOutEvent(
-                                data=p, src_name=self.name, call_id=call_id
+                                data=p, source=self.name, exec_id=exec_id
                             )
                         return
 
@@ -175,7 +164,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                         )
                         for p in exit_packet.payloads:
                             yield ProcPayloadOutEvent(
-                                data=p, src_name=self.name, call_id=call_id
+                                data=p, source=self.name, exec_id=exec_id
                             )
                         return
 

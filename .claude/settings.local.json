@@ -13,7 +13,23 @@
       "Bash(python3:*)",
       "WebFetch(domain:www.openresponses.org)",
       "WebFetch(domain:platform.openai.com)",
-      "WebFetch(domain:community.openai.com)"
+      "WebFetch(domain:community.openai.com)",
+      "Bash(git grep:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(curl:*)",
+      "Bash(uv run pip show:*)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(ls:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(python -c:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(rg:*)",
+      "Bash(xargs:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.anthropic.com)"
     ]
   }
 }

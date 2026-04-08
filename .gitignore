@@ -175,3 +175,6 @@ cython_debug/
 
 # MAC OS files
 **/.DS_Store
+
+docs/*
+reference_agent_spec/*

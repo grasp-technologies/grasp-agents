@@ -135,7 +135,7 @@ class TestFunctionToolExecution:
         assert "Timed out" in result.error
 
 
-# ---------- Context and call_id passthrough ----------
+# ---------- Context and exec_id passthrough ----------
 
 
 class TestFunctionToolContext:
@@ -154,35 +154,35 @@ class TestFunctionToolContext:
         assert result == "no_ctx"
 
     @pytest.mark.asyncio
-    async def test_call_id_passthrough(self) -> None:
+    async def test_exec_id_passthrough(self) -> None:
         @function_tool
-        async def check_id(x: int, *, call_id: str | None = None) -> str:
-            """Check call_id."""
-            return call_id or "none"
+        async def check_id(x: int, *, exec_id: str | None = None) -> str:
+            """Check exec_id."""
+            return exec_id or "none"
 
-        assert "call_id" not in check_id.in_type.model_fields
+        assert "exec_id" not in check_id.in_type.model_fields
 
-        result = await check_id(x=1, call_id="abc")
+        result = await check_id(x=1, exec_id="abc")
         assert result == "abc"
 
     @pytest.mark.asyncio
-    async def test_ctx_and_call_id_both(self) -> None:
+    async def test_ctx_and_exec_id_both(self) -> None:
         @function_tool
         async def both(
-            x: int, *, ctx: RunContext[Any] | None = None, call_id: str | None = None
+            x: int, *, ctx: RunContext[Any] | None = None, exec_id: str | None = None
         ) -> str:
             """Both special params."""
             parts = []
             if ctx is not None:
                 parts.append("ctx")
-            if call_id is not None:
-                parts.append(call_id)
+            if exec_id is not None:
+                parts.append(exec_id)
             return ",".join(parts) or "empty"
 
         fields = both.in_type.model_fields
         assert "x" in fields
         assert "ctx" not in fields
-        assert "call_id" not in fields
+        assert "exec_id" not in fields
 
 
 # ---------- Schema generation ----------

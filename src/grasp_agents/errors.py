@@ -3,14 +3,14 @@
 
 class ProcRunError(Exception):
     def __init__(
-        self, proc_name: str, call_id: str, message: str | None = None
+        self, proc_name: str, exec_id: str | None = None, message: str | None = None
     ) -> None:
         super().__init__(
             message
-            or f"Processor run failed [proc_name: {proc_name}; call_id: {call_id}]."
+            or f"Processor run failed [proc_name: {proc_name}; exec_id: {exec_id}]."
         )
         self.proc_name = proc_name
-        self.call_id = call_id
+        self.exec_id = exec_id
 
 
 class ProcInputValidationError(ProcRunError):
@@ -19,15 +19,19 @@ class ProcInputValidationError(ProcRunError):
 
 class ProcOutputValidationError(ProcRunError):
     def __init__(
-        self, schema: object, proc_name: str, call_id: str, message: str | None = None
+        self,
+        schema: object,
+        proc_name: str,
+        exec_id: str | None = None,
+        message: str | None = None,
     ):
         super().__init__(
             proc_name=proc_name,
-            call_id=call_id,
+            exec_id=exec_id,
             message=message
             or (
                 "Processor output validation failed "
-                f"[proc_name: {proc_name}; call_id: {call_id}]. "
+                f"[proc_name: {proc_name}; exec_id: {exec_id}]. "
                 f"Expected type:\n{schema}"
             ),
         )
@@ -35,14 +39,14 @@ class ProcOutputValidationError(ProcRunError):
 
 class AgentFinalAnswerError(ProcRunError):
     def __init__(
-        self, proc_name: str, call_id: str, message: str | None = None
+        self, proc_name: str, exec_id: str | None = None, message: str | None = None
     ) -> None:
         super().__init__(
             proc_name=proc_name,
-            call_id=call_id,
+            exec_id=exec_id,
             message=message
             or "Final answer tool call did not return a final answer message "
-            f"[proc_name={proc_name}; call_id={call_id}]",
+            f"[proc_name={proc_name}; exec_id={exec_id}]",
         )
         self.message = message
 
@@ -55,7 +59,7 @@ class PacketRoutingError(ProcRunError):
     def __init__(
         self,
         proc_name: str,
-        call_id: str,
+        exec_id: str | None = None,
         selected_recipient: str | None = None,
         allowed_recipients: list[str] | None = None,
         message: str | None = None,
@@ -63,10 +67,10 @@ class PacketRoutingError(ProcRunError):
         default_message = (
             f"Selected recipient '{selected_recipient}' is not in the allowed "
             f"recipients: {allowed_recipients} "
-            f"[proc_name={proc_name}; call_id={call_id}]"
+            f"[proc_name={proc_name}; exec_id={exec_id}]"
         )
         super().__init__(
-            proc_name=proc_name, call_id=call_id, message=message or default_message
+            proc_name=proc_name, exec_id=exec_id, message=message or default_message
         )
         self.selected_recipient = selected_recipient
         self.allowed_recipients = allowed_recipients

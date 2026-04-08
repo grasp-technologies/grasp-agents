@@ -55,8 +55,8 @@ class Runner(Generic[OutT, CtxT]):
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
 
-    def _generate_call_id(self, proc: BaseProcessor[Any, Any, CtxT]) -> str | None:
-        return self._name + "/" + proc.generate_call_id(call_id=None)
+    def _generate_exec_id(self, proc: BaseProcessor[Any, Any, CtxT]) -> str | None:
+        return self._name + "/" + proc.generate_exec_id(exec_id=None)
 
     def _make_start_event(self, chat_inputs: Any) -> ProcPacketOutEvent:
         start_packet = Packet[Any](
@@ -67,9 +67,8 @@ class Runner(Generic[OutT, CtxT]):
         return ProcPacketOutEvent(
             id=start_packet.id,
             data=start_packet,
-            src_name=START_PROC_NAME,
-            dst_name=self._entry_proc.name,
-            call_id=None,
+            source=START_PROC_NAME,
+            destination=self._entry_proc.name,
         )
 
     def _unpack_packet(
@@ -94,7 +93,7 @@ class Runner(Generic[OutT, CtxT]):
         logger.info(f"\n[Running processor {proc.name}]\n")
 
         in_packet, chat_inputs = self._unpack_packet(in_event.data)
-        call_id = self._generate_call_id(proc)
+        exec_id = self._generate_exec_id(proc)
         out_packet: Packet[Any] | None = None
 
         finalized: bool = False
@@ -103,7 +102,7 @@ class Runner(Generic[OutT, CtxT]):
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             ctx=self._ctx,
-            call_id=call_id,
+            exec_id=exec_id,
             **run_kwargs,
         ):
             if finalized:
@@ -112,7 +111,7 @@ class Runner(Generic[OutT, CtxT]):
 
             if (
                 isinstance(out_event, ProcPacketOutEvent)
-                and out_event.src_name == proc.name
+                and out_event.source == proc.name
             ):
                 out_packet = out_event.data
 
@@ -120,9 +119,9 @@ class Runner(Generic[OutT, CtxT]):
                     final_event = RunPacketOutEvent(
                         id=out_packet.id,
                         data=out_packet,
-                        src_name=out_packet.sender,
-                        dst_name=END_PROC_NAME,
-                        call_id=call_id,
+                        source=out_packet.sender,
+                        destination=END_PROC_NAME,
+                        exec_id=exec_id,
                     )
                     await self._event_bus.push_to_stream(final_event)
                     await self._event_bus.finalize(final_event.data)
@@ -137,9 +136,9 @@ class Runner(Generic[OutT, CtxT]):
                     sub_out_event = ProcPacketOutEvent(
                         id=sub_out_packet.id,
                         data=sub_out_packet,
-                        src_name=sub_out_packet.sender,
-                        dst_name=dst_name,
-                        call_id=call_id,
+                        source=sub_out_packet.sender,
+                        destination=dst_name,
+                        exec_id=exec_id,
                     )
                     await self._event_bus.push_to_stream(sub_out_event)
                     await self._event_bus.post(sub_out_event)

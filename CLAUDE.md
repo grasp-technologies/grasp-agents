@@ -82,7 +82,7 @@ Agents are customized through decorator hooks, not subclassing:
 @agent.add_input_content_builder    # format input from typed args + state
 @agent.add_output_parser            # parse LLM text into typed output
 @agent.add_recipient_selector       # route output to specific agents
-@agent.add_before_generate_hook     # modify settings before each LLM call
+@agent.add_before_llm_hook     # modify settings before each LLM call
 @agent.add_tool_output_converter    # custom tool result → message conversion
 @agent.add_memory_builder           # custom memory initialization
 ```

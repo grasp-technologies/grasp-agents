@@ -53,6 +53,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = ["integration: requires real API keys (skipped by default)"]
 addopts = "-m 'not integration'"

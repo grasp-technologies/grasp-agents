@@ -1,36 +1,44 @@
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, cast, final
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from .agent_loop import AgentLoop, ResponseCapture
 from .errors import ProcInputValidationError
 from .llm import LLM
 from .llm_agent_memory import LLMAgentMemory
-from .llm_policy_executor import (
-    AfterGenerateHook,
-    BeforeGenerateHook,
-    FinalAnswerChecker,
-    LLMPolicyExecutor,
-    ResponseCapture,
-    ToolInputConverter,
-    ToolOutputConverter,
-)
 from .processors.processor import Processor
-from .prompt_builder import (
-    InputContentBuilder,
-    PromptBuilder,
-    SystemPromptBuilder,
-)
+from .prompt_builder import PromptBuilder
 from .run_context import CtxT, RunContext
+from .sessions.resume import prepare_messages_for_resume
+from .sessions.snapshot import SessionSnapshot
+from .sessions.store import CheckpointStore
+
+logger = logging.getLogger(__name__)
 from .types.content import Content, InputImage
 from .types.events import (
     Event,
     ProcPayloadOutEvent,
     SystemMessageEvent,
     UserMessageEvent,
+)
+from .types.hooks import (
+    AfterLlmHook,
+    AfterToolHook,
+    BeforeLlmHook,
+    BeforeToolHook,
+    FinalAnswerExtractor,
+    InputContentBuilder,
+    MemoryBuilder,
+    OutputParser,
+    SystemPromptBuilder,
+    ToolInputConverter,
+    ToolOutputConverter,
 )
 from .types.io import InT, LLMPrompt, OutT, ProcName
 from .types.items import FunctionToolCallItem, InputMessageItem
@@ -40,35 +48,10 @@ from .utils.callbacks import is_method_overridden
 from .utils.io import get_prompt
 from .utils.validation import validate_obj_from_json_or_py_string
 
-_InT_contra = TypeVar("_InT_contra", contravariant=True)
-_OutT_co = TypeVar("_OutT_co", covariant=True)
-
-
-class MemoryBuilder(Protocol[_InT_contra]):
-    def __call__(
-        self,
-        *,
-        instructions: LLMPrompt | None = None,
-        in_args: _InT_contra | None = None,
-        ctx: RunContext[Any],
-        call_id: str,
-    ) -> None: ...
-
-
-class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
-    def __call__(
-        self,
-        final_answer: str,
-        *,
-        in_args: _InT_contra | None = None,
-        ctx: RunContext[CtxT],
-        call_id: str,
-    ) -> _OutT_co: ...
-
 
 class CallArgs(TypedDict):
     ctx: RunContext[Any]
-    call_id: str
+    exec_id: str
 
 
 class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
@@ -96,7 +79,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         response_schema_by_xml_tag: Mapping[str, Any] | None = None,
         # Agent loop settings
         max_turns: int = 100,
-        react_mode: bool = False,
+        force_react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
         # Agent memory management
         memory: LLMAgentMemory | None = None,
@@ -111,6 +94,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Tracing
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        # Session persistence (opt-in)
+        session_id: str | None = None,
+        store: CheckpointStore | None = None,
+        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -119,15 +106,24 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             max_retries=max_retries,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            store=store,
         )
 
         if tracing_exclude_input_fields:
             for tool in tools or []:
                 tool.tracing_exclude_input_fields = tracing_exclude_input_fields
 
+        # Session persistence
+
+        self._session_id = session_id
+        self._session_metadata = session_metadata or {}
+        self._session_snapshot: SessionSnapshot | None = None
+        self._session_turn_number: int = 0
+        self._session_loaded: bool = False
+
         # Memory
 
-        # Avoid narrowing the base '_memory' type (declared as 'Memory' in BaseProcessor)
+        # Don't narrow the base '_memory' type (Memory in BaseProcessor)
         self._memory = memory or LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
 
@@ -140,7 +136,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             agent_name=self._name, sys_prompt=sys_prompt, in_prompt=in_prompt
         )
 
-        # LLM policy executor
+        # Agent loop
 
         if issubclass(self._out_type, BaseModel):
             final_answer_type = self._out_type
@@ -163,7 +159,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             response_schema = self.out_type
             self._used_default_llm_response_schema = True
 
-        self._policy_executor: LLMPolicyExecutor[CtxT] = LLMPolicyExecutor[CtxT](
+        self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             agent_name=self.name,
             llm=llm,
             tools=tools,
@@ -171,7 +167,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             response_schema=response_schema,
             response_schema_by_xml_tag=response_schema_by_xml_tag,
             max_turns=max_turns,
-            react_mode=react_mode,
+            force_react_mode=force_react_mode,
             final_answer_type=final_answer_type,
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm_responses=stream_llm_responses,
@@ -179,19 +175,33 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
+        # Wire persistence callbacks if enabled
+        if self._store and self._session_id:
+            self._loop.checkpoint_callback = self._save_checkpoint
+            self._loop.bg_tasks.store = self._store
+            self._loop.bg_tasks.session_id = self._session_id
+
         self._register_overridden_implementations()
 
     @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    @property
+    def _session_store_key(self) -> str | None:
+        return f"session/{self._session_id}" if self._session_id else None
+
+    @property
     def llm(self) -> LLM:
-        return self._policy_executor.llm
+        return self._loop.llm
 
     @property
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
-        return self._policy_executor.tools
+        return self._loop.tools
 
     @property
     def max_turns(self) -> int:
-        return self._policy_executor.max_turns
+        return self._loop.max_turns
 
     @property
     def sys_prompt(self) -> LLMPrompt | None:
@@ -213,20 +223,131 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def _has_build_memory_impl(self) -> bool:
         return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
 
+    # --- Session persistence ---
+
+    @property
+    def resumable(self) -> bool:
+        return True
+
+    def configure_session(self, session_id: str, store: CheckpointStore) -> None:
+        """Dynamically set up session persistence for this agent."""
+        self._session_id: str | None = session_id
+        self._store: CheckpointStore | None = store
+        self._session_loaded = False
+        self._session_snapshot = None
+        self._session_turn_number = 0
+        # Re-wire loop persistence
+        self._loop.checkpoint_callback = self._save_checkpoint
+        self._loop.bg_tasks.store = store
+        self._loop.bg_tasks.session_id = session_id
+
+    async def resume(
+        self,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+    ) -> OutT:
+        """Resume from a persisted session checkpoint (no new input)."""
+        assert ctx is not None
+        assert exec_id is not None
+        await self._maybe_load_session(ctx=ctx, exec_id=exec_id)
+
+        call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
+        stream = ResponseCapture(self._loop.execute_stream(**call_kwargs))
+        async for _ in stream:
+            pass
+
+        assert self._loop.final_answer is not None
+        return self.parse_output(
+            self._loop.final_answer,
+            in_args=None,
+            **call_kwargs,
+        )
+
+    async def _maybe_load_session(
+        self,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        exec_id: str | None = None,
+    ) -> None:
+        """Load session snapshot from store on first run (if available)."""
+        if self._store is None or self._session_id is None:
+            return
+        if not self.memory.is_empty:
+            return  # Already has messages — don't reload
+
+        assert self._session_store_key is not None
+        data = await self._store.load(self._session_store_key)
+        if data is None:
+            return  # Fresh session
+
+        snapshot = SessionSnapshot.model_validate_json(data)
+        resume_state = prepare_messages_for_resume(snapshot.messages)
+        self.memory.messages = resume_state.messages
+        self._session_snapshot = snapshot
+        self._session_turn_number = snapshot.turn_number
+        self._session_loaded = True
+
+        logger.info(
+            "Loaded session %s for agent %s "
+            "(turns=%d, messages=%d, interruption=%s, stripped=%d)",
+            self._session_id,
+            self.name,
+            self._session_turn_number,
+            len(resume_state.messages),
+            resume_state.interruption.value,
+            resume_state.removed_count,
+        )
+
+        await self._loop.bg_tasks.handle_pending(ctx=ctx, exec_id=exec_id)
+
+    async def _save_checkpoint(self) -> None:
+        """Persist current conversation state to the store."""
+        if self._store is None or self._session_id is None:
+            return
+
+        now = datetime.now(UTC)
+        self._session_turn_number += 1
+
+        snapshot = SessionSnapshot(
+            session_id=self._session_id,
+            agent_name=self.name,
+            messages=list(self.memory.messages),
+            turn_number=self._session_turn_number,
+            created_at=(
+                self._session_snapshot.created_at if self._session_snapshot else now
+            ),
+            updated_at=now,
+            metadata=self._session_metadata,
+        )
+        self._session_snapshot = snapshot
+
+        assert self._session_store_key is not None
+        await self._store.save(
+            self._session_store_key,
+            snapshot.model_dump_json().encode("utf-8"),
+        )
+
     def _memorize_inputs(
         self,
         *,
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> list[InputMessageItem]:
-        call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
+        call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
 
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
-            ctx=ctx, call_id=call_id
+            ctx=ctx, exec_id=exec_id
         )
-        fresh_init = self._reset_memory_on_run or self.memory.is_empty
+        # If store is set, don't reset — the store manages memory lifetime.
+        # If a session was just loaded, also skip reset (one-time flag).
+        has_store = self._store is not None and self._session_id is not None
+        fresh_init = (
+            (self._reset_memory_on_run and not has_store) or self.memory.is_empty
+        ) and not self._session_loaded
+        self._session_loaded = False  # Consumed
 
         if fresh_init and not self._has_build_memory_impl:
             self.memory.reset(formatted_sys_prompt)
@@ -265,25 +386,25 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> OutT:
         if is_method_overridden("parse_output_impl", self, LLMAgent[Any, Any, Any]):
             return self.parse_output_impl(
                 final_answer,
                 in_args=in_args,
                 ctx=ctx,
-                call_id=call_id,
+                exec_id=exec_id,
             )
 
         return self.parse_output_default(final_answer)
 
     def _extract_input_args(
-        self, in_args: list[InT] | None, call_id: str
+        self, in_args: list[InT] | None, exec_id: str
     ) -> InT | None:
         if in_args and len(in_args) != 1:
             raise ProcInputValidationError(
                 proc_name=self.name,
-                call_id=call_id,
+                exec_id=exec_id,
                 message="LLMAgent expects a single input argument.",
             )
 
@@ -295,11 +416,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> AsyncIterator[Event[Any]]:
-        call_kwargs = CallArgs(ctx=ctx, call_id=call_id)
+        call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
 
-        inp = self._extract_input_args(in_args, call_id)
+        inp = self._extract_input_args(in_args, exec_id)
+
+        # Auto-load session from store on first run
+        await self._maybe_load_session(ctx=ctx, exec_id=exec_id)
 
         messages_to_expose = self._memorize_inputs(
             chat_inputs=chat_inputs, in_args=inp, **call_kwargs
@@ -308,22 +432,31 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         for message in messages_to_expose:
             if message.role == "system":
                 yield SystemMessageEvent(
-                    data=message, src_name=self.name, call_id=call_id
+                    data=message,
+                    source=self.name,
+                    exec_id=exec_id,
                 )
             elif message.role == "user":
                 yield UserMessageEvent(
-                    data=message, src_name=self.name, call_id=call_id
+                    data=message,
+                    source=self.name,
+                    exec_id=exec_id,
                 )
 
-        stream = ResponseCapture(self._policy_executor.execute_stream(**call_kwargs))
+        # Checkpoint after user message — survives crash before LLM responds
+        await self._loop.checkpoint()
+
+        stream = ResponseCapture(self._loop.execute_stream(**call_kwargs))
         async for event in stream:
             yield event
 
-        assert stream.response is not None
-        final_answer = self._policy_executor.get_final_answer(stream.response)
-
-        output = self.parse_output(final_answer or "", in_args=inp, **call_kwargs)
-        yield ProcPayloadOutEvent(data=output, src_name=self.name, call_id=call_id)
+        assert self._loop.final_answer is not None
+        output = self.parse_output(
+            self._loop.final_answer,
+            in_args=inp,
+            **call_kwargs,
+        )
+        yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 
     async def _process(
         self,
@@ -331,26 +464,31 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> list[OutT]:
         async for event in self._process_stream(
-            chat_inputs=chat_inputs, in_args=in_args, ctx=ctx, call_id=call_id
+            chat_inputs=chat_inputs,
+            in_args=in_args,
+            ctx=ctx,
+            exec_id=exec_id,
         ):
             if isinstance(event, ProcPayloadOutEvent):
                 return [event.data]
         return []
 
     def _print_messages(
-        self, messages: Sequence[Any], ctx: RunContext[CtxT], call_id: str
+        self,
+        messages: Sequence[Any],
+        ctx: RunContext[CtxT],
+        exec_id: str,
     ) -> None:
         if ctx.printer:
-            ctx.printer.print_messages(
-                messages,
-                agent_name=self.name,
-                call_id=call_id,  # type: ignore[arg-type]
-            )
+            ctx.printer.print_messages(messages, agent_name=self.name, exec_id=exec_id)
 
-    # Methods that can be overridden in subclasses
+    # --- Subclass hook points ---
+    #
+    # Override these in subclasses for customization.
+    # Alternatively, use the @agent.add_* decorators (preferred).
 
     def build_memory_impl(
         self,
@@ -358,7 +496,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         instructions: LLMPrompt | None = None,
         in_args: InT | None = None,
         ctx: RunContext[Any],
-        call_id: str,
+        exec_id: str,
     ) -> None:
         raise NotImplementedError
 
@@ -368,85 +506,78 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         in_args: InT | None = None,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
     ) -> OutT:
         raise NotImplementedError
 
     def build_system_prompt_impl(
-        self, *, ctx: RunContext[CtxT], call_id: str
+        self, *, ctx: RunContext[CtxT], exec_id: str
     ) -> str | None:
-        return self._prompt_builder.build_system_prompt_impl(ctx=ctx, call_id=call_id)
+        raise NotImplementedError
 
     def build_input_content_impl(
-        self, in_args: InT, *, ctx: RunContext[CtxT], call_id: str
+        self, in_args: InT, *, ctx: RunContext[CtxT], exec_id: str
     ) -> Content:
-        return self._prompt_builder.build_input_content_impl(
-            in_args=in_args, ctx=ctx, call_id=call_id
-        )
+        raise NotImplementedError
 
-    def check_for_final_answer_impl(
+    def extract_final_answer_impl(
         self,
         *,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
         **kwargs: Any,
     ) -> str | None:
-        return self._policy_executor.check_for_final_answer_impl(
-            ctx=ctx, call_id=call_id, **kwargs
-        )
+        raise NotImplementedError
 
-    async def on_before_generate_impl(
+    async def on_before_llm_impl(
         self,
         *,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
         num_turns: int,
         extra_llm_settings: dict[str, Any],
     ) -> None:
-        return await self._policy_executor.on_before_generate_impl(
-            ctx=ctx,
-            call_id=call_id,
-            num_turns=num_turns,
-            extra_llm_settings=extra_llm_settings,
-        )
+        raise NotImplementedError
 
-    async def on_after_generate_impl(
+    async def on_after_llm_impl(
         self,
         response: Response,
         *,
         ctx: RunContext[CtxT],
-        call_id: str,
+        exec_id: str,
         num_turns: int,
     ) -> None:
-        return await self._policy_executor.on_after_generate_impl(
-            response=response,
-            ctx=ctx,
-            call_id=call_id,
-            num_turns=num_turns,
-        )
+        raise NotImplementedError
 
-    async def tool_outputs_to_messages_impl(
+    async def on_before_tool_impl(
         self,
-        tool_outputs: Sequence[Any],
-        tool_calls: Sequence[FunctionToolCallItem],
         *,
+        tool_calls: Sequence[FunctionToolCallItem],
         ctx: RunContext[CtxT],
-        call_id: str,
-    ):
-        return await self._policy_executor.tool_outputs_to_messages_impl(
-            tool_outputs=tool_outputs,
-            tool_calls=tool_calls,
-            ctx=ctx,
-            call_id=call_id,
-        )
+        exec_id: str,
+    ) -> None:
+        raise NotImplementedError
 
-    # Decorators as an alternative to overriding methods
+    async def on_after_tool_impl(
+        self,
+        *,
+        tool_calls: Sequence[FunctionToolCallItem],
+        tool_messages: Sequence[Any],
+        ctx: RunContext[CtxT],
+        exec_id: str,
+    ) -> None:
+        raise NotImplementedError
+
+    # --- Decorator API ---
+    #
+    # Preferred over subclassing. Each decorator sets a callback slot
+    # on the appropriate component (AgentLoop or PromptBuilder).
 
     def add_output_parser(
         self, func: OutputParser[InT, OutT, CtxT]
     ) -> OutputParser[InT, OutT, CtxT]:
         if self._used_default_llm_response_schema:
-            self._policy_executor.response_schema = None
+            self._loop.response_schema = None
         self.parse_output_impl = func
         return func
 
@@ -457,96 +588,95 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def add_system_prompt_builder(
         self, func: SystemPromptBuilder[CtxT]
     ) -> SystemPromptBuilder[CtxT]:
-        self._prompt_builder.build_system_prompt_impl = func
+        self._prompt_builder.system_prompt_builder = func
         return func
 
     def add_input_content_builder(
         self, func: InputContentBuilder[InT, CtxT]
     ) -> InputContentBuilder[InT, CtxT]:
-        self._prompt_builder.build_input_content_impl = func
+        self._prompt_builder.input_content_builder = func
         return func
 
-    def add_final_answer_checker(
-        self, func: FinalAnswerChecker[CtxT]
-    ) -> FinalAnswerChecker[CtxT]:
-        self._policy_executor.check_for_final_answer_impl = func
+    def add_final_answer_extractor(
+        self, func: FinalAnswerExtractor[CtxT]
+    ) -> FinalAnswerExtractor[CtxT]:
+        self._loop.final_answer_extractor = func
         return func
 
-    def add_before_generate_hook(
-        self, func: BeforeGenerateHook[CtxT]
-    ) -> BeforeGenerateHook[CtxT]:
-        self._policy_executor.on_before_generate_impl = func
+    def add_before_llm_hook(self, func: BeforeLlmHook[CtxT]) -> BeforeLlmHook[CtxT]:
+        self._loop.before_llm_hook = func
         return func
 
-    def add_after_generate_hook(
-        self, func: AfterGenerateHook[CtxT]
-    ) -> AfterGenerateHook[CtxT]:
-        self._policy_executor.on_after_generate_impl = func
+    def add_after_llm_hook(self, func: AfterLlmHook[CtxT]) -> AfterLlmHook[CtxT]:
+        self._loop.after_llm_hook = func
+        return func
+
+    def add_before_tool_hook(self, func: BeforeToolHook[CtxT]) -> BeforeToolHook[CtxT]:
+        self._loop.before_tool_hook = func
+        return func
+
+    def add_after_tool_hook(self, func: AfterToolHook[CtxT]) -> AfterToolHook[CtxT]:
+        self._loop.after_tool_hook = func
         return func
 
     def add_tool_input_converter(self, tool_name: str) -> Any:
-        def decorator(
-            func: ToolInputConverter[CtxT],
-        ) -> ToolInputConverter[CtxT]:
-            self._policy_executor.tool_input_converters[tool_name] = func
+        def decorator(func: ToolInputConverter[CtxT]) -> ToolInputConverter[CtxT]:
+            self._loop.tool_input_converters[tool_name] = func
             return func
 
         return decorator
 
-    def add_tool_output_converter(
-        self, func: ToolOutputConverter[CtxT]
-    ) -> ToolOutputConverter[CtxT]:
-        self._policy_executor.tool_outputs_to_messages_impl = func
-        return func
+    def add_tool_output_converter(self, tool_name: str) -> Any:
+        def decorator(func: ToolOutputConverter[CtxT]) -> ToolOutputConverter[CtxT]:
+            self._loop.tool_output_converters[tool_name] = func
+            return func
 
-    # When methods are overridden in subclasses, pass them to the components
+        return decorator
+
+    # --- Override detection and registration ---
 
     def _register_overridden_implementations(self) -> None:
+        """
+        Detect subclass overrides and set them as callback slots
+        on the appropriate components (AgentLoop, PromptBuilder).
+        """
         base_cls = LLMAgent[Any, Any, Any]
 
         # Prompt builder
-
         if is_method_overridden("build_system_prompt_impl", self, base_cls):
-            self._prompt_builder.build_system_prompt_impl = (
-                self.build_system_prompt_impl
-            )
-
+            self._prompt_builder.system_prompt_builder = self.build_system_prompt_impl
         if is_method_overridden("build_input_content_impl", self, base_cls):
-            self._prompt_builder.build_input_content_impl = (
-                self.build_input_content_impl
-            )
+            self._prompt_builder.input_content_builder = self.build_input_content_impl
 
-        # Policy executor
-
-        if is_method_overridden("check_for_final_answer_impl", self, base_cls):
-            self._policy_executor.check_for_final_answer_impl = (
-                self.check_for_final_answer_impl
-            )
-
-        if is_method_overridden("on_before_generate_impl", self, base_cls):
-            self._policy_executor.on_before_generate_impl = self.on_before_generate_impl
-
-        if is_method_overridden("on_after_generate_impl", self, base_cls):
-            self._policy_executor.on_after_generate_impl = self.on_after_generate_impl
-
-        if is_method_overridden("tool_outputs_to_messages_impl", self, base_cls):
-            self._policy_executor.tool_outputs_to_messages_impl = (
-                self.tool_outputs_to_messages_impl
-            )
+        # Agent loop
+        if is_method_overridden("extract_final_answer_impl", self, base_cls):
+            self._loop.final_answer_extractor = self.extract_final_answer_impl
+        if is_method_overridden("on_before_llm_impl", self, base_cls):
+            self._loop.before_llm_hook = self.on_before_llm_impl
+        if is_method_overridden("on_after_llm_impl", self, base_cls):
+            self._loop.after_llm_hook = self.on_after_llm_impl
+        if is_method_overridden("on_before_tool_impl", self, base_cls):
+            self._loop.before_tool_hook = self.on_before_tool_impl
+        if is_method_overridden("on_after_tool_impl", self, base_cls):
+            self._loop.after_tool_hook = self.on_after_tool_impl
 
     def copy(self) -> "LLMAgent[InT, OutT, CtxT]":
-        # Share LLM and tools, deepcopy everything else
+        # Share LLM, tools, and store — deepcopy everything else
 
         cls = self.__class__
         new_obj = cls.__new__(cls)
-        memo = {id(self): new_obj}
+        memo: dict[int, Any] = {id(self): new_obj}
 
-        pe = getattr(self, "_policy_executor", None)
+        pe = getattr(self, "_loop", None)
         if pe is not None:
             if getattr(pe, "llm", None) is not None:
                 memo[id(pe.llm)] = pe.llm
             if getattr(pe, "tools", None) is not None:
                 memo[id(pe.tools)] = pe.tools
+
+        # Store is a shared resource (DB pool, etc.) — never deepcopy
+        if getattr(self, "_store", None) is not None:
+            memo[id(self._store)] = self._store
 
         state = deepcopy(self.__dict__, memo)
         new_obj.__dict__.update(state)

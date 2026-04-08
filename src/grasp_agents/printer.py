@@ -16,7 +16,7 @@ from .types.events import (
     ProcPacketOutEvent,
     RunPacketOutEvent,
     SystemMessageEvent,
-    ToolMessageEvent,
+    ToolResultEvent,
     UserMessageEvent,
 )
 from .types.items import (
@@ -130,9 +130,9 @@ class Printer:
         self,
         message: Any,
         agent_name: str,
-        call_id: str,
+        exec_id: str,
     ) -> None:
-        out = f"<{agent_name}> [{call_id}]\n"
+        out = f"<{agent_name}> [{exec_id}]\n"
 
         if isinstance(message, InputMessageItem):
             role = message.role
@@ -168,10 +168,12 @@ class Printer:
         self,
         messages: Sequence[Any],
         agent_name: str,
-        call_id: str,
+        exec_id: str,
     ) -> None:
         for _message in messages:
-            self.print_message(_message, agent_name=agent_name, call_id=call_id)
+            self.print_message(
+                _message, agent_name=agent_name, exec_id=exec_id
+            )
 
 
 async def print_event_stream(
@@ -183,12 +185,12 @@ async def print_event_stream(
     def _make_stream_event_text(event: LLMStreamEvent) -> str:
         se = event.data
         color = get_color(
-            agent_name=event.src_name or "", role="assistant", color_by=color_by
+            agent_name=event.source or "", role="assistant", color_by=color_by
         )
         text = ""
 
         if isinstance(se, ResponseCreated):
-            text += f"\n<{event.src_name}> [{event.call_id}]\n"
+            text += f"\n<{event.source}> [{event.exec_id}]\n"
 
         elif isinstance(se, OutputItemAdded):
             item = se.item
@@ -220,20 +222,20 @@ async def print_event_stream(
         return colored(text, color)
 
     def _make_message_text(
-        event: SystemMessageEvent | UserMessageEvent | ToolMessageEvent,
+        event: SystemMessageEvent | UserMessageEvent | ToolResultEvent,
     ) -> str:
         data = event.data
         color = get_color(
-            agent_name=event.src_name or "", role="assistant", color_by=color_by
+            agent_name=event.source or "", role="assistant", color_by=color_by
         )
-        text = f"\n<{event.src_name}> [{event.call_id}]\n"
+        text = f"\n<{event.source}> [{event.exec_id}]\n"
 
         if isinstance(event, SystemMessageEvent):
             assert isinstance(data, InputMessageItem)
             content = _input_message_text(data)
             content = truncate_content_str(content, trunc_len=trunc_len)
             color = get_color(
-                agent_name=event.src_name or "",
+                agent_name=event.source or "",
                 role="system",
                 color_by=color_by,
             )
@@ -244,7 +246,7 @@ async def print_event_stream(
             content = _input_message_text(data)
             content = truncate_content_str(content, trunc_len=trunc_len)
             color = get_color(
-                agent_name=event.src_name or "",
+                agent_name=event.source or "",
                 role="user",
                 color_by=color_by,
             )
@@ -258,7 +260,7 @@ async def print_event_stream(
             except Exception:
                 pass
             color = get_color(
-                agent_name=event.src_name or "",
+                agent_name=event.source or "",
                 role="tool",
                 color_by=color_by,
             )
@@ -272,9 +274,9 @@ async def print_event_stream(
         src = "run" if isinstance(event, RunPacketOutEvent) else "processor"
 
         color = get_color(
-            agent_name=event.src_name or "", role="assistant", color_by=color_by
+            agent_name=event.source or "", role="assistant", color_by=color_by
         )
-        text = f"\n<{event.src_name}> [{event.call_id}]\n"
+        text = f"\n<{event.source}> [{event.exec_id}]\n"
 
         if event.data.payloads:
             text += f"<{src} output>\n"
@@ -300,7 +302,7 @@ async def print_event_stream(
                 stream_colored_text(text)
 
         elif isinstance(
-            event, SystemMessageEvent | UserMessageEvent | ToolMessageEvent
+            event, SystemMessageEvent | UserMessageEvent | ToolResultEvent
         ):
             stream_colored_text(_make_message_text(event))
 

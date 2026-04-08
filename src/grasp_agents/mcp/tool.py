@@ -80,7 +80,7 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         inp: BaseModel,
         *,
         ctx: RunContext[None] | None = None,
-        call_id: str | None = None,
+        exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         meta: dict[str, Any] | None = None,
     ) -> McpToolResult:
