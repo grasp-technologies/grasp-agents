@@ -42,9 +42,9 @@ class ParallelCheckpoint(ProcessorCheckpoint):
     """
     Checkpoint for ParallelProcessor.
 
-    Stores original inputs and a completion map so the processor
-    can skip completed copies on resume.
+    Stores original inputs as a Packet and a completion map so the
+    processor can skip completed copies on resume.
     """
 
-    inputs: list[dict[str, Any]]  # [in_arg.model_dump() for each input]
+    input_packet: dict[str, Any]  # Packet(payloads=in_args).model_dump()
     completed: dict[int, dict[str, Any]]  # idx -> Packet.model_dump()

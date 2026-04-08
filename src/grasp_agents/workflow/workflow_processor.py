@@ -8,7 +8,7 @@ from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..types.errors import WorkflowConstructionError
-from ..types.events import DummyEvent, Event
+from ..types.events import DummyEvent, Event, ProcPayloadOutEvent
 from ..types.io import InT, OutT, ProcName
 
 logger = logging.getLogger(__name__)
@@ -152,7 +152,6 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
     def end_proc(self) -> Processor[Any, OutT, CtxT]:
         return self._end_proc
 
-    @abstractmethod
     async def _process(
         self,
         chat_inputs: Any | None = None,
@@ -161,7 +160,16 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         ctx: RunContext[CtxT],
         exec_id: str,
     ) -> list[OutT]:
-        pass
+        outputs: list[OutT] = []
+        async for event in self._process_stream(
+            chat_inputs=chat_inputs,
+            in_args=in_args,
+            ctx=ctx,
+            exec_id=exec_id,
+        ):
+            if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
+                outputs.append(event.data)
+        return outputs
 
     @abstractmethod
     async def _process_stream(

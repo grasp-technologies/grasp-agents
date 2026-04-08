@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import dataclass
 from logging import getLogger
 from typing import Any, Generic, TypeVar
 
@@ -13,41 +14,93 @@ logger = getLogger(__name__)
 _T = TypeVar("_T")
 
 
-async def stream_concurrent(
+@dataclass(frozen=True, slots=True)
+class PumpError:
+    """Records a failed pump in :class:`ConcurrentStream`."""
+
+    index: int
+    exception: BaseException
+
+
+_QueueItem = tuple[int, _T] | PumpError | None
+
+
+class ConcurrentStream(Generic[_T]):
+    """
+    Merges multiple async iterators, yielding ``(index, item)`` in arrival order.
+
+    After iteration completes, :attr:`errors` contains one :class:`PumpError`
+    per failed pump so callers can react (retry, inject error messages, etc.).
+    """
+
+    def __init__(self, generators: list[AsyncIterator[_T]]) -> None:
+        self._generators = generators
+        self._errors: list[PumpError] = []
+
+    @property
+    def errors(self) -> list[PumpError]:
+        return self._errors
+
+    @property
+    def failed_indices(self) -> list[int]:
+        return [e.index for e in self._errors]
+
+    async def __aiter__(self) -> AsyncIterator[tuple[int, _T]]:
+        generators = self._generators
+        if not generators:
+            return
+
+        queue: asyncio.Queue[_QueueItem[_T]] = asyncio.Queue()
+        pumps_left = len(generators)
+        errors = self._errors
+
+        async def pump(gen: AsyncIterator[_T], idx: int) -> None:
+            nonlocal pumps_left
+            try:
+                async for item in gen:
+                    await queue.put((idx, item))
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as e:
+                logger.warning("stream_concurrent pump %d failed: %r", idx, e)
+                await queue.put(PumpError(idx, e))
+
+            finally:
+                pumps_left -= 1
+                if pumps_left == 0:
+                    await queue.put(None)
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, gen in enumerate(generators):
+                tg.create_task(pump(gen, idx))
+
+            while True:
+                msg = await queue.get()
+                if msg is None:
+                    break
+                if isinstance(msg, PumpError):
+                    errors.append(msg)
+                    continue
+                yield msg
+
+
+def stream_concurrent(
     generators: list[AsyncIterator[_T]],
-) -> AsyncIterator[tuple[int, _T]]:
-    tasks: list[asyncio.Task[None]] = []
-    queue: asyncio.Queue[tuple[int, _T] | None] = asyncio.Queue()
-    pumps_left = len(generators)
+) -> ConcurrentStream[_T]:
+    """
+    Create a :class:`ConcurrentStream` that merges *generators*.
 
-    async def pump(gen: AsyncIterator[_T], idx: int) -> None:
-        nonlocal pumps_left
-        try:
-            async for item in gen:
-                await queue.put((idx, item))
+    Usage::
 
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as e:
-            logger.warning(
-                f"stream_concurrent pump {idx} failed:\n{e!r}", exc_info=True
-            )
-
-        finally:
-            pumps_left -= 1
-            if pumps_left == 0:
-                await queue.put(None)
-
-    async with asyncio.TaskGroup() as tg:
-        for idx, gen in enumerate(generators):
-            tasks.append(tg.create_task(pump(gen, idx)))
-
-        while True:
-            msg = await queue.get()
-            if msg is None:
-                break
-            yield msg
+        stream = stream_concurrent(generators)
+        async for idx, item in stream:
+            ...
+        for err in stream.errors:
+            handle(err.index, err.exception)
+    """
+    return ConcurrentStream(generators)
 
 
 _F = TypeVar("_F")

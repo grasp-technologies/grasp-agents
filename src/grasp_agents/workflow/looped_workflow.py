@@ -79,44 +79,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
 
         return False
 
-    async def _process(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: list[InT] | None = None,
-        exec_id: str,
-        ctx: RunContext[CtxT],
-    ) -> list[OutT]:
-        packet = Packet(sender=self.name, payloads=in_args) if in_args else None
-
-        for iteration_num in range(1, self._max_iterations + 1):
-            for subproc in self.subprocs:
-                logger.info(f"\n[Running subprocessor {subproc.name}]\n")
-
-                packet = await subproc.run(
-                    chat_inputs=chat_inputs,
-                    in_packet=packet,
-                    exec_id=f"{exec_id}/{subproc.name}/iter_{iteration_num}",
-                    ctx=ctx,
-                )
-
-                logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
-
-                if subproc is self.end_proc:
-                    exit_packet = cast("Packet[OutT]", packet)
-                    if self.terminate_workflow_loop(exit_packet, ctx=ctx):
-                        return list(exit_packet.payloads)
-                    if iteration_num == self._max_iterations:
-                        logger.info(
-                            f"Max iterations reached ({self._max_iterations}). "
-                            "Exiting loop."
-                        )
-                        return list(exit_packet.payloads)
-
-                chat_inputs = None
-
-        raise RuntimeError("Looped workflow did not exit after max iterations.")
-
     @final
     async def _process_stream(
         self,
@@ -127,9 +89,20 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
+        start_iteration = 1
+        start_step = 0
 
-        for iteration_num in range(1, self._max_iterations + 1):
-            for subproc in self.subprocs:
+        checkpoint = await self._load_checkpoint(ctx)
+        if checkpoint is not None:
+            packet = Packet[Any].model_validate(checkpoint.packet)
+            start_iteration = checkpoint.iteration
+            start_step = checkpoint.completed_step + 1
+
+        for iteration_num in range(start_iteration, self._max_iterations + 1):
+            for idx, subproc in enumerate(self.subprocs):
+                if iteration_num == start_iteration and idx < start_step:
+                    continue
+
                 logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
                 async for event in subproc.run_stream(
@@ -144,6 +117,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                         and event.source == subproc.name
                     ):
                         packet = event.data
+
+                await self._save_checkpoint(
+                    ctx,
+                    completed_step=idx,
+                    packet=cast("Packet[Any]", packet),
+                    iteration=iteration_num,
+                )
 
                 logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
 

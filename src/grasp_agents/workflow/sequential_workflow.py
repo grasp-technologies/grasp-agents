@@ -41,31 +41,6 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     f" {proc.name}"
                 )
 
-    async def _process(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: list[InT] | None = None,
-        exec_id: str,
-        ctx: RunContext[CtxT],
-    ) -> list[OutT]:
-        packet = Packet(sender=self.name, payloads=in_args) if in_args else None
-
-        for subproc in self.subprocs:
-            logger.info(f"\n[Running subprocessor {subproc.name}]\n")
-
-            packet = await subproc.run(
-                chat_inputs=chat_inputs,
-                in_packet=packet,
-                exec_id=f"{exec_id}/{subproc.name}",
-                ctx=ctx,
-            )
-            chat_inputs = None
-
-            logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
-
-        return list(cast("Packet[OutT]", packet).payloads)
-
     async def _process_stream(
         self,
         chat_inputs: Any | None = None,
@@ -75,8 +50,17 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         ctx: RunContext[CtxT],
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
+        start_step = 0
 
-        for subproc in self.subprocs:
+        checkpoint = await self._load_checkpoint(ctx)
+        if checkpoint is not None:
+            packet = Packet[Any].model_validate(checkpoint.packet)
+            start_step = checkpoint.completed_step + 1
+
+        for idx, subproc in enumerate(self.subprocs):
+            if idx < start_step:
+                continue
+
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
             async for event in subproc.run_stream(
@@ -91,6 +75,10 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     and event.source == subproc.name
                 ):
                     packet = event.data
+
+            await self._save_checkpoint(
+                ctx, completed_step=idx, packet=cast("Packet[Any]", packet)
+            )
 
             if subproc is self.end_proc:
                 out_packet = cast("Packet[OutT]", packet)

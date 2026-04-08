@@ -447,11 +447,23 @@ class AgentLoop(Generic[CtxT]):
                 )
                 for _, t, inp in immediate
             ]
-            async for stream_idx, event in stream_concurrent(streams):
+            merged = stream_concurrent(streams)
+            async for stream_idx, event in merged:
                 if isinstance(event, ToolOutputEvent):
                     outputs[immediate[stream_idx][0]] = event.data
                 else:
                     yield event
+
+            for err in merged.errors:
+                i = immediate[err.index][0]
+                tool_name = immediate[err.index][1].name
+                outputs[i] = f"Tool '{tool_name}' failed: {err.exception}"
+                logger.warning(
+                    "Tool '%s' (call index %d) failed: %r",
+                    tool_name,
+                    i,
+                    err.exception,
+                )
 
         elif immediate:
             results = await asyncio.gather(
