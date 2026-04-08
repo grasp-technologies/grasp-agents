@@ -414,7 +414,7 @@ class TestAPIRetries:
     """API retry layer in LLM base: transient vs deterministic errors."""
 
     @pytest.mark.asyncio
-    @patch("grasp_agents.llm.asyncio.sleep", new_callable=AsyncMock)
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
     async def test_transient_error_retried_then_succeeds(
         self, mock_sleep: AsyncMock
     ) -> None:
@@ -464,7 +464,7 @@ class TestAPIRetries:
         assert llm.call_count == 1
 
     @pytest.mark.asyncio
-    @patch("grasp_agents.llm.asyncio.sleep", new_callable=AsyncMock)
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
     async def test_retries_exhausted_raises(self, mock_sleep: AsyncMock) -> None:
         """All retries fail → error propagated, not swallowed."""
         llm = ErrorLLM(
@@ -480,7 +480,7 @@ class TestAPIRetries:
         assert llm.call_count == 3  # 1 initial + 2 retries
 
     @pytest.mark.asyncio
-    @patch("grasp_agents.llm.asyncio.sleep", new_callable=AsyncMock)
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
     async def test_stream_emits_retrying_on_transient_error(
         self, mock_sleep: AsyncMock
     ) -> None:

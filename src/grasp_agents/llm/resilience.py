@@ -3,7 +3,7 @@
 import random
 from dataclasses import dataclass
 
-from .types.llm_errors import (
+from ..types.llm_errors import (
     LlmAuthenticationError,
     LlmBadRequestError,
     LlmContentFilterError,

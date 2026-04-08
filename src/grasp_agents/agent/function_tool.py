@@ -165,7 +165,7 @@ def function_tool(
             name=tool_name,
             description=tool_description,
             input_model=input_model,
-            is_async=asyncio.iscoroutinefunction(f),
+            is_async=inspect.iscoroutinefunction(f),
             has_ctx=_has_special_param(sig, "ctx"),
             has_exec_id=_has_special_param(sig, "exec_id"),
             timeout=timeout,

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from ..durability.workflow_checkpoint import WorkflowCheckpoint
+from ..durability.checkpoints import WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext

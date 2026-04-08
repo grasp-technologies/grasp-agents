@@ -59,8 +59,8 @@ from grasp_agents.types.llm_events import (
     WebSearchCallSearching,
 )
 from grasp_agents.types.logprob_converters import (
-    to_delta_logprobs,
-    to_done_logprobs,
+    output_to_delta_logprobs as to_delta_logprobs,
+    output_to_done_logprobs as to_done_logprobs,
 )
 from grasp_agents.types.response import Response, ResponseUsage
 
