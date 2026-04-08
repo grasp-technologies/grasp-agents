@@ -26,15 +26,8 @@ from openai.types.responses import (
     ResponseTextDeltaEvent,
     ResponseTextDoneEvent,
 )
-from openai.types.responses.response_output_text import Logprob
 from openai.types.responses.response_text_delta_event import Logprob as DeltaLogprob
-from openai.types.responses.response_text_delta_event import (
-    LogprobTopLogprob as DeltaTopLogprob,
-)
 from openai.types.responses.response_text_done_event import Logprob as DoneLogprob
-from openai.types.responses.response_text_done_event import (
-    LogprobTopLogprob as DoneTopLogprob,
-)
 from pydantic import BaseModel, Field
 
 from .content import OutputContentPart, ReasoningSummary
