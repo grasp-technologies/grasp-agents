@@ -48,8 +48,7 @@ class WorkflowCheckpoint(ProcessorCheckpoint):
     can skip completed steps on resume.
     """
 
-    completed_step: int  # index of last completed subproc
-    iteration: int = 0  # for LoopedWorkflow
+    completed_step: int  # global step counter (iteration * N + idx for looped)
     packet: Packet[Any]
 
 

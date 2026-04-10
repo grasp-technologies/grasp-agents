@@ -82,7 +82,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 in_packet=packet,
                 exec_id=f"{exec_id}/{subproc.name}",
                 ctx=ctx,
-                step=idx,
+                step=0,  # each subproc is called exactly once
             ):
                 yield event
                 if (

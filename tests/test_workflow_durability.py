@@ -330,7 +330,7 @@ class TestLoopedWorkflowCheckpoint:
         raw = await store.load("workflow/loop-1")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
-        assert cp.iteration == 2
+        assert cp.completed_step == 3  # 2 iterations * 2 subprocs - 1
 
     @pytest.mark.asyncio
     async def test_resume_skips_completed_iteration_steps(self) -> None:
@@ -349,11 +349,10 @@ class TestLoopedWorkflowCheckpoint:
         with pytest.raises(ProcRunError):
             await run_workflow(wf1, ctx1, in_args="s")
 
-        # Checkpoint: iteration 1, step 0 completed
+        # Checkpoint: global step 0 completed (iteration 0, subproc A)
         raw = await store.load("workflow/loop-2")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
-        assert cp.iteration == 1
         assert cp.completed_step == 0
 
         # Resume — terminate after iteration 1
@@ -507,12 +506,11 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
         *,
         completed_step: int,
         packet: Packet[Any],
-        iteration: int = 0,
     ) -> None:
         if completed_step == self._crash_after_step:
             raise RuntimeError(f"Simulated crash after step {completed_step}")
         await super().save_checkpoint(
-            ctx, completed_step=completed_step, packet=packet, iteration=iteration
+            ctx, completed_step=completed_step, packet=packet
         )
 
 

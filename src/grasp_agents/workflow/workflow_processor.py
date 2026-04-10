@@ -93,10 +93,9 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         checkpoint = await self._deserialize_checkpoint(ctx, WorkflowCheckpoint)
         if checkpoint is not None:
             logger.info(
-                "Loaded workflow checkpoint %s (step=%d, iter=%d)",
+                "Loaded workflow checkpoint %s (completed_step=%d)",
                 self._session_id,
                 checkpoint.completed_step,
-                checkpoint.iteration,
             )
         return checkpoint
 
@@ -106,13 +105,11 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         *,
         completed_step: int,
         packet: Packet[Any],
-        iteration: int = 0,
     ) -> None:
         checkpoint = WorkflowCheckpoint(
             session_id=self._session_id or "",
             processor_name=self.name,
             completed_step=completed_step,
-            iteration=iteration,
             packet=packet,
         )
         await self._serialize_checkpoint(ctx, checkpoint)

@@ -54,11 +54,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 f"{subprocs[-1].out_type} does not match first subprocessor input "
                 f"type {subprocs[0].in_type}"
             )
-        if exit_proc is not subprocs[-1]:
-            raise WorkflowConstructionError(
-                "exit_proc must be the last subprocessor in a LoopedWorkflow"
-            )
-
         self._max_iterations = max_iterations
 
     @property
@@ -98,82 +93,77 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
-        start_iteration = 1
-        start_step = 0
+        n = len(self.subprocs)
+        exit_idx = self.subprocs.index(self.end_proc)
+        max_global_steps = self._max_iterations * n
+        start_global = 0
 
         checkpoint = await self.load_checkpoint(ctx)
         if checkpoint is not None:
             packet = checkpoint.packet
-            start_iteration = checkpoint.iteration
-            start_step = checkpoint.completed_step + 1
+            start_global = checkpoint.completed_step + 1
 
-            # All steps completed — re-evaluate termination.
-            if start_step >= len(self.subprocs):
+            # Exit proc completed — re-evaluate termination.
+            if checkpoint.completed_step % n == exit_idx:
                 exit_packet = cast("Packet[OutT]", packet)
                 if (
                     self.terminate_workflow_loop(exit_packet, ctx=ctx)
-                    or start_iteration >= self._max_iterations
+                    or start_global >= max_global_steps
                 ):
                     for p in exit_packet.payloads:
                         yield ProcPayloadOutEvent(
                             data=p, source=self.name, exec_id=exec_id
                         )
                     return
-                # Loop continues — advance to next iteration
-                start_iteration += 1
-                start_step = 0
 
-        n_subprocs = len(self.subprocs)
-        for iteration_num in range(start_iteration, self._max_iterations + 1):
-            for idx, subproc in enumerate(self.subprocs):
-                if iteration_num == start_iteration and idx < start_step:
-                    continue
+        for global_step in range(start_global, max_global_steps):
+            iteration = global_step // n
+            idx = global_step % n
+            subproc = self.subprocs[idx]
 
-                logger.info(f"\n[Running subprocessor {subproc.name}]\n")
+            logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
-                child_step = (iteration_num - 1) * n_subprocs + idx
-                async for event in subproc.run_stream(
-                    chat_inputs=chat_inputs,
-                    in_packet=packet,
-                    exec_id=f"{exec_id}/{subproc.name}/iter_{iteration_num}",
-                    ctx=ctx,
-                    step=child_step,
+            async for event in subproc.run_stream(
+                chat_inputs=chat_inputs,
+                in_packet=packet,
+                exec_id=f"{exec_id}/{subproc.name}/iter_{iteration}",
+                ctx=ctx,
+                step=iteration,
+            ):
+                yield event
+                if (
+                    isinstance(event, ProcPacketOutEvent)
+                    and event.source == subproc.name
                 ):
-                    yield event
-                    if (
-                        isinstance(event, ProcPacketOutEvent)
-                        and event.source == subproc.name
-                    ):
-                        packet = event.data
+                    packet = event.data
 
-                await self.save_checkpoint(
-                    ctx,
-                    completed_step=idx,
-                    packet=cast("Packet[Any]", packet),
-                    iteration=iteration_num,
-                )
+            await self.save_checkpoint(
+                ctx,
+                completed_step=global_step,
+                packet=cast("Packet[Any]", packet),
+            )
 
-                logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
+            logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
 
-                if subproc is self.end_proc:
-                    exit_packet = cast("Packet[OutT]", packet)
+            if subproc is self.end_proc:
+                exit_packet = cast("Packet[OutT]", packet)
 
-                    if self.terminate_workflow_loop(exit_packet, ctx=ctx):
-                        for p in exit_packet.payloads:
-                            yield ProcPayloadOutEvent(
-                                data=p, source=self.name, exec_id=exec_id
-                            )
-                        return
-
-                    if iteration_num == self._max_iterations:
-                        logger.info(
-                            f"Max iterations reached ({self._max_iterations}). "
-                            "Exiting loop."
+                if self.terminate_workflow_loop(exit_packet, ctx=ctx):
+                    for p in exit_packet.payloads:
+                        yield ProcPayloadOutEvent(
+                            data=p, source=self.name, exec_id=exec_id
                         )
-                        for p in exit_packet.payloads:
-                            yield ProcPayloadOutEvent(
-                                data=p, source=self.name, exec_id=exec_id
-                            )
-                        return
+                    return
 
-                chat_inputs = None
+                if iteration == self._max_iterations - 1:
+                    logger.info(
+                        f"Max iterations reached ({self._max_iterations}). "
+                        "Exiting loop."
+                    )
+                    for p in exit_packet.payloads:
+                        yield ProcPayloadOutEvent(
+                            data=p, source=self.name, exec_id=exec_id
+                        )
+                    return
+
+            chat_inputs = None

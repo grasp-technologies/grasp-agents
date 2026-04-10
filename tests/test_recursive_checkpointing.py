@@ -154,14 +154,13 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
         *,
         completed_step: int,
         packet: Packet[Any],
-        iteration: int = 0,
     ) -> None:
         if completed_step == self._crash_after_step:
             raise RuntimeError(
                 f"Simulated crash before saving step {completed_step}"
             )
         await super().save_checkpoint(
-            ctx, completed_step=completed_step, packet=packet, iteration=iteration
+            ctx, completed_step=completed_step, packet=packet
         )
 
 
