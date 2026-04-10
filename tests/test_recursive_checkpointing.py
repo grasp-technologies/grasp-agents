@@ -52,7 +52,7 @@ class AppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             yield ProcPayloadOutEvent(
@@ -74,7 +74,7 @@ class CountingProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         for inp in in_args or []:
@@ -96,7 +96,7 @@ class FanOutProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             yield ProcPayloadOutEvent(
@@ -121,7 +121,7 @@ class InputFailProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             if self._fail_input in inp:
@@ -188,7 +188,7 @@ class ChatAppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
             yield ProcPayloadOutEvent(
@@ -209,7 +209,7 @@ class ChatFanOutProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
             yield ProcPayloadOutEvent(
@@ -226,12 +226,12 @@ async def collect_payloads(
     | CrashAfterStepWorkflow,
     ctx: RunContext[None],
     in_args: str | list[str] | None = None,
-    resume: bool = False,
+    step: int | None = None,
 ) -> list[str]:
     """Run a processor via run_stream and collect final payloads."""
     payloads: list[str] = []
     async for event in proc.run_stream(
-        in_args=in_args, ctx=ctx, exec_id="test", resume=resume
+        in_args=in_args, ctx=ctx, exec_id="test", step=step
     ):
         if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
             payloads = list(event.data.payloads)
@@ -486,7 +486,7 @@ class TestRecursiveResume:
         )
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await collect_payloads(wf2, ctx2, resume=True)
+        result = await collect_payloads(wf2, ctx2, step=0)
 
         assert fan2.call_count == 0  # skipped (step 0 done)
         assert collect2.call_count == 1  # ran
@@ -539,7 +539,7 @@ class TestRecursiveResume:
         )
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await collect_payloads(wf2, ctx2, resume=True)
+        result = await collect_payloads(wf2, ctx2, step=0)
 
         assert fan2.call_count == 0  # skipped
         assert collect2.call_count == 1
@@ -591,7 +591,7 @@ class TestRecursiveResume:
         )
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await collect_payloads(outer2, ctx2, resume=True)
+        result = await collect_payloads(outer2, ctx2, step=0)
 
         assert a2.call_count == 0  # skipped (outer checkpoint at step 0)
         assert x2.call_count == 0  # skipped (inner checkpoint)
@@ -662,7 +662,7 @@ class TestRecursiveResume:
         )
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await collect_payloads(outer2, ctx2, resume=True)
+        result = await collect_payloads(outer2, ctx2, step=0)
 
         assert fan2.call_count == 0  # skipped (outer step 0 done)
         assert collect2.call_count == 1  # ran

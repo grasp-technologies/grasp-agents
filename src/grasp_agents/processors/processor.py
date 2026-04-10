@@ -203,13 +203,13 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         if store is None or self._checkpoint_store_key is None:
             return
 
-        self._checkpoint_number += 1
-        checkpoint.checkpoint_number = self._checkpoint_number
+        checkpoint.checkpoint_number = self._checkpoint_number + 1
 
         await store.save(
             self._checkpoint_store_key,
             checkpoint.model_dump_json().encode("utf-8"),
         )
+        self._checkpoint_number += 1
 
     # --- Input / output validation ---
 
@@ -343,7 +343,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        resume: bool = False,
+        step: int | None = None,
     ) -> list[OutT]:
         """
         Process inputs and return outputs.
@@ -365,7 +365,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
                 in_args=in_args,
                 exec_id=exec_id,
                 ctx=ctx,
-                resume=resume,
+                step=step,
             ):
                 if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
                     outputs.append(event.data)
@@ -380,7 +380,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         """
         Stream events for inputs. See ``_process`` docstring for override rules.
@@ -390,7 +390,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
             in_args=in_args,
             exec_id=exec_id,
             ctx=ctx,
-            resume=resume,
+            step=step,
         )
         for output in outputs:
             yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
@@ -436,7 +436,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         exec_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         exec_id = self.generate_exec_id(exec_id)
@@ -454,7 +454,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
             in_args=val_in_args,
             exec_id=exec_id,
             ctx=ctx,
-            resume=resume,
+            step=step,
         ):
             if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
                 outputs.append(event.data)
@@ -477,7 +477,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         in_args: InT | list[InT] | None = None,
         exec_id: str | None = None,
         ctx: RunContext[CtxT] | None = None,
-        resume: bool = False,
+        step: int | None = None,
     ) -> Packet[OutT]:
         result = None
 
@@ -487,7 +487,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
             in_args=in_args,
             exec_id=exec_id,
             ctx=ctx,
-            resume=resume,
+            step=step,
         ):
             if result is not None:
                 continue

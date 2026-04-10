@@ -176,7 +176,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         )
 
         # Session persistence
-        self._step: int = 0
+        self._step: int = 0  # completed invocation counter (observability)
+        self._delivery_step: int | None = None  # caller's step for checkpoint
 
         if self._session_id:
             self.setup_session(self._session_id)
@@ -257,7 +258,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.memory.messages = resume_state.messages
-        self._step = checkpoint.step
         self._loop.turn = checkpoint.turn
 
         logger.info(
@@ -292,7 +292,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             processor_name=self.name,
             messages=list(self.memory.messages),
             session_metadata=self._session_metadata,
-            step=self._step,
+            step=self._delivery_step,
             turn=turn,
             output=output,
             location=location,
@@ -396,25 +396,33 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
         exec_id: str,
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
+        self._delivery_step = step
 
         inp = in_args[0] if in_args else None
 
-        # Load checkpoint on resume (restore memory, background tasks, etc.)
-        checkpoint = (
-            await self.load_checkpoint(ctx, exec_id=exec_id) if resume else None
+        # Always load checkpoint (restores memory, background tasks, turn).
+        checkpoint = await self.load_checkpoint(ctx, exec_id=exec_id)
+
+        is_redelivery = (
+            step is not None
+            and checkpoint is not None
+            and checkpoint.step == step
         )
 
-        # Cached output: step already completed, caller re-delivered
-        # (e.g. workflow crashed before saving its own checkpoint).
-        if checkpoint is not None and checkpoint.output is not None:
+        # Re-delivery with cached output: step already completed, caller
+        # re-delivered (e.g. workflow crashed before saving its own checkpoint).
+        if is_redelivery and checkpoint is not None and checkpoint.output is not None:
             output = self.parse_output(checkpoint.output, in_args=inp, **call_kwargs)
             yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
             return
 
-        if checkpoint is None:
+        # New step (or no checkpoint): memorize inputs and reset turn.
+        # Interrupted re-delivery (same step, no output): memory already
+        # loaded from checkpoint, skip memorization.
+        if not is_redelivery:
             self._loop.turn = 0
             messages_to_expose = self._memorize_inputs(
                 chat_inputs=chat_inputs, in_args=inp, **call_kwargs

@@ -49,7 +49,7 @@ class AppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             output = f"{inp}->{self.name}"
@@ -70,7 +70,7 @@ class CountingProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         for inp in in_args or []:
@@ -93,7 +93,7 @@ class FailOnCallProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         if self.call_count == self._fail_on_call:
@@ -119,7 +119,7 @@ class InputFailProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             if self._fail_input in inp:
@@ -132,12 +132,12 @@ async def run_workflow(
     wf: SequentialWorkflow[str, str, None] | LoopedWorkflow[str, str, None],
     ctx: RunContext[None],
     in_args: str | None = None,
-    resume: bool = False,
+    step: int | None = None,
 ) -> list[str]:
     """Run a workflow via run_stream and collect final payloads."""
     payloads: list[str] = []
     async for event in wf.run_stream(
-        in_args=in_args, ctx=ctx, exec_id="test", resume=resume
+        in_args=in_args, ctx=ctx, exec_id="test", step=step
     ):
         if isinstance(event, ProcPacketOutEvent) and event.source == wf.name:
             payloads = list(event.data.payloads)
@@ -148,12 +148,12 @@ async def run_parallel(
     par: ParallelProcessor[str, str, None],
     ctx: RunContext[None],
     in_args: list[str] | None = None,
-    resume: bool = False,
+    step: int | None = None,
 ) -> list[str]:
     """Run a ParallelProcessor and collect final payloads."""
     payloads: list[str] = []
     async for event in par.run_stream(
-        in_args=in_args, ctx=ctx, exec_id="test", resume=resume
+        in_args=in_args, ctx=ctx, exec_id="test", step=step
     ):
         if isinstance(event, ProcPacketOutEvent) and event.source == par.name:
             payloads = list(event.data.payloads)
@@ -226,7 +226,7 @@ class TestSequentialWorkflowCheckpoint:
         wf2.setup_session("seq-2")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_workflow(wf2, ctx2, resume=True)
+        result = await run_workflow(wf2, ctx2, step=0)
         assert result == ["start->A->B->C"]
 
         # A skipped, B and C ran once each
@@ -247,7 +247,7 @@ class TestSequentialWorkflowCheckpoint:
                 in_args: list[str] | None = None,
                 exec_id: str,
                 ctx: RunContext[None],
-                resume: bool = False,
+                step: int | None = None,
             ) -> AsyncIterator[Event[Any]]:
                 for inp in in_args or []:
                     yield ProcPayloadOutEvent(
@@ -273,7 +273,7 @@ class TestSequentialWorkflowCheckpoint:
         wf2.setup_session("seq-multi")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_workflow(wf2, ctx2, resume=True)
+        result = await run_workflow(wf2, ctx2, step=0)
         assert result == ["s:x->B", "s:y->B"]
         assert fan2.call_count == 0
 
@@ -372,7 +372,7 @@ class TestLoopedWorkflowCheckpoint:
         wf2.setup_session("loop-2")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_workflow(wf2, ctx2, resume=True)
+        result = await run_workflow(wf2, ctx2, step=0)
         assert result == ["s->A->B"]
 
         # A was skipped (completed in iteration 1), B ran once
@@ -441,7 +441,7 @@ class TestParallelProcessorCheckpoint:
         par2.setup_session("par-2")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_parallel(par2, ctx2, resume=True)
+        result = await run_parallel(par2, ctx2, step=0)
 
         # "a" from checkpoint, "FAIL" re-run successfully
         assert sorted(result) == ["FAIL->worker", "a->worker"]
@@ -463,7 +463,7 @@ class TestParallelProcessorCheckpoint:
         par2.setup_session("par-3")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_parallel(par2, ctx2, resume=True)
+        result = await run_parallel(par2, ctx2, step=0)
         assert sorted(result) == ["a->worker", "b->worker"]
         assert subproc2.call_count == 0
 
@@ -483,3 +483,203 @@ class TestParallelProcessorCheckpoint:
         cp = ParallelCheckpoint.model_validate_json(raw)
         pkt = Packet[str].model_validate(cp.input_packet)
         assert list(pkt.payloads) == ["ok", "FAIL", "also_ok"]
+
+
+# ---------- Crash-after-completion (re-delivery) ----------
+
+
+class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
+    """Crashes before saving the workflow checkpoint for a specific step."""
+
+    def __init__(
+        self,
+        name: str,
+        subprocs: list[Processor[Any, Any, None]],
+        crash_after_step: int,
+        session_id: str | None = None,
+    ) -> None:
+        super().__init__(name=name, subprocs=subprocs, session_id=session_id)
+        self._crash_after_step = crash_after_step
+
+    async def save_checkpoint(
+        self,
+        ctx: RunContext[None],
+        *,
+        completed_step: int,
+        packet: Packet[Any],
+        iteration: int = 0,
+    ) -> None:
+        if completed_step == self._crash_after_step:
+            raise RuntimeError(f"Simulated crash after step {completed_step}")
+        await super().save_checkpoint(
+            ctx, completed_step=completed_step, packet=packet, iteration=iteration
+        )
+
+
+class TestCrashAfterCompletion:
+    """
+    Verify the crash race window: child processor completes and saves its
+    checkpoint, parent crashes before saving its own. On resume, the child
+    must re-emit cached output without re-processing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sequential_child_reemits_after_workflow_crash(self) -> None:
+        """
+        Workflow: [A, B].
+        B completes (workflow checkpoint at step 0 only).
+        Workflow crashes before saving step 1.
+        Resume: B loads its checkpoint → all steps done → re-emits cached output.
+        """
+        store = InMemoryCheckpointStore()
+
+        a1 = AppendProcessor("A")
+        b1 = AppendProcessor("B")
+        wf1 = CrashAfterStepWorkflow(
+            name="wf", subprocs=[a1, b1], crash_after_step=1, session_id="crash1"
+        )
+        ctx1: RunContext[None] = RunContext(state=None, store=store)
+
+        with pytest.raises(ProcRunError):
+            await run_workflow(wf1, ctx1, in_args="start")
+
+        # Workflow checkpoint: step 0 done
+        raw = await store.load("workflow/crash1")
+        assert raw is not None
+        cp = WorkflowCheckpoint.model_validate_json(raw)
+        assert cp.completed_step == 0
+
+        # Resume: A skipped, B re-delivered (step=1 matches its checkpoint)
+        a2 = CountingProcessor("A")
+        b2 = CountingProcessor("B")
+        wf2 = SequentialWorkflow[str, str, None](
+            name="wf", subprocs=[a2, b2], session_id="crash1"
+        )
+        ctx2: RunContext[None] = RunContext(state=None, store=store)
+
+        result = await run_workflow(wf2, ctx2)
+        assert result == ["start->A->B"]
+        assert a2.call_count == 0  # skipped
+        assert b2.call_count == 1  # re-ran (simple processor, no agent checkpoint)
+
+    @pytest.mark.asyncio
+    async def test_parallel_child_reemits_after_workflow_crash(self) -> None:
+        """
+        Workflow: [Fan, Parallel(worker)].
+        Parallel completes all items. Workflow crashes before saving step 1.
+        Resume: Parallel loads its checkpoint → all items done → emits from map.
+        """
+        store = InMemoryCheckpointStore()
+
+        class FanOut(Processor[str, str, None]):
+            async def _process_stream(
+                self,
+                chat_inputs: Any | None = None,
+                *,
+                in_args: list[str] | None = None,
+                exec_id: str,
+                ctx: RunContext[None],
+                step: int | None = None,
+            ) -> AsyncIterator[Event[Any]]:
+                for inp in in_args or []:
+                    yield ProcPayloadOutEvent(
+                        data=f"{inp}:a", source=self.name, exec_id=exec_id
+                    )
+                    yield ProcPayloadOutEvent(
+                        data=f"{inp}:b", source=self.name, exec_id=exec_id
+                    )
+
+        fan1 = FanOut(name="fan")
+        worker1 = AppendProcessor("worker")
+        par1 = ParallelProcessor[str, str, None](subproc=worker1)
+        wf1 = CrashAfterStepWorkflow(
+            name="wf", subprocs=[fan1, par1], crash_after_step=1, session_id="crash2"
+        )
+        ctx1: RunContext[None] = RunContext(state=None, store=store)
+
+        with pytest.raises(ProcRunError):
+            await run_workflow(wf1, ctx1, in_args="start")
+
+        # Parallel checkpoint: both items done
+        par_key = f"parallel/crash2/{par1.name}"
+        par_raw = await store.load(par_key)
+        assert par_raw is not None
+        par_cp = ParallelCheckpoint.model_validate_json(par_raw)
+        assert len(par_cp.completed) == 2
+
+        # Resume
+        fan2 = CountingProcessor("fan")
+        worker2 = CountingProcessor("worker")
+        par2 = ParallelProcessor[str, str, None](subproc=worker2)
+        wf2 = SequentialWorkflow[str, str, None](
+            name="wf", subprocs=[fan2, par2], session_id="crash2"
+        )
+        ctx2: RunContext[None] = RunContext(state=None, store=store)
+
+        result = await run_workflow(wf2, ctx2)
+        assert fan2.call_count == 0  # skipped
+        assert worker2.call_count == 0  # all items from checkpoint
+        assert sorted(result) == ["start:a->worker", "start:b->worker"]
+
+
+# ---------- Store failure propagation ----------
+
+
+class FailingStore(InMemoryCheckpointStore):
+    """A store that raises on save after N successful saves."""
+
+    def __init__(self, fail_after: int = 0) -> None:
+        super().__init__()
+        self._save_count = 0
+        self._fail_after = fail_after
+
+    async def save(self, key: str, data: bytes) -> None:
+        self._save_count += 1
+        if self._save_count > self._fail_after:
+            raise OSError(f"Simulated I/O error on save #{self._save_count}")
+        await super().save(key, data)
+
+
+class TestStoreFailurePropagation:
+    """Verify that store save failures propagate up and kill the run."""
+
+    @pytest.mark.asyncio
+    async def test_workflow_checkpoint_save_failure_kills_run(self) -> None:
+        """If workflow.save_checkpoint fails, the run dies immediately."""
+        store = FailingStore(fail_after=0)  # fail on first save
+        a = AppendProcessor("A")
+        b = AppendProcessor("B")
+        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
+        wf.setup_session("fail-wf")
+        ctx: RunContext[None] = RunContext(state=None, store=store)
+
+        with pytest.raises(ProcRunError):
+            await run_workflow(wf, ctx, in_args="start")
+
+    @pytest.mark.asyncio
+    async def test_parallel_checkpoint_save_failure_kills_run(self) -> None:
+        """If parallel.save_checkpoint fails, the run dies immediately."""
+        store = FailingStore(fail_after=0)
+        subproc = AppendProcessor("worker")
+        par = ParallelProcessor[str, str, None](subproc=subproc)
+        par.setup_session("fail-par")
+        ctx: RunContext[None] = RunContext(state=None, store=store)
+
+        with pytest.raises(ProcRunError):
+            await run_parallel(par, ctx, in_args=["a", "b"])
+
+    @pytest.mark.asyncio
+    async def test_corrupt_checkpoint_treated_as_fresh(self) -> None:
+        """A corrupt checkpoint is logged and treated as if no checkpoint exists."""
+        store = InMemoryCheckpointStore()
+        await store.save("workflow/corrupt-wf", b"not valid json{{{")
+
+        a = AppendProcessor("A")
+        b = AppendProcessor("B")
+        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
+        wf.setup_session("corrupt-wf")
+        ctx: RunContext[None] = RunContext(state=None, store=store)
+
+        # Should proceed as fresh run (corrupt checkpoint ignored)
+        result = await run_workflow(wf, ctx, in_args="start")
+        assert result == ["start->A->B"]

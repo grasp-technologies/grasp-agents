@@ -95,14 +95,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         start_iteration = 1
         start_step = 0
 
-        checkpoint = await self.load_checkpoint(ctx) if resume else None
-        resuming = checkpoint is not None
+        checkpoint = await self.load_checkpoint(ctx)
         if checkpoint is not None:
             packet = checkpoint.packet
             start_iteration = checkpoint.iteration
@@ -124,6 +123,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 start_iteration += 1
                 start_step = 0
 
+        n_subprocs = len(self.subprocs)
         for iteration_num in range(start_iteration, self._max_iterations + 1):
             for idx, subproc in enumerate(self.subprocs):
                 if iteration_num == start_iteration and idx < start_step:
@@ -131,17 +131,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
 
                 logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
-                resume = (
-                    resuming
-                    and iteration_num == start_iteration
-                    and idx == start_step
-                )
+                child_step = (iteration_num - 1) * n_subprocs + idx
                 async for event in subproc.run_stream(
                     chat_inputs=chat_inputs,
                     in_packet=packet,
                     exec_id=f"{exec_id}/{subproc.name}/iter_{iteration_num}",
                     ctx=ctx,
-                    resume=resume,
+                    step=child_step,
                 ):
                     yield event
                     if (

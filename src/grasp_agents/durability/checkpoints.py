@@ -34,7 +34,7 @@ class AgentCheckpoint(ProcessorCheckpoint):
 
     messages: list[InputItem]
     usage: ResponseUsage | None = None
-    step: int = 0  # external invocation counter
+    step: int | None = None  # caller's delivery step (None = chat / untracked)
     turn: int = 0  # current LLM cycle within the step
     output: str | None = None  # cached final answer (None = step incomplete)
     location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
@@ -75,4 +75,4 @@ class RunnerCheckpoint(ProcessorCheckpoint):
 
     pending_events: list[ProcPacketOutEvent]
     active_sessions: dict[str, str] = Field(default_factory=dict)
-    # proc_name -> session_id (for resumable procs)
+    active_steps: dict[str, int] = Field(default_factory=dict)

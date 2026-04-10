@@ -291,6 +291,7 @@ class TestAgentCheckpoint:
             processor_name="agent",
             messages=messages,
             checkpoint_number=3,
+            step=0,
             session_metadata={"parent_id": "p1"},
         )
         json_bytes = snap.model_dump_json().encode()
@@ -638,7 +639,7 @@ def _count_user_messages(agent: LLMAgent[Any, Any, Any]) -> int:
 
 
 def _interrupted_checkpoint(
-    messages: list[Any], session_id: str = "s1"
+    messages: list[Any], session_id: str = "s1", step: int | None = 0
 ) -> AgentCheckpoint:
     """Checkpoint whose last message is a user message → PENDING_USER_MESSAGE."""
     return AgentCheckpoint(
@@ -646,11 +647,12 @@ def _interrupted_checkpoint(
         processor_name="test_agent",
         messages=messages,
         checkpoint_number=1,
+        step=step,
     )
 
 
 def _completed_checkpoint(
-    messages: list[Any], session_id: str = "s1"
+    messages: list[Any], session_id: str = "s1", step: int | None = 0
 ) -> AgentCheckpoint:
     """Checkpoint whose last message is an assistant response → NONE."""
     return AgentCheckpoint(
@@ -658,6 +660,7 @@ def _completed_checkpoint(
         processor_name="test_agent",
         messages=messages,
         checkpoint_number=1,
+        step=step,
     )
 
 
@@ -687,7 +690,7 @@ class TestResumeInputDetection:
         agent, ctx = _make_agent(
             [_text_response("world")], session_id="s1", store=store
         )
-        await agent.run(ctx=ctx, resume=True)  # no input — pure resume
+        await agent.run(ctx=ctx, step=0)  # no input — pure resume
 
         assert (
             _count_user_messages(agent) == 1
@@ -712,7 +715,7 @@ class TestResumeInputDetection:
         agent, ctx = _make_agent(
             [_text_response("world")], session_id="s1", store=store
         )
-        await agent.run(in_args="hello", ctx=ctx, resume=True)  # same input re-delivered
+        await agent.run(in_args="hello", ctx=ctx, step=0)  # same input re-delivered
 
         assert _count_user_messages(agent) == 1  # not duplicated
 
@@ -733,7 +736,7 @@ class TestResumeInputDetection:
         )
 
         agent, ctx = _make_agent([_text_response("done")], session_id="s1", store=store)
-        await agent.run("start", ctx=ctx, resume=True)  # same chat_inputs re-delivered
+        await agent.run("start", ctx=ctx, step=0)  # same chat_inputs re-delivered
 
         assert _count_user_messages(agent) == 1  # not duplicated
 
@@ -815,7 +818,7 @@ class TestResumeInputDetection:
             session_id="s1",
             store=store,
         )
-        await agent.run(ctx=ctx, resume=True)  # resume
+        await agent.run(ctx=ctx, step=0)  # resume
         assert _count_user_messages(agent) == 1
 
         # Continuation: new input added
@@ -841,7 +844,7 @@ class _AppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from grasp_agents.types.events import ProcPayloadOutEvent
 
@@ -865,7 +868,7 @@ class _CountingAppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from grasp_agents.types.events import ProcPayloadOutEvent
 
@@ -966,7 +969,7 @@ class TestResumeIntegration:
         )
         ctx2: RunContext[None] = RunContext(store=store)
 
-        async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", resume=True):
+        async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
             pass
 
         assert a2.call_count == 0  # step 0 skipped
@@ -1031,7 +1034,7 @@ class TestResumeIntegration:
         ctx2: RunContext[None] = RunContext(store=store)
 
         payloads: list[str] = []
-        async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", resume=True):
+        async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
             from grasp_agents.types.events import ProcPacketOutEvent
 
             if isinstance(event, ProcPacketOutEvent) and event.source == "wf":
@@ -1073,8 +1076,10 @@ class TestResumeIntegration:
             session_id="rs2",
             processor_name="r",
             checkpoint_number=1,
+            step=0,
             pending_events=[pending_event],
             active_sessions={"A": "rs2/A", "agent": "rs2/agent"},
+            active_steps={"A": 1, "agent": 0},
         )
         await store.save("runner/rs2", runner_cp.model_dump_json().encode())
 
@@ -1089,6 +1094,7 @@ class TestResumeIntegration:
                 InputMessageItem.from_text("start->A", role="user"),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/rs2/agent", agent_cp.model_dump_json().encode())
 
@@ -1342,6 +1348,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/s1", snapshot.model_dump_json().encode())
 
@@ -1360,7 +1367,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, resume=True)
+        await agent.run("continue", ctx=ctx, step=0)
 
         # The interruption notification should be in memory
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1396,6 +1403,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/s1", snapshot.model_dump_json().encode())
 
@@ -1416,7 +1424,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, resume=True)
+        await agent.run("continue", ctx=ctx, step=0)
 
         # Result notification should be in memory
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1454,6 +1462,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=2,
+            step=0,
         )
         await store.save("agent/s1", snapshot.model_dump_json().encode())
 
@@ -1473,7 +1482,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, resume=True)
+        await agent.run("continue", ctx=ctx, step=0)
 
         # Should NOT have duplicate notification
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1493,6 +1502,7 @@ class TestPendingTaskResume:
                 InputMessageItem.from_text("go", role="user"),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/s1", snapshot.model_dump_json().encode())
 
@@ -1511,7 +1521,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, resume=True)
+        await agent.run("continue", ctx=ctx, step=0)
 
         # No interruption notification injected for already-failed records
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1546,6 +1556,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/s1", snapshot.model_dump_json().encode())
 
@@ -1563,7 +1574,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, resume=True)
+        await agent.run("continue", ctx=ctx, step=0)
 
         # Both should have interruption notifications
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1662,6 +1673,7 @@ class TestChildTaskResume:
                 ),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
@@ -1688,6 +1700,7 @@ class TestChildTaskResume:
                 InputMessageItem.from_text("work", role="user"),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save(
             "agent/child/parent_s1/ch1",
@@ -1709,7 +1722,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx, resume=True)
+        await parent.run("continue", ctx=ctx, step=0)
 
         # Should NOT have "interrupted" in memory — child was re-spawned
         memory_texts = [str(m) for m in parent.memory.messages]
@@ -1748,6 +1761,7 @@ class TestChildTaskResume:
                 ),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
@@ -1769,7 +1783,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx, resume=True)
+        await parent.run("continue", ctx=ctx, step=0)
 
         # Should have "interrupted" notification (not re-spawned)
         memory_texts = [str(m) for m in parent.memory.messages]
@@ -1807,6 +1821,7 @@ class TestChildTaskResume:
                 ),
             ],
             checkpoint_number=1,
+            step=0,
         )
         await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
@@ -1833,6 +1848,7 @@ class TestChildTaskResume:
                     InputMessageItem.from_text(tid, role="user"),
                 ],
                 checkpoint_number=1,
+                step=0,
             )
             await store.save(f"agent/{sid}", snap.model_dump_json().encode())
 
@@ -1853,7 +1869,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx, resume=True)
+        await parent.run("continue", ctx=ctx, step=0)
 
         # Both children should have completed (not interrupted)
         memory_texts = [str(m) for m in parent.memory.messages]

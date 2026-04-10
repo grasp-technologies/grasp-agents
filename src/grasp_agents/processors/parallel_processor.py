@@ -160,10 +160,10 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         # --- Resume from checkpoint ---
-        checkpoint = await self.load_checkpoint(ctx) if resume else None
+        checkpoint = await self.load_checkpoint(ctx)
         completed_map: dict[int, Packet[Any]] = {}
 
         if checkpoint is not None:
@@ -184,7 +184,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             out_packets_map[idx] = cast("Packet[OutT]", pkt)
 
         # Create replicas only for uncompleted indices
-        resuming = checkpoint is not None
         pending_indices = [i for i in range(len(all_in_args)) if i not in completed_map]
         if pending_indices:
             replicas = {i: self._subproc.copy() for i in pending_indices}
@@ -193,7 +192,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                     in_args=all_in_args[i],
                     exec_id=f"{exec_id}/{i}",
                     ctx=ctx,
-                    resume=resuming,
+                    step=0,
                 )
                 for i in pending_indices
             ]

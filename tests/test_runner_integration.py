@@ -59,7 +59,7 @@ class Passthrough(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> list[str]:
         if in_args is not None:
             return in_args
@@ -88,7 +88,7 @@ class SplitterProcessor(Processor[str, TopicIdea, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> list[TopicIdea]:
         inputs = in_args or ([str(chat_inputs)] if chat_inputs is not None else [])
         topics: list[TopicIdea] = []
@@ -109,7 +109,7 @@ class CollectorProcessor(Processor[Paragraph, str, None]):
         in_args: list[Paragraph] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> list[str]:
         paragraphs = in_args or []
         doc = "\n\n".join(f"## {p.topic}\n{p.text}" for p in paragraphs)
@@ -397,7 +397,7 @@ class _FailingProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> list[str]:
         self.call_count += 1
         if self.call_count == 1:
@@ -638,7 +638,7 @@ class TestWorkflowCrashResume:
                 in_args: Any = None,
                 exec_id: str,
                 ctx: RunContext[None],
-                resume: bool = False,
+                step: int | None = None,
             ) -> list[str]:
                 raise RuntimeError("Refiner crash")
 

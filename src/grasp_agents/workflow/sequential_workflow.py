@@ -52,12 +52,12 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         start_step = 0
 
-        checkpoint = await self.load_checkpoint(ctx) if resume else None
+        checkpoint = await self.load_checkpoint(ctx)
         if checkpoint is not None:
             packet = checkpoint.packet
             start_step = checkpoint.completed_step + 1
@@ -71,22 +71,18 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     )
                 return
 
-        resuming = checkpoint is not None
-
         for idx, subproc in enumerate(self.subprocs):
             if idx < start_step:
                 continue
 
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
-            # First step after checkpoint restore may be a re-delivery
-            resume = resuming and idx == start_step
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
                 exec_id=f"{exec_id}/{subproc.name}",
                 ctx=ctx,
-                resume=resume,
+                step=idx,
             ):
                 yield event
                 if (

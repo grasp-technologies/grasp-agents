@@ -88,7 +88,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         proc = self._resolve_processor(session_id)
         async for event in self._yield_proc_events(
-            proc, in_args=inp, ctx=ctx, exec_id=exec_id
+            proc, in_args=inp, ctx=ctx, exec_id=exec_id, step=0
         ):
             yield event
 
@@ -101,7 +101,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         proc = self._resolve_processor(session_id)
         async for event in self._yield_proc_events(
-            proc, in_args=None, ctx=ctx, exec_id=exec_id, resume=True
+            proc, in_args=None, ctx=ctx, exec_id=exec_id, step=0
         ):
             yield event
 
@@ -112,10 +112,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         in_args: _InT | None = None,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in proc.run_stream(
-            in_args=in_args, exec_id=exec_id, ctx=ctx, resume=resume
+            in_args=in_args, exec_id=exec_id, ctx=ctx, step=step
         ):
             if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
                 yield ToolOutputEvent(

@@ -53,7 +53,7 @@ class AppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
             output = f"{inp}->{self.name}"
@@ -74,7 +74,7 @@ class CountingProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         for inp in _resolve_inputs(chat_inputs, in_args):
@@ -103,7 +103,7 @@ class FailOnCallProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         if self.call_count == self._fail_on_call:
@@ -128,7 +128,7 @@ class FanOutProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
             yield ProcPayloadOutEvent(
@@ -167,7 +167,7 @@ class RoutingProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
-        resume: bool = False,
+        step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
             yield ProcPayloadOutEvent(data=inp, source=self.name, exec_id=exec_id)

@@ -70,7 +70,7 @@ class Runner(Generic[OutT, CtxT]):
         self._pending_events: dict[str, ProcPacketOutEvent] = {}
         self._active_sessions: dict[str, str] = {}  # proc_name -> session_id
         self._checkpoint_lock = asyncio.Lock()
-        self._resume_event_ids: set[str] = set()  # events from checkpoint
+        self._active_steps: dict[str, int] = {}  # proc_name -> last delivery step
 
         if session_id:
             self.setup_session(session_id)
@@ -89,6 +89,7 @@ class Runner(Generic[OutT, CtxT]):
         self._session_id = session_id
         self._checkpoint_number = 0
         self._active_sessions = {}
+        self._active_steps = {}
         for proc in self._procs:
             proc_session = f"{session_id}/{proc.name}"
             proc.setup_session(proc_session)
@@ -140,6 +141,7 @@ class Runner(Generic[OutT, CtxT]):
             checkpoint_number=self._checkpoint_number,
             pending_events=list(events.values()),
             active_sessions=dict(self._active_sessions),
+            active_steps=dict(self._active_steps),
         )
         await store.save(
             self._checkpoint_store_key,
@@ -171,10 +173,10 @@ class Runner(Generic[OutT, CtxT]):
             return None, packet.payloads[0]
         return packet, None
 
-    async def _route_output(
+    def _build_routed_events(
         self, out_packet: Packet[Any], *, exec_id: str | None
-    ) -> list[ProcPacketOutEvent]:
-        """Route output packet. Returns sub-events (empty list for END)."""
+    ) -> tuple[list[ProcPacketOutEvent], RunPacketOutEvent | None]:
+        """Build routed events without posting them. Returns (sub_events, final)."""
         uniform = out_packet.uniform_routing
         if uniform is not None and list(uniform) == [END_PROC_NAME]:
             final_event = RunPacketOutEvent(
@@ -184,9 +186,7 @@ class Runner(Generic[OutT, CtxT]):
                 destination=END_PROC_NAME,
                 exec_id=exec_id,
             )
-            await self._event_bus.push_to_stream(final_event)
-            await self._event_bus.finalize(final_event.data)
-            return []
+            return [], final_event
 
         sub_events: list[ProcPacketOutEvent] = []
         for sub_out_packet in out_packet.split_by_recipient() or []:
@@ -202,18 +202,30 @@ class Runner(Generic[OutT, CtxT]):
                 exec_id=exec_id,
             )
             sub_events.append(sub_out_event)
-            await self._event_bus.push_to_stream(sub_out_event)
-        return sub_events
+        return sub_events, None
 
     async def _checkpoint_transition(
-        self, consumed_id: str, produced: list[ProcPacketOutEvent] | None = None
+        self,
+        consumed_id: str,
+        produced: list[ProcPacketOutEvent] | None = None,
+        *,
+        proc_name: str | None = None,
     ) -> None:
-        """Atomically update pending events and save checkpoint."""
+        """Atomically update pending events, advance step, and save checkpoint."""
         async with self._checkpoint_lock:
             new_pending = dict(self._pending_events)
             new_pending.pop(consumed_id, None)
             for e in produced or []:
                 new_pending[e.id] = e
+            # Advance delivery step for completed proc
+            if proc_name is not None:
+                prev = self._active_steps.get(proc_name, 0)
+                self._active_steps[proc_name] = prev + 1
+            # Initialize step for newly targeted procs
+            for e in produced or []:
+                dst = e.destination
+                if dst and dst not in self._active_steps:
+                    self._active_steps[dst] = 0
             await self._save_checkpoint(new_pending)
             self._pending_events = new_pending
 
@@ -236,15 +248,14 @@ class Runner(Generic[OutT, CtxT]):
 
         finalized: bool = False
 
-        resume = in_event.id in self._resume_event_ids
-        self._resume_event_ids.discard(in_event.id)
+        step = self._active_steps.get(proc.name)
 
         async for out_event in proc.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             ctx=self._ctx,
             exec_id=exec_id,
-            resume=resume,
+            step=step,
             **run_kwargs,
         ):
             if finalized:
@@ -256,15 +267,24 @@ class Runner(Generic[OutT, CtxT]):
                 and out_event.source == proc.name
             ):
                 out_packet = out_event.data
-                sub_events = await self._route_output(out_packet, exec_id=exec_id)
-                await self._checkpoint_transition(in_event.id, sub_events)
+                sub_events, final_event = self._build_routed_events(
+                    out_packet, exec_id=exec_id
+                )
 
-                if not sub_events:
+                # Save checkpoint BEFORE posting anything to bus
+                await self._checkpoint_transition(
+                    in_event.id, sub_events, proc_name=proc.name
+                )
+
+                if final_event is not None:
+                    await self._event_bus.push_to_stream(final_event)
+                    await self._event_bus.finalize(final_event.data)
                     finalized = True
                     continue
 
-                # Post to bus AFTER checkpoint save
+                # Post sub-events to bus after checkpoint is durable
                 for e in sub_events:
+                    await self._event_bus.push_to_stream(e)
                     await self._event_bus.post(e)
 
             else:
@@ -288,7 +308,7 @@ class Runner(Generic[OutT, CtxT]):
 
         if checkpoint is not None:
             self._pending_events = {e.id: e for e in checkpoint.pending_events}
-            self._resume_event_ids = set(self._pending_events.keys())
+            self._active_steps = dict(checkpoint.active_steps)
             # Restore proc sessions from checkpoint
             for proc_name, session_id in checkpoint.active_sessions.items():
                 proc = self._procs_by_name.get(proc_name)
@@ -298,6 +318,7 @@ class Runner(Generic[OutT, CtxT]):
         else:
             start_event = self._make_start_event(chat_inputs)
             self._pending_events = {start_event.id: start_event}
+            self._active_steps = {self._entry_proc.name: 0}
             await self._save_checkpoint()
 
         initial_events = list(self._pending_events.values())
