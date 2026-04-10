@@ -1,7 +1,6 @@
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Generic, cast, final
 
@@ -9,6 +8,7 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from ..durability import AgentCheckpoint
+from ..durability.checkpoints import AgentCheckpointLocation
 from ..durability.resume import prepare_messages_for_resume
 from ..llm.llm import LLM
 from ..processors.processor import Processor
@@ -41,7 +41,7 @@ from ..types.tool import BaseTool
 from ..utils.callbacks import is_method_overridden
 from ..utils.io import get_prompt
 from ..utils.validation import validate_obj_from_json_or_py_string
-from .agent_loop import AgentLoop, ResponseCapture
+from .agent_loop import AgentLoop
 from .llm_agent_memory import LLMAgentMemory
 from .prompt_builder import PromptBuilder
 
@@ -104,23 +104,17 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             max_retries=max_retries,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            session_id=session_id,
+            session_metadata=session_metadata,
         )
 
         if tracing_exclude_input_fields:
             for tool in tools or []:
                 tool.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        # Session persistence
-
-        self._session_id = session_id
-        self._session_metadata = session_metadata or {}
-        self._session_checkpoint: AgentCheckpoint | None = None
-        self._session_turn_number: int = 0
-        self._session_loaded: bool = False
-
         # Memory
 
-        # Don't narrow the base '_memory' type (Memory in BaseProcessor)
+        # Don't narrow the base '_memory' type (Memory in Processor)
         self._memory = memory or LLMAgentMemory()
         self._reset_memory_on_run = reset_memory_on_run
 
@@ -129,7 +123,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         for tool in tools or []:
             if isinstance(tool, AgentTool):
-                tool.set_parent_memory(self._memory)  # type: ignore[arg-type]
+                tool.set_parent_memory(self._memory)
                 if tool.inherit_tools:
                     tool.set_parent_tools(tools or [])
 
@@ -154,7 +148,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 "final_answer_as_tool_call is True."
             )
 
-        self._used_default_llm_response_schema: bool = False
+        self._used_default_llm_response_schema = False
         if (
             response_schema is None
             and tools is None
@@ -181,20 +175,19 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
-        # Wire persistence callbacks if session_id provided
+        # Session persistence
+        self._step: int = 0
+
         if self._session_id:
-            self._loop.checkpoint_callback = self._save_checkpoint
-            self._loop.bg_tasks.session_id = self._session_id
+            self.setup_session(self._session_id)
+
+        # Subclass hook points (set by decorators or subclass overrides)
 
         self._register_overridden_implementations()
 
     @property
-    def session_id(self) -> str | None:
-        return self._session_id
-
-    @property
-    def _session_store_key(self) -> str | None:
-        return f"session/{self._session_id}" if self._session_id else None
+    def _checkpoint_store_key(self) -> str | None:
+        return f"agent/{self._session_id}" if self._session_id else None
 
     @property
     def llm(self) -> LLM:
@@ -207,6 +200,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     @property
     def max_turns(self) -> int:
         return self._loop.max_turns
+
+    @property
+    def step(self) -> int:
+        return self._step
+
+    @property
+    def turn(self) -> int:
+        return self._loop.turn
 
     @property
     def sys_prompt(self) -> LLMPrompt | None:
@@ -230,88 +231,73 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     # --- Session persistence ---
 
-    @property
-    def resumable(self) -> bool:
-        return True
-
-    def reset_session(self, session_id: str) -> None:
+    def setup_session(self, session_id: str) -> None:
         """
         Dynamically set up session persistence for this agent.
 
         Store is read from ``ctx.store`` at runtime.
         """
-        self._session_id = session_id
-        self._session_loaded = False
-        self._session_checkpoint = None
-        self._session_turn_number = 0
-        self._loop.checkpoint_callback = self._save_checkpoint
+        super().setup_session(session_id)
+        self._loop.checkpoint_callback = self.save_checkpoint
         self._loop.bg_tasks.session_id = session_id
 
-    async def _maybe_load_session(
+    async def load_checkpoint(
         self,
-        *,
         ctx: RunContext[CtxT],
+        *,
         exec_id: str | None = None,
-    ) -> None:
+    ) -> AgentCheckpoint | None:
         """Load session checkpoint from store on first run (if available)."""
-        store = ctx.store
-        if store is None or self._session_id is None:
-            return
         if not self.memory.is_empty:
-            return  # Already has messages — don't reload
+            return None  # Already has messages — don't reload
 
-        assert self._session_store_key is not None
-        data = await store.load(self._session_store_key)
-        if data is None:
-            return  # Fresh session
+        checkpoint = await self._deserialize_checkpoint(ctx, AgentCheckpoint)
+        if checkpoint is None:
+            return None
 
-        checkpoint = AgentCheckpoint.model_validate_json(data)
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.memory.messages = resume_state.messages
-        self._session_checkpoint = checkpoint
-        self._session_turn_number = checkpoint.turn_number
-        self._session_loaded = True
+        self._step = checkpoint.step
+        self._loop.turn = checkpoint.turn
 
         logger.info(
             "Loaded session %s for agent %s "
-            "(turns=%d, messages=%d, interruption=%s, stripped=%d)",
+            "(checkpoints=%d, messages=%d, interruption=%s, "
+            "stripped=%d, step=%d, turn=%d)",
             self._session_id,
             self.name,
-            self._session_turn_number,
+            self._checkpoint_number,
             len(resume_state.messages),
             resume_state.interruption.value,
             resume_state.removed_count,
+            checkpoint.step,
+            checkpoint.turn,
         )
 
         await self._loop.bg_tasks.handle_pending(ctx=ctx, exec_id=exec_id)
 
-    async def _save_checkpoint(self, ctx: RunContext[CtxT]) -> None:
+        return checkpoint
+
+    async def save_checkpoint(
+        self,
+        ctx: RunContext[CtxT],
+        *,
+        turn: int = 0,
+        output: str | None = None,
+        location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT,
+    ) -> None:
         """Persist current conversation state to the store."""
-        store = ctx.store
-        if store is None or self._session_id is None:
-            return
-
-        now = datetime.now(UTC)
-        self._session_turn_number += 1
-
         checkpoint = AgentCheckpoint(
-            session_id=self._session_id,
+            session_id=self._session_id or "",
             processor_name=self.name,
             messages=list(self.memory.messages),
-            turn_number=self._session_turn_number,
-            created_at=(
-                self._session_checkpoint.created_at if self._session_checkpoint else now
-            ),
-            updated_at=now,
-            metadata=self._session_metadata,
+            session_metadata=self._session_metadata,
+            step=self._step,
+            turn=turn,
+            output=output,
+            location=location,
         )
-        self._session_checkpoint = checkpoint
-
-        assert self._session_store_key is not None
-        await store.save(
-            self._session_store_key,
-            checkpoint.model_dump_json().encode("utf-8"),
-        )
+        await self._serialize_checkpoint(ctx, checkpoint)
 
     def _memorize_inputs(
         self,
@@ -326,13 +312,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
             ctx=ctx, exec_id=exec_id
         )
-        # If store is set, don't reset — the store manages memory lifetime.
-        # If a session was just loaded, also skip reset (one-time flag).
-        has_store = ctx.store is not None and self._session_id is not None
-        fresh_init = (
-            (self._reset_memory_on_run and not has_store) or self.memory.is_empty
-        ) and not self._session_loaded
-        self._session_loaded = False  # Consumed
+        fresh_init = self._reset_memory_on_run or self.memory.is_empty
 
         if fresh_init and not self._has_build_memory_impl:
             self.memory.reset(formatted_sys_prompt)
@@ -394,24 +374,20 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
         if not has_input and self._session_id is not None:
             return None
-        return super().validate_inputs(
+
+        result = super().validate_inputs(
             exec_id=exec_id,
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
         )
-
-    def _extract_input_args(
-        self, in_args: list[InT] | None, exec_id: str
-    ) -> InT | None:
-        if in_args and len(in_args) != 1:
+        if result is not None and len(result) != 1:
             raise ProcInputValidationError(
                 proc_name=self.name,
                 exec_id=exec_id,
                 message="LLMAgent expects a single input argument.",
             )
-
-        return in_args[0] if in_args else None
+        return result
 
     async def _process_stream(
         self,
@@ -420,20 +396,26 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         ctx: RunContext[CtxT],
         exec_id: str,
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
 
-        inp = self._extract_input_args(in_args, exec_id)
+        inp = in_args[0] if in_args else None
 
-        # Auto-load session from store on first run
-        await self._maybe_load_session(ctx=ctx, exec_id=exec_id)
+        # Load checkpoint on resume (restore memory, background tasks, etc.)
+        checkpoint = (
+            await self.load_checkpoint(ctx, exec_id=exec_id) if resume else None
+        )
 
-        # Resume detection: no new inputs + session was loaded → skip memorization
-        is_resume = inp is None and chat_inputs is None and self._session_loaded
-        if is_resume:
-            self._session_loaded = False  # Consumed
+        # Cached output: step already completed, caller re-delivered
+        # (e.g. workflow crashed before saving its own checkpoint).
+        if checkpoint is not None and checkpoint.output is not None:
+            output = self.parse_output(checkpoint.output, in_args=inp, **call_kwargs)
+            yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
+            return
 
-        if not is_resume:
+        if checkpoint is None:
+            self._loop.turn = 0
             messages_to_expose = self._memorize_inputs(
                 chat_inputs=chat_inputs, in_args=inp, **call_kwargs
             )
@@ -441,49 +423,21 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             for message in messages_to_expose:
                 if message.role == "system":
                     yield SystemMessageEvent(
-                        data=message,
-                        source=self.name,
-                        exec_id=exec_id,
+                        data=message, source=self.name, exec_id=exec_id
                     )
                 elif message.role == "user":
                     yield UserMessageEvent(
-                        data=message,
-                        source=self.name,
-                        exec_id=exec_id,
+                        data=message, source=self.name, exec_id=exec_id
                     )
 
-            # Checkpoint after user message — survives crash before LLM responds
-            await self._loop.checkpoint(ctx)
-
-        stream = ResponseCapture(self._loop.execute_stream(**call_kwargs))
-        async for event in stream:
+        async for event in self._loop.execute_stream(**call_kwargs):
             yield event
 
         assert self._loop.final_answer is not None
-        output = self.parse_output(
-            self._loop.final_answer,
-            in_args=inp,
-            **call_kwargs,
-        )
+        output = self.parse_output(self._loop.final_answer, in_args=inp, **call_kwargs)
         yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 
-    async def _process(
-        self,
-        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
-        *,
-        in_args: list[InT] | None = None,
-        ctx: RunContext[CtxT],
-        exec_id: str,
-    ) -> list[OutT]:
-        async for event in self._process_stream(
-            chat_inputs=chat_inputs,
-            in_args=in_args,
-            ctx=ctx,
-            exec_id=exec_id,
-        ):
-            if isinstance(event, ProcPayloadOutEvent):
-                return [event.data]
-        return []
+        self._step += 1
 
     def _print_messages(
         self,

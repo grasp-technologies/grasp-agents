@@ -24,7 +24,6 @@ from .llm.resilience import RetryPolicy
 from .memory import Memory
 from .packet import Packet
 from .printer import Printer, print_event_stream
-from .processors.base_processor import BaseProcessor
 from .processors.parallel_processor import ParallelProcessor
 from .processors.processor import Processor
 from .run_context import RunContext
@@ -91,7 +90,6 @@ __all__ = [
     "BackgroundTaskCompletedEvent",
     "BackgroundTaskInfo",
     "BackgroundTaskLaunchedEvent",
-    "BaseProcessor",
     "BaseTool",
     "CheckpointStore",
     "Content",

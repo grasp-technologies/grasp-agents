@@ -96,7 +96,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         self._tools = tools
         self._tasks: dict[str, PendingTask] = {}
 
-        # Session persistence — set by LLMAgent when enabled
+        # Session persistence — wired by LLMAgent.setup_session()
         self.session_id: str | None = None
 
     @property
@@ -282,7 +282,15 @@ class BackgroundTaskManager(Generic[CtxT]):
             if data is None:
                 continue
 
-            record = TaskRecord.model_validate_json(data)
+            try:
+                record = TaskRecord.model_validate_json(data)
+            except Exception:
+                logger.warning(
+                    "Corrupt task record at %s, skipping",
+                    key,
+                    exc_info=True,
+                )
+                continue
 
             # Terminal states — already handled
             if record.status in {

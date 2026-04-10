@@ -35,8 +35,11 @@ from grasp_agents.durability import (
     prepare_messages_for_resume,
 )
 from grasp_agents.llm.llm import LLM
+from grasp_agents.packet import Packet
+from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.events import Event
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -54,6 +57,7 @@ from grasp_agents.types.llm_events import (
 )
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.types.tool import BaseTool
+from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 # ---------- Infrastructure ----------
 
@@ -265,7 +269,7 @@ class TestAgentCheckpoint:
         restored = AgentCheckpoint.model_validate_json(json_bytes)
         assert restored.session_id == "s1"
         assert restored.messages == []
-        assert restored.turn_number == 0
+        assert restored.checkpoint_number == 0
 
     def test_round_trip_with_messages(self):
         messages: list[Any] = [
@@ -286,14 +290,14 @@ class TestAgentCheckpoint:
             session_id="s1",
             processor_name="agent",
             messages=messages,
-            turn_number=3,
-            metadata={"parent_id": "p1"},
+            checkpoint_number=3,
+            session_metadata={"parent_id": "p1"},
         )
         json_bytes = snap.model_dump_json().encode()
         restored = AgentCheckpoint.model_validate_json(json_bytes)
-        assert restored.turn_number == 3
+        assert restored.checkpoint_number == 3
         assert len(restored.messages) == 5
-        assert restored.metadata == {"parent_id": "p1"}
+        assert restored.session_metadata == {"parent_id": "p1"}
 
         # Verify types survive round-trip
         assert isinstance(restored.messages[0], InputMessageItem)
@@ -450,7 +454,7 @@ class TestAgentSessionPersistence:
         assert result.payloads[0] == "hello"
 
         # Snapshot should be persisted
-        data = await store.load("session/s1")
+        data = await store.load("agent/s1")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.session_id == "s1"
@@ -471,7 +475,7 @@ class TestAgentSessionPersistence:
         await agent1.run("hi", ctx=ctx)
 
         # Get saved message count
-        data = await store.load("session/s1")
+        data = await store.load("agent/s1")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         saved_msg_count = len(snap.messages)
@@ -483,10 +487,11 @@ class TestAgentSessionPersistence:
             session_id="s1",
             store=store,
         )
+        await agent2.load_checkpoint(ctx)
         await agent2.run("follow up", ctx=ctx)
 
         # Snapshot should have more messages now
-        data2 = await store.load("session/s1")
+        data2 = await store.load("agent/s1")
         assert data2 is not None
         snap2 = AgentCheckpoint.model_validate_json(data2)
         assert len(snap2.messages) > saved_msg_count
@@ -521,8 +526,8 @@ class TestAgentSessionPersistence:
         assert checkpoint_count >= 2
 
     @pytest.mark.anyio
-    async def test_store_suppresses_reset_memory_on_run(self):
-        """When store is set, reset_memory_on_run is effectively disabled."""
+    async def test_reset_memory_on_run_with_store(self):
+        """reset_memory_on_run=True wipes memory even with a store."""
         store = InMemoryCheckpointStore()
 
         # First run -- saves session
@@ -534,23 +539,25 @@ class TestAgentSessionPersistence:
         )
         await agent1.run("hi", ctx=ctx)
 
-        # Second run -- agent has reset_memory_on_run=True but store overrides
+        # Second run -- reset_memory_on_run=True wipes prior messages
         agent2, ctx = _make_agent(
             [_text_response("second")],
             reset_memory_on_run=True,
             session_id="s1",
             store=store,
         )
-        # Before run, memory is empty. Run will load session first.
         await agent2.run("follow up", ctx=ctx)
 
-        # Check the snapshot has messages from BOTH runs
-        data = await store.load("session/s1")
+        # Checkpoint should only have messages from the second run
+        data = await store.load("agent/s1")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
-        # Should have: sys prompt + "hi" + response1 + "follow up" + response2
-        # (not just "follow up" + response2, which would happen with reset)
-        assert len(snap.messages) > 3
+        user_msgs = [
+            m
+            for m in snap.messages
+            if isinstance(m, InputMessageItem) and m.role == "user"
+        ]
+        assert len(user_msgs) == 1  # only "follow up"
 
     @pytest.mark.anyio
     async def test_no_store_works_normally(self):
@@ -573,14 +580,14 @@ class TestAgentSessionPersistence:
         ctx: RunContext[None] = RunContext(store=store)
         await agent.run("hi", ctx=ctx)
 
-        data = await store.load("session/s1")
+        data = await store.load("agent/s1")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
-        assert snap.metadata == {"pathway_id": "pw_123"}
+        assert snap.session_metadata == {"pathway_id": "pw_123"}
 
     @pytest.mark.anyio
-    async def test_turn_number_increments(self):
-        """Turn number increases with each checkpoint."""
+    async def test_checkpoint_number_increments(self):
+        """Checkpoint number increases with each save."""
         store = InMemoryCheckpointStore()
         agent, ctx = _make_agent(
             [
@@ -594,10 +601,10 @@ class TestAgentSessionPersistence:
 
         await agent.run("go", ctx=ctx)
 
-        data = await store.load("session/s1")
+        data = await store.load("agent/s1")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
-        assert snap.turn_number > 0
+        assert snap.checkpoint_number > 0
 
     @pytest.mark.anyio
     async def test_stream_interface(self):
@@ -613,8 +620,513 @@ class TestAgentSessionPersistence:
         assert len(events) > 0
 
         # Should have persisted
-        data = await store.load("session/s1")
+        data = await store.load("agent/s1")
         assert data is not None
+
+
+# ================================================================== #
+#  Resume input detection                                              #
+# ================================================================== #
+
+
+def _count_user_messages(agent: LLMAgent[Any, Any, Any]) -> int:
+    return sum(
+        1
+        for m in agent.memory.messages
+        if isinstance(m, InputMessageItem) and m.role == "user"
+    )
+
+
+def _interrupted_checkpoint(
+    messages: list[Any], session_id: str = "s1"
+) -> AgentCheckpoint:
+    """Checkpoint whose last message is a user message → PENDING_USER_MESSAGE."""
+    return AgentCheckpoint(
+        session_id=session_id,
+        processor_name="test_agent",
+        messages=messages,
+        checkpoint_number=1,
+    )
+
+
+def _completed_checkpoint(
+    messages: list[Any], session_id: str = "s1"
+) -> AgentCheckpoint:
+    """Checkpoint whose last message is an assistant response → NONE."""
+    return AgentCheckpoint(
+        session_id=session_id,
+        processor_name="test_agent",
+        messages=messages,
+        checkpoint_number=1,
+    )
+
+
+class TestResumeInputDetection:
+    """
+    Verify that resume detection correctly skips or adds inputs
+    depending on whether it's a resume (interrupted checkpoint)
+    or a chat continuation (clean completion + new input).
+    """
+
+    @pytest.mark.anyio
+    async def test_standalone_resume_no_inputs(self):
+        """Standalone resume (no inputs, interrupted) skips memorization."""
+        store = InMemoryCheckpointStore()
+        await store.save(
+            "agent/s1",
+            _interrupted_checkpoint(
+                [
+                    InputMessageItem.from_text("sys", role="system"),
+                    InputMessageItem.from_text("hello", role="user"),
+                ]
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        agent, ctx = _make_agent(
+            [_text_response("world")], session_id="s1", store=store
+        )
+        await agent.run(ctx=ctx, resume=True)  # no input — pure resume
+
+        assert (
+            _count_user_messages(agent) == 1
+        )  # "hello" from checkpoint, not duplicated
+
+    @pytest.mark.anyio
+    async def test_workflow_rerun_with_in_args(self):
+        """Workflow re-delivers in_args after crash — must not duplicate input."""
+        store = InMemoryCheckpointStore()
+        await store.save(
+            "agent/s1",
+            _interrupted_checkpoint(
+                [
+                    InputMessageItem.from_text("sys", role="system"),
+                    InputMessageItem.from_text("hello", role="user"),
+                ]
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        agent, ctx = _make_agent(
+            [_text_response("world")], session_id="s1", store=store
+        )
+        await agent.run(in_args="hello", ctx=ctx, resume=True)  # same input re-delivered
+
+        assert _count_user_messages(agent) == 1  # not duplicated
+
+    @pytest.mark.anyio
+    async def test_runner_redelivery_with_chat_inputs(self):
+        """Runner re-delivers chat_inputs after crash — must not duplicate input."""
+        store = InMemoryCheckpointStore()
+        await store.save(
+            "agent/s1",
+            _interrupted_checkpoint(
+                [
+                    InputMessageItem.from_text("sys", role="system"),
+                    InputMessageItem.from_text("start", role="user"),
+                ]
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        agent, ctx = _make_agent([_text_response("done")], session_id="s1", store=store)
+        await agent.run("start", ctx=ctx, resume=True)  # same chat_inputs re-delivered
+
+        assert _count_user_messages(agent) == 1  # not duplicated
+
+    @pytest.mark.anyio
+    async def test_chat_continuation_adds_new_input(self):
+        """Clean completion + new chat_inputs = continuation, must memorize."""
+        store = InMemoryCheckpointStore()
+        await store.save(
+            "agent/s1",
+            _completed_checkpoint(
+                [
+                    InputMessageItem.from_text("sys", role="system"),
+                    InputMessageItem.from_text("hello", role="user"),
+                    OutputMessageItem(
+                        content_parts=[OutputMessageText(text="world")],
+                        status="completed",
+                    ),
+                ]
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        agent, ctx = _make_agent(
+            [_text_response("goodbye")], session_id="s1", store=store
+        )
+        await agent.load_checkpoint(ctx)
+        await agent.run("follow up", ctx=ctx)
+
+        assert _count_user_messages(agent) == 2  # "hello" + "follow up"
+
+    @pytest.mark.anyio
+    async def test_multi_turn_session_no_duplication(self):
+        """Multiple run() calls on same agent — each adds exactly one input."""
+        store = InMemoryCheckpointStore()
+        agent, ctx = _make_agent(
+            [
+                _text_response("first"),
+                _text_response("second"),
+                _text_response("third"),
+            ],
+            session_id="s1",
+            store=store,
+        )
+
+        await agent.run("turn1", ctx=ctx)
+        assert _count_user_messages(agent) == 1
+
+        await agent.run("turn2", ctx=ctx)
+        assert _count_user_messages(agent) == 2
+
+        await agent.run("turn3", ctx=ctx)
+        assert _count_user_messages(agent) == 3
+
+    @pytest.mark.anyio
+    async def test_resume_then_continuation(self):
+        """
+        Interrupted agent resumes (skip memorization), completes, then
+        receives new input (must memorize). Verifies the flags reset properly.
+        """
+        store = InMemoryCheckpointStore()
+
+        # First agent: run and crash (simulate via pre-seeded interrupted checkpoint)
+        await store.save(
+            "agent/s1",
+            _interrupted_checkpoint(
+                [
+                    InputMessageItem.from_text("sys", role="system"),
+                    InputMessageItem.from_text("hello", role="user"),
+                ]
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        # Resume: no duplication
+        agent, ctx = _make_agent(
+            [_text_response("world"), _text_response("goodbye")],
+            session_id="s1",
+            store=store,
+        )
+        await agent.run(ctx=ctx, resume=True)  # resume
+        assert _count_user_messages(agent) == 1
+
+        # Continuation: new input added
+        await agent.run("follow up", ctx=ctx)
+        assert _count_user_messages(agent) == 2
+
+
+# ================================================================== #
+#  Resume integration (workflow / runner)                               #
+# ================================================================== #
+
+
+class _AppendProcessor(Processor[str, str, None]):
+    """Appends name to each input."""
+
+    def __init__(self, name: str, *, recipients: list[str] | None = None) -> None:
+        super().__init__(name=name, recipients=recipients)
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        ctx: RunContext[None],
+        resume: bool = False,
+    ) -> AsyncIterator[Event[Any]]:
+        from grasp_agents.types.events import ProcPayloadOutEvent
+
+        for inp in in_args or []:
+            yield ProcPayloadOutEvent(
+                data=f"{inp}->{self.name}", source=self.name, exec_id=exec_id
+            )
+
+
+class _CountingAppendProcessor(Processor[str, str, None]):
+    """Counts calls and appends name."""
+
+    def __init__(self, name: str, *, recipients: list[str] | None = None) -> None:
+        super().__init__(name=name, recipients=recipients)
+        self.call_count = 0
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        ctx: RunContext[None],
+        resume: bool = False,
+    ) -> AsyncIterator[Event[Any]]:
+        from grasp_agents.types.events import ProcPayloadOutEvent
+
+        self.call_count += 1
+        inputs = in_args or []
+        if chat_inputs is not None:
+            inputs = [str(chat_inputs)]
+        for inp in inputs:
+            yield ProcPayloadOutEvent(
+                data=f"{inp}->{self.name}", source=self.name, exec_id=exec_id
+            )
+
+
+class _CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
+    """Crashes before saving the workflow checkpoint for a specific step."""
+
+    def __init__(
+        self,
+        name: str,
+        subprocs: Sequence[Processor[Any, Any, None]],
+        crash_after_step: int,
+        session_id: str | None = None,
+    ) -> None:
+        super().__init__(name=name, subprocs=list(subprocs), session_id=session_id)
+        self._crash_after_step = crash_after_step
+
+    async def save_checkpoint(
+        self,
+        ctx: RunContext[None],
+        *,
+        completed_step: int,
+        packet: Packet[Any],
+        iteration: int = 0,
+    ) -> None:
+        if completed_step == self._crash_after_step:
+            raise RuntimeError(f"Simulated crash after step {completed_step}")
+        await super().save_checkpoint(
+            ctx, completed_step=completed_step, packet=packet, iteration=iteration
+        )
+
+
+class TestResumeIntegration:
+    """
+    Integration tests that run actual Workflow / Runner pipelines
+    with LLMAgent sub-processors and verify no input duplication on resume.
+    """
+
+    @pytest.mark.anyio
+    async def test_workflow_agent_crash_after_agent_step(self):
+        """
+        Workflow: [Append("A"), LLMAgent].
+        Crash after agent step. On resume: A skipped, agent loads
+        checkpoint (clean completion), input not duplicated.
+        """
+        store = InMemoryCheckpointStore()
+
+        # First run — crash after step 1 (agent)
+        a1 = _AppendProcessor("A")
+        agent1 = LLMAgent[str, str, None](
+            name="agent",
+            llm=MockLLM(responses_queue=[_text_response("agent_out")]),
+            stream_llm_responses=True,
+        )
+        wf1 = _CrashAfterStepWorkflow(
+            name="wf",
+            subprocs=[a1, agent1],
+            crash_after_step=1,
+            session_id="wf1",
+        )
+        ctx1: RunContext[None] = RunContext(store=store)
+
+        with pytest.raises(ProcRunError):
+            async for _ in wf1.run_stream(in_args="start", ctx=ctx1, exec_id="e1"):
+                pass
+
+        # Agent checkpoint saved (clean completion)
+        agent_data = await store.load("agent/wf1/agent")
+        assert agent_data is not None
+        agent_cp = AgentCheckpoint.model_validate_json(agent_data)
+        user_msgs = [
+            m
+            for m in agent_cp.messages
+            if isinstance(m, InputMessageItem) and m.role == "user"
+        ]
+        assert len(user_msgs) == 1  # "start->A"
+
+        # Resume
+        a2 = _CountingAppendProcessor("A")
+        agent2 = LLMAgent[str, str, None](
+            name="agent",
+            llm=MockLLM(responses_queue=[_text_response("agent_out_2")]),
+            stream_llm_responses=True,
+        )
+        wf2 = SequentialWorkflow[str, str, None](
+            name="wf",
+            subprocs=[a2, agent2],
+            session_id="wf1",
+        )
+        ctx2: RunContext[None] = RunContext(store=store)
+
+        async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", resume=True):
+            pass
+
+        assert a2.call_count == 0  # step 0 skipped
+
+        # Agent checkpoint: still 1 user message (no duplication)
+        agent_data2 = await store.load("agent/wf1/agent")
+        assert agent_data2 is not None
+        agent_cp2 = AgentCheckpoint.model_validate_json(agent_data2)
+        user_msgs2 = [
+            m
+            for m in agent_cp2.messages
+            if isinstance(m, InputMessageItem) and m.role == "user"
+        ]
+        assert len(user_msgs2) == 1
+
+    @pytest.mark.anyio
+    async def test_workflow_agent_crash_before_agent_step(self):
+        """
+        Workflow: [LLMAgent, Append("B")].
+        Agent completes, B crashes. On resume: agent loads checkpoint
+        (all steps done → emit cached output), B runs fresh.
+        """
+        store = InMemoryCheckpointStore()
+
+        # First run — crash after step 1 (B)
+        agent1 = LLMAgent[str, str, None](
+            name="agent",
+            llm=MockLLM(responses_queue=[_text_response("agent_out")]),
+            stream_llm_responses=True,
+        )
+        b1 = _AppendProcessor("B")
+        wf1 = _CrashAfterStepWorkflow(
+            name="wf",
+            subprocs=[agent1, b1],
+            crash_after_step=1,
+            session_id="wf2",
+        )
+        ctx1: RunContext[None] = RunContext(store=store)
+
+        with pytest.raises(ProcRunError):
+            async for _ in wf1.run_stream("start", ctx=ctx1, exec_id="e1"):
+                pass
+
+        # Agent checkpoint: clean completion
+        assert await store.load("agent/wf2/agent") is not None
+        # Workflow checkpoint: step 0 done
+        wf_data = await store.load("workflow/wf2")
+        assert wf_data is not None
+
+        # Resume
+        agent2 = LLMAgent[str, str, None](
+            name="agent",
+            llm=MockLLM(responses_queue=[]),  # should NOT be called
+            stream_llm_responses=True,
+        )
+        b2 = _CountingAppendProcessor("B")
+        wf2 = SequentialWorkflow[str, str, None](
+            name="wf",
+            subprocs=[agent2, b2],
+            session_id="wf2",
+        )
+        ctx2: RunContext[None] = RunContext(store=store)
+
+        payloads: list[str] = []
+        async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", resume=True):
+            from grasp_agents.types.events import ProcPacketOutEvent
+
+            if isinstance(event, ProcPacketOutEvent) and event.source == "wf":
+                payloads = list(event.data.payloads)
+
+        assert b2.call_count == 1
+        assert payloads == ["agent_out->B"]
+
+    @pytest.mark.anyio
+    async def test_runner_agent_resume_no_duplication(self):
+        """
+        Runner: Append("A") → LLMAgent → END.
+        Agent crashes mid-execution. On resume: runner re-delivers to agent,
+        agent loads interrupted checkpoint, input not duplicated.
+        """
+        from grasp_agents.runner.runner import END_PROC_NAME, Runner
+        from grasp_agents.types.events import RunPacketOutEvent
+
+        store = InMemoryCheckpointStore()
+
+        # Pre-seed: A completed, agent's event is pending, agent has checkpoint
+        # Simulate: A ran, produced "start->A", runner delivered to agent,
+        # agent started (checkpoint saved with user message), then crashed.
+
+        # Seed runner checkpoint with pending event for agent
+        from grasp_agents.durability.checkpoints import RunnerCheckpoint
+        from grasp_agents.types.events import ProcPacketOutEvent
+
+        agent_input_packet = Packet[str](
+            sender="A", payloads=["start->A"], routing=[["agent"]]
+        )
+        pending_event = ProcPacketOutEvent(
+            id=agent_input_packet.id,
+            data=agent_input_packet,
+            source="A",
+            destination="agent",
+        )
+        runner_cp = RunnerCheckpoint(
+            session_id="rs2",
+            processor_name="r",
+            checkpoint_number=1,
+            pending_events=[pending_event],
+            active_sessions={"A": "rs2/A", "agent": "rs2/agent"},
+        )
+        await store.save("runner/rs2", runner_cp.model_dump_json().encode())
+
+        # Seed agent's interrupted checkpoint (user message pending)
+        agent_cp = AgentCheckpoint(
+            session_id="rs2/agent",
+            processor_name="agent",
+            messages=[
+                InputMessageItem.from_text(
+                    "You are a helpful assistant.", role="system"
+                ),
+                InputMessageItem.from_text("start->A", role="user"),
+            ],
+            checkpoint_number=1,
+        )
+        await store.save("agent/rs2/agent", agent_cp.model_dump_json().encode())
+
+        # Resume runner
+        a2 = _CountingAppendProcessor("A", recipients=["agent"])
+        agent2 = LLMAgent[str, str, None](
+            name="agent",
+            llm=MockLLM(responses_queue=[_text_response("agent_done")]),
+            stream_llm_responses=True,
+            recipients=[END_PROC_NAME],
+        )
+        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        runner2 = Runner[str, None](
+            entry_proc=a2,
+            procs=[a2, agent2],
+            ctx=ctx2,
+            name="r",
+        )
+        runner2.setup_session("rs2")
+
+        payloads: list[str] = []
+        async for event in runner2.run_stream():
+            if isinstance(event, RunPacketOutEvent):
+                payloads = list(event.data.payloads)
+
+        assert a2.call_count == 0  # A not re-run (not in pending)
+        assert payloads == ["agent_done"]
+
+        # Verify: agent checkpoint has exactly 1 user message
+        agent_data = await store.load("agent/rs2/agent")
+        assert agent_data is not None
+        cp = AgentCheckpoint.model_validate_json(agent_data)
+        user_msgs = [
+            m
+            for m in cp.messages
+            if isinstance(m, InputMessageItem) and m.role == "user"
+        ]
+        assert len(user_msgs) == 1
 
 
 # ================================================================== #
@@ -829,9 +1341,9 @@ class TestPendingTaskResume:
                     output="Task launched in background (id: abc123)",
                 ),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save("session/s1", snapshot.model_dump_json().encode())
+        await store.save("agent/s1", snapshot.model_dump_json().encode())
 
         # 2. Save a PENDING task record (simulates crash before completion)
         record = TaskRecord(
@@ -848,7 +1360,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx)
+        await agent.run("continue", ctx=ctx, resume=True)
 
         # The interruption notification should be in memory
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -883,9 +1395,9 @@ class TestPendingTaskResume:
                     output="Task launched in background (id: xyz789)",
                 ),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save("session/s1", snapshot.model_dump_json().encode())
+        await store.save("agent/s1", snapshot.model_dump_json().encode())
 
         # Task completed between checkpoint and crash
         record = TaskRecord(
@@ -904,7 +1416,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx)
+        await agent.run("continue", ctx=ctx, resume=True)
 
         # Result notification should be in memory
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -941,9 +1453,9 @@ class TestPendingTaskResume:
                     role="user",
                 ),
             ],
-            turn_number=2,
+            checkpoint_number=2,
         )
-        await store.save("session/s1", snapshot.model_dump_json().encode())
+        await store.save("agent/s1", snapshot.model_dump_json().encode())
 
         # Record is DELIVERED — drain already injected + checkpointed
         record = TaskRecord(
@@ -961,7 +1473,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx)
+        await agent.run("continue", ctx=ctx, resume=True)
 
         # Should NOT have duplicate notification
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -980,9 +1492,9 @@ class TestPendingTaskResume:
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save("session/s1", snapshot.model_dump_json().encode())
+        await store.save("agent/s1", snapshot.model_dump_json().encode())
 
         record = TaskRecord(
             task_id="fail1",
@@ -999,7 +1511,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx)
+        await agent.run("continue", ctx=ctx, resume=True)
 
         # No interruption notification injected for already-failed records
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1033,9 +1545,9 @@ class TestPendingTaskResume:
                     output="Task launched in background (id: t2)",
                 ),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save("session/s1", snapshot.model_dump_json().encode())
+        await store.save("agent/s1", snapshot.model_dump_json().encode())
 
         for tid, name, cid in [("t1", "slow_a", "fc_1"), ("t2", "slow_b", "fc_2")]:
             record = TaskRecord(
@@ -1051,7 +1563,7 @@ class TestPendingTaskResume:
             session_id="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx)
+        await agent.run("continue", ctx=ctx, resume=True)
 
         # Both should have interruption notifications
         memory_texts = [str(m) for m in agent.memory.messages]
@@ -1122,7 +1634,7 @@ class TestChildTaskResume:
         assert record.child_session_id.startswith("child/parent_s1/")
 
         # Child should have its own session snapshot
-        child_snap_data = await store.load(f"session/{record.child_session_id}")
+        child_snap_data = await store.load(f"agent/{record.child_session_id}")
         assert child_snap_data is not None
         child_snap = AgentCheckpoint.model_validate_json(child_snap_data)
         assert child_snap.processor_name == "child"
@@ -1149,11 +1661,9 @@ class TestChildTaskResume:
                     output="Task launched in background (id: ch1)",
                 ),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save(
-            "session/parent_s1", parent_snapshot.model_dump_json().encode()
-        )
+        await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
         # 2. PENDING task record with child_session_id
         task_record = TaskRecord(
@@ -1177,10 +1687,10 @@ class TestChildTaskResume:
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("work", role="user"),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
         await store.save(
-            "session/child/parent_s1/ch1",
+            "agent/child/parent_s1/ch1",
             child_snapshot.model_dump_json().encode(),
         )
 
@@ -1199,7 +1709,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx)
+        await parent.run("continue", ctx=ctx, resume=True)
 
         # Should NOT have "interrupted" in memory — child was re-spawned
         memory_texts = [str(m) for m in parent.memory.messages]
@@ -1237,11 +1747,9 @@ class TestChildTaskResume:
                     output="Task launched in background (id: t1)",
                 ),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save(
-            "session/parent_s1", parent_snapshot.model_dump_json().encode()
-        )
+        await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
         # PENDING record WITHOUT child_session_id (plain bg tool)
         task_record = TaskRecord(
@@ -1261,7 +1769,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx)
+        await parent.run("continue", ctx=ctx, resume=True)
 
         # Should have "interrupted" notification (not re-spawned)
         memory_texts = [str(m) for m in parent.memory.messages]
@@ -1298,11 +1806,9 @@ class TestChildTaskResume:
                     output="Task launched in background (id: ch_b)",
                 ),
             ],
-            turn_number=1,
+            checkpoint_number=1,
         )
-        await store.save(
-            "session/parent_s1", parent_snapshot.model_dump_json().encode()
-        )
+        await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
         # Two PENDING children
         for tid, cid, sid in [
@@ -1326,9 +1832,9 @@ class TestChildTaskResume:
                     InputMessageItem.from_text("prompt", role="system"),
                     InputMessageItem.from_text(tid, role="user"),
                 ],
-                turn_number=1,
+                checkpoint_number=1,
             )
-            await store.save(f"session/{sid}", snap.model_dump_json().encode())
+            await store.save(f"agent/{sid}", snap.model_dump_json().encode())
 
         # Both children will complete with different results
         _child, tool = _make_child_tool(
@@ -1347,7 +1853,7 @@ class TestChildTaskResume:
             session_id="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx)
+        await parent.run("continue", ctx=ctx, resume=True)
 
         # Both children should have completed (not interrupted)
         memory_texts = [str(m) for m in parent.memory.messages]

@@ -1,15 +1,15 @@
 import logging
-from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
-from typing import Any
+from abc import ABC
+from collections.abc import Sequence
+from typing import Any, cast
 
 from ..durability.checkpoints import WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..types.errors import WorkflowConstructionError
-from ..types.events import DummyEvent, Event, ProcPayloadOutEvent
 from ..types.io import InT, OutT, ProcName
+from ..utils.callbacks import is_method_overridden
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,8 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        session_id: str | None = None,
+        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -31,6 +33,8 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
             max_retries=0,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            session_id=session_id,
+            session_metadata=session_metadata,
         )
 
         self._in_type = start_proc.in_type
@@ -54,17 +58,13 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         for subproc in subprocs:
             subproc.recipients = None
 
-        # Session persistence (set via reset_session)
-        self._session_id: str | None = None
+        if self._session_id:
+            self.setup_session(self._session_id)
 
-    # --- Session persistence ---
-
-    @property
-    def resumable(self) -> bool:
-        return True
-
-    def reset_session(self, session_id: str) -> None:
-        self._session_id = session_id
+    def setup_session(self, session_id: str) -> None:
+        super().setup_session(session_id)
+        for subproc in self._subprocs:
+            subproc.setup_session(f"{session_id}/{subproc.name}")
 
     def validate_inputs(
         self,
@@ -89,25 +89,18 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
             return None
         return f"workflow/{self._session_id}"
 
-    async def _load_checkpoint(
-        self, ctx: RunContext[CtxT]
-    ) -> WorkflowCheckpoint | None:
-        store = ctx.store
-        if store is None or self._checkpoint_store_key is None:
-            return None
-        data = await store.load(self._checkpoint_store_key)
-        if data is None:
-            return None
-        checkpoint = WorkflowCheckpoint.model_validate_json(data)
-        logger.info(
-            "Loaded workflow checkpoint %s (step=%d, iter=%d)",
-            self._session_id,
-            checkpoint.completed_step,
-            checkpoint.iteration,
-        )
+    async def load_checkpoint(self, ctx: RunContext[CtxT]) -> WorkflowCheckpoint | None:
+        checkpoint = await self._deserialize_checkpoint(ctx, WorkflowCheckpoint)
+        if checkpoint is not None:
+            logger.info(
+                "Loaded workflow checkpoint %s (step=%d, iter=%d)",
+                self._session_id,
+                checkpoint.completed_step,
+                checkpoint.iteration,
+            )
         return checkpoint
 
-    async def _save_checkpoint(
+    async def save_checkpoint(
         self,
         ctx: RunContext[CtxT],
         *,
@@ -115,30 +108,23 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         packet: Packet[Any],
         iteration: int = 0,
     ) -> None:
-        store = ctx.store
-        if store is None or self._session_id is None:
-            return
-        assert self._checkpoint_store_key is not None
         checkpoint = WorkflowCheckpoint(
-            session_id=self._session_id,
+            session_id=self._session_id or "",
             processor_name=self.name,
             completed_step=completed_step,
             iteration=iteration,
-            packet=packet.model_dump(),
+            packet=packet,
         )
-        await store.save(
-            self._checkpoint_store_key,
-            checkpoint.model_dump_json().encode("utf-8"),
-        )
-
-    # --- Routing ---
+        await self._serialize_checkpoint(ctx, checkpoint)
 
     def select_recipients_impl(
         self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str
     ) -> Sequence[ProcName]:
-        return self._end_proc.select_recipients_impl(
-            output=output, ctx=ctx, exec_id=exec_id
-        )
+        if is_method_overridden("select_recipients_impl", self._end_proc, Processor):
+            return self._end_proc.select_recipients_impl(
+                output=output, ctx=ctx, exec_id=exec_id
+            )
+        return cast("list[ProcName]", self.recipients or [])
 
     @property
     def subprocs(self) -> Sequence[Processor[Any, Any, CtxT]]:
@@ -151,33 +137,3 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
     @property
     def end_proc(self) -> Processor[Any, OutT, CtxT]:
         return self._end_proc
-
-    async def _process(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: list[InT] | None = None,
-        ctx: RunContext[CtxT],
-        exec_id: str,
-    ) -> list[OutT]:
-        outputs: list[OutT] = []
-        async for event in self._process_stream(
-            chat_inputs=chat_inputs,
-            in_args=in_args,
-            ctx=ctx,
-            exec_id=exec_id,
-        ):
-            if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
-                outputs.append(event.data)
-        return outputs
-
-    @abstractmethod
-    async def _process_stream(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: list[InT] | None = None,
-        ctx: RunContext[CtxT],
-        exec_id: str,
-    ) -> AsyncIterator[Event[Any]]:
-        yield DummyEvent()

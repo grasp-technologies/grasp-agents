@@ -22,6 +22,8 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         recipients: list[ProcName] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        session_id: str | None = None,
+        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -31,6 +33,8 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             recipients=recipients,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            session_id=session_id,
+            session_metadata=session_metadata,
         )
 
         for prev_proc, proc in pairwise(subprocs):
@@ -48,14 +52,26 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         start_step = 0
 
-        checkpoint = await self._load_checkpoint(ctx)
+        checkpoint = await self.load_checkpoint(ctx) if resume else None
         if checkpoint is not None:
-            packet = Packet[Any].model_validate(checkpoint.packet)
+            packet = checkpoint.packet
             start_step = checkpoint.completed_step + 1
+
+            # All steps completed in a prior run — emit cached final output
+            if start_step >= len(self.subprocs):
+                out_packet = cast("Packet[OutT]", packet)
+                for p in out_packet.payloads:
+                    yield ProcPayloadOutEvent(
+                        data=p, source=self.name, exec_id=exec_id
+                    )
+                return
+
+        resuming = checkpoint is not None
 
         for idx, subproc in enumerate(self.subprocs):
             if idx < start_step:
@@ -63,11 +79,14 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
 
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
+            # First step after checkpoint restore may be a re-delivery
+            resume = resuming and idx == start_step
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
                 exec_id=f"{exec_id}/{subproc.name}",
                 ctx=ctx,
+                resume=resume,
             ):
                 yield event
                 if (
@@ -76,7 +95,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 ):
                     packet = event.data
 
-            await self._save_checkpoint(
+            await self.save_checkpoint(
                 ctx, completed_step=idx, packet=cast("Packet[Any]", packet)
             )
 

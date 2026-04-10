@@ -3,7 +3,7 @@ from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel
 
-from ..processors.base_processor import BaseProcessor
+from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from ..types.tool import BaseTool, ToolProgressCallback
@@ -23,7 +23,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     def __init__(
         self,
         *,
-        processor: BaseProcessor[_InT, _OutT, CtxT],
+        processor: Processor[_InT, _OutT, CtxT],
         name: str,
         description: str,
         background: bool = False,
@@ -42,20 +42,20 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         self._out_type = processor.out_type
 
     @property
-    def processor(self) -> BaseProcessor[_InT, _OutT, CtxT]:
+    def processor(self) -> Processor[_InT, _OutT, CtxT]:
         return self._processor
 
     @property
     def resumable(self) -> bool:
-        return self._processor.resumable
+        return True
 
     def _resolve_processor(
         self, session_id: str | None
-    ) -> BaseProcessor[_InT, _OutT, CtxT]:
+    ) -> Processor[_InT, _OutT, CtxT]:
         """Return the processor to use — a session-configured copy or self."""
         if session_id is not None:
             proc = self._processor.copy()
-            proc.reset_session(session_id)
+            proc.setup_session(session_id)
             return proc
 
         if self._reset_memory_on_run:
@@ -101,19 +101,22 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         proc = self._resolve_processor(session_id)
         async for event in self._yield_proc_events(
-            proc, in_args=None, ctx=ctx, exec_id=exec_id
+            proc, in_args=None, ctx=ctx, exec_id=exec_id, resume=True
         ):
             yield event
 
     async def _yield_proc_events(
         self,
-        proc: BaseProcessor[_InT, _OutT, CtxT],
+        proc: Processor[_InT, _OutT, CtxT],
         *,
         in_args: _InT | None = None,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
-        async for event in proc.run_stream(in_args=in_args, exec_id=exec_id, ctx=ctx):
+        async for event in proc.run_stream(
+            in_args=in_args, exec_id=exec_id, ctx=ctx, resume=resume
+        ):
             if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
                 yield ToolOutputEvent(
                     data=event.data.payloads[0], source=proc.name, exec_id=exec_id

@@ -1,10 +1,22 @@
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from grasp_agents.packet import Packet
+from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
+
+
+class AgentCheckpointLocation(Enum):
+    """Where in the agent loop a checkpoint was saved."""
+
+    AFTER_INPUT = "after_input"
+    AFTER_TOOL_RESULT = "after_tool_result"
+    AFTER_FINAL_ANSWER = "after_final_answer"
+    AFTER_MAX_TURNS = "after_max_turns"
 
 
 class ProcessorCheckpoint(BaseModel):
@@ -12,17 +24,20 @@ class ProcessorCheckpoint(BaseModel):
 
     session_id: str
     processor_name: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    checkpoint_number: int = 0
+    saved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    session_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentCheckpoint(ProcessorCheckpoint):
     """Lightweight checkpoint for an agent session. No business state."""
 
     messages: list[InputItem]
-    turn_number: int = 0
     usage: ResponseUsage | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    step: int = 0  # external invocation counter
+    turn: int = 0  # current LLM cycle within the step
+    output: str | None = None  # cached final answer (None = step incomplete)
+    location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):
@@ -35,7 +50,7 @@ class WorkflowCheckpoint(ProcessorCheckpoint):
 
     completed_step: int  # index of last completed subproc
     iteration: int = 0  # for LoopedWorkflow
-    packet: dict[str, Any]  # Packet.model_dump()
+    packet: Packet[Any]
 
 
 class ParallelCheckpoint(ProcessorCheckpoint):
@@ -46,5 +61,18 @@ class ParallelCheckpoint(ProcessorCheckpoint):
     processor can skip completed copies on resume.
     """
 
-    input_packet: dict[str, Any]  # Packet(payloads=in_args).model_dump()
-    completed: dict[int, dict[str, Any]]  # idx -> Packet.model_dump()
+    input_packet: Packet[Any]
+    completed: dict[int, Packet[Any]]  # idx -> completed replica output
+
+
+class RunnerCheckpoint(ProcessorCheckpoint):
+    """
+    Checkpoint for Runner.
+
+    Stores pending events (events awaiting delivery OR currently being handled)
+    and per-processor session IDs so sessions can be restored on resume.
+    """
+
+    pending_events: list[ProcPacketOutEvent]
+    active_sessions: dict[str, str] = Field(default_factory=dict)
+    # proc_name -> session_id (for resumable procs)

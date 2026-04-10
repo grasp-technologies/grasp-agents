@@ -49,6 +49,7 @@ class AppendProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             output = f"{inp}->{self.name}"
@@ -69,6 +70,7 @@ class CountingProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         for inp in in_args or []:
@@ -91,6 +93,7 @@ class FailOnCallProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
         if self.call_count == self._fail_on_call:
@@ -116,6 +119,7 @@ class InputFailProcessor(Processor[str, str, None]):
         in_args: list[str] | None = None,
         exec_id: str,
         ctx: RunContext[None],
+        resume: bool = False,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
             if self._fail_input in inp:
@@ -128,10 +132,13 @@ async def run_workflow(
     wf: SequentialWorkflow[str, str, None] | LoopedWorkflow[str, str, None],
     ctx: RunContext[None],
     in_args: str | None = None,
+    resume: bool = False,
 ) -> list[str]:
     """Run a workflow via run_stream and collect final payloads."""
     payloads: list[str] = []
-    async for event in wf.run_stream(in_args=in_args, ctx=ctx, exec_id="test"):
+    async for event in wf.run_stream(
+        in_args=in_args, ctx=ctx, exec_id="test", resume=resume
+    ):
         if isinstance(event, ProcPacketOutEvent) and event.source == wf.name:
             payloads = list(event.data.payloads)
     return payloads
@@ -141,10 +148,13 @@ async def run_parallel(
     par: ParallelProcessor[str, str, None],
     ctx: RunContext[None],
     in_args: list[str] | None = None,
+    resume: bool = False,
 ) -> list[str]:
     """Run a ParallelProcessor and collect final payloads."""
     payloads: list[str] = []
-    async for event in par.run_stream(in_args=in_args, ctx=ctx, exec_id="test"):
+    async for event in par.run_stream(
+        in_args=in_args, ctx=ctx, exec_id="test", resume=resume
+    ):
         if isinstance(event, ProcPacketOutEvent) and event.source == par.name:
             payloads = list(event.data.payloads)
     return payloads
@@ -156,7 +166,7 @@ async def run_parallel(
 class TestSequentialWorkflowCheckpoint:
     @pytest.mark.asyncio
     async def test_basic_run_without_session(self) -> None:
-        """Workflow works normally without session/store."""
+        """Workflow works normally without agent/store."""
         a = AppendProcessor("A")
         b = AppendProcessor("B")
         c = AppendProcessor("C")
@@ -174,7 +184,7 @@ class TestSequentialWorkflowCheckpoint:
         b = AppendProcessor("B")
         c = AppendProcessor("C")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b, c])
-        wf.reset_session("seq-1")
+        wf.setup_session("seq-1")
         ctx: RunContext[None] = RunContext(state=None, store=store)
 
         result = await run_workflow(wf, ctx, in_args="start")
@@ -196,7 +206,7 @@ class TestSequentialWorkflowCheckpoint:
         b1 = FailOnCallProcessor("B", fail_on_call=1)
         c1 = CountingProcessor("C")
         wf1 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a1, b1, c1])
-        wf1.reset_session("seq-2")
+        wf1.setup_session("seq-2")
         ctx1: RunContext[None] = RunContext(state=None, store=store)
 
         with pytest.raises(ProcRunError):
@@ -213,10 +223,10 @@ class TestSequentialWorkflowCheckpoint:
         b2 = CountingProcessor("B")
         c2 = CountingProcessor("C")
         wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a2, b2, c2])
-        wf2.reset_session("seq-2")
+        wf2.setup_session("seq-2")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_workflow(wf2, ctx2)
+        result = await run_workflow(wf2, ctx2, resume=True)
         assert result == ["start->A->B->C"]
 
         # A skipped, B and C ran once each
@@ -237,6 +247,7 @@ class TestSequentialWorkflowCheckpoint:
                 in_args: list[str] | None = None,
                 exec_id: str,
                 ctx: RunContext[None],
+                resume: bool = False,
             ) -> AsyncIterator[Event[Any]]:
                 for inp in in_args or []:
                     yield ProcPayloadOutEvent(
@@ -249,7 +260,7 @@ class TestSequentialWorkflowCheckpoint:
         fan = FanOutProcessor(name="fan")
         fail_b = FailOnCallProcessor("B", fail_on_call=1)
         wf1 = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan, fail_b])
-        wf1.reset_session("seq-multi")
+        wf1.setup_session("seq-multi")
         ctx1: RunContext[None] = RunContext(state=None, store=store)
 
         with pytest.raises(ProcRunError):
@@ -259,10 +270,10 @@ class TestSequentialWorkflowCheckpoint:
         fan2 = CountingProcessor("fan")
         b2 = AppendProcessor("B")
         wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan2, b2])
-        wf2.reset_session("seq-multi")
+        wf2.setup_session("seq-multi")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_workflow(wf2, ctx2)
+        result = await run_workflow(wf2, ctx2, resume=True)
         assert result == ["s:x->B", "s:y->B"]
         assert fan2.call_count == 0
 
@@ -310,7 +321,7 @@ class TestLoopedWorkflowCheckpoint:
 
         wf.add_workflow_loop_terminator(count_terminate)
 
-        wf.reset_session("loop-1")
+        wf.setup_session("loop-1")
         ctx: RunContext[None] = RunContext(state=None, store=store)
 
         result = await run_workflow(wf, ctx, in_args="s")
@@ -332,7 +343,7 @@ class TestLoopedWorkflowCheckpoint:
         wf1 = LoopedWorkflow[str, str, None](
             name="loop", subprocs=[a1, b1], exit_proc=b1, max_iterations=2
         )
-        wf1.reset_session("loop-2")
+        wf1.setup_session("loop-2")
         ctx1: RunContext[None] = RunContext(state=None, store=store)
 
         with pytest.raises(ProcRunError):
@@ -358,10 +369,10 @@ class TestLoopedWorkflowCheckpoint:
             return True
 
         wf2.terminate_workflow_loop_impl = _always_terminate2
-        wf2.reset_session("loop-2")
+        wf2.setup_session("loop-2")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_workflow(wf2, ctx2)
+        result = await run_workflow(wf2, ctx2, resume=True)
         assert result == ["s->A->B"]
 
         # A was skipped (completed in iteration 1), B ran once
@@ -387,7 +398,7 @@ class TestParallelProcessorCheckpoint:
         store = InMemoryCheckpointStore()
         subproc = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        par.reset_session("par-1")
+        par.setup_session("par-1")
         ctx: RunContext[None] = RunContext(state=None, store=store)
 
         await run_parallel(par, ctx, in_args=["a", "b"])
@@ -399,7 +410,8 @@ class TestParallelProcessorCheckpoint:
 
     @pytest.mark.asyncio
     async def test_resume_skips_completed_copies(self) -> None:
-        """After partial completion, resume only runs pending copies.
+        """
+        After partial completion, resume only runs pending copies.
 
         stream_concurrent swallows per-copy errors, so the first run
         completes with None for the failed copy. On resume, only that
@@ -410,7 +422,7 @@ class TestParallelProcessorCheckpoint:
         # "a" succeeds, "FAIL" crashes (InputFailProcessor survives deepcopy)
         subproc1 = InputFailProcessor("worker", fail_input="FAIL")
         par1 = ParallelProcessor[str, str, None](subproc=subproc1)
-        par1.reset_session("par-2")
+        par1.setup_session("par-2")
         ctx1: RunContext[None] = RunContext(state=None, store=store)
 
         # stream_concurrent catches the error — run completes
@@ -426,10 +438,10 @@ class TestParallelProcessorCheckpoint:
         # Resume with a non-failing processor
         subproc2 = AppendProcessor("worker")
         par2 = ParallelProcessor[str, str, None](subproc=subproc2)
-        par2.reset_session("par-2")
+        par2.setup_session("par-2")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_parallel(par2, ctx2)
+        result = await run_parallel(par2, ctx2, resume=True)
 
         # "a" from checkpoint, "FAIL" re-run successfully
         assert sorted(result) == ["FAIL->worker", "a->worker"]
@@ -440,7 +452,7 @@ class TestParallelProcessorCheckpoint:
         store = InMemoryCheckpointStore()
         subproc = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        par.reset_session("par-3")
+        par.setup_session("par-3")
         ctx: RunContext[None] = RunContext(state=None, store=store)
 
         await run_parallel(par, ctx, in_args=["a", "b"])
@@ -448,10 +460,10 @@ class TestParallelProcessorCheckpoint:
         # Resume
         subproc2 = CountingProcessor("worker")
         par2 = ParallelProcessor[str, str, None](subproc=subproc2)
-        par2.reset_session("par-3")
+        par2.setup_session("par-3")
         ctx2: RunContext[None] = RunContext(state=None, store=store)
 
-        result = await run_parallel(par2, ctx2)
+        result = await run_parallel(par2, ctx2, resume=True)
         assert sorted(result) == ["a->worker", "b->worker"]
         assert subproc2.call_count == 0
 
@@ -461,7 +473,7 @@ class TestParallelProcessorCheckpoint:
         store = InMemoryCheckpointStore()
         subproc = InputFailProcessor("worker", fail_input="FAIL")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        par.reset_session("par-rt")
+        par.setup_session("par-rt")
         ctx: RunContext[None] = RunContext(state=None, store=store)
 
         await run_parallel(par, ctx, in_args=["ok", "FAIL", "also_ok"])
