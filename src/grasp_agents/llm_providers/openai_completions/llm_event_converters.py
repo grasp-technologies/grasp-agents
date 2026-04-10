@@ -12,10 +12,10 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from openai.types.chat import ChatCompletionChunk
 from pydantic import TypeAdapter, ValidationError
 
+from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs,
 )

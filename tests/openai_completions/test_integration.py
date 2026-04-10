@@ -26,7 +26,6 @@ from grasp_agents.types.llm_events import (
 
 if TYPE_CHECKING:
     from grasp_agents.llm.cloud_llm import CloudLLM
-
     from grasp_agents.types.tool import BaseTool
 
 

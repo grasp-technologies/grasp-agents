@@ -12,13 +12,13 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
 )
 
+from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.items import prefixed_id
 from grasp_agents.types.response import ResponseUsage
 

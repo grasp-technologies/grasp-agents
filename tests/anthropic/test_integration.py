@@ -11,9 +11,9 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from grasp_agents.llm.cloud_llm import APIProvider
 from pydantic import BaseModel, Field
 
+from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -32,7 +32,6 @@ from grasp_agents.types.llm_events import (
 
 if TYPE_CHECKING:
     from grasp_agents.llm.cloud_llm import CloudLLM
-
     from grasp_agents.types.tool import BaseTool
 
 

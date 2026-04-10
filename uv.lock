@@ -820,9 +820,7 @@ name = "grasp-agents"
 version = "0.7.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anthropic" },
     { name = "dotenv" },
-    { name = "google-genai" },
     { name = "httpx" },
     { name = "litellm" },
     { name = "numpy" },
@@ -837,8 +835,15 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all-providers = [
+    { name = "anthropic" },
+    { name = "google-genai" },
+]
 anthropic = [
     { name = "anthropic" },
+]
+gemini = [
+    { name = "google-genai" },
 ]
 mcp = [
     { name = "mcp" },
@@ -869,11 +874,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = "==0.84.0" },
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40.0" },
+    { name = "anthropic", marker = "extra == 'all-providers'", specifier = "==0.84.0" },
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.84.0" },
     { name = "arize-phoenix-otel", marker = "extra == 'observability'", specifier = ">=0.13.1" },
     { name = "dotenv", specifier = ">=0.9.9" },
-    { name = "google-genai", specifier = ">=1.65.0" },
+    { name = "google-genai", marker = "extra == 'all-providers'", specifier = ">=1.65.0" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.65.0" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "litellm", specifier = "==1.82.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.8" },
@@ -890,7 +896,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.2,<5" },
     { name = "traceloop-sdk", specifier = ">=0.47.2" },
 ]
-provides-extras = ["anthropic", "mcp", "observability"]
+provides-extras = ["anthropic", "gemini", "all-providers", "mcp", "observability"]
 
 [package.metadata.requires-dev]
 dev = [

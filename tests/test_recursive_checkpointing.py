@@ -313,7 +313,7 @@ class TestRecursiveSessionPropagation:
         assert y._session_id == "sess/inner/Y"
 
     def test_all_levels_resumable_after_setup(self) -> None:
-        """resumable is True at every level after setup_session."""
+        """Resumable is True at every level after setup_session."""
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
         a = AppendProcessor("A")
