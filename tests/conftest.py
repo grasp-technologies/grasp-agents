@@ -15,6 +15,15 @@ from grasp_agents.types.tool import BaseTool
 load_dotenv()
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help="Regenerate golden snapshot files",
+    )
+
+
 # ------------------------------------------------------------------ #
 #  API key fixtures                                                    #
 # ------------------------------------------------------------------ #

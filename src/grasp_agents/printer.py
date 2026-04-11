@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel
-from termcolor import colored
-from termcolor._types import Color
+from rich.console import Console
+from rich.text import Text
 
 from .types.content import InputImage, InputText
 from .types.events import (
@@ -38,20 +38,26 @@ from .types.llm_events import (
 
 logger = logging.getLogger(__name__)
 
+_console = Console(
+    force_jupyter=False,
+    force_terminal=True,
+    highlight=False,
+    color_system="256",
+)
 
-ROLE_TO_COLOR: dict[str, Color] = {
+ROLE_TO_STYLE: dict[str, str] = {
     "system": "magenta",
     "developer": "magenta",
     "user": "green",
-    "assistant": "light_blue",
+    "assistant": "bright_blue",
     "tool": "blue",
 }
 
-AVAILABLE_COLORS: list[Color] = [
+AVAILABLE_STYLES: list[str] = [
     "magenta",
     "green",
-    "light_blue",
-    "light_cyan",
+    "bright_blue",
+    "bright_cyan",
     "yellow",
     "blue",
     "red",
@@ -65,17 +71,27 @@ def stream_colored_text(new_colored_text: str) -> None:
     sys.stdout.flush()
 
 
-def get_color(
-    agent_name: str = "", role: str = "assistant", color_by: ColoringMode = "role"
-) -> Color:
+def _styled_str(text: str, style: str) -> str:
+    """Return text wrapped in ANSI escape codes via Rich."""
+    t = Text(text, style=style)
+    with _console.capture() as capture:
+        _console.print(t, end="")
+    return capture.get()
+
+
+def get_style(
+    agent_name: str = "",
+    role: str = "assistant",
+    color_by: ColoringMode = "role",
+) -> str:
     if color_by == "agent":
         idx = int(
             hashlib.md5(agent_name.encode()).hexdigest(),  # noqa: S324
             16,
-        ) % len(AVAILABLE_COLORS)
+        ) % len(AVAILABLE_STYLES)
 
-        return AVAILABLE_COLORS[idx]
-    return ROLE_TO_COLOR.get(role, "light_blue")
+        return AVAILABLE_STYLES[idx]
+    return ROLE_TO_STYLE.get(role, "bright_blue")
 
 
 def truncate_content_str(content_str: str, trunc_len: int = 2000) -> str:
@@ -119,12 +135,12 @@ class Printer:
         self._logging_level = logging_level
         self._output_to = output_to
 
-    def _output(self, text: str, color: Color) -> None:
+    def _output(self, text: str, style: str) -> None:
         if self._output_to == "log":
-            log_kwargs: dict[str, Any] = {"extra": {"color": color}}
+            log_kwargs: dict[str, Any] = {"extra": {"color": style}}
             getattr(logger, self._logging_level)(text, **log_kwargs)
         else:
-            stream_colored_text(colored(text + "\n", color))
+            stream_colored_text(_styled_str(text + "\n", style))
 
     def print_message(
         self,
@@ -136,33 +152,46 @@ class Printer:
 
         if isinstance(message, InputMessageItem):
             role = message.role
-            color = get_color(agent_name=agent_name, role=role, color_by=self.color_by)
+            style = get_style(
+                agent_name=agent_name, role=role, color_by=self.color_by
+            )
             content = _input_message_text(message)
-            content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
+            content = truncate_content_str(
+                content, trunc_len=self.msg_trunc_len
+            )
             if role == "system":
                 out += f"<system>\n{content}\n</system>\n"
             else:
                 out += f"<input>\n{content}\n</input>\n"
 
         elif isinstance(message, FunctionToolOutputItem):
-            color = get_color(
+            style = get_style(
                 agent_name=agent_name, role="tool", color_by=self.color_by
             )
-            content = message.output if isinstance(message.output, str) else ""
+            content = (
+                message.output if isinstance(message.output, str) else ""
+            )
             try:
                 content = json.dumps(json.loads(content), indent=2)
             except Exception:
                 pass
-            content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
-            out += f"<tool result> [{message.call_id}]\n{content}\n</tool result>\n"
+            content = truncate_content_str(
+                content, trunc_len=self.msg_trunc_len
+            )
+            out += (
+                f"<tool result> [{message.call_id}]"
+                f"\n{content}\n</tool result>\n"
+            )
 
         else:
-            color = get_color(
-                agent_name=agent_name, role="assistant", color_by=self.color_by
+            style = get_style(
+                agent_name=agent_name,
+                role="assistant",
+                color_by=self.color_by,
             )
             out += f"{message}\n"
 
-        self._output(out, color)
+        self._output(out, style)
 
     def print_messages(
         self,
@@ -184,8 +213,10 @@ async def print_event_stream(
 ) -> AsyncIterator[Event[Any]]:
     def _make_stream_event_text(event: LLMStreamEvent) -> str:
         se = event.data
-        color = get_color(
-            agent_name=event.source or "", role="assistant", color_by=color_by
+        style = get_style(
+            agent_name=event.source or "",
+            role="assistant",
+            color_by=color_by,
         )
         text = ""
 
@@ -199,7 +230,9 @@ async def print_event_stream(
             elif isinstance(item, OutputMessageItem):
                 text += "<response>\n"
             elif isinstance(item, FunctionToolCallItem):
-                text += f"<tool call> {item.name} [{item.call_id}]\n"
+                text += (
+                    f"<tool call> {item.name} [{item.call_id}]\n"
+                )
 
         elif isinstance(se, OutputItemDone):
             item = se.item
@@ -219,22 +252,19 @@ async def print_event_stream(
         ):
             text += se.delta
 
-        return colored(text, color)
+        return _styled_str(text, style)
 
     def _make_message_text(
         event: SystemMessageEvent | UserMessageEvent | ToolResultEvent,
     ) -> str:
         data = event.data
-        color = get_color(
-            agent_name=event.source or "", role="assistant", color_by=color_by
-        )
         text = f"\n<{event.source}> [{event.exec_id}]\n"
 
         if isinstance(event, SystemMessageEvent):
             assert isinstance(data, InputMessageItem)
             content = _input_message_text(data)
             content = truncate_content_str(content, trunc_len=trunc_len)
-            color = get_color(
+            style = get_style(
                 agent_name=event.source or "",
                 role="system",
                 color_by=color_by,
@@ -245,7 +275,7 @@ async def print_event_stream(
             assert isinstance(data, InputMessageItem)
             content = _input_message_text(data)
             content = truncate_content_str(content, trunc_len=trunc_len)
-            color = get_color(
+            style = get_style(
                 agent_name=event.source or "",
                 role="user",
                 color_by=color_by,
@@ -254,27 +284,38 @@ async def print_event_stream(
 
         else:
             assert isinstance(data, FunctionToolOutputItem)
-            content = data.output if isinstance(data.output, str) else ""
+            content = (
+                data.output if isinstance(data.output, str) else ""
+            )
             try:
                 content = json.dumps(json.loads(content), indent=2)
             except Exception:
                 pass
-            color = get_color(
+            style = get_style(
                 agent_name=event.source or "",
                 role="tool",
                 color_by=color_by,
             )
-            text += f"<tool result> [{data.call_id}]\n{content}\n</tool result>\n"
+            text += (
+                f"<tool result> [{data.call_id}]"
+                f"\n{content}\n</tool result>\n"
+            )
 
-        return colored(text, color)
+        return _styled_str(text, style)
 
     def _make_packet_text(
         event: ProcPacketOutEvent | RunPacketOutEvent,
     ) -> str:
-        src = "run" if isinstance(event, RunPacketOutEvent) else "processor"
+        src = (
+            "run"
+            if isinstance(event, RunPacketOutEvent)
+            else "processor"
+        )
 
-        color = get_color(
-            agent_name=event.source or "", role="assistant", color_by=color_by
+        style = get_style(
+            agent_name=event.source or "",
+            role="assistant",
+            color_by=color_by,
         )
         text = f"\n<{event.source}> [{event.exec_id}]\n"
 
@@ -291,7 +332,7 @@ async def print_event_stream(
                 text += f"{p_str}\n"
             text += f"</{src} output>\n"
 
-        return colored(text, color)
+        return _styled_str(text, style)
 
     # ------ Wrap event generator -------
 

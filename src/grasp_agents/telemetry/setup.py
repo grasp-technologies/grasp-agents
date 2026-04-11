@@ -36,7 +36,10 @@ def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
             return existing
 
         provider = TracerProvider(
-            resource=Resource.create({SERVICE_NAME: project_name}),
+            resource=Resource.create({
+                SERVICE_NAME: project_name,
+                "openinference.project.name": project_name,
+            }),
         )
         trace.set_tracer_provider(provider)
         _initialized = True

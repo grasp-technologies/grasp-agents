@@ -22,6 +22,7 @@ from .llm.model_info import (
 )
 from .llm.resilience import RetryPolicy
 from .memory import Memory
+from .console import EventConsole, stream_events
 from .packet import Packet
 from .printer import Printer, print_event_stream
 from .processors.parallel_processor import ParallelProcessor
@@ -95,6 +96,7 @@ __all__ = [
     "Content",
     "DeveloperMessage",
     "Event",
+    "EventConsole",
     "FallbackLLM",
     "FunctionTool",
     "GenerationEndEvent",
@@ -151,4 +153,5 @@ __all__ = [
     "get_context_window",
     "get_model_capabilities",
     "print_event_stream",
+    "stream_events",
 ]

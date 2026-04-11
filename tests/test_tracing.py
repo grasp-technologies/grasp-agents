@@ -22,6 +22,7 @@ from grasp_agents.telemetry.decorators import (
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
     ATTR_ENTITY_OUTPUT,
+    ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
     ATTR_WORKFLOW_NAME,
     _resolve_span_kind,
@@ -350,6 +351,38 @@ class TestSpanAttributes:
 
         spans = _exporter.get_finished_spans()
         assert spans[0].attributes[ATTR_WORKFLOW_NAME] == "my_agent"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_openinference_span_kind_set(self) -> None:
+        """Each grasp span kind maps to an OpenInference span kind."""
+
+        @traced(name="wf", span_kind=SpanKind.WORKFLOW)
+        async def wf() -> str:
+            return "ok"
+
+        @traced(name="ag", span_kind=SpanKind.AGENT)
+        async def ag() -> str:
+            return "ok"
+
+        @traced(name="tl", span_kind=SpanKind.TOOL)
+        async def tl() -> str:
+            return "ok"
+
+        @traced(name="tk", span_kind=SpanKind.TASK)
+        async def tk() -> str:
+            return "ok"
+
+        await wf()
+        await ag()
+        await tl()
+        await tk()
+
+        spans = _exporter.get_finished_spans()
+        by_name = {s.attributes[ATTR_ENTITY_NAME]: s for s in spans}  # type: ignore[index]
+        assert by_name["wf"].attributes[ATTR_OI_SPAN_KIND] == "CHAIN"
+        assert by_name["ag"].attributes[ATTR_OI_SPAN_KIND] == "AGENT"
+        assert by_name["tl"].attributes[ATTR_OI_SPAN_KIND] == "TOOL"
+        assert by_name["tk"].attributes[ATTR_OI_SPAN_KIND] == "CHAIN"
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_input_output_recorded(self) -> None:

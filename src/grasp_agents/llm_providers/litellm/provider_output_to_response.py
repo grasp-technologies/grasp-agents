@@ -277,7 +277,7 @@ def provider_output_to_response(provider_output: LiteLLMCompletion) -> Response:
         status=status,
         model=model,
         response_ms=response_ms,
-        provider_specific_fields=raw_choice.provider_specific_fields,
+        provider_specific_fields=getattr(raw_choice, "provider_specific_fields", None),
         hidden_params=hidden_params,
         response_headers=response_headers,
     )

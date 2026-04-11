@@ -4,7 +4,6 @@ from collections.abc import Sequence
 
 from litellm import cost_per_token
 from pydantic import BaseModel, Field
-from termcolor import colored
 
 from .types.response import Response, ResponseUsage
 
@@ -51,10 +50,16 @@ class UsageTracker(BaseModel):
         )
         token_usage_str += f"/{usage.output_tokens_details.reasoning_tokens}"
         token_usage_str += f"/{usage.input_tokens_details.cached_tokens}"
-        logger.debug(colored(token_usage_str, "light_grey"))
+        logger.debug(
+            token_usage_str, extra={"color": "bright_black"}
+        )
 
         if usage.cost is not None:
-            logger.debug(colored(f"Total cost: ${usage.cost:.4f}", "light_grey"))
+            logger.debug(
+                "Total cost: $%.4f",
+                usage.cost,
+                extra={"color": "bright_black"},
+            )
 
     def _add_cost_to_usage(
         self,

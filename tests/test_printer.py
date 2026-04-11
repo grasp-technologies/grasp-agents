@@ -8,7 +8,7 @@ import pytest
 from grasp_agents.printer import (
     Printer,
     _input_message_text,
-    get_color,
+    get_style,
     print_event_stream,
     truncate_content_str,
 )
@@ -43,23 +43,23 @@ from grasp_agents.types.response import Response
 # ---------- Utility functions ----------
 
 
-class TestGetColor:
-    def test_role_based_colors(self):
-        """Role-based coloring returns expected colors."""
-        assert get_color(role="system", color_by="role") == "magenta"
-        assert get_color(role="user", color_by="role") == "green"
-        assert get_color(role="assistant", color_by="role") == "light_blue"
-        assert get_color(role="tool", color_by="role") == "blue"
+class TestGetStyle:
+    def test_role_based_styles(self):
+        """Role-based coloring returns expected styles."""
+        assert get_style(role="system", color_by="role") == "magenta"
+        assert get_style(role="user", color_by="role") == "green"
+        assert get_style(role="assistant", color_by="role") == "bright_blue"
+        assert get_style(role="tool", color_by="role") == "blue"
 
     def test_unknown_role_defaults(self):
-        """Unknown role defaults to light_blue."""
-        assert get_color(role="unknown", color_by="role") == "light_blue"
+        """Unknown role defaults to bright_blue."""
+        assert get_style(role="unknown", color_by="role") == "bright_blue"
 
     def test_agent_based_coloring(self):
         """Agent-based coloring is deterministic per agent name."""
-        c1 = get_color(agent_name="agent_a", color_by="agent")
-        c2 = get_color(agent_name="agent_a", color_by="agent")
-        c3 = get_color(agent_name="agent_b", color_by="agent")
+        c1 = get_style(agent_name="agent_a", color_by="agent")
+        c2 = get_style(agent_name="agent_a", color_by="agent")
+        c3 = get_style(agent_name="agent_b", color_by="agent")
 
         assert c1 == c2  # same agent → same color
         # different agents may or may not have different colors (hash collision)
@@ -328,7 +328,6 @@ class TestPrintEventStream:
         async def gen():
             yield LLMStreamEvent(
                 data=FunctionCallArgumentsDelta(
-                    call_id="tc_1",
                     delta='{"query":',
                     output_index=0,
                     sequence_number=1,

@@ -3,16 +3,16 @@ from logging import Formatter, LogRecord
 from pathlib import Path
 
 import yaml
-from termcolor import colored
-from termcolor._types import Color  # type: ignore[import]
+from rich.text import Text
 
 
 class ColorFormatter(Formatter):
     def format(self, record: LogRecord) -> str:
         message = super().format(record)
-        color: Color | None = getattr(record, "color", None)
+        color: str | None = getattr(record, "color", None)
         if color:
-            return colored(message, color)
+            styled = Text(message, style=color)
+            return styled.markup
         return message
 
 

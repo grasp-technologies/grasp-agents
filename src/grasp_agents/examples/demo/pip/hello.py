@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from grasp_agents import BaseTool, LLMAgent, RunContext
 from grasp_agents.llm_providers.litellm import LiteLLM, LiteLLMSettings
-from grasp_agents.printer import print_event_stream
+from grasp_agents.console import stream_events
 from grasp_agents.types.events import ProcPacketOutEvent
 
 load_dotenv()
@@ -69,7 +69,7 @@ teacher = LLMAgent[None, Problem, None](
 
 async def main():
     ctx = RunContext[None]()
-    async for event in print_event_stream(teacher.run_stream("start", ctx=ctx)):
+    async for event in stream_events(teacher.run_stream("start", ctx=ctx)):
         if isinstance(event, ProcPacketOutEvent):
             result = event.data.payloads[0]
             print(f"\n<Suggested Problem>:\n\n{result.problem}\n")

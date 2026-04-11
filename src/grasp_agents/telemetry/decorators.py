@@ -43,6 +43,15 @@ ATTR_ENTITY_INPUT = "grasp.entity.input"
 ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
 
+# OpenInference compatibility — Phoenix uses this to show span type icons
+ATTR_OI_SPAN_KIND = "openinference.span.kind"
+_GRASP_TO_OI_KIND: dict[str, str] = {
+    "workflow": "CHAIN",
+    "task": "CHAIN",
+    "agent": "AGENT",
+    "tool": "TOOL",
+}
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -144,6 +153,9 @@ def _set_span_attributes(
 ) -> None:
     span.set_attribute(ATTR_SPAN_KIND, span_kind.value)
     span.set_attribute(ATTR_ENTITY_NAME, entity_name)
+    oi_kind = _GRASP_TO_OI_KIND.get(span_kind.value)
+    if oi_kind:
+        span.set_attribute(ATTR_OI_SPAN_KIND, oi_kind)
     if span_kind in {SpanKind.WORKFLOW, SpanKind.AGENT}:
         span.set_attribute(ATTR_WORKFLOW_NAME, entity_name)
     if version:

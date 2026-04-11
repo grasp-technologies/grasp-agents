@@ -89,6 +89,10 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         )
         self._fn = fn
         self._resolved_in_type = input_model
+        # Override class-level _in_type (BaseModel) with the actual
+        # dynamic model so that llm_in_type (reads _in_type directly)
+        # returns the correct schema for LLM tool calls.
+        self._in_type = input_model  # type: ignore[assignment]
         self._is_async = is_async
         self._has_ctx = has_ctx
         self._has_exec_id = has_exec_id
