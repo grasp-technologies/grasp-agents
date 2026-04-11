@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Generic, Protocol
 
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.tracing_decorators import task
+from grasp_agents.telemetry import traced
 
 from ..durability.checkpoints import AgentCheckpointLocation
 from ..llm.llm import LLM
@@ -337,7 +337,7 @@ class AgentLoop(Generic[CtxT]):
 
     # --- LLM generation ---
 
-    @task(name="generate")  # type: ignore
+    @traced(name="generate")
     async def query_llm(
         self,
         *,
@@ -525,7 +525,7 @@ class AgentLoop(Generic[CtxT]):
 
     # --- Final answer ---
 
-    @task(name="force_generate_final_answer")  # type: ignore
+    @traced(name="force_generate_final_answer")
     async def _force_generate_final_answer_stream(
         self,
         ctx: RunContext[CtxT],

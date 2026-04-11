@@ -13,6 +13,7 @@ from ..durability.resume import prepare_messages_for_resume
 from ..llm.llm import LLM
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..telemetry import SpanKind
 from ..types.content import Content, InputImage
 from ..types.errors import ProcInputValidationError
 from ..types.events import (
@@ -54,6 +55,8 @@ class CallArgs(TypedDict):
 
 
 class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
+    _span_kind = SpanKind.AGENT
+
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
         1: "_out_type",
@@ -407,9 +410,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         checkpoint = await self.load_checkpoint(ctx, exec_id=exec_id)
 
         is_redelivery = (
-            step is not None
-            and checkpoint is not None
-            and checkpoint.step == step
+            step is not None and checkpoint is not None and checkpoint.step == step
         )
 
         # Re-delivery with cached output: step already completed, caller

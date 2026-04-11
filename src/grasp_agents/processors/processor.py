@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from grasp_agents.tracing_decorators import workflow
+from grasp_agents.telemetry import traced
 from grasp_agents.types.errors import (
     PacketRoutingError,
     ProcInputValidationError,
@@ -426,7 +426,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         return deepcopy(self)
 
     @final
-    @workflow(name="processor")  # type: ignore
+    @traced(name="processor")
     @with_retry
     async def run_stream(
         self,

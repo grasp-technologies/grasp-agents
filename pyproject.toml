@@ -13,7 +13,6 @@ dependencies = [
     "pydantic>=2",
     "litellm==1.82.0",
     "opentelemetry-sdk>=1.37.0",
-    "traceloop-sdk>=0.47.2",
     "termcolor>=2.4.0,<3",
     "dotenv>=0.9.9",
     "numpy<2",
@@ -41,6 +40,18 @@ anthropic = ["anthropic==0.84.0"]
 gemini = ["google-genai>=1.65.0"]
 all-providers = ["anthropic==0.84.0", "google-genai>=1.65.0"]
 mcp = ["mcp>=1.8"]
+llm-instrumentation = [
+    "openinference-instrumentation-openllmetry>=0.1.2",
+    "openinference-instrumentation-openai>=0.1.32",
+    "openinference-instrumentation-litellm>=0.1.25",
+]
+phoenix = [
+    "arize-phoenix-otel>=0.13.1",
+    "openinference-instrumentation-openllmetry>=0.1.2",
+    "openinference-instrumentation-openai>=0.1.32",
+    "openinference-instrumentation-litellm>=0.1.25",
+]
+# Backward compatibility alias for phoenix
 observability = [
     "arize-phoenix-otel>=0.13.1",
     "openinference-instrumentation-openllmetry>=0.1.2",

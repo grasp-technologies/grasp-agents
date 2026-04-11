@@ -5,7 +5,7 @@ from functools import partial
 from typing import Any, Generic, Literal
 from uuid import uuid4
 
-from grasp_agents.tracing_decorators import workflow
+from grasp_agents.telemetry import SpanKind, traced
 
 from ..durability.checkpoints import RunnerCheckpoint
 from ..packet import Packet
@@ -299,7 +299,7 @@ class Runner(Generic[OutT, CtxT]):
             f"Posted output packet to recipients: {route}\n"
         )
 
-    @workflow(name="runner_run")  # type: ignore
+    @traced(name="runner_run", span_kind=SpanKind.WORKFLOW)
     async def run_stream(
         self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:

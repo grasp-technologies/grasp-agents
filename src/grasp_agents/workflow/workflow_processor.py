@@ -7,6 +7,7 @@ from ..durability.checkpoints import WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..telemetry import SpanKind
 from ..types.errors import WorkflowConstructionError
 from ..types.io import InT, OutT, ProcName
 from ..utils.callbacks import is_method_overridden
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
+    _span_kind = SpanKind.WORKFLOW
+
     def __init__(
         self,
         name: ProcName,

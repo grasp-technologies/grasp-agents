@@ -17,7 +17,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.run_context import CtxT, RunContext
-from grasp_agents.tracing_decorators import tool
+from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
 from .events import Event, ToolErrorEvent, ToolErrorInfo
@@ -45,7 +45,7 @@ class ToolProgressCallback(Protocol):
     ) -> None: ...
 
 
-@tool(name="tool", method_name="__call__")  # type: ignore
+@traced(name="tool", method_name="__call__", span_kind=SpanKind.TOOL)
 class BaseTool(
     AutoInstanceAttributesMixin,
     ABC,
