@@ -187,9 +187,13 @@ class Printer:
 
         # Usage
         if usage is not None:
-            usage_str = f"I/O/R/C tokens: {usage.input_tokens}/{usage.output_tokens}"
+            usage_str = (
+                f"I/O/R/CR/CW tokens: "
+                f"{usage.input_tokens}/{usage.output_tokens}"
+            )
             usage_str += f"/{usage.reasoning_tokens or '-'}"
-            usage_str += f"/{usage.cached_tokens or '-'}"
+            usage_str += f"/{usage.cached_reading_tokens or '-'}"
+            usage_str += f"/{usage.cached_writing_tokens or '-'}"
 
             out += f"\n------------------------------------\n{usage_str}\n"
 

@@ -9,21 +9,28 @@ from .message_converters import from_api_assistant_message
 
 def from_api_completion_usage(api_usage: LiteLLMUsage) -> Usage:
     reasoning_tokens = None
-    cached_tokens = None
+    cached_reading_tokens = None
+    cached_writing_tokens = None
 
     if api_usage.completion_tokens_details is not None:
         reasoning_tokens = api_usage.completion_tokens_details.reasoning_tokens
     if api_usage.prompt_tokens_details is not None:
-        cached_tokens = api_usage.prompt_tokens_details.cached_tokens
+        cached_reading_tokens = api_usage.prompt_tokens_details.cached_tokens
+        cached_writing_tokens = api_usage.prompt_tokens_details.cache_creation_tokens
 
-    input_tokens = max(api_usage.prompt_tokens - (cached_tokens or 0), 0)
-    output_tokens = max(api_usage.completion_tokens - (reasoning_tokens or 0), 0)
+    input_tokens = max(
+        api_usage.prompt_tokens - (cached_reading_tokens or 0), 0
+    )
+    output_tokens = max(
+        api_usage.completion_tokens - (reasoning_tokens or 0), 0
+    )
 
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
-        cached_tokens=cached_tokens,
+        cached_reading_tokens=cached_reading_tokens,
+        cached_writing_tokens=cached_writing_tokens,
     )
 
 

@@ -62,12 +62,15 @@ class UsageTracker(BaseModel):
         logger.debug("\n-------------------")
 
         token_usage_str = (
-            f"Total I/O/(R)/(C) tokens: {usage.input_tokens}/{usage.output_tokens}"
+            f"Total I/O/(R)/(CR)/(CW) tokens: "
+            f"{usage.input_tokens}/{usage.output_tokens}"
         )
         if usage.reasoning_tokens is not None:
             token_usage_str += f"/{usage.reasoning_tokens}"
-        if usage.cached_tokens is not None:
-            token_usage_str += f"/{usage.cached_tokens}"
+        if usage.cached_reading_tokens is not None:
+            token_usage_str += f"/{usage.cached_reading_tokens}"
+        if usage.cached_writing_tokens is not None:
+            token_usage_str += f"/{usage.cached_writing_tokens}"
         logger.debug(colored(token_usage_str, "light_grey"))
 
         if usage.cost is not None:
@@ -95,8 +98,9 @@ class UsageTracker(BaseModel):
             else 0.0
         )
         cached_cost: float = (
-            cached_discount * in_rate * usage.cached_tokens
-            if (usage.cached_tokens is not None) and (cached_discount is not None)
+            cached_discount * in_rate * usage.cached_reading_tokens
+            if (usage.cached_reading_tokens is not None)
+            and (cached_discount is not None)
             else 0.0
         )
         usage.cost = (input_cost + output_cost + reasoning_cost + cached_cost) / 1e6

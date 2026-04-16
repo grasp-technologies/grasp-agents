@@ -1,5 +1,5 @@
 import time
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, overload
 from uuid import uuid4
 
 from litellm.types.utils import ChoiceLogprobs as LiteLLMChoiceLogprobs
@@ -17,36 +17,42 @@ class Usage(BaseModel):
     input_tokens: NonNegativeInt = 0
     output_tokens: NonNegativeInt = 0
     reasoning_tokens: NonNegativeInt | None = None
-    cached_tokens: NonNegativeInt | None = None
+    cached_reading_tokens: NonNegativeInt | None = None
+    cached_writing_tokens: NonNegativeInt | None = None
     cost: NonNegativeFloat | None = None
 
-    def __add__(self, add_usage: "Usage") -> "Usage":
-        input_tokens = self.input_tokens + add_usage.input_tokens
-        output_tokens = self.output_tokens + add_usage.output_tokens
+    @overload
+    @staticmethod
+    def _add_opt(
+        a: NonNegativeInt | None, b: NonNegativeInt | None
+    ) -> NonNegativeInt | None: ...
 
-        if self.reasoning_tokens is not None or add_usage.reasoning_tokens is not None:
-            reasoning_tokens = (self.reasoning_tokens or 0) + (
-                add_usage.reasoning_tokens or 0
-            )
-        else:
-            reasoning_tokens = None
+    @overload
+    @staticmethod
+    def _add_opt(
+        a: NonNegativeFloat | None, b: NonNegativeFloat | None
+    ) -> NonNegativeFloat | None: ...
 
-        if self.cached_tokens is not None or add_usage.cached_tokens is not None:
-            cached_tokens = (self.cached_tokens or 0) + (add_usage.cached_tokens or 0)
-        else:
-            cached_tokens = None
+    @staticmethod
+    def _add_opt(a: float | None, b: float | None) -> int | float | None:
+        if a is not None or b is not None:
+            return (a or 0) + (b or 0)
+        return None
 
-        if self.cost is not None or add_usage.cost is not None:
-            cost = (self.cost or 0.0) + (add_usage.cost or 0.0)
-        else:
-            cost = None
-
+    def __add__(self, other: "Usage") -> "Usage":
         return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            cached_tokens=cached_tokens,
-            cost=cost,
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            reasoning_tokens=self._add_opt(
+                self.reasoning_tokens, other.reasoning_tokens
+            ),
+            cached_reading_tokens=self._add_opt(
+                self.cached_reading_tokens, other.cached_reading_tokens
+            ),
+            cached_writing_tokens=self._add_opt(
+                self.cached_writing_tokens, other.cached_writing_tokens
+            ),
+            cost=self._add_opt(self.cost, other.cost),
         )
 
 

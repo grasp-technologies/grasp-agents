@@ -9,12 +9,26 @@ from .message_converters import from_api_assistant_message
 
 
 def from_response_usage(raw_usage: ResponseUsage) -> Usage:
+    reasoning_tokens = None
+    cached_reading_tokens = None
+
+    if raw_usage.output_tokens_details is not None:
+        reasoning_tokens = raw_usage.output_tokens_details.reasoning_tokens
+    if raw_usage.input_tokens_details is not None:
+        cached_reading_tokens = raw_usage.input_tokens_details.cached_tokens
+
+    input_tokens = max(
+        raw_usage.input_tokens - (cached_reading_tokens or 0), 0
+    )
+    output_tokens = max(
+        raw_usage.output_tokens - (reasoning_tokens or 0), 0
+    )
+
     return Usage(
-        input_tokens=raw_usage.input_tokens,
-        output_tokens=raw_usage.output_tokens
-        - raw_usage.output_tokens_details.reasoning_tokens,
-        reasoning_tokens=raw_usage.output_tokens_details.reasoning_tokens,
-        cached_tokens=raw_usage.input_tokens_details.cached_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cached_reading_tokens=cached_reading_tokens,
     )
 
 
