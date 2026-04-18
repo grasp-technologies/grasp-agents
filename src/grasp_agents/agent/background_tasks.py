@@ -230,7 +230,8 @@ class BackgroundTaskManager(Generic[CtxT]):
                 ),
             )
             yield UserMessageEvent(
-                source=self._agent_name,
+                source=pt.tool_name,
+                destination=self._agent_name,
                 exec_id=exec_id,
                 data=notification,
             )

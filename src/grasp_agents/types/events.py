@@ -47,6 +47,7 @@ class LLMStreamEvent(Event[LlmEvent], frozen=True):
 
 class ToolCallItemEvent(Event[FunctionToolCallItem], frozen=True):
     type: Literal["agent.tool_call"] = "agent.tool_call"
+    destination: str | None = None
 
 
 class ReasoningItemEvent(Event[ReasoningItem], frozen=True):
@@ -62,6 +63,7 @@ class OutputMessageItemEvent(Event[OutputMessageItem], frozen=True):
 
 class ToolResultEvent(Event[FunctionToolOutputItem], frozen=True):
     type: Literal["tool.result"] = "tool.result"
+    destination: str | None = None
 
 
 class ToolOutputEvent(Event[Any], frozen=True):
@@ -134,6 +136,7 @@ class GenerationEndEvent(Event[Response], frozen=True):
 
 class UserMessageEvent(Event[InputMessageItem], frozen=True):
     type: Literal["user.message"] = "user.message"
+    destination: str | None = None
 
 
 class SystemMessageEvent(Event[InputMessageItem], frozen=True):

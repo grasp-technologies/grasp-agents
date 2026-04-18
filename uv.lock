@@ -571,6 +571,15 @@ wheels = [
 ]
 
 [[package]]
+name = "fastjsonschema"
+version = "2.21.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/b5/23b216d9d985a956623b6bd12d4086b60f0059b27799f23016af04a74ea1/fastjsonschema-2.21.2.tar.gz", hash = "sha256:b1eb43748041c880796cd077f1a07c3d94e93ae84bba5ed36800a33554ae05de", size = 374130, upload-time = "2025-08-14T18:49:36.666Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/a8/20d0723294217e47de6d9e2e40fd4a9d2f7c4b6ef974babd482a59743694/fastjsonschema-2.21.2-py3-none-any.whl", hash = "sha256:1c797122d0a86c5cace2e54bf4e819c36223b552017172f32c5c024a6b77e463", size = 24024, upload-time = "2025-08-14T18:49:34.776Z" },
+]
+
+[[package]]
 name = "fastuuid"
 version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -826,19 +835,8 @@ anthropic = [
 gemini = [
     { name = "google-genai" },
 ]
-llm-instrumentation = [
-    { name = "openinference-instrumentation-litellm" },
-    { name = "openinference-instrumentation-openai" },
-    { name = "openinference-instrumentation-openllmetry" },
-]
 mcp = [
     { name = "mcp" },
-]
-observability = [
-    { name = "arize-phoenix-otel" },
-    { name = "openinference-instrumentation-litellm" },
-    { name = "openinference-instrumentation-openai" },
-    { name = "openinference-instrumentation-openllmetry" },
 ]
 phoenix = [
     { name = "arize-phoenix-otel" },
@@ -853,6 +851,7 @@ dev = [
     { name = "ipython" },
     { name = "ipywidgets" },
     { name = "mcp" },
+    { name = "nbformat" },
     { name = "pip-licenses" },
     { name = "pre-commit-uv" },
     { name = "pyright" },
@@ -868,7 +867,6 @@ dev = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'all-providers'", specifier = "==0.84.0" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.84.0" },
-    { name = "arize-phoenix-otel", marker = "extra == 'observability'", specifier = ">=0.13.1" },
     { name = "arize-phoenix-otel", marker = "extra == 'phoenix'", specifier = ">=0.13.1" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "google-genai", marker = "extra == 'all-providers'", specifier = ">=1.65.0" },
@@ -878,14 +876,8 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.8" },
     { name = "numpy", specifier = "<2" },
     { name = "openai", specifier = "==2.23.0" },
-    { name = "openinference-instrumentation-litellm", marker = "extra == 'llm-instrumentation'", specifier = ">=0.1.25" },
-    { name = "openinference-instrumentation-litellm", marker = "extra == 'observability'", specifier = ">=0.1.25" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'phoenix'", specifier = ">=0.1.25" },
-    { name = "openinference-instrumentation-openai", marker = "extra == 'llm-instrumentation'", specifier = ">=0.1.32" },
-    { name = "openinference-instrumentation-openai", marker = "extra == 'observability'", specifier = ">=0.1.32" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'phoenix'", specifier = ">=0.1.32" },
-    { name = "openinference-instrumentation-openllmetry", marker = "extra == 'llm-instrumentation'", specifier = ">=0.1.2" },
-    { name = "openinference-instrumentation-openllmetry", marker = "extra == 'observability'", specifier = ">=0.1.2" },
     { name = "openinference-instrumentation-openllmetry", marker = "extra == 'phoenix'", specifier = ">=0.1.2" },
     { name = "opentelemetry-sdk", specifier = ">=1.37.0" },
     { name = "pydantic", specifier = ">=2" },
@@ -894,7 +886,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.3.0,<9" },
     { name = "tqdm", specifier = ">=4.66.2,<5" },
 ]
-provides-extras = ["anthropic", "gemini", "all-providers", "mcp", "llm-instrumentation", "phoenix", "observability"]
+provides-extras = ["anthropic", "gemini", "all-providers", "mcp", "phoenix"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -902,6 +894,7 @@ dev = [
     { name = "ipython", specifier = ">=8.3.0,<9" },
     { name = "ipywidgets", specifier = ">=8.0.4,<9" },
     { name = "mcp", specifier = ">=1.8" },
+    { name = "nbformat", specifier = ">=5.10.4" },
     { name = "pip-licenses", specifier = ">=5.0.0" },
     { name = "pre-commit-uv", specifier = ">=4.1.4" },
     { name = "pyright", specifier = ">=1.1.400" },
@@ -1718,6 +1711,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ba/8f/0a60e501584145588be1af5cc829265701ba3c35a64aec8e07cbb71d39bb/multidict-6.7.0-cp314-cp314t-win_amd64.whl", hash = "sha256:09929cab6fcb68122776d575e03c6cc64ee0b8fca48d17e135474b042ce515cd", size = 53507, upload-time = "2025-10-06T14:51:53.672Z" },
     { url = "https://files.pythonhosted.org/packages/7f/ae/3148b988a9c6239903e786eac19c889fab607c31d6efa7fb2147e5680f23/multidict-6.7.0-cp314-cp314t-win_arm64.whl", hash = "sha256:cc41db090ed742f32bd2d2c721861725e6109681eddf835d0a82bd3a5c382827", size = 44804, upload-time = "2025-10-06T14:51:55.415Z" },
     { url = "https://files.pythonhosted.org/packages/b7/da/7d22601b625e241d4f23ef1ebff8acfc60da633c9e7e7922e24d10f592b3/multidict-6.7.0-py3-none-any.whl", hash = "sha256:394fc5c42a333c9ffc3e421a4c85e08580d990e08b99f6bf35b4132114c5dcb3", size = 12317, upload-time = "2025-10-06T14:52:29.272Z" },
+]
+
+[[package]]
+name = "nbformat"
+version = "5.10.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fastjsonschema" },
+    { name = "jsonschema" },
+    { name = "jupyter-core" },
+    { name = "traitlets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6d/fd/91545e604bc3dad7dca9ed03284086039b294c6b3d75c0d2fa45f9e9caf3/nbformat-5.10.4.tar.gz", hash = "sha256:322168b14f937a5d11362988ecac2a4952d3d8e3a2cbeb2319584631226d5b3a", size = 142749, upload-time = "2024-04-04T11:20:37.371Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/82/0340caa499416c78e5d8f5f05947ae4bc3cba53c9f038ab6e9ed964e22f1/nbformat-5.10.4-py3-none-any.whl", hash = "sha256:3b48d6c8fbca4b299bf3982ea7db1af21580e4fec269ad087b9e81588891200b", size = 78454, upload-time = "2024-04-04T11:20:34.895Z" },
 ]
 
 [[package]]

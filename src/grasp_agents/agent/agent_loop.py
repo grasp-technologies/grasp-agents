@@ -370,6 +370,7 @@ class AgentLoop(Generic[CtxT]):
                     if isinstance(item, FunctionToolCallItem):
                         yield ToolCallItemEvent(
                             source=self.agent_name,
+                            destination=item.name,
                             exec_id=exec_id,
                             data=item,
                         )
@@ -403,6 +404,7 @@ class AgentLoop(Generic[CtxT]):
                 if isinstance(item, FunctionToolCallItem):
                     yield ToolCallItemEvent(
                         source=self.agent_name,
+                        destination=item.name,
                         exec_id=exec_id,
                         data=item,
                     )
@@ -514,7 +516,9 @@ class AgentLoop(Generic[CtxT]):
             )
             tool_messages.append(msg)
             self.memory.update([msg], ctx=ctx)
-            yield ToolResultEvent(source=call.name, exec_id=exec_id, data=msg)
+            yield ToolResultEvent(
+                source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
+            )
 
         if ctx.printer:
             ctx.printer.print_messages(
@@ -537,8 +541,10 @@ class AgentLoop(Generic[CtxT]):
             role="user",
         )
         self.memory.update([user_message])
+        # TODO: set source
         yield UserMessageEvent(
-            source=self.agent_name,
+            source=None,
+            destination=self.agent_name,
             exec_id=exec_id,
             data=user_message,
         )

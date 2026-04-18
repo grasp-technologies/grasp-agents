@@ -434,9 +434,13 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                     yield SystemMessageEvent(
                         data=message, source=self.name, exec_id=exec_id
                     )
+                # TODO: set source
                 elif message.role == "user":
                     yield UserMessageEvent(
-                        data=message, source=self.name, exec_id=exec_id
+                        data=message,
+                        source=None,
+                        destination=self.name,
+                        exec_id=exec_id,
                     )
 
         async for event in self._loop.execute_stream(**call_kwargs):

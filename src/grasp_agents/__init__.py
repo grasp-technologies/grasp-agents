@@ -5,6 +5,7 @@ from .agent.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
 from .agent.function_tool import FunctionTool, function_tool
 from .agent.llm_agent import LLMAgent
 from .agent.llm_agent_memory import LLMAgentMemory
+from .console import EventConsole, stream_events
 from .durability import (
     AgentCheckpoint,
     CheckpointStore,
@@ -22,7 +23,6 @@ from .llm.model_info import (
 )
 from .llm.resilience import RetryPolicy
 from .memory import Memory
-from .console import EventConsole, stream_events
 from .packet import Packet
 from .printer import Printer, print_event_stream
 from .processors.parallel_processor import ParallelProcessor
@@ -37,7 +37,9 @@ from .types.events import (
     GenerationEndEvent,
     LLMStreamEvent,
     OutputMessageItemEvent,
+    ProcPacketOutEvent,
     ReasoningItemEvent,
+    RunPacketOutEvent,
     ToolCallItemEvent,
     ToolResultEvent,
     TurnEndEvent,

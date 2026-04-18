@@ -500,10 +500,11 @@ class TestMessageEvents:
     async def test_user_message_shown_when_enabled(self):
         ec, buf = _make_console_with(show_input_messages=True)
         msg = InputMessageItem.from_text("Hello agent", role="user")
-        events = [UserMessageEvent(data=msg, source="agent", exec_id="c1")]
+        events = [UserMessageEvent(data=msg, source=None, destination="agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "User" in output
+        assert "agent" in output
         assert "Hello agent" in output
 
     @pytest.mark.asyncio

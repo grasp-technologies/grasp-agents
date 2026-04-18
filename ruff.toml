@@ -120,3 +120,16 @@ unfixable = ["F401"]
 [lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "*.ipynb" = ["I"]
+# data_retrieval: copied from grasp-core, interface compliance kwargs
+"src/grasp_agents/data_retrieval/*.py" = ["ARG002", "TC003"]
+# tools.py: imports used at runtime by @function_tool Pydantic models
+# RUF029: vault tools wrap sync filesystem ops in async for @function_tool
+"src/grasp_agents/kits/**/tools.py" = ["TC001", "A002", "RUF029"]
+# schemas.py: datetime used at runtime by Pydantic
+"src/grasp_agents/kits/**/schemas.py" = ["TC003"]
+# retrievers: Mapping used at runtime, xml.etree is safe for our own API responses
+"src/grasp_agents/kits/**/retriever.py" = ["TC003", "S405"]
+# vault filesystem: Path used at runtime for file operations
+"src/grasp_agents/kits/research/vault/filesystem.py" = ["TC003"]
+# tests: pytestmark before imports; explicit `!= ""` is clearer in assertions
+"tests/kits/**/*.py" = ["E402", "PLC1901", "F841"]

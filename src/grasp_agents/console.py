@@ -183,9 +183,8 @@ class EventConsole:
         self._streamed_tool = False
         self._streamed_reasoning = False
         self._in_tool_block = False
+        self._pending_tool_spacing = False
 
-        # Tool call_id → name mapping for result/error attribution
-        self._tool_names: dict[str, str] = {}
         # Tool names launched as background tasks — their subagent
         # events (turns, thinking, text) are suppressed.
         self._bg_tool_names: set[str] = set()
@@ -218,6 +217,12 @@ class EventConsole:
             src == name or src.startswith(f"{name}:") for name in self._bg_tool_names
         )
 
+    def _flush_tool_spacing(self) -> None:
+        """Emit deferred blank line after a tool result group."""
+        if self._pending_tool_spacing:
+            self.console.print()
+            self._pending_tool_spacing = False
+
     def _handle(self, event: Event[Any]) -> None:
         # Background task lifecycle events are always handled
         if isinstance(event, BackgroundTaskLaunchedEvent):
@@ -229,11 +234,17 @@ class EventConsole:
             return
 
         # Suppress internal events from background subagents,
-        # but let tool results through (placeholder "Task launched...")
+        # but let tool results, errors, and task notifications through.
         if self._is_bg_subagent(event) and not isinstance(
-            event, (ToolResultEvent, ToolErrorEvent)
+            event, (ToolResultEvent, ToolErrorEvent, UserMessageEvent)
         ):
             return
+
+        # Flush deferred spacing from tool results before any
+        # non-tool-result event — keeps consecutive result panels
+        # tight but ensures a blank line after the last one.
+        if not isinstance(event, (ToolResultEvent, ToolErrorEvent)):
+            self._flush_tool_spacing()
 
         if isinstance(event, TurnStartEvent):
             self._on_turn_start(event)
@@ -265,7 +276,9 @@ class EventConsole:
         elif isinstance(event, UserMessageEvent):
             text = _extract_input_text(event.data)
             if "<task_notification>" in text:
-                self._on_task_notification(text)
+                self._on_task_notification(
+                    text, source=event.source, destination=event.destination
+                )
             elif self.show_input_messages:
                 self._on_user_message(event)
 
@@ -341,20 +354,19 @@ class EventConsole:
         self._in_tool_block = True
 
         item = event.data
-        name = item.name or "tool"
-
-        # Track call_id → name for later result/error attribution
-        if item.call_id:
-            self._tool_names[item.call_id] = name
+        agent_name = event.source or "agent"
+        tool_name = item.name or "tool"
 
         title_color = self._color_theme["border_tool_call"]
         border_color = self._color_theme["border_tool_call"]
+
+        text = f"[bold {title_color}]{escape(agent_name)} → {escape(tool_name)}[/]"
 
         if self.show_tool_args and item.arguments:
             renderable = self._build_args_renderable(item.arguments)
             panel = Panel(
                 renderable,
-                title=f"[bold {title_color}]→ {escape(name)}[/]",
+                title=text,
                 title_align="left",
                 border_style=border_color,
                 box=ROUNDED,
@@ -363,7 +375,7 @@ class EventConsole:
             )
             self.console.print(panel)
         else:
-            self.console.print(f"[bold {title_color}]▶ {escape(name)}[/]")
+            self.console.print(text)
 
     def _on_reasoning_item(self, event: ReasoningItemEvent) -> None:
         if self._streamed_reasoning:
@@ -405,10 +417,11 @@ class EventConsole:
         self._in_tool_block = False
         agent = event.source or "agent"
         turn = event.data.turn + 1
+        color = self._color_theme["separator"]
         self.console.print(
             Rule(
                 f"[bold]{escape(agent)}[/bold] · turn {turn}",
-                style=self._color_theme["separator"],
+                style=color,
             )
         )
         self.console.print()
@@ -421,9 +434,12 @@ class EventConsole:
         if reason is None:
             return
         val = str(getattr(reason, "value", reason))
-        color = self._color_theme["muted"]
+        color_text = self._color_theme["muted"]
+        # color_separator = self._color_theme["separator"]
         if val != "final_answer":
-            self.console.print(f"[italic {color}]stopped: {escape(val)}[/]")
+            self.console.print(f"[italic {color_text}]stopped: {escape(val)}[/]")
+        #     self.console.print()
+        # self.console.print(Rule("", style=color_separator))
 
     def _on_generation_end(self, event: GenerationEndEvent) -> None:
         if not self.show_usage:
@@ -472,8 +488,9 @@ class EventConsole:
         self._in_tool_block = False
         text = _extract_input_text(event.data)
         display = _truncate_lines(text, self.max_input_msg_lines)
-        agent = event.source or ""
-        label = f"User → {agent}" if agent else "User"
+        agent = event.destination or "agent"
+        user = event.source or "User"
+        label = f"{user} → {agent}"
         self.console.print(
             Panel(
                 escape(display),
@@ -491,7 +508,7 @@ class EventConsole:
         self._in_tool_block = False
         text = _extract_input_text(event.data)
         display = _truncate_lines(text, self.max_input_msg_lines)
-        agent = event.source or ""
+        agent = event.source or "agent"
         label = f"System → {agent}" if agent else "System"
         self.console.print(
             Panel(
@@ -515,8 +532,13 @@ class EventConsole:
         text_color = self._color_theme["tool_result"]
 
         # Look up tool name from the call_id recorded in _on_tool_call_item
-        tool_name = "← " + self._tool_names.get(data.call_id, "")
-        title = f"[bold {title_color}]{escape(tool_name)}[/]" if tool_name else None
+        agent_name = event.destination or "agent"
+        tool_name = event.source or "tool"
+        title = (
+            f"[bold {title_color}]{escape(agent_name)} ← {escape(tool_name)}[/]"
+            if tool_name
+            else None
+        )
 
         # Try to render dicts/BaseModels as key-value tables
         renderable = self._build_result_renderable(data.output, text_color)
@@ -531,7 +553,7 @@ class EventConsole:
             expand=True,
         )
         self.console.print(panel)
-        self.console.print()
+        self._pending_tool_spacing = True
 
     def _on_tool_error(self, event: ToolErrorEvent) -> None:
         title_color = self._color_theme["error"]
@@ -597,7 +619,6 @@ class EventConsole:
     def _on_bg_completed(self, event: BackgroundTaskCompletedEvent) -> None:
         color = self._color_theme["tool_result"]
         info = event.data
-        self.console.print()
         self.console.print(
             Text(
                 f"✓ {info.tool_name} completed (id: {info.task_id})",
@@ -605,14 +626,14 @@ class EventConsole:
             )
         )
 
-    def _on_task_notification(self, text: str) -> None:
+    def _on_task_notification(
+        self, text: str, source: str | None = None, destination: str | None = None
+    ) -> None:
         """Display background task result from notification XML."""
         import re  # noqa: PLC0415
 
-        tool = re.search(r"<tool_name>(.+?)</tool_name>", text)
         result = re.search(r"<result>\s*(.+?)\s*</result>", text, re.DOTALL)
         error = re.search(r"<error>\s*(.+?)\s*</error>", text, re.DOTALL)
-        name = tool.group(1) if tool else "background task"
 
         text_error_color = self._color_theme["tool_result"]
         text_success_color = self._color_theme["tool_result"]
@@ -621,13 +642,19 @@ class EventConsole:
         border_success_color = self._color_theme["border_tool_result"]
         border_error_color = self._color_theme["error"]
 
+        title_color = title_success_color if result else title_error_color
+
+        source = source or "background task"
+        destination = destination or "agent"
+        title = f"[bold {title_color}]{escape(source)} → {escape(destination)}[/]"
+
         if error:
             panel = Panel(
                 Text(
                     f"✗ {error.group(1)}",
                     style=f"bold {text_error_color}",
                 ),
-                title=f"[bold {title_error_color}]{escape(name)}[/]",
+                title=title,
                 title_align="left",
                 border_style=border_error_color,
                 box=ROUNDED,
@@ -641,7 +668,7 @@ class EventConsole:
             display = _truncate_lines(content, self.max_tool_output_lines)
             panel = Panel(
                 Text(escape(display), style=text_success_color),
-                title=f"[bold {title_success_color}]{escape(name)}[/]",
+                title=title,
                 title_align="left",
                 border_style=border_success_color,
                 box=ROUNDED,
@@ -710,7 +737,7 @@ class EventConsole:
         border_color = self._color_theme["border_thinking"]
 
         if not line:
-            # self.console.print(Text(gutter, style=f"{color}"))
+            self.console.print(Text(gutter, style=f"{border_color}"))
             return
         wrapped = textwrap.wrap(line, width=max_w) or [line]
 
