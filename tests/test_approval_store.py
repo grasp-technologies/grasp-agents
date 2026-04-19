@@ -52,7 +52,6 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.types.tool import BaseTool
 
-
 # ---------- Infrastructure (shared with prior approval tests) ----------
 
 
@@ -424,9 +423,11 @@ async def _auto_resolve(
     decide: Any,
     stop_event: asyncio.Event,
 ) -> None:
-    """Poll ``list_pending`` and resolve each with ``decide(pending)``
+    """
+    Poll ``list_pending`` and resolve each with ``decide(pending)``
     until ``stop_event`` is set. Used in integration tests as a
-    stand-in for a UI."""
+    stand-in for a UI.
+    """
     while not stop_event.is_set():
         pending = await store.list_pending(session_key)
         for p in pending:
@@ -457,7 +458,7 @@ class TestApprovalGate:
             await store.resolve("s1", "tc1", ApprovalAllow())
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         await _drain_with_resolver(executor, ctx, resolver())
         assert _invocations["echo"] == ["hi"]
@@ -501,7 +502,7 @@ class TestApprovalGate:
             )
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         await _drain_with_resolver(executor, ctx, resolver())
 
@@ -527,7 +528,7 @@ class TestApprovalGate:
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         await _drain(executor, ctx)
 
@@ -557,7 +558,7 @@ class TestApprovalGate:
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         resolver = asyncio.create_task(
             _auto_resolve(store, "s1", decide=decide, stop_event=stop)
@@ -602,7 +603,7 @@ class TestApprovalGate:
                 await _drain(
                     executor,
                     RunContext[None](
-                        approval_store=store, approval_session_key=session
+                        approval_store=store, session_key=session
                     ),
                 )
             finally:
@@ -651,7 +652,7 @@ class TestApprovalGate:
         )
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         await _drain_with_resolver(executor, ctx, resolver())
 
@@ -673,7 +674,7 @@ class TestApprovalGate:
         )
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         await _drain(executor, ctx)
 
@@ -685,8 +686,10 @@ class TestApprovalGate:
 
     @pytest.mark.asyncio
     async def test_custom_approval_key_fn(self):
-        """Custom key_fn lets identical-args calls across turns share
-        the same allowlist entry."""
+        """
+        Custom key_fn lets identical-args calls across turns share
+        the same allowlist entry.
+        """
         _invocations.clear()
         responses = [
             _tool_call_response([("echo", '{"text":"safe"}', "tc1")]),
@@ -708,7 +711,7 @@ class TestApprovalGate:
         )
 
         ctx = RunContext[None](
-            approval_store=store, approval_session_key="s1"
+            approval_store=store, session_key="s1"
         )
         resolver = asyncio.create_task(
             _auto_resolve(store, "s1", decide=decide, stop_event=stop)

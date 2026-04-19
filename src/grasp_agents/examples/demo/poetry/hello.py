@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from grasp_agents import BaseTool, LLMAgent, RunContext
-from grasp_agents.llm_providers.litellm import LiteLLM, LiteLLMSettings
 from grasp_agents.console import stream_events
+from grasp_agents.llm_providers.litellm import LiteLLM, LiteLLMSettings
 from grasp_agents.types.events import ProcPacketOutEvent
 
 load_dotenv()

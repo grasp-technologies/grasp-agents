@@ -1,4 +1,5 @@
-"""Tracing decorators using raw OpenTelemetry API.
+"""
+Tracing decorators using raw OpenTelemetry API.
 
 Follows the OTel library instrumentation pattern: depends only on opentelemetry-api.
 If no TracerProvider is configured by the application, all spans are no-ops.
@@ -226,8 +227,8 @@ def _is_async(fn: Callable[..., Any]) -> bool:
 def _camel_to_snake(name: str) -> str:
     import re
 
-    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +454,8 @@ def traced(
     span_kind: SpanKind = SpanKind.TASK,
     method_name: str | None = None,
 ) -> Callable[[F], F] | Callable[[T], T]:
-    """Trace a function or class method with an OTel span.
+    """
+    Trace a function or class method with an OTel span.
 
     Span kind is resolved at call time: ``instance._span_kind`` (if present)
     takes precedence over the *span_kind* argument.  Use the decorator

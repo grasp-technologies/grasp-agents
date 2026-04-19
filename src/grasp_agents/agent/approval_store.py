@@ -29,7 +29,7 @@ Usage::
 
     ctx = RunContext(
         approval_store=store,
-        approval_session_key="user-42",
+        session_key="user-42",
     )
     await agent.run(..., ctx=ctx)
 """
@@ -325,9 +325,9 @@ def build_store_approval(
     :class:`~grasp_agents.run_context.RunContext`.
 
     Set ``ctx.approval_store`` to enable the gate; if it is ``None``
-    the hook is a no-op and all calls run. ``ctx.approval_session_key``
-    scopes the ``session`` allowlist so different users don't share
-    each other's decisions.
+    the hook is a no-op and all calls run. ``ctx.session_key`` scopes
+    the ``session`` allowlist so different users don't share each
+    other's decisions.
 
     Each matched call goes through the approval flow:
     pre-approval check (skip if the key is already allowed), submit a
@@ -353,7 +353,7 @@ def build_store_approval(
         store = ctx.approval_store
         if store is None:
             return None
-        session_key = ctx.approval_session_key
+        session_key = ctx.session_key
 
         decisions: dict[str, ToolCallDecision] = {}
         pending_futures: list[
