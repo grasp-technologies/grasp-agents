@@ -44,48 +44,69 @@ Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.
 ### Core hierarchy
 
 ```
-BaseProcessor[InT, OutT, CtxT]      # abstract base for all computation units
-  └─ Processor[InT, OutT, CtxT]     # generic processor with routing
-       └─ LLMAgent[InT, OutT, CtxT] # agent with LLM + tools + agentic loop
+Processor[InT, OutT, CtxT]          # generic computation unit with routing
+  └─ LLMAgent[InT, OutT, CtxT]      # agent with LLM + tools + agentic loop (AgentLoop)
+  └─ ParallelProcessor[...]         # fan-out over the same processor
+  └─ WorkflowProcessor[...]         # Sequential/Looped workflows
 ```
+
+`Processor` is the single base class for all computation units — no separate `BaseProcessor` layer. Routing between processors (used by `Runner` in multi-agent setups) is dynamic: any `Processor` can override `select_recipients_impl(output, ctx, exec_id)` to pick downstream recipients per-payload based on content, state, or LLM judgment.
 
 ### Key components
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `LLMAgent` | `llm_agent.py` | Core agent: LLM + tools + ReAct loop |
-| `LLMPolicyExecutor` | `llm_policy_executor.py` | Implements the agentic loop (generate → tool calls → observe → repeat) |
-| `BaseTool` | `typing/tool.py` | Abstract tool with typed Pydantic input/output |
-| `LLMAgentMemory` | `llm_agent_memory.py` | Conversation history (messages) |
+| `LLMAgent` | `agent/llm_agent.py` | Core agent: LLM + tools + `AgentLoop` |
+| `AgentLoop` | `agent/agent_loop.py` | The agentic loop with RL-style PRE-ACT/ACT/JUDGE/OBSERVE phases; enforces `max_turns`, injects dangling-tool-call cancellations on exhaustion, integrates `BackgroundTaskManager` |
+| `LLMAgentMemory` | `agent/llm_agent_memory.py` | Conversation history (messages) |
+| `PromptBuilder` | `agent/prompt_builder.py` | System/input prompt construction; uses the `InputRenderable` protocol |
+| `@function_tool` | `agent/function_tool.py` | Decorator turning async Python functions into typed `BaseTool`s |
+| `AgentTool` / `ProcessorTool` | `agent/agent_tool.py`, `agent/processor_tool.py` | `.as_tool()` wrappers — any agent/processor becomes a tool |
+| `BaseTool` + event/item/content types | `types/tool.py`, `types/events.py`, `types/items.py`, `types/content.py`, `types/response.py` | Typed streaming events and message parts |
+| Hook `Protocol`s | `types/hooks.py` | `SystemPromptBuilder`, `BeforeLlmHook`, `AfterToolHook`, etc. — consolidated in one module |
 | `RunContext[CtxT]` | `run_context.py` | Runtime state container (user state, usage tracker, printer) |
 | `Packet[T]` | `packet.py` | Multi-payload container with per-payload routing |
-| `Runner` | `runner.py` | Multi-agent orchestration with packet routing |
-| `SequentialWorkflow` | `workflow/sequential_workflow.py` | Linear chain of processors |
-| `LoopedWorkflow` | `workflow/looped_workflow.py` | Cyclic processor chain with termination |
-| `ParallelProcessor` | `processors/parallel_processor.py` | Runs a processor on multiple inputs concurrently |
-| `PromptBuilder` | `prompt_builder.py` | System/input prompt construction |
-| Event types | `typing/events.py` | Typed streaming events (CompletionChunk, ToolCall, GenMessage, etc.) |
+| `Runner` + `EventBus` | `runner/runner.py`, `runner/event_bus.py` | Multi-agent orchestration with packet routing and event bubbling |
+| `SequentialWorkflow`, `LoopedWorkflow`, `WorkflowProcessor` | `workflow/` | Linear and cyclic processor chains |
+| `Processor`, `ParallelProcessor` | `processors/` | Base `Processor` and concurrent fan-out processor |
+| `CheckpointStore`, `AgentCheckpoint` etc., resume helpers, `TaskRecord` | `durability/` | Session persistence + CC-style resume + `BackgroundTaskManager` |
+| `LLM`, `CloudLLM`, `FallbackLLM`, `RetryPolicy`, `model_info.py` | `llm/` | Base LLM abstractions, multi-model fallback cascade, resilience, token/capability metadata |
+| MCP client (tools, resources, prompts) | `mcp/` | Model Context Protocol client |
+| Tracing `@traced` + Phoenix/Traceloop | `telemetry/` (`decorators.py`, `phoenix.py`, `exporters.py`, `setup.py`) | Optional observability; span-decorator on processors/methods |
 
 ### LLM providers
 
-| Class | Location | Providers |
-|-------|----------|-----------|
-| `OpenAILLM` | `openai/` | OpenAI, Gemini (via openai compat), OpenRouter |
-| `LiteLLM` | `litellm/` | 100+ providers via litellm (Anthropic, Bedrock, Vertex, etc.) |
+All providers live under `llm_providers/` and inherit from `CloudLLM` (`llm/cloud_llm.py`). Each ships its own converters (provider input/output ↔ our `Response` item types) — no shared intermediate format:
+
+| Class | Location | Notes |
+|-------|----------|-------|
+| `OpenAIResponsesLLM` | `llm_providers/openai_responses/responses_llm.py` | OpenAI Responses API (first-class) |
+| `OpenAILLM` | `llm_providers/openai_completions/completions_llm.py` | OpenAI Chat Completions; also used for Gemini/OpenRouter OpenAI-compat endpoints |
+| `AnthropicLLM` | `llm_providers/anthropic/anthropic_llm.py` | Anthropic Messages API (native) |
+| `GeminiLLM` | `llm_providers/gemini/gemini_llm.py` | Google GenAI SDK (native) |
+| `LiteLLM` | `llm_providers/litellm/lite_llm.py` | Long-tail (100+) providers via `litellm` |
+
+`FallbackLLM` (`llm/fallback_llm.py`) composes a cascade of any of the above for model-level fallback.
 
 ### Customization via decorators
 
-Agents are customized through decorator hooks, not subclassing:
+Agents are customized through decorator hooks on an `LLMAgent` instance. Subclassing is also supported (and useful for more complex processors/agents):
 
 ```python
 @agent.add_system_prompt_builder    # dynamic system prompt from context
 @agent.add_input_content_builder    # format input from typed args + state
 @agent.add_output_parser            # parse LLM text into typed output
-@agent.add_recipient_selector       # route output to specific agents
-@agent.add_before_llm_hook     # modify settings before each LLM call
-@agent.add_tool_output_converter    # custom tool result → message conversion
+@agent.add_final_answer_extractor   # choose when a turn's output is the final answer
 @agent.add_memory_builder           # custom memory initialization
+@agent.add_before_llm_hook          # inspect/modify settings before each LLM call
+@agent.add_after_llm_hook           # observe completed LLM responses
+@agent.add_before_tool_hook         # pre-tool hook (per tool call)
+@agent.add_after_tool_hook          # post-tool hook
+@agent.add_tool_input_converter(tool_name=...)   # custom typed-args → tool input
+@agent.add_tool_output_converter(tool_name=...)  # custom tool result → message
 ```
+
+Hook function signatures are defined as `Protocol`s in `types/hooks.py`. Dynamic multi-agent routing is done by overriding `select_recipients_impl` on the processor (not a decorator).
 
 ### Agents as tools
 
@@ -95,21 +116,38 @@ Any processor/workflow can be converted to a tool via `.as_tool()`, enabling man
 
 ```
 src/
-  grasp_agents/           # main package
-    openai/               # OpenAI LLM provider
-    litellm/              # LiteLLM provider
-    processors/           # BaseProcessor, Processor, ParallelProcessor
-    workflow/             # SequentialWorkflow, LoopedWorkflow
-    typing/               # Message, Event, Tool, Content, Completion types
-    tracing_decorators/   # @workflow, @task, @tool span decorators
-    telemetry/            # Phoenix + Traceloop integration
-    rate_limiting/        # Rate limiter for LLM calls
-    utils/                # Helpers (streaming, etc.)
-    examples/             # Demo notebooks and scripts
-      demo/               # pip/poetry/uv example projects
-      notebooks/          # Jupyter demos (agents_demo.ipynb, litellm_tests.ipynb)
-  grasp_agents_kits/      # Domain-specific kits built on grasp_agents
-    education/            # Edtech-specific: planner, resources, context presets
+  grasp_agents/               # single top-level package
+    agent/                    # LLMAgent, AgentLoop, PromptBuilder, @function_tool,
+                              # AgentTool/ProcessorTool (.as_tool()), LLMAgentMemory,
+                              # BackgroundTaskManager glue
+    llm/                      # LLM / CloudLLM / FallbackLLM / RetryPolicy / model_info
+    llm_providers/            # one subdir per provider, each with own converters:
+      openai_responses/       #   OpenAIResponsesLLM
+      openai_completions/     #   OpenAILLM (Chat Completions)
+      anthropic/              #   AnthropicLLM (native Messages API)
+      gemini/                 #   GeminiLLM (native google-genai)
+      litellm/                #   LiteLLM (long-tail providers)
+    processors/               # Processor, ParallelProcessor
+    workflow/                 # SequentialWorkflow, LoopedWorkflow, WorkflowProcessor
+    runner/                   # Runner + EventBus (multi-agent orchestration)
+    durability/               # CheckpointStore, resume, TaskRecord
+    types/                    # content, events, items, hooks (Protocols), tool, response
+    mcp/                      # MCP client (tools + resources + prompts)
+    telemetry/                # @traced decorators, Phoenix + Traceloop exporters
+    rate_limiting/            # Rate limiter for LLM calls
+    data_retrieval/           # AsyncHTTPXRetriever + caching/batching primitives for tool kits
+    utils/                    # Helpers (streaming merging, etc.)
+    kits/                     # Domain-specific tool kits built on grasp_agents
+      research/               #   Phase-1 research kits: arXiv, S2, HF Papers, Tavily, OpenAlex, vault
+      music/                  #   (exploratory)
+    examples/
+      demo/                   #   pip/poetry/uv example projects
+      notebooks/              #   Jupyter demos (agents_demo.ipynb, litellm_tests.ipynb, advanced_patterns_demo.ipynb)
+    run_context.py            # RunContext[CtxT]
+    packet.py                 # Packet[T]
+    memory.py                 # base memory abstractions
+    usage_tracker.py          # token/cost accounting
+    console.py, printer.py, grasp_logging.py
 ```
 
 ## How grasp-core uses this library
@@ -124,11 +162,13 @@ grasp-core's `libs/grasp_data/src/grasp_data/course_gen/` is the primary consume
 
 ## Important design decisions
 
-- **Hooks over subclassing**: Agent behavior is customized via decorator hooks (`@agent.add_*`), not by subclassing `LLMAgent`. This keeps the agent class generic.
+- **Hooks over subclassing (primary), but subclassing is kept**: The primary customization path for `LLMAgent` is decorator hooks (`@agent.add_*`). Subclassing is supported and useful for more complex processors/agents — the forwarding layer (`_register_overridden_implementations`) stays.
 - **State mutations via context**: `RunContext[CtxT].state` carries user-defined state through the entire pipeline. Tools and hooks mutate it directly.
-- **No universal context management**: Context window management is task-specific and handled via callbacks. The framework provides the hook points, not the strategies.
-- **Streaming first**: All agents support `.run_stream()` yielding typed events. Non-streaming `.run()` is built on top of streaming.
-- **Provider-agnostic**: No dependency on a specific LLM provider. Model-specific features (reasoning_effort, thinking, web_search) exposed via provider-specific settings.
+- **No universal context management, no universal compaction**: Context window management and summarization are task-specific and handled via callbacks. The framework provides the hook points, not the strategies.
+- **DB/application is the source of truth for application state**: The framework persists *conversation history* (via `durability/`), not business artifacts. No duplication between framework checkpoints and production databases.
+- **Streaming first**: All agents support `.run_stream()` yielding typed events; non-streaming `.run()` is built on top.
+- **Provider-agnostic**: Five peer LLM providers under `llm_providers/` (OpenAI Responses, OpenAI Chat Completions, Anthropic, Gemini, LiteLLM), each with its own converters. Model-specific features (reasoning_effort, thinking, web_search) exposed via provider-specific settings classes (`OpenAIResponsesLLMSettings`, `AnthropicLLMSettings`, etc.).
+- **Sandbox-ready**: The framework does not assume unrestricted host access. File/terminal tools (planned under `docs/roadmap/14-file-edit-tools.md`, `15-sandbox-and-terminal.md`) are additive and opt-in.
 
 ## Telemetry
 
@@ -139,7 +179,7 @@ cd phoenix && docker compose up -d
 # Set PHOENIX_COLLECTOR_HTTP_ENDPOINT=http://localhost:6006/v1/traces
 ```
 
-Initialize in code: `init_traceloop()` for spans, `init_phoenix()` for the Phoenix backend.
+Initialize in code: `init_tracing(project_name=...)` (`telemetry/setup.py`) to install a TracerProvider, then `init_phoenix(...)` (`telemetry/phoenix.py`) to attach the Phoenix exporter. Spans are emitted by `@traced` decorators (`telemetry/decorators.py`) applied to processor/method entrypoints.
 
 ## Roadmap
 

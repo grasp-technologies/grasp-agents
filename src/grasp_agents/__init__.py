@@ -67,6 +67,12 @@ from .types.llm_errors import (
     LlmPermissionDeniedError,
     LlmRateLimitError,
 )
+from .types.recovery import (
+    RecoveryHint,
+    classify_error,
+    is_retryable,
+    register_recovery_hint,
+)
 from .types.response import Response
 from .types.tool import BaseTool, ToolProgressCallback
 from .utils.schema import exclude_fields
@@ -135,6 +141,7 @@ __all__ = [
     "ProcName",
     "Processor",
     "ReasoningItemEvent",
+    "RecoveryHint",
     "Response",
     "RetryPolicy",
     "RunContext",
@@ -149,11 +156,14 @@ __all__ = [
     "TurnStartEvent",
     "UserMessage",
     "WebSearchCallItem",
+    "classify_error",
     "count_tokens",
     "exclude_fields",
     "function_tool",
     "get_context_window",
     "get_model_capabilities",
+    "is_retryable",
     "print_event_stream",
+    "register_recovery_hint",
     "stream_events",
 ]

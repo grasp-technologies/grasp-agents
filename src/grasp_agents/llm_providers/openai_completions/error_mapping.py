@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import openai
 
+from grasp_agents.llm_providers._http_helpers import parse_retry_after  # noqa: PLC2701
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
     LlmApiStatusError,
@@ -31,8 +32,9 @@ def map_api_error(err: Exception) -> LlmError | None:
     code = err.status_code
     resp, body = err.response, err.body
     if code == 429:
-        retry_after = _parse_retry_after(err)
-        return LlmRateLimitError(msg, response=resp, body=body, retry_after=retry_after)
+        return LlmRateLimitError(
+            msg, response=resp, body=body, retry_after=parse_retry_after(resp)
+        )
 
     if code in {401, 403}:
         return LlmAuthenticationError(msg, response=resp, body=body)
@@ -47,13 +49,3 @@ def map_api_error(err: Exception) -> LlmError | None:
         return LlmBadRequestError(msg, response=resp, body=body)
 
     return LlmApiStatusError(msg, response=resp, body=body)
-
-
-def _parse_retry_after(err: openai.APIStatusError) -> float | None:
-    raw = err.response.headers.get("retry-after")
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None

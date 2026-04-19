@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 from google.genai import errors as genai_errors
 
+from grasp_agents.llm_providers._http_helpers import parse_retry_after  # noqa: PLC2701
 from grasp_agents.types.llm_errors import (
     LlmAuthenticationError,
     LlmBadRequestError,
@@ -36,7 +37,9 @@ def map_api_error(err: Exception) -> LlmError | None:
 
     # ClientError — branch on status code
     if code == 429:
-        return LlmRateLimitError(msg, response=resp, body=None)
+        return LlmRateLimitError(
+            msg, response=resp, body=None, retry_after=parse_retry_after(resp)
+        )
     if code in {401, 403}:
         return LlmAuthenticationError(msg, response=resp, body=None)
     if code == 404:

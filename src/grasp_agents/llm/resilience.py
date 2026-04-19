@@ -3,22 +3,8 @@
 import random
 from dataclasses import dataclass
 
-from ..types.llm_errors import (
-    LlmAuthenticationError,
-    LlmBadRequestError,
-    LlmContentFilterError,
-    LlmContextWindowError,
-    LlmErrorTuple,
-    LlmRateLimitError,
-)
-
-# Deterministic errors — retrying the same request won't help.
-_NON_RETRYABLE = (
-    LlmAuthenticationError,
-    LlmBadRequestError,
-    LlmContextWindowError,
-    LlmContentFilterError,
-)
+from ..types.llm_errors import LlmErrorTuple, LlmRateLimitError
+from ..types.recovery import RecoveryHint, classify_error, is_retryable
 
 
 @dataclass(frozen=True)
@@ -47,11 +33,15 @@ class RetryPolicy:
     # --- Validation error retries ---
     validation_retries: int = 0
 
+    def classify(self, error: Exception) -> RecoveryHint:
+        """Return the recovery hint for ``error`` (see ``types.recovery``)."""
+        return classify_error(error)
+
     def is_retryable_api_error(self, error: Exception) -> bool:
         """Return whether this API error is retryable (transient)."""
-        return isinstance(error, LlmErrorTuple) and not isinstance(
-            error, _NON_RETRYABLE
-        )
+        if not isinstance(error, LlmErrorTuple):
+            return False
+        return is_retryable(classify_error(error))
 
     def api_delay_for(self, attempt: int, error: Exception) -> float:
         """Compute delay for an API retry attempt (0-indexed)."""

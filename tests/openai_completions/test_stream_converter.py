@@ -227,7 +227,7 @@ async def _collect_litellm(
 
 class TestTextStream:
     def test_single_chunk(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -245,7 +245,7 @@ class TestTextStream:
         assert dones[0].text == "Hello"
 
     def test_multi_chunk(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -264,7 +264,7 @@ class TestTextStream:
         assert done.text == "Hello world"
 
     def test_final_response_output(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -281,7 +281,7 @@ class TestTextStream:
         assert msg.text == "Hi"
 
     def test_content_part_events(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -312,7 +312,7 @@ class TestToolCallStream:
             index=0,
             function=ChoiceDeltaToolCallFunction(arguments='ity": "NYC"}'),
         )
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -340,7 +340,7 @@ class TestToolCallStream:
             function=ChoiceDeltaToolCallFunction(name="search", arguments="{}"),
             type="function",
         )
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -370,7 +370,7 @@ class TestToolCallStream:
             function=ChoiceDeltaToolCallFunction(name="fn_b", arguments="{}"),
             type="function",
         )
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -388,7 +388,7 @@ class TestToolCallStream:
 
 class TestRefusalStream:
     def test_refusal_events(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -411,7 +411,7 @@ class TestReasoningContentStream:
     """Tests for reasoning_content (plain string fallback, e.g. OpenRouter)."""
 
     def test_reasoning_events(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -431,7 +431,7 @@ class TestReasoningContentStream:
         assert r_dones[0].text == "Thinking..."
 
     def test_reasoning_closes_before_text(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -452,7 +452,7 @@ class TestReasoningContentStream:
         assert types[2] == ("OutputItemAdded", "OutputMessageItem")
 
     def test_reasoning_in_final_response(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -482,7 +482,7 @@ class TestReasoningDetailsStream:
                 "index": 0,
             },
         ]
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -506,7 +506,7 @@ class TestReasoningDetailsStream:
         details = [
             {"type": "reasoning.encrypted", "data": "encrypted_data_here", "index": 0},
         ]
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -537,7 +537,7 @@ class TestReasoningDetailsStream:
         details = [
             {"type": "reasoning.summary", "summary": "Brief thought", "index": 0},
         ]
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -558,7 +558,7 @@ class TestReasoningDetailsStream:
     def test_details_preferred_over_content(self):
         """When reasoning_details is present, reasoning_content should be skipped."""
         detail = {"type": "reasoning.text", "text": "structured", "index": 0}
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -578,7 +578,7 @@ class TestReasoningDetailsStream:
 
     def test_encrypted_details_preferred_over_content(self):
         """Even encrypted-only details should suppress reasoning_content."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -600,7 +600,7 @@ class TestReasoningDetailsStream:
 
     def test_interleaved_text_and_encrypted(self):
         """Text → encrypted → text across chunks → 3 separate ReasoningItems."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -664,7 +664,7 @@ class TestReasoningDetailsStream:
 
     def test_interleaved_summary_and_encrypted(self):
         """Summary → encrypted → summary produces 3 items (summary variant)."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -715,7 +715,7 @@ class TestReasoningDetailsStream:
 
     def test_consecutive_encrypted_details(self):
         """Multiple encrypted blocks in a row → separate ReasoningItems each."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -772,7 +772,7 @@ class TestLogprobs:
 
     def test_logprobs_in_text_delta(self):
         lp = self._make_logprobs("Hi", -0.5)
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -788,7 +788,7 @@ class TestLogprobs:
     def test_logprobs_accumulated_in_text_done(self):
         lp1 = self._make_logprobs("A", -0.3)
         lp2 = self._make_logprobs("B", -0.7)
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -804,7 +804,7 @@ class TestLogprobs:
 
     def test_logprobs_in_final_content(self):
         lp = self._make_logprobs("X", -1.0)
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -822,7 +822,7 @@ class TestLogprobs:
         assert len(text_part.logprobs) == 1
 
     def test_no_logprobs_default(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -844,7 +844,7 @@ class TestLogprobs:
 
 class TestLifecycle:
     def test_sequence_numbers_monotonic(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -859,7 +859,7 @@ class TestLifecycle:
         assert len(set(seq_nums)) == len(seq_nums)  # all unique
 
     def test_response_created_and_in_progress(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -873,7 +873,7 @@ class TestLifecycle:
         assert events[0].response.status == "in_progress"
 
     def test_service_tier(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -891,7 +891,7 @@ class TestLifecycle:
             completion_tokens=20,
             total_tokens=30,
         )
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -908,7 +908,7 @@ class TestLifecycle:
 
 class TestFinishReasons:
     def test_length_incomplete(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect(
                 CompletionsStreamConverter(),
                 [
@@ -964,7 +964,7 @@ class TestConvertChoiceLogprobs:
 
 class TestLiteLLMThinkingBlocks:
     def test_single_block(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -990,7 +990,7 @@ class TestLiteLLMThinkingBlocks:
 
     def test_multi_chunk_consolidated(self):
         """Multiple chunks for one thinking segment get consolidated."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1025,7 +1025,7 @@ class TestLiteLLMThinkingBlocks:
         assert reasoning[0].encrypted_content == "sig_final"
 
     def test_redacted_block(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1048,7 +1048,7 @@ class TestLiteLLMThinkingBlocks:
 
     def test_interleaved_thinking_and_redacted(self):
         """Thinking → redacted → thinking produces 3 items with correct flags."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1105,7 +1105,7 @@ class TestLiteLLMThinkingBlocks:
 
         Real LiteLLM always sends reasoning_content alongside thinking_blocks.
         """
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1157,7 +1157,7 @@ class TestLiteLLMThinkingBlocks:
 
     def test_multi_chunk_with_redacted_block(self):
         """Thinking → redacted → thinking across chunks → 3 ReasoningItems."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1218,7 +1218,7 @@ class TestLiteLLMThinkingBlocks:
 
     def test_consecutive_redacted_blocks(self):
         """Multiple redacted blocks in a row → separate ReasoningItems each."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1246,7 +1246,7 @@ class TestLiteLLMThinkingBlocks:
         assert reasoning[1].encrypted_content == "enc_2"
 
     def test_thinking_blocks_preferred_over_reasoning_text(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1273,7 +1273,7 @@ class TestLiteLLMThinkingBlocks:
 
     def test_redacted_only_blocks_no_reasoning_content(self):
         """Redacted-only blocks emit inline during streaming, not at close."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1319,7 +1319,7 @@ class TestLiteLLMThinkingBlocks:
 
     def test_cache_control_on_thinking_block_ignored(self):
         """Anthropic ThinkingBlockParam does not support cache_control."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1347,7 +1347,7 @@ class TestLiteLLMThinkingBlocks:
 
 class TestLiteLLMAnnotations:
     def test_url_citations_in_output(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1378,7 +1378,7 @@ class TestLiteLLMAnnotations:
 
 class TestLiteLLMMetadata:
     def test_hidden_params_and_cost(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1406,7 +1406,7 @@ class TestLiteLLMMetadata:
         assert resp.usage_with_cost.cost == 0.001
 
     def test_response_ms(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1419,7 +1419,7 @@ class TestLiteLLMMetadata:
         assert resp.response_ms == 150.5
 
     def test_provider_specific_fields(self):
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1437,7 +1437,7 @@ class TestLiteLLMMetadata:
 
     def test_thought_signature_fallback(self):
         """When no thinking_blocks, signature from provider_specific_fields is used."""
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [
@@ -1472,7 +1472,7 @@ class TestLiteLLMLogprobs:
                 )
             ]
         )
-        events = asyncio.get_event_loop().run_until_complete(
+        events = asyncio.run(
             _collect_litellm(
                 LiteLLMStreamConverter(),
                 [

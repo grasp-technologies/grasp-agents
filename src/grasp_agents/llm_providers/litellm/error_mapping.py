@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import litellm
+from grasp_agents.llm_providers._http_helpers import parse_retry_after  # noqa: PLC2701
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
     LlmApiTimeoutError,
@@ -30,7 +31,12 @@ def map_api_error(err: Exception) -> LlmError | None:
         return LlmApiConnectionError(message=msg, request=err.request)
 
     if isinstance(err, litellm.RateLimitError):
-        return LlmRateLimitError(message=msg, response=err.response, body=err.body)
+        return LlmRateLimitError(
+            message=msg,
+            response=err.response,
+            body=err.body,
+            retry_after=parse_retry_after(err.response),
+        )
 
     if isinstance(err, litellm.ContentPolicyViolationError):
         return LlmContentFilterError()

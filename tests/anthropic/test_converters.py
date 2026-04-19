@@ -590,12 +590,8 @@ def _msg_stop() -> RawMessageStopEvent:
 
 
 class TestAnthropicStreamConverter:
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        self.loop = asyncio.get_event_loop()
-
     def _run(self, events: list[Any]) -> list[Any]:
-        return self.loop.run_until_complete(_collect_events(events))
+        return asyncio.run(_collect_events(events))
 
     def test_text_stream(self):
         """Basic text streaming: message_start → text block → deltas → stop."""
@@ -1109,12 +1105,8 @@ class TestWebSearchRoundtrip:
 class TestWebSearchStream:
     """Streaming web search → WebSearchCallItem events."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        self.loop = asyncio.get_event_loop()
-
     def _run(self, events: list[Any]) -> list[Any]:
-        return self.loop.run_until_complete(_collect_events(events))
+        return asyncio.run(_collect_events(events))
 
     def test_stream_web_search_produces_item_events(self):
         """server_tool_use + web_search_tool_result blocks emit OutputItemAdded/Done."""
@@ -1459,12 +1451,8 @@ class TestWebFetchRoundtrip:
 class TestWebFetchStream:
     """Streaming web_fetch → WebSearchCallItem events."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        self.loop = asyncio.get_event_loop()
-
     def _run(self, events: list[Any]) -> list[Any]:
-        return self.loop.run_until_complete(_collect_events(events))
+        return asyncio.run(_collect_events(events))
 
     def test_success(self):
         server_block = ServerToolUseBlock(

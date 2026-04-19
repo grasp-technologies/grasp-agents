@@ -833,7 +833,7 @@ def _final_chunk(
 
 class TestGeminiStreamConverter:
     def _run(self, chunks: list[GenerateContentResponse]) -> list[Any]:
-        return asyncio.get_event_loop().run_until_complete(_collect_events(chunks))
+        return asyncio.run(_collect_events(chunks))
 
     def test_simple_text_streaming(self):
         """Multiple text chunks → text deltas + done."""
@@ -1141,7 +1141,7 @@ class TestUrlContextStream:
     """Streaming url_context → WebSearchCallItem events."""
 
     def _run(self, chunks: list[GenerateContentResponse]) -> list[Any]:
-        return asyncio.get_event_loop().run_until_complete(_collect_events(chunks))
+        return asyncio.run(_collect_events(chunks))
 
     def test_success(self):
         url_ctx = UrlContextMetadata(
