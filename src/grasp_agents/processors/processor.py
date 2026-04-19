@@ -172,7 +172,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
     async def _deserialize_checkpoint(
         self, ctx: RunContext[CtxT], checkpoint_type: type[CpT]
     ) -> "CpT | None":
-        store = ctx.store
+        store = ctx.checkpoint_store
         if store is None or self._checkpoint_store_key is None:
             return None
 
@@ -202,7 +202,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         ctx: RunContext[CtxT],
         checkpoint: "ProcessorCheckpoint",
     ) -> None:
-        store = ctx.store
+        store = ctx.checkpoint_store
         if store is None or self._checkpoint_store_key is None:
             return
 

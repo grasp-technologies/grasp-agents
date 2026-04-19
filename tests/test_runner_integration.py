@@ -293,7 +293,7 @@ class TestRunnerDurability:
             recipients=[END_PROC_NAME],
         )
 
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](
             entry_proc=agent_a, procs=[agent_a, agent_b], ctx=ctx, name="r"
         )
@@ -438,7 +438,7 @@ class TestAgentCrashResume:
         crasher1 = _FailingProcessor("crasher", recipients=[END_PROC_NAME])
 
         entry1 = Passthrough(name="entry", recipients=["calculator"])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](
             entry_proc=entry1, procs=[entry1, agent1, crasher1], ctx=ctx1, name="r"
         )
@@ -481,7 +481,7 @@ class TestAgentCrashResume:
         crasher2.call_count = 1  # skip the failure
 
         entry2 = Passthrough(name="entry", recipients=["calculator"])
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](
             entry_proc=entry2, procs=[entry2, agent2, crasher2], ctx=ctx2, name="r"
         )
@@ -539,7 +539,7 @@ class TestAgentCrashResume:
                 raise RuntimeError("Deliberate crash on turn 2")
 
         entry1 = Passthrough(name="entry", recipients=["calculator"])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](
             entry_proc=entry1, procs=[entry1, agent1], ctx=ctx1, name="r"
         )
@@ -588,7 +588,7 @@ class TestAgentCrashResume:
         # No crash hook on agent2
 
         entry2 = Passthrough(name="entry", recipients=["calculator"])
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](
             entry_proc=entry2, procs=[entry2, agent2], ctx=ctx2, name="r"
         )
@@ -650,7 +650,7 @@ class TestWorkflowCrashResume:
         )
 
         entry1 = Passthrough(name="entry", recipients=["draft_refine"])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](
             entry_proc=entry1, procs=[entry1, wf1], ctx=ctx1, name="r"
         )
@@ -687,7 +687,7 @@ class TestWorkflowCrashResume:
         )
 
         entry2 = Passthrough(name="entry", recipients=["draft_refine"])
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](
             entry_proc=entry2, procs=[entry2, wf2], ctx=ctx2, name="r"
         )

@@ -196,7 +196,7 @@ def _make_agent(
         stream_llm_responses=True,
         session_id=session_id,
     )
-    ctx: RunContext[None] = RunContext(store=store)
+    ctx: RunContext[None] = RunContext(checkpoint_store=store)
     return agent, ctx
 
 
@@ -578,7 +578,7 @@ class TestAgentSessionPersistence:
             session_id="s1",
             session_metadata={"pathway_id": "pw_123"},
         )
-        ctx: RunContext[None] = RunContext(store=store)
+        ctx: RunContext[None] = RunContext(checkpoint_store=store)
         await agent.run("hi", ctx=ctx)
 
         data = await store.load("agent/s1")
@@ -937,7 +937,7 @@ class TestResumeIntegration:
             crash_after_step=1,
             session_id="wf1",
         )
-        ctx1: RunContext[None] = RunContext(store=store)
+        ctx1: RunContext[None] = RunContext(checkpoint_store=store)
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream(in_args="start", ctx=ctx1, exec_id="e1"):
@@ -966,7 +966,7 @@ class TestResumeIntegration:
             subprocs=[a2, agent2],
             session_id="wf1",
         )
-        ctx2: RunContext[None] = RunContext(store=store)
+        ctx2: RunContext[None] = RunContext(checkpoint_store=store)
 
         async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
             pass
@@ -1006,7 +1006,7 @@ class TestResumeIntegration:
             crash_after_step=1,
             session_id="wf2",
         )
-        ctx1: RunContext[None] = RunContext(store=store)
+        ctx1: RunContext[None] = RunContext(checkpoint_store=store)
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream("start", ctx=ctx1, exec_id="e1"):
@@ -1030,7 +1030,7 @@ class TestResumeIntegration:
             subprocs=[agent2, b2],
             session_id="wf2",
         )
-        ctx2: RunContext[None] = RunContext(store=store)
+        ctx2: RunContext[None] = RunContext(checkpoint_store=store)
 
         payloads: list[str] = []
         async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
@@ -1105,7 +1105,7 @@ class TestResumeIntegration:
             stream_llm_responses=True,
             recipients=[END_PROC_NAME],
         )
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](
             entry_proc=a2,
             procs=[a2, agent2],
@@ -1286,7 +1286,7 @@ class TestTaskRecordPersistence:
             stream_llm_responses=True,
             session_id="s1",
         )
-        ctx: RunContext[None] = RunContext(store=store)
+        ctx: RunContext[None] = RunContext(checkpoint_store=store)
 
         await agent.run("go", ctx=ctx)
 

@@ -26,11 +26,12 @@ Processor Hooks:
     WorkflowLoopTerminator — determines when a looped workflow exits
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.packet import Packet
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.types.content import Content
@@ -90,7 +91,7 @@ class BeforeToolHook(Protocol[CtxT]):
         tool_calls: Sequence[FunctionToolCallItem],
         ctx: RunContext[CtxT],
         exec_id: str,
-    ) -> None: ...
+    ) -> Mapping[str, ToolCallDecision] | None: ...
 
 
 class AfterToolHook(Protocol[CtxT]):

@@ -288,7 +288,7 @@ class TestRunnerCheckpoint:
         store = InMemoryCheckpointStore()
         a = AppendProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
         runner.setup_session("run-1")
 
@@ -306,7 +306,7 @@ class TestRunnerCheckpoint:
         store = InMemoryCheckpointStore()
         a = AppendProcessor("A", recipients=["B"])
         b = FailOnCallProcessor("B", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
         runner.setup_session("run-2")
 
@@ -329,7 +329,7 @@ class TestRunnerCheckpoint:
         par.recipients = [END_PROC_NAME]
         splitter = FanOutProcessor("splitter", recipients=[par.name])
 
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](
             entry_proc=splitter, procs=[splitter, par], ctx=ctx, name="r"
         )
@@ -355,7 +355,7 @@ class TestRunnerResume:
 
         a1 = CountingProcessor("A", recipients=["B"])
         b1 = FailOnCallProcessor("B", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1, b1], ctx=ctx1, name="r")
         runner1.setup_session("run-r1")
 
@@ -367,7 +367,7 @@ class TestRunnerResume:
         # Resume
         a2 = CountingProcessor("A", recipients=["B"])
         b2 = CountingProcessor("B", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](entry_proc=a2, procs=[a2, b2], ctx=ctx2, name="r")
         runner2.setup_session("run-r1")
 
@@ -384,7 +384,7 @@ class TestRunnerResume:
         a1 = CountingProcessor("A", recipients=["B"])
         b1 = CountingProcessor("B", recipients=["C"])
         c1 = FailOnCallProcessor("C", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](
             entry_proc=a1, procs=[a1, b1, c1], ctx=ctx1, name="r"
         )
@@ -396,7 +396,7 @@ class TestRunnerResume:
         a2 = CountingProcessor("A", recipients=["B"])
         b2 = CountingProcessor("B", recipients=["C"])
         c2 = CountingProcessor("C", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](
             entry_proc=a2, procs=[a2, b2, c2], ctx=ctx2, name="r"
         )
@@ -417,7 +417,7 @@ class TestRunnerResume:
         b1 = CountingProcessor("B", recipients=["D"])
         c1 = FailOnCallProcessor("C", fail_on_call=1, recipients=["D"])
         d1 = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](
             entry_proc=a1, procs=[a1, b1, c1, d1], ctx=ctx1, name="r"
         )
@@ -431,7 +431,7 @@ class TestRunnerResume:
         b2 = CountingProcessor("B", recipients=["D"])
         c2 = CountingProcessor("C", recipients=["D"])
         d2 = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner2 = Runner[str, None](
             entry_proc=a2, procs=[a2, b2, c2, d2], ctx=ctx2, name="r"
         )
@@ -449,7 +449,7 @@ class TestRunnerResume:
 
         a1 = AppendProcessor("A", recipients=["B"])
         b1 = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1, b1], ctx=ctx1, name="r")
         runner1.setup_session("run-noop")
 
@@ -477,7 +477,7 @@ class TestRunnerComposableCheckpointing:
         splitter.recipients = [par.name]
         par.recipients = ["collector"]
 
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](
             entry_proc=splitter,
             procs=[splitter, par, collector],
@@ -534,7 +534,7 @@ class TestRunnerCorruptCheckpoint:
         await store.save("runner/sess-corrupt", b"not valid json at all")
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
         runner.setup_session("sess-corrupt")
 
@@ -558,7 +558,7 @@ class TestRunnerCorruptCheckpoint:
         )
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
         runner.setup_session("sess-done")
 

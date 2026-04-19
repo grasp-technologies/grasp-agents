@@ -372,7 +372,7 @@ class TestRecursiveCheckpointStorage:
             name="wf", subprocs=[fan, par, collect]
         )
         wf.setup_session("s1")
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         result = await collect_payloads(wf, ctx, in_args="start")
         assert sorted(result) == [
@@ -404,7 +404,7 @@ class TestRecursiveCheckpointStorage:
         a = AppendProcessor("A")
         outer = SequentialWorkflow[str, str, None](name="outer", subprocs=[a, inner])
         outer.setup_session("s2")
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         result = await collect_payloads(outer, ctx, in_args="start")
         assert result == ["start->A->X->Y"]
@@ -425,7 +425,7 @@ class TestRecursiveCheckpointStorage:
         fan = FanOutProcessor("fan")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan, par])
         wf.setup_session("deep")
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         await collect_payloads(wf, ctx, in_args="start")
 
@@ -460,7 +460,7 @@ class TestRecursiveResume:
             crash_after_step=1,
             session_id="r1",
         )
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -483,7 +483,7 @@ class TestRecursiveResume:
         wf2 = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[fan2, par2, collect2], session_id="r1"
         )
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -515,7 +515,7 @@ class TestRecursiveResume:
             crash_after_step=1,
             session_id="r2",
         )
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -536,7 +536,7 @@ class TestRecursiveResume:
         wf2 = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[fan2, par2, collect2], session_id="r2"
         )
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -569,7 +569,7 @@ class TestRecursiveResume:
             crash_after_step=1,
             session_id="r3",
         )
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -588,7 +588,7 @@ class TestRecursiveResume:
         outer2 = SequentialWorkflow[str, str, None](
             name="outer", subprocs=[a2, inner2], session_id="r3"
         )
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -626,7 +626,7 @@ class TestRecursiveResume:
         outer1 = SequentialWorkflow[str, str, None](
             name="outer", subprocs=[fan1, inner1], session_id="r4"
         )
-        ctx1: RunContext[None] = RunContext(state=None, store=store)
+        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -659,7 +659,7 @@ class TestRecursiveResume:
         outer2 = SequentialWorkflow[str, str, None](
             name="outer", subprocs=[fan2, inner2], session_id="r4"
         )
-        ctx2: RunContext[None] = RunContext(state=None, store=store)
+        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -687,7 +687,7 @@ class TestRecursiveResume:
         )
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
         runner = Runner[str, None](
             entry_proc=entry, procs=[entry, wf], ctx=ctx, name="r"
         )

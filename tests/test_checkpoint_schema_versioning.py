@@ -181,7 +181,7 @@ class TestDeserializePropagation:
             name="wf", subprocs=[_Appender("A"), _Appender("B")]
         )
         wf.setup_session("s-future")
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         future_blob = json.dumps(
             {
@@ -209,7 +209,7 @@ class TestDeserializePropagation:
             name="wf", subprocs=[_Appender("A"), _Appender("B")]
         )
         wf.setup_session("s-corrupt")
-        ctx: RunContext[None] = RunContext(state=None, store=store)
+        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
 
         await store.save("workflow/s-corrupt", b"{not valid json")
 

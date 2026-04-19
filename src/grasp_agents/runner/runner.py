@@ -102,7 +102,7 @@ class Runner(Generic[OutT, CtxT]):
         return f"runner/{self._session_id}"
 
     async def _load_checkpoint(self) -> RunnerCheckpoint | None:
-        store = self._ctx.store
+        store = self._ctx.checkpoint_store
         if store is None or self._checkpoint_store_key is None:
             return None
         data = await store.load(self._checkpoint_store_key)
@@ -131,7 +131,7 @@ class Runner(Generic[OutT, CtxT]):
         self,
         pending_events: dict[str, ProcPacketOutEvent] | None = None,
     ) -> None:
-        store = self._ctx.store
+        store = self._ctx.checkpoint_store
         if store is None or self._session_id is None:
             return
         assert self._checkpoint_store_key is not None

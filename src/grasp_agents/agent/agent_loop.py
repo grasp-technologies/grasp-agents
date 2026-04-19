@@ -31,6 +31,20 @@ from ..types.events import (
 )
 from .background_tasks import BackgroundTaskManager
 from .llm_agent_memory import LLMAgentMemory
+from .loop_state import (
+    NextStep,
+    NextStepContinue,
+    NextStepForceFinalAnswer,
+    NextStepRunTools,
+    NextStepStop,
+    decide_next_step,
+)
+from .tool_decision import (
+    AllowTool,
+    RaiseToolException,
+    RejectToolContent,
+    ToolCallDecision,
+)
 
 if TYPE_CHECKING:
     from ..types.hooks import (
@@ -256,9 +270,12 @@ class AgentLoop(Generic[CtxT]):
         tool_calls: Sequence[FunctionToolCallItem],
         ctx: RunContext[CtxT],
         exec_id: str,
-    ) -> None:
+    ) -> Mapping[str, ToolCallDecision] | None:
         if self.before_tool_hook is not None:
-            await self.before_tool_hook(tool_calls=tool_calls, ctx=ctx, exec_id=exec_id)
+            return await self.before_tool_hook(
+                tool_calls=tool_calls, ctx=ctx, exec_id=exec_id
+            )
+        return None
 
     async def on_after_tool(
         self,
@@ -596,30 +613,32 @@ class AgentLoop(Generic[CtxT]):
             return "none"  # first turn or just acted → reason
         return "required"  # just reasoned → must act
 
-    def _check_stop(
+    def _decide_next_step(
         self,
         response: Response,
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-    ) -> StopReason | None:
-        """Single decision point for all loop termination conditions."""
+    ) -> NextStep:
+        """
+        Classify the post-ACT loop transition.
+
+        Delegates to the pure :func:`decide_next_step` so the JUDGE-phase
+        state machine can be tested without mocking the loop.
+        """
         final = self._extract_final_answer(
             response=response,
             ctx=ctx,
             exec_id=exec_id,
             num_turns=self.turn,
         )
-        if final is not None:
-            if self.bg_tasks.has_pending and self.turn < self.max_turns:
-                return None  # suppress, we have turns left to wait
-            self.final_answer = final
-            return StopReason.FINAL_ANSWER
-
-        if self.turn >= self.max_turns:
-            return StopReason.MAX_TURNS
-
-        return None
+        return decide_next_step(
+            final_answer=final,
+            tool_calls=response.tool_call_items,
+            turn=self.turn,
+            max_turns=self.max_turns,
+            bg_tasks_pending=self.bg_tasks.has_pending,
+        )
 
     def _close_dangling_tool_calls(
         self, response: Response
@@ -646,6 +665,242 @@ class AgentLoop(Generic[CtxT]):
         self.memory.update(cancellations)
 
         return cancellations
+
+    # --- Per-state handlers (dispatched from execute_stream) ---
+
+    async def _handle_stop(
+        self,
+        step: NextStepStop,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+    ) -> AsyncIterator[Event[Any]]:
+        """``NextStepStop``: final answer extracted, end loop cleanly."""
+        self.final_answer = step.final_answer
+        await self.checkpoint(
+            ctx,
+            turn=self.turn,
+            location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
+            output=self.final_answer,
+        )
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(
+                turn=self.turn,
+                had_tool_calls=False,
+                stop_reason=step.stop_reason,
+            ),
+        )
+
+    async def _handle_force_final_answer(
+        self,
+        response: Response,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+        extra_llm_settings: dict[str, Any],
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        ``NextStepForceFinalAnswer``: turn budget exhausted.
+
+        Cancels background tasks, closes dangling tool calls, force-generates
+        a final answer, and ends the loop with ``stop_reason=MAX_TURNS``.
+        """
+        await self.bg_tasks.cancel_all(ctx=ctx)
+        self._close_dangling_tool_calls(response)
+
+        async for event in self._force_generate_final_answer_stream(
+            ctx=ctx,
+            exec_id=exec_id,
+            extra_llm_settings=extra_llm_settings,
+        ):
+            yield event
+
+        await self.checkpoint(
+            ctx,
+            turn=self.turn,
+            location=AgentCheckpointLocation.AFTER_MAX_TURNS,
+            output=self.final_answer,
+        )
+
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(
+                turn=self.turn,
+                had_tool_calls=False,
+                stop_reason=StopReason.MAX_TURNS,
+            ),
+        )
+
+        logger.info(
+            "Max turns reached: %s. Exiting the tool call loop.",
+            self.max_turns,
+        )
+
+    async def _handle_run_tools(
+        self,
+        step: NextStepRunTools,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+    ) -> AsyncIterator[Event[Any]]:
+        r"""
+        ``NextStepRunTools``: execute tools, checkpoint, emit TurnEnd.
+
+        Non-terminal: caller continues the loop after this handler completes.
+
+        Before any tool runs, the ``BeforeToolHook`` is consulted for
+        per-call :class:`ToolCallDecision`\ s. A :class:`RaiseToolException`
+        anywhere aborts the batch; :class:`RejectToolContent` synthesizes
+        a tool output and skips execution; otherwise the call runs
+        normally.
+        """
+        decisions = await self.on_before_tool(
+            tool_calls=step.tool_calls, ctx=ctx, exec_id=exec_id
+        )
+        # RaiseToolException aborts the whole batch — check before
+        # synthesizing any rejections so we don't leak partial state.
+        if decisions:
+            for decision in decisions.values():
+                if isinstance(decision, RaiseToolException):
+                    raise decision.exception
+
+        tool_messages: list[FunctionToolOutputItem] = []
+        allowed_calls: list[FunctionToolCallItem] = []
+        rejection_msgs: list[FunctionToolOutputItem] = []
+
+        for call in step.tool_calls:
+            decision = (decisions or {}).get(call.call_id, AllowTool())
+            if isinstance(decision, RejectToolContent):
+                msg = FunctionToolOutputItem.from_tool_result(
+                    call_id=call.call_id, output=decision.content
+                )
+                tool_messages.append(msg)
+                rejection_msgs.append(msg)
+                self.memory.update([msg], ctx=ctx)
+                yield ToolResultEvent(
+                    source=call.name,
+                    destination=self.agent_name,
+                    exec_id=exec_id,
+                    data=msg,
+                )
+            else:
+                allowed_calls.append(call)
+
+        if rejection_msgs and ctx.printer:
+            ctx.printer.print_messages(
+                rejection_msgs,
+                agent_name=self.agent_name,
+                exec_id=exec_id,
+            )
+
+        if allowed_calls:
+            async for event in self.execute_tools_stream(
+                allowed_calls, ctx=ctx, exec_id=exec_id
+            ):
+                if isinstance(event, ToolResultEvent):
+                    tool_messages.append(event.data)
+                yield event
+
+        await self.on_after_tool(
+            tool_calls=step.tool_calls,
+            tool_messages=tool_messages,
+            ctx=ctx,
+            exec_id=exec_id,
+        )
+
+        await self.checkpoint(
+            ctx,
+            turn=self.turn,
+            location=AgentCheckpointLocation.AFTER_TOOL_RESULT,
+        )
+
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(turn=self.turn, had_tool_calls=True),
+        )
+
+    async def _handle_continue(
+        self,
+        *,
+        exec_id: str,
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        ``NextStepContinue``: no tools, no final answer — just emit TurnEnd.
+
+        Non-terminal: reached on reason-turns under ``force_react_mode`` or
+        when a final answer is suppressed by pending background tasks.
+        """
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
+        )
+
+    # --- ACT phase ---
+
+    async def _run_act_stream(
+        self,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+        extra_llm_settings: dict[str, Any],
+        had_tool_calls: bool,
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        ACT phase: prepare settings, query the LLM, observe the response.
+
+        Dispatches ``on_before_llm`` / ``on_after_llm`` hooks around the LLM
+        call, yields all streaming events from :meth:`query_llm`, and
+        concludes with a :class:`GenerationEndEvent` carrying the response.
+        Symmetric with :meth:`_force_generate_final_answer_stream`, which
+        wraps ``query_llm`` with the same :class:`ResponseCapture` idiom.
+
+        Callers receive the response via :class:`ResponseCapture` around
+        this stream.
+        """
+        settings = deepcopy(extra_llm_settings)
+        await self.on_before_llm(
+            extra_llm_settings=settings,
+            num_turns=self.turn,
+            ctx=ctx,
+            exec_id=exec_id,
+        )
+
+        tool_choice: ToolChoice | None = None
+        if self._tools:
+            tool_choice = self._compute_tool_choice(had_tool_calls)
+        tool_choice = settings.pop("tool_choice", tool_choice)
+
+        stream = ResponseCapture(
+            self.query_llm(
+                tool_choice=tool_choice,
+                extra_llm_settings=settings,
+                exec_id=exec_id,
+                ctx=ctx,
+            ),
+        )
+        async for event in stream:
+            yield event
+
+        response = stream.response
+        assert response is not None
+
+        await self.on_after_llm(
+            response,
+            num_turns=self.turn,
+            ctx=ctx,
+            exec_id=exec_id,
+        )
+
+        yield GenerationEndEvent(
+            source=self.agent_name, exec_id=exec_id, data=response
+        )
+
+    # --- Main execution loop ---
 
     async def execute_stream(
         self,
@@ -687,138 +942,54 @@ class AgentLoop(Generic[CtxT]):
 
                 # ── ACT: LLM generates response ──
 
-                settings = deepcopy(extra_llm_settings or {})
-                await self.on_before_llm(
-                    extra_llm_settings=settings,
-                    num_turns=self.turn,
-                    ctx=ctx,
-                    exec_id=exec_id,
-                )
-
-                tool_choice: ToolChoice | None = None
-                if self._tools:
-                    tool_choice = self._compute_tool_choice(had_tool_calls)
-                tool_choice = settings.pop("tool_choice", tool_choice)
-
-                stream = ResponseCapture(
-                    self.query_llm(
-                        tool_choice=tool_choice,
-                        extra_llm_settings=settings,
-                        exec_id=exec_id,
+                act = ResponseCapture(
+                    self._run_act_stream(
                         ctx=ctx,
+                        exec_id=exec_id,
+                        extra_llm_settings=extra_llm_settings or {},
+                        had_tool_calls=had_tool_calls,
                     ),
                 )
-                async for event in stream:
+                async for event in act:
                     yield event
 
-                assert stream.response is not None
-                response = stream.response
+                assert act.response is not None
+                response = act.response
 
-                await self.on_after_llm(
-                    response,
-                    num_turns=self.turn,
-                    ctx=ctx,
-                    exec_id=exec_id,
-                )
+                # ── JUDGE: classify next transition ──
 
-                yield GenerationEndEvent(
-                    source=self.agent_name, exec_id=exec_id, data=response
-                )
+                step = self._decide_next_step(response, ctx=ctx, exec_id=exec_id)
 
-                # ── JUDGE: should the loop stop? ──
+                # ── Dispatch to per-state handler ──
 
-                stop = self._check_stop(response, ctx=ctx, exec_id=exec_id)
-
-                if stop == StopReason.FINAL_ANSWER:
-                    await self.checkpoint(
-                        ctx,
-                        turn=self.turn,
-                        location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
-                        output=self.final_answer,
-                    )
-
-                    yield TurnEndEvent(
-                        source=self.agent_name,
-                        exec_id=exec_id,
-                        data=TurnEndInfo(
-                            turn=self.turn,
-                            had_tool_calls=False,
-                            stop_reason=StopReason.FINAL_ANSWER,
-                        ),
-                    )
+                if isinstance(step, NextStepStop):
+                    async for event in self._handle_stop(
+                        step, ctx=ctx, exec_id=exec_id
+                    ):
+                        yield event
                     return
 
-                if stop == StopReason.MAX_TURNS:
-                    await self.bg_tasks.cancel_all(ctx=ctx)
-                    self._close_dangling_tool_calls(response)
-
-                    async for event in self._force_generate_final_answer_stream(
+                if isinstance(step, NextStepForceFinalAnswer):
+                    async for event in self._handle_force_final_answer(
+                        response,
                         ctx=ctx,
                         exec_id=exec_id,
                         extra_llm_settings=deepcopy(extra_llm_settings or {}),
                     ):
                         yield event
-
-                    await self.checkpoint(
-                        ctx,
-                        turn=self.turn,
-                        location=AgentCheckpointLocation.AFTER_MAX_TURNS,
-                        output=self.final_answer,
-                    )
-
-                    yield TurnEndEvent(
-                        source=self.agent_name,
-                        exec_id=exec_id,
-                        data=TurnEndInfo(
-                            turn=self.turn,
-                            had_tool_calls=False,
-                            stop_reason=StopReason.MAX_TURNS,
-                        ),
-                    )
-
-                    logger.info(
-                        "Max turns reached: %s. Exiting the tool call loop.",
-                        self.max_turns,
-                    )
-
                     return
 
-                # ── OBSERVE: execute tools ──
-
-                tool_calls = response.tool_call_items
-                if tool_calls:
-                    await self.on_before_tool(
-                        tool_calls=tool_calls, ctx=ctx, exec_id=exec_id
-                    )
-
-                    tool_messages: list[FunctionToolOutputItem] = []
-                    async for event in self.execute_tools_stream(
-                        tool_calls, ctx=ctx, exec_id=exec_id
+                if isinstance(step, NextStepRunTools):
+                    async for event in self._handle_run_tools(
+                        step, ctx=ctx, exec_id=exec_id
                     ):
-                        if isinstance(event, ToolResultEvent):
-                            tool_messages.append(event.data)
+                        yield event
+                else:
+                    assert isinstance(step, NextStepContinue)
+                    async for event in self._handle_continue(exec_id=exec_id):
                         yield event
 
-                    await self.on_after_tool(
-                        tool_calls=tool_calls,
-                        tool_messages=tool_messages,
-                        ctx=ctx,
-                        exec_id=exec_id,
-                    )
-
-                    await self.checkpoint(
-                        ctx,
-                        turn=self.turn,
-                        location=AgentCheckpointLocation.AFTER_TOOL_RESULT,
-                    )
-
-                yield TurnEndEvent(
-                    source=self.agent_name,
-                    exec_id=exec_id,
-                    data=TurnEndInfo(turn=self.turn, had_tool_calls=bool(tool_calls)),
-                )
-
-                had_tool_calls = bool(tool_calls)
+                had_tool_calls = isinstance(step, NextStepRunTools)
                 self.turn += 1
 
         finally:

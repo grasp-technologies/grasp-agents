@@ -45,6 +45,7 @@ from ..utils.validation import validate_obj_from_json_or_py_string
 from .agent_loop import AgentLoop
 from .llm_agent_memory import LLMAgentMemory
 from .prompt_builder import PromptBuilder
+from .tool_decision import ToolCallDecision
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +240,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         """
         Dynamically set up session persistence for this agent.
 
-        Store is read from ``ctx.store`` at runtime.
+        Store is read from ``ctx.checkpoint_store`` at runtime.
         """
         super().setup_session(session_id)
         self._loop.checkpoint_callback = self.save_checkpoint
@@ -531,7 +532,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         tool_calls: Sequence[FunctionToolCallItem],
         ctx: RunContext[CtxT],
         exec_id: str,
-    ) -> None:
+    ) -> Mapping[str, ToolCallDecision] | None:
         raise NotImplementedError
 
     async def on_after_tool_impl(

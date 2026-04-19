@@ -117,11 +117,11 @@ class BackgroundTaskManager(Generic[CtxT]):
         child_session_id: str | None = None
 
         # Resumable tools get their own child session
-        if tool.resumable and ctx.store and self.session_id:
+        if tool.resumable and ctx.checkpoint_store and self.session_id:
             child_session_id = f"child/{self.session_id}/{task_id}"
 
         # Persist task record BEFORE spawning — survives crashes
-        if ctx.store and self.session_id:
+        if ctx.checkpoint_store and self.session_id:
             record = TaskRecord(
                 task_id=task_id,
                 parent_session_id=self.session_id,
@@ -130,7 +130,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                 tool_call_arguments=call.arguments,
                 child_session_id=child_session_id,
             )
-            await ctx.store.save(record.store_key, record.model_dump_json().encode())
+            await ctx.checkpoint_store.save(record.store_key, record.model_dump_json().encode())
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.run_stream(
@@ -206,9 +206,9 @@ class BackgroundTaskManager(Generic[CtxT]):
             self._memory.update([notification])
 
             # Mark record as DELIVERED
-            if ctx.store and self.session_id:
+            if ctx.checkpoint_store and self.session_id:
                 key = f"task/{self.session_id}/{pt.task_id}"
-                existing = await ctx.store.load(key)
+                existing = await ctx.checkpoint_store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
                     record = record.model_copy(
@@ -219,7 +219,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                             "updated_at": datetime.now(UTC),
                         }
                     )
-                    await ctx.store.save(key, record.model_dump_json().encode())
+                    await ctx.checkpoint_store.save(key, record.model_dump_json().encode())
 
             yield BackgroundTaskCompletedEvent(
                 source=self._agent_name,
@@ -241,7 +241,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
     async def cancel_all(self, ctx: RunContext[CtxT] | None = None) -> None:
         """Cancel all pending background tasks and wait for cleanup."""
-        store = ctx.store if ctx else None
+        store = ctx.checkpoint_store if ctx else None
 
         if store and self.session_id:
             for pt in self._tasks.values():
@@ -274,7 +274,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         exec_id: str | None = None,
     ) -> None:
         """On resume, re-spawn or notify about interrupted background tasks."""
-        store = ctx.store if ctx else None
+        store = ctx.checkpoint_store if ctx else None
         if not store or not self.session_id:
             return
 
@@ -363,7 +363,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         """Re-spawn a child task from its session checkpoint."""
         if not record.child_session_id or not ctx or not exec_id:
             return False
-        if not ctx.store:
+        if not ctx.checkpoint_store:
             return False
 
         tool = self._tools.get(record.tool_name) if self._tools else None

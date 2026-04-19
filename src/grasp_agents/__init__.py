@@ -2,9 +2,38 @@
 
 
 from .agent.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
+from .agent.approval_callback import (
+    DEFAULT_DENY_MESSAGE,
+    ApprovalCallback,
+    build_callback_approval,
+)
+from .agent.approval_store import (
+    ApprovalAllow,
+    ApprovalDecision,
+    ApprovalDeny,
+    ApprovalScope,
+    ApprovalStore,
+    InMemoryApprovalStore,
+    PendingApproval,
+    build_store_approval,
+)
 from .agent.function_tool import FunctionTool, function_tool
 from .agent.llm_agent import LLMAgent
 from .agent.llm_agent_memory import LLMAgentMemory
+from .agent.loop_state import (
+    NextStep,
+    NextStepContinue,
+    NextStepForceFinalAnswer,
+    NextStepRunTools,
+    NextStepStop,
+    decide_next_step,
+)
+from .agent.tool_decision import (
+    AllowTool,
+    RaiseToolException,
+    RejectToolContent,
+    ToolCallDecision,
+)
 from .console import EventConsole, stream_events
 from .durability import (
     AgentCheckpoint,
@@ -40,6 +69,7 @@ from .types.events import (
     ProcPacketOutEvent,
     ReasoningItemEvent,
     RunPacketOutEvent,
+    StopReason,
     ToolCallItemEvent,
     ToolResultEvent,
     TurnEndEvent,
@@ -90,11 +120,19 @@ except ImportError:
     pass
 
 __all__ = [
+    "DEFAULT_DENY_MESSAGE",
     "LLM",
     "AgentCheckpoint",
     "AgentPromptBuilder",
     "AgentTool",
     "AgentToolInput",
+    "AllowTool",
+    "ApprovalAllow",
+    "ApprovalCallback",
+    "ApprovalDecision",
+    "ApprovalDeny",
+    "ApprovalScope",
+    "ApprovalStore",
     "AssistantMessage",
     "BackgroundTaskCompletedEvent",
     "BackgroundTaskInfo",
@@ -108,6 +146,7 @@ __all__ = [
     "FallbackLLM",
     "FunctionTool",
     "GenerationEndEvent",
+    "InMemoryApprovalStore",
     "InMemoryCheckpointStore",
     "InputImage",
     "InputRenderable",
@@ -134,20 +173,30 @@ __all__ = [
     "MCPServerStdio",
     "MCPTool",
     "Memory",
+    "NextStep",
+    "NextStepContinue",
+    "NextStepForceFinalAnswer",
+    "NextStepRunTools",
+    "NextStepStop",
     "OutputMessageItemEvent",
     "Packet",
     "ParallelProcessor",
+    "PendingApproval",
     "Printer",
     "ProcName",
     "Processor",
+    "RaiseToolException",
     "ReasoningItemEvent",
     "RecoveryHint",
+    "RejectToolContent",
     "Response",
     "RetryPolicy",
     "RunContext",
+    "StopReason",
     "SystemMessage",
     "TaskRecord",
     "TaskStatus",
+    "ToolCallDecision",
     "ToolCallItemEvent",
     "ToolInputConverter",
     "ToolProgressCallback",
@@ -156,8 +205,11 @@ __all__ = [
     "TurnStartEvent",
     "UserMessage",
     "WebSearchCallItem",
+    "build_callback_approval",
+    "build_store_approval",
     "classify_error",
     "count_tokens",
+    "decide_next_step",
     "exclude_fields",
     "function_tool",
     "get_context_window",
