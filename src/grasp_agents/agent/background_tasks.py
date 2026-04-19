@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from ..durability.checkpoints import CheckpointSchemaError
 from ..durability.task_record import TaskRecord, TaskStatus
 from ..run_context import CtxT, RunContext
 from ..types.events import (
@@ -285,6 +286,8 @@ class BackgroundTaskManager(Generic[CtxT]):
 
             try:
                 record = TaskRecord.model_validate_json(data)
+            except CheckpointSchemaError:
+                raise
             except Exception:
                 logger.warning(
                     "Corrupt task record at %s, skipping",

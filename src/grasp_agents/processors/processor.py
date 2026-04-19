@@ -16,6 +16,7 @@ from grasp_agents.types.errors import (
     ProcRunError,
 )
 
+from ..durability.checkpoints import CheckpointSchemaError
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
@@ -181,6 +182,8 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
 
         try:
             checkpoint = checkpoint_type.model_validate_json(data)
+        except CheckpointSchemaError:
+            raise
         except Exception:
             logger.warning(
                 "Corrupt checkpoint %s for %s, starting fresh",

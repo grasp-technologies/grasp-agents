@@ -1,12 +1,21 @@
 # pyright: reportUnusedImport=false
 
 from .checkpoint_store import CheckpointStore, InMemoryCheckpointStore
-from .checkpoints import AgentCheckpoint, RunnerCheckpoint
+from .checkpoints import (
+    CURRENT_SCHEMA_VERSION,
+    SCHEMA_VERSION_SUMMARIES,
+    AgentCheckpoint,
+    CheckpointSchemaError,
+    RunnerCheckpoint,
+)
 from .resume import InterruptionType, ResumeState, prepare_messages_for_resume
 from .task_record import TaskRecord, TaskStatus
 
 __all__ = [
+    "CURRENT_SCHEMA_VERSION",
+    "SCHEMA_VERSION_SUMMARIES",
     "AgentCheckpoint",
+    "CheckpointSchemaError",
     "CheckpointStore",
     "InMemoryCheckpointStore",
     "InterruptionType",

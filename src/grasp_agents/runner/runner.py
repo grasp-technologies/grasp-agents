@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from grasp_agents.telemetry import SpanKind, traced
 
-from ..durability.checkpoints import RunnerCheckpoint
+from ..durability.checkpoints import CheckpointSchemaError, RunnerCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
@@ -110,6 +110,8 @@ class Runner(Generic[OutT, CtxT]):
             return None
         try:
             checkpoint = RunnerCheckpoint.model_validate_json(data)
+        except CheckpointSchemaError:
+            raise
         except Exception:
             logger.warning(
                 "Corrupt runner checkpoint %s, starting fresh",

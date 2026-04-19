@@ -1,13 +1,41 @@
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from grasp_agents.packet import Packet
 from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
+
+CURRENT_SCHEMA_VERSION: int = 1
+"""
+Version of the persisted checkpoint / task-record schema.
+
+Bump when the shape of any ``ProcessorCheckpoint`` subclass or ``TaskRecord``
+changes in a way that older code could not load. Add an entry to
+``SCHEMA_VERSION_SUMMARIES`` describing what changed.
+"""
+
+SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
+    1: "Initial versioned schema for processor checkpoints and task records.",
+}
+"""
+One-line summary per schema version. The current version MUST have an entry.
+Kept alongside ``CURRENT_SCHEMA_VERSION`` so that a mismatch on load can tell
+the operator what they are missing.
+"""
+
+
+class CheckpointSchemaError(Exception):
+    """
+    Raised when a persisted checkpoint or task record was written by a newer
+    schema version than this process understands. Inherits directly from
+    ``Exception`` (not ``ValueError``) so it propagates through Pydantic
+    model validators as-is rather than being wrapped in ``ValidationError``,
+    and so callers can distinguish it from generic corruption.
+    """
 
 
 class AgentCheckpointLocation(Enum):
@@ -22,11 +50,25 @@ class AgentCheckpointLocation(Enum):
 class ProcessorCheckpoint(BaseModel):
     """Base checkpoint for any resumable processor."""
 
+    schema_version: int = Field(default=CURRENT_SCHEMA_VERSION)
     session_id: str
     processor_name: str
     checkpoint_number: int = 0
     saved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     session_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_schema_version(self) -> Self:
+        if self.schema_version > CURRENT_SCHEMA_VERSION:
+            known = ", ".join(
+                f"{v}: {s}" for v, s in sorted(SCHEMA_VERSION_SUMMARIES.items())
+            )
+            raise CheckpointSchemaError(
+                f"Checkpoint schema version {self.schema_version} is newer than "
+                f"this process understands (current={CURRENT_SCHEMA_VERSION}). "
+                f"Known versions: {known}."
+            )
+        return self
 
 
 class AgentCheckpoint(ProcessorCheckpoint):
