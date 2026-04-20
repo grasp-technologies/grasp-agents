@@ -596,4 +596,3 @@ class TestTelemetrySetup:
         ):
             with pytest.raises(RuntimeError, match="No TracerProvider configured"):
                 add_exporter(MemoryExporter())
-

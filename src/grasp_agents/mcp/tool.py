@@ -85,8 +85,8 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         meta: dict[str, Any] | None = None,
-        session_id: str | None = None,
     ) -> McpToolResult:
+        del ctx, exec_id
         timeout_delta = (
             timedelta(seconds=self.timeout) if self.timeout is not None else None
         )

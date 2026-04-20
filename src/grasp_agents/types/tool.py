@@ -114,7 +114,6 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> _OutT_co:
         pass
 
@@ -125,7 +124,6 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from .events import ToolOutputEvent  # avoid circular import
 
@@ -134,7 +132,6 @@ class BaseTool(
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_id=session_id,
         )
         yield ToolOutputEvent(data=out, source=self.name, exec_id=exec_id)
 
@@ -189,7 +186,6 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> _OutT_co | ToolErrorInfo:
         try:
             coro = self._run(
@@ -197,7 +193,6 @@ class BaseTool(
                 ctx=ctx,
                 exec_id=exec_id,
                 progress_callback=progress_callback,
-                session_id=session_id,
             )
             if self.timeout is not None:
                 result = await asyncio.wait_for(coro, timeout=self.timeout)
@@ -214,14 +209,12 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         stream = self._run_stream(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_id=session_id,
         )
         async for event in self._stream_with_timeout(stream, exec_id=exec_id):
             yield event
@@ -251,14 +244,12 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_id=session_id,
         )
 
     async def run_stream(
@@ -268,14 +259,12 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_id=session_id,
         ):
             yield event
 
@@ -290,7 +279,6 @@ class BaseTool(
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        session_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         """Resume from a session checkpoint. Override in resumable tools."""
         raise NotImplementedError(f"{type(self).__name__} does not support resume")

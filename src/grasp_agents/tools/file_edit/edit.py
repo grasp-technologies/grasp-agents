@@ -144,9 +144,8 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> EditResult:
-        del exec_id, progress_callback, session_id
+        del exec_id, progress_callback
 
         if inp.old_string == inp.new_string:
             raise ValueError("old_string and new_string are identical; no-op refused.")

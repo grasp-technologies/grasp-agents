@@ -97,9 +97,6 @@ class BackgroundTaskManager(Generic[CtxT]):
         self._tools = tools
         self._tasks: dict[str, PendingTask] = {}
 
-        # Session persistence — wired by LLMAgent.setup_session()
-        self.session_id: str | None = None
-
     @property
     def has_pending(self) -> bool:
         return bool(self._tasks)
@@ -114,30 +111,33 @@ class BackgroundTaskManager(Generic[CtxT]):
         exec_id: str,
     ) -> tuple[str, BackgroundTaskLaunchedEvent]:
         task_id = str(uuid4())[:8]
-        child_session_id: str | None = None
+        store = ctx.checkpoint_store
+        child_session_key: str | None = None
+        child_ctx: RunContext[CtxT] = ctx
 
-        # Resumable tools get their own child session
-        if tool.resumable and ctx.checkpoint_store and self.session_id:
-            child_session_id = f"child/{self.session_id}/{task_id}"
+        # Resumable tools get their own child session key carved out of the
+        # parent's session_key, so their checkpoints don't collide.
+        if tool.resumable and store is not None:
+            child_session_key = f"child/{ctx.session_key}/{task_id}"
+            child_ctx = ctx.model_copy(update={"session_key": child_session_key})
 
         # Persist task record BEFORE spawning — survives crashes
-        if ctx.checkpoint_store and self.session_id:
+        if store is not None:
             record = TaskRecord(
                 task_id=task_id,
-                parent_session_id=self.session_id,
+                parent_session_key=ctx.session_key,
                 tool_call_id=call.call_id,
                 tool_name=call.name,
                 tool_call_arguments=call.arguments,
-                child_session_id=child_session_id,
+                child_session_key=child_session_key,
             )
-            await ctx.checkpoint_store.save(record.store_key, record.model_dump_json().encode())
+            await store.save(record.store_key, record.model_dump_json().encode())
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.run_stream(
             inp,
-            ctx=ctx,
+            ctx=child_ctx,
             exec_id=exec_id,
-            session_id=child_session_id,
         )
         async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
@@ -206,8 +206,8 @@ class BackgroundTaskManager(Generic[CtxT]):
             self._memory.update([notification])
 
             # Mark record as DELIVERED
-            if ctx.checkpoint_store and self.session_id:
-                key = f"task/{self.session_id}/{pt.task_id}"
+            if ctx.checkpoint_store is not None:
+                key = f"task/{ctx.session_key}/{pt.task_id}"
                 existing = await ctx.checkpoint_store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
@@ -219,7 +219,9 @@ class BackgroundTaskManager(Generic[CtxT]):
                             "updated_at": datetime.now(UTC),
                         }
                     )
-                    await ctx.checkpoint_store.save(key, record.model_dump_json().encode())
+                    await ctx.checkpoint_store.save(
+                        key, record.model_dump_json().encode()
+                    )
 
             yield BackgroundTaskCompletedEvent(
                 source=self._agent_name,
@@ -243,9 +245,9 @@ class BackgroundTaskManager(Generic[CtxT]):
         """Cancel all pending background tasks and wait for cleanup."""
         store = ctx.checkpoint_store if ctx else None
 
-        if store and self.session_id:
+        if store is not None and ctx is not None:
             for pt in self._tasks.values():
-                key = f"task/{self.session_id}/{pt.task_id}"
+                key = f"task/{ctx.session_key}/{pt.task_id}"
                 existing = await store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
@@ -275,10 +277,10 @@ class BackgroundTaskManager(Generic[CtxT]):
     ) -> None:
         """On resume, re-spawn or notify about interrupted background tasks."""
         store = ctx.checkpoint_store if ctx else None
-        if not store or not self.session_id:
+        if store is None or ctx is None:
             return
 
-        keys = await store.list_keys(f"task/{self.session_id}/")
+        keys = await store.list_keys(f"task/{ctx.session_key}/")
         for key in keys:
             data = await store.load(key)
             if data is None:
@@ -350,7 +352,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         logger.info(
             "Handled %d task records for session %s",
             len(keys),
-            self.session_id,
+            ctx.session_key,
         )
 
     def _try_respawn_child(
@@ -361,7 +363,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         exec_id: str | None,
     ) -> bool:
         """Re-spawn a child task from its session checkpoint."""
-        if not record.child_session_id or not ctx or not exec_id:
+        if not record.child_session_key or not ctx or not exec_id:
             return False
         if not ctx.checkpoint_store:
             return False
@@ -370,11 +372,15 @@ class BackgroundTaskManager(Generic[CtxT]):
         if not tool or not tool.resumable:
             return False
 
+        # The child ran under its own carved-out session_key; re-create
+        # the same ctx scope so the tool's inner processor finds its
+        # checkpoint at the same store key.
+        child_ctx = ctx.model_copy(update={"session_key": record.child_session_key})
+
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.resume_stream(
-            ctx=ctx,
+            ctx=child_ctx,
             exec_id=exec_id,
-            session_id=record.child_session_id,
         )
         async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
@@ -390,6 +396,6 @@ class BackgroundTaskManager(Generic[CtxT]):
             "Re-spawned child task %s (%s) from session %s",
             record.task_id,
             record.tool_name,
-            record.child_session_id,
+            record.child_session_key,
         )
         return True

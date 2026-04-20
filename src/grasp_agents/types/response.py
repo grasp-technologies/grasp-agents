@@ -136,8 +136,15 @@ class Response(_SDKResponse):
 
     # conversation: Conversation | None = None
     # prompt: ResponsePrompt | None = None
-    # prompt_cache_retention: Literal["in-memory", "24h"] | None = None
     # service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
+
+    # Override the SDK's strict literal — OpenAI started returning the
+    # snake-case variant ``"in_memory"`` which the SDK's literal
+    # ``"in-memory" | "24h"`` rejects. Accept both forms until the SDK
+    # catches up.
+    prompt_cache_retention: (  # type: ignore[assignment]
+        Literal["in-memory", "24h", "in_memory"] | None
+    ) = None
 
     @model_validator(mode="before")
     @classmethod

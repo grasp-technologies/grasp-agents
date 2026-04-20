@@ -3,8 +3,8 @@ Tests for recursive session propagation and checkpointing across nested
 composite processors.
 
 Verifies that:
-- setup_session propagates session IDs through Workflow -> subprocs
-- setup_session propagates through ParallelProcessor -> subproc
+- Adoption propagates session paths through Workflow -> subprocs
+- Adoption propagates through ParallelProcessor -> subproc
 - Nested composites get correctly namespaced sessions at every level
 - Checkpoints are saved at each level independently
 - Resume works across multiple nesting levels: workflow skips completed steps,
@@ -12,7 +12,7 @@ Verifies that:
 """
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -143,9 +143,8 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
         name: str,
         subprocs: Sequence[Processor[Any, Any, None]],
         crash_after_step: int,
-        session_id: str | None = None,
     ) -> None:
-        super().__init__(name=name, subprocs=list(subprocs), session_id=session_id)
+        super().__init__(name=name, subprocs=list(subprocs))
         self._crash_after_step = crash_after_step
 
     async def save_checkpoint(
@@ -254,34 +253,31 @@ async def collect_runner_payloads(
 
 class TestRecursiveSessionPropagation:
     def test_workflow_propagates_to_subprocs(self) -> None:
-        """setup_session sets namespaced session_id on each subproc."""
+        """Workflow adoption sets namespaced session_path on each subproc."""
         a = AppendProcessor("A")
         b = AppendProcessor("B")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
-        wf.setup_session("sess")
 
-        assert wf._session_id == "sess"
-        assert a._session_id == "sess/A"
-        assert b._session_id == "sess/B"
+        # Root workflow -> empty path
+        assert wf.session_path == []
+        assert a.session_path == ["A"]
+        assert b.session_path == ["B"]
 
     def test_parallel_propagates_to_subproc(self) -> None:
-        """ParallelProcessor.setup_session propagates to inner subproc."""
+        """ParallelProcessor propagates its path to inner subproc."""
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
-        par.setup_session("sess")
 
-        assert par._session_id == "sess"
-        assert worker._session_id == "sess/worker"
+        assert par.session_path == []
+        assert worker.session_path == ["worker"]
 
     def test_parallel_init_with_session_propagates(self) -> None:
-        """session_id passed to ParallelProcessor.__init__ propagates to subproc."""
+        """ParallelProcessor construction propagates path to subproc."""
         worker = AppendProcessor("worker")
-        par = ParallelProcessor[str, str, None](
-            subproc=worker, session_id="sess"
-        )
+        par = ParallelProcessor[str, str, None](subproc=worker)
 
-        assert par._session_id == "sess"
-        assert worker._session_id == "sess/worker"
+        assert par.session_path == []
+        assert worker.session_path == ["worker"]
 
     def test_workflow_containing_parallel_three_levels(self) -> None:
         """Workflow -> ParallelProcessor -> worker gets 3-level namespacing."""
@@ -289,12 +285,11 @@ class TestRecursiveSessionPropagation:
         par = ParallelProcessor[str, str, None](subproc=worker)
         a = AppendProcessor("A")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, par])
-        wf.setup_session("sess")
 
-        assert wf._session_id == "sess"
-        assert a._session_id == "sess/A"
-        assert par._session_id == f"sess/{par.name}"
-        assert worker._session_id == f"sess/{par.name}/worker"
+        assert wf.session_path == []
+        assert a.session_path == ["A"]
+        assert par.session_path == [par.name]
+        assert worker.session_path == [par.name, "worker"]
 
     def test_nested_workflows_propagate_to_leaf_procs(self) -> None:
         """Outer -> Inner workflow propagates to all leaf processors."""
@@ -304,34 +299,33 @@ class TestRecursiveSessionPropagation:
 
         a = AppendProcessor("A")
         outer = SequentialWorkflow[str, str, None](name="outer", subprocs=[a, inner])
-        outer.setup_session("sess")
 
-        assert outer._session_id == "sess"
-        assert a._session_id == "sess/A"
-        assert inner._session_id == "sess/inner"
-        assert x._session_id == "sess/inner/X"
-        assert y._session_id == "sess/inner/Y"
+        assert outer.session_path == []
+        assert a.session_path == ["A"]
+        assert inner.session_path == ["inner"]
+        assert x.session_path == ["inner", "X"]
+        assert y.session_path == ["inner", "Y"]
 
-    def test_all_levels_resumable_after_setup(self) -> None:
-        """Resumable is True at every level after setup_session."""
+    def test_is_resumable_depends_on_ctx(self) -> None:
+        """Processor.is_resumable() is inferred from ctx.checkpoint_store."""
         worker = AppendProcessor("worker")
-        par = ParallelProcessor[str, str, None](subproc=worker)
-        a = AppendProcessor("A")
-        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, par])
 
-        # Before: nothing is resumable
-        assert not wf.resumable
-        assert not a.resumable
-        assert not par.resumable
-        assert not worker.resumable
+        # No ctx -> not resumable
+        assert not Processor.is_resumable(None)
 
-        wf.setup_session("sess")
+        # Ctx with no checkpoint_store -> not resumable
+        ctx_empty: RunContext[None] = RunContext(state=None)
+        assert not Processor.is_resumable(ctx_empty)
 
-        # After: everything is resumable
-        assert wf.resumable
-        assert a.resumable
-        assert par.resumable
-        assert worker.resumable
+        # Ctx with checkpoint_store -> resumable
+        store = InMemoryCheckpointStore()
+        ctx_with_store: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store
+        )
+        assert Processor.is_resumable(ctx_with_store)
+
+        # worker not used for runtime; only docs its path
+        _ = worker
 
     def test_runner_propagates_through_workflow_and_parallel(self) -> None:
         """Runner -> Workflow -> Parallel -> worker: 4-level propagation."""
@@ -344,16 +338,18 @@ class TestRecursiveSessionPropagation:
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
         ctx: RunContext[None] = RunContext(state=None)
-        runner = Runner[str, None](
+        Runner[str, None](
             entry_proc=entry, procs=[entry, wf], ctx=ctx, name="r"
         )
-        runner.setup_session("sess")
 
-        assert entry._session_id == "sess/entry"
-        assert wf._session_id == "sess/wf"
-        assert fan._session_id == "sess/wf/fan"
-        assert par._session_id == f"sess/wf/{par.name}"
-        assert worker._session_id == f"sess/wf/{par.name}/worker"
+        # Runner adopts each top-level proc at empty parent path, so
+        # direct children get single-entry paths and descendants get
+        # the accumulated path.
+        assert entry.session_path == ["entry"]
+        assert wf.session_path == ["wf"]
+        assert fan.session_path == ["wf", "fan"]
+        assert par.session_path == ["wf", par.name]
+        assert worker.session_path == ["wf", par.name, "worker"]
 
 
 # ---------- Checkpoint storage ----------
@@ -371,8 +367,9 @@ class TestRecursiveCheckpointStorage:
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[fan, par, collect]
         )
-        wf.setup_session("s1")
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="s1"
+        )
 
         result = await collect_payloads(wf, ctx, in_args="start")
         assert sorted(result) == [
@@ -403,8 +400,9 @@ class TestRecursiveCheckpointStorage:
 
         a = AppendProcessor("A")
         outer = SequentialWorkflow[str, str, None](name="outer", subprocs=[a, inner])
-        outer.setup_session("s2")
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="s2"
+        )
 
         result = await collect_payloads(outer, ctx, in_args="start")
         assert result == ["start->A->X->Y"]
@@ -424,14 +422,15 @@ class TestRecursiveCheckpointStorage:
         par = ParallelProcessor[str, str, None](subproc=worker)
         fan = FanOutProcessor("fan")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan, par])
-        wf.setup_session("deep")
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="deep"
+        )
 
         await collect_payloads(wf, ctx, in_args="start")
 
-        # Workflow: "workflow/{session_id}"
+        # Workflow: "workflow/{session_key}"
         assert await store.load("workflow/deep") is not None
-        # Parallel: "parallel/{session_id}/{par.name}"
+        # Parallel: "parallel/{session_key}/{par.name}"
         assert await store.load(f"parallel/deep/{par.name}") is not None
 
 
@@ -458,9 +457,10 @@ class TestRecursiveResume:
             name="wf",
             subprocs=[fan1, par1, collect1],
             crash_after_step=1,
-            session_id="r1",
         )
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r1"
+        )
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -481,9 +481,11 @@ class TestRecursiveResume:
         fan2 = CountingProcessor("fan")
         collect2 = CountingProcessor("collect")
         wf2 = SequentialWorkflow[str, str, None](
-            name="wf", subprocs=[fan2, par2, collect2], session_id="r1"
+            name="wf", subprocs=[fan2, par2, collect2]
         )
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r1"
+        )
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -513,9 +515,10 @@ class TestRecursiveResume:
             name="wf",
             subprocs=[fan1, par1, collect1],
             crash_after_step=1,
-            session_id="r2",
         )
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r2"
+        )
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -534,9 +537,11 @@ class TestRecursiveResume:
         fan2 = CountingProcessor("fan")
         collect2 = CountingProcessor("collect")
         wf2 = SequentialWorkflow[str, str, None](
-            name="wf", subprocs=[fan2, par2, collect2], session_id="r2"
+            name="wf", subprocs=[fan2, par2, collect2]
         )
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r2"
+        )
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -567,9 +572,10 @@ class TestRecursiveResume:
             name="outer",
             subprocs=[a1, inner1],
             crash_after_step=1,
-            session_id="r3",
         )
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r3"
+        )
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -586,9 +592,11 @@ class TestRecursiveResume:
         inner2 = SequentialWorkflow[str, str, None](name="inner", subprocs=[x2, y2])
         a2 = CountingProcessor("A")
         outer2 = SequentialWorkflow[str, str, None](
-            name="outer", subprocs=[a2, inner2], session_id="r3"
+            name="outer", subprocs=[a2, inner2]
         )
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r3"
+        )
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -624,9 +632,11 @@ class TestRecursiveResume:
         )
         fan1 = FanOutProcessor("fan")
         outer1 = SequentialWorkflow[str, str, None](
-            name="outer", subprocs=[fan1, inner1], session_id="r4"
+            name="outer", subprocs=[fan1, inner1]
         )
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r4"
+        )
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -657,9 +667,11 @@ class TestRecursiveResume:
         )
         fan2 = CountingProcessor("fan")
         outer2 = SequentialWorkflow[str, str, None](
-            name="outer", subprocs=[fan2, inner2], session_id="r4"
+            name="outer", subprocs=[fan2, inner2]
         )
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="r4"
+        )
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -687,11 +699,12 @@ class TestRecursiveResume:
         )
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="rs"
+        )
         runner = Runner[str, None](
             entry_proc=entry, procs=[entry, wf], ctx=ctx, name="r"
         )
-        runner.setup_session("rs")
 
         result = await collect_runner_payloads(runner, chat_inputs="start")
         assert sorted(result) == [

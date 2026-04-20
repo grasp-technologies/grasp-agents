@@ -288,9 +288,10 @@ class TestRunnerCheckpoint:
         store = InMemoryCheckpointStore()
         a = AppendProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-1"
+        )
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
-        runner.setup_session("run-1")
 
         result = await run_runner(runner, chat_inputs="s")
         assert result == ["s->A->B"]
@@ -306,9 +307,10 @@ class TestRunnerCheckpoint:
         store = InMemoryCheckpointStore()
         a = AppendProcessor("A", recipients=["B"])
         b = FailOnCallProcessor("B", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-2"
+        )
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
-        runner.setup_session("run-2")
 
         with pytest.raises(Exception):
             await run_runner(runner, chat_inputs="s")
@@ -322,26 +324,28 @@ class TestRunnerCheckpoint:
         assert cp.pending_events[0].destination == "B"
 
     @pytest.mark.asyncio
-    async def test_checkpoint_tracks_active_sessions(self) -> None:
+    async def test_checkpoint_tracks_active_steps(self) -> None:
         store = InMemoryCheckpointStore()
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
         par.recipients = [END_PROC_NAME]
         splitter = FanOutProcessor("splitter", recipients=[par.name])
 
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-3"
+        )
         runner = Runner[str, None](
             entry_proc=splitter, procs=[splitter, par], ctx=ctx, name="r"
         )
-        runner.setup_session("run-3")
 
         await run_runner(runner, chat_inputs="s")
 
         raw = await store.load("runner/run-3")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
-        # ParallelProcessor is resumable → should be tracked
-        assert par.name in cp.active_sessions
+        # After completion, step counters remain in active_steps for all
+        # procs that were invoked.
+        assert par.name in cp.active_steps
 
 
 # ---------- Resume ----------
@@ -355,9 +359,10 @@ class TestRunnerResume:
 
         a1 = CountingProcessor("A", recipients=["B"])
         b1 = FailOnCallProcessor("B", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-r1"
+        )
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1, b1], ctx=ctx1, name="r")
-        runner1.setup_session("run-r1")
 
         with pytest.raises(Exception):
             await run_runner(runner1, chat_inputs="s")
@@ -367,9 +372,10 @@ class TestRunnerResume:
         # Resume
         a2 = CountingProcessor("A", recipients=["B"])
         b2 = CountingProcessor("B", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-r1"
+        )
         runner2 = Runner[str, None](entry_proc=a2, procs=[a2, b2], ctx=ctx2, name="r")
-        runner2.setup_session("run-r1")
 
         result = await run_runner(runner2)
         assert result == ["s->A->B"]
@@ -384,11 +390,12 @@ class TestRunnerResume:
         a1 = CountingProcessor("A", recipients=["B"])
         b1 = CountingProcessor("B", recipients=["C"])
         c1 = FailOnCallProcessor("C", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-r2"
+        )
         runner1 = Runner[str, None](
             entry_proc=a1, procs=[a1, b1, c1], ctx=ctx1, name="r"
         )
-        runner1.setup_session("run-r2")
 
         with pytest.raises(Exception):
             await run_runner(runner1, chat_inputs="s")
@@ -396,11 +403,12 @@ class TestRunnerResume:
         a2 = CountingProcessor("A", recipients=["B"])
         b2 = CountingProcessor("B", recipients=["C"])
         c2 = CountingProcessor("C", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-r2"
+        )
         runner2 = Runner[str, None](
             entry_proc=a2, procs=[a2, b2, c2], ctx=ctx2, name="r"
         )
-        runner2.setup_session("run-r2")
 
         result = await run_runner(runner2)
         assert result == ["s->A->B->C"]
@@ -417,11 +425,12 @@ class TestRunnerResume:
         b1 = CountingProcessor("B", recipients=["D"])
         c1 = FailOnCallProcessor("C", fail_on_call=1, recipients=["D"])
         d1 = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-fan"
+        )
         runner1 = Runner[str, None](
             entry_proc=a1, procs=[a1, b1, c1, d1], ctx=ctx1, name="r"
         )
-        runner1.setup_session("run-fan")
 
         with pytest.raises(Exception):
             await run_runner(runner1, chat_inputs="s")
@@ -431,11 +440,12 @@ class TestRunnerResume:
         b2 = CountingProcessor("B", recipients=["D"])
         c2 = CountingProcessor("C", recipients=["D"])
         d2 = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-fan"
+        )
         runner2 = Runner[str, None](
             entry_proc=a2, procs=[a2, b2, c2, d2], ctx=ctx2, name="r"
         )
-        runner2.setup_session("run-fan")
 
         result = await run_runner(runner2)
         assert a2.call_count == 0
@@ -449,9 +459,10 @@ class TestRunnerResume:
 
         a1 = AppendProcessor("A", recipients=["B"])
         b1 = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-noop"
+        )
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1, b1], ctx=ctx1, name="r")
-        runner1.setup_session("run-noop")
 
         result1 = await run_runner(runner1, chat_inputs="s")
         assert result1 == ["s->A->B"]
@@ -477,14 +488,15 @@ class TestRunnerComposableCheckpointing:
         splitter.recipients = [par.name]
         par.recipients = ["collector"]
 
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="run-comp"
+        )
         runner = Runner[str, None](
             entry_proc=splitter,
             procs=[splitter, par, collector],
             ctx=ctx,
             name="r",
         )
-        runner.setup_session("run-comp")
 
         result = await run_runner(runner, chat_inputs="s")
         assert sorted(result) == ["s:x->worker->collector", "s:y->worker->collector"]
@@ -494,11 +506,11 @@ class TestRunnerComposableCheckpointing:
         par_data = await store.load(par_key)
         assert par_data is not None
 
-        # Runner checkpoint has active sessions
+        # Runner checkpoint tracks active step counters
         raw = await store.load("runner/run-comp")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
-        assert par.name in cp.active_sessions
+        assert par.name in cp.active_steps
 
 
 # ---------- Validation ----------
@@ -534,9 +546,10 @@ class TestRunnerCorruptCheckpoint:
         await store.save("runner/sess-corrupt", b"not valid json at all")
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="sess-corrupt"
+        )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
-        runner.setup_session("sess-corrupt")
 
         # Should run fresh despite corrupt checkpoint
         result = await run_runner(runner, chat_inputs="s")
@@ -548,19 +561,19 @@ class TestRunnerCorruptCheckpoint:
         store = InMemoryCheckpointStore()
         # Save a valid checkpoint with empty pending_events
         cp = RunnerCheckpoint(
-            session_id="sess-done",
+            session_key="sess-done",
             processor_name="r",
             pending_events=[],
-            active_sessions={},
         )
         await store.save(
             "runner/sess-done", cp.model_dump_json().encode("utf-8")
         )
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="sess-done"
+        )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
-        runner.setup_session("sess-done")
 
         # Should return immediately without hanging
         events: list[Event[Any]] = []

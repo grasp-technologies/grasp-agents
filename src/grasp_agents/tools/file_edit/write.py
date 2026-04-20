@@ -116,9 +116,8 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> WriteResult:
-        del exec_id, progress_callback, session_id
+        del exec_id, progress_callback
 
         state = await self._resolve_state(ctx)
 

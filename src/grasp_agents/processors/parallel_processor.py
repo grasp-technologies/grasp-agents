@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from grasp_agents.utils.streaming import stream_concurrent
 
-from ..durability.checkpoints import ParallelCheckpoint
+from ..durability.checkpoints import CheckpointKind, ParallelCheckpoint
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
 from ..types.errors import ProcInputValidationError
@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 class ParallelProcessor(Processor[InT, OutT, CtxT]):
+    _checkpoint_kind = CheckpointKind.PARALLEL
+
     def __init__(
         self,
         subproc: Processor[InT, OutT, CtxT],
         drop_failed: bool = False,
-        session_id: str | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
@@ -31,7 +32,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             max_retries=0,
             tracing_enabled=subproc.tracing_enabled,
             tracing_exclude_input_fields=subproc.tracing_exclude_input_fields,
-            session_id=session_id,
             session_metadata=session_metadata,
         )
 
@@ -45,27 +45,22 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         # but preserves subproc.select_recipients_impl
         subproc.recipients = None
 
-        if self._session_id:
-            self.setup_session(self._session_id)
+        # Adopt the subproc so its session path + resumability reflect
+        # our current configuration. Re-triggered if we're later adopted
+        # by a container.
+        self._propagate_to_children()
 
     # --- Checkpointing ---
 
-    def setup_session(self, session_id: str) -> None:
-        super().setup_session(session_id)
-        self._subproc.setup_session(f"{session_id}/{self._subproc.name}")
-
-    @property
-    def _checkpoint_store_key(self) -> str | None:
-        if self._session_id is None:
-            return None
-        return f"parallel/{self._session_id}"
+    def _propagate_to_children(self) -> None:
+        self._subproc._on_adopted(self._session_path)  # noqa: SLF001
 
     async def load_checkpoint(self, ctx: RunContext[CtxT]) -> ParallelCheckpoint | None:
         checkpoint = await self._deserialize_checkpoint(ctx, ParallelCheckpoint)
         if checkpoint is not None:
             logger.info(
                 "Loaded parallel checkpoint %s (%d/%d completed)",
-                self._session_id,
+                self._checkpoint_store_key(ctx),
                 len(checkpoint.completed),
                 len(checkpoint.input_packet.payloads),
             )
@@ -79,7 +74,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         completed: dict[int, Packet[Any]],
     ) -> None:
         checkpoint = ParallelCheckpoint(
-            session_id=self._session_id or "",
+            session_key=ctx.session_key,
             processor_name=self.name,
             input_packet=input_packet,
             completed=completed,
@@ -112,15 +107,17 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
+        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and self._session_id is not None:
+        if not has_input and Processor.is_resumable(ctx):
             return None
         return super().validate_inputs(
             exec_id=exec_id,
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
+            ctx=ctx,
         )
 
     def _validate_in_args(

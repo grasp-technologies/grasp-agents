@@ -27,17 +27,17 @@ class TaskRecord(BaseModel):
     completion/failure/cancellation. On session resume, pending records
     indicate interrupted tasks whose results were never delivered.
 
-    Store key: ``task/{parent_session_id}/{task_id}``
+    Store key: ``task/{parent_session_key}/{task_id}``
     """
 
     schema_version: int = Field(default=CURRENT_SCHEMA_VERSION)
     task_id: str
-    parent_session_id: str
+    parent_session_key: str
     tool_call_id: str  # FunctionToolCallItem.call_id that spawned this
     tool_name: str
     tool_call_arguments: str | None = None  # Serialized tool input for resume replay
     status: TaskStatus = TaskStatus.PENDING
-    child_session_id: str | None = None  # If set, child agent checkpoints here
+    child_session_key: str | None = None  # If set, child agent checkpoints here
     result: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -45,7 +45,7 @@ class TaskRecord(BaseModel):
 
     @property
     def store_key(self) -> str:
-        return f"task/{self.parent_session_id}/{self.task_id}"
+        return f"task/{self.parent_session_key}/{self.task_id}"
 
     @model_validator(mode="after")
     def _check_schema_version(self) -> Self:

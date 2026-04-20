@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from ..durability import AgentCheckpoint
-from ..durability.checkpoints import AgentCheckpointLocation
+from ..durability.checkpoints import AgentCheckpointLocation, CheckpointKind
 from ..durability.resume import prepare_messages_for_resume
 from ..llm.llm import LLM
 from ..processors.processor import Processor
@@ -57,6 +57,7 @@ class CallArgs(TypedDict):
 
 class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     _span_kind = SpanKind.AGENT
+    _checkpoint_kind = CheckpointKind.AGENT
 
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
@@ -97,8 +98,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Tracing
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        # Session persistence (opt-in)
-        session_id: str | None = None,
+        # Session persistence (metadata attached to saved checkpoints;
+        # resumability itself is inferred at run time from
+        # ``ctx.checkpoint_store``)
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
@@ -108,7 +110,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             max_retries=max_retries,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_id=session_id,
             session_metadata=session_metadata,
         )
 
@@ -183,16 +184,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._step: int = 0  # completed invocation counter (observability)
         self._delivery_step: int | None = None  # caller's step for checkpoint
 
-        if self._session_id:
-            self.setup_session(self._session_id)
+        # Wire the loop's checkpoint callback unconditionally. The
+        # callback itself short-circuits when no store is attached to
+        # the RunContext at call time.
+        self._loop.checkpoint_callback = self.save_checkpoint
 
         # Subclass hook points (set by decorators or subclass overrides)
 
         self._register_overridden_implementations()
-
-    @property
-    def _checkpoint_store_key(self) -> str | None:
-        return f"agent/{self._session_id}" if self._session_id else None
 
     @property
     def llm(self) -> LLM:
@@ -236,16 +235,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     # --- Session persistence ---
 
-    def setup_session(self, session_id: str) -> None:
-        """
-        Dynamically set up session persistence for this agent.
-
-        Store is read from ``ctx.checkpoint_store`` at runtime.
-        """
-        super().setup_session(session_id)
-        self._loop.checkpoint_callback = self.save_checkpoint
-        self._loop.bg_tasks.session_id = session_id
-
     async def load_checkpoint(
         self,
         ctx: RunContext[CtxT],
@@ -268,7 +257,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             "Loaded session %s for agent %s "
             "(checkpoints=%d, messages=%d, interruption=%s, "
             "stripped=%d, step=%d, turn=%d)",
-            self._session_id,
+            self._checkpoint_store_key(ctx),
             self.name,
             self._checkpoint_number,
             len(resume_state.messages),
@@ -292,7 +281,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> None:
         """Persist current conversation state to the store."""
         checkpoint = AgentCheckpoint(
-            session_id=self._session_id or "",
+            session_key=ctx.session_key,
             processor_name=self.name,
             messages=list(self.memory.messages),
             session_metadata=self._session_metadata,
@@ -373,10 +362,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         chat_inputs: Any = None,
         in_packet: Any = None,
         in_args: Any = None,
+        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
-        # Allow no inputs when a session is configured (resume case)
+        # Allow no inputs when the ctx has a checkpoint store (resume case)
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and self._session_id is not None:
+        if not has_input and Processor.is_resumable(ctx):
             return None
 
         result = super().validate_inputs(
@@ -384,6 +374,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
+            ctx=ctx,
         )
         if result is not None and len(result) != 1:
             raise ProcInputValidationError(

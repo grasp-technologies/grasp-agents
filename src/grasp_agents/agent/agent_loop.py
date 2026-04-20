@@ -1010,7 +1010,6 @@ class AgentLoop(Generic[CtxT]):
                 ctx: RunContext[Any] | None = None,
                 exec_id: str | None = None,
                 progress_callback: Any = None,
-                session_id: str | None = None,
             ) -> None:
                 return None
 

@@ -182,9 +182,8 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> ReadResult:
-        del exec_id, progress_callback, session_id
+        del exec_id, progress_callback
 
         # 1. Device-path guard — literal path, no resolve.
         if is_blocked_device(inp.path):

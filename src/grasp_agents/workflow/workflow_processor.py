@@ -3,7 +3,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import Any, cast
 
-from ..durability.checkpoints import WorkflowCheckpoint
+from ..durability.checkpoints import CheckpointKind, WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
     _span_kind = SpanKind.WORKFLOW
+    _checkpoint_kind = CheckpointKind.WORKFLOW
 
     def __init__(
         self,
@@ -27,7 +28,6 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_id: str | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
@@ -36,7 +36,6 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
             max_retries=0,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_id=session_id,
             session_metadata=session_metadata,
         )
 
@@ -61,13 +60,13 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         for subproc in subprocs:
             subproc.recipients = None
 
-        if self._session_id:
-            self.setup_session(self._session_id)
+        # Adopt subprocs — propagate our current session path + resumability.
+        # Re-triggered if we're later adopted by a container (Runner, etc.).
+        self._propagate_to_children()
 
-    def setup_session(self, session_id: str) -> None:
-        super().setup_session(session_id)
+    def _propagate_to_children(self) -> None:
         for subproc in self._subprocs:
-            subproc.setup_session(f"{session_id}/{subproc.name}")
+            subproc._on_adopted(self._session_path)  # noqa: SLF001
 
     def validate_inputs(
         self,
@@ -75,29 +74,25 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
+        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and self._session_id is not None:
+        if not has_input and Processor.is_resumable(ctx):
             return None
         return super().validate_inputs(
             exec_id=exec_id,
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
+            ctx=ctx,
         )
-
-    @property
-    def _checkpoint_store_key(self) -> str | None:
-        if self._session_id is None:
-            return None
-        return f"workflow/{self._session_id}"
 
     async def load_checkpoint(self, ctx: RunContext[CtxT]) -> WorkflowCheckpoint | None:
         checkpoint = await self._deserialize_checkpoint(ctx, WorkflowCheckpoint)
         if checkpoint is not None:
             logger.info(
                 "Loaded workflow checkpoint %s (completed_step=%d)",
-                self._session_id,
+                self._checkpoint_store_key(ctx),
                 checkpoint.completed_step,
             )
         return checkpoint
@@ -110,7 +105,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         packet: Packet[Any],
     ) -> None:
         checkpoint = WorkflowCheckpoint(
-            session_id=self._session_id or "",
+            session_key=ctx.session_key,
             processor_name=self.name,
             completed_step=completed_step,
             packet=packet,

@@ -29,7 +29,6 @@ class SucceedingTool(BaseTool[AddInput, int, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> int:
         return inp.a + inp.b
 
@@ -45,7 +44,6 @@ class FailingTool(BaseTool[AddInput, int, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> int:
         msg = "Intentional failure"
         raise RuntimeError(msg)
@@ -62,7 +60,6 @@ class SlowTool(BaseTool[AddInput, int, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> int:
         await asyncio.sleep(10)
         return inp.a + inp.b
@@ -81,7 +78,6 @@ class CustomErrorTool(BaseTool[AddInput, str, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> str:
         msg = "something broke"
         raise ValueError(msg)
@@ -104,7 +100,6 @@ class ReraisingTool(BaseTool[AddInput, int, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_id: str | None = None,
     ) -> int:
         msg = "critical failure"
         raise RuntimeError(msg)

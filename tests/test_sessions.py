@@ -171,7 +171,6 @@ class EchoTool(BaseTool[EchoInput, str, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
-        session_id: str | None = None,  # noqa: ARG002
     ) -> str:
         return f"echo: {inp.text}"
 
@@ -183,7 +182,7 @@ def _make_agent(
     responses: list[Response],
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
-    session_id: str | None = None,
+    session_key: str | None = None,
     store: InMemoryCheckpointStore | None = None,
     reset_memory_on_run: bool = False,
 ) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
@@ -194,9 +193,11 @@ def _make_agent(
         tools=tools,
         reset_memory_on_run=reset_memory_on_run,
         stream_llm_responses=True,
-        session_id=session_id,
     )
-    ctx: RunContext[None] = RunContext(checkpoint_store=store)
+    ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
+    if session_key is not None:
+        ctx_kwargs["session_key"] = session_key
+    ctx: RunContext[None] = RunContext(**ctx_kwargs)
     return agent, ctx
 
 
@@ -261,13 +262,13 @@ class TestInMemoryCheckpointStore:
 class TestAgentCheckpoint:
     def test_round_trip_empty(self):
         snap = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="agent",
             messages=[],
         )
         json_bytes = snap.model_dump_json().encode()
         restored = AgentCheckpoint.model_validate_json(json_bytes)
-        assert restored.session_id == "s1"
+        assert restored.session_key == "s1"
         assert restored.messages == []
         assert restored.checkpoint_number == 0
 
@@ -287,7 +288,7 @@ class TestAgentCheckpoint:
             ),
         ]
         snap = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="agent",
             messages=messages,
             checkpoint_number=3,
@@ -447,7 +448,7 @@ class TestAgentSessionPersistence:
         store = InMemoryCheckpointStore()
         agent, ctx = _make_agent(
             [_text_response("hello")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -458,7 +459,7 @@ class TestAgentSessionPersistence:
         data = await store.load("agent/s1")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
-        assert snap.session_id == "s1"
+        assert snap.session_key == "s1"
         assert snap.processor_name == "test_agent"
         assert len(snap.messages) > 0
 
@@ -470,7 +471,7 @@ class TestAgentSessionPersistence:
         # First run
         agent1, ctx = _make_agent(
             [_text_response("hello")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent1.run("hi", ctx=ctx)
@@ -485,7 +486,7 @@ class TestAgentSessionPersistence:
         # Second run -- new agent, same session
         agent2, ctx = _make_agent(
             [_text_response("world")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent2.load_checkpoint(ctx)
@@ -517,7 +518,7 @@ class TestAgentSessionPersistence:
                 _text_response("done"),
             ],
             tools=[EchoTool()],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -535,7 +536,7 @@ class TestAgentSessionPersistence:
         agent1, ctx = _make_agent(
             [_text_response("first")],
             reset_memory_on_run=True,
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent1.run("hi", ctx=ctx)
@@ -544,7 +545,7 @@ class TestAgentSessionPersistence:
         agent2, ctx = _make_agent(
             [_text_response("second")],
             reset_memory_on_run=True,
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent2.run("follow up", ctx=ctx)
@@ -562,7 +563,7 @@ class TestAgentSessionPersistence:
 
     @pytest.mark.anyio
     async def test_no_store_works_normally(self):
-        """Agent without store/session_id works exactly as before."""
+        """Agent without store/session_key works exactly as before."""
         agent, ctx = _make_agent([_text_response("hello")])
         result = await agent.run("hi", ctx=ctx)
         assert result.payloads[0] == "hello"
@@ -575,10 +576,11 @@ class TestAgentSessionPersistence:
             name="test_agent",
             llm=MockLLM(responses_queue=[_text_response("ok")]),
             stream_llm_responses=True,
-            session_id="s1",
             session_metadata={"pathway_id": "pw_123"},
         )
-        ctx: RunContext[None] = RunContext(checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            checkpoint_store=store, session_key="s1"
+        )
         await agent.run("hi", ctx=ctx)
 
         data = await store.load("agent/s1")
@@ -596,7 +598,7 @@ class TestAgentSessionPersistence:
                 _text_response("done"),
             ],
             tools=[EchoTool()],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -613,7 +615,7 @@ class TestAgentSessionPersistence:
         store = InMemoryCheckpointStore()
         agent, ctx = _make_agent(
             [_text_response("streamed")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -639,11 +641,11 @@ def _count_user_messages(agent: LLMAgent[Any, Any, Any]) -> int:
 
 
 def _interrupted_checkpoint(
-    messages: list[Any], session_id: str = "s1", step: int | None = 0
+    messages: list[Any], session_key: str = "s1", step: int | None = 0
 ) -> AgentCheckpoint:
     """Checkpoint whose last message is a user message → PENDING_USER_MESSAGE."""
     return AgentCheckpoint(
-        session_id=session_id,
+        session_key=session_key,
         processor_name="test_agent",
         messages=messages,
         checkpoint_number=1,
@@ -652,11 +654,11 @@ def _interrupted_checkpoint(
 
 
 def _completed_checkpoint(
-    messages: list[Any], session_id: str = "s1", step: int | None = 0
+    messages: list[Any], session_key: str = "s1", step: int | None = 0
 ) -> AgentCheckpoint:
     """Checkpoint whose last message is an assistant response → NONE."""
     return AgentCheckpoint(
-        session_id=session_id,
+        session_key=session_key,
         processor_name="test_agent",
         messages=messages,
         checkpoint_number=1,
@@ -688,7 +690,7 @@ class TestResumeInputDetection:
         )
 
         agent, ctx = _make_agent(
-            [_text_response("world")], session_id="s1", store=store
+            [_text_response("world")], session_key="s1", store=store
         )
         await agent.run(ctx=ctx, step=0)  # no input — pure resume
 
@@ -713,7 +715,7 @@ class TestResumeInputDetection:
         )
 
         agent, ctx = _make_agent(
-            [_text_response("world")], session_id="s1", store=store
+            [_text_response("world")], session_key="s1", store=store
         )
         await agent.run(in_args="hello", ctx=ctx, step=0)  # same input re-delivered
 
@@ -735,7 +737,9 @@ class TestResumeInputDetection:
             .encode(),
         )
 
-        agent, ctx = _make_agent([_text_response("done")], session_id="s1", store=store)
+        agent, ctx = _make_agent(
+            [_text_response("done")], session_key="s1", store=store
+        )
         await agent.run("start", ctx=ctx, step=0)  # same chat_inputs re-delivered
 
         assert _count_user_messages(agent) == 1  # not duplicated
@@ -761,7 +765,7 @@ class TestResumeInputDetection:
         )
 
         agent, ctx = _make_agent(
-            [_text_response("goodbye")], session_id="s1", store=store
+            [_text_response("goodbye")], session_key="s1", store=store
         )
         await agent.load_checkpoint(ctx)
         await agent.run("follow up", ctx=ctx)
@@ -778,7 +782,7 @@ class TestResumeInputDetection:
                 _text_response("second"),
                 _text_response("third"),
             ],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -815,7 +819,7 @@ class TestResumeInputDetection:
         # Resume: no duplication
         agent, ctx = _make_agent(
             [_text_response("world"), _text_response("goodbye")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent.run(ctx=ctx, step=0)  # resume
@@ -890,9 +894,8 @@ class _CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
         name: str,
         subprocs: Sequence[Processor[Any, Any, None]],
         crash_after_step: int,
-        session_id: str | None = None,
     ) -> None:
-        super().__init__(name=name, subprocs=list(subprocs), session_id=session_id)
+        super().__init__(name=name, subprocs=list(subprocs))
         self._crash_after_step = crash_after_step
 
     async def save_checkpoint(
@@ -935,9 +938,10 @@ class TestResumeIntegration:
             name="wf",
             subprocs=[a1, agent1],
             crash_after_step=1,
-            session_id="wf1",
         )
-        ctx1: RunContext[None] = RunContext(checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            checkpoint_store=store, session_key="wf1"
+        )
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream(in_args="start", ctx=ctx1, exec_id="e1"):
@@ -964,9 +968,10 @@ class TestResumeIntegration:
         wf2 = SequentialWorkflow[str, str, None](
             name="wf",
             subprocs=[a2, agent2],
-            session_id="wf1",
         )
-        ctx2: RunContext[None] = RunContext(checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            checkpoint_store=store, session_key="wf1"
+        )
 
         async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
             pass
@@ -1004,9 +1009,10 @@ class TestResumeIntegration:
             name="wf",
             subprocs=[agent1, b1],
             crash_after_step=1,
-            session_id="wf2",
         )
-        ctx1: RunContext[None] = RunContext(checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            checkpoint_store=store, session_key="wf2"
+        )
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream("start", ctx=ctx1, exec_id="e1"):
@@ -1028,9 +1034,10 @@ class TestResumeIntegration:
         wf2 = SequentialWorkflow[str, str, None](
             name="wf",
             subprocs=[agent2, b2],
-            session_id="wf2",
         )
-        ctx2: RunContext[None] = RunContext(checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            checkpoint_store=store, session_key="wf2"
+        )
 
         payloads: list[str] = []
         async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
@@ -1072,19 +1079,17 @@ class TestResumeIntegration:
             destination="agent",
         )
         runner_cp = RunnerCheckpoint(
-            session_id="rs2",
+            session_key="rs2",
             processor_name="r",
             checkpoint_number=1,
-            step=0,
             pending_events=[pending_event],
-            active_sessions={"A": "rs2/A", "agent": "rs2/agent"},
             active_steps={"A": 1, "agent": 0},
         )
         await store.save("runner/rs2", runner_cp.model_dump_json().encode())
 
         # Seed agent's interrupted checkpoint (user message pending)
         agent_cp = AgentCheckpoint(
-            session_id="rs2/agent",
+            session_key="rs2",
             processor_name="agent",
             messages=[
                 InputMessageItem.from_text(
@@ -1105,14 +1110,15 @@ class TestResumeIntegration:
             stream_llm_responses=True,
             recipients=[END_PROC_NAME],
         )
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="rs2"
+        )
         runner2 = Runner[str, None](
             entry_proc=a2,
             procs=[a2, agent2],
             ctx=ctx2,
             name="r",
         )
-        runner2.setup_session("rs2")
 
         payloads: list[str] = []
         async for event in runner2.run_stream():
@@ -1143,21 +1149,21 @@ class TestTaskRecord:
     def test_round_trip(self):
         record = TaskRecord(
             task_id="t1",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="research",
         )
         json_bytes = record.model_dump_json().encode()
         restored = TaskRecord.model_validate_json(json_bytes)
         assert restored.task_id == "t1"
-        assert restored.parent_session_id == "s1"
+        assert restored.parent_session_key == "s1"
         assert restored.status == TaskStatus.PENDING
         assert restored.result is None
 
     def test_store_key(self):
         record = TaskRecord(
             task_id="t1",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="research",
         )
@@ -1166,7 +1172,7 @@ class TestTaskRecord:
     def test_model_copy_update(self):
         record = TaskRecord(
             task_id="t1",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="research",
         )
@@ -1222,7 +1228,7 @@ class TestTaskRecordPersistence:
                 _text_response("done"),
             ],
             tools=[SlowTool(delay=0.05)],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -1235,7 +1241,7 @@ class TestTaskRecordPersistence:
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        assert record.parent_session_id == "s1"
+        assert record.parent_session_key == "s1"
         assert record.tool_name == "slow"
         assert record.tool_call_id == "fc_1"
 
@@ -1250,7 +1256,7 @@ class TestTaskRecordPersistence:
                 _text_response("got it"),
             ],
             tools=[SlowTool(delay=0.05)],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
 
@@ -1284,9 +1290,10 @@ class TestTaskRecordPersistence:
             tools=[very_slow],
             max_turns=1,
             stream_llm_responses=True,
-            session_id="s1",
         )
-        ctx: RunContext[None] = RunContext(checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            checkpoint_store=store, session_key="s1"
+        )
 
         await agent.run("go", ctx=ctx)
 
@@ -1329,7 +1336,7 @@ class TestPendingTaskResume:
         # Simulate: agent ran, bg task was spawned, process crashed before completion
         # 1. Save a session snapshot (parent had placeholder in memory)
         snapshot = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1354,7 +1361,7 @@ class TestPendingTaskResume:
         # 2. Save a PENDING task record (simulates crash before completion)
         record = TaskRecord(
             task_id="abc123",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
         )
@@ -1363,7 +1370,7 @@ class TestPendingTaskResume:
         # 3. Resume: new agent loads session
         agent, ctx = _make_agent(
             [_text_response("recovered")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent.run("continue", ctx=ctx, step=0)
@@ -1388,7 +1395,7 @@ class TestPendingTaskResume:
 
         # Snapshot from before the drain notification was checkpointed
         snapshot = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1409,7 +1416,7 @@ class TestPendingTaskResume:
         # Task completed between checkpoint and crash
         record = TaskRecord(
             task_id="xyz789",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.COMPLETED,
@@ -1420,7 +1427,7 @@ class TestPendingTaskResume:
         # Resume
         agent, ctx = _make_agent(
             [_text_response("got it")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent.run("continue", ctx=ctx, step=0)
@@ -1443,7 +1450,7 @@ class TestPendingTaskResume:
 
         # Snapshot has the notification (drained + checkpointed)
         snapshot = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1468,7 +1475,7 @@ class TestPendingTaskResume:
         # Record is DELIVERED — drain already injected + checkpointed
         record = TaskRecord(
             task_id="done1",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.DELIVERED,
@@ -1478,7 +1485,7 @@ class TestPendingTaskResume:
 
         agent, ctx = _make_agent(
             [_text_response("ok")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent.run("continue", ctx=ctx, step=0)
@@ -1494,7 +1501,7 @@ class TestPendingTaskResume:
         store = InMemoryCheckpointStore()
 
         snapshot = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1507,7 +1514,7 @@ class TestPendingTaskResume:
 
         record = TaskRecord(
             task_id="fail1",
-            parent_session_id="s1",
+            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.FAILED,
@@ -1517,7 +1524,7 @@ class TestPendingTaskResume:
 
         agent, ctx = _make_agent(
             [_text_response("ok")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent.run("continue", ctx=ctx, step=0)
@@ -1533,7 +1540,7 @@ class TestPendingTaskResume:
         store = InMemoryCheckpointStore()
 
         snapshot = AgentCheckpoint(
-            session_id="s1",
+            session_key="s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1562,7 +1569,7 @@ class TestPendingTaskResume:
         for tid, name, cid in [("t1", "slow_a", "fc_1"), ("t2", "slow_b", "fc_2")]:
             record = TaskRecord(
                 task_id=tid,
-                parent_session_id="s1",
+                parent_session_key="s1",
                 tool_call_id=cid,
                 tool_name=name,
             )
@@ -1570,7 +1577,7 @@ class TestPendingTaskResume:
 
         agent, ctx = _make_agent(
             [_text_response("recovered")],
-            session_id="s1",
+            session_key="s1",
             store=store,
         )
         await agent.run("continue", ctx=ctx, step=0)
@@ -1618,7 +1625,7 @@ def _make_child_tool(
 class TestChildTaskResume:
     @pytest.mark.anyio
     async def test_bg_agent_tool_creates_child_session(self):
-        """Background agent-as-tool spawns with its own child_session_id."""
+        """Background agent-as-tool spawns with its own child_session_key."""
         store = InMemoryCheckpointStore()
         _child, tool = _make_child_tool([_text_response("child done")], store=store)
 
@@ -1629,22 +1636,22 @@ class TestChildTaskResume:
                 _text_response("parent done"),
             ],
             tools=[tool],
-            session_id="parent_s1",
+            session_key="parent_s1",
             store=store,
         )
         await parent.run("go", ctx=ctx)
 
-        # TaskRecord should have a child_session_id
+        # TaskRecord should have a child_session_key
         keys = await store.list_keys("task/parent_s1/")
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        assert record.child_session_id is not None
-        assert record.child_session_id.startswith("child/parent_s1/")
+        assert record.child_session_key is not None
+        assert record.child_session_key.startswith("child/parent_s1/")
 
         # Child should have its own session snapshot
-        child_snap_data = await store.load(f"agent/{record.child_session_id}")
+        child_snap_data = await store.load(f"agent/{record.child_session_key}")
         assert child_snap_data is not None
         child_snap = AgentCheckpoint.model_validate_json(child_snap_data)
         assert child_snap.processor_name == "child"
@@ -1656,7 +1663,7 @@ class TestChildTaskResume:
 
         # 1. Simulate: parent ran, child was spawned but crashed mid-execution
         parent_snapshot = AgentCheckpoint(
-            session_id="parent_s1",
+            session_key="parent_s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1676,14 +1683,14 @@ class TestChildTaskResume:
         )
         await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
-        # 2. PENDING task record with child_session_id
+        # 2. PENDING task record with child_session_key
         task_record = TaskRecord(
             task_id="ch1",
-            parent_session_id="parent_s1",
+            parent_session_key="parent_s1",
             tool_call_id="fc_1",
             tool_name="child_agent",
             tool_call_arguments='{"text": "hello"}',
-            child_session_id="child/parent_s1/ch1",
+            child_session_key="child/parent_s1/ch1",
         )
         await store.save(
             task_record.store_key,
@@ -1692,7 +1699,7 @@ class TestChildTaskResume:
 
         # 3. Child's own session snapshot (checkpointed mid-execution)
         child_snapshot = AgentCheckpoint(
-            session_id="child/parent_s1/ch1",
+            session_key="child/parent_s1/ch1",
             processor_name="child",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1718,7 +1725,7 @@ class TestChildTaskResume:
                 _text_response("parent done"),
             ],
             tools=[tool],
-            session_id="parent_s1",
+            session_key="parent_s1",
             store=store,
         )
         await parent.run("continue", ctx=ctx, step=0)
@@ -1744,7 +1751,7 @@ class TestChildTaskResume:
         store = InMemoryCheckpointStore()
 
         parent_snapshot = AgentCheckpoint(
-            session_id="parent_s1",
+            session_key="parent_s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1764,10 +1771,10 @@ class TestChildTaskResume:
         )
         await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
-        # PENDING record WITHOUT child_session_id (plain bg tool)
+        # PENDING record WITHOUT child_session_key (plain bg tool)
         task_record = TaskRecord(
             task_id="t1",
-            parent_session_id="parent_s1",
+            parent_session_key="parent_s1",
             tool_call_id="fc_1",
             tool_name="slow",
         )
@@ -1779,7 +1786,7 @@ class TestChildTaskResume:
         parent, ctx = _make_agent(
             [_text_response("recovered")],
             tools=[SlowTool()],
-            session_id="parent_s1",
+            session_key="parent_s1",
             store=store,
         )
         await parent.run("continue", ctx=ctx, step=0)
@@ -1795,7 +1802,7 @@ class TestChildTaskResume:
         store = InMemoryCheckpointStore()
 
         parent_snapshot = AgentCheckpoint(
-            session_id="parent_s1",
+            session_key="parent_s1",
             processor_name="test_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1831,16 +1838,16 @@ class TestChildTaskResume:
         ]:
             rec = TaskRecord(
                 task_id=tid,
-                parent_session_id="parent_s1",
+                parent_session_key="parent_s1",
                 tool_call_id=cid,
                 tool_name="child_agent",
                 tool_call_arguments='{"text": "hello"}',
-                child_session_id=sid,
+                child_session_key=sid,
             )
             await store.save(rec.store_key, rec.model_dump_json().encode())
             # Each child has its own snapshot
             snap = AgentCheckpoint(
-                session_id=sid,
+                session_key=sid,
                 processor_name="child",
                 messages=[
                     InputMessageItem.from_text("prompt", role="system"),
@@ -1865,7 +1872,7 @@ class TestChildTaskResume:
                 _text_response("parent done"),
             ],
             tools=[tool],
-            session_id="parent_s1",
+            session_key="parent_s1",
             store=store,
         )
         await parent.run("continue", ctx=ctx, step=0)

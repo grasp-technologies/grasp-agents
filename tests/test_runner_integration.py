@@ -293,11 +293,12 @@ class TestRunnerDurability:
             recipients=[END_PROC_NAME],
         )
 
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="int-1"
+        )
         runner = Runner[str, None](
             entry_proc=agent_a, procs=[agent_a, agent_b], ctx=ctx, name="r"
         )
-        runner.setup_session("int-1")
 
         result = await runner.run(chat_inputs="Mathematics")
         assert len(list(result.payloads)) == 1
@@ -306,7 +307,7 @@ class TestRunnerDurability:
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         assert len(cp.pending_events) == 0
-        assert len(cp.active_sessions) == 2
+        assert len(cp.active_steps) == 2
 
 
 @pytest.mark.integration
@@ -375,7 +376,6 @@ class _FailingAddTool(BaseTool[_AddInput, int, None]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
-        session_id: str | None = None,
     ) -> int:
         self.call_count += 1
         if self.call_count == self.fail_on_call:
@@ -438,11 +438,12 @@ class TestAgentCrashResume:
         crasher1 = _FailingProcessor("crasher", recipients=[END_PROC_NAME])
 
         entry1 = Passthrough(name="entry", recipients=["calculator"])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="agent-crash-1"
+        )
         runner1 = Runner[str, None](
             entry_proc=entry1, procs=[entry1, agent1, crasher1], ctx=ctx1, name="r"
         )
-        runner1.setup_session("agent-crash-1")
 
         with pytest.raises(ExceptionGroup):
             await runner1.run(chat_inputs="go")
@@ -481,11 +482,12 @@ class TestAgentCrashResume:
         crasher2.call_count = 1  # skip the failure
 
         entry2 = Passthrough(name="entry", recipients=["calculator"])
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="agent-crash-1"
+        )
         runner2 = Runner[str, None](
             entry_proc=entry2, procs=[entry2, agent2, crasher2], ctx=ctx2, name="r"
         )
-        runner2.setup_session("agent-crash-1")
 
         result = await runner2.run()
         payloads = list(result.payloads)
@@ -539,11 +541,12 @@ class TestAgentCrashResume:
                 raise RuntimeError("Deliberate crash on turn 2")
 
         entry1 = Passthrough(name="entry", recipients=["calculator"])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="mid-agent-1"
+        )
         runner1 = Runner[str, None](
             entry_proc=entry1, procs=[entry1, agent1], ctx=ctx1, name="r"
         )
-        runner1.setup_session("mid-agent-1")
 
         with pytest.raises(Exception):
             await runner1.run(chat_inputs="go")
@@ -588,11 +591,12 @@ class TestAgentCrashResume:
         # No crash hook on agent2
 
         entry2 = Passthrough(name="entry", recipients=["calculator"])
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="mid-agent-1"
+        )
         runner2 = Runner[str, None](
             entry_proc=entry2, procs=[entry2, agent2], ctx=ctx2, name="r"
         )
-        runner2.setup_session("mid-agent-1")
 
         result = await runner2.run()
         payloads = list(result.payloads)
@@ -650,11 +654,12 @@ class TestWorkflowCrashResume:
         )
 
         entry1 = Passthrough(name="entry", recipients=["draft_refine"])
-        ctx1: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="wf-crash-1"
+        )
         runner1 = Runner[str, None](
             entry_proc=entry1, procs=[entry1, wf1], ctx=ctx1, name="r"
         )
-        runner1.setup_session("wf-crash-1")
 
         with pytest.raises(Exception):
             await runner1.run(chat_inputs="The ocean at sunset")
@@ -687,11 +692,12 @@ class TestWorkflowCrashResume:
         )
 
         entry2 = Passthrough(name="entry", recipients=["draft_refine"])
-        ctx2: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="wf-crash-1"
+        )
         runner2 = Runner[str, None](
             entry_proc=entry2, procs=[entry2, wf2], ctx=ctx2, name="r"
         )
-        runner2.setup_session("wf-crash-1")
 
         result = await runner2.run()
         payloads = list(result.payloads)

@@ -449,7 +449,7 @@ class TestAgentPromptBuilders:
         # Verify builder was called — child agent's sys_prompt was set
         # by _build_prompts via the builder, not the static string.
         agent, _ = await agent_tool._prepare_child(
-            AgentToolInput(prompt="hello"), ctx=ctx, exec_id="x2", session_id=None
+            AgentToolInput(prompt="hello"), ctx=ctx, exec_id="x2"
         )
         assert agent._prompt_builder.sys_prompt == "Dynamic: hello"
 
@@ -543,7 +543,7 @@ class TestAgentPromptBuilders:
 
         ctx: RunContext[None] = RunContext()
         agent, _ = await agent_tool._prepare_child(
-            AgentToolInput(prompt="test"), ctx=ctx, exec_id="x", session_id=None
+            AgentToolInput(prompt="test"), ctx=ctx, exec_id="x"
         )
         assert agent._prompt_builder.sys_prompt == "async: test"
 
@@ -561,7 +561,7 @@ class TestAgentPromptBuilders:
 
         ctx: RunContext[None] = RunContext()
         agent, user_msg = await agent_tool._prepare_child(
-            AgentToolInput(prompt="raw"), ctx=ctx, exec_id="x", session_id=None
+            AgentToolInput(prompt="raw"), ctx=ctx, exec_id="x"
         )
         assert agent._prompt_builder.sys_prompt == "static"
         assert user_msg == "raw"

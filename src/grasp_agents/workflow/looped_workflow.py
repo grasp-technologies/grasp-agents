@@ -26,7 +26,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         max_iterations: int = 10,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_id: str | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
@@ -37,7 +36,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             recipients=recipients,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_id=session_id,
             session_metadata=session_metadata,
         )
 

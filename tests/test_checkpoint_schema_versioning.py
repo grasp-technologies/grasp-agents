@@ -68,11 +68,11 @@ class TestSchemaVersionConstants:
 
 class TestProcessorCheckpointVersion:
     def test_default_schema_version_is_current(self) -> None:
-        cp = ProcessorCheckpoint(session_id="s1", processor_name="p")
+        cp = ProcessorCheckpoint(session_key="s1", processor_name="p")
         assert cp.schema_version == CURRENT_SCHEMA_VERSION
 
     def test_round_trip_preserves_schema_version(self) -> None:
-        cp = ProcessorCheckpoint(session_id="s1", processor_name="p")
+        cp = ProcessorCheckpoint(session_key="s1", processor_name="p")
         raw = cp.model_dump_json()
         loaded = ProcessorCheckpoint.model_validate_json(raw)
         assert loaded.schema_version == CURRENT_SCHEMA_VERSION
@@ -81,7 +81,7 @@ class TestProcessorCheckpointVersion:
         """Checkpoints written before versioning should still load."""
         legacy = json.dumps(
             {
-                "session_id": "s1",
+                "session_key": "s1",
                 "processor_name": "p",
                 "checkpoint_number": 0,
                 "saved_at": "2026-04-17T00:00:00+00:00",
@@ -95,7 +95,7 @@ class TestProcessorCheckpointVersion:
         future = json.dumps(
             {
                 "schema_version": CURRENT_SCHEMA_VERSION + 1,
-                "session_id": "s1",
+                "session_key": "s1",
                 "processor_name": "p",
             }
         )
@@ -110,7 +110,7 @@ class TestProcessorCheckpointVersion:
         future = json.dumps(
             {
                 "schema_version": CURRENT_SCHEMA_VERSION + 5,
-                "session_id": "s",
+                "session_key": "s",
                 "processor_name": "p",
             }
         )
@@ -124,7 +124,7 @@ class TestTaskRecordVersion:
     def _record(self, **overrides: object) -> TaskRecord:
         defaults: dict[str, object] = {
             "task_id": "t1",
-            "parent_session_id": "s1",
+            "parent_session_key": "s1",
             "tool_call_id": "c1",
             "tool_name": "do_thing",
         }
@@ -145,7 +145,7 @@ class TestTaskRecordVersion:
         legacy = json.dumps(
             {
                 "task_id": "t1",
-                "parent_session_id": "s1",
+                "parent_session_key": "s1",
                 "tool_call_id": "c1",
                 "tool_name": "do_thing",
                 "status": "pending",
@@ -161,7 +161,7 @@ class TestTaskRecordVersion:
             {
                 "schema_version": CURRENT_SCHEMA_VERSION + 1,
                 "task_id": "t1",
-                "parent_session_id": "s1",
+                "parent_session_key": "s1",
                 "tool_call_id": "c1",
                 "tool_name": "do_thing",
             }
@@ -180,13 +180,14 @@ class TestDeserializePropagation:
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[_Appender("A"), _Appender("B")]
         )
-        wf.setup_session("s-future")
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="s-future"
+        )
 
         future_blob = json.dumps(
             {
                 "schema_version": CURRENT_SCHEMA_VERSION + 1,
-                "session_id": "s-future",
+                "session_key": "s-future",
                 "processor_name": "wf",
                 "completed_step": 0,
                 "packet": {
@@ -208,8 +209,9 @@ class TestDeserializePropagation:
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[_Appender("A"), _Appender("B")]
         )
-        wf.setup_session("s-corrupt")
-        ctx: RunContext[None] = RunContext(state=None, checkpoint_store=store)
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="s-corrupt"
+        )
 
         await store.save("workflow/s-corrupt", b"{not valid json")
 

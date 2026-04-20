@@ -50,7 +50,6 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.types.tool import BaseTool
 
-
 # ---------- Infrastructure (mirrors test_before_tool_decision.py) ----------
 
 
@@ -324,7 +323,7 @@ class TestDenyPath:
         # {name} substituted
         assert "Blocked echo with args" in text
         # {arguments} substituted (content visible through JSON escaping)
-        assert "text" in text and "\\\"x\\\"" in text
+        assert "text" in text and '\\"x\\"' in text
 
 
 class TestToolNameFilter:

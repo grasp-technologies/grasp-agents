@@ -16,7 +16,7 @@ from grasp_agents.types.errors import (
     ProcRunError,
 )
 
-from ..durability.checkpoints import CheckpointSchemaError
+from ..durability.checkpoints import CheckpointKind, CheckpointSchemaError
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
@@ -95,6 +95,12 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         1: "_out_type",
     }
 
+    # Key prefix used when composing this processor's checkpoint store key.
+    # Base ``Processor`` has no checkpoint machinery, so the default is
+    # ``None`` and ``_checkpoint_store_key`` returns ``None``. Subclasses
+    # that support resuming set this to a ``CheckpointKind`` value.
+    _checkpoint_kind: ClassVar[CheckpointKind | None] = None
+
     def __init__(
         self,
         name: ProcName,
@@ -103,7 +109,6 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         recipients: Sequence[ProcName] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_id: str | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         self._in_type: type[InT]
@@ -121,7 +126,10 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        self._session_id: str | None = session_id
+        # Position of this processor within the session hierarchy. Empty
+        # for a processor that is the session root; container processors
+        # prepend their own path + child name when adopting subprocs.
+        self._session_path: list[str] = []
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
 
@@ -144,8 +152,8 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         return self._memory
 
     @property
-    def session_id(self) -> str | None:
-        return self._session_id
+    def session_path(self) -> list[str]:
+        return list(self._session_path)
 
     @property
     def checkpoint_number(self) -> int:
@@ -157,26 +165,53 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
 
     # --- Session persistence ---
 
-    @property
-    def resumable(self) -> bool:
-        return self._session_id is not None
+    @staticmethod
+    def is_resumable(ctx: RunContext[Any] | None) -> bool:
+        """True if ``ctx`` has a checkpoint store wired up."""
+        return ctx is not None and ctx.checkpoint_store is not None
 
-    def setup_session(self, session_id: str) -> None:
-        self._session_id = session_id
-        self._checkpoint_number = 0
+    def _on_adopted(self, parent_session_path: Sequence[str]) -> None:
+        """
+        Called by a container processor adopting this processor as a subproc.
 
-    @property
-    def _checkpoint_store_key(self) -> str | None:
-        return None
+        Prepends the container's session path to ``self._session_path`` and
+        recurses so deeply-nested container subprocs pick up the full path.
+        Resumability is not a construction-time flag — it's inferred at
+        call time from ``ctx.checkpoint_store``, so nothing to propagate
+        beyond the path itself.
+        """
+        self._session_path = [*parent_session_path, self._name]
+        self._propagate_to_children()
+
+    def _propagate_to_children(self) -> None:
+        """Override in container processors to (re-)adopt child subprocs."""
+
+    def _checkpoint_store_key(self, ctx: RunContext[CtxT]) -> str | None:
+        """
+        Compose the checkpoint-store key for the current run.
+
+        Returns ``None`` when no checkpoint store is wired *or* when
+        this processor class has no ``_checkpoint_kind`` (base
+        :class:`Processor`). Otherwise returns
+        ``"{kind}/{ctx.session_key}[/{path}]"`` where ``path`` is the
+        slash-joined ``_session_path`` (omitted when empty).
+        """
+        if ctx.checkpoint_store is None or self._checkpoint_kind is None:
+            return None
+        root = f"{self._checkpoint_kind}/{ctx.session_key}"
+        if not self._session_path:
+            return root
+        return f"{root}/{'/'.join(self._session_path)}"
 
     async def _deserialize_checkpoint(
         self, ctx: RunContext[CtxT], checkpoint_type: type[CpT]
     ) -> "CpT | None":
         store = ctx.checkpoint_store
-        if store is None or self._checkpoint_store_key is None:
+        key = self._checkpoint_store_key(ctx)
+        if store is None or key is None:
             return None
 
-        data = await store.load(self._checkpoint_store_key)
+        data = await store.load(key)
         if data is None:
             return None
 
@@ -187,7 +222,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         except Exception:
             logger.warning(
                 "Corrupt checkpoint %s for %s, starting fresh",
-                self._session_id,
+                key,
                 self.name,
                 exc_info=True,
             )
@@ -203,13 +238,14 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         checkpoint: "ProcessorCheckpoint",
     ) -> None:
         store = ctx.checkpoint_store
-        if store is None or self._checkpoint_store_key is None:
+        key = self._checkpoint_store_key(ctx)
+        if store is None or key is None:
             return
 
         checkpoint.checkpoint_number = self._checkpoint_number + 1
 
         await store.save(
-            self._checkpoint_store_key,
+            key,
             checkpoint.model_dump_json().encode("utf-8"),
         )
         self._checkpoint_number += 1
@@ -222,7 +258,9 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
+        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
+        del ctx  # base class doesn't inspect ctx; subclasses may
         err_kwargs = {"proc_name": self.name, "exec_id": exec_id}
 
         num_non_null_inputs = sum(
@@ -449,6 +487,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
+            ctx=ctx,
         )
 
         outputs: list[OutT] = []

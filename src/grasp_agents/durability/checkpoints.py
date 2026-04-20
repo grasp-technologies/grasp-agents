@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
@@ -9,7 +9,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 1
+CURRENT_SCHEMA_VERSION: int = 2
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -20,12 +20,33 @@ changes in a way that older code could not load. Add an entry to
 
 SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
     1: "Initial versioned schema for processor checkpoints and task records.",
+    2: (
+        "Renamed session identifier fields to ``session_key`` "
+        "(``parent_session_key`` / ``child_session_key`` on TaskRecord)."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
 Kept alongside ``CURRENT_SCHEMA_VERSION`` so that a mismatch on load can tell
 the operator what they are missing.
 """
+
+
+class CheckpointKind(StrEnum):
+    """
+    Key prefix identifying the kind of processor that owns a checkpoint.
+
+    Composed into the checkpoint-store key by :meth:`Processor
+    ._checkpoint_store_key` as ``"{kind}/{session_key}[/{path}]"``.
+    Subclasses of :class:`Processor` that support checkpointing set
+    ``_checkpoint_kind`` to one of these values; the base class leaves
+    it unset (``None``), which disables persistence.
+    """
+
+    AGENT = "agent"
+    WORKFLOW = "workflow"
+    PARALLEL = "parallel"
+    RUNNER = "runner"
 
 
 class CheckpointSchemaError(Exception):
@@ -51,7 +72,7 @@ class ProcessorCheckpoint(BaseModel):
     """Base checkpoint for any resumable processor."""
 
     schema_version: int = Field(default=CURRENT_SCHEMA_VERSION)
-    session_id: str
+    session_key: str
     processor_name: str
     checkpoint_number: int = 0
     saved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -111,9 +132,10 @@ class RunnerCheckpoint(ProcessorCheckpoint):
     Checkpoint for Runner.
 
     Stores pending events (events awaiting delivery OR currently being handled)
-    and per-processor session IDs so sessions can be restored on resume.
+    and per-processor delivery-step counters so deliveries can be restored
+    on resume. Per-processor session paths are fixed at construction time
+    and don't need persisting.
     """
 
     pending_events: list[ProcPacketOutEvent]
-    active_sessions: dict[str, str] = Field(default_factory=dict)
     active_steps: dict[str, int] = Field(default_factory=dict)

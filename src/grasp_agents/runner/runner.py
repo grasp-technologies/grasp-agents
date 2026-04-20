@@ -7,7 +7,11 @@ from uuid import uuid4
 
 from grasp_agents.telemetry import SpanKind, traced
 
-from ..durability.checkpoints import CheckpointSchemaError, RunnerCheckpoint
+from ..durability.checkpoints import (
+    CheckpointKind,
+    CheckpointSchemaError,
+    RunnerCheckpoint,
+)
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
@@ -29,7 +33,6 @@ class Runner(Generic[OutT, CtxT]):
         procs: Sequence[Processor[Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
         name: str | None = None,
-        session_id: str | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         if entry_proc not in procs:
@@ -63,17 +66,16 @@ class Runner(Generic[OutT, CtxT]):
 
         self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
-        # Session persistence
-        self._session_id: str | None = None
+        # Session path: adopt each proc so its session path becomes
+        # ``[proc.name]``. Runner itself lives at the session root.
+        for proc in procs:
+            proc._on_adopted([])  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
         self._checkpoint_number: int = 0
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._pending_events: dict[str, ProcPacketOutEvent] = {}
-        self._active_sessions: dict[str, str] = {}  # proc_name -> session_id
         self._checkpoint_lock = asyncio.Lock()
         self._active_steps: dict[str, int] = {}  # proc_name -> last delivery step
-
-        if session_id:
-            self.setup_session(session_id)
 
     @property
     def name(self) -> str:
@@ -85,27 +87,17 @@ class Runner(Generic[OutT, CtxT]):
 
     # --- Session persistence ---
 
-    def setup_session(self, session_id: str) -> None:
-        self._session_id = session_id
-        self._checkpoint_number = 0
-        self._active_sessions = {}
-        self._active_steps = {}
-        for proc in self._procs:
-            proc_session = f"{session_id}/{proc.name}"
-            proc.setup_session(proc_session)
-            self._active_sessions[proc.name] = proc_session
-
-    @property
     def _checkpoint_store_key(self) -> str | None:
-        if self._session_id is None:
+        if self._ctx.checkpoint_store is None:
             return None
-        return f"runner/{self._session_id}"
+        return f"{CheckpointKind.RUNNER}/{self._ctx.session_key}"
 
     async def _load_checkpoint(self) -> RunnerCheckpoint | None:
         store = self._ctx.checkpoint_store
-        if store is None or self._checkpoint_store_key is None:
+        key = self._checkpoint_store_key()
+        if store is None or key is None:
             return None
-        data = await store.load(self._checkpoint_store_key)
+        data = await store.load(key)
         if data is None:
             return None
         try:
@@ -115,14 +107,14 @@ class Runner(Generic[OutT, CtxT]):
         except Exception:
             logger.warning(
                 "Corrupt runner checkpoint %s, starting fresh",
-                self._session_id,
+                key,
                 exc_info=True,
             )
             return None
         self._checkpoint_number = checkpoint.checkpoint_number
         logger.info(
             "Loaded runner checkpoint %s (%d pending events)",
-            self._session_id,
+            key,
             len(checkpoint.pending_events),
         )
         return checkpoint
@@ -132,21 +124,20 @@ class Runner(Generic[OutT, CtxT]):
         pending_events: dict[str, ProcPacketOutEvent] | None = None,
     ) -> None:
         store = self._ctx.checkpoint_store
-        if store is None or self._session_id is None:
+        key = self._checkpoint_store_key()
+        if store is None or key is None:
             return
-        assert self._checkpoint_store_key is not None
         self._checkpoint_number += 1
         events = pending_events if pending_events is not None else self._pending_events
         checkpoint = RunnerCheckpoint(
-            session_id=self._session_id,
+            session_key=self._ctx.session_key,
             processor_name=self._name,
             checkpoint_number=self._checkpoint_number,
             pending_events=list(events.values()),
-            active_sessions=dict(self._active_sessions),
             active_steps=dict(self._active_steps),
         )
         await store.save(
-            self._checkpoint_store_key,
+            key,
             checkpoint.model_dump_json().encode("utf-8"),
         )
 
@@ -311,11 +302,6 @@ class Runner(Generic[OutT, CtxT]):
         if checkpoint is not None:
             self._pending_events = {e.id: e for e in checkpoint.pending_events}
             self._active_steps = dict(checkpoint.active_steps)
-            # Restore proc sessions from checkpoint
-            for proc_name, session_id in checkpoint.active_sessions.items():
-                proc = self._procs_by_name.get(proc_name)
-                if proc is not None:
-                    proc.setup_session(session_id)
 
         else:
             start_event = self._make_start_event(chat_inputs)
