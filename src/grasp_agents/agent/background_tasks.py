@@ -1,14 +1,19 @@
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from logging import getLogger
 from typing import Any, Generic
 from uuid import uuid4
 
 from pydantic import BaseModel
 
-from ..durability.checkpoints import CheckpointSchemaError
+from ..durability.keys import (
+    background_child_session_subpath,
+    task_key,
+    task_session_prefix,
+)
+from ..durability.loading import load_json
 from ..durability.task_record import TaskRecord, TaskStatus
 from ..run_context import CtxT, RunContext
 from ..types.events import (
@@ -112,16 +117,17 @@ class BackgroundTaskManager(Generic[CtxT]):
     ) -> tuple[str, BackgroundTaskLaunchedEvent]:
         task_id = str(uuid4())[:8]
         store = ctx.checkpoint_store
-        child_session_key: str | None = None
-        child_ctx: RunContext[CtxT] = ctx
 
-        # Resumable tools get their own child session key carved out of the
-        # parent's session_key, so their checkpoints don't collide.
+        # Resumable tools nest their checkpoint under the parent's session
+        # at a path derived from ``task_id``. Session-scoped services
+        # (approval_store, file_edit_store, usage tracker) remain shared
+        # with the parent — no ctx copy needed.
+        child_subpath: list[str] | None = None
         if tool.resumable and store is not None:
-            child_session_key = f"child/{ctx.session_key}/{task_id}"
-            child_ctx = ctx.model_copy(update={"session_key": child_session_key})
+            child_subpath = background_child_session_subpath(task_id)
 
-        # Persist task record BEFORE spawning — survives crashes
+        # Persist task record BEFORE spawning — survives crashes.
+        # ``child_session_key`` is left unset; see TaskRecord doc comment.
         if store is not None:
             record = TaskRecord(
                 task_id=task_id,
@@ -129,15 +135,15 @@ class BackgroundTaskManager(Generic[CtxT]):
                 tool_call_id=call.call_id,
                 tool_name=call.name,
                 tool_call_arguments=call.arguments,
-                child_session_key=child_session_key,
             )
             await store.save(record.store_key, record.model_dump_json().encode())
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.run_stream(
             inp,
-            ctx=child_ctx,
+            ctx=ctx,
             exec_id=exec_id,
+            session_subpath=child_subpath,
         )
         async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
@@ -205,9 +211,11 @@ class BackgroundTaskManager(Generic[CtxT]):
             )
             self._memory.update([notification])
 
-            # Mark record as DELIVERED
+            # Mark record as DELIVERED. Records are kept for post-hoc
+            # observability / debugging; run ``prune_delivered(older_than)``
+            # to reclaim space once they're no longer interesting.
             if ctx.checkpoint_store is not None:
-                key = f"task/{ctx.session_key}/{pt.task_id}"
+                key = task_key(ctx.session_key, pt.task_id)
                 existing = await ctx.checkpoint_store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
@@ -247,7 +255,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
         if store is not None and ctx is not None:
             for pt in self._tasks.values():
-                key = f"task/{ctx.session_key}/{pt.task_id}"
+                key = task_key(ctx.session_key, pt.task_id)
                 existing = await store.load(key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
@@ -280,22 +288,12 @@ class BackgroundTaskManager(Generic[CtxT]):
         if store is None or ctx is None:
             return
 
-        keys = await store.list_keys(f"task/{ctx.session_key}/")
+        keys = await store.list_keys(task_session_prefix(ctx.session_key))
         for key in keys:
-            data = await store.load(key)
-            if data is None:
-                continue
-
-            try:
-                record = TaskRecord.model_validate_json(data)
-            except CheckpointSchemaError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Corrupt task record at %s, skipping",
-                    key,
-                    exc_info=True,
-                )
+            record = await load_json(
+                store, key, TaskRecord, subject="task record", logger=logger
+            )
+            if record is None:
                 continue
 
             # Terminal states — already handled
@@ -327,7 +325,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                     }
                 )
             elif record.status == TaskStatus.COMPLETED:
-                # Completed between drain and checkpoint — re-inject
+                # Completed between drain and checkpoint — re-inject.
                 notification = InputMessageItem.from_text(
                     _task_notification(
                         task_id=record.task_id,
@@ -355,6 +353,40 @@ class BackgroundTaskManager(Generic[CtxT]):
             ctx.session_key,
         )
 
+    # --- Offline cleanup ---
+
+    @staticmethod
+    async def prune_delivered(
+        ctx: RunContext[Any],
+        *,
+        older_than: timedelta,
+    ) -> int:
+        """
+        Delete ``DELIVERED`` task records older than ``older_than``.
+
+        Records are normally deleted at delivery (see :meth:`drain`), so
+        this is primarily for stragglers left by older code or crashed
+        deliveries. Returns the number of records pruned. Short-circuits
+        with ``0`` when no store is attached.
+        """
+        store = ctx.checkpoint_store
+        if store is None:
+            return 0
+
+        cutoff = datetime.now(UTC) - older_than
+        pruned = 0
+        keys = await store.list_keys(task_session_prefix(ctx.session_key))
+        for key in keys:
+            record = await load_json(
+                store, key, TaskRecord, subject="task record", logger=logger
+            )
+            if record is None:
+                continue
+            if record.status == TaskStatus.DELIVERED and record.updated_at < cutoff:
+                await store.delete(key)
+                pruned += 1
+        return pruned
+
     def _try_respawn_child(
         self,
         record: TaskRecord,
@@ -363,24 +395,24 @@ class BackgroundTaskManager(Generic[CtxT]):
         exec_id: str | None,
     ) -> bool:
         """Re-spawn a child task from its session checkpoint."""
-        if not record.child_session_key or not ctx or not exec_id:
-            return False
-        if not ctx.checkpoint_store:
+        if not ctx or not exec_id or not ctx.checkpoint_store:
             return False
 
         tool = self._tools.get(record.tool_name) if self._tools else None
         if not tool or not tool.resumable:
             return False
 
-        # The child ran under its own carved-out session_key; re-create
-        # the same ctx scope so the tool's inner processor finds its
-        # checkpoint at the same store key.
-        child_ctx = ctx.model_copy(update={"session_key": record.child_session_key})
+        # Child's session_subpath is deterministic from ``task_id`` — the
+        # tool's inner processor re-adopts into that subpath on resume
+        # and finds its own checkpoint at the same key it was saved
+        # under.
+        child_subpath = background_child_session_subpath(record.task_id)
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.resume_stream(
-            ctx=child_ctx,
+            ctx=ctx,
             exec_id=exec_id,
+            session_subpath=child_subpath,
         )
         async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
@@ -393,9 +425,9 @@ class BackgroundTaskManager(Generic[CtxT]):
             events=queue,
         )
         logger.info(
-            "Re-spawned child task %s (%s) from session %s",
+            "Re-spawned child task %s (%s) at subpath %s",
             record.task_id,
             record.tool_name,
-            record.child_session_key,
+            "/".join(child_subpath),
         )
         return True

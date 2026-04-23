@@ -2,7 +2,7 @@ import asyncio
 import copy as copy_mod
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import (
     Any,
     ClassVar,
@@ -115,6 +115,10 @@ class BaseTool(
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> _OutT_co:
+        # Resumable subagent wrappers (``AgentTool`` / ``ProcessorTool``)
+        # extend this with a ``session_subpath`` kwarg — forwarded by
+        # ``_run_with_timeout`` only when non-``None`` so plain tools
+        # remain compatible with the short signature.
         pass
 
     async def _run_stream(
@@ -125,6 +129,8 @@ class BaseTool(
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        # Resumable subagent wrappers extend this with a ``session_subpath``
+        # kwarg — see :meth:`_run` for the forwarding rule.
         from .events import ToolOutputEvent  # avoid circular import
 
         out = await self._run(
@@ -186,13 +192,22 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> _OutT_co | ToolErrorInfo:
+        # ``session_subpath`` is only forwarded when set so that user
+        # tools overriding ``_run`` with the short signature keep working.
+        extra: dict[str, Any] = (
+            {"session_subpath": session_subpath}
+            if session_subpath is not None
+            else {}
+        )
         try:
             coro = self._run(
                 inp,
                 ctx=ctx,
                 exec_id=exec_id,
                 progress_callback=progress_callback,
+                **extra,
             )
             if self.timeout is not None:
                 result = await asyncio.wait_for(coro, timeout=self.timeout)
@@ -209,12 +224,19 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        extra: dict[str, Any] = (
+            {"session_subpath": session_subpath}
+            if session_subpath is not None
+            else {}
+        )
         stream = self._run_stream(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
+            **extra,
         )
         async for event in self._stream_with_timeout(stream, exec_id=exec_id):
             yield event
@@ -244,12 +266,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
+            session_subpath=session_subpath,
         )
 
     async def run_stream(
@@ -259,12 +283,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
+            session_subpath=session_subpath,
         ):
             yield event
 
@@ -279,8 +305,10 @@ class BaseTool(
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         """Resume from a session checkpoint. Override in resumable tools."""
+        del session_subpath
         raise NotImplementedError(f"{type(self).__name__} does not support resume")
         yield  # type: ignore[unreachable]  # makes this an async generator
 

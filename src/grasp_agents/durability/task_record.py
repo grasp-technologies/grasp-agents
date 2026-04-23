@@ -9,6 +9,7 @@ from .checkpoints import (
     SCHEMA_VERSION_SUMMARIES,
     CheckpointSchemaError,
 )
+from .keys import task_key
 
 
 class TaskStatus(StrEnum):
@@ -37,7 +38,12 @@ class TaskRecord(BaseModel):
     tool_name: str
     tool_call_arguments: str | None = None  # Serialized tool input for resume replay
     status: TaskStatus = TaskStatus.PENDING
-    child_session_key: str | None = None  # If set, child agent checkpoints here
+    # DEPRECATED: retained for back-compat with pre-B2 task records that
+    # minted a separate session_key for each child. New records leave
+    # this ``None`` and the child runs under the parent's session_key
+    # with a derived session-path — see
+    # :func:`..keys.background_child_session_subpath`.
+    child_session_key: str | None = None
     result: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -45,7 +51,7 @@ class TaskRecord(BaseModel):
 
     @property
     def store_key(self) -> str:
-        return f"task/{self.parent_session_key}/{self.task_id}"
+        return task_key(self.parent_session_key, self.task_id)
 
     @model_validator(mode="after")
     def _check_schema_version(self) -> Self:

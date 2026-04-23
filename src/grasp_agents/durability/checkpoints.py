@@ -4,12 +4,13 @@ from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from grasp_agents.durability.context_serialization import ContextKind
 from grasp_agents.packet import Packet
 from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 2
+CURRENT_SCHEMA_VERSION: int = 3
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -23,6 +24,11 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
     2: (
         "Renamed session identifier fields to ``session_key`` "
         "(``parent_session_key`` / ``child_session_key`` on TaskRecord)."
+    ),
+    3: (
+        "AgentCheckpoint carries optional context-serialization metadata "
+        "(``context_kind`` / ``context_data``), provider ``prompt_cache_key``, "
+        "and ``session_mode`` for resume-time drift warnings."
     ),
 }
 """
@@ -101,6 +107,27 @@ class AgentCheckpoint(ProcessorCheckpoint):
     turn: int = 0  # current LLM cycle within the step
     output: str | None = None  # cached final answer (None = step incomplete)
     location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
+
+    # Optional opt-in auto-serialization of ``RunContext.state``. When
+    # ``kind == OMITTED`` (default) the framework does not persist state;
+    # ``@agent.add_state_builder`` rebuilds it from the app's own source
+    # of truth on resume. See ``context_serialization.py`` for the
+    # full contract.
+    context_kind: ContextKind | None = None
+    context_data: Any | None = None
+
+    # Provider-supplied cache key (OpenAI Responses, Anthropic prompt
+    # caching, etc.). Persisted so resume can reuse the same key and
+    # avoid invalidating the model-side cache. Providers that ignore
+    # this field leave it ``None``.
+    prompt_cache_key: str | None = None
+
+    # Free-form label describing how the session is being run — e.g.
+    # ``"interactive"`` vs ``"batch"`` vs ``"sdk"``. On resume the load
+    # path warns when the current mode differs from the saved mode, so
+    # callers notice when the same session is hit from a new entry
+    # point. Leave ``None`` to opt out of the drift check.
+    session_mode: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

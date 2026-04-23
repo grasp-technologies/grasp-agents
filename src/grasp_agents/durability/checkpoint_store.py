@@ -11,7 +11,7 @@ class CheckpointStore(Protocol):
     async def list_keys(self, prefix: str) -> list[str]: ...
 
 
-class InMemoryCheckpointStore:
+class InMemoryCheckpointStore(CheckpointStore):
     """In-memory checkpoint store for testing and short-lived sessions."""
 
     def __init__(self) -> None:

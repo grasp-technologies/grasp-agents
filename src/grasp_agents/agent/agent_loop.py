@@ -1,16 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, Generic, Protocol
+from typing import TYPE_CHECKING, Any, Final, Generic, Protocol
 
 from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.telemetry import traced
 
 from ..durability.checkpoints import AgentCheckpointLocation
-from ..llm.llm import LLM
 from ..run_context import CtxT, RunContext
 from ..types.errors import AgentFinalAnswerError
 from ..types.events import (
@@ -29,8 +29,17 @@ from ..types.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from ..types.items import (
+    FunctionToolCallItem,
+    FunctionToolOutputItem,
+    InputMessageItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
+from ..types.llm_events import OutputItemDone, ResponseCompleted
+from ..types.tool import BaseTool, NamedToolChoice, ToolChoice
+from ..utils.streaming import stream_concurrent
 from .background_tasks import BackgroundTaskManager
-from .llm_agent_memory import LLMAgentMemory
 from .loop_state import (
     NextStep,
     NextStepContinue,
@@ -47,6 +56,9 @@ from .tool_decision import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping, Sequence
+
+    from ..llm.llm import LLM
     from ..types.hooks import (
         AfterLlmHook,
         AfterToolHook,
@@ -56,17 +68,8 @@ if TYPE_CHECKING:
         ToolInputConverter,
         ToolOutputConverter,
     )
-from ..types.items import (
-    FunctionToolCallItem,
-    FunctionToolOutputItem,
-    InputMessageItem,
-    OutputMessageItem,
-    ReasoningItem,
-)
-from ..types.llm_events import OutputItemDone, ResponseCompleted
-from ..types.response import Response
-from ..types.tool import BaseTool, NamedToolChoice, ToolChoice
-from ..utils.streaming import stream_concurrent
+    from ..types.response import Response
+    from .llm_agent_memory import LLMAgentMemory
 
 logger = getLogger(__name__)
 
@@ -109,6 +112,40 @@ class AgentLoop(Generic[CtxT]):
     callback slots set by the owning LLMAgent.
     """
 
+    # Config — set once at init, effectively immutable
+    agent_name: Final[str]
+    llm: Final[LLM]
+    max_turns: Final[int]
+    force_react_mode: Final[bool]
+    final_answer_as_tool_call: Final[bool]
+    tracing_exclude_input_fields: Final[set[str] | None]
+
+    # Mutable runtime state
+    memory: LLMAgentMemory
+    final_answer: str | None  # extracted by _check_stop / _force_generate
+    turn: int  # current LLM cycle within a step
+    bg_tasks: BackgroundTaskManager[CtxT]
+
+    # Internal
+    _tools: dict[str, BaseTool[BaseModel, Any, CtxT]] | None
+    _response_schema: Any | None
+    _final_answer_type: type[BaseModel]
+    _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
+    _stream_llm: bool
+    _stream_tools: bool
+
+    # Hook callback slots — set by LLMAgent, None = no-op
+    final_answer_extractor: FinalAnswerExtractor[CtxT] | None
+    before_llm_hook: BeforeLlmHook[CtxT] | None
+    after_llm_hook: AfterLlmHook[CtxT] | None
+    before_tool_hook: BeforeToolHook[CtxT] | None
+    after_tool_hook: AfterToolHook[CtxT] | None
+    tool_output_converters: dict[str, ToolOutputConverter[CtxT]]
+    tool_input_converters: dict[str, ToolInputConverter[CtxT]]
+
+    # Session persistence — wired by LLMAgent.setup_session()
+    checkpoint_callback: CheckpointCallback | None
+
     def __init__(
         self,
         *,
@@ -117,80 +154,53 @@ class AgentLoop(Generic[CtxT]):
         memory: LLMAgentMemory,
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
         response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
         max_turns: int,
         force_react_mode: bool = False,
         final_answer_type: type[BaseModel] = BaseModel,
         final_answer_as_tool_call: bool = False,
-        stream_llm_responses: bool = True,
+        stream_llm: bool = True,
         stream_tools: bool = False,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__()
 
-        self._agent_name = agent_name
-        self._max_turns = max_turns
-        self._force_react_mode = force_react_mode
-        self._tracing_exclude_input_fields = tracing_exclude_input_fields
-
-        self._llm = llm
-        self._response_schema = response_schema
-        self._response_schema_by_xml_tag = response_schema_by_xml_tag
-
+        self.final_answer = None
+        self.turn = 0
         self.memory = memory
 
-        self._final_answer_type = final_answer_type
-        self._final_answer_as_tool_call = final_answer_as_tool_call
-        self._final_answer_tool = self._make_final_answer_tool()
+        self.agent_name = agent_name
+        self.llm = llm
+        self.max_turns = max_turns
+        self.force_react_mode = force_react_mode
+        self.final_answer_as_tool_call = final_answer_as_tool_call
+        self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        self._stream_llm_responses = stream_llm_responses
+        self._response_schema = response_schema
+        self._final_answer_type = final_answer_type
+        self._final_answer_tool = self._make_final_answer_tool()
+        self._stream_llm = stream_llm
         self._stream_tools = stream_tools
 
-        tools_list: list[BaseTool[BaseModel, Any, CtxT]] | None = tools
+        tools_list = (tools or [])[:]
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
         self._tools = {t.name: t for t in tools_list} if tools_list else None
 
-        # Hook callback slots — set by LLMAgent, None = no-op
-        self.final_answer_extractor: FinalAnswerExtractor[CtxT] | None = None
-        self.before_llm_hook: BeforeLlmHook[CtxT] | None = None
-        self.after_llm_hook: AfterLlmHook[CtxT] | None = None
-        self.tool_output_converters: dict[str, ToolOutputConverter[CtxT]] = {}
-        self.tool_input_converters: dict[str, ToolInputConverter[CtxT]] = {}
-        self.before_tool_hook: BeforeToolHook[CtxT] | None = None
-        self.after_tool_hook: AfterToolHook[CtxT] | None = None
+        self.final_answer_extractor = None
+        self.before_llm_hook = None
+        self.after_llm_hook = None
+        self.tool_output_converters = {}
+        self.tool_input_converters = {}
+        self.before_tool_hook = None
+        self.after_tool_hook = None
 
-        # Background task manager
+        self.checkpoint_callback = None
+
         self.bg_tasks = BackgroundTaskManager[CtxT](
             agent_name=agent_name,
             memory=memory,
             tools=self._tools,
         )
-
-        # Extracted final answer (set by _check_stop / _force_generate)
-        self.final_answer: str | None = None
-
-        # Turn tracking — current LLM cycle within a step
-        self.turn: int = 0
-
-        # Session persistence — wired by LLMAgent.setup_session()
-        self.checkpoint_callback: CheckpointCallback | None = None
-
-    @property
-    def agent_name(self) -> str:
-        return self._agent_name
-
-    @property
-    def max_turns(self) -> int:
-        return self._max_turns
-
-    @property
-    def force_react_mode(self) -> bool:
-        return self._force_react_mode
-
-    @property
-    def llm(self) -> LLM:
-        return self._llm
 
     @property
     def response_schema(self) -> Any | None:
@@ -201,20 +211,8 @@ class AgentLoop(Generic[CtxT]):
         self._response_schema = value
 
     @property
-    def response_schema_by_xml_tag(self) -> Mapping[str, Any] | None:
-        return self._response_schema_by_xml_tag
-
-    @property
-    def final_answer_as_tool_call(self) -> bool:
-        return self._final_answer_as_tool_call
-
-    @property
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
         return self._tools or {}
-
-    @property
-    def tracing_exclude_input_fields(self) -> set[str] | None:
-        return self._tracing_exclude_input_fields
 
     async def checkpoint(
         self,
@@ -341,7 +339,7 @@ class AgentLoop(Generic[CtxT]):
                 ctx=ctx, exec_id=exec_id, response=response, **kwargs
             )
 
-        if self._final_answer_as_tool_call:
+        if self.final_answer_as_tool_call:
             for tc in response.tool_call_items:
                 if tc.name == self._final_answer_tool.name:
                     return tc.arguments
@@ -366,7 +364,6 @@ class AgentLoop(Generic[CtxT]):
         llm_params: dict[str, Any] = {
             "input": self.memory.messages,
             "response_schema": self.response_schema,
-            "response_schema_by_xml_tag": self.response_schema_by_xml_tag,
             "tools": self.tools or None,
             "tool_choice": tool_choice,
             **extra_llm_settings,
@@ -374,7 +371,7 @@ class AgentLoop(Generic[CtxT]):
 
         response: Response | None = None
 
-        if self._stream_llm_responses:
+        if self._stream_llm:
             async for se in self.llm.generate_response_stream(**llm_params):
                 if isinstance(se, OutputItemDone):
                     item = se.item
@@ -462,7 +459,9 @@ class AgentLoop(Generic[CtxT]):
         # Resolve inputs, partition into background vs immediate
 
         outputs: list[Any] = [None] * len(calls)
-        immediate: list[tuple[int, BaseTool[BaseModel, Any, CtxT], BaseModel]] = []
+        immediate: list[
+            tuple[int, FunctionToolCallItem, BaseTool[BaseModel, Any, CtxT], BaseModel]
+        ] = []
 
         for i, call in enumerate(calls):
             tool = self.tools[call.name]
@@ -474,9 +473,17 @@ class AgentLoop(Generic[CtxT]):
                 yield event
                 outputs[i] = f"Task launched in background (id: {task_id})"
             else:
-                immediate.append((i, tool, inp))
+                immediate.append((i, call, tool, inp))
 
-        # Execute immediate tools concurrently
+        # Execute immediate tools concurrently. Resumable tools get a
+        # deterministic ``session_subpath`` keyed on ``call_id`` so their
+        # child checkpoint doesn't collide with the parent agent's key
+        # (or with sibling tool calls in the same turn).
+        def _subpath_for(
+            t: BaseTool[BaseModel, Any, CtxT],
+            call: FunctionToolCallItem,
+        ) -> list[str] | None:
+            return ["call", call.call_id] if t.resumable else None
 
         if immediate and self._stream_tools:
             streams = [
@@ -484,8 +491,9 @@ class AgentLoop(Generic[CtxT]):
                     inp=inp,
                     ctx=ctx,
                     exec_id=exec_id,
+                    session_subpath=_subpath_for(t, call),
                 )
-                for _, t, inp in immediate
+                for _, call, t, inp in immediate
             ]
             merged = stream_concurrent(streams)
             async for stream_idx, event in merged:
@@ -496,7 +504,7 @@ class AgentLoop(Generic[CtxT]):
 
             for err in merged.errors:
                 i = immediate[err.index][0]
-                tool_name = immediate[err.index][1].name
+                tool_name = immediate[err.index][2].name
                 outputs[i] = f"Tool '{tool_name}' failed: {err.exception}"
                 logger.warning(
                     "Tool '%s' (call index %d) failed: %r",
@@ -512,12 +520,13 @@ class AgentLoop(Generic[CtxT]):
                         inp,
                         ctx=ctx,
                         exec_id=exec_id,
+                        session_subpath=_subpath_for(t, call),
                     )
-                    for _, t, inp in immediate
+                    for _, call, t, inp in immediate
                 ],
                 return_exceptions=True,
             )
-            for (i, t, _), result in zip(immediate, results, strict=True):
+            for (i, _call, t, _inp), result in zip(immediate, results, strict=True):
                 if isinstance(result, BaseException):
                     outputs[i] = f"Tool '{t.name}' failed: {result}"
                     logger.warning(
@@ -575,7 +584,7 @@ class AgentLoop(Generic[CtxT]):
 
         tool_choice = (
             NamedToolChoice(name=self._final_answer_tool.name)
-            if self._final_answer_as_tool_call
+            if self.final_answer_as_tool_call
             else None
         )
         stream = ResponseCapture(
@@ -896,9 +905,7 @@ class AgentLoop(Generic[CtxT]):
             exec_id=exec_id,
         )
 
-        yield GenerationEndEvent(
-            source=self.agent_name, exec_id=exec_id, data=response
-        )
+        yield GenerationEndEvent(source=self.agent_name, exec_id=exec_id, data=response)
 
     # --- Main execution loop ---
 
@@ -1010,8 +1017,9 @@ class AgentLoop(Generic[CtxT]):
                 ctx: RunContext[Any] | None = None,
                 exec_id: str | None = None,
                 progress_callback: Any = None,
+                session_subpath: Sequence[str] | None = None,
             ) -> None:
-                return None
+                del inp, ctx, exec_id, progress_callback, session_subpath
 
         return FinalAnswerTool()
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -162,6 +162,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         *,
         ctx: RunContext[CtxT] | None,
         exec_id: str | None,
+        session_subpath: Sequence[str] | None = None,
     ) -> tuple[LLMAgent[AgentToolInput, str, CtxT], str | None]:
         """Build the child agent with resolved prompts."""
         from .llm_agent import LLMAgent as _LLMAgent
@@ -181,6 +182,15 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             max_turns=self._max_turns,
         )
 
+        # Nest the child's checkpoint under the caller's session so its
+        # store key doesn't collide with the parent agent's. Sharing
+        # ``ctx.session_key`` means approval / file-edit / usage scopes
+        # carry through unchanged. ``set_session_path`` takes the path
+        # verbatim — the caller supplies a deterministic path (e.g.
+        # ``["task", task_id]``) that must match across resume.
+        if session_subpath:
+            agent.set_session_path(session_subpath)
+
         return agent, in_prompt
 
     async def _run(
@@ -190,9 +200,12 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> str:
         del progress_callback
-        agent, in_prompt = await self._prepare_child(inp, ctx=ctx, exec_id=exec_id)
+        agent, in_prompt = await self._prepare_child(
+            inp, ctx=ctx, exec_id=exec_id, session_subpath=session_subpath
+        )
         result = await agent.run(chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id)
 
         return result.payloads[0]
@@ -204,9 +217,12 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del progress_callback
-        agent, in_prompt = await self._prepare_child(inp=inp, ctx=ctx, exec_id=exec_id)
+        agent, in_prompt = await self._prepare_child(
+            inp=inp, ctx=ctx, exec_id=exec_id, session_subpath=session_subpath
+        )
         async for event in self._yield_child_events(
             agent, chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id
         ):
@@ -217,8 +233,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        agent, _ = await self._prepare_child(inp=None, ctx=ctx, exec_id=exec_id)
+        agent, _ = await self._prepare_child(
+            inp=None, ctx=ctx, exec_id=exec_id, session_subpath=session_subpath
+        )
         async for event in self._yield_child_events(
             agent, chat_inputs=None, ctx=ctx, exec_id=exec_id
         ):

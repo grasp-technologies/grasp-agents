@@ -16,7 +16,8 @@ from grasp_agents.types.errors import (
     ProcRunError,
 )
 
-from ..durability.checkpoints import CheckpointKind, CheckpointSchemaError
+from ..durability.checkpoints import CheckpointKind
+from ..durability.loading import load_json
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
@@ -183,6 +184,20 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         self._session_path = [*parent_session_path, self._name]
         self._propagate_to_children()
 
+    def set_session_path(self, session_path: Sequence[str]) -> None:
+        """
+        Assign this processor's session path verbatim (no adoption compose).
+
+        Differs from :meth:`_on_adopted` in that the caller supplies the
+        *final* path, not a prefix to extend with ``self._name``. Used by
+        tool wrappers (``AgentTool`` / ``ProcessorTool``) when spawning a
+        subprocessor that must resume at a deterministic key — the path
+        comes from something stable (e.g. a task id) rather than from
+        per-invocation container state.
+        """
+        self._session_path = list(session_path)
+        self._propagate_to_children()
+
     def _propagate_to_children(self) -> None:
         """Override in container processors to (re-)adopt child subprocs."""
 
@@ -211,25 +226,17 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         if store is None or key is None:
             return None
 
-        data = await store.load(key)
-        if data is None:
-            return None
-
-        try:
-            checkpoint = checkpoint_type.model_validate_json(data)
-        except CheckpointSchemaError:
-            raise
-        except Exception:
-            logger.warning(
-                "Corrupt checkpoint %s for %s, starting fresh",
-                key,
-                self.name,
-                exc_info=True,
-            )
+        checkpoint = await load_json(
+            store,
+            key,
+            checkpoint_type,
+            subject=f"checkpoint for {self.name}",
+            logger=logger,
+        )
+        if checkpoint is None:
             return None
 
         self._checkpoint_number = checkpoint.checkpoint_number
-
         return checkpoint
 
     async def _serialize_checkpoint(

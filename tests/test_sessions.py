@@ -192,7 +192,7 @@ def _make_agent(
         llm=llm,
         tools=tools,
         reset_memory_on_run=reset_memory_on_run,
-        stream_llm_responses=True,
+        stream_llm=True,
     )
     ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
     if session_key is not None:
@@ -575,12 +575,10 @@ class TestAgentSessionPersistence:
         agent = LLMAgent[str, str, None](
             name="test_agent",
             llm=MockLLM(responses_queue=[_text_response("ok")]),
-            stream_llm_responses=True,
+            stream_llm=True,
             session_metadata={"pathway_id": "pw_123"},
         )
-        ctx: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="s1"
-        )
+        ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
         await agent.run("hi", ctx=ctx)
 
         data = await store.load("agent/s1")
@@ -907,9 +905,7 @@ class _CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
     ) -> None:
         if completed_step == self._crash_after_step:
             raise RuntimeError(f"Simulated crash after step {completed_step}")
-        await super().save_checkpoint(
-            ctx, completed_step=completed_step, packet=packet
-        )
+        await super().save_checkpoint(ctx, completed_step=completed_step, packet=packet)
 
 
 class TestResumeIntegration:
@@ -932,16 +928,14 @@ class TestResumeIntegration:
         agent1 = LLMAgent[str, str, None](
             name="agent",
             llm=MockLLM(responses_queue=[_text_response("agent_out")]),
-            stream_llm_responses=True,
+            stream_llm=True,
         )
         wf1 = _CrashAfterStepWorkflow(
             name="wf",
             subprocs=[a1, agent1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="wf1"
-        )
+        ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream(in_args="start", ctx=ctx1, exec_id="e1"):
@@ -963,15 +957,13 @@ class TestResumeIntegration:
         agent2 = LLMAgent[str, str, None](
             name="agent",
             llm=MockLLM(responses_queue=[_text_response("agent_out_2")]),
-            stream_llm_responses=True,
+            stream_llm=True,
         )
         wf2 = SequentialWorkflow[str, str, None](
             name="wf",
             subprocs=[a2, agent2],
         )
-        ctx2: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="wf1"
-        )
+        ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
 
         async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
             pass
@@ -1002,7 +994,7 @@ class TestResumeIntegration:
         agent1 = LLMAgent[str, str, None](
             name="agent",
             llm=MockLLM(responses_queue=[_text_response("agent_out")]),
-            stream_llm_responses=True,
+            stream_llm=True,
         )
         b1 = _AppendProcessor("B")
         wf1 = _CrashAfterStepWorkflow(
@@ -1010,9 +1002,7 @@ class TestResumeIntegration:
             subprocs=[agent1, b1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="wf2"
-        )
+        ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream("start", ctx=ctx1, exec_id="e1"):
@@ -1028,16 +1018,14 @@ class TestResumeIntegration:
         agent2 = LLMAgent[str, str, None](
             name="agent",
             llm=MockLLM(responses_queue=[]),  # should NOT be called
-            stream_llm_responses=True,
+            stream_llm=True,
         )
         b2 = _CountingAppendProcessor("B")
         wf2 = SequentialWorkflow[str, str, None](
             name="wf",
             subprocs=[agent2, b2],
         )
-        ctx2: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="wf2"
-        )
+        ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
 
         payloads: list[str] = []
         async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
@@ -1107,7 +1095,7 @@ class TestResumeIntegration:
         agent2 = LLMAgent[str, str, None](
             name="agent",
             llm=MockLLM(responses_queue=[_text_response("agent_done")]),
-            stream_llm_responses=True,
+            stream_llm=True,
             recipients=[END_PROC_NAME],
         )
         ctx2: RunContext[None] = RunContext(
@@ -1289,11 +1277,9 @@ class TestTaskRecordPersistence:
             llm=llm,
             tools=[very_slow],
             max_turns=1,
-            stream_llm_responses=True,
+            stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="s1"
-        )
+        ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
 
         await agent.run("go", ctx=ctx)
 
@@ -1612,7 +1598,7 @@ def _make_child_tool(
     child = LLMAgent[EchoInput, str, None](
         name="child",
         llm=MockLLM(responses_queue=responses),
-        stream_llm_responses=True,
+        stream_llm=True,
     )
     tool = child.as_tool(
         tool_name=tool_name,
@@ -1625,7 +1611,11 @@ def _make_child_tool(
 class TestChildTaskResume:
     @pytest.mark.anyio
     async def test_bg_agent_tool_creates_child_session(self):
-        """Background agent-as-tool spawns with its own child_session_key."""
+        """
+        Background agent-as-tool nests its checkpoint under the parent's
+        session_key at ``task/<task_id>`` — sharing the parent's session
+        scope while avoiding a key collision.
+        """
         store = InMemoryCheckpointStore()
         _child, tool = _make_child_tool([_text_response("child done")], store=store)
 
@@ -1641,17 +1631,17 @@ class TestChildTaskResume:
         )
         await parent.run("go", ctx=ctx)
 
-        # TaskRecord should have a child_session_key
         keys = await store.list_keys("task/parent_s1/")
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        assert record.child_session_key is not None
-        assert record.child_session_key.startswith("child/parent_s1/")
+        # New records no longer populate child_session_key — the child's
+        # location is derivable from task_id instead.
+        assert record.child_session_key is None
 
-        # Child should have its own session snapshot
-        child_snap_data = await store.load(f"agent/{record.child_session_key}")
+        # Child's checkpoint lives under the parent's session tree.
+        child_snap_data = await store.load(f"agent/parent_s1/task/{record.task_id}")
         assert child_snap_data is not None
         child_snap = AgentCheckpoint.model_validate_json(child_snap_data)
         assert child_snap.processor_name == "child"
@@ -1683,23 +1673,24 @@ class TestChildTaskResume:
         )
         await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
 
-        # 2. PENDING task record with child_session_key
+        # 2. PENDING task record — child_session_key intentionally unset
+        #    (child lives under parent_session_key at the task subpath).
         task_record = TaskRecord(
             task_id="ch1",
             parent_session_key="parent_s1",
             tool_call_id="fc_1",
             tool_name="child_agent",
             tool_call_arguments='{"text": "hello"}',
-            child_session_key="child/parent_s1/ch1",
         )
         await store.save(
             task_record.store_key,
             task_record.model_dump_json().encode(),
         )
 
-        # 3. Child's own session snapshot (checkpointed mid-execution)
+        # 3. Child's own session snapshot (checkpointed mid-execution).
+        #    Sits under the parent's session key at ``task/ch1``.
         child_snapshot = AgentCheckpoint(
-            session_key="child/parent_s1/ch1",
+            session_key="parent_s1",
             processor_name="child",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
@@ -1709,7 +1700,7 @@ class TestChildTaskResume:
             step=0,
         )
         await store.save(
-            "agent/child/parent_s1/ch1",
+            "agent/parent_s1/task/ch1",
             child_snapshot.model_dump_json().encode(),
         )
 

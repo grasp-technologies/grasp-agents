@@ -19,6 +19,7 @@ Prompt Hooks (registered on PromptBuilder via LLMAgent):
 
 Agent Hooks (handled directly by LLMAgent):
     MemoryBuilder  — custom memory initialization
+    StateBuilder   — rebuild CtxT / RunContext.state on resume-from-checkpoint
     OutputParser   — parses LLM text into typed output
 
 Processor Hooks:
@@ -32,6 +33,7 @@ from typing import Any, Protocol, TypeVar
 from pydantic import BaseModel
 
 from grasp_agents.agent.tool_decision import ToolCallDecision
+from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.packet import Packet
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.types.content import Content
@@ -148,6 +150,26 @@ class MemoryBuilder(Protocol[_InT_contra]):
         instructions: LLMPrompt | None = None,
         in_args: _InT_contra | None = None,
         ctx: RunContext[Any],
+        exec_id: str,
+    ) -> None: ...
+
+
+class StateBuilder(Protocol[CtxT]):
+    """
+    Rebuild business state (typically ``ctx.state``) from external sources
+    after loading a checkpoint.
+
+    Fires exactly once per resume — i.e. when ``_load_checkpoint`` returned
+    a non-``None`` checkpoint — after conversation messages have been
+    restored into memory and before the agent's next turn. Does not fire
+    on fresh init; use :class:`MemoryBuilder` there instead.
+    """
+
+    async def __call__(
+        self,
+        *,
+        checkpoint: AgentCheckpoint,
+        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> None: ...
 

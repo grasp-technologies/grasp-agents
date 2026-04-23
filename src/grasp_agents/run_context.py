@@ -32,6 +32,13 @@ class RunContext(BaseModel, Generic[CtxT]):
     # session's state if the store has it.
     session_key: str = Field(default="default", exclude=True)
 
+    # Optional free-form label describing how the session is being
+    # run (e.g. ``"interactive"`` vs ``"batch"`` vs ``"sdk"``). Round-
+    # trips through ``AgentCheckpoint.session_mode``; a mismatch between
+    # the saved mode and the mode set on resume emits a warning. Leave
+    # ``None`` to opt out of the drift check.
+    session_mode: str | None = Field(default=None, exclude=True)
+
     # Set ``approval_store`` to enable the approval gate built via
     # ``build_store_approval``; it scopes its session allowlist by
     # ``session_key``.

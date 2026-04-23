@@ -8,6 +8,8 @@ from .checkpoints import (
     CheckpointSchemaError,
     RunnerCheckpoint,
 )
+from .context_serialization import ContextKind, rehydrate_context, serialize_context
+from .file_checkpoint_store import FileCheckpointStore
 from .resume import InterruptionType, ResumeState, prepare_messages_for_resume
 from .task_record import TaskRecord, TaskStatus
 
@@ -17,6 +19,8 @@ __all__ = [
     "AgentCheckpoint",
     "CheckpointSchemaError",
     "CheckpointStore",
+    "ContextKind",
+    "FileCheckpointStore",
     "InMemoryCheckpointStore",
     "InterruptionType",
     "ResumeState",
@@ -24,4 +28,6 @@ __all__ = [
     "TaskRecord",
     "TaskStatus",
     "prepare_messages_for_resume",
+    "rehydrate_context",
+    "serialize_context",
 ]

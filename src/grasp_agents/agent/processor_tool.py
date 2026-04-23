@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel
@@ -50,14 +50,23 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         return True
 
     def _resolve_processor(
-        self, ctx: RunContext[CtxT] | None
+        self,
+        ctx: RunContext[CtxT] | None,
+        *,
+        session_subpath: Sequence[str] | None = None,
     ) -> Processor[_InT, _OutT, CtxT]:
         """Return the processor to use — a copy when resumable, else shared."""
         # If the caller wired a checkpoint store, each invocation runs on
         # a fresh copy so its session_path / checkpoint state doesn't bleed
         # across calls that share this tool instance.
         if Processor.is_resumable(ctx):
-            return self._processor.copy()
+            proc = self._processor.copy()
+            # Nest under the caller's session so the copy's store key
+            # doesn't collide with the parent's. The subpath must be
+            # deterministic across resume — see ``set_session_path`` doc.
+            if session_subpath:
+                proc.set_session_path(session_subpath)
+            return proc
 
         if self._reset_memory_on_run:
             self._processor.memory.reset()
@@ -71,9 +80,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> _OutT:
         del progress_callback
-        proc = self._resolve_processor(ctx)
+        proc = self._resolve_processor(ctx, session_subpath=session_subpath)
         result = await proc.run(in_args=inp, exec_id=exec_id, ctx=ctx)
 
         return result.payloads[0]
@@ -85,9 +95,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del progress_callback
-        proc = self._resolve_processor(ctx)
+        proc = self._resolve_processor(ctx, session_subpath=session_subpath)
         async for event in self._yield_proc_events(
             proc, in_args=inp, ctx=ctx, exec_id=exec_id, step=0
         ):
@@ -98,8 +109,9 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
+        session_subpath: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        proc = self._resolve_processor(ctx)
+        proc = self._resolve_processor(ctx, session_subpath=session_subpath)
         async for event in self._yield_proc_events(
             proc, in_args=None, ctx=ctx, exec_id=exec_id, step=0
         ):

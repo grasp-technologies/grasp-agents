@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 
 from ..durability import AgentCheckpoint
 from ..durability.checkpoints import AgentCheckpointLocation, CheckpointKind
+from ..durability.context_serialization import rehydrate_context, serialize_context
 from ..durability.resume import prepare_messages_for_resume
 from ..llm.llm import LLM
 from ..processors.processor import Processor
@@ -31,6 +32,7 @@ from ..types.hooks import (
     InputContentBuilder,
     MemoryBuilder,
     OutputParser,
+    StateBuilder,
     SystemPromptBuilder,
     ToolInputConverter,
     ToolOutputConverter,
@@ -80,7 +82,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         sys_prompt_path: str | Path | None = None,
         # LLM response validation
         response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
         # Agent loop settings
         max_turns: int = 100,
         force_react_mode: bool = False,
@@ -93,7 +94,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Multi-agent routing
         recipients: Sequence[ProcName] | None = None,
         # Streaming
-        stream_llm_responses: bool = False,
+        stream_llm: bool = False,
         stream_tools: bool = False,
         # Tracing
         tracing_enabled: bool = True,
@@ -170,12 +171,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             tools=tools,
             memory=self.memory,
             response_schema=response_schema,
-            response_schema_by_xml_tag=response_schema_by_xml_tag,
             max_turns=max_turns,
             force_react_mode=force_react_mode,
             final_answer_type=final_answer_type,
             final_answer_as_tool_call=final_answer_as_tool_call,
-            stream_llm_responses=stream_llm_responses,
+            stream_llm=stream_llm,
             stream_tools=stream_tools,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
@@ -183,6 +183,13 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Session persistence
         self._step: int = 0  # completed invocation counter (observability)
         self._delivery_step: int | None = None  # caller's step for checkpoint
+
+        # Provider-supplied prompt cache key (OpenAI Responses / Anthropic
+        # prompt caching). Populated by provider adapters post-LLM-call;
+        # round-tripped through the checkpoint so resume reuses the same
+        # key and the model-side cache doesn't get invalidated. ``None``
+        # when the provider doesn't support caching (or hasn't set one).
+        self._prompt_cache_key: str | None = None
 
         # Wire the loop's checkpoint callback unconditionally. The
         # callback itself short-circuits when no store is attached to
@@ -226,12 +233,25 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return cast("LLMAgentMemory", self._memory)
 
     @property
+    def prompt_cache_key(self) -> str | None:
+        """Last-seen provider cache key (round-tripped through checkpoint)."""
+        return self._prompt_cache_key
+
+    @prompt_cache_key.setter
+    def prompt_cache_key(self, value: str | None) -> None:
+        self._prompt_cache_key = value
+
+    @property
     def reset_memory_on_run(self) -> bool:
         return self._reset_memory_on_run
 
     @property
     def _has_build_memory_impl(self) -> bool:
         return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
+
+    @property
+    def _has_build_state_impl(self) -> bool:
+        return is_method_overridden("build_state_impl", self, LLMAgent[Any, Any, Any])
 
     # --- Session persistence ---
 
@@ -252,6 +272,31 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.memory.messages = resume_state.messages
         self._loop.turn = checkpoint.turn
+        self._prompt_cache_key = checkpoint.prompt_cache_key
+
+        # Warn if the session is being resumed in a different mode than
+        # it was saved — e.g. interactive session continued via SDK, or
+        # vice versa — so callers notice the drift early.
+        if (
+            checkpoint.session_mode is not None
+            and ctx.session_mode is not None
+            and checkpoint.session_mode != ctx.session_mode
+        ):
+            logger.warning(
+                "Session %s resumed with mode %r but was saved under %r",
+                self._checkpoint_store_key(ctx),
+                ctx.session_mode,
+                checkpoint.session_mode,
+            )
+
+        # Auto-rehydrate ctx.state for the machine-serializable kinds
+        # (mapping / pydantic / dataclass). OMITTED / CUSTOM leave state
+        # untouched — state_builder fills in below.
+        ctx.state = rehydrate_context(
+            checkpoint.context_kind,
+            checkpoint.context_data,
+            ctx.state,
+        )
 
         logger.info(
             "Loaded session %s for agent %s "
@@ -269,6 +314,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         await self._loop.bg_tasks.handle_pending(ctx=ctx, exec_id=exec_id)
 
+        # Rebuild business state from external sources (DB, etc.) after
+        # conversation restoration is complete. Opt-in; fresh init uses
+        # add_memory_builder instead.
+        if self._has_build_state_impl:
+            await self.build_state_impl(
+                checkpoint=checkpoint, ctx=ctx, exec_id=exec_id or ""
+            )
+
         return checkpoint
 
     async def save_checkpoint(
@@ -280,6 +333,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT,
     ) -> None:
         """Persist current conversation state to the store."""
+        context_kind, context_data = serialize_context(ctx.state)
         checkpoint = AgentCheckpoint(
             session_key=ctx.session_key,
             processor_name=self.name,
@@ -289,6 +343,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             turn=turn,
             output=output,
             location=location,
+            context_kind=context_kind,
+            context_data=context_data,
+            prompt_cache_key=self._prompt_cache_key,
+            session_mode=ctx.session_mode,
         )
         await self._serialize_checkpoint(ctx, checkpoint)
 
@@ -468,6 +526,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> None:
         raise NotImplementedError
 
+    async def build_state_impl(
+        self,
+        *,
+        checkpoint: AgentCheckpoint,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+    ) -> None:
+        raise NotImplementedError
+
     def parse_output_impl(
         self,
         final_answer: str,
@@ -551,6 +618,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
     def add_memory_builder(self, func: MemoryBuilder[InT]) -> MemoryBuilder[InT]:
         self.build_memory_impl = func
+        return func
+
+    def add_state_builder(self, func: StateBuilder[CtxT]) -> StateBuilder[CtxT]:
+        self.build_state_impl = func
         return func
 
     def add_system_prompt_builder(

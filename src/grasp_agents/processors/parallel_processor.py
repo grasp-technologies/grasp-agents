@@ -180,10 +180,19 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         for idx, pkt in completed_map.items():
             out_packets_map[idx] = cast("Packet[OutT]", pkt)
 
-        # Create replicas only for uncompleted indices
+        # Create replicas only for uncompleted indices. Each replica
+        # gets its own session path extended by the replica index so
+        # resumable subprocs (e.g. LLMAgent) don't share a checkpoint
+        # key across siblings. ``self._subproc.session_path`` is
+        # already ``[*self._session_path, self._subproc.name]`` via
+        # ``_on_adopted``, so we just append the index.
         pending_indices = [i for i in range(len(all_in_args)) if i not in completed_map]
         if pending_indices:
-            replicas = {i: self._subproc.copy() for i in pending_indices}
+            replicas: dict[int, Processor[InT, OutT, CtxT]] = {}
+            for i in pending_indices:
+                rep = self._subproc.copy()
+                rep.set_session_path([*self._subproc.session_path, str(i)])
+                replicas[i] = rep
             streams = [
                 replicas[i].run_stream(
                     in_args=all_in_args[i],
