@@ -116,7 +116,7 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -130,14 +130,14 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
             **extra_llm_settings,
         )
@@ -1636,9 +1636,6 @@ class TestChildTaskResume:
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        # New records no longer populate child_session_key — the child's
-        # location is derivable from task_id instead.
-        assert record.child_session_key is None
 
         # Child's checkpoint lives under the parent's session tree.
         child_snap_data = await store.load(f"agent/parent_s1/task/{record.task_id}")
@@ -1833,7 +1830,6 @@ class TestChildTaskResume:
                 tool_call_id=cid,
                 tool_name="child_agent",
                 tool_call_arguments='{"text": "hello"}',
-                child_session_key=sid,
             )
             await store.save(rec.store_key, rec.model_dump_json().encode())
             # Each child has its own snapshot

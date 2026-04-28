@@ -56,14 +56,18 @@ def serialize_context(state: Any) -> tuple[ContextKind, Any]:
     """
     if state is None:
         return ContextKind.OMITTED, None
+
     if isinstance(state, BaseModel):
         return ContextKind.PYDANTIC, state.model_dump(mode="json")
+
     # Dataclass check precedes Mapping because a dataclass could in
     # principle also satisfy Mapping via a user-defined __iter__/__getitem__.
     if is_dataclass(state) and not isinstance(state, type):
         return ContextKind.DATACLASS, asdict(state)
+
     if isinstance(state, Mapping):
         return ContextKind.MAPPING, dict(cast("Mapping[str, Any]", state))
+
     return ContextKind.OMITTED, None
 
 
@@ -83,12 +87,16 @@ def rehydrate_context(
     """
     if kind is None or kind in {ContextKind.OMITTED, ContextKind.CUSTOM}:
         return current_state
+
     if kind == ContextKind.MAPPING:
         return dict(data) if data is not None else {}
+
     if kind == ContextKind.PYDANTIC:
         if isinstance(current_state, BaseModel):
             return type(current_state).model_validate(data)
         return current_state
+
     if is_dataclass(current_state) and not isinstance(current_state, type):
         return type(current_state)(**data)
+
     return current_state

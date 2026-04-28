@@ -1,9 +1,8 @@
 import ast
 import json
 import re
-from collections.abc import Mapping
 from logging import getLogger
-from typing import Annotated, Any, NoReturn, TypeVar, get_args, get_origin
+from typing import Annotated, Any, TypeVar, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -89,51 +88,3 @@ def validate_obj_from_json_or_py_string(
         return TypeAdapter(schema).validate_python(parsed)
     except PydanticValidationError as exc:
         raise JSONSchemaValidationError(s, schema) from exc
-
-
-def validate_tagged_objs_from_json_or_py_string(
-    s: str,
-    schema_by_xml_tag: Mapping[str, type[T]],
-    from_substring: bool = False,
-    strip_language_markdown: bool = True,
-) -> Mapping[str, T]:
-    validated_obj_per_tag: dict[str, T] = {}
-    _schema: type[T] | None = None
-    _tag: str | None = None
-
-    def _raise(
-        tag: str,
-        schema: Any,
-        *,
-        not_found: bool = False,
-        base_exc: Exception | None = None,
-    ) -> NoReturn:
-        if not_found:
-            msg = (
-                f"Failed to find valid tagged section <{tag}>...</{tag}> "
-                f"in the string:\n{s}"
-            )
-        else:
-            msg = (
-                f"Failed to validate substring within tag <{tag}> against JSON schema:"
-                f"\n{s}\nExpected type: {schema}"
-            )
-        raise JSONSchemaValidationError(s, schema, message=msg) from base_exc
-
-    for _tag, _schema in schema_by_xml_tag.items():
-        if f"<{_tag}>" in s:
-            match = re.search(rf"<{_tag}>\s*(.*?)\s*</{_tag}>", s, re.DOTALL)
-            if match is None:
-                _raise(_tag, _schema, not_found=True, base_exc=None)
-            try:
-                tagged_substring = match.group(1).strip()
-                validated_obj_per_tag[_tag] = validate_obj_from_json_or_py_string(
-                    tagged_substring,  # type: ignore[assignment]
-                    schema=_schema,
-                    from_substring=from_substring,
-                    strip_language_markdown=strip_language_markdown,
-                )
-            except JSONSchemaValidationError as exc:
-                _raise(_tag, _schema, base_exc=exc)
-
-    return validated_obj_per_tag

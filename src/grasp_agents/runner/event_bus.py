@@ -94,7 +94,8 @@ class EventBus:
             finally:
                 self._task_group = None
 
-        # Fallback only: if finalize() already set the result/exception, don't override it.
+        # Fallback only: if finalize() already set the result/exception,
+        # don't override it.
         if not self._final_result_fut.done():
             if exc is not None:
                 if isinstance(exc, asyncio.CancelledError):
@@ -121,11 +122,13 @@ class EventBus:
 
             try:
                 await handler(event)
+
             except asyncio.CancelledError as err:
                 # Cooperative cancellation: the whole TaskGroup is being cancelled)
                 logger.info("Event handler cancelled for %s", dst_name)
                 self.set_result(None, err=err)
                 raise
+
             except Exception as err:
                 # Unexpected error: only this handler is affected
                 logger.exception("Error handling event for %s", dst_name)

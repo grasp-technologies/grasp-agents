@@ -37,7 +37,7 @@ from .types.events import (
     SystemMessageEvent,
     ToolCallItemEvent,
     ToolErrorEvent,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
@@ -236,14 +236,14 @@ class EventConsole:
         # Suppress internal events from background subagents,
         # but let tool results, errors, and task notifications through.
         if self._is_bg_subagent(event) and not isinstance(
-            event, (ToolResultEvent, ToolErrorEvent, UserMessageEvent)
+            event, (ToolOutputItemEvent, ToolErrorEvent, UserMessageEvent)
         ):
             return
 
         # Flush deferred spacing from tool results before any
         # non-tool-result event — keeps consecutive result panels
         # tight but ensures a blank line after the last one.
-        if not isinstance(event, (ToolResultEvent, ToolErrorEvent)):
+        if not isinstance(event, (ToolOutputItemEvent, ToolErrorEvent)):
             self._flush_tool_spacing()
 
         if isinstance(event, TurnStartEvent):
@@ -267,7 +267,7 @@ class EventConsole:
         elif isinstance(event, ReasoningItemEvent):
             self._on_reasoning_item(event)
 
-        elif isinstance(event, ToolResultEvent):
+        elif isinstance(event, ToolOutputItemEvent):
             self._on_tool_result(event)
 
         elif isinstance(event, ToolErrorEvent):
@@ -524,7 +524,7 @@ class EventConsole:
 
     # ── Tool events ──
 
-    def _on_tool_result(self, event: ToolResultEvent) -> None:
+    def _on_tool_result(self, event: ToolOutputItemEvent) -> None:
         data = event.data
 
         title_color = self._color_theme["border_tool_result"]

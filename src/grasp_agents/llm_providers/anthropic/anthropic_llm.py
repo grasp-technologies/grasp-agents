@@ -97,7 +97,7 @@ class AnthropicLLM(CloudLLM):
         input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
-        response_schema: type | None = None,
+        output_schema: type | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
         system, messages = items_to_provider_inputs(input)
@@ -138,8 +138,8 @@ class AnthropicLLM(CloudLLM):
             api_tools=api_tools,
             api_tool_choice=api_tool_choice,
         )
-        if response_schema is not None:
-            api_kwargs["api_response_schema"] = response_schema
+        if output_schema is not None:
+            api_kwargs["api_output_schema"] = output_schema
         if extra_settings:
             api_kwargs["extra_settings"] = extra_settings
 
@@ -158,18 +158,18 @@ class AnthropicLLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: Any | None = None,
+        api_output_schema: Any | None = None,
         **api_llm_settings: Any,
     ) -> AnthropicMessage:
         max_tokens: int = api_llm_settings.pop("max_tokens", DEFAULT_MAX_TOKENS)
 
-        if self.apply_response_schema_via_provider:
+        if self.apply_output_schema_via_provider:
             return await self.client.messages.parse(
                 max_tokens=max_tokens,
                 messages=api_input,
                 model=self.model_name,
                 stream=False,
-                output_format=api_response_schema or omit,
+                output_format=api_output_schema or omit,
                 tools=api_tools or omit,
                 tool_choice=api_tool_choice or omit,
                 **api_llm_settings,
@@ -191,7 +191,7 @@ class AnthropicLLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: Any | None = None,
+        api_output_schema: Any | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[AnthropicStreamEvent]:
         max_tokens: int = api_llm_settings.pop("max_tokens", DEFAULT_MAX_TOKENS)
@@ -201,7 +201,7 @@ class AnthropicLLM(CloudLLM):
                 max_tokens=max_tokens,
                 messages=api_input,
                 model=self.model_name,
-                output_format=api_response_schema or omit,
+                output_format=api_output_schema or omit,
                 tools=api_tools or omit,
                 tool_choice=api_tool_choice or omit,
                 **api_llm_settings,

@@ -158,7 +158,7 @@ class OpenAILLM(CloudLLM):
         input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
         api_tools: list[OpenAIToolParam] | None = None
@@ -185,8 +185,8 @@ class OpenAILLM(CloudLLM):
             "api_tools": api_tools,
             "api_tool_choice": api_tool_choice,
         }
-        if response_schema is not None:
-            api_kwargs["api_response_schema"] = response_schema
+        if output_schema is not None:
+            api_kwargs["api_output_schema"] = output_schema
         if merged:
             api_kwargs["extra_settings"] = merged
 
@@ -205,14 +205,14 @@ class OpenAILLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> OpenAICompletion | OpenAIParsedCompletion[Any]:
         tools = api_tools or omit
         tool_choice = api_tool_choice or omit
-        response_format = api_response_schema or omit
+        response_format = api_output_schema or omit
 
-        if self.apply_response_schema_via_provider:
+        if self.apply_output_schema_via_provider:
             return await self.client.beta.chat.completions.parse(  # type: ignore[reportUnknownVariableType]
                 model=self.model_name,
                 messages=api_input,
@@ -237,12 +237,12 @@ class OpenAILLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[OpenAICompletionChunk]:
         tools = api_tools or omit
         tool_choice = api_tool_choice or omit
-        response_format = api_response_schema or omit
+        response_format = api_output_schema or omit
 
         # Ensure usage is included in the streamed responses
         stream_options = dict(api_llm_settings.get("stream_options") or {})
@@ -251,7 +251,7 @@ class OpenAILLM(CloudLLM):
 
         # Need to wrap the iterator to make it work with decorators
         async def iterator() -> AsyncIterator[OpenAICompletionChunk]:
-            if self.apply_response_schema_via_provider:
+            if self.apply_output_schema_via_provider:
                 stream_manager: OpenAIAsyncChatCompletionStreamManager[Any] = (
                     self.client.beta.chat.completions.stream(
                         model=self.model_name,

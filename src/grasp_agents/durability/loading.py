@@ -48,6 +48,7 @@ async def load_json(
     data = await store.load(key)
     if data is None:
         return None
+
     try:
         return model_type.model_validate_json(data)
     except CheckpointSchemaError:

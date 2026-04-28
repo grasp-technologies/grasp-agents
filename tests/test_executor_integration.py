@@ -67,7 +67,7 @@ class MockLLM(LLM):
         input: Sequence[InputItem],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -81,14 +81,14 @@ class MockLLM(LLM):
         input: Sequence[InputItem],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
             **extra_llm_settings,
         )
@@ -227,7 +227,7 @@ class TestExecutorTextResponse:
             memory=memory,
             tools=None,
             max_turns=3,
-            stream_llm_responses=False,
+            stream_llm=False,
         )
 
         ctx = RunContext[None]()
@@ -263,7 +263,7 @@ class TestExecutorTextResponse:
             memory=memory,
             tools=None,
             max_turns=1,
-            stream_llm_responses=True,
+            stream_llm=True,
         )
 
         ctx = RunContext[None]()
@@ -305,7 +305,7 @@ class TestExecutorToolCalling:
                 memory=memory,
                 tools=[tool],
                 max_turns=3,
-                stream_llm_responses=False,
+                stream_llm=False,
             )
         )
 
@@ -372,7 +372,7 @@ class TestExecutorToolCalling:
             memory=memory,
             tools=[tool],
             max_turns=2,
-            stream_llm_responses=False,
+            stream_llm=False,
         )
 
         ctx = RunContext[None]()
@@ -408,7 +408,7 @@ class TestExecutorUsageTracking:
             memory=memory,
             tools=None,
             max_turns=1,
-            stream_llm_responses=False,
+            stream_llm=False,
         )
 
         ctx = RunContext[None]()
@@ -450,7 +450,7 @@ class TestExecutorMemoryIntegrity:
                 memory=memory,
                 tools=[AddTool()],
                 max_turns=3,
-                stream_llm_responses=False,
+                stream_llm=False,
             )
         )
 

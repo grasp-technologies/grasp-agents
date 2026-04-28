@@ -1,7 +1,7 @@
 # pyright: reportUnusedImport=false
 
 
-from .agent.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
+from .agent.agent_tool import AgentTool, AgentToolInput, AgentToolPromptBuilder
 from .agent.approval_callback import (
     DEFAULT_DENY_MESSAGE,
     ApprovalCallback,
@@ -71,7 +71,7 @@ from .types.events import (
     RunPacketOutEvent,
     StopReason,
     ToolCallItemEvent,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     TurnEndEvent,
     TurnStartEvent,
 )
@@ -123,9 +123,9 @@ __all__ = [
     "DEFAULT_DENY_MESSAGE",
     "LLM",
     "AgentCheckpoint",
-    "AgentPromptBuilder",
     "AgentTool",
     "AgentToolInput",
+    "AgentToolPromptBuilder",
     "AllowTool",
     "ApprovalAllow",
     "ApprovalCallback",
@@ -199,8 +199,8 @@ __all__ = [
     "ToolCallDecision",
     "ToolCallItemEvent",
     "ToolInputConverter",
+    "ToolOutputItemEvent",
     "ToolProgressCallback",
-    "ToolResultEvent",
     "TurnEndEvent",
     "TurnStartEvent",
     "UserMessage",

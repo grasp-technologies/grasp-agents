@@ -32,7 +32,7 @@ from grasp_agents.types.events import (
     ToolCallItemEvent,
     ToolErrorEvent,
     ToolErrorInfo,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     TurnEndEvent,
     TurnEndInfo,
     TurnInfo,
@@ -78,6 +78,7 @@ def _strip_ansi(text: str) -> str:
 
 async def _collect(ec: EventConsole, events: list[Event[Any]]) -> list[Event[Any]]:
     """Run events through console and collect yielded events."""
+
     async def gen():
         for e in events:
             yield e
@@ -162,7 +163,9 @@ class TestTurnEvents:
         ec, buf = _make_console()
         events = [
             TurnEndEvent(
-                data=TurnEndInfo(turn=0, had_tool_calls=False, stop_reason="final_answer"),  # type: ignore[arg-type]
+                data=TurnEndInfo(
+                    turn=0, had_tool_calls=False, stop_reason="final_answer"
+                ),  # type: ignore[arg-type]
                 source="agent",
             )
         ]
@@ -195,17 +198,27 @@ class TestStreamingText:
         events = [
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
-                    content_index=0, delta="Hello ", output_index=0,
-                    sequence_number=1, item_id="i1", logprobs=[],
+                    content_index=0,
+                    delta="Hello ",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
-                    content_index=0, delta="world!", output_index=0,
-                    sequence_number=2, item_id="i1", logprobs=[],
+                    content_index=0,
+                    delta="world!",
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
+                    logprobs=[],
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
         ]
         await _collect(ec, events)
@@ -223,14 +236,20 @@ class TestStreamingText:
         events = [
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
-                    content_index=0, delta="Hello", output_index=0,
-                    sequence_number=1, item_id="i1", logprobs=[],
+                    content_index=0,
+                    delta="Hello",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=OutputItemDone(item=msg_item, output_index=0, sequence_number=2),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
         ]
         await _collect(ec, events)
@@ -243,11 +262,14 @@ class TestStreamingToolCalls:
     async def test_tool_call_header_from_promoted_event(self):
         """Tool name comes from ToolCallItemEvent, not OutputItemAdded."""
         ec, buf = _make_console()
-        item = FunctionToolCallItem(call_id="tc_1", name="search", arguments='{"q": "test"}')
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"q": "test"}'
+        )
         events = [
             LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
         ]
@@ -259,11 +281,14 @@ class TestStreamingToolCalls:
     @pytest.mark.asyncio
     async def test_tool_call_args_shown(self):
         ec, buf = _make_console()
-        item = FunctionToolCallItem(call_id="tc_1", name="search", arguments='{"query": "test"}')
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"query": "test"}'
+        )
         events = [
             LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
         ]
@@ -276,11 +301,14 @@ class TestStreamingToolCalls:
     @pytest.mark.asyncio
     async def test_tool_call_args_hidden(self):
         ec, buf = _make_console_with(show_tool_args=False)
-        item = FunctionToolCallItem(call_id="tc_1", name="search", arguments='{"query": "test"}')
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"query": "test"}'
+        )
         events = [
             LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
         ]
@@ -299,14 +327,20 @@ class TestStreamingThinking:
                 data=OutputItemAdded(
                     item=ReasoningItem(), output_index=0, sequence_number=1
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=ReasoningSummaryPartTextDelta(
-                    content_index=0, delta="deep thought", summary_index=0,
-                    output_index=0, sequence_number=2, item_id="i1",
+                    content_index=0,
+                    delta="deep thought",
+                    summary_index=0,
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
         ]
         await _collect(ec, events)
@@ -322,20 +356,29 @@ class TestStreamingThinking:
                 data=OutputItemAdded(
                     item=ReasoningItem(), output_index=0, sequence_number=1
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=ReasoningSummaryPartTextDelta(
-                    content_index=0, delta="deep thought", summary_index=0,
-                    output_index=0, sequence_number=2, item_id="i1",
+                    content_index=0,
+                    delta="deep thought",
+                    summary_index=0,
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=OutputItemDone(
-                    item=ReasoningItem(), output_index=0, sequence_number=3,
+                    item=ReasoningItem(),
+                    output_index=0,
+                    sequence_number=3,
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
         ]
         await _collect(ec, events)
@@ -372,10 +415,15 @@ class TestNonStreamingMode:
         events = [
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
-                    content_index=0, delta="Hello world", output_index=0,
-                    sequence_number=1, item_id="i1", logprobs=[],
+                    content_index=0,
+                    delta="Hello world",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             OutputMessageItemEvent(data=msg, source="agent", exec_id="c1"),
         ]
@@ -408,7 +456,8 @@ class TestNonStreamingMode:
         events = [
             LLMStreamEvent(
                 data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             ),
             ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
         ]
@@ -437,7 +486,7 @@ class TestToolEvents:
         msg = FunctionToolOutputItem.from_tool_result(
             call_id="tc_1", output="found 3 results"
         )
-        events = [ToolResultEvent(data=msg, source="agent", exec_id="c1")]
+        events = [ToolOutputItemEvent(data=msg, source="agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "found 3 results" in output
@@ -449,7 +498,7 @@ class TestToolEvents:
         msg = FunctionToolOutputItem.from_tool_result(
             call_id="tc_1", output={"status": "ok"}
         )
-        events = [ToolResultEvent(data=msg, source="agent", exec_id="c1")]
+        events = [ToolOutputItemEvent(data=msg, source="agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "status" in output
@@ -460,7 +509,8 @@ class TestToolEvents:
         events = [
             ToolErrorEvent(
                 data=ToolErrorInfo(tool_name="search", error="API down"),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             )
         ]
         await _collect(ec, events)
@@ -474,8 +524,11 @@ class TestToolEvents:
         ec, buf = _make_console()
         events = [
             ToolErrorEvent(
-                data=ToolErrorInfo(tool_name="slow", error="took too long", timed_out=True),
-                source="agent", exec_id="c1",
+                data=ToolErrorInfo(
+                    tool_name="slow", error="took too long", timed_out=True
+                ),
+                source="agent",
+                exec_id="c1",
             )
         ]
         await _collect(ec, events)
@@ -500,7 +553,9 @@ class TestMessageEvents:
     async def test_user_message_shown_when_enabled(self):
         ec, buf = _make_console_with(show_input_messages=True)
         msg = InputMessageItem.from_text("Hello agent", role="user")
-        events = [UserMessageEvent(data=msg, source=None, destination="agent", exec_id="c1")]
+        events = [
+            UserMessageEvent(data=msg, source=None, destination="agent", exec_id="c1")
+        ]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "User" in output
@@ -638,8 +693,9 @@ class TestToolPanels:
         """Nested dicts render in panel."""
         ec, buf = _make_console()
         item = FunctionToolCallItem(
-            call_id="tc_1", name="api",
-            arguments='{"config": {"temp": 0.7, "max": 500}, "query": "hello"}'
+            call_id="tc_1",
+            name="api",
+            arguments='{"config": {"temp": 0.7, "max": 500}, "query": "hello"}',
         )
         events = [ToolCallItemEvent(data=item, source="a", exec_id="c1")]
         await _collect(ec, events)
@@ -670,7 +726,7 @@ class TestToolPanels:
         msg = FunctionToolOutputItem.from_tool_result(
             call_id="tc_1", output="result text"
         )
-        events = [ToolResultEvent(data=msg, source="a", exec_id="c1")]
+        events = [ToolOutputItemEvent(data=msg, source="a", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "──" in output  # HORIZONTALS box style
@@ -683,7 +739,8 @@ class TestToolPanels:
         events = [
             ToolErrorEvent(
                 data=ToolErrorInfo(tool_name="broken", error="something failed"),
-                source="a", exec_id="c1",
+                source="a",
+                exec_id="c1",
             )
         ]
         await _collect(ec, events)
@@ -700,7 +757,7 @@ class TestToolPanels:
         msg = FunctionToolOutputItem.from_tool_result(
             call_id="tc_1", output="[bold red]injection attempt[/]"
         )
-        events = [ToolResultEvent(data=msg, source="a", exec_id="c1")]
+        events = [ToolOutputItemEvent(data=msg, source="a", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         # The raw markup should appear escaped, not interpreted
@@ -720,7 +777,8 @@ class TestErrorEvents:
                     error=RuntimeError("connection lost"),
                     model_name="test",
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             )
         ]
         await _collect(ec, events)
@@ -742,7 +800,8 @@ class TestBackgroundTasks:
                 data=BackgroundTaskInfo(
                     task_id="t1", tool_name="web_search", tool_call_id="tc_1"
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             )
         ]
         await _collect(ec, events)
@@ -757,7 +816,8 @@ class TestBackgroundTasks:
                 data=BackgroundTaskInfo(
                     task_id="t1", tool_name="web_search", tool_call_id="tc_1"
                 ),
-                source="agent", exec_id="c1",
+                source="agent",
+                exec_id="c1",
             )
         ]
         await _collect(ec, events)
@@ -777,9 +837,7 @@ class TestPacketEvents:
 
         ec, buf = _make_console()
         packet = Packet(payloads=["result"], sender="agent")
-        events = [
-            ProcPacketOutEvent(data=packet, source="agent", exec_id="c1")
-        ]
+        events = [ProcPacketOutEvent(data=packet, source="agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "result" not in output
@@ -790,9 +848,7 @@ class TestPacketEvents:
 
         ec, buf = _make_console_with(show_packets=True)
         packet = Packet(payloads=["hello"], sender="my_agent")
-        events = [
-            ProcPacketOutEvent(data=packet, source="my_agent", exec_id="c1")
-        ]
+        events = [ProcPacketOutEvent(data=packet, source="my_agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "my_agent" in output
@@ -812,10 +868,15 @@ class TestPassthrough:
             UserMessageEvent(data=msg, source="a", exec_id="c1"),
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
-                    content_index=0, delta="Hi", output_index=0,
-                    sequence_number=1, item_id="i1", logprobs=[],
+                    content_index=0,
+                    delta="Hi",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
                 ),
-                source="a", exec_id="c1",
+                source="a",
+                exec_id="c1",
             ),
         ]
         collected = await _collect(ec, events)
@@ -880,46 +941,60 @@ class TestFullSequence:
             # Text streaming
             LLMStreamEvent(
                 data=OutputItemAdded(item=text_item, output_index=0, sequence_number=1),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
-                    content_index=0, delta="Let me search.",
-                    output_index=0, sequence_number=2, item_id="i1", logprobs=[],
+                    content_index=0,
+                    delta="Let me search.",
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
+                    logprobs=[],
                 ),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             # Promoted message (should be skipped — already streamed)
             OutputMessageItemEvent(data=text_item, source="teacher", exec_id="c1"),
             LLMStreamEvent(
                 data=OutputItemDone(item=text_item, output_index=0, sequence_number=3),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             # Tool call
             LLMStreamEvent(
                 data=OutputItemAdded(item=tool_item, output_index=1, sequence_number=4),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             LLMStreamEvent(
                 data=FunctionCallArgumentsDelta(
-                    call_id="tc_1", delta='{"q": "stats"}',
-                    output_index=1, sequence_number=5, item_id="i2",
+                    call_id="tc_1",
+                    delta='{"q": "stats"}',
+                    output_index=1,
+                    sequence_number=5,
+                    item_id="i2",
                 ),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             ToolCallItemEvent(data=tool_item, source="teacher", exec_id="c1"),
             LLMStreamEvent(
                 data=OutputItemDone(item=tool_item, output_index=1, sequence_number=6),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             # Generation complete
             LLMStreamEvent(
                 data=ResponseCompleted(response=resp, sequence_number=7),
-                source="teacher", exec_id="c1",
+                source="teacher",
+                exec_id="c1",
             ),
             GenerationEndEvent(data=resp, source="teacher", exec_id="c1"),
             # Tool result
-            ToolResultEvent(data=tool_result, source="teacher", exec_id="c1"),
+            ToolOutputItemEvent(data=tool_result, source="teacher", exec_id="c1"),
             # Turn end
             TurnEndEvent(
                 data=TurnEndInfo(turn=0, had_tool_calls=True),
@@ -971,7 +1046,7 @@ class TestFullSequence:
         events: list[Event[Any]] = [
             ToolCallItemEvent(data=tool_item, source="a", exec_id="c1"),
             GenerationEndEvent(data=resp, source="a", exec_id="c1"),
-            ToolResultEvent(data=tool_result, source="a", exec_id="c1"),
+            ToolOutputItemEvent(data=tool_result, source="a", exec_id="c1"),
         ]
         await _collect(ec, events)
         output = buf.getvalue()
@@ -992,7 +1067,7 @@ class TestFullSequence:
         msg = FunctionToolOutputItem.from_tool_result(
             call_id="tc_1", output="line 1\n\n\nline 2"
         )
-        events = [ToolResultEvent(data=msg, source="a", exec_id="c1")]
+        events = [ToolOutputItemEvent(data=msg, source="a", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "line 1" in output

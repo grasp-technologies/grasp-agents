@@ -60,7 +60,7 @@ class BeforeLlmHook(Protocol[CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-        num_turns: int,
+        turn: int,
         extra_llm_settings: dict[str, Any],
     ) -> None: ...
 
@@ -72,7 +72,7 @@ class AfterLlmHook(Protocol[CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-        num_turns: int,
+        turn: int,
     ) -> None: ...
 
 

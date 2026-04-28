@@ -20,7 +20,7 @@ from grasp_agents.types.content import (
 from grasp_agents.types.events import (
     LLMStreamEvent,
     SystemMessageEvent,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     UserMessageEvent,
 )
 from grasp_agents.types.items import (
@@ -375,11 +375,11 @@ class TestPrintEventStream:
 
     @pytest.mark.asyncio
     async def test_tool_message_event(self, capsys):
-        """ToolResultEvent prints <tool result> tags."""
+        """ToolOutputItemEvent prints <tool result> tags."""
         msg = FunctionToolOutputItem.from_tool_result(call_id="tc_1", output="result")
 
         async def gen():
-            yield ToolResultEvent(data=msg, source="agent", exec_id="c1")
+            yield ToolOutputItemEvent(data=msg, source="agent", exec_id="c1")
 
         async for _ in print_event_stream(gen()):
             pass

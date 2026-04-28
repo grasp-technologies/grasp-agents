@@ -112,7 +112,7 @@ class GeminiLLM(CloudLLM):
         input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
-        response_schema: type | None = None,
+        output_schema: type | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
         system_instruction, contents = items_to_provider_inputs(input)
@@ -147,9 +147,9 @@ class GeminiLLM(CloudLLM):
                 http_options["extra_body"] = extra_body
             config_kwargs["http_options"] = http_options
 
-        # Structured output via dynamic response_schema parameter
-        if response_schema is not None:
-            config_kwargs["response_schema"] = response_schema
+        # Structured output via dynamic output_schema parameter
+        if output_schema is not None:
+            config_kwargs["response_schema"] = output_schema
             config_kwargs.setdefault("response_mime_type", "application/json")
 
         # Google Search grounding tool

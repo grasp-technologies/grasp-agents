@@ -19,7 +19,7 @@ class ModelCapabilities:
 
     function_calling: bool
     vision: bool
-    response_schema: bool
+    output_schema: bool
     prompt_caching: bool
     reasoning: bool
     web_search: bool
@@ -31,7 +31,7 @@ class ModelCapabilities:
 _PERMISSIVE_DEFAULTS = ModelCapabilities(
     function_calling=True,
     vision=True,
-    response_schema=True,
+    output_schema=True,
     prompt_caching=True,
     reasoning=True,
     web_search=True,
@@ -58,7 +58,7 @@ def get_model_capabilities(
     return ModelCapabilities(
         function_calling=info.get("supports_function_calling") or False,
         vision=info.get("supports_vision") or False,
-        response_schema=info.get("supports_response_schema") or False,
+        output_schema=info.get("supports_response_schema") or False,
         prompt_caching=info.get("supports_prompt_caching") or False,
         reasoning=info.get("supports_reasoning") or False,
         web_search=info.get("supports_web_search") or False,

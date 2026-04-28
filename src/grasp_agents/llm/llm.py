@@ -24,10 +24,7 @@ from ..types.llm_errors import LlmErrorTuple
 from ..types.llm_events import LlmEvent, ResponseCompleted, ResponseRetrying
 from ..types.response import Response
 from ..types.tool import BaseTool, ToolChoice
-from ..utils.validation import (
-    validate_obj_from_json_or_py_string,
-    validate_tagged_objs_from_json_or_py_string,
-)
+from ..utils.validation import validate_obj_from_json_or_py_string
 from .model_info import ModelCapabilities, get_model_capabilities
 from .resilience import RetryPolicy
 
@@ -66,7 +63,7 @@ class LLM(ABC):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response: ...
@@ -77,7 +74,7 @@ class LLM(ABC):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -90,7 +87,7 @@ class LLM(ABC):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -100,7 +97,7 @@ class LLM(ABC):
             return await self._generate_response_once(
                 input,
                 tools=tools,
-                response_schema=response_schema,
+                output_schema=output_schema,
                 tool_choice=tool_choice,
                 **extra_llm_settings,
             )
@@ -111,7 +108,7 @@ class LLM(ABC):
                 return await self._generate_response_once(
                     input,
                     tools=tools,
-                    response_schema=response_schema,
+                    output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
@@ -136,7 +133,7 @@ class LLM(ABC):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -147,7 +144,7 @@ class LLM(ABC):
             async for event in self._generate_response_stream_once(
                 input,
                 tools=tools,
-                response_schema=response_schema,
+                output_schema=output_schema,
                 tool_choice=tool_choice,
                 **extra_llm_settings,
             ):
@@ -162,7 +159,7 @@ class LLM(ABC):
                 async for event in self._generate_response_stream_once(
                     input,
                     tools=tools,
-                    response_schema=response_schema,
+                    output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 ):
@@ -196,8 +193,7 @@ class LLM(ABC):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -210,15 +206,12 @@ class LLM(ABC):
                 response = await self._generate_with_api_retries(
                     input,
                     tools=tools,
-                    response_schema=response_schema,
+                    output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
                 self._validate_response(
-                    response,
-                    tools=tools,
-                    response_schema=response_schema,
-                    response_schema_by_xml_tag=response_schema_by_xml_tag,
+                    response, tools=tools, output_schema=output_schema
                 )
                 return response
 
@@ -242,8 +235,7 @@ class LLM(ABC):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -257,7 +249,7 @@ class LLM(ABC):
                 async for event in self._generate_stream_with_api_retries(
                     input,
                     tools=tools,
-                    response_schema=response_schema,
+                    output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 ):
@@ -266,10 +258,7 @@ class LLM(ABC):
 
                     if isinstance(event, ResponseCompleted):
                         self._validate_response(
-                            event.response,
-                            tools=tools,
-                            response_schema=response_schema,
-                            response_schema_by_xml_tag=response_schema_by_xml_tag,
+                            event.response, tools=tools, output_schema=output_schema
                         )
                 return
 
@@ -297,31 +286,19 @@ class LLM(ABC):
         response: Response,
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
-        response_schema_by_xml_tag: Mapping[str, Any] | None = None,
+        output_schema: Any | None = None,
     ) -> None:
         if tools is not None:
             self._validate_tool_calls(response, tools)
 
-        if response_schema is not None and not response.tool_call_items:
+        if output_schema is not None and not response.tool_call_items:
             try:
                 validate_obj_from_json_or_py_string(
-                    response.output_text, schema=response_schema
+                    response.output_text, schema=output_schema
                 )
             except JSONSchemaValidationError as exc:
                 raise LLMResponseValidationError(
-                    response.output_text, response_schema
-                ) from exc
-
-        if response_schema_by_xml_tag and not response.tool_call_items:
-            try:
-                validate_tagged_objs_from_json_or_py_string(
-                    response.output_text,
-                    schema_by_xml_tag=response_schema_by_xml_tag,
-                )
-            except JSONSchemaValidationError as exc:
-                raise LLMResponseValidationError(
-                    response.output_text, response_schema_by_xml_tag
+                    response.output_text, output_schema
                 ) from exc
 
     def _validate_tool_calls(
@@ -340,7 +317,9 @@ class LLM(ABC):
                 )
             tool = tools[tc.name]
             try:
-                validate_obj_from_json_or_py_string(tc.arguments, schema=tool.llm_in_type)
+                validate_obj_from_json_or_py_string(
+                    tc.arguments, schema=tool.llm_in_type
+                )
             except JSONSchemaValidationError as exc:
                 raise LLMToolCallValidationError(
                     tc.name,

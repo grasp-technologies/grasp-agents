@@ -61,7 +61,7 @@ class OutputMessageItemEvent(Event[OutputMessageItem], frozen=True):
 # ── Tool execution ──
 
 
-class ToolResultEvent(Event[FunctionToolOutputItem], frozen=True):
+class ToolOutputItemEvent(Event[FunctionToolOutputItem], frozen=True):
     type: Literal["tool.result"] = "tool.result"
     destination: str | None = None
 
@@ -204,8 +204,8 @@ class DummyEvent(Event[Any], frozen=True):
     data: Any = None
 
 
-# ToolMessageEvent: alias for ToolResultEvent during migration
-ToolMessageEvent = ToolResultEvent
+# ToolMessageEvent: alias for ToolOutputItemEvent during migration
+ToolMessageEvent = ToolOutputItemEvent
 
 # ToolCallEvent: alias for ToolCallItemEvent during migration
 ToolCallEvent = ToolCallItemEvent

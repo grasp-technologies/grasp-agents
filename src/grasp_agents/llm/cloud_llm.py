@@ -38,7 +38,7 @@ class ApiCallParams(TypedDict, total=False):
     api_input: Required[list[Any]]
     api_tools: list[Any] | None
     api_tool_choice: Any
-    api_response_schema: type
+    api_output_schema: type
     extra_settings: dict[str, Any]
 
 
@@ -47,7 +47,7 @@ class CloudLLM(LLM):
     llm_settings: CloudLLMSettings | None = None
     api_provider: APIProvider | None = None
     rate_limiter: LLMRateLimiter | None = None
-    apply_response_schema_via_provider: bool = False
+    apply_output_schema_via_provider: bool = False
     apply_tool_call_schema_via_provider: bool = False
     http_client: httpx.AsyncClient | None = None
 
@@ -58,7 +58,7 @@ class CloudLLM(LLM):
                 f"{self.rate_limiter.rpm} RPM"
             )
 
-        if self.apply_response_schema_via_provider:
+        if self.apply_output_schema_via_provider:
             object.__setattr__(self, "apply_tool_call_schema_via_provider", True)
 
     # --- Provider API layer (abstract) ---
@@ -70,7 +70,7 @@ class CloudLLM(LLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> Any: ...
 
@@ -81,7 +81,7 @@ class CloudLLM(LLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[Any]: ...
 
@@ -104,7 +104,7 @@ class CloudLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams: ...
 
@@ -135,7 +135,7 @@ class CloudLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -143,12 +143,12 @@ class CloudLLM(LLM):
             input,
             tools=tools,
             tool_choice=tool_choice,
-            response_schema=response_schema,
+            output_schema=output_schema,
             **extra_llm_settings,
         )
         extra_settings = api_kwargs.pop("extra_settings", {})
-        if not self.apply_response_schema_via_provider:
-            api_kwargs.pop("api_response_schema", None)
+        if not self.apply_output_schema_via_provider:
+            api_kwargs.pop("api_output_schema", None)
 
         try:
             raw = await self._get_api_response(**api_kwargs, **extra_settings)
@@ -167,7 +167,7 @@ class CloudLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -175,13 +175,13 @@ class CloudLLM(LLM):
             input,
             tools=tools,
             tool_choice=tool_choice,
-            response_schema=response_schema,
+            output_schema=output_schema,
             **extra_llm_settings,
         )
 
         extra_settings = api_kwargs.pop("extra_settings", {})
-        if not self.apply_response_schema_via_provider:
-            api_kwargs.pop("api_response_schema", None)
+        if not self.apply_output_schema_via_provider:
+            api_kwargs.pop("api_output_schema", None)
 
         try:
             api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)

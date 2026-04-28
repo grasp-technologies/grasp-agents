@@ -39,7 +39,7 @@ class RejectToolContent:
     output for that ``call_id``.
 
     The loop fabricates a :class:`FunctionToolOutputItem`, appends it
-    to memory, and emits a :class:`ToolResultEvent` so downstream
+    to memory, and emits a :class:`ToolOutputItemEvent` so downstream
     consumers (printer, telemetry) see a normal tool round.
     """
 

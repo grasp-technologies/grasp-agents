@@ -38,7 +38,7 @@ class FallbackLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -50,7 +50,7 @@ class FallbackLLM(LLM):
                 return await llm._generate_response_once(
                     input,
                     tools=tools,
-                    response_schema=response_schema,
+                    output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
@@ -70,7 +70,7 @@ class FallbackLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -84,7 +84,7 @@ class FallbackLLM(LLM):
                 async for event in llm._generate_response_stream_once(
                     input,
                     tools=tools,
-                    response_schema=response_schema,
+                    output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 ):

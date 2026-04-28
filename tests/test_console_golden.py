@@ -33,7 +33,7 @@ from grasp_agents.types.events import (
     ToolCallItemEvent,
     ToolErrorEvent,
     ToolErrorInfo,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     TurnEndEvent,
     TurnEndInfo,
     TurnInfo,
@@ -93,9 +93,7 @@ async def _collect(ec: EventConsole, events: list[Event[Any]]) -> None:
         pass
 
 
-def _assert_golden(
-    actual: str, name: str, *, update: bool
-) -> None:
+def _assert_golden(actual: str, name: str, *, update: bool) -> None:
     """Compare actual output against golden file, or update it."""
     golden_path = GOLDEN_DIR / f"{name}.expected"
     clean = _strip_ansi(actual)
@@ -108,10 +106,7 @@ def _assert_golden(
     if not golden_path.exists():
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         golden_path.write_text(clean)
-        msg = (
-            f"Golden file created: {golden_path}\n"
-            "Review it and re-run the test."
-        )
+        msg = f"Golden file created: {golden_path}\nReview it and re-run the test."
         pytest.fail(msg)
 
     expected = golden_path.read_text()
@@ -158,11 +153,13 @@ def _full_turn_events() -> list[Event[Any]]:
     tool_item_2 = FunctionToolCallItem(
         call_id="tc_2",
         name="write_document",
-        arguments=json.dumps({
-            "title": "Internet History",
-            "content": "The Internet traces its origins to ARPANET...",
-            "format": "markdown",
-        }),
+        arguments=json.dumps(
+            {
+                "title": "Internet History",
+                "content": "The Internet traces its origins to ARPANET...",
+                "format": "markdown",
+            }
+        ),
     )
     tool_result_2 = FunctionToolOutputItem.from_tool_result(
         call_id="tc_2",
@@ -259,9 +256,7 @@ def _full_turn_events() -> list[Event[Any]]:
         ),
         # Tool call 1: web_search
         LLMStreamEvent(
-            data=OutputItemAdded(
-                item=tool_item_1, output_index=2, sequence_number=7
-            ),
+            data=OutputItemAdded(item=tool_item_1, output_index=2, sequence_number=7),
             source="coordinator",
             exec_id="c1",
         ),
@@ -277,9 +272,7 @@ def _full_turn_events() -> list[Event[Any]]:
         ),
         ToolCallItemEvent(data=tool_item_1, source="coordinator", exec_id="c1"),
         LLMStreamEvent(
-            data=OutputItemDone(
-                item=tool_item_1, output_index=2, sequence_number=9
-            ),
+            data=OutputItemDone(item=tool_item_1, output_index=2, sequence_number=9),
             source="coordinator",
             exec_id="c1",
         ),
@@ -291,17 +284,15 @@ def _full_turn_events() -> list[Event[Any]]:
         # Generation end with usage
         GenerationEndEvent(data=resp_1, source="coordinator", exec_id="c1"),
         # Tool result 1
-        ToolResultEvent(data=tool_result_1, source="coordinator", exec_id="c1"),
+        ToolOutputItemEvent(data=tool_result_1, source="coordinator", exec_id="c1"),
         # ── Turn 2 ──
         TurnStartEvent(data=TurnInfo(turn=1), source="coordinator"),
         # Tool call 2: write_document (no streaming, direct)
         ToolCallItemEvent(data=tool_item_2, source="coordinator", exec_id="c2"),
         GenerationEndEvent(data=resp_2, source="coordinator", exec_id="c2"),
-        ToolResultEvent(data=tool_result_2, source="coordinator", exec_id="c2"),
+        ToolOutputItemEvent(data=tool_result_2, source="coordinator", exec_id="c2"),
         # Tool call 3: publish (will error)
-        ToolCallItemEvent(
-            data=tool_item_error, source="coordinator", exec_id="c3"
-        ),
+        ToolCallItemEvent(data=tool_item_error, source="coordinator", exec_id="c3"),
         ToolErrorEvent(
             data=ToolErrorInfo(
                 tool_name="publish",
@@ -410,9 +401,7 @@ class TestGoldenFullTurn:
         """Same scenario with thinking hidden (default)."""
         ec, buf = _make_console(show_thinking=False)
         await _collect(ec, _full_turn_events())
-        _assert_golden(
-            buf.getvalue(), "full_turn_no_thinking", update=update_golden
-        )
+        _assert_golden(buf.getvalue(), "full_turn_no_thinking", update=update_golden)
 
     @pytest.mark.asyncio
     async def test_input_messages(self, update_golden: bool) -> None:

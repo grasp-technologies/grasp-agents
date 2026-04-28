@@ -104,7 +104,7 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -118,14 +118,14 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
             **extra_llm_settings,
         )
@@ -190,7 +190,7 @@ def _make_executor(
         memory=memory,
         tools=tools,
         max_turns=max_turns,
-        stream_llm_responses=False,
+        stream_llm=False,
     )
     # Final-answer extractor: stop on text-only responses.
     executor.final_answer_extractor = (
@@ -357,9 +357,7 @@ class TestRaiseToolException:
             ),
             _text_response("never reached"),
         ]
-        executor, _, _ = _make_executor(
-            responses, tools=[EchoTool(), ShoutTool()]
-        )
+        executor, _, _ = _make_executor(responses, tools=[EchoTool(), ShoutTool()])
 
         class PolicyBlock(RuntimeError):
             pass
@@ -394,9 +392,7 @@ class TestRaiseToolException:
             ),
             _text_response("never reached"),
         ]
-        executor, memory, _ = _make_executor(
-            responses, tools=[EchoTool(), ShoutTool()]
-        )
+        executor, memory, _ = _make_executor(responses, tools=[EchoTool(), ShoutTool()])
 
         async def hook(*, tool_calls, ctx, exec_id):
             return {
@@ -411,9 +407,7 @@ class TestRaiseToolException:
             await _drain(executor, ctx)
 
         # No rejection output leaked into memory
-        assert not [
-            m for m in memory.messages if isinstance(m, FunctionToolOutputItem)
-        ]
+        assert not [m for m in memory.messages if isinstance(m, FunctionToolOutputItem)]
 
 
 class TestMixedDecisions:
@@ -431,9 +425,7 @@ class TestMixedDecisions:
             ),
             _text_response("done"),
         ]
-        executor, memory, _ = _make_executor(
-            responses, tools=[EchoTool(), ShoutTool()]
-        )
+        executor, memory, _ = _make_executor(responses, tools=[EchoTool(), ShoutTool()])
 
         async def hook(*, tool_calls, ctx, exec_id):
             return {"tc2": RejectToolContent(content="shout disabled")}

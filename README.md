@@ -141,7 +141,7 @@ teacher = LLMAgent[None, Problem, None](
     tools=[AskStudentTool()],
     final_answer_as_tool_call=True,
     sys_prompt=sys_prompt,
-    stream_llm_responses=True,
+    stream_llm=True,
 )
 
 async def main():

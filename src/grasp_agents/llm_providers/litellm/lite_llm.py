@@ -14,10 +14,10 @@ from litellm.litellm_core_utils.get_supported_openai_params import (
 )
 from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.utils import (
+    supports_output_schema,
     supports_parallel_function_calling,
     supports_prompt_caching,
     supports_reasoning,
-    supports_response_schema,
     supports_tool_choice,
 )
 
@@ -102,13 +102,10 @@ class LiteLLM(CloudLLM):
                     f"'{self.model_name}' and no custom API provider was specified."
                 ) from exc
 
-        if (
-            self.apply_response_schema_via_provider
-            and not self.supports_response_schema
-        ):
+        if self.apply_output_schema_via_provider and not self.supports_output_schema:
             raise ValueError(
                 f"Model '{self.model_name}' does not support response schema "
-                "natively. Please set `apply_response_schema_via_provider=False`"
+                "natively. Please set `apply_output_schema_via_provider=False`"
             )
 
         if self.http_client is not None:
@@ -136,8 +133,8 @@ class LiteLLM(CloudLLM):
         return supports_prompt_caching(model=self.model_name)
 
     @property
-    def supports_response_schema(self) -> bool:
-        return supports_response_schema(model=self.model_name)
+    def supports_output_schema(self) -> bool:
+        return supports_output_schema(model=self.model_name)
 
     @property
     def supports_tool_choice(self) -> bool:
@@ -155,7 +152,7 @@ class LiteLLM(CloudLLM):
         input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
         api_tools: list[OpenAIToolParam] | None = None
@@ -177,8 +174,8 @@ class LiteLLM(CloudLLM):
             "api_tools": api_tools,
             "api_tool_choice": api_tool_choice,
         }
-        if response_schema is not None:
-            api_kwargs["api_response_schema"] = response_schema
+        if output_schema is not None:
+            api_kwargs["api_output_schema"] = output_schema
         if merged:
             api_kwargs["extra_settings"] = merged
 
@@ -192,7 +189,7 @@ class LiteLLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> LiteLLMCompletion:
         completion = await litellm.acompletion(  # type: ignore[no-untyped-call]
@@ -200,7 +197,7 @@ class LiteLLM(CloudLLM):
             messages=api_input,  # type: ignore[arg-type]
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
-            response_format=api_response_schema,
+            response_format=api_output_schema,
             stream=False,
             **self._lite_llm_completion_params,
             **api_llm_settings,
@@ -216,7 +213,7 @@ class LiteLLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[LiteLLMCompletionChunk]:
         # Ensure usage is included in the streamed responses
@@ -229,7 +226,7 @@ class LiteLLM(CloudLLM):
             messages=api_input,  # type: ignore[arg-type]
             tools=api_tools,
             tool_choice=api_tool_choice,  # type: ignore[arg-type]
-            response_format=api_response_schema,
+            response_format=api_output_schema,
             stream=True,
             **self._lite_llm_completion_params,
             **_api_llm_settings,

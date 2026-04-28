@@ -16,7 +16,7 @@ from .types.events import (
     ProcPacketOutEvent,
     RunPacketOutEvent,
     SystemMessageEvent,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     UserMessageEvent,
 )
 from .types.items import (
@@ -152,13 +152,9 @@ class Printer:
 
         if isinstance(message, InputMessageItem):
             role = message.role
-            style = get_style(
-                agent_name=agent_name, role=role, color_by=self.color_by
-            )
+            style = get_style(agent_name=agent_name, role=role, color_by=self.color_by)
             content = _input_message_text(message)
-            content = truncate_content_str(
-                content, trunc_len=self.msg_trunc_len
-            )
+            content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
             if role == "system":
                 out += f"<system>\n{content}\n</system>\n"
             else:
@@ -168,20 +164,13 @@ class Printer:
             style = get_style(
                 agent_name=agent_name, role="tool", color_by=self.color_by
             )
-            content = (
-                message.output if isinstance(message.output, str) else ""
-            )
+            content = message.output if isinstance(message.output, str) else ""
             try:
                 content = json.dumps(json.loads(content), indent=2)
             except Exception:
                 pass
-            content = truncate_content_str(
-                content, trunc_len=self.msg_trunc_len
-            )
-            out += (
-                f"<tool result> [{message.call_id}]"
-                f"\n{content}\n</tool result>\n"
-            )
+            content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
+            out += f"<tool result> [{message.call_id}]\n{content}\n</tool result>\n"
 
         else:
             style = get_style(
@@ -200,9 +189,7 @@ class Printer:
         exec_id: str,
     ) -> None:
         for _message in messages:
-            self.print_message(
-                _message, agent_name=agent_name, exec_id=exec_id
-            )
+            self.print_message(_message, agent_name=agent_name, exec_id=exec_id)
 
 
 async def print_event_stream(
@@ -230,9 +217,7 @@ async def print_event_stream(
             elif isinstance(item, OutputMessageItem):
                 text += "<response>\n"
             elif isinstance(item, FunctionToolCallItem):
-                text += (
-                    f"<tool call> {item.name} [{item.call_id}]\n"
-                )
+                text += f"<tool call> {item.name} [{item.call_id}]\n"
 
         elif isinstance(se, OutputItemDone):
             item = se.item
@@ -255,7 +240,7 @@ async def print_event_stream(
         return _styled_str(text, style)
 
     def _make_message_text(
-        event: SystemMessageEvent | UserMessageEvent | ToolResultEvent,
+        event: SystemMessageEvent | UserMessageEvent | ToolOutputItemEvent,
     ) -> str:
         data = event.data
         text = f"\n<{event.source}> [{event.exec_id}]\n"
@@ -284,9 +269,7 @@ async def print_event_stream(
 
         else:
             assert isinstance(data, FunctionToolOutputItem)
-            content = (
-                data.output if isinstance(data.output, str) else ""
-            )
+            content = data.output if isinstance(data.output, str) else ""
             try:
                 content = json.dumps(json.loads(content), indent=2)
             except Exception:
@@ -296,21 +279,14 @@ async def print_event_stream(
                 role="tool",
                 color_by=color_by,
             )
-            text += (
-                f"<tool result> [{data.call_id}]"
-                f"\n{content}\n</tool result>\n"
-            )
+            text += f"<tool result> [{data.call_id}]\n{content}\n</tool result>\n"
 
         return _styled_str(text, style)
 
     def _make_packet_text(
         event: ProcPacketOutEvent | RunPacketOutEvent,
     ) -> str:
-        src = (
-            "run"
-            if isinstance(event, RunPacketOutEvent)
-            else "processor"
-        )
+        src = "run" if isinstance(event, RunPacketOutEvent) else "processor"
 
         style = get_style(
             agent_name=event.source or "",
@@ -343,7 +319,7 @@ async def print_event_stream(
                 stream_colored_text(text)
 
         elif isinstance(
-            event, SystemMessageEvent | UserMessageEvent | ToolResultEvent
+            event, SystemMessageEvent | UserMessageEvent | ToolOutputItemEvent
         ):
             stream_colored_text(_make_message_text(event))
 

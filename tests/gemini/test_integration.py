@@ -417,7 +417,7 @@ class TestGeminiStructuredOutput:
     @pytest.mark.asyncio
     async def test_structured_output(self, llm: CloudLLM) -> None:
         input_items = [InputMessageItem.from_text("What is the capital of France?")]
-        response = await llm.generate_response(input_items, response_schema=Capital)
+        response = await llm.generate_response(input_items, output_schema=Capital)
 
         parsed = Capital.model_validate_json(response.output_text)
         assert parsed.capital.lower() == "paris"
@@ -429,7 +429,7 @@ class TestGeminiStructuredOutput:
         events = [
             event
             async for event in llm.generate_response_stream(
-                input_items, response_schema=Capital
+                input_items, output_schema=Capital
             )
         ]
 

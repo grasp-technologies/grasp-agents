@@ -95,7 +95,7 @@ class MockLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> Response:
@@ -109,12 +109,12 @@ class MockLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
-            input, tools=tools, response_schema=response_schema, tool_choice=tool_choice
+            input, tools=tools, output_schema=output_schema, tool_choice=tool_choice
         )
         seq = 0
         seq += 1
@@ -146,7 +146,7 @@ class ErrorLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> Response:
@@ -159,7 +159,7 @@ class ErrorLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -199,8 +199,8 @@ class TestValidationErrorTypes:
             await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
 
     @pytest.mark.asyncio
-    async def test_response_schema_raises_response_validation_error(self):
-        """Bad response text + response_schema → LLMResponseValidationError."""
+    async def test_output_schema_raises_response_validation_error(self):
+        """Bad response text + output_schema → LLMResponseValidationError."""
         llm = MockLLM(
             model_name="mock",
             responses=[_text_response("garbage")],
@@ -210,7 +210,7 @@ class TestValidationErrorTypes:
             value: int
 
         with pytest.raises(LLMResponseValidationError):
-            await llm.generate_response(_USER_MSG, response_schema=StrictModel)
+            await llm.generate_response(_USER_MSG, output_schema=StrictModel)
 
 
 # ---------- Retry behavior ----------
@@ -268,7 +268,7 @@ class TestRetryBehavior:
         class M(BaseModel):
             v: int
 
-        result = await llm.generate_response(_USER_MSG, response_schema=M)
+        result = await llm.generate_response(_USER_MSG, output_schema=M)
         assert result.output_text == '{"v": 1}'
         assert llm.call_count == 2
 
@@ -285,7 +285,7 @@ class TestRetryBehavior:
             v: int
 
         with pytest.raises(LLMResponseValidationError):
-            await llm.generate_response(_USER_MSG, response_schema=M)
+            await llm.generate_response(_USER_MSG, output_schema=M)
         assert llm.call_count == 2
 
 
@@ -308,7 +308,7 @@ class TestStreamRetry:
             v: int
 
         events: list[LlmEvent] = []
-        async for event in llm.generate_response_stream(_USER_MSG, response_schema=M):
+        async for event in llm.generate_response_stream(_USER_MSG, output_schema=M):
             events.append(event)
 
         retrying = [e for e in events if isinstance(e, ResponseRetrying)]
@@ -332,7 +332,7 @@ class TestStreamRetry:
             v: int
 
         events: list[LlmEvent] = []
-        async for event in llm.generate_response_stream(_USER_MSG, response_schema=M):
+        async for event in llm.generate_response_stream(_USER_MSG, output_schema=M):
             events.append(event)
 
         retrying_idx = next(

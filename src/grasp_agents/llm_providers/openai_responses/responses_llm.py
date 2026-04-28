@@ -97,7 +97,7 @@ class OpenAIResponsesLLM(CloudLLM):
         input: Sequence[InputItem],  # noqa: A002
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
         api_tools: list[ResponsesToolParam] | None = None
@@ -122,8 +122,8 @@ class OpenAIResponsesLLM(CloudLLM):
             api_tools=api_tools,
             api_tool_choice=api_tool_choice,
         )
-        if response_schema is not None:
-            api_kwargs["api_response_schema"] = response_schema
+        if output_schema is not None:
+            api_kwargs["api_output_schema"] = output_schema
         if merged:
             api_kwargs["extra_settings"] = merged
 
@@ -142,16 +142,16 @@ class OpenAIResponsesLLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> ParsedResponse[Any] | Response:
         tools = api_tools or omit
         tool_choice = api_tool_choice or omit
-        text_format = api_response_schema or omit
+        text_format = api_output_schema or omit
 
         response_id = api_llm_settings.get("previous_response_id")
 
-        if self.apply_response_schema_via_provider:
+        if self.apply_output_schema_via_provider:
             return await self.client.responses.parse(  # type: ignore[reportUnknownVariableType]
                 text_format=text_format,
                 model=self.model_name,
@@ -175,7 +175,7 @@ class OpenAIResponsesLLM(CloudLLM):
         *,
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
-        api_response_schema: type | None = None,
+        api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[ResponseStreamEvent]:
         response_id = api_llm_settings.get("previous_response_id")
@@ -193,7 +193,7 @@ class OpenAIResponsesLLM(CloudLLM):
                     input=[api_input[-1]] if response_id else api_input,
                     tool_choice=api_tool_choice or omit,
                     tools=api_tools or omit,
-                    text_format=api_response_schema or omit,
+                    text_format=api_output_schema or omit,
                     **_api_llm_settings,
                 )
             )

@@ -90,7 +90,7 @@ class StubLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> Response:
@@ -103,7 +103,7 @@ class StubLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -142,7 +142,7 @@ class ErrorLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> Response:
@@ -155,7 +155,7 @@ class ErrorLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> AsyncIterator[LlmEvent]:
@@ -189,7 +189,7 @@ class FailThenSucceedLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> Response:
@@ -204,14 +204,14 @@ class FailThenSucceedLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> AsyncIterator[LlmEvent]:
         resp = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
         )
         seq = 0
@@ -241,7 +241,7 @@ class FailMidStreamLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> Response:
@@ -252,7 +252,7 @@ class FailMidStreamLLM(LLM):
         input: Sequence[InputItem],  # noqa: A002
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra: Any,
     ) -> AsyncIterator[LlmEvent]:

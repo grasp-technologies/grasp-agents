@@ -102,13 +102,13 @@ class TestLiteLLMStructuredOutput:
         return LiteLLM(
             model_name="gpt-4.1-nano",
             llm_settings={"max_completion_tokens": 200},
-            apply_response_schema_via_provider=True,
+            apply_output_schema_via_provider=True,
         )
 
     @pytest.mark.asyncio
     async def test_structured_output(self, llm: CloudLLM) -> None:
         input_items = [InputMessageItem.from_text("What is the capital of France?")]
-        response = await llm.generate_response(input_items, response_schema=Capital)
+        response = await llm.generate_response(input_items, output_schema=Capital)
 
         parsed = Capital.model_validate_json(response.output_text)
         assert parsed.capital.lower() == "paris"
@@ -120,7 +120,7 @@ class TestLiteLLMStructuredOutput:
         events = [
             event
             async for event in llm.generate_response_stream(
-                input_items, response_schema=Capital
+                input_items, output_schema=Capital
             )
         ]
 

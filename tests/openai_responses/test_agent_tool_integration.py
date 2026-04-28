@@ -70,7 +70,7 @@ class TestAgentToolIntegration:
                 "respond with that summary. Always use the tool."
             ),
             max_turns=3,
-            stream_llm_responses=True,
+            stream_llm=True,
         )
 
         result = await parent.run(chat_inputs="What is photosynthesis?")
@@ -101,7 +101,7 @@ class TestAgentToolIntegration:
                 "give the explanation back."
             ),
             max_turns=3,
-            stream_llm_responses=True,
+            stream_llm=True,
         )
 
         events: list[Event[Any]] = []
@@ -178,7 +178,7 @@ class TestAgentToolIntegration:
                 "the result, then summarize it."
             ),
             max_turns=5,
-            stream_llm_responses=True,
+            stream_llm=True,
         )
 
         events: list[Event[Any]] = []

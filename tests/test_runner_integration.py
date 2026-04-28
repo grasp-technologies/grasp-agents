@@ -131,7 +131,7 @@ def _make_llm(
     return OpenAIResponsesLLM(
         model_name="gpt-5.4-nano",
         llm_settings={"max_output_tokens": max_output_tokens},
-        apply_response_schema_via_provider=structured,
+        apply_output_schema_via_provider=structured,
     )
 
 
@@ -228,7 +228,7 @@ class TestRunnerParallelFanout:
                 "Given a subject, generate exactly 2 specific topic ideas. "
                 "Each should target 'general audience'."
             ),
-            response_schema=TopicIdeas,
+            llm_output_schema=TopicIdeas,
         )
         splitter = SplitterProcessor(
             "splitter", agent=splitter_agent, recipients=["placeholder"]
@@ -241,7 +241,7 @@ class TestRunnerParallelFanout:
                 "Write a short paragraph (2-3 sentences) about the given topic "
                 "for the specified audience. Return structured output."
             ),
-            response_schema=Paragraph,
+            llm_output_schema=Paragraph,
             max_retries=2,
         )
         par = ParallelProcessor[TopicIdea, Paragraph, None](subproc=writer)
@@ -533,7 +533,7 @@ class TestAgentCrashResume:
             *,
             ctx: Any,
             exec_id: Any,
-            num_turns: int,
+            turn: int,
             extra_llm_settings: Any,  # noqa: ARG001
         ) -> None:
             turn_counter["count"] += 1

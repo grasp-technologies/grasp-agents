@@ -3,7 +3,6 @@ Integration tests for the B2.c metadata borrows on ``AgentCheckpoint``:
 
 - context_kind / context_data auto-round-trip
 - prompt_cache_key round-trip
-- session_mode drift warning on resume
 - pre-persist user input before first LLM call
 """
 
@@ -41,7 +40,6 @@ def _make_agent(
     session_key: str,
     store: InMemoryCheckpointStore,
     state_type: type[_MyState] = _MyState,
-    session_mode: str | None = None,
 ) -> tuple[LLMAgent[str, str, _MyState], RunContext[_MyState]]:
     agent = LLMAgent[str, str, _MyState](
         name="test_agent",
@@ -52,7 +50,6 @@ def _make_agent(
         checkpoint_store=store,
         session_key=session_key,
         state=state_type(),
-        session_mode=session_mode,
     )
     return agent, ctx
 
@@ -71,7 +68,6 @@ class TestSchemaVersion:
         assert snap.context_kind is None
         assert snap.context_data is None
         assert snap.prompt_cache_key is None
-        assert snap.session_mode is None
 
 
 # ---------------------------------------------------------------------------
@@ -170,86 +166,6 @@ class TestPromptCacheKey:
 
 
 # ---------------------------------------------------------------------------
-# session_mode drift warning
-# ---------------------------------------------------------------------------
-
-
-class TestSessionModeWarning:
-    @pytest.mark.anyio
-    async def test_warning_when_mode_differs(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        store = InMemoryCheckpointStore()
-        agent1, ctx1 = _make_agent(
-            [_text_response("hi")],
-            session_key="s1",
-            store=store,
-            session_mode="interactive",
-        )
-        await agent1.run("hello", ctx=ctx1)
-
-        agent2, ctx2 = _make_agent(
-            [_text_response("follow")],
-            session_key="s1",
-            store=store,
-            session_mode="batch",
-        )
-        with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.llm_agent"):
-            await agent2.load_checkpoint(ctx2)
-
-        assert any(
-            "resumed with mode" in rec.message and "interactive" in rec.message
-            for rec in caplog.records
-        )
-
-    @pytest.mark.anyio
-    async def test_no_warning_when_modes_match(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        store = InMemoryCheckpointStore()
-        agent1, ctx1 = _make_agent(
-            [_text_response("hi")],
-            session_key="s2",
-            store=store,
-            session_mode="interactive",
-        )
-        await agent1.run("hello", ctx=ctx1)
-
-        agent2, ctx2 = _make_agent(
-            [_text_response("follow")],
-            session_key="s2",
-            store=store,
-            session_mode="interactive",
-        )
-        with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.llm_agent"):
-            await agent2.load_checkpoint(ctx2)
-
-        assert not any("resumed with mode" in rec.message for rec in caplog.records)
-
-    @pytest.mark.anyio
-    async def test_no_warning_when_either_mode_unset(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Opt-in: drift check only fires when *both* modes are set."""
-        store = InMemoryCheckpointStore()
-        agent1, ctx1 = _make_agent(
-            [_text_response("hi")], session_key="s3", store=store, session_mode=None
-        )
-        await agent1.run("hello", ctx=ctx1)
-
-        agent2, ctx2 = _make_agent(
-            [_text_response("follow")],
-            session_key="s3",
-            store=store,
-            session_mode="sdk",
-        )
-        with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.llm_agent"):
-            await agent2.load_checkpoint(ctx2)
-
-        assert not any("resumed with mode" in rec.message for rec in caplog.records)
-
-
-# ---------------------------------------------------------------------------
 # Pre-persist user input
 # ---------------------------------------------------------------------------
 
@@ -270,11 +186,11 @@ class TestPrePersistInput:
                 input: Any,  # noqa: A002
                 *,
                 tools: Any = None,
-                response_schema: Any = None,
+                output_schema: Any = None,
                 tool_choice: Any = None,
                 **extra_llm_settings: Any,
             ) -> Any:
-                del input, tools, response_schema, tool_choice, extra_llm_settings
+                del input, tools, output_schema, tool_choice, extra_llm_settings
                 data = await store.load("agent/s-pp")
                 snap = (
                     AgentCheckpoint.model_validate_json(data)
