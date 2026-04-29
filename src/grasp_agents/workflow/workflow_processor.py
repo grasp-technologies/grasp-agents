@@ -26,7 +26,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         start_proc: Processor[InT, Any, CtxT],
         end_proc: Processor[Any, OutT, CtxT],
         recipients: Sequence[ProcName] | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
@@ -52,7 +52,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
             name=name,
             recipients=(recipients or end_proc.recipients),
             max_retries=0,
-            session_path=session_path,
+            path=path,
             session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
@@ -67,7 +67,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
 
     def _propagate_to_children(self) -> None:
         for subproc in self._subprocs:
-            subproc.on_adopted(self._session_path)
+            subproc.on_adopted(self._path)
 
     def validate_inputs(
         self,

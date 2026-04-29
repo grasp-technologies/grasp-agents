@@ -126,7 +126,7 @@ class Processor(
         max_retries: int = 0,
         memory: Memory | None = None,
         recipients: Sequence[ProcName] | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
@@ -147,7 +147,7 @@ class Processor(
 
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
-        self.set_session_path(session_path)
+        self.set_path(path)
 
     # --- Identity & utilities ---
 
@@ -164,8 +164,8 @@ class Processor(
         return self._memory
 
     @property
-    def session_path(self) -> list[str]:
-        return list(self._session_path)
+    def path(self) -> list[str]:
+        return list(self._path)
 
     @property
     def checkpoint_number(self) -> int:
@@ -182,17 +182,17 @@ class Processor(
         """True if ``ctx`` has a checkpoint store wired up."""
         return ctx is not None and ctx.checkpoint_store is not None
 
-    def set_session_path(self, session_path: list[str] | None = None) -> None:
+    def set_path(self, path: list[str] | None = None) -> None:
         """Set the session path verbatim. ``None`` resets to ``[self.name]``."""
-        if session_path is None:
-            self._session_path = [self.name]
+        if path is None:
+            self._path = [self.name]
         else:
-            self._session_path = list(session_path)
+            self._path = list(path)
         self._propagate_to_children()
 
-    def on_adopted(self, parent_session_path: Sequence[str]) -> None:
-        """Adoption hook: ``_session_path = [*parent_session_path, self.name]``."""
-        self.set_session_path([*parent_session_path, self.name])
+    def on_adopted(self, parent_path: Sequence[str]) -> None:
+        """Adoption hook: ``_path = [*parent_path, self.name]``."""
+        self.set_path([*parent_path, self.name])
 
     def _propagate_to_children(self) -> None:
         """Override in container processors to (re-)adopt child subprocs."""

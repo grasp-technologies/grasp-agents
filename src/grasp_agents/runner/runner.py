@@ -32,7 +32,7 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
         procs: Sequence[Processor[Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
         name: str | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         if entry_proc not in procs:
@@ -66,9 +66,9 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
 
         self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
-        self._session_path = session_path or []
+        self._path = path or []
         for proc in procs:
-            proc.on_adopted(self.session_path)
+            proc.on_adopted(self.path)
 
         self._session_metadata: dict[str, Any] = session_metadata or {}
 
@@ -82,8 +82,8 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
         return self._name
 
     @property
-    def session_path(self) -> list[str]:
-        return self._session_path
+    def path(self) -> list[str]:
+        return self._path
 
     @property
     def checkpoint_number(self) -> int:

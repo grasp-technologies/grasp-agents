@@ -166,7 +166,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         *,
         ctx: RunContext[CtxT] | None,
         exec_id: str | None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> tuple[LLMAgent[AgentToolInput, str, CtxT], str | None]:
         """Build the child agent with resolved prompts."""
         del exec_id
@@ -184,8 +184,8 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             sys_prompt=sys_prompt,
             max_turns=self._max_turns,
         )
-        if session_path is not None:
-            agent.set_session_path(session_path)
+        if path is not None:
+            agent.set_path(path)
 
         return agent, in_prompt
 
@@ -196,11 +196,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> str:
         del progress_callback
         agent, in_prompt = await self._prepare_child(
-            inp, ctx=ctx, exec_id=exec_id, session_path=session_path
+            inp, ctx=ctx, exec_id=exec_id, path=path
         )
         result = await agent.run(chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id)
 
@@ -213,11 +213,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del progress_callback
         agent, in_prompt = await self._prepare_child(
-            inp=inp, ctx=ctx, exec_id=exec_id, session_path=session_path
+            inp=inp, ctx=ctx, exec_id=exec_id, path=path
         )
         async for event in self._yield_child_events(
             agent, chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id
@@ -229,10 +229,10 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         agent, _ = await self._prepare_child(
-            inp=None, ctx=ctx, exec_id=exec_id, session_path=session_path
+            inp=None, ctx=ctx, exec_id=exec_id, path=path
         )
         async for event in self._yield_child_events(
             agent, chat_inputs=None, ctx=ctx, exec_id=exec_id

@@ -196,14 +196,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: Sequence[str] | None = None,
+        path: Sequence[str] | None = None,
     ) -> _OutT_co | ToolErrorInfo:
-        # ``session_path`` is forwarded only to *resumable* tools (whose
+        # ``path`` is forwarded only to *resumable* tools (whose
         # ``_run`` is known to accept the kwarg). Plain tools keep the
         # short signature and never see it.
         extra: dict[str, Any] = (
-            {"session_path": session_path}
-            if self.resumable and session_path is not None
+            {"path": path}
+            if self.resumable and path is not None
             else {}
         )
         try:
@@ -229,12 +229,12 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: Sequence[str] | None = None,
+        path: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         # See ``_run_with_timeout`` for the forwarding rule.
         extra: dict[str, Any] = (
-            {"session_path": session_path}
-            if self.resumable and session_path is not None
+            {"path": path}
+            if self.resumable and path is not None
             else {}
         )
         stream = self._run_stream(
@@ -272,14 +272,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_path=session_path,
+            path=path,
         )
 
     async def run_stream(
@@ -289,14 +289,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_path=session_path,
+            path=path,
         ):
             yield event
 
@@ -323,7 +323,7 @@ class BaseTool(
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         """Resume from a session checkpoint. Override in resumable tools."""
         raise NotImplementedError(f"{type(self).__name__} does not support resume")

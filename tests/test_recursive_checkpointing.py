@@ -253,31 +253,31 @@ async def collect_runner_payloads(
 
 class TestRecursiveSessionPropagation:
     def test_workflow_propagates_to_subprocs(self) -> None:
-        """Workflow adoption sets namespaced session_path on each subproc."""
+        """Workflow adoption sets namespaced path on each subproc."""
         a = AppendProcessor("A")
         b = AppendProcessor("B")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
 
         # Root workflow path includes its own name (Option D)
-        assert wf.session_path == ["wf"]
-        assert a.session_path == ["wf", "A"]
-        assert b.session_path == ["wf", "B"]
+        assert wf.path == ["wf"]
+        assert a.path == ["wf", "A"]
+        assert b.path == ["wf", "B"]
 
     def test_parallel_propagates_to_subproc(self) -> None:
         """ParallelProcessor propagates its path to inner subproc."""
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
 
-        assert par.session_path == [par.name]
-        assert worker.session_path == [par.name, "worker"]
+        assert par.path == [par.name]
+        assert worker.path == [par.name, "worker"]
 
     def test_parallel_init_with_session_propagates(self) -> None:
         """ParallelProcessor construction propagates path to subproc."""
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
 
-        assert par.session_path == [par.name]
-        assert worker.session_path == [par.name, "worker"]
+        assert par.path == [par.name]
+        assert worker.path == [par.name, "worker"]
 
     def test_workflow_containing_parallel_three_levels(self) -> None:
         """Workflow -> ParallelProcessor -> worker gets 3-level namespacing."""
@@ -286,10 +286,10 @@ class TestRecursiveSessionPropagation:
         a = AppendProcessor("A")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, par])
 
-        assert wf.session_path == ["wf"]
-        assert a.session_path == ["wf", "A"]
-        assert par.session_path == ["wf", par.name]
-        assert worker.session_path == ["wf", par.name, "worker"]
+        assert wf.path == ["wf"]
+        assert a.path == ["wf", "A"]
+        assert par.path == ["wf", par.name]
+        assert worker.path == ["wf", par.name, "worker"]
 
     def test_nested_workflows_propagate_to_leaf_procs(self) -> None:
         """Outer -> Inner workflow propagates to all leaf processors."""
@@ -300,11 +300,11 @@ class TestRecursiveSessionPropagation:
         a = AppendProcessor("A")
         outer = SequentialWorkflow[str, str, None](name="outer", subprocs=[a, inner])
 
-        assert outer.session_path == ["outer"]
-        assert a.session_path == ["outer", "A"]
-        assert inner.session_path == ["outer", "inner"]
-        assert x.session_path == ["outer", "inner", "X"]
-        assert y.session_path == ["outer", "inner", "Y"]
+        assert outer.path == ["outer"]
+        assert a.path == ["outer", "A"]
+        assert inner.path == ["outer", "inner"]
+        assert x.path == ["outer", "inner", "X"]
+        assert y.path == ["outer", "inner", "Y"]
 
     def test_is_resumable_depends_on_ctx(self) -> None:
         """Processor.is_resumable() is inferred from ctx.checkpoint_store."""
@@ -345,11 +345,11 @@ class TestRecursiveSessionPropagation:
         # Runner adopts each top-level proc at empty parent path, so
         # direct children get single-entry paths and descendants get
         # the accumulated path.
-        assert entry.session_path == ["entry"]
-        assert wf.session_path == ["wf"]
-        assert fan.session_path == ["wf", "fan"]
-        assert par.session_path == ["wf", par.name]
-        assert worker.session_path == ["wf", par.name, "worker"]
+        assert entry.path == ["entry"]
+        assert wf.path == ["wf"]
+        assert fan.path == ["wf", "fan"]
+        assert par.path == ["wf", par.name]
+        assert worker.path == ["wf", par.name, "worker"]
 
 
 # ---------- Checkpoint storage ----------

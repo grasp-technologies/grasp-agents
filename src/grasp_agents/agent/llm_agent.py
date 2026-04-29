@@ -99,7 +99,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         stream_llm: bool = False,
         stream_tools: bool = False,
         # Session persistence
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
         # Tracing
         tracing_enabled: bool = True,
@@ -110,7 +110,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             memory=memory,
             recipients=recipients,
             max_retries=max_retries,
-            session_path=session_path,
+            path=path,
             session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
@@ -178,7 +178,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm=stream_llm,
             stream_tools=stream_tools,
-            session_path=session_path,
+            path=path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
@@ -206,7 +206,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # so it is propagated to the loop and its tools
         # via _propagate_to_children.
 
-        self.set_session_path(session_path)
+        self.set_path(path)
 
     @property
     def llm(self) -> LLM:
@@ -247,12 +247,12 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     # --- Session persistence ---
 
     def _propagate_to_children(self) -> None:
-        # Guarded: super().__init__ calls set_session_path before _loop is set.
+        # Guarded: super().__init__ calls set_path before _loop is set.
         loop = getattr(self, "_loop", None)
         if loop is None:
             return
-        loop.session_path = self.session_path
-        loop.bg_tasks._session_path = self.session_path
+        loop.path = self.path
+        loop.bg_tasks._path = self.path
 
     async def load_checkpoint(
         self,

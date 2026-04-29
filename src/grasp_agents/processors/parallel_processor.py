@@ -24,7 +24,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         self,
         subproc: Processor[InT, OutT, CtxT],
         drop_failed: bool = False,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         # Need to set _subproc before __init__ because it
@@ -35,7 +35,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             name=subproc.name + "_par",
             recipients=subproc.recipients,
             max_retries=0,
-            session_path=session_path,
+            path=path,
             session_metadata=session_metadata,
             tracing_enabled=subproc.tracing_enabled,
             tracing_exclude_input_fields=subproc.tracing_exclude_input_fields,
@@ -55,7 +55,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
     # --- Checkpointing ---
 
     def _propagate_to_children(self) -> None:
-        self._subproc.on_adopted(self.session_path)
+        self._subproc.on_adopted(self.path)
 
     async def load_checkpoint(self, ctx: RunContext[CtxT]) -> ParallelCheckpoint | None:
         checkpoint = await self._deserialize_checkpoint(ctx, ParallelCheckpoint)
@@ -194,9 +194,9 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             replicas: dict[int, Processor[InT, OutT, CtxT]] = {}
             for i in pending_indices:
                 # TODO: Perhaps each replica should get a unique name?
-                # Then we can use on_adopted instead of set_session_path.
+                # Then we can use on_adopted instead of set_path.
                 rep = self._subproc.copy()
-                rep.set_session_path([*self._session_path, f"{self._subproc.name}_{i}"])
+                rep.set_path([*self._path, f"{self._subproc.name}_{i}"])
                 replicas[i] = rep
 
             streams = [

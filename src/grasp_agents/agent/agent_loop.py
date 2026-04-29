@@ -130,7 +130,7 @@ class AgentLoop(Generic[CtxT]):
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
     bg_tasks: BackgroundTaskManager[CtxT]
-    session_path: list[str] | None
+    path: list[str] | None
 
     # Hook callback slots — set by LLMAgent, None = no-op
     final_answer_extractor: FinalAnswerExtractor[CtxT] | None
@@ -161,7 +161,7 @@ class AgentLoop(Generic[CtxT]):
         final_answer_as_tool_call: bool = False,
         stream_llm: bool = True,
         stream_tools: bool = False,
-        session_path: list[str] | None = None,
+        path: list[str] | None = None,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__()
@@ -200,13 +200,13 @@ class AgentLoop(Generic[CtxT]):
         self.after_tool_hook = None
 
         self.checkpoint_callback = None
-        self.session_path = session_path
+        self.path = path
 
         self.bg_tasks = BackgroundTaskManager[CtxT](
             agent_name=agent_name,
             memory=memory,
             tools=self.tools,
-            session_path=session_path,
+            path=path,
         )
 
     @property
@@ -484,7 +484,7 @@ class AgentLoop(Generic[CtxT]):
                     inp=inp,
                     ctx=ctx,
                     exec_id=exec_id,
-                    session_path=make_tool_call_path(self.session_path, call.call_id),
+                    path=make_tool_call_path(self.path, call.call_id),
                 )
                 for _, call, tool, inp in immediate
             ]
@@ -512,8 +512,8 @@ class AgentLoop(Generic[CtxT]):
                         inp,
                         ctx=ctx,
                         exec_id=exec_id,
-                        session_path=make_tool_call_path(
-                            self.session_path, call.call_id
+                        path=make_tool_call_path(
+                            self.path, call.call_id
                         ),
                     )
                     for _, call, tool, inp in immediate
@@ -1009,9 +1009,9 @@ class AgentLoop(Generic[CtxT]):
                 ctx: RunContext[Any] | None = None,
                 exec_id: str | None = None,
                 progress_callback: Any = None,
-                session_path: Sequence[str] | None = None,
+                path: Sequence[str] | None = None,
             ) -> None:
-                del inp, ctx, exec_id, progress_callback, session_path
+                del inp, ctx, exec_id, progress_callback, path
 
         return FinalAnswerTool()
 

@@ -21,19 +21,19 @@ class CheckpointPersistMixin:
     Adds checkpoint key composition + load/save to a session-scoped object.
 
     Subclasses set ``_checkpoint_kind`` (``None`` disables persistence)
-    and maintain ``_session_path`` / ``_checkpoint_number``.
+    and maintain ``_path`` / ``_checkpoint_number``.
     """
 
     _checkpoint_kind: ClassVar[CheckpointKind | None] = None
 
-    _session_path: list[str]
+    _path: list[str]
     _checkpoint_number: int
 
     def _checkpoint_store_key(self, ctx: RunContext[Any]) -> str | None:
         if ctx.checkpoint_store is None or self._checkpoint_kind is None:
             return None
         return make_store_key(
-            ctx.session_key, self._checkpoint_kind, self._session_path
+            ctx.session_key, self._checkpoint_kind, self._path
         )
 
     async def _deserialize_checkpoint(

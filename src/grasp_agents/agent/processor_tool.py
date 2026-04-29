@@ -58,14 +58,14 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         self,
         ctx: RunContext[CtxT] | None,
         *,
-        session_path: Sequence[str] | None = None,
+        path: Sequence[str] | None = None,
     ) -> Processor[_InT, _OutT, CtxT]:
         """Return a fresh copy when ``ctx`` has a store; else the shared instance."""
         if Processor.is_resumable(ctx):
             # TODO: why do we copy only when resumable?
             proc = self._processor.copy()
-            if session_path is not None:
-                proc.set_session_path(list(session_path))
+            if path is not None:
+                proc.set_path(list(path))
             return proc
 
         if self._reset_memory_on_run:
@@ -80,10 +80,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: Sequence[str] | None = None,
+        path: Sequence[str] | None = None,
     ) -> _OutT:
         del progress_callback
-        proc = self._resolve_processor(ctx, session_path=session_path)
+        proc = self._resolve_processor(ctx, path=path)
         result = await proc.run(in_args=inp, exec_id=exec_id, ctx=ctx)
 
         return result.payloads[0]
@@ -95,10 +95,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_path: Sequence[str] | None = None,
+        path: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del progress_callback
-        proc = self._resolve_processor(ctx, session_path=session_path)
+        proc = self._resolve_processor(ctx, path=path)
         async for event in self._yield_proc_events(
             proc, in_args=inp, ctx=ctx, exec_id=exec_id, step=0
         ):
@@ -109,9 +109,9 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        session_path: Sequence[str] | None = None,
+        path: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        proc = self._resolve_processor(ctx, session_path=session_path)
+        proc = self._resolve_processor(ctx, path=path)
         async for event in self._yield_proc_events(
             proc, in_args=None, ctx=ctx, exec_id=exec_id, step=0
         ):

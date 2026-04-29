@@ -2,12 +2,12 @@
 Non-background ``AgentTool`` / ``ProcessorTool`` session-key isolation.
 
 Previously, the child agent inside a non-bg resumable tool ran under the
-parent's session key with no distinguishing ``session_path`` — which meant
+parent's session key with no distinguishing ``path`` — which meant
 the child's checkpoint key collided with the parent's, clobbering it.
 
 The fix is in ``agent_loop.py``'s tool-invocation site: resumable tools
-receive ``session_path = make_tool_call_path(parent_path, call.call_id)``,
-routed to the child via :meth:`Processor.set_session_path`. The child
+receive ``path = make_tool_call_path(parent_path, call.call_id)``,
+routed to the child via :meth:`Processor.set_path`. The child
 inherits the parent's ``session_key`` (approval / file-edit / usage
 scopes stay shared) but lives at a nested checkpoint path
 ``"<session_key>/agent/<parent_path>/tc_<call_id>"``.
@@ -142,7 +142,7 @@ async def test_sibling_child_calls_dont_collide() -> None:
 
 async def test_parallel_processor_replicas_dont_collide() -> None:
     """
-    Each ParallelProcessor replica gets its own session_path (suffix
+    Each ParallelProcessor replica gets its own path (suffix
     = replica index) so their checkpoint keys are disjoint. Without the
     fix, all N copies would overwrite each other at the same key.
     """
