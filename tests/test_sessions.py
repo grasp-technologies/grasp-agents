@@ -36,20 +36,16 @@ from grasp_agents.durability import (
 )
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.durability.store_keys import (
-    is_lifecycle_key,
-    make_lifecycle_key,
-    session_prefix,
+    make_store_key,
+    task_prefix,
 )
 
 
-def _agent_lifecycle_key(session_key: str, parent_name: str, call_id: str) -> str:
-    """
-    Test helper: compose the lifecycle key for a bg task spawned by
-    a root LLMAgent named ``parent_name`` at ``call_id``.
-    """
-    return make_lifecycle_key(
+def _agent_task_key(session_key: str, parent_name: str, call_id: str) -> str:
+    """Test helper: TaskRecord key for a bg call at ``parent_name``/``tc_<call_id>``."""
+    return make_store_key(
         session_key,
-        CheckpointKind.AGENT,
+        CheckpointKind.TASK,
         [parent_name, f"tc_{call_id}"],
     )
 
@@ -1234,11 +1230,7 @@ class TestTaskRecordPersistence:
         await agent.run("go", ctx=ctx)
 
         # Should have a task record under task/s1/
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix("s1"))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix("s1"))
         assert len(keys) == 1
 
         data = await store.load(keys[0])
@@ -1265,11 +1257,7 @@ class TestTaskRecordPersistence:
 
         await agent.run("go", ctx=ctx)
 
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix("s1"))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix("s1"))
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -1302,11 +1290,7 @@ class TestTaskRecordPersistence:
 
         await agent.run("go", ctx=ctx)
 
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix("s1"))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix("s1"))
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -1375,7 +1359,7 @@ class TestPendingTaskResume:
             tool_name="slow",
         )
         await store.save(
-            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            _agent_task_key(record.session_key, "test_agent", record.tool_call_id),
             record.model_dump_json().encode(),
         )
 
@@ -1396,7 +1380,7 @@ class TestPendingTaskResume:
 
         # TaskRecord should now be FAILED
         data = await store.load(
-            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id)
+            _agent_task_key(record.session_key, "test_agent", record.tool_call_id)
         )
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
@@ -1437,7 +1421,7 @@ class TestPendingTaskResume:
             result="slow: data",
         )
         await store.save(
-            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            _agent_task_key(record.session_key, "test_agent", record.tool_call_id),
             record.model_dump_json().encode(),
         )
 
@@ -1456,7 +1440,7 @@ class TestPendingTaskResume:
 
         # Record should now be DELIVERED
         data = await store.load(
-            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id)
+            _agent_task_key(record.session_key, "test_agent", record.tool_call_id)
         )
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
@@ -1501,7 +1485,7 @@ class TestPendingTaskResume:
             result="slow: data",
         )
         await store.save(
-            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            _agent_task_key(record.session_key, "test_agent", record.tool_call_id),
             record.model_dump_json().encode(),
         )
 
@@ -1543,7 +1527,7 @@ class TestPendingTaskResume:
             error="Already failed",
         )
         await store.save(
-            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            _agent_task_key(record.session_key, "test_agent", record.tool_call_id),
             record.model_dump_json().encode(),
         )
 
@@ -1599,7 +1583,7 @@ class TestPendingTaskResume:
                 tool_name=name,
             )
             await store.save(
-                _agent_lifecycle_key(
+                _agent_task_key(
                     record.session_key, "test_agent", record.tool_call_id
                 ),
                 record.model_dump_json().encode(),
@@ -1621,7 +1605,7 @@ class TestPendingTaskResume:
 
         # Both records should be FAILED
         for cid in ["fc_1", "fc_2"]:
-            data = await store.load(_agent_lifecycle_key("s1", "test_agent", cid))
+            data = await store.load(_agent_task_key("s1", "test_agent", cid))
             assert data is not None
             rec = TaskRecord.model_validate_json(data)
             assert rec.status == TaskStatus.FAILED
@@ -1675,11 +1659,7 @@ class TestChildTaskResume:
         )
         await parent.run("go", ctx=ctx)
 
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix("parent_s1"))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix("parent_s1"))
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -1737,7 +1717,7 @@ class TestChildTaskResume:
             tool_call_arguments='{"text": "hello"}',
         )
         await store.save(
-            _agent_lifecycle_key(
+            _agent_task_key(
                 task_record.session_key, "test_agent", task_record.tool_call_id
             ),
             task_record.model_dump_json().encode(),
@@ -1787,10 +1767,10 @@ class TestChildTaskResume:
         assert len(completed) >= 1
 
         # TaskRecord should be DELIVERED (drain completed + notified)
-        lifecycle_key = _agent_lifecycle_key(
+        task_key = _agent_task_key(
             task_record.session_key, "test_agent", task_record.tool_call_id
         )
-        data = await store.load(lifecycle_key)
+        data = await store.load(task_key)
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.DELIVERED
@@ -1831,7 +1811,7 @@ class TestChildTaskResume:
             tool_name="slow",
         )
         await store.save(
-            _agent_lifecycle_key(
+            _agent_task_key(
                 task_record.session_key, "test_agent", task_record.tool_call_id
             ),
             task_record.model_dump_json().encode(),
@@ -1898,7 +1878,7 @@ class TestChildTaskResume:
                 tool_call_arguments='{"text": "hello"}',
             )
             await store.save(
-                _agent_lifecycle_key("parent_s1", "test_agent", cid),
+                _agent_task_key("parent_s1", "test_agent", cid),
                 rec.model_dump_json().encode(),
             )
             # Each child's own checkpoint lives at the same path as the

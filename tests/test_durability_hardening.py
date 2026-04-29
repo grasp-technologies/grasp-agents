@@ -27,9 +27,8 @@ from grasp_agents.durability import (
 )
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.durability.store_keys import (
-    is_lifecycle_key,
-    make_lifecycle_key,
-    session_prefix,
+    make_store_key,
+    task_prefix,
 )
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
@@ -41,11 +40,11 @@ from grasp_agents.types.events import (
 )
 
 
-def _agent_lifecycle_key(session_key: str, parent_name: str, call_id: str) -> str:
-    """Compose lifecycle key for a bg task spawned by a root LLMAgent."""
-    return make_lifecycle_key(
+def _agent_task_key(session_key: str, parent_name: str, call_id: str) -> str:
+    """Compose task-record key for a bg task spawned by a root LLMAgent."""
+    return make_store_key(
         session_key,
-        CheckpointKind.AGENT,
+        CheckpointKind.TASK,
         [parent_name, f"tc_{call_id}"],
     )
 
@@ -242,7 +241,7 @@ def _record(
         status=status,
         updated_at=updated_at,
     )
-    key = _agent_lifecycle_key(session_key, "agent", rec.tool_call_id)
+    key = _agent_task_key(session_key, "agent", rec.tool_call_id)
     return rec, key
 
 
@@ -345,7 +344,7 @@ class TestPruneDelivered:
     async def test_skips_corrupt_records(self) -> None:
         """A corrupt task record logs a warning; prune doesn't crash."""
         store = InMemoryCheckpointStore()
-        corrupt_key = _agent_lifecycle_key("s", "agent", "corrupt")
+        corrupt_key = _agent_task_key("s", "agent", "corrupt")
         await store.save(corrupt_key, b"not-json")
 
         ctx: RunContext[None] = RunContext(
@@ -387,11 +386,7 @@ class TestEndToEndGC:
         await agent.run("go", ctx=ctx)
 
         # Exactly one DELIVERED record.
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix("e2e"))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix("e2e"))
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -404,9 +399,5 @@ class TestEndToEndGC:
             ctx, older_than=timedelta(milliseconds=1)
         )
         assert pruned == 1
-        remaining = [
-            k
-            for k in await store.list_keys(session_prefix("e2e"))
-            if is_lifecycle_key(k)
-        ]
+        remaining = await store.list_keys(task_prefix("e2e"))
         assert remaining == []

@@ -30,12 +30,13 @@ the operator what they are missing.
 
 
 class CheckpointKind(StrEnum):
-    """Key segment identifying the kind of processor owning a checkpoint."""
+    """Key segment identifying the kind of record persisted at this key."""
 
     AGENT = "agent"
     WORKFLOW = "workflow"
     PARALLEL = "parallel"
     RUNNER = "runner"
+    TASK = "task"
 
 
 class CheckpointSchemaError(Exception):

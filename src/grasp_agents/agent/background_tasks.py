@@ -10,10 +10,9 @@ from pydantic import BaseModel
 
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.durability.store_keys import (
-    is_lifecycle_key,
-    make_lifecycle_key,
+    make_store_key,
     make_tool_call_path,
-    session_prefix,
+    task_prefix,
 )
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 from grasp_agents.run_context import CtxT, RunContext
@@ -70,7 +69,7 @@ class PendingTask:
     task: asyncio.Task[Any]
     # Lifecycle store key for this task's TaskRecord; ``None`` when no
     # store / no checkpoint kind, in which case status updates are no-ops.
-    lifecycle_key: str | None = None
+    task_key: str | None = None
     events: asyncio.Queue[Event[Any] | None] = field(
         default_factory=lambda: asyncio.Queue[Event[Any] | None]()  # noqa: PLW0108
     )
@@ -101,16 +100,12 @@ class BackgroundTaskManager(Generic[CtxT]):
         agent_name: str,
         memory: LLMAgentMemory,
         tools: dict[str, BaseTool[BaseModel, Any, CtxT]] | None,
-        session_path: list[str] | None = None,
-        parent_kind: CheckpointKind | None = CheckpointKind.AGENT,
+        path: list[str] | None = None,
     ) -> None:
         self._agent_name = agent_name
         self._memory = memory
         self._tools = tools
-        self._session_path = session_path
-        # Kind of the processor that owns this manager — used to compose
-        # lifecycle keys under the parent's namespace.
-        self._parent_kind = parent_kind
+        self._path = path
         self._tasks: dict[str, PendingTask] = {}
 
     @property
@@ -129,18 +124,11 @@ class BackgroundTaskManager(Generic[CtxT]):
         task_id = str(uuid4())[:8]
         store = ctx.checkpoint_store
 
-        # Path the spawned tool runs at; lifecycle key sits in the parent's
-        # kind namespace so every bg invocation has a record regardless of
-        # whether the wrapped tool is itself resumable.
-        child_session_path = make_tool_call_path(self._session_path, call.call_id)
-        lifecycle_key: str | None = None
-        if (
-            store is not None
-            and child_session_path is not None
-            and self._parent_kind is not None
-        ):
-            lifecycle_key = make_lifecycle_key(
-                ctx.session_key, self._parent_kind, child_session_path
+        child_path = make_tool_call_path(self._path, call.call_id)
+        task_key: str | None = None
+        if store is not None and child_path is not None:
+            task_key = make_store_key(
+                ctx.session_key, CheckpointKind.TASK, child_path
             )
             record = TaskRecord(
                 session_key=ctx.session_key,
@@ -150,14 +138,14 @@ class BackgroundTaskManager(Generic[CtxT]):
                 tool_call_arguments=call.arguments,
                 status=TaskStatus.PENDING,
             )
-            await store.save(lifecycle_key, record.model_dump_json().encode())
+            await store.save(task_key, record.model_dump_json().encode())
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.run_stream(
             inp,
             ctx=ctx,
             exec_id=exec_id,
-            session_path=child_session_path,
+            path=child_path,
         )
         async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
@@ -167,7 +155,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             exec_id=exec_id,
             tool_call_id=call.call_id,
             task=async_task,
-            lifecycle_key=lifecycle_key,
+            task_key=task_key,
             events=queue,
         )
 
@@ -227,8 +215,8 @@ class BackgroundTaskManager(Generic[CtxT]):
             # Mark record as DELIVERED. Records are kept for post-hoc
             # observability / debugging; run ``prune_delivered(older_than)``
             # to reclaim space once they're no longer interesting.
-            if ctx.checkpoint_store is not None and pt.lifecycle_key is not None:
-                existing = await ctx.checkpoint_store.load(pt.lifecycle_key)
+            if ctx.checkpoint_store is not None and pt.task_key is not None:
+                existing = await ctx.checkpoint_store.load(pt.task_key)
 
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
@@ -242,7 +230,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                     )
 
                     await ctx.checkpoint_store.save(
-                        pt.lifecycle_key, record.model_dump_json().encode()
+                        pt.task_key, record.model_dump_json().encode()
                     )
 
             yield BackgroundTaskCompletedEvent(
@@ -269,10 +257,10 @@ class BackgroundTaskManager(Generic[CtxT]):
 
         if store is not None and ctx is not None:
             for pt in self._tasks.values():
-                if pt.lifecycle_key is None:
+                if pt.task_key is None:
                     continue
 
-                existing = await store.load(pt.lifecycle_key)
+                existing = await store.load(pt.task_key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
                     record = record.model_copy(
@@ -283,7 +271,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                         }
                     )
                     await store.save(
-                        pt.lifecycle_key, record.model_dump_json().encode()
+                        pt.task_key, record.model_dump_json().encode()
                     )
 
         tasks = [pt.task for pt in self._tasks.values()]
@@ -307,11 +295,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             return
 
         # Only this session's keys, only the lifecycle leaves.
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix(ctx.session_key))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix(ctx.session_key))
 
         for key in keys:
             record = await store.load_json(key, TaskRecord, subject="task record")
@@ -328,7 +312,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
             if record.status == TaskStatus.PENDING:
                 if self._try_respawn_child(
-                    record, lifecycle_key=key, ctx=ctx, exec_id=exec_id
+                    record, task_key=key, ctx=ctx, exec_id=exec_id
                 ):
                     continue
 
@@ -397,11 +381,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
         cutoff = datetime.now(UTC) - older_than
         pruned = 0
-        keys = [
-            k
-            for k in await store.list_keys(session_prefix(ctx.session_key))
-            if is_lifecycle_key(k)
-        ]
+        keys = await store.list_keys(task_prefix(ctx.session_key))
 
         for key in keys:
             record = await store.load_json(key, TaskRecord, subject="task record")
@@ -416,7 +396,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         self,
         record: TaskRecord,
         *,
-        lifecycle_key: str,
+        task_key: str,
         ctx: RunContext[CtxT] | None,
         exec_id: str | None,
     ) -> bool:
@@ -428,15 +408,15 @@ class BackgroundTaskManager(Generic[CtxT]):
         if not tool or not tool.resumable:
             return False
 
-        child_session_path = make_tool_call_path(
-            self._session_path, record.tool_call_id
+        child_path = make_tool_call_path(
+            self._path, record.tool_call_id
         )
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.resume_stream(
             ctx=ctx,
             exec_id=exec_id,
-            session_path=child_session_path,
+            path=child_path,
         )
         async_task = asyncio.create_task(_stream_to_result(stream, queue))
 
@@ -446,7 +426,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             exec_id=exec_id,
             tool_call_id=record.tool_call_id,
             task=async_task,
-            lifecycle_key=lifecycle_key,
+            task_key=task_key,
             events=queue,
         )
 
@@ -454,6 +434,6 @@ class BackgroundTaskManager(Generic[CtxT]):
             "Re-spawned child task %s (%s) at lifecycle key %s",
             record.task_id,
             record.tool_name,
-            lifecycle_key,
+            task_key,
         )
         return True
