@@ -296,7 +296,7 @@ class TestRunnerCheckpoint:
         result = await run_runner(runner, chat_inputs="s")
         assert result == ["s->A->B"]
 
-        raw = await store.load("runner/run-1")
+        raw = await store.load("run-1/runner")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         assert len(cp.pending_events) == 0
@@ -315,7 +315,7 @@ class TestRunnerCheckpoint:
         with pytest.raises(Exception):
             await run_runner(runner, chat_inputs="s")
 
-        raw = await store.load("runner/run-2")
+        raw = await store.load("run-2/runner")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         # A completed → START event removed, A's output event added.
@@ -340,7 +340,7 @@ class TestRunnerCheckpoint:
 
         await run_runner(runner, chat_inputs="s")
 
-        raw = await store.load("runner/run-3")
+        raw = await store.load("run-3/runner")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         # After completion, step counters remain in active_steps for all
@@ -467,7 +467,7 @@ class TestRunnerResume:
         result1 = await run_runner(runner1, chat_inputs="s")
         assert result1 == ["s->A->B"]
 
-        raw = await store.load("runner/run-noop")
+        raw = await store.load("run-noop/runner")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         assert len(cp.pending_events) == 0
@@ -502,12 +502,12 @@ class TestRunnerComposableCheckpointing:
         assert sorted(result) == ["s:x->worker->collector", "s:y->worker->collector"]
 
         # ParallelProcessor should have its own checkpoint in the store
-        par_key = f"parallel/run-comp/{par.name}"
+        par_key = f"run-comp/parallel/{par.name}"
         par_data = await store.load(par_key)
         assert par_data is not None
 
         # Runner checkpoint tracks active step counters
-        raw = await store.load("runner/run-comp")
+        raw = await store.load("run-comp/runner")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         assert par.name in cp.active_steps
@@ -543,7 +543,7 @@ class TestRunnerCorruptCheckpoint:
         """Corrupt checkpoint data should be ignored (fail-open), not crash."""
         store = InMemoryCheckpointStore()
         # Plant garbage data at the checkpoint key
-        await store.save("runner/sess-corrupt", b"not valid json at all")
+        await store.save("sess-corrupt/runner", b"not valid json at all")
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
         ctx: RunContext[None] = RunContext(
@@ -566,7 +566,7 @@ class TestRunnerCorruptCheckpoint:
             pending_events=[],
         )
         await store.save(
-            "runner/sess-done", cp.model_dump_json().encode("utf-8")
+            "sess-done/runner", cp.model_dump_json().encode("utf-8")
         )
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])

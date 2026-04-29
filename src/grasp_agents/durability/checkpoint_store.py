@@ -1,14 +1,65 @@
-from typing import Protocol, runtime_checkable
+import logging
+from typing import TypeVar
+
+from pydantic import BaseModel
+
+from .checkpoints import CheckpointSchemaError
+
+logger = logging.getLogger(__name__)
+
+_M = TypeVar("_M", bound=BaseModel)
 
 
-@runtime_checkable
-class CheckpointStore(Protocol):
-    """Key-value persistence backend for session checkpoints."""
+class CheckpointStore:
+    """
+    Key-value persistence backend for session checkpoints.
 
-    async def save(self, key: str, data: bytes) -> None: ...
-    async def load(self, key: str) -> bytes | None: ...
-    async def delete(self, key: str) -> None: ...
-    async def list_keys(self, prefix: str) -> list[str]: ...
+    Subclasses implement raw byte-level :meth:`save` / :meth:`load` /
+    :meth:`delete` / :meth:`list_keys`; :meth:`load_json` is provided.
+    """
+
+    async def save(self, key: str, data: bytes) -> None:
+        raise NotImplementedError
+
+    async def load(self, key: str) -> bytes | None:
+        raise NotImplementedError
+
+    async def delete(self, key: str) -> None:
+        raise NotImplementedError
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        raise NotImplementedError
+
+    async def load_json(
+        self,
+        key: str,
+        model_type: type[_M],
+        *,
+        subject: str | None = None,
+    ) -> _M | None:
+        """
+        Load ``key`` and validate as ``model_type``.
+
+        Missing key → ``None``. Schema-version mismatch propagates as
+        :class:`CheckpointSchemaError`. Any other deserialization error
+        is logged at WARN and returns ``None``.
+        """
+        data = await self.load(key)
+        if data is None:
+            return None
+
+        try:
+            return model_type.model_validate_json(data)
+        except CheckpointSchemaError:
+            raise
+        except Exception:
+            logger.warning(
+                "Corrupt %s at %s, treating as missing",
+                subject or model_type.__name__,
+                key,
+                exc_info=True,
+            )
+            return None
 
 
 class InMemoryCheckpointStore(CheckpointStore):

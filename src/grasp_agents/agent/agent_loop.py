@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any, Final, Generic, Protocol
 
 from pydantic import BaseModel, TypeAdapter
 
+from grasp_agents.durability.checkpoints import AgentCheckpointLocation
+from grasp_agents.durability.store_keys import make_tool_call_path
+from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import traced
-
-from ..durability.checkpoints import AgentCheckpointLocation
-from ..run_context import CtxT, RunContext
-from ..types.errors import AgentFinalAnswerError
-from ..types.events import (
+from grasp_agents.types.errors import AgentFinalAnswerError
+from grasp_agents.types.events import (
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -22,23 +22,24 @@ from ..types.events import (
     StopReason,
     ToolCallItemEvent,
     ToolOutputEvent,
-    ToolResultEvent,
+    ToolOutputItemEvent,
     TurnEndEvent,
     TurnEndInfo,
     TurnInfo,
     TurnStartEvent,
     UserMessageEvent,
 )
-from ..types.items import (
+from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
 )
-from ..types.llm_events import OutputItemDone, ResponseCompleted
-from ..types.tool import BaseTool, NamedToolChoice, ToolChoice
-from ..utils.streaming import stream_concurrent
+from grasp_agents.types.llm_events import OutputItemDone, ResponseCompleted
+from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
+from grasp_agents.utils.streaming import stream_concurrent
+
 from .background_tasks import BackgroundTaskManager
 from .loop_state import (
     NextStep,
@@ -58,8 +59,8 @@ from .tool_decision import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
 
-    from ..llm.llm import LLM
-    from ..types.hooks import (
+    from grasp_agents.llm.llm import LLM
+    from grasp_agents.types.hooks import (
         AfterLlmHook,
         AfterToolHook,
         BeforeLlmHook,
@@ -68,7 +69,8 @@ if TYPE_CHECKING:
         ToolInputConverter,
         ToolOutputConverter,
     )
-    from ..types.response import Response
+    from grasp_agents.types.response import Response
+
     from .llm_agent_memory import LLMAgentMemory
 
 logger = getLogger(__name__)
@@ -112,27 +114,23 @@ class AgentLoop(Generic[CtxT]):
     callback slots set by the owning LLMAgent.
     """
 
-    # Config — set once at init, effectively immutable
     agent_name: Final[str]
     llm: Final[LLM]
+    final_answer_type: type[BaseModel]
     max_turns: Final[int]
     force_react_mode: Final[bool]
     final_answer_as_tool_call: Final[bool]
     tracing_exclude_input_fields: Final[set[str] | None]
+    stream_llm: Final[bool]
+    stream_tools: Final[bool]
 
-    # Mutable runtime state
+    # Mutable state
     memory: LLMAgentMemory
+    tools: dict[str, BaseTool[BaseModel, Any, CtxT]]
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
     bg_tasks: BackgroundTaskManager[CtxT]
-
-    # Internal
-    _tools: dict[str, BaseTool[BaseModel, Any, CtxT]] | None
-    _response_schema: Any | None
-    _final_answer_type: type[BaseModel]
-    _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
-    _stream_llm: bool
-    _stream_tools: bool
+    session_path: list[str] | None
 
     # Hook callback slots — set by LLMAgent, None = no-op
     final_answer_extractor: FinalAnswerExtractor[CtxT] | None
@@ -146,6 +144,9 @@ class AgentLoop(Generic[CtxT]):
     # Session persistence — wired by LLMAgent.setup_session()
     checkpoint_callback: CheckpointCallback | None
 
+    _llm_output_schema: Any | None
+    _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
+
     def __init__(
         self,
         *,
@@ -153,13 +154,14 @@ class AgentLoop(Generic[CtxT]):
         llm: LLM,
         memory: LLMAgentMemory,
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
-        response_schema: Any | None = None,
+        llm_output_schema: Any | None = None,
         max_turns: int,
         force_react_mode: bool = False,
         final_answer_type: type[BaseModel] = BaseModel,
         final_answer_as_tool_call: bool = False,
         stream_llm: bool = True,
         stream_tools: bool = False,
+        session_path: list[str] | None = None,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__()
@@ -171,20 +173,23 @@ class AgentLoop(Generic[CtxT]):
         self.agent_name = agent_name
         self.llm = llm
         self.max_turns = max_turns
+
+        self.stream_llm = stream_llm
+        self.stream_tools = stream_tools
+
         self.force_react_mode = force_react_mode
+        self.final_answer_type = final_answer_type
         self.final_answer_as_tool_call = final_answer_as_tool_call
+
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        self._response_schema = response_schema
-        self._final_answer_type = final_answer_type
+        self._llm_output_schema = llm_output_schema
         self._final_answer_tool = self._make_final_answer_tool()
-        self._stream_llm = stream_llm
-        self._stream_tools = stream_tools
 
         tools_list = (tools or [])[:]
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
-        self._tools = {t.name: t for t in tools_list} if tools_list else None
+        self.tools = {t.name: t for t in tools_list}
 
         self.final_answer_extractor = None
         self.before_llm_hook = None
@@ -195,24 +200,22 @@ class AgentLoop(Generic[CtxT]):
         self.after_tool_hook = None
 
         self.checkpoint_callback = None
+        self.session_path = session_path
 
         self.bg_tasks = BackgroundTaskManager[CtxT](
             agent_name=agent_name,
             memory=memory,
-            tools=self._tools,
+            tools=self.tools,
+            session_path=session_path,
         )
 
     @property
-    def response_schema(self) -> Any | None:
-        return self._response_schema
+    def llm_output_schema(self) -> Any | None:
+        return self._llm_output_schema
 
-    @response_schema.setter
-    def response_schema(self, value: Any | None) -> None:
-        self._response_schema = value
-
-    @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
-        return self._tools or {}
+    @llm_output_schema.setter
+    def llm_output_schema(self, value: Any | None) -> None:
+        self._llm_output_schema = value
 
     async def checkpoint(
         self,
@@ -235,14 +238,14 @@ class AgentLoop(Generic[CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-        num_turns: int,
+        turn: int,
         extra_llm_settings: dict[str, Any],
     ) -> None:
         if self.before_llm_hook is not None:
             await self.before_llm_hook(
                 ctx=ctx,
                 exec_id=exec_id,
-                num_turns=num_turns,
+                turn=turn,
                 extra_llm_settings=extra_llm_settings,
             )
 
@@ -252,14 +255,14 @@ class AgentLoop(Generic[CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-        num_turns: int,
+        turn: int,
     ) -> None:
         if self.after_llm_hook is not None:
             await self.after_llm_hook(
                 response=response,
                 ctx=ctx,
                 exec_id=exec_id,
-                num_turns=num_turns,
+                turn=turn,
             )
 
     async def on_before_tool(
@@ -363,7 +366,7 @@ class AgentLoop(Generic[CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         llm_params: dict[str, Any] = {
             "input": self.memory.messages,
-            "response_schema": self.response_schema,
+            "output_schema": self.llm_output_schema,
             "tools": self.tools or None,
             "tool_choice": tool_choice,
             **extra_llm_settings,
@@ -371,7 +374,7 @@ class AgentLoop(Generic[CtxT]):
 
         response: Response | None = None
 
-        if self._stream_llm:
+        if self.stream_llm:
             async for se in self.llm.generate_response_stream(**llm_params):
                 if isinstance(se, OutputItemDone):
                     item = se.item
@@ -404,11 +407,7 @@ class AgentLoop(Generic[CtxT]):
                 elif isinstance(se, ResponseCompleted):
                     response = se.response
 
-                yield LLMStreamEvent(
-                    data=se,
-                    source=self.agent_name,
-                    exec_id=exec_id,
-                )
+                yield LLMStreamEvent(data=se, source=self.agent_name, exec_id=exec_id)
 
         else:
             response = await self.llm.generate_response(**llm_params)
@@ -468,39 +467,32 @@ class AgentLoop(Generic[CtxT]):
             inp = await self._convert_tool_input(call, ctx=ctx, exec_id=exec_id)
             if tool.background:
                 task_id, event = await self.bg_tasks.spawn(
-                    call, tool, inp, ctx=ctx, exec_id=exec_id
+                    call,
+                    tool,
+                    inp,
+                    ctx=ctx,
+                    exec_id=exec_id,
                 )
                 yield event
                 outputs[i] = f"Task launched in background (id: {task_id})"
             else:
                 immediate.append((i, call, tool, inp))
 
-        # Execute immediate tools concurrently. Resumable tools get a
-        # deterministic ``session_subpath`` keyed on ``call_id`` so their
-        # child checkpoint doesn't collide with the parent agent's key
-        # (or with sibling tool calls in the same turn).
-        def _subpath_for(
-            t: BaseTool[BaseModel, Any, CtxT],
-            call: FunctionToolCallItem,
-        ) -> list[str] | None:
-            return ["call", call.call_id] if t.resumable else None
-
-        if immediate and self._stream_tools:
+        if immediate and self.stream_tools:
             streams = [
-                t.run_stream(
+                tool.run_stream(
                     inp=inp,
                     ctx=ctx,
                     exec_id=exec_id,
-                    session_subpath=_subpath_for(t, call),
+                    session_path=make_tool_call_path(self.session_path, call.call_id),
                 )
-                for _, call, t, inp in immediate
+                for _, call, tool, inp in immediate
             ]
             merged = stream_concurrent(streams)
             async for stream_idx, event in merged:
                 if isinstance(event, ToolOutputEvent):
                     outputs[immediate[stream_idx][0]] = event.data
-                else:
-                    yield event
+                yield event
 
             for err in merged.errors:
                 i = immediate[err.index][0]
@@ -516,13 +508,15 @@ class AgentLoop(Generic[CtxT]):
         elif immediate:
             results = await asyncio.gather(
                 *[
-                    t.run(
+                    tool.run(
                         inp,
                         ctx=ctx,
                         exec_id=exec_id,
-                        session_subpath=_subpath_for(t, call),
+                        session_path=make_tool_call_path(
+                            self.session_path, call.call_id
+                        ),
                     )
-                    for _, call, t, inp in immediate
+                    for _, call, tool, inp in immediate
                 ],
                 return_exceptions=True,
             )
@@ -536,13 +530,14 @@ class AgentLoop(Generic[CtxT]):
                     outputs[i] = result
 
         tool_messages: list[FunctionToolOutputItem] = []
+
         for output, call in zip(outputs, calls, strict=True):
             msg = await self._convert_tool_output(
                 output, call, ctx=ctx, exec_id=exec_id
             )
             tool_messages.append(msg)
             self.memory.update([msg], ctx=ctx)
-            yield ToolResultEvent(
+            yield ToolOutputItemEvent(
                 source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
 
@@ -639,7 +634,7 @@ class AgentLoop(Generic[CtxT]):
             response=response,
             ctx=ctx,
             exec_id=exec_id,
-            num_turns=self.turn,
+            turn=self.turn,
         )
         return decide_next_step(
             final_answer=final,
@@ -769,14 +764,13 @@ class AgentLoop(Generic[CtxT]):
         decisions = await self.on_before_tool(
             tool_calls=step.tool_calls, ctx=ctx, exec_id=exec_id
         )
-        # RaiseToolException aborts the whole batch — check before
-        # synthesizing any rejections so we don't leak partial state.
+
         if decisions:
             for decision in decisions.values():
                 if isinstance(decision, RaiseToolException):
                     raise decision.exception
 
-        tool_messages: list[FunctionToolOutputItem] = []
+        tool_msgs: list[FunctionToolOutputItem] = []
         allowed_calls: list[FunctionToolCallItem] = []
         rejection_msgs: list[FunctionToolOutputItem] = []
 
@@ -786,10 +780,10 @@ class AgentLoop(Generic[CtxT]):
                 msg = FunctionToolOutputItem.from_tool_result(
                     call_id=call.call_id, output=decision.content
                 )
-                tool_messages.append(msg)
+                tool_msgs.append(msg)
                 rejection_msgs.append(msg)
                 self.memory.update([msg], ctx=ctx)
-                yield ToolResultEvent(
+                yield ToolOutputItemEvent(
                     source=call.name,
                     destination=self.agent_name,
                     exec_id=exec_id,
@@ -809,13 +803,13 @@ class AgentLoop(Generic[CtxT]):
             async for event in self.execute_tools_stream(
                 allowed_calls, ctx=ctx, exec_id=exec_id
             ):
-                if isinstance(event, ToolResultEvent):
-                    tool_messages.append(event.data)
+                if isinstance(event, ToolOutputItemEvent):
+                    tool_msgs.append(event.data)
                 yield event
 
         await self.on_after_tool(
             tool_calls=step.tool_calls,
-            tool_messages=tool_messages,
+            tool_messages=tool_msgs,
             ctx=ctx,
             exec_id=exec_id,
         )
@@ -874,13 +868,13 @@ class AgentLoop(Generic[CtxT]):
         settings = deepcopy(extra_llm_settings)
         await self.on_before_llm(
             extra_llm_settings=settings,
-            num_turns=self.turn,
+            turn=self.turn,
             ctx=ctx,
             exec_id=exec_id,
         )
 
         tool_choice: ToolChoice | None = None
-        if self._tools:
+        if self.tools:
             tool_choice = self._compute_tool_choice(had_tool_calls)
         tool_choice = settings.pop("tool_choice", tool_choice)
 
@@ -900,7 +894,7 @@ class AgentLoop(Generic[CtxT]):
 
         await self.on_after_llm(
             response,
-            num_turns=self.turn,
+            turn=self.turn,
             ctx=ctx,
             exec_id=exec_id,
         )
@@ -916,8 +910,6 @@ class AgentLoop(Generic[CtxT]):
         extra_llm_settings: dict[str, Any] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         had_tool_calls = False
-        # Don't clear _background_tasks — may have pre-registered tasks
-        # from session resume. The finally block cancels any remaining.
         self.final_answer = None
 
         try:
@@ -1003,7 +995,7 @@ class AgentLoop(Generic[CtxT]):
             await self.bg_tasks.cancel_all(ctx=ctx)
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
-        class FinalAnswerTool(BaseTool[self._final_answer_type, None, Any]):
+        class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):
             name = "final_answer"
             description = (
                 "You must call this tool to provide the final answer. "
@@ -1017,9 +1009,9 @@ class AgentLoop(Generic[CtxT]):
                 ctx: RunContext[Any] | None = None,
                 exec_id: str | None = None,
                 progress_callback: Any = None,
-                session_subpath: Sequence[str] | None = None,
+                session_path: Sequence[str] | None = None,
             ) -> None:
-                del inp, ctx, exec_id, progress_callback, session_subpath
+                del inp, ctx, exec_id, progress_callback, session_path
 
         return FinalAnswerTool()
 

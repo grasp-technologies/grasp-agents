@@ -2,7 +2,17 @@ import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from copy import deepcopy
 from functools import wraps
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, TypeVar, cast, final
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Generic,
+    Self,
+    TypeVar,
+    cast,
+    final,
+)
 from uuid import uuid4
 
 from pydantic import BaseModel, TypeAdapter
@@ -17,7 +27,7 @@ from grasp_agents.types.errors import (
 )
 
 from ..durability.checkpoints import CheckpointKind
-from ..durability.loading import load_json
+from ..durability.persist import CheckpointPersistMixin
 from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
@@ -35,13 +45,11 @@ from ..utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
     from ..agent.processor_tool import ProcessorTool
-    from ..durability.checkpoints import ProcessorCheckpoint
 
 logger = logging.getLogger(__name__)
 
 
 F = TypeVar("F", bound=Callable[..., AsyncIterator[Event[Any]]])
-CpT = TypeVar("CpT", bound="ProcessorCheckpoint")
 
 
 def with_retry(func: F) -> F:
@@ -84,7 +92,11 @@ def with_retry(func: F) -> F:
     return cast("F", wrapper)
 
 
-class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
+class Processor(
+    AutoInstanceAttributesMixin,
+    CheckpointPersistMixin,
+    Generic[InT, OutT, CtxT],
+):
     """
     Base computation unit in the framework. Supports typed input/output validation,
     recipient-based routing, retry, and streaming. Subclasses override ``_process``
@@ -96,11 +108,17 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         1: "_out_type",
     }
 
-    # Key prefix used when composing this processor's checkpoint store key.
     # Base ``Processor`` has no checkpoint machinery, so the default is
     # ``None`` and ``_checkpoint_store_key`` returns ``None``. Subclasses
-    # that support resuming set this to a ``CheckpointKind`` value.
+    # that support resuming override this with a ``CheckpointKind`` value.
     _checkpoint_kind: ClassVar[CheckpointKind | None] = None
+
+    name: Final[str]
+
+    max_retries: int
+    recipients: Sequence[ProcName] | None
+    tracing_enabled: bool
+    tracing_exclude_input_fields: set[str] | None
 
     def __init__(
         self,
@@ -108,31 +126,28 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         max_retries: int = 0,
         memory: Memory | None = None,
         recipients: Sequence[ProcName] | None = None,
+        session_path: list[str] | None = None,
+        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         self._in_type: type[InT]
         self._out_type: type[OutT]
 
         super().__init__()
 
-        self._name = name
-        self._max_retries = max_retries
+        self.name = name
 
-        self._memory: Memory = memory or DummyMemory()
-
+        self.max_retries = max_retries
         self.recipients = recipients
-
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        # Position of this processor within the session hierarchy. Empty
-        # for a processor that is the session root; container processors
-        # prepend their own path + child name when adopting subprocs.
-        self._session_path: list[str] = []
+        self._memory: Memory = memory or DummyMemory()
+
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
+        self.set_session_path(session_path)
 
     # --- Identity & utilities ---
 
@@ -143,10 +158,6 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
     @property
     def out_type(self) -> type[OutT]:
         return self._out_type
-
-    @property
-    def name(self) -> ProcName:
-        return self._name
 
     @property
     def memory(self) -> Memory:
@@ -161,8 +172,8 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         return self._checkpoint_number
 
     @property
-    def max_retries(self) -> int:
-        return self._max_retries
+    def checkpoint_kind(self) -> "CheckpointKind | None":
+        return self._checkpoint_kind
 
     # --- Session persistence ---
 
@@ -171,91 +182,23 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         """True if ``ctx`` has a checkpoint store wired up."""
         return ctx is not None and ctx.checkpoint_store is not None
 
-    def _on_adopted(self, parent_session_path: Sequence[str]) -> None:
-        """
-        Called by a container processor adopting this processor as a subproc.
-
-        Prepends the container's session path to ``self._session_path`` and
-        recurses so deeply-nested container subprocs pick up the full path.
-        Resumability is not a construction-time flag — it's inferred at
-        call time from ``ctx.checkpoint_store``, so nothing to propagate
-        beyond the path itself.
-        """
-        self._session_path = [*parent_session_path, self._name]
+    def set_session_path(self, session_path: list[str] | None = None) -> None:
+        """Set the session path verbatim. ``None`` resets to ``[self.name]``."""
+        if session_path is None:
+            self._session_path = [self.name]
+        else:
+            self._session_path = list(session_path)
         self._propagate_to_children()
 
-    def set_session_path(self, session_path: Sequence[str]) -> None:
-        """
-        Assign this processor's session path verbatim (no adoption compose).
-
-        Differs from :meth:`_on_adopted` in that the caller supplies the
-        *final* path, not a prefix to extend with ``self._name``. Used by
-        tool wrappers (``AgentTool`` / ``ProcessorTool``) when spawning a
-        subprocessor that must resume at a deterministic key — the path
-        comes from something stable (e.g. a task id) rather than from
-        per-invocation container state.
-        """
-        self._session_path = list(session_path)
-        self._propagate_to_children()
+    def on_adopted(self, parent_session_path: Sequence[str]) -> None:
+        """Adoption hook: ``_session_path = [*parent_session_path, self.name]``."""
+        self.set_session_path([*parent_session_path, self.name])
 
     def _propagate_to_children(self) -> None:
         """Override in container processors to (re-)adopt child subprocs."""
 
-    def _checkpoint_store_key(self, ctx: RunContext[CtxT]) -> str | None:
-        """
-        Compose the checkpoint-store key for the current run.
-
-        Returns ``None`` when no checkpoint store is wired *or* when
-        this processor class has no ``_checkpoint_kind`` (base
-        :class:`Processor`). Otherwise returns
-        ``"{kind}/{ctx.session_key}[/{path}]"`` where ``path`` is the
-        slash-joined ``_session_path`` (omitted when empty).
-        """
-        if ctx.checkpoint_store is None or self._checkpoint_kind is None:
-            return None
-        root = f"{self._checkpoint_kind}/{ctx.session_key}"
-        if not self._session_path:
-            return root
-        return f"{root}/{'/'.join(self._session_path)}"
-
-    async def _deserialize_checkpoint(
-        self, ctx: RunContext[CtxT], checkpoint_type: type[CpT]
-    ) -> "CpT | None":
-        store = ctx.checkpoint_store
-        key = self._checkpoint_store_key(ctx)
-        if store is None or key is None:
-            return None
-
-        checkpoint = await load_json(
-            store,
-            key,
-            checkpoint_type,
-            subject=f"checkpoint for {self.name}",
-            logger=logger,
-        )
-        if checkpoint is None:
-            return None
-
-        self._checkpoint_number = checkpoint.checkpoint_number
-        return checkpoint
-
-    async def _serialize_checkpoint(
-        self,
-        ctx: RunContext[CtxT],
-        checkpoint: "ProcessorCheckpoint",
-    ) -> None:
-        store = ctx.checkpoint_store
-        key = self._checkpoint_store_key(ctx)
-        if store is None or key is None:
-            return
-
-        checkpoint.checkpoint_number = self._checkpoint_number + 1
-
-        await store.save(
-            key,
-            checkpoint.model_dump_json().encode("utf-8"),
-        )
-        self._checkpoint_number += 1
+    # ``_checkpoint_store_key`` / ``_deserialize_checkpoint`` /
+    # ``_serialize_checkpoint`` are provided by ``CheckpointPersistMixin``.
 
     # --- Input / output validation ---
 
@@ -265,9 +208,8 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002
     ) -> list[InT] | None:
-        del ctx  # base class doesn't inspect ctx; subclasses may
         err_kwargs = {"proc_name": self.name, "exec_id": exec_id}
 
         num_non_null_inputs = sum(
@@ -281,6 +223,7 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
                 ),
                 **err_kwargs,
             )
+
         if self.in_type is not type(None) and num_non_null_inputs == 0:
             raise ProcInputValidationError(
                 message="One of chat_inputs, in_args, or in_message must be provided",
@@ -557,7 +500,9 @@ class Processor(AutoInstanceAttributesMixin, Generic[InT, OutT, CtxT]):
         reset_memory_on_run: bool = True,
         background: bool = False,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
-        from ..agent.processor_tool import ProcessorTool as _ProcessorTool
+        from ..agent.processor_tool import (  # noqa: PLC0415
+            ProcessorTool as _ProcessorTool,
+        )
 
         if not issubclass(self.in_type, BaseModel):
             raise TypeError(

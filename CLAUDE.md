@@ -38,6 +38,7 @@ Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.
 - Pydantic `BaseModel` for all data types that cross API boundaries (tool inputs, agent outputs, state)
 - Async throughout — all agent/tool `run()` methods are `async`
 - Commit messages: short imperative descriptions (e.g., "update LiteLLM", "version bump", "fix copilot comments")
+- **Comments and docstrings are for framework users, not implementers.** Default to none; add one only when the *why* is non-obvious or there's a contract a caller must honor. Skip restating types, paraphrasing the code, or explaining design history (that belongs in commits / memory, not in source). One short line is almost always enough; no multi-paragraph rationale, no "previously / now" narratives, no "verbatim — the caller supplies …" essays. If a comment couldn't credibly land on the API reference page, it's too long.
 
 ## Architecture overview
 

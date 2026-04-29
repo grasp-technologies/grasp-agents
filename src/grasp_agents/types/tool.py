@@ -4,6 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
     Generic,
@@ -21,6 +22,9 @@ from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
 from .events import Event, ToolErrorEvent, ToolErrorInfo
+
+if TYPE_CHECKING:
+    from grasp_agents.durability.checkpoints import CheckpointKind
 
 logger = logging.getLogger(__name__)
 
@@ -192,13 +196,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: Sequence[str] | None = None,
     ) -> _OutT_co | ToolErrorInfo:
-        # ``session_subpath`` is only forwarded when set so that user
-        # tools overriding ``_run`` with the short signature keep working.
+        # ``session_path`` is forwarded only to *resumable* tools (whose
+        # ``_run`` is known to accept the kwarg). Plain tools keep the
+        # short signature and never see it.
         extra: dict[str, Any] = (
-            {"session_subpath": session_subpath}
-            if session_subpath is not None
+            {"session_path": session_path}
+            if self.resumable and session_path is not None
             else {}
         )
         try:
@@ -224,11 +229,12 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: Sequence[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        # See ``_run_with_timeout`` for the forwarding rule.
         extra: dict[str, Any] = (
-            {"session_subpath": session_subpath}
-            if session_subpath is not None
+            {"session_path": session_path}
+            if self.resumable and session_path is not None
             else {}
         )
         stream = self._run_stream(
@@ -266,14 +272,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_subpath=session_subpath,
+            session_path=session_path,
         )
 
     async def run_stream(
@@ -283,14 +289,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            session_subpath=session_subpath,
+            session_path=session_path,
         ):
             yield event
 
@@ -300,15 +306,26 @@ class BaseTool(
     def resumable(self) -> bool:
         return False
 
+    @property
+    def checkpoint_kind(self) -> "CheckpointKind | None":
+        """
+        :class:`CheckpointKind` of the processor this tool wraps, if any.
+
+        Returned by resumable tools (``AgentTool`` / ``ProcessorTool``)
+        so that callers like :class:`BackgroundTaskManager` can compose
+        the right lifecycle-store key for a spawned invocation. Plain
+        tools that don't wrap a processor return ``None``.
+        """
+        return None
+
     async def resume_stream(
         self,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         """Resume from a session checkpoint. Override in resumable tools."""
-        del session_subpath
         raise NotImplementedError(f"{type(self).__name__} does not support resume")
         yield  # type: ignore[unreachable]  # makes this an async generator
 

@@ -26,22 +26,11 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         start_proc: Processor[InT, Any, CtxT],
         end_proc: Processor[Any, OutT, CtxT],
         recipients: Sequence[ProcName] | None = None,
+        session_path: list[str] | None = None,
+        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(
-            name=name,
-            recipients=(recipients or end_proc.recipients),
-            max_retries=0,
-            tracing_enabled=tracing_enabled,
-            tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_metadata=session_metadata,
-        )
-
-        self._in_type = start_proc.in_type
-        self._out_type = end_proc.out_type
-
         if len(subprocs) < 2:
             raise WorkflowConstructionError("At least two subprocessors are required")
         if start_proc not in subprocs:
@@ -53,20 +42,32 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
                 "End subprocessor must be in the subprocessors list"
             )
 
+        # Need to set _subprocs before __init__ because it
+        # executes _propagate_to_children which calls subproc.on_adopted
         self._subprocs = subprocs
         self._start_proc = start_proc
         self._end_proc = end_proc
 
+        super().__init__(
+            name=name,
+            recipients=(recipients or end_proc.recipients),
+            max_retries=0,
+            session_path=session_path,
+            session_metadata=session_metadata,
+            tracing_enabled=tracing_enabled,
+            tracing_exclude_input_fields=tracing_exclude_input_fields,
+        )
+
+        self._in_type = start_proc.in_type
+        self._out_type = end_proc.out_type
+
+        # TODO: Is it still needed?
         for subproc in subprocs:
             subproc.recipients = None
 
-        # Adopt subprocs — propagate our current session path + resumability.
-        # Re-triggered if we're later adopted by a container (Runner, etc.).
-        self._propagate_to_children()
-
     def _propagate_to_children(self) -> None:
         for subproc in self._subprocs:
-            subproc._on_adopted(self._session_path)  # noqa: SLF001
+            subproc.on_adopted(self._session_path)
 
     def validate_inputs(
         self,
@@ -79,6 +80,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
         if not has_input and Processor.is_resumable(ctx):
             return None
+
         return super().validate_inputs(
             exec_id=exec_id,
             chat_inputs=chat_inputs,
@@ -107,6 +109,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         checkpoint = WorkflowCheckpoint(
             session_key=ctx.session_key,
             processor_name=self.name,
+            session_metadata=self._session_metadata,
             completed_step=completed_step,
             packet=packet,
         )

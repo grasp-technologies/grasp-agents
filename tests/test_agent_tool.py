@@ -21,7 +21,11 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.agent.agent_tool import AgentPromptBuilder, AgentTool, AgentToolInput
+from grasp_agents.agent.agent_tool import (
+    AgentTool,
+    AgentToolInput,
+    AgentToolPromptBuilder,
+)
 from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
@@ -108,7 +112,7 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -123,14 +127,14 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
             **extra_llm_settings,
         )
@@ -420,7 +424,7 @@ class TestAgentToolWithParentAgent:
         assert len(notifications) >= 1
 
 
-class TestAgentPromptBuilders:
+class TestAgentToolPromptBuilders:
     @pytest.mark.anyio
     async def test_sys_prompt_builder_overrides_static(self) -> None:
         """sys_prompt_builder replaces static sys_prompt."""

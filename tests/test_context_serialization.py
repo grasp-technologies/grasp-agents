@@ -76,11 +76,6 @@ def test_rehydrate_omitted_leaves_current() -> None:
     assert rehydrate_context(ContextKind.OMITTED, None, sentinel) is sentinel
 
 
-def test_rehydrate_custom_leaves_current() -> None:
-    sentinel = object()
-    assert rehydrate_context(ContextKind.CUSTOM, {"foo": 1}, sentinel) is sentinel
-
-
 def test_rehydrate_pydantic_without_seed_leaves_current() -> None:
     """
     If the caller didn't seed ``ctx.state`` with an instance of the

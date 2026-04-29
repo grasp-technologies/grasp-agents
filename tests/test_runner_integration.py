@@ -449,7 +449,7 @@ class TestAgentCrashResume:
             await runner1.run(chat_inputs="go")
 
         # Verify: agent checkpoint has tool call conversation
-        agent_key = "agent/agent-crash-1/calculator"
+        agent_key = "agent-crash-1/agent/calculator"
         agent_data = await store.load(agent_key)
         assert agent_data is not None, "Agent checkpoint should exist"
         agent_cp = AgentCheckpoint.model_validate_json(agent_data)
@@ -463,7 +463,7 @@ class TestAgentCrashResume:
         assert has_tool_result, "Checkpoint should contain a tool result"
 
         # Verify: Runner checkpoint shows crasher pending
-        runner_data = await store.load("runner/agent-crash-1")
+        runner_data = await store.load("agent-crash-1/runner")
         assert runner_data is not None
         runner_cp = RunnerCheckpoint.model_validate_json(runner_data)
         assert len(runner_cp.pending_events) == 1
@@ -555,7 +555,7 @@ class TestAgentCrashResume:
         assert add_tool1.call_count == 1
 
         # Verify: agent checkpoint has the 1st tool call + result
-        agent_key = "agent/mid-agent-1/calculator"
+        agent_key = "mid-agent-1/agent/calculator"
         agent_data = await store.load(agent_key)
         assert agent_data is not None
         agent_cp = AgentCheckpoint.model_validate_json(agent_data)
@@ -569,7 +569,7 @@ class TestAgentCrashResume:
         assert len(tool_results) >= 1
 
         # Runner checkpoint: calculator's input event is still pending
-        runner_data = await store.load("runner/mid-agent-1")
+        runner_data = await store.load("mid-agent-1/runner")
         assert runner_data is not None
         runner_cp = RunnerCheckpoint.model_validate_json(runner_data)
         assert len(runner_cp.pending_events) == 1
@@ -665,7 +665,7 @@ class TestWorkflowCrashResume:
             await runner1.run(chat_inputs="The ocean at sunset")
 
         # Verify: workflow checkpoint saved at step 0 (drafter completed)
-        wf_key = "workflow/wf-crash-1/draft_refine"
+        wf_key = "wf-crash-1/workflow/draft_refine"
         wf_data = await store.load(wf_key)
         assert wf_data is not None
         wf_cp = WorkflowCheckpoint.model_validate_json(wf_data)

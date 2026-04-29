@@ -24,9 +24,10 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         exit_proc: Processor[Any, OutT, CtxT],
         recipients: list[ProcName] | None = None,
         max_iterations: int = 10,
+        session_path: list[str] | None = None,
+        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -34,9 +35,10 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             start_proc=subprocs[0],
             end_proc=exit_proc,
             recipients=recipients,
+            session_path=session_path,
+            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_metadata=session_metadata,
         )
 
         for prev_proc, proc in pairwise(subprocs):
@@ -46,12 +48,14 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     f"{prev_proc.name} does not match input type {proc.in_type} of "
                     f"subprocessor {proc.name}"
                 )
+
         if subprocs[-1].out_type != subprocs[0].in_type:
             raise WorkflowConstructionError(
                 "Looped workflow's last subprocessor output type "
                 f"{subprocs[-1].out_type} does not match first subprocessor input "
                 f"type {subprocs[0].in_type}"
             )
+
         self._max_iterations = max_iterations
 
     @property
@@ -88,7 +92,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        step: int | None = None,
+        step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         n = len(self.subprocs)

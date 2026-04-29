@@ -20,9 +20,10 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, CtxT]],
         recipients: list[ProcName] | None = None,
+        session_path: list[str] | None = None,
+        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -30,9 +31,10 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             end_proc=subprocs[-1],
             name=name,
             recipients=recipients,
+            session_path=session_path,
+            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_metadata=session_metadata,
         )
 
         for prev_proc, proc in pairwise(subprocs):
@@ -50,7 +52,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        step: int | None = None,
+        step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         start_step = 0
@@ -64,9 +66,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             if start_step >= len(self.subprocs):
                 out_packet = cast("Packet[OutT]", packet)
                 for p in out_packet.payloads:
-                    yield ProcPayloadOutEvent(
-                        data=p, source=self.name, exec_id=exec_id
-                    )
+                    yield ProcPayloadOutEvent(data=p, source=self.name, exec_id=exec_id)
                 return
 
         for idx, subproc in enumerate(self.subprocs):

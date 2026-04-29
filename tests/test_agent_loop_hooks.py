@@ -95,7 +95,7 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -109,14 +109,14 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
             **extra_llm_settings,
         )
@@ -161,7 +161,7 @@ def _make_executor(
         memory=memory,
         tools=tools,
         max_turns=max_turns,
-        stream_llm_responses=False,
+        stream_llm=False,
     )
     return executor, memory, llm
 
@@ -202,19 +202,19 @@ class TestBeforeAfterLlmHooks:
         before_calls: list[dict[str, Any]] = []
         after_calls: list[dict[str, Any]] = []
 
-        async def before_hook(*, ctx, exec_id, num_turns, extra_llm_settings):
+        async def before_hook(*, ctx, exec_id, turn, extra_llm_settings):
             before_calls.append(
                 {
-                    "turn": num_turns,
+                    "turn": turn,
                     "exec_id": exec_id,
                     "settings_keys": list(extra_llm_settings.keys()),
                 }
             )
 
-        async def after_hook(response, *, ctx, exec_id, num_turns):
+        async def after_hook(response, *, ctx, exec_id, turn):
             after_calls.append(
                 {
-                    "turn": num_turns,
+                    "turn": turn,
                     "exec_id": exec_id,
                     "has_tool_calls": bool(response.tool_call_items),
                     "text": response.output_text,
@@ -265,7 +265,7 @@ class TestBeforeAfterLlmHooks:
 
         executor.query_llm = capturing_gen  # type: ignore[assignment]
 
-        async def inject_tool_choice(*, ctx, exec_id, num_turns, extra_llm_settings):
+        async def inject_tool_choice(*, ctx, exec_id, turn, extra_llm_settings):
             extra_llm_settings["tool_choice"] = "required"
 
         executor.before_llm_hook = inject_tool_choice  # type: ignore[assignment]
@@ -431,11 +431,11 @@ class TestHookOrdering:
 
         trace: list[str] = []
 
-        async def bg(*, ctx, exec_id, num_turns, extra_llm_settings):
-            trace.append(f"before_gen:{num_turns}")
+        async def bg(*, ctx, exec_id, turn, extra_llm_settings):
+            trace.append(f"before_gen:{turn}")
 
-        async def ag(response, *, ctx, exec_id, num_turns):
-            trace.append(f"after_gen:{num_turns}")
+        async def ag(response, *, ctx, exec_id, turn):
+            trace.append(f"after_gen:{turn}")
 
         async def btc(*, tool_calls, ctx, exec_id):
             trace.append("before_tool")
@@ -477,8 +477,8 @@ class TestHookOrdering:
 
         gen_turns: list[int] = []
 
-        async def bg(*, ctx, exec_id, num_turns, extra_llm_settings):
-            gen_turns.append(num_turns)
+        async def bg(*, ctx, exec_id, turn, extra_llm_settings):
+            gen_turns.append(turn)
 
         executor.before_llm_hook = bg  # type: ignore[assignment]
 

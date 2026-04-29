@@ -10,7 +10,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 3
+CURRENT_SCHEMA_VERSION: int = 1
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -20,16 +20,7 @@ changes in a way that older code could not load. Add an entry to
 """
 
 SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
-    1: "Initial versioned schema for processor checkpoints and task records.",
-    2: (
-        "Renamed session identifier fields to ``session_key`` "
-        "(``parent_session_key`` / ``child_session_key`` on TaskRecord)."
-    ),
-    3: (
-        "AgentCheckpoint carries optional context-serialization metadata "
-        "(``context_kind`` / ``context_data``), provider ``prompt_cache_key``, "
-        "and ``session_mode`` for resume-time drift warnings."
-    ),
+    1: "Initial versioned schema for processor checkpoints and task records."
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -39,15 +30,7 @@ the operator what they are missing.
 
 
 class CheckpointKind(StrEnum):
-    """
-    Key prefix identifying the kind of processor that owns a checkpoint.
-
-    Composed into the checkpoint-store key by :meth:`Processor
-    ._checkpoint_store_key` as ``"{kind}/{session_key}[/{path}]"``.
-    Subclasses of :class:`Processor` that support checkpointing set
-    ``_checkpoint_kind`` to one of these values; the base class leaves
-    it unset (``None``), which disables persistence.
-    """
+    """Key segment identifying the kind of processor owning a checkpoint."""
 
     AGENT = "agent"
     WORKFLOW = "workflow"
@@ -56,13 +39,7 @@ class CheckpointKind(StrEnum):
 
 
 class CheckpointSchemaError(Exception):
-    """
-    Raised when a persisted checkpoint or task record was written by a newer
-    schema version than this process understands. Inherits directly from
-    ``Exception`` (not ``ValueError``) so it propagates through Pydantic
-    model validators as-is rather than being wrapped in ``ValidationError``,
-    and so callers can distinguish it from generic corruption.
-    """
+    """Raised when a persisted record uses a newer schema version than known."""
 
 
 class AgentCheckpointLocation(Enum):
@@ -74,15 +51,12 @@ class AgentCheckpointLocation(Enum):
     AFTER_MAX_TURNS = "after_max_turns"
 
 
-class ProcessorCheckpoint(BaseModel):
-    """Base checkpoint for any resumable processor."""
+class PersistedRecord(BaseModel):
+    """Common base for any record persisted in the checkpoint store."""
 
     schema_version: int = Field(default=CURRENT_SCHEMA_VERSION)
     session_key: str
-    processor_name: str
-    checkpoint_number: int = 0
     saved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    session_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_schema_version(self) -> Self:
@@ -91,11 +65,19 @@ class ProcessorCheckpoint(BaseModel):
                 f"{v}: {s}" for v, s in sorted(SCHEMA_VERSION_SUMMARIES.items())
             )
             raise CheckpointSchemaError(
-                f"Checkpoint schema version {self.schema_version} is newer than "
-                f"this process understands (current={CURRENT_SCHEMA_VERSION}). "
-                f"Known versions: {known}."
+                f"Persisted record schema version {self.schema_version} is "
+                f"newer than this process understands "
+                f"(current={CURRENT_SCHEMA_VERSION}). Known versions:\n{known}."
             )
         return self
+
+
+class ProcessorCheckpoint(PersistedRecord):
+    """Snapshot of a resumable processor's state at a turn boundary."""
+
+    processor_name: str
+    checkpoint_number: int = 0
+    session_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentCheckpoint(ProcessorCheckpoint):
@@ -104,7 +86,7 @@ class AgentCheckpoint(ProcessorCheckpoint):
     messages: list[InputItem]
     usage: ResponseUsage | None = None
     step: int | None = None  # caller's delivery step (None = chat / untracked)
-    turn: int = 0  # current LLM cycle within the step
+    turn: int = 0  # current agent turn within the step (resets to 0 on each new step)
     output: str | None = None  # cached final answer (None = step incomplete)
     location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
 
@@ -121,13 +103,6 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # avoid invalidating the model-side cache. Providers that ignore
     # this field leave it ``None``.
     prompt_cache_key: str | None = None
-
-    # Free-form label describing how the session is being run — e.g.
-    # ``"interactive"`` vs ``"batch"`` vs ``"sdk"``. On resume the load
-    # path warns when the current mode differs from the saved mode, so
-    # callers notice when the same session is hit from a new entry
-    # point. Leave ``None`` to opt out of the drift check.
-    session_mode: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):
@@ -166,3 +141,6 @@ class RunnerCheckpoint(ProcessorCheckpoint):
 
     pending_events: list[ProcPacketOutEvent]
     active_steps: dict[str, int] = Field(default_factory=dict)
+
+
+# TODO: Put TaskREcord here too?

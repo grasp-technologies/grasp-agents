@@ -2,7 +2,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, ClassVar, Generic, cast, final
+from typing import Any, ClassVar, Final, Generic, cast, final
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -66,6 +66,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         1: "_out_type",
     }
 
+    reset_memory_on_run: Final[bool]
+
     def __init__(
         self,
         name: ProcName,
@@ -81,7 +83,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         sys_prompt: LLMPrompt | None = None,
         sys_prompt_path: str | Path | None = None,
         # LLM response validation
-        response_schema: Any | None = None,
+        llm_output_schema: Any | None = None,
         # Agent loop settings
         max_turns: int = 100,
         force_react_mode: bool = False,
@@ -96,22 +98,22 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Streaming
         stream_llm: bool = False,
         stream_tools: bool = False,
+        # Session persistence
+        session_path: list[str] | None = None,
+        session_metadata: dict[str, Any] | None = None,
         # Tracing
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
-        # Session persistence (metadata attached to saved checkpoints;
-        # resumability itself is inferred at run time from
-        # ``ctx.checkpoint_store``)
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             name=name,
             memory=memory,
             recipients=recipients,
             max_retries=max_retries,
+            session_path=session_path,
+            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            session_metadata=session_metadata,
         )
 
         if tracing_exclude_input_fields:
@@ -122,16 +124,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         # Don't narrow the base '_memory' type (Memory in Processor)
         self._memory = memory or LLMAgentMemory()
-        self._reset_memory_on_run = reset_memory_on_run
+        self.reset_memory_on_run = reset_memory_on_run
 
         # Wire parent context for AgentTool instances (after memory init)
-        from .agent_tool import AgentTool  # local: avoid circular
+        from .agent_tool import AgentTool  # noqa: PLC0415
 
         for tool in tools or []:
             if isinstance(tool, AgentTool):
                 tool.set_parent_memory(self._memory)
-                if tool.inherit_tools:
-                    tool.set_parent_tools(tools or [])
+                tool.set_parent_tools(tools or [])
 
         # Prompt builder
 
@@ -139,7 +140,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         in_prompt = get_prompt(prompt_text=in_prompt, prompt_path=in_prompt_path)
 
         self._prompt_builder = PromptBuilder[self.in_type, CtxT](
-            agent_name=self._name, sys_prompt=sys_prompt, in_prompt=in_prompt
+            agent_name=self.name, sys_prompt=sys_prompt, in_prompt=in_prompt
         )
 
         # Agent loop
@@ -154,34 +155,35 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 "final_answer_as_tool_call is True."
             )
 
-        self._used_default_llm_response_schema = False
+        self._used_default_llm_output_schema = False
         if (
-            response_schema is None
+            llm_output_schema is None
             and tools is None
             and not is_method_overridden(
                 "parse_output_impl", self, LLMAgent[Any, Any, Any]
             )
         ):
-            response_schema = self.out_type
-            self._used_default_llm_response_schema = True
+            llm_output_schema = self.out_type
+            self._used_default_llm_output_schema = True
 
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             agent_name=self.name,
             llm=llm,
             tools=tools,
             memory=self.memory,
-            response_schema=response_schema,
+            llm_output_schema=llm_output_schema,
             max_turns=max_turns,
             force_react_mode=force_react_mode,
             final_answer_type=final_answer_type,
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm=stream_llm,
             stream_tools=stream_tools,
+            session_path=session_path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
         # Session persistence
-        self._step: int = 0  # completed invocation counter (observability)
+        self.step: int = 0  # completed invocation counter (observability)
         self._delivery_step: int | None = None  # caller's step for checkpoint
 
         # Provider-supplied prompt cache key (OpenAI Responses / Anthropic
@@ -189,7 +191,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # round-tripped through the checkpoint so resume reuses the same
         # key and the model-side cache doesn't get invalidated. ``None``
         # when the provider doesn't support caching (or hasn't set one).
-        self._prompt_cache_key: str | None = None
+        self.prompt_cache_key: str | None = None
 
         # Wire the loop's checkpoint callback unconditionally. The
         # callback itself short-circuits when no store is attached to
@@ -200,6 +202,12 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         self._register_overridden_implementations()
 
+        # Reset session path after the loop is initialized,
+        # so it is propagated to the loop and its tools
+        # via _propagate_to_children.
+
+        self.set_session_path(session_path)
+
     @property
     def llm(self) -> LLM:
         return self._loop.llm
@@ -209,16 +217,12 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return self._loop.tools
 
     @property
-    def max_turns(self) -> int:
-        return self._loop.max_turns
-
-    @property
-    def step(self) -> int:
-        return self._step
-
-    @property
     def turn(self) -> int:
         return self._loop.turn
+
+    @property
+    def max_turns(self) -> int:
+        return self._loop.max_turns
 
     @property
     def sys_prompt(self) -> LLMPrompt | None:
@@ -233,19 +237,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return cast("LLMAgentMemory", self._memory)
 
     @property
-    def prompt_cache_key(self) -> str | None:
-        """Last-seen provider cache key (round-tripped through checkpoint)."""
-        return self._prompt_cache_key
-
-    @prompt_cache_key.setter
-    def prompt_cache_key(self, value: str | None) -> None:
-        self._prompt_cache_key = value
-
-    @property
-    def reset_memory_on_run(self) -> bool:
-        return self._reset_memory_on_run
-
-    @property
     def _has_build_memory_impl(self) -> bool:
         return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
 
@@ -254,6 +245,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return is_method_overridden("build_state_impl", self, LLMAgent[Any, Any, Any])
 
     # --- Session persistence ---
+
+    def _propagate_to_children(self) -> None:
+        # Guarded: super().__init__ calls set_session_path before _loop is set.
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return
+        loop.session_path = self.session_path
+        loop.bg_tasks._session_path = self.session_path
 
     async def load_checkpoint(
         self,
@@ -272,22 +271,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.memory.messages = resume_state.messages
         self._loop.turn = checkpoint.turn
-        self._prompt_cache_key = checkpoint.prompt_cache_key
-
-        # Warn if the session is being resumed in a different mode than
-        # it was saved — e.g. interactive session continued via SDK, or
-        # vice versa — so callers notice the drift early.
-        if (
-            checkpoint.session_mode is not None
-            and ctx.session_mode is not None
-            and checkpoint.session_mode != ctx.session_mode
-        ):
-            logger.warning(
-                "Session %s resumed with mode %r but was saved under %r",
-                self._checkpoint_store_key(ctx),
-                ctx.session_mode,
-                checkpoint.session_mode,
-            )
+        self.prompt_cache_key = checkpoint.prompt_cache_key
 
         # Auto-rehydrate ctx.state for the machine-serializable kinds
         # (mapping / pydantic / dataclass). OMITTED / CUSTOM leave state
@@ -304,7 +288,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             "stripped=%d, step=%d, turn=%d)",
             self._checkpoint_store_key(ctx),
             self.name,
-            self._checkpoint_number,
+            self.checkpoint_number,
             len(resume_state.messages),
             resume_state.interruption.value,
             resume_state.removed_count,
@@ -345,8 +329,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             location=location,
             context_kind=context_kind,
             context_data=context_data,
-            prompt_cache_key=self._prompt_cache_key,
-            session_mode=ctx.session_mode,
+            prompt_cache_key=self.prompt_cache_key,
         )
         await self._serialize_checkpoint(ctx, checkpoint)
 
@@ -363,7 +346,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         formatted_sys_prompt = self._prompt_builder.build_system_prompt(
             ctx=ctx, exec_id=exec_id
         )
-        fresh_init = self._reset_memory_on_run or self.memory.is_empty
+        fresh_init = self.reset_memory_on_run or self.memory.is_empty
 
         if fresh_init and not self._has_build_memory_impl:
             self.memory.reset(formatted_sys_prompt)
@@ -500,7 +483,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         output = self.parse_output(self._loop.final_answer, in_args=inp, **call_kwargs)
         yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 
-        self._step += 1
+        self.step += 1
 
     def _print_messages(
         self,
@@ -569,7 +552,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-        num_turns: int,
+        turn: int,
         extra_llm_settings: dict[str, Any],
     ) -> None:
         raise NotImplementedError
@@ -580,7 +563,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
-        num_turns: int,
+        turn: int,
     ) -> None:
         raise NotImplementedError
 
@@ -611,8 +594,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def add_output_parser(
         self, func: OutputParser[InT, OutT, CtxT]
     ) -> OutputParser[InT, OutT, CtxT]:
-        if self._used_default_llm_response_schema:
-            self._loop.response_schema = None
+        if self._used_default_llm_output_schema:
+            self._loop.llm_output_schema = None
         self.parse_output_impl = func
         return func
 

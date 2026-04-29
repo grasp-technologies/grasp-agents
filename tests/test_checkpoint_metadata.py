@@ -60,8 +60,8 @@ def _make_agent(
 
 
 class TestSchemaVersion:
-    def test_current_schema_version_is_three(self) -> None:
-        assert CURRENT_SCHEMA_VERSION == 3
+    def test_current_schema_version_is_one(self) -> None:
+        assert CURRENT_SCHEMA_VERSION == 1
 
     def test_new_fields_default_to_none(self) -> None:
         snap = AgentCheckpoint(session_key="s", processor_name="a", messages=[])
@@ -85,7 +85,7 @@ class TestContextRoundTrip:
 
         await agent.run("hello", ctx=ctx)
 
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.context_kind == ContextKind.PYDANTIC
@@ -124,7 +124,7 @@ class TestContextRoundTrip:
         await agent.run("hello", ctx=ctx)
 
         snap = AgentCheckpoint.model_validate_json(
-            await store.load("agent/s2") or b"{}"
+            await store.load("s2/agent/test_agent") or b"{}"
         )
         assert snap.context_kind == ContextKind.OMITTED
         assert snap.context_data is None
@@ -161,7 +161,7 @@ class TestPromptCacheKey:
         agent, ctx = _make_agent([_text_response("hi")], session_key="s", store=store)
         await agent.run("hello", ctx=ctx)
 
-        snap = AgentCheckpoint.model_validate_json(await store.load("agent/s") or b"{}")
+        snap = AgentCheckpoint.model_validate_json(await store.load("s/agent/test_agent") or b"{}")
         assert snap.prompt_cache_key is None
 
 
@@ -191,7 +191,7 @@ class TestPrePersistInput:
                 **extra_llm_settings: Any,
             ) -> Any:
                 del input, tools, output_schema, tool_choice, extra_llm_settings
-                data = await store.load("agent/s-pp")
+                data = await store.load("s-pp/agent/test_agent")
                 snap = (
                     AgentCheckpoint.model_validate_json(data)
                     if data is not None

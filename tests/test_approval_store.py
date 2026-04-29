@@ -103,7 +103,7 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
@@ -117,14 +117,14 @@ class MockLLM(LLM):
         input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
-        response_schema: Any | None = None,
+        output_schema: Any | None = None,
         tool_choice: Any | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         response = await self._generate_response_once(
             input,
             tools=tools,
-            response_schema=response_schema,
+            output_schema=output_schema,
             tool_choice=tool_choice,
             **extra_llm_settings,
         )
@@ -184,7 +184,7 @@ def _make_executor(
         memory=memory,
         tools=tools,
         max_turns=max_turns,
-        stream_llm_responses=False,
+        stream_llm=False,
     )
     executor.final_answer_extractor = (
         lambda *, ctx, exec_id, response=None, **kw: response.output_text
@@ -280,9 +280,7 @@ class TestStoreBasics:
                 approval_key="echo-key",
             )
         )
-        await store.resolve(
-            "s1", "c1", ApprovalAllow(scope=ApprovalScope.SESSION)
-        )
+        await store.resolve("s1", "c1", ApprovalAllow(scope=ApprovalScope.SESSION))
 
         # Same approval_key in same session → pre-approved
         assert await store.is_pre_approved("echo-key", session_key="s1")
@@ -301,9 +299,7 @@ class TestStoreBasics:
                 approval_key="echo-key",
             )
         )
-        await store.resolve(
-            "s1", "c1", ApprovalAllow(scope=ApprovalScope.ALWAYS)
-        )
+        await store.resolve("s1", "c1", ApprovalAllow(scope=ApprovalScope.ALWAYS))
 
         # Any session → pre-approved
         assert await store.is_pre_approved("echo-key", session_key="s1")
@@ -321,9 +317,7 @@ class TestStoreBasics:
                 approval_key="echo-key",
             )
         )
-        await store.resolve(
-            "s1", "c1", ApprovalAllow(scope=ApprovalScope.ONCE)
-        )
+        await store.resolve("s1", "c1", ApprovalAllow(scope=ApprovalScope.ONCE))
 
         # Nothing remembered
         assert not await store.is_pre_approved("echo-key", session_key="s1")
@@ -383,9 +377,7 @@ class TestPersistence:
                 approval_key="echo-key",
             )
         )
-        await store.resolve(
-            "s1", "c1", ApprovalAllow(scope=ApprovalScope.ALWAYS)
-        )
+        await store.resolve("s1", "c1", ApprovalAllow(scope=ApprovalScope.ALWAYS))
 
         assert path.is_file()
         data = json.loads(path.read_text())
@@ -394,14 +386,10 @@ class TestPersistence:
     @pytest.mark.asyncio
     async def test_persisted_allowlist_loads_on_init(self, tmp_path: Path):
         path = tmp_path / "approvals.json"
-        path.write_text(
-            json.dumps({"always_approved": ["preloaded-key"]})
-        )
+        path.write_text(json.dumps({"always_approved": ["preloaded-key"]}))
 
         store = InMemoryApprovalStore(persist_path=path)
-        assert await store.is_pre_approved(
-            "preloaded-key", session_key="any"
-        )
+        assert await store.is_pre_approved("preloaded-key", session_key="any")
 
     @pytest.mark.asyncio
     async def test_malformed_persist_file_is_ignored(self, tmp_path: Path):
@@ -457,9 +445,7 @@ class TestApprovalGate:
                 await asyncio.sleep(0.005)
             await store.resolve("s1", "tc1", ApprovalAllow())
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
         assert _invocations["echo"] == ["hi"]
 
@@ -497,19 +483,13 @@ class TestApprovalGate:
                 if await store.list_pending("s1"):
                     break
                 await asyncio.sleep(0.005)
-            await store.resolve(
-                "s1", "tc1", ApprovalDeny(reason="policy block")
-            )
+            await store.resolve("s1", "tc1", ApprovalDeny(reason="policy block"))
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
 
         assert _invocations["echo"] == []
-        outs = [
-            m for m in memory.messages if isinstance(m, FunctionToolOutputItem)
-        ]
+        outs = [m for m in memory.messages if isinstance(m, FunctionToolOutputItem)]
         assert len(outs) == 1
         assert "policy block" in outs[0].text
 
@@ -527,9 +507,7 @@ class TestApprovalGate:
 
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain(executor, ctx)
 
         assert _invocations["echo"] == ["ok"]
@@ -557,9 +535,7 @@ class TestApprovalGate:
 
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         resolver = asyncio.create_task(
             _auto_resolve(store, "s1", decide=decide, stop_event=stop)
         )
@@ -602,9 +578,7 @@ class TestApprovalGate:
             try:
                 await _drain(
                     executor,
-                    RunContext[None](
-                        approval_store=store, session_key=session
-                    ),
+                    RunContext[None](approval_store=store, session_key=session),
                 )
             finally:
                 # Leave the resolver running across runs — we only stop at the end.
@@ -633,9 +607,7 @@ class TestApprovalGate:
             ),
             _text_response("done"),
         ]
-        executor, _, _ = _make_executor(
-            responses, tools=[EchoTool(), DeleteTool()]
-        )
+        executor, _, _ = _make_executor(responses, tools=[EchoTool(), DeleteTool()])
         store = InMemoryApprovalStore()
 
         async def resolver() -> None:
@@ -651,9 +623,7 @@ class TestApprovalGate:
             tool_names={"delete_file"}
         )
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
 
         assert _invocations["echo"] == ["safe"]
@@ -673,15 +643,11 @@ class TestApprovalGate:
             timeout=0.05
         )
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain(executor, ctx)
 
         assert _invocations["echo"] == []
-        outs = [
-            m for m in memory.messages if isinstance(m, FunctionToolOutputItem)
-        ]
+        outs = [m for m in memory.messages if isinstance(m, FunctionToolOutputItem)]
         assert "timed out" in outs[0].text
 
     @pytest.mark.asyncio
@@ -710,9 +676,7 @@ class TestApprovalGate:
             approval_key_fn=lambda c: f"{c.name}:{c.arguments}"
         )
 
-        ctx = RunContext[None](
-            approval_store=store, session_key="s1"
-        )
+        ctx = RunContext[None](approval_store=store, session_key="s1")
         resolver = asyncio.create_task(
             _auto_resolve(store, "s1", decide=decide, stop_event=stop)
         )

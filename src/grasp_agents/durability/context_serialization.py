@@ -11,8 +11,8 @@ have the framework serialize and restore it automatically.
 We record *how* the state was serialized alongside the payload so the
 restore path knows what to do with it:
 
-- ``OMITTED`` — state is ``None`` (or intentionally not persisted); load
-  leaves ``ctx.state`` untouched. ``state_builder`` does the work.
+- ``OMITTED`` — state is ``None`` or an unrecognized type; load leaves
+  ``ctx.state`` untouched. ``state_builder`` does the work.
 - ``MAPPING`` — state is a ``dict`` (or dict-compatible). Round-trips as
   a JSON object; restored as ``dict``.
 - ``PYDANTIC`` — state is a Pydantic ``BaseModel``. Round-trips via
@@ -22,8 +22,6 @@ restore path knows what to do with it:
   loading so we know the target type.
 - ``DATACLASS`` — state is a dataclass instance. Same idea: caller seeds
   the type; we rehydrate via ``type(current_state)(**data)``.
-- ``CUSTOM`` — the framework can't rehydrate without a user codec; the
-  payload is kept but ``ctx.state`` is left to ``state_builder``.
 
 The kind is detected at save time by inspection; no configuration.
 """
@@ -43,7 +41,6 @@ class ContextKind(StrEnum):
     MAPPING = "mapping"
     PYDANTIC = "pydantic"
     DATACLASS = "dataclass"
-    CUSTOM = "custom"
 
 
 def serialize_context(state: Any) -> tuple[ContextKind, Any]:
@@ -78,14 +75,14 @@ def rehydrate_context(
 ) -> Any:
     """
     Invert :func:`serialize_context`. Returns the rehydrated state, or
-    ``current_state`` unchanged when the kind is not machine-rehydratable
-    (``OMITTED`` / ``CUSTOM``) or when we can't infer the target type.
+    ``current_state`` unchanged when ``kind`` is ``OMITTED`` / ``None``
+    or when we can't infer the target type.
 
     ``current_state`` is consulted to learn the pydantic / dataclass
     type — callers should seed ``ctx.state`` with a fresh instance of
     the expected type before loading for automatic rehydration to work.
     """
-    if kind is None or kind in {ContextKind.OMITTED, ContextKind.CUSTOM}:
+    if kind is None or kind == ContextKind.OMITTED:
         return current_state
 
     if kind == ContextKind.MAPPING:

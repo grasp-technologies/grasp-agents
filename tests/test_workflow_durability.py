@@ -191,7 +191,7 @@ class TestSequentialWorkflowCheckpoint:
         result = await run_workflow(wf, ctx, in_args="start")
         assert result == ["start->A->B->C"]
 
-        raw = await store.load("workflow/seq-1")
+        raw = await store.load("seq-1/workflow/wf")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
         assert cp.completed_step == 2  # 0-indexed, all 3 steps done
@@ -215,7 +215,7 @@ class TestSequentialWorkflowCheckpoint:
             await run_workflow(wf1, ctx1, in_args="start")
 
         # Checkpoint: step 0 completed
-        raw = await store.load("workflow/seq-2")
+        raw = await store.load("seq-2/workflow/wf")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
         assert cp.completed_step == 0
@@ -333,7 +333,7 @@ class TestLoopedWorkflowCheckpoint:
         result = await run_workflow(wf, ctx, in_args="s")
         assert result == ["s->A->B->A->B"]
 
-        raw = await store.load("workflow/loop-1")
+        raw = await store.load("loop-1/workflow/loop")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
         assert cp.completed_step == 3  # 2 iterations * 2 subprocs - 1
@@ -357,7 +357,7 @@ class TestLoopedWorkflowCheckpoint:
             await run_workflow(wf1, ctx1, in_args="s")
 
         # Checkpoint: global step 0 completed (iteration 0, subproc A)
-        raw = await store.load("workflow/loop-2")
+        raw = await store.load("loop-2/workflow/loop")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
         assert cp.completed_step == 0
@@ -411,7 +411,7 @@ class TestParallelProcessorCheckpoint:
 
         await run_parallel(par, ctx, in_args=["a", "b"])
 
-        raw = await store.load("parallel/par-1")
+        raw = await store.load("par-1/parallel/worker_par")
         assert raw is not None
         cp = ParallelCheckpoint.model_validate_json(raw)
         assert len(cp.completed) == 2
@@ -438,7 +438,7 @@ class TestParallelProcessorCheckpoint:
         await run_parallel(par1, ctx1, in_args=["a", "FAIL"])
 
         # Checkpoint: only index 0 completed
-        raw = await store.load("parallel/par-2")
+        raw = await store.load("par-2/parallel/worker_par")
         assert raw is not None
         cp = ParallelCheckpoint.model_validate_json(raw)
         assert len(cp.completed) == 1
@@ -491,7 +491,7 @@ class TestParallelProcessorCheckpoint:
 
         await run_parallel(par, ctx, in_args=["ok", "FAIL", "also_ok"])
 
-        raw = await store.load("parallel/par-rt")
+        raw = await store.load("par-rt/parallel/worker_par")
         assert raw is not None
         cp = ParallelCheckpoint.model_validate_json(raw)
         pkt = Packet[str].model_validate(cp.input_packet)
@@ -557,7 +557,7 @@ class TestCrashAfterCompletion:
             await run_workflow(wf1, ctx1, in_args="start")
 
         # Workflow checkpoint: step 0 done
-        raw = await store.load("workflow/crash1")
+        raw = await store.load("crash1/workflow/wf")
         assert raw is not None
         cp = WorkflowCheckpoint.model_validate_json(raw)
         assert cp.completed_step == 0
@@ -618,7 +618,7 @@ class TestCrashAfterCompletion:
             await run_workflow(wf1, ctx1, in_args="start")
 
         # Parallel checkpoint: both items done
-        par_key = f"parallel/crash2/{par1.name}"
+        par_key = f"crash2/parallel/wf/{par1.name}"
         par_raw = await store.load(par_key)
         assert par_raw is not None
         par_cp = ParallelCheckpoint.model_validate_json(par_raw)
@@ -693,7 +693,7 @@ class TestStoreFailurePropagation:
     async def test_corrupt_checkpoint_treated_as_fresh(self) -> None:
         """A corrupt checkpoint is logged and treated as if no checkpoint exists."""
         store = InMemoryCheckpointStore()
-        await store.save("workflow/corrupt-wf", b"not valid json{{{")
+        await store.save("corrupt-wf/workflow/wf", b"not valid json{{{")
 
         a = AppendProcessor("A")
         b = AppendProcessor("B")

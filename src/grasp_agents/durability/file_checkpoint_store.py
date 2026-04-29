@@ -1,24 +1,15 @@
 """
 Filesystem-backed :class:`CheckpointStore`.
 
-Each key maps to one JSON file under ``root``. Keys are ``/``-separated;
-each segment becomes a directory component, with ``.json`` appended to
-the final segment. For example:
+Each key maps to one JSON file under ``root``: segments become directory
+components and ``.json`` is appended to the leaf. A checkpoint at
+``<x>`` and metadata at ``<x>/lifecycle`` coexist on disk because the
+parent's file (``<x>.json``) and the directory (``<x>/``) carrying its
+children share a name without colliding.
 
-- ``"agent/session-abc"``           → ``<root>/agent/session-abc.json``
-- ``"workflow/session/subproc"``    → ``<root>/workflow/session/subproc.json``
-- ``"task/session-abc/task-42"``    → ``<root>/task/session-abc/task-42.json``
-
-Writes are atomic: the payload lands in a uniquely-named tempfile in the
-same directory, then :func:`os.replace` swaps it into place. Concurrent
-writes to the same key serialize via a per-key :class:`asyncio.Lock`.
-
-No TTL / GC at this layer — retention policies are the caller's concern.
-
-Crash safety: ``os.replace`` is atomic rename on POSIX (and on Windows
-for same-volume moves), so post-crash you see either the old file or the
-new file, never a partial write. Orphaned ``*.tmp`` files may be left
-behind on a hard crash; they are harmless and can be swept separately.
+Writes are atomic (``tempfile.mkstemp`` + ``os.replace``). Concurrent
+writes to the same key serialize via a per-key ``asyncio.Lock``. No
+TTL / GC — retention is the caller's concern.
 """
 
 from __future__ import annotations

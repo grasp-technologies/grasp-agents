@@ -24,36 +24,38 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         self,
         subproc: Processor[InT, OutT, CtxT],
         drop_failed: bool = False,
+        session_path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
+        # Need to set _subproc before __init__ because it
+        # executes _propagate_to_children which calls subproc.on_adopted
+        self._subproc = subproc
+
         super().__init__(
             name=subproc.name + "_par",
             recipients=subproc.recipients,
             max_retries=0,
+            session_path=session_path,
+            session_metadata=session_metadata,
             tracing_enabled=subproc.tracing_enabled,
             tracing_exclude_input_fields=subproc.tracing_exclude_input_fields,
-            session_metadata=session_metadata,
         )
 
         self._in_type = subproc.in_type
         self._out_type = subproc.out_type
-        self._subproc = subproc
 
         self._drop_failed = drop_failed
 
         # This disables recipient selection in the subprocessor,
         # but preserves subproc.select_recipients_impl
-        subproc.recipients = None
 
-        # Adopt the subproc so its session path + resumability reflect
-        # our current configuration. Re-triggered if we're later adopted
-        # by a container.
-        self._propagate_to_children()
+        # TODO: Is it still needed?
+        subproc.recipients = None
 
     # --- Checkpointing ---
 
     def _propagate_to_children(self) -> None:
-        self._subproc._on_adopted(self._session_path)  # noqa: SLF001
+        self._subproc.on_adopted(self.session_path)
 
     async def load_checkpoint(self, ctx: RunContext[CtxT]) -> ParallelCheckpoint | None:
         checkpoint = await self._deserialize_checkpoint(ctx, ParallelCheckpoint)
@@ -76,6 +78,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         checkpoint = ParallelCheckpoint(
             session_key=ctx.session_key,
             processor_name=self.name,
+            session_metadata=self._session_metadata,
             input_packet=input_packet,
             completed=completed,
         )
@@ -157,7 +160,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         ctx: RunContext[CtxT],
-        step: int | None = None,
+        step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         # --- Resume from checkpoint ---
         checkpoint = await self.load_checkpoint(ctx)
@@ -181,18 +184,21 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             out_packets_map[idx] = cast("Packet[OutT]", pkt)
 
         # Create replicas only for uncompleted indices. Each replica
-        # gets its own session path extended by the replica index so
-        # resumable subprocs (e.g. LLMAgent) don't share a checkpoint
-        # key across siblings. ``self._subproc.session_path`` is
-        # already ``[*self._session_path, self._subproc.name]`` via
-        # ``_on_adopted``, so we just append the index.
+        # gets a one-segment combined identifier ``"<subproc_name>_<i>"``
+        # appended to the parallel processor's own path, so resumable
+        # subprocs (e.g. LLMAgent) don't share a checkpoint key across
+        # siblings. The combined segment encodes both the template
+        # subproc's name and the replica index in one path component.
         pending_indices = [i for i in range(len(all_in_args)) if i not in completed_map]
         if pending_indices:
             replicas: dict[int, Processor[InT, OutT, CtxT]] = {}
             for i in pending_indices:
+                # TODO: Perhaps each replica should get a unique name?
+                # Then we can use on_adopted instead of set_session_path.
                 rep = self._subproc.copy()
-                rep.set_session_path([*self._subproc.session_path, str(i)])
+                rep.set_session_path([*self._session_path, f"{self._subproc.name}_{i}"])
                 replicas[i] = rep
+
             streams = [
                 replicas[i].run_stream(
                     in_args=all_in_args[i],
@@ -204,6 +210,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             ]
 
             merged = stream_concurrent(streams)
+
             async for stream_idx, event in merged:
                 real_idx = pending_indices[stream_idx]
                 if (
@@ -231,6 +238,8 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 )
 
         # Emit results in input order
+
+        # TODO: Consider returning error instances instead of None for failed copies
         out_packets = [out_packets_map[i] for i in sorted(out_packets_map)]
         if self.drop_failed:
             out_packets = [p for p in out_packets if p is not None]

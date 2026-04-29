@@ -258,26 +258,26 @@ class TestRecursiveSessionPropagation:
         b = AppendProcessor("B")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
 
-        # Root workflow -> empty path
-        assert wf.session_path == []
-        assert a.session_path == ["A"]
-        assert b.session_path == ["B"]
+        # Root workflow path includes its own name (Option D)
+        assert wf.session_path == ["wf"]
+        assert a.session_path == ["wf", "A"]
+        assert b.session_path == ["wf", "B"]
 
     def test_parallel_propagates_to_subproc(self) -> None:
         """ParallelProcessor propagates its path to inner subproc."""
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
 
-        assert par.session_path == []
-        assert worker.session_path == ["worker"]
+        assert par.session_path == [par.name]
+        assert worker.session_path == [par.name, "worker"]
 
     def test_parallel_init_with_session_propagates(self) -> None:
         """ParallelProcessor construction propagates path to subproc."""
         worker = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=worker)
 
-        assert par.session_path == []
-        assert worker.session_path == ["worker"]
+        assert par.session_path == [par.name]
+        assert worker.session_path == [par.name, "worker"]
 
     def test_workflow_containing_parallel_three_levels(self) -> None:
         """Workflow -> ParallelProcessor -> worker gets 3-level namespacing."""
@@ -286,10 +286,10 @@ class TestRecursiveSessionPropagation:
         a = AppendProcessor("A")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, par])
 
-        assert wf.session_path == []
-        assert a.session_path == ["A"]
-        assert par.session_path == [par.name]
-        assert worker.session_path == [par.name, "worker"]
+        assert wf.session_path == ["wf"]
+        assert a.session_path == ["wf", "A"]
+        assert par.session_path == ["wf", par.name]
+        assert worker.session_path == ["wf", par.name, "worker"]
 
     def test_nested_workflows_propagate_to_leaf_procs(self) -> None:
         """Outer -> Inner workflow propagates to all leaf processors."""
@@ -300,11 +300,11 @@ class TestRecursiveSessionPropagation:
         a = AppendProcessor("A")
         outer = SequentialWorkflow[str, str, None](name="outer", subprocs=[a, inner])
 
-        assert outer.session_path == []
-        assert a.session_path == ["A"]
-        assert inner.session_path == ["inner"]
-        assert x.session_path == ["inner", "X"]
-        assert y.session_path == ["inner", "Y"]
+        assert outer.session_path == ["outer"]
+        assert a.session_path == ["outer", "A"]
+        assert inner.session_path == ["outer", "inner"]
+        assert x.session_path == ["outer", "inner", "X"]
+        assert y.session_path == ["outer", "inner", "Y"]
 
     def test_is_resumable_depends_on_ctx(self) -> None:
         """Processor.is_resumable() is inferred from ctx.checkpoint_store."""
@@ -378,13 +378,13 @@ class TestRecursiveCheckpointStorage:
         ]
 
         # Workflow checkpoint exists
-        wf_raw = await store.load("workflow/s1")
+        wf_raw = await store.load("s1/workflow/wf")
         assert wf_raw is not None
         wf_cp = WorkflowCheckpoint.model_validate_json(wf_raw)
         assert wf_cp.completed_step == 2  # all 3 steps done
 
         # Parallel checkpoint exists with correctly namespaced key
-        par_key = f"parallel/s1/{par.name}"
+        par_key = f"s1/parallel/wf/{par.name}"
         par_raw = await store.load(par_key)
         assert par_raw is not None
         par_cp = ParallelCheckpoint.model_validate_json(par_raw)
@@ -408,10 +408,10 @@ class TestRecursiveCheckpointStorage:
         assert result == ["start->A->X->Y"]
 
         # Both checkpoints exist with correct namespacing
-        outer_raw = await store.load("workflow/s2")
+        outer_raw = await store.load("s2/workflow/outer")
         assert outer_raw is not None
 
-        inner_raw = await store.load("workflow/s2/inner")
+        inner_raw = await store.load("s2/workflow/outer/inner")
         assert inner_raw is not None
 
     @pytest.mark.asyncio
@@ -428,10 +428,10 @@ class TestRecursiveCheckpointStorage:
 
         await collect_payloads(wf, ctx, in_args="start")
 
-        # Workflow: "workflow/{session_key}"
-        assert await store.load("workflow/deep") is not None
-        # Parallel: "parallel/{session_key}/{par.name}"
-        assert await store.load(f"parallel/deep/{par.name}") is not None
+        # Workflow: "<session>/workflow/<wf_name>"
+        assert await store.load("deep/workflow/wf") is not None
+        # Parallel: "<session>/parallel/<wf_name>/<par.name>"
+        assert await store.load(f"deep/parallel/wf/{par.name}") is not None
 
 
 # ---------- Resume ----------
@@ -466,13 +466,13 @@ class TestRecursiveResume:
             await collect_payloads(wf1, ctx1, in_args="start")
 
         # Workflow checkpoint at step 0 (fan succeeded), step 1 save crashed
-        wf_raw = await store.load("workflow/r1")
+        wf_raw = await store.load("r1/workflow/wf")
         assert wf_raw is not None
         wf_cp = WorkflowCheckpoint.model_validate_json(wf_raw)
         assert wf_cp.completed_step == 0
 
         # Parallel checkpoint exists (saved internally before the workflow crash)
-        par_key = f"parallel/r1/{par1.name}"
+        par_key = f"r1/parallel/wf/{par1.name}"
         assert await store.load(par_key) is not None
 
         # Resume with fresh processors
@@ -524,7 +524,7 @@ class TestRecursiveResume:
             await collect_payloads(wf1, ctx1, in_args="start")
 
         # Parallel checkpoint: only item 0 completed (item 1 failed)
-        par_key = f"parallel/r2/{par1.name}"
+        par_key = f"r2/parallel/wf/{par1.name}"
         par_raw = await store.load(par_key)
         assert par_raw is not None
         par_cp = ParallelCheckpoint.model_validate_json(par_raw)
@@ -581,7 +581,7 @@ class TestRecursiveResume:
             await collect_payloads(outer1, ctx1, in_args="start")
 
         # Inner checkpoint exists (both steps done)
-        inner_raw = await store.load("workflow/r3/inner")
+        inner_raw = await store.load("r3/workflow/outer/inner")
         assert inner_raw is not None
         inner_cp = WorkflowCheckpoint.model_validate_json(inner_raw)
         assert inner_cp.completed_step == 1  # both X and Y done
@@ -642,16 +642,16 @@ class TestRecursiveResume:
             await collect_payloads(outer1, ctx1, in_args="start")
 
         # Outer checkpoint at step 0 (fan succeeded, inner crashed)
-        outer_raw = await store.load("workflow/r4")
+        outer_raw = await store.load("r4/workflow/outer")
         assert outer_raw is not None
         outer_cp = WorkflowCheckpoint.model_validate_json(outer_raw)
         assert outer_cp.completed_step == 0
 
         # Inner has NO checkpoint (crash prevented saving)
-        assert await store.load("workflow/r4/inner") is None
+        assert await store.load("r4/workflow/outer/inner") is None
 
         # But parallel's checkpoint exists with item 0 completed
-        par_key = f"parallel/r4/inner/{par1.name}"
+        par_key = f"r4/parallel/outer/inner/{par1.name}"
         par_raw = await store.load(par_key)
         assert par_raw is not None
         par_cp = ParallelCheckpoint.model_validate_json(par_raw)
@@ -713,8 +713,8 @@ class TestRecursiveResume:
         ]
 
         # Runner checkpoint
-        assert await store.load("runner/rs") is not None
+        assert await store.load("rs/runner") is not None
         # Workflow checkpoint (namespaced under runner session)
-        assert await store.load("workflow/rs/wf") is not None
+        assert await store.load("rs/workflow/wf") is not None
         # Parallel checkpoint (namespaced under workflow session)
-        assert await store.load(f"parallel/rs/wf/{par.name}") is not None
+        assert await store.load(f"rs/parallel/wf/{par.name}") is not None

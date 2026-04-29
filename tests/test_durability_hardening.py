@@ -25,6 +25,12 @@ from grasp_agents.durability import (
     TaskRecord,
     TaskStatus,
 )
+from grasp_agents.durability.checkpoints import CheckpointKind
+from grasp_agents.durability.store_keys import (
+    is_lifecycle_key,
+    make_lifecycle_key,
+    session_prefix,
+)
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
@@ -33,6 +39,15 @@ from grasp_agents.types.events import (
     ProcPayloadOutEvent,
     RunPacketOutEvent,
 )
+
+
+def _agent_lifecycle_key(session_key: str, parent_name: str, call_id: str) -> str:
+    """Compose lifecycle key for a bg task spawned by a root LLMAgent."""
+    return make_lifecycle_key(
+        session_key,
+        CheckpointKind.AGENT,
+        [parent_name, f"tc_{call_id}"],
+    )
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -167,7 +182,7 @@ class TestCorruptCheckpointTolerance:
     async def test_llm_agent_corrupt_checkpoint_treated_as_fresh(self) -> None:
         store = InMemoryCheckpointStore()
         # Planted corrupt payload at the agent's store key.
-        await store.save("agent/corrupt-a", b"not-valid-json{{{")
+        await store.save("corrupt-a/agent/agent", b"not-valid-json{{{")
 
         agent = LLMAgent[str, str, None](
             name="agent",
@@ -183,14 +198,14 @@ class TestCorruptCheckpointTolerance:
 
         # A fresh checkpoint now sits at the key — the corrupt one was
         # treated as missing and overwritten by the normal run.
-        data = await store.load("agent/corrupt-a")
+        data = await store.load("corrupt-a/agent/agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.session_key == "corrupt-a"
 
     async def test_runner_corrupt_checkpoint_treated_as_fresh(self) -> None:
         store = InMemoryCheckpointStore()
-        await store.save("runner/corrupt-r", b"garbage")
+        await store.save("corrupt-r/runner", b"garbage")
 
         a = _AppendProcessor("A", recipients=[END_PROC_NAME])
         ctx: RunContext[None] = RunContext(
@@ -214,38 +229,41 @@ class TestCorruptCheckpointTolerance:
 def _record(
     *,
     task_id: str,
-    parent_session_key: str,
+    session_key: str,
     status: TaskStatus,
     updated_at: datetime,
-) -> TaskRecord:
-    return TaskRecord(
+) -> tuple[TaskRecord, str]:
+    """Build a TaskRecord and the lifecycle store key it would land at."""
+    rec = TaskRecord(
+        session_key=session_key,
         task_id=task_id,
-        parent_session_key=parent_session_key,
         tool_call_id=f"fc_{task_id}",
         tool_name="test",
         status=status,
         updated_at=updated_at,
     )
+    key = _agent_lifecycle_key(session_key, "agent", rec.tool_call_id)
+    return rec, key
 
 
 class TestPruneDelivered:
     async def test_deletes_delivered_older_than_cutoff(self) -> None:
         store = InMemoryCheckpointStore()
         now = datetime.now(UTC)
-        old = _record(
+        old, old_key = _record(
             task_id="t-old",
-            parent_session_key="s",
+            session_key="s",
             status=TaskStatus.DELIVERED,
             updated_at=now - timedelta(days=2),
         )
-        fresh = _record(
+        fresh, fresh_key = _record(
             task_id="t-fresh",
-            parent_session_key="s",
+            session_key="s",
             status=TaskStatus.DELIVERED,
             updated_at=now,
         )
-        await store.save(old.store_key, old.model_dump_json().encode())
-        await store.save(fresh.store_key, fresh.model_dump_json().encode())
+        await store.save(old_key, old.model_dump_json().encode())
+        await store.save(fresh_key, fresh.model_dump_json().encode())
 
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="s", state=None
@@ -254,27 +272,27 @@ class TestPruneDelivered:
             ctx, older_than=timedelta(hours=1)
         )
         assert pruned == 1
-        assert await store.load(old.store_key) is None
-        assert await store.load(fresh.store_key) is not None
+        assert await store.load(old_key) is None
+        assert await store.load(fresh_key) is not None
 
     async def test_keeps_non_delivered(self) -> None:
         """Only DELIVERED records are swept; PENDING / FAILED stay."""
         store = InMemoryCheckpointStore()
         old = datetime.now(UTC) - timedelta(days=5)
-        pending = _record(
+        pending, pending_key = _record(
             task_id="t-p",
-            parent_session_key="s",
+            session_key="s",
             status=TaskStatus.PENDING,
             updated_at=old,
         )
-        failed = _record(
+        failed, failed_key = _record(
             task_id="t-f",
-            parent_session_key="s",
+            session_key="s",
             status=TaskStatus.FAILED,
             updated_at=old,
         )
-        await store.save(pending.store_key, pending.model_dump_json().encode())
-        await store.save(failed.store_key, failed.model_dump_json().encode())
+        await store.save(pending_key, pending.model_dump_json().encode())
+        await store.save(failed_key, failed.model_dump_json().encode())
 
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="s", state=None
@@ -283,8 +301,8 @@ class TestPruneDelivered:
             ctx, older_than=timedelta(seconds=1)
         )
         assert pruned == 0
-        assert await store.load(pending.store_key) is not None
-        assert await store.load(failed.store_key) is not None
+        assert await store.load(pending_key) is not None
+        assert await store.load(failed_key) is not None
 
     async def test_returns_zero_without_store(self) -> None:
         ctx: RunContext[None] = RunContext(session_key="s", state=None)
@@ -299,20 +317,20 @@ class TestPruneDelivered:
         """Records in other sessions are untouched."""
         store = InMemoryCheckpointStore()
         old = datetime.now(UTC) - timedelta(days=2)
-        ours = _record(
+        ours, ours_key = _record(
             task_id="t-ours",
-            parent_session_key="sA",
+            session_key="sA",
             status=TaskStatus.DELIVERED,
             updated_at=old,
         )
-        theirs = _record(
+        theirs, theirs_key = _record(
             task_id="t-theirs",
-            parent_session_key="sB",
+            session_key="sB",
             status=TaskStatus.DELIVERED,
             updated_at=old,
         )
-        await store.save(ours.store_key, ours.model_dump_json().encode())
-        await store.save(theirs.store_key, theirs.model_dump_json().encode())
+        await store.save(ours_key, ours.model_dump_json().encode())
+        await store.save(theirs_key, theirs.model_dump_json().encode())
 
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="sA", state=None
@@ -321,13 +339,14 @@ class TestPruneDelivered:
             ctx, older_than=timedelta(hours=1)
         )
         assert pruned == 1
-        assert await store.load(ours.store_key) is None
-        assert await store.load(theirs.store_key) is not None
+        assert await store.load(ours_key) is None
+        assert await store.load(theirs_key) is not None
 
     async def test_skips_corrupt_records(self) -> None:
         """A corrupt task record logs a warning; prune doesn't crash."""
         store = InMemoryCheckpointStore()
-        await store.save("task/s/t-corrupt", b"not-json")
+        corrupt_key = _agent_lifecycle_key("s", "agent", "corrupt")
+        await store.save(corrupt_key, b"not-json")
 
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="s", state=None
@@ -337,7 +356,7 @@ class TestPruneDelivered:
         )
         assert pruned == 0
         # Record remains (we can't safely delete something we can't parse).
-        assert await store.load("task/s/t-corrupt") is not None
+        assert await store.load(corrupt_key) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +387,11 @@ class TestEndToEndGC:
         await agent.run("go", ctx=ctx)
 
         # Exactly one DELIVERED record.
-        keys = await store.list_keys("task/e2e/")
+        keys = [
+            k
+            for k in await store.list_keys(session_prefix("e2e"))
+            if is_lifecycle_key(k)
+        ]
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -381,4 +404,9 @@ class TestEndToEndGC:
             ctx, older_than=timedelta(milliseconds=1)
         )
         assert pruned == 1
-        assert await store.list_keys("task/e2e/") == []
+        remaining = [
+            k
+            for k in await store.list_keys(session_prefix("e2e"))
+            if is_lifecycle_key(k)
+        ]
+        assert remaining == []

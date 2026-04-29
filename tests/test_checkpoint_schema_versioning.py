@@ -124,7 +124,7 @@ class TestTaskRecordVersion:
     def _record(self, **overrides: object) -> TaskRecord:
         defaults: dict[str, object] = {
             "task_id": "t1",
-            "parent_session_key": "s1",
+            "session_key": "s1",
             "tool_call_id": "c1",
             "tool_name": "do_thing",
         }
@@ -145,7 +145,7 @@ class TestTaskRecordVersion:
         legacy = json.dumps(
             {
                 "task_id": "t1",
-                "parent_session_key": "s1",
+                "session_key": "s1",
                 "tool_call_id": "c1",
                 "tool_name": "do_thing",
                 "status": "pending",
@@ -161,7 +161,7 @@ class TestTaskRecordVersion:
             {
                 "schema_version": CURRENT_SCHEMA_VERSION + 1,
                 "task_id": "t1",
-                "parent_session_key": "s1",
+                "session_key": "s1",
                 "tool_call_id": "c1",
                 "tool_name": "do_thing",
             }
@@ -197,7 +197,7 @@ class TestDeserializePropagation:
                 },
             }
         ).encode("utf-8")
-        await store.save("workflow/s-future", future_blob)
+        await store.save("s-future/workflow/wf", future_blob)
 
         with pytest.raises(CheckpointSchemaError):
             await wf._deserialize_checkpoint(ctx, WorkflowCheckpoint)
@@ -213,7 +213,7 @@ class TestDeserializePropagation:
             state=None, checkpoint_store=store, session_key="s-corrupt"
         )
 
-        await store.save("workflow/s-corrupt", b"{not valid json")
+        await store.save("s-corrupt/workflow/wf", b"{not valid json")
 
         # Generic corruption should NOT propagate — silent reset is intact.
         result = await wf._deserialize_checkpoint(ctx, WorkflowCheckpoint)

@@ -6,10 +6,11 @@ parent's session key with no distinguishing ``session_path`` — which meant
 the child's checkpoint key collided with the parent's, clobbering it.
 
 The fix is in ``agent_loop.py``'s tool-invocation site: resumable tools
-receive ``session_subpath=["call", call.call_id]``, routed to the child
-via :meth:`Processor.set_session_path`. The child inherits the parent's
-``session_key`` (approval / file-edit / usage scopes stay shared) but
-lives at a nested checkpoint path.
+receive ``session_path = make_tool_call_path(parent_path, call.call_id)``,
+routed to the child via :meth:`Processor.set_session_path`. The child
+inherits the parent's ``session_key`` (approval / file-edit / usage
+scopes stay shared) but lives at a nested checkpoint path
+``"<session_key>/agent/<parent_path>/tc_<call_id>"``.
 """
 
 from __future__ import annotations
@@ -93,18 +94,20 @@ async def test_parent_and_child_keys_dont_collide() -> None:
     ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
     await parent.run("start", ctx=ctx)
 
-    # Parent checkpoint survives.
-    parent_data = await store.load("agent/s1")
+    # Parent checkpoint at "<session>/agent/parent" (root processor uses
+    # its own name as the first path segment).
+    parent_data = await store.load("s1/agent/parent")
     assert parent_data is not None
     parent_snap = AgentCheckpoint.model_validate_json(parent_data)
     assert parent_snap.processor_name == "parent"
 
-    # Child checkpoint lives at agent/{session_key}/call/{call_id}.
-    child_data = await store.load("agent/s1/call/call_abc")
+    # Child checkpoint at "<session>/agent/<parent_path>/tc_<call_id>".
+    child_data = await store.load("s1/agent/parent/tc_call_abc")
     assert child_data is not None
     child_snap = AgentCheckpoint.model_validate_json(child_data)
-    # Child's processor_name is a synthesized "child_agent:<exec-id-prefix>".
-    assert child_snap.processor_name.startswith("child_agent:")
+    # Child's processor_name matches the AgentTool's name (deterministic
+    # across resumes — no exec_id suffix).
+    assert child_snap.processor_name == "child_agent"
 
 
 async def test_sibling_child_calls_dont_collide() -> None:
@@ -131,10 +134,10 @@ async def test_sibling_child_calls_dont_collide() -> None:
     ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s2")
     await parent.run("start", ctx=ctx)
 
-    assert await store.load("agent/s2/call/call_one") is not None
-    assert await store.load("agent/s2/call/call_two") is not None
+    assert await store.load("s2/agent/parent/tc_call_one") is not None
+    assert await store.load("s2/agent/parent/tc_call_two") is not None
     # Parent's own checkpoint is still intact.
-    assert await store.load("agent/s2") is not None
+    assert await store.load("s2/agent/parent") is not None
 
 
 async def test_parallel_processor_replicas_dont_collide() -> None:
@@ -162,13 +165,14 @@ async def test_parallel_processor_replicas_dont_collide() -> None:
 
     await par.run(in_args=["a", "b", "c"], ctx=ctx)
 
-    # ParallelProcessor's own checkpoint lives at ``parallel/<session>``;
-    # each replica's LLMAgent checkpoint at
-    # ``agent/<session>/<subproc-name>/<index>``.
-    assert await store.load("parallel/par-s") is not None
-    assert await store.load("agent/par-s/worker/0") is not None
-    assert await store.load("agent/par-s/worker/1") is not None
-    assert await store.load("agent/par-s/worker/2") is not None
+    # ParallelProcessor's own checkpoint lives at
+    # ``"<session>/parallel/<parallel_name>"``; each replica's LLMAgent
+    # checkpoint at ``"<session>/agent/<parallel_name>/<subproc>_<idx>"``
+    # (combined segment encodes subproc name + replica index).
+    assert await store.load("par-s/parallel/worker_par") is not None
+    assert await store.load("par-s/agent/worker_par/worker_0") is not None
+    assert await store.load("par-s/agent/worker_par/worker_1") is not None
+    assert await store.load("par-s/agent/worker_par/worker_2") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -225,10 +229,11 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
             2: Packet[str](sender="worker", payloads=["phase1-final-2"]),
         },
     )
-    await store.save("parallel/par-ms", par_cp.model_dump_json().encode())
+    await store.save("par-ms/parallel/worker_par", par_cp.model_dump_json().encode())
 
-    # Plant replica 1's mid-run checkpoint: tool has fired, waiting for
-    # the final answer.
+    # Plant replica 1's mid-run checkpoint at the new combined-segment
+    # path "<session>/agent/<parallel_name>/<subproc>_1": tool has fired,
+    # waiting for the final answer.
     call_id = "call_mid"
     r1_cp = AgentCheckpoint(
         session_key="par-ms",
@@ -243,7 +248,9 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
         ],
         turn=1,
     )
-    await store.save("agent/par-ms/worker/1", r1_cp.model_dump_json().encode())
+    await store.save(
+        "par-ms/agent/worker_par/worker_1", r1_cp.model_dump_json().encode()
+    )
 
     # Resume: fresh subproc; its LLM only needs the final answer for
     # replica 1 (indices 0 and 2 are redelivered from the parallel cp).

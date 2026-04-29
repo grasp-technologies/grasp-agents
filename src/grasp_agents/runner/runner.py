@@ -2,16 +2,13 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
-from typing import Any, Generic, Literal
+from typing import Any, ClassVar, Generic, Literal
 from uuid import uuid4
 
 from grasp_agents.telemetry import SpanKind, traced
 
-from ..durability.checkpoints import (
-    CheckpointKind,
-    CheckpointSchemaError,
-    RunnerCheckpoint,
-)
+from ..durability.checkpoints import CheckpointKind, RunnerCheckpoint
+from ..durability.persist import CheckpointPersistMixin
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
@@ -26,13 +23,16 @@ START_PROC_NAME: Literal["*START*"] = "*START*"
 END_PROC_NAME: Literal["*END*"] = "*END*"
 
 
-class Runner(Generic[OutT, CtxT]):
+class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
+    _checkpoint_kind: ClassVar[CheckpointKind | None] = CheckpointKind.RUNNER
+
     def __init__(
         self,
         entry_proc: Processor[Any, Any, CtxT],
         procs: Sequence[Processor[Any, Any, CtxT]],
         ctx: RunContext[CtxT] | None = None,
         name: str | None = None,
+        session_path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
         if entry_proc not in procs:
@@ -66,14 +66,14 @@ class Runner(Generic[OutT, CtxT]):
 
         self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
 
-        # Session path: adopt each proc so its session path becomes
-        # ``[proc.name]``. Runner itself lives at the session root.
+        self._session_path = session_path or []
         for proc in procs:
-            proc._on_adopted([])  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            proc.on_adopted(self.session_path)
 
-        self._checkpoint_number: int = 0
         self._session_metadata: dict[str, Any] = session_metadata or {}
+
         self._pending_events: dict[str, ProcPacketOutEvent] = {}
+        self._checkpoint_number: int = 0
         self._checkpoint_lock = asyncio.Lock()
         self._active_steps: dict[str, int] = {}  # proc_name -> last delivery step
 
@@ -82,64 +82,42 @@ class Runner(Generic[OutT, CtxT]):
         return self._name
 
     @property
+    def session_path(self) -> list[str]:
+        return self._session_path
+
+    @property
+    def checkpoint_number(self) -> int:
+        return self._checkpoint_number
+
+    @property
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
 
     # --- Session persistence ---
 
-    def _checkpoint_store_key(self) -> str | None:
-        if self._ctx.checkpoint_store is None:
-            return None
-        return f"{CheckpointKind.RUNNER}/{self._ctx.session_key}"
-
     async def _load_checkpoint(self) -> RunnerCheckpoint | None:
-        store = self._ctx.checkpoint_store
-        key = self._checkpoint_store_key()
-        if store is None or key is None:
-            return None
-        data = await store.load(key)
-        if data is None:
-            return None
-        try:
-            checkpoint = RunnerCheckpoint.model_validate_json(data)
-        except CheckpointSchemaError:
-            raise
-        except Exception:
-            logger.warning(
-                "Corrupt runner checkpoint %s, starting fresh",
-                key,
-                exc_info=True,
+        checkpoint = await self._deserialize_checkpoint(self._ctx, RunnerCheckpoint)
+        if checkpoint is not None:
+            logger.info(
+                "Loaded runner checkpoint %s (%d pending events)",
+                self._checkpoint_store_key(self._ctx),
+                len(checkpoint.pending_events),
             )
-            return None
-        self._checkpoint_number = checkpoint.checkpoint_number
-        logger.info(
-            "Loaded runner checkpoint %s (%d pending events)",
-            key,
-            len(checkpoint.pending_events),
-        )
         return checkpoint
 
     async def _save_checkpoint(
         self,
         pending_events: dict[str, ProcPacketOutEvent] | None = None,
     ) -> None:
-        store = self._ctx.checkpoint_store
-        key = self._checkpoint_store_key()
-        if store is None or key is None:
-            return
-        self._checkpoint_number += 1
         events = pending_events if pending_events is not None else self._pending_events
         checkpoint = RunnerCheckpoint(
             session_key=self._ctx.session_key,
             processor_name=self._name,
-            checkpoint_number=self._checkpoint_number,
+            session_metadata=self._session_metadata,
             pending_events=list(events.values()),
             active_steps=dict(self._active_steps),
         )
-        await store.save(
-            key,
-            checkpoint.model_dump_json().encode("utf-8"),
-        )
+        await self._serialize_checkpoint(self._ctx, checkpoint)
 
     # --- Execution helpers ---
 

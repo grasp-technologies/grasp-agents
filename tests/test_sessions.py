@@ -34,6 +34,26 @@ from grasp_agents.durability import (
     TaskStatus,
     prepare_messages_for_resume,
 )
+from grasp_agents.durability.checkpoints import CheckpointKind
+from grasp_agents.durability.store_keys import (
+    is_lifecycle_key,
+    make_lifecycle_key,
+    session_prefix,
+)
+
+
+def _agent_lifecycle_key(session_key: str, parent_name: str, call_id: str) -> str:
+    """
+    Test helper: compose the lifecycle key for a bg task spawned by
+    a root LLMAgent named ``parent_name`` at ``call_id``.
+    """
+    return make_lifecycle_key(
+        session_key,
+        CheckpointKind.AGENT,
+        [parent_name, f"tc_{call_id}"],
+    )
+
+
 from grasp_agents.llm.llm import LLM
 from grasp_agents.packet import Packet
 from grasp_agents.processors.processor import Processor
@@ -456,7 +476,7 @@ class TestAgentSessionPersistence:
         assert result.payloads[0] == "hello"
 
         # Snapshot should be persisted
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.session_key == "s1"
@@ -477,7 +497,7 @@ class TestAgentSessionPersistence:
         await agent1.run("hi", ctx=ctx)
 
         # Get saved message count
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         saved_msg_count = len(snap.messages)
@@ -493,7 +513,7 @@ class TestAgentSessionPersistence:
         await agent2.run("follow up", ctx=ctx)
 
         # Snapshot should have more messages now
-        data2 = await store.load("agent/s1")
+        data2 = await store.load("s1/agent/test_agent")
         assert data2 is not None
         snap2 = AgentCheckpoint.model_validate_json(data2)
         assert len(snap2.messages) > saved_msg_count
@@ -551,7 +571,7 @@ class TestAgentSessionPersistence:
         await agent2.run("follow up", ctx=ctx)
 
         # Checkpoint should only have messages from the second run
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         user_msgs = [
@@ -581,7 +601,7 @@ class TestAgentSessionPersistence:
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
         await agent.run("hi", ctx=ctx)
 
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.session_metadata == {"pathway_id": "pw_123"}
@@ -602,7 +622,7 @@ class TestAgentSessionPersistence:
 
         await agent.run("go", ctx=ctx)
 
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.checkpoint_number > 0
@@ -621,7 +641,7 @@ class TestAgentSessionPersistence:
         assert len(events) > 0
 
         # Should have persisted
-        data = await store.load("agent/s1")
+        data = await store.load("s1/agent/test_agent")
         assert data is not None
 
 
@@ -676,7 +696,7 @@ class TestResumeInputDetection:
         """Standalone resume (no inputs, interrupted) skips memorization."""
         store = InMemoryCheckpointStore()
         await store.save(
-            "agent/s1",
+            "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
@@ -701,7 +721,7 @@ class TestResumeInputDetection:
         """Workflow re-delivers in_args after crash — must not duplicate input."""
         store = InMemoryCheckpointStore()
         await store.save(
-            "agent/s1",
+            "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
@@ -724,7 +744,7 @@ class TestResumeInputDetection:
         """Runner re-delivers chat_inputs after crash — must not duplicate input."""
         store = InMemoryCheckpointStore()
         await store.save(
-            "agent/s1",
+            "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
@@ -747,7 +767,7 @@ class TestResumeInputDetection:
         """Clean completion + new chat_inputs = continuation, must memorize."""
         store = InMemoryCheckpointStore()
         await store.save(
-            "agent/s1",
+            "s1/agent/test_agent",
             _completed_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
@@ -803,7 +823,7 @@ class TestResumeInputDetection:
 
         # First agent: run and crash (simulate via pre-seeded interrupted checkpoint)
         await store.save(
-            "agent/s1",
+            "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
@@ -942,7 +962,7 @@ class TestResumeIntegration:
                 pass
 
         # Agent checkpoint saved (clean completion)
-        agent_data = await store.load("agent/wf1/agent")
+        agent_data = await store.load("wf1/agent/wf/agent")
         assert agent_data is not None
         agent_cp = AgentCheckpoint.model_validate_json(agent_data)
         user_msgs = [
@@ -971,7 +991,7 @@ class TestResumeIntegration:
         assert a2.call_count == 0  # step 0 skipped
 
         # Agent checkpoint: still 1 user message (no duplication)
-        agent_data2 = await store.load("agent/wf1/agent")
+        agent_data2 = await store.load("wf1/agent/wf/agent")
         assert agent_data2 is not None
         agent_cp2 = AgentCheckpoint.model_validate_json(agent_data2)
         user_msgs2 = [
@@ -1009,9 +1029,9 @@ class TestResumeIntegration:
                 pass
 
         # Agent checkpoint: clean completion
-        assert await store.load("agent/wf2/agent") is not None
+        assert await store.load("wf2/agent/wf/agent") is not None
         # Workflow checkpoint: step 0 done
-        wf_data = await store.load("workflow/wf2")
+        wf_data = await store.load("wf2/workflow/wf")
         assert wf_data is not None
 
         # Resume
@@ -1073,7 +1093,7 @@ class TestResumeIntegration:
             pending_events=[pending_event],
             active_steps={"A": 1, "agent": 0},
         )
-        await store.save("runner/rs2", runner_cp.model_dump_json().encode())
+        await store.save("rs2/runner", runner_cp.model_dump_json().encode())
 
         # Seed agent's interrupted checkpoint (user message pending)
         agent_cp = AgentCheckpoint(
@@ -1088,7 +1108,7 @@ class TestResumeIntegration:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/rs2/agent", agent_cp.model_dump_json().encode())
+        await store.save("rs2/agent/agent", agent_cp.model_dump_json().encode())
 
         # Resume runner
         a2 = _CountingAppendProcessor("A", recipients=["agent"])
@@ -1117,7 +1137,7 @@ class TestResumeIntegration:
         assert payloads == ["agent_done"]
 
         # Verify: agent checkpoint has exactly 1 user message
-        agent_data = await store.load("agent/rs2/agent")
+        agent_data = await store.load("rs2/agent/agent")
         assert agent_data is not None
         cp = AgentCheckpoint.model_validate_json(agent_data)
         user_msgs = [
@@ -1136,31 +1156,22 @@ class TestResumeIntegration:
 class TestTaskRecord:
     def test_round_trip(self):
         record = TaskRecord(
+            session_key="s1",
             task_id="t1",
-            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="research",
         )
         json_bytes = record.model_dump_json().encode()
         restored = TaskRecord.model_validate_json(json_bytes)
         assert restored.task_id == "t1"
-        assert restored.parent_session_key == "s1"
+        assert restored.session_key == "s1"
         assert restored.status == TaskStatus.PENDING
         assert restored.result is None
 
-    def test_store_key(self):
-        record = TaskRecord(
-            task_id="t1",
-            parent_session_key="s1",
-            tool_call_id="fc_1",
-            tool_name="research",
-        )
-        assert record.store_key == "task/s1/t1"
-
     def test_model_copy_update(self):
         record = TaskRecord(
+            session_key="s1",
             task_id="t1",
-            parent_session_key="s1",
             tool_call_id="fc_1",
             tool_name="research",
         )
@@ -1223,13 +1234,17 @@ class TestTaskRecordPersistence:
         await agent.run("go", ctx=ctx)
 
         # Should have a task record under task/s1/
-        keys = await store.list_keys("task/s1/")
+        keys = [
+            k
+            for k in await store.list_keys(session_prefix("s1"))
+            if is_lifecycle_key(k)
+        ]
         assert len(keys) == 1
 
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        assert record.parent_session_key == "s1"
+        assert record.session_key == "s1"
         assert record.tool_name == "slow"
         assert record.tool_call_id == "fc_1"
 
@@ -1250,7 +1265,11 @@ class TestTaskRecordPersistence:
 
         await agent.run("go", ctx=ctx)
 
-        keys = await store.list_keys("task/s1/")
+        keys = [
+            k
+            for k in await store.list_keys(session_prefix("s1"))
+            if is_lifecycle_key(k)
+        ]
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -1283,7 +1302,11 @@ class TestTaskRecordPersistence:
 
         await agent.run("go", ctx=ctx)
 
-        keys = await store.list_keys("task/s1/")
+        keys = [
+            k
+            for k in await store.list_keys(session_prefix("s1"))
+            if is_lifecycle_key(k)
+        ]
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
@@ -1342,16 +1365,19 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/s1", snapshot.model_dump_json().encode())
+        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
 
         # 2. Save a PENDING task record (simulates crash before completion)
         record = TaskRecord(
             task_id="abc123",
-            parent_session_key="s1",
+            session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
         )
-        await store.save(record.store_key, record.model_dump_json().encode())
+        await store.save(
+            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            record.model_dump_json().encode(),
+        )
 
         # 3. Resume: new agent loads session
         agent, ctx = _make_agent(
@@ -1369,7 +1395,9 @@ class TestPendingTaskResume:
         assert len(interruption_msgs) >= 1
 
         # TaskRecord should now be FAILED
-        data = await store.load(record.store_key)
+        data = await store.load(
+            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id)
+        )
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.FAILED
@@ -1397,18 +1425,21 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/s1", snapshot.model_dump_json().encode())
+        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
 
         # Task completed between checkpoint and crash
         record = TaskRecord(
             task_id="xyz789",
-            parent_session_key="s1",
+            session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.COMPLETED,
             result="slow: data",
         )
-        await store.save(record.store_key, record.model_dump_json().encode())
+        await store.save(
+            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            record.model_dump_json().encode(),
+        )
 
         # Resume
         agent, ctx = _make_agent(
@@ -1424,7 +1455,9 @@ class TestPendingTaskResume:
         assert len(result_msgs) >= 1
 
         # Record should now be DELIVERED
-        data = await store.load(record.store_key)
+        data = await store.load(
+            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id)
+        )
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.DELIVERED
@@ -1456,18 +1489,21 @@ class TestPendingTaskResume:
             checkpoint_number=2,
             step=0,
         )
-        await store.save("agent/s1", snapshot.model_dump_json().encode())
+        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
 
         # Record is DELIVERED — drain already injected + checkpointed
         record = TaskRecord(
             task_id="done1",
-            parent_session_key="s1",
+            session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.DELIVERED,
             result="slow: data",
         )
-        await store.save(record.store_key, record.model_dump_json().encode())
+        await store.save(
+            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            record.model_dump_json().encode(),
+        )
 
         agent, ctx = _make_agent(
             [_text_response("ok")],
@@ -1496,17 +1532,20 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/s1", snapshot.model_dump_json().encode())
+        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
 
         record = TaskRecord(
             task_id="fail1",
-            parent_session_key="s1",
+            session_key="s1",
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.FAILED,
             error="Already failed",
         )
-        await store.save(record.store_key, record.model_dump_json().encode())
+        await store.save(
+            _agent_lifecycle_key(record.session_key, "test_agent", record.tool_call_id),
+            record.model_dump_json().encode(),
+        )
 
         agent, ctx = _make_agent(
             [_text_response("ok")],
@@ -1550,16 +1589,21 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/s1", snapshot.model_dump_json().encode())
+        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
 
         for tid, name, cid in [("t1", "slow_a", "fc_1"), ("t2", "slow_b", "fc_2")]:
             record = TaskRecord(
                 task_id=tid,
-                parent_session_key="s1",
+                session_key="s1",
                 tool_call_id=cid,
                 tool_name=name,
             )
-            await store.save(record.store_key, record.model_dump_json().encode())
+            await store.save(
+                _agent_lifecycle_key(
+                    record.session_key, "test_agent", record.tool_call_id
+                ),
+                record.model_dump_json().encode(),
+            )
 
         agent, ctx = _make_agent(
             [_text_response("recovered")],
@@ -1576,8 +1620,8 @@ class TestPendingTaskResume:
         assert len(t2_msgs) >= 1
 
         # Both records should be FAILED
-        for tid in ["t1", "t2"]:
-            data = await store.load(f"task/s1/{tid}")
+        for cid in ["fc_1", "fc_2"]:
+            data = await store.load(_agent_lifecycle_key("s1", "test_agent", cid))
             assert data is not None
             rec = TaskRecord.model_validate_json(data)
             assert rec.status == TaskStatus.FAILED
@@ -1631,16 +1675,27 @@ class TestChildTaskResume:
         )
         await parent.run("go", ctx=ctx)
 
-        keys = await store.list_keys("task/parent_s1/")
+        keys = [
+            k
+            for k in await store.list_keys(session_prefix("parent_s1"))
+            if is_lifecycle_key(k)
+        ]
         assert len(keys) == 1
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
 
-        # Child's checkpoint lives under the parent's session tree.
-        child_snap_data = await store.load(f"agent/parent_s1/task/{record.task_id}")
+        # Child's checkpoint lives under the parent's session tree at
+        # "<session>/agent/<parent>/tc_<call_id>".
+        child_snap_data = await store.load(
+            f"parent_s1/agent/test_agent/tc_{record.tool_call_id}"
+        )
         assert child_snap_data is not None
         child_snap = AgentCheckpoint.model_validate_json(child_snap_data)
+        # Child here is wrapped via ``LLMAgent.as_tool()`` (a
+        # ``ProcessorTool``), which copies the wrapped processor and
+        # sets its session path verbatim — the wrapped processor keeps
+        # its own configured name ("child"), not the tool's name.
         assert child_snap.processor_name == "child"
 
     @pytest.mark.anyio
@@ -1668,27 +1723,31 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
+        await store.save(
+            "parent_s1/agent/test_agent", parent_snapshot.model_dump_json().encode()
+        )
 
         # 2. PENDING task record — child_session_key intentionally unset
-        #    (child lives under parent_session_key at the task subpath).
+        #    (child lives under session_key at the task subpath).
         task_record = TaskRecord(
             task_id="ch1",
-            parent_session_key="parent_s1",
+            session_key="parent_s1",
             tool_call_id="fc_1",
             tool_name="child_agent",
             tool_call_arguments='{"text": "hello"}',
         )
         await store.save(
-            task_record.store_key,
+            _agent_lifecycle_key(
+                task_record.session_key, "test_agent", task_record.tool_call_id
+            ),
             task_record.model_dump_json().encode(),
         )
 
         # 3. Child's own session snapshot (checkpointed mid-execution).
-        #    Sits under the parent's session key at ``task/ch1``.
+        #    Lives at "<session>/agent/<parent>/tc_<call_id>".
         child_snapshot = AgentCheckpoint(
             session_key="parent_s1",
-            processor_name="child",
+            processor_name="child_agent",
             messages=[
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("work", role="user"),
@@ -1697,7 +1756,7 @@ class TestChildTaskResume:
             step=0,
         )
         await store.save(
-            "agent/parent_s1/task/ch1",
+            "parent_s1/agent/test_agent/tc_fc_1",
             child_snapshot.model_dump_json().encode(),
         )
 
@@ -1728,7 +1787,10 @@ class TestChildTaskResume:
         assert len(completed) >= 1
 
         # TaskRecord should be DELIVERED (drain completed + notified)
-        data = await store.load(task_record.store_key)
+        lifecycle_key = _agent_lifecycle_key(
+            task_record.session_key, "test_agent", task_record.tool_call_id
+        )
+        data = await store.load(lifecycle_key)
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.DELIVERED
@@ -1757,17 +1819,21 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
+        await store.save(
+            "parent_s1/agent/test_agent", parent_snapshot.model_dump_json().encode()
+        )
 
         # PENDING record WITHOUT child_session_key (plain bg tool)
         task_record = TaskRecord(
             task_id="t1",
-            parent_session_key="parent_s1",
+            session_key="parent_s1",
             tool_call_id="fc_1",
             tool_name="slow",
         )
         await store.save(
-            task_record.store_key,
+            _agent_lifecycle_key(
+                task_record.session_key, "test_agent", task_record.tool_call_id
+            ),
             task_record.model_dump_json().encode(),
         )
 
@@ -1817,24 +1883,29 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("agent/parent_s1", parent_snapshot.model_dump_json().encode())
+        await store.save(
+            "parent_s1/agent/test_agent", parent_snapshot.model_dump_json().encode()
+        )
 
-        # Two PENDING children
-        for tid, cid, sid in [
-            ("ch_a", "fc_1", "child/parent_s1/ch_a"),
-            ("ch_b", "fc_2", "child/parent_s1/ch_b"),
-        ]:
+        # Two PENDING children, each with its own task record + checkpoint
+        # at sibling paths under the parent's session.
+        for tid, cid in [("ch_a", "fc_1"), ("ch_b", "fc_2")]:
             rec = TaskRecord(
                 task_id=tid,
-                parent_session_key="parent_s1",
+                session_key="parent_s1",
                 tool_call_id=cid,
                 tool_name="child_agent",
                 tool_call_arguments='{"text": "hello"}',
             )
-            await store.save(rec.store_key, rec.model_dump_json().encode())
-            # Each child has its own snapshot
+            await store.save(
+                _agent_lifecycle_key("parent_s1", "test_agent", cid),
+                rec.model_dump_json().encode(),
+            )
+            # Each child's own checkpoint lives at the same path as the
+            # lifecycle, but in the agent kind tree (the .json file vs.
+            # the directory carrying its lifecycle leaf coexist on disk).
             snap = AgentCheckpoint(
-                session_key=sid,
+                session_key="parent_s1",
                 processor_name="child",
                 messages=[
                     InputMessageItem.from_text("prompt", role="system"),
@@ -1843,7 +1914,10 @@ class TestChildTaskResume:
                 checkpoint_number=1,
                 step=0,
             )
-            await store.save(f"agent/{sid}", snap.model_dump_json().encode())
+            await store.save(
+                f"parent_s1/agent/test_agent/tc_{cid}",
+                snap.model_dump_json().encode(),
+            )
 
         # Both children will complete with different results
         _child, tool = _make_child_tool(

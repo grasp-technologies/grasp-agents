@@ -1,23 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from ..llm.llm import LLM
-from ..run_context import CtxT, RunContext
-from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.durability.checkpoints import CheckpointKind
+from grasp_agents.run_context import CtxT, RunContext
+from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
+from grasp_agents.types.tool import BaseTool, ToolProgressCallback
+
 from .llm_agent_memory import LLMAgentMemory
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable
+
+    from grasp_agents.llm.llm import LLM
+
     from .llm_agent import LLMAgent
 
 
 @runtime_checkable
-class AgentPromptBuilder(Protocol):
+class AgentToolPromptBuilder(Protocol):
     """
     Builds a prompt string for an AgentTool child agent.
 
@@ -35,7 +39,7 @@ class AgentPromptBuilder(Protocol):
 
 
 async def _resolve_builder(
-    builder: AgentPromptBuilder,
+    builder: AgentToolPromptBuilder,
     prompt: str,
     memory: LLMAgentMemory,
     ctx: RunContext[Any],
@@ -66,11 +70,6 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
     user message.
     """
 
-    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-        0: "_in_type",
-        1: "_out_type",
-    }
-
     def __init__(
         self,
         *,
@@ -79,8 +78,8 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         llm: LLM,
         tools: list[BaseTool[Any, Any, CtxT]] | None = None,
         sys_prompt: str | None = None,
-        sys_prompt_builder: AgentPromptBuilder | None = None,
-        in_prompt_builder: AgentPromptBuilder | None = None,
+        sys_prompt_builder: AgentToolPromptBuilder | None = None,
+        in_prompt_builder: AgentToolPromptBuilder | None = None,
         max_turns: int = 30,
         background: bool = False,
         timeout: float | None = None,
@@ -93,21 +92,26 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             timeout=timeout,
         )
         self._llm = llm
-        self._own_tools = tools or []
+
         self._sys_prompt = sys_prompt
         self._sys_prompt_builder = sys_prompt_builder
         self._in_prompt_builder = in_prompt_builder
         self._max_turns = max_turns
         self.inherit_tools = inherit_tools
+        self._own_tools = tools or []
         self._parent_tools: list[BaseTool[Any, Any, CtxT]] = []
         self._parent_memory: LLMAgentMemory | None = None
 
         self._in_type = AgentToolInput
-        self._out_type: type[str] = str
+        self._out_type = str
 
     @property
     def resumable(self) -> bool:
         return True
+
+    @property
+    def checkpoint_kind(self) -> CheckpointKind | None:
+        return CheckpointKind.AGENT
 
     def set_parent_tools(self, tools: list[BaseTool[Any, Any, CtxT]]) -> None:
         """Called by parent LLMAgent to provide sibling tools."""
@@ -141,7 +145,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         """Resolve sys_prompt and user message via builders or defaults."""
         memory = self._parent_memory or LLMAgentMemory()
         sys_prompt = self._sys_prompt
-        user_msg = prompt
+        in_prompt = prompt
 
         if ctx is not None:
             if self._sys_prompt_builder is not None:
@@ -150,11 +154,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
                 )
 
             if self._in_prompt_builder is not None:
-                user_msg = await _resolve_builder(
+                in_prompt = await _resolve_builder(
                     self._in_prompt_builder, prompt, memory, ctx
                 )
 
-        return sys_prompt, user_msg
+        return sys_prompt, in_prompt
 
     async def _prepare_child(
         self,
@@ -162,34 +166,26 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         *,
         ctx: RunContext[CtxT] | None,
         exec_id: str | None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> tuple[LLMAgent[AgentToolInput, str, CtxT], str | None]:
         """Build the child agent with resolved prompts."""
-        from .llm_agent import LLMAgent as _LLMAgent
+        del exec_id
+        from .llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
 
         if inp is not None:
             sys_prompt, in_prompt = await self._build_prompts(inp.prompt, ctx)
         else:
             sys_prompt, in_prompt = None, None
 
-        child_name = f"{self.name}:{(exec_id or 'x')[:8]}"
-
         agent = _LLMAgent[AgentToolInput, str, CtxT](
-            name=child_name,
+            name=self.name,
             llm=self._llm,
             tools=self._resolve_tools(),
             sys_prompt=sys_prompt,
             max_turns=self._max_turns,
         )
-
-        # Nest the child's checkpoint under the caller's session so its
-        # store key doesn't collide with the parent agent's. Sharing
-        # ``ctx.session_key`` means approval / file-edit / usage scopes
-        # carry through unchanged. ``set_session_path`` takes the path
-        # verbatim — the caller supplies a deterministic path (e.g.
-        # ``["task", task_id]``) that must match across resume.
-        if session_subpath:
-            agent.set_session_path(session_subpath)
+        if session_path is not None:
+            agent.set_session_path(session_path)
 
         return agent, in_prompt
 
@@ -200,11 +196,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> str:
         del progress_callback
         agent, in_prompt = await self._prepare_child(
-            inp, ctx=ctx, exec_id=exec_id, session_subpath=session_subpath
+            inp, ctx=ctx, exec_id=exec_id, session_path=session_path
         )
         result = await agent.run(chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id)
 
@@ -217,11 +213,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del progress_callback
         agent, in_prompt = await self._prepare_child(
-            inp=inp, ctx=ctx, exec_id=exec_id, session_subpath=session_subpath
+            inp=inp, ctx=ctx, exec_id=exec_id, session_path=session_path
         )
         async for event in self._yield_child_events(
             agent, chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id
@@ -233,10 +229,10 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
-        session_subpath: Sequence[str] | None = None,
+        session_path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         agent, _ = await self._prepare_child(
-            inp=None, ctx=ctx, exec_id=exec_id, session_subpath=session_subpath
+            inp=None, ctx=ctx, exec_id=exec_id, session_path=session_path
         )
         async for event in self._yield_child_events(
             agent, chat_inputs=None, ctx=ctx, exec_id=exec_id
