@@ -61,10 +61,6 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         self._in_type = start_proc.in_type
         self._out_type = end_proc.out_type
 
-        # TODO: Is it still needed?
-        for subproc in subprocs:
-            subproc.recipients = None
-
     def _propagate_to_children(self) -> None:
         for subproc in self._subprocs:
             subproc.on_adopted(self._path)

@@ -373,8 +373,8 @@ class TestRecursiveCheckpointStorage:
 
         result = await collect_payloads(wf, ctx, in_args="start")
         assert sorted(result) == [
-            "start:a->worker->collect",
-            "start:b->worker->collect",
+            "start:a->worker_0->collect",
+            "start:b->worker_1->collect",
         ]
 
         # Workflow checkpoint exists
@@ -492,8 +492,8 @@ class TestRecursiveResume:
         assert fan2.call_count == 0  # skipped (step 0 done)
         assert collect2.call_count == 1  # ran
         assert sorted(result) == [
-            "start:a->worker->collect",
-            "start:b->worker->collect",
+            "start:a->worker_0->collect",
+            "start:b->worker_1->collect",
         ]
 
     @pytest.mark.asyncio
@@ -549,8 +549,8 @@ class TestRecursiveResume:
         assert collect2.call_count == 1
         # Both items present: item 0 from checkpoint, item 1 re-run
         assert sorted(result) == [
-            "start:a->worker->collect",
-            "start:b->worker->collect",
+            "start:a->worker_0->collect",
+            "start:b->worker_1->collect",
         ]
 
     @pytest.mark.asyncio
@@ -679,8 +679,8 @@ class TestRecursiveResume:
         assert collect2.call_count == 1  # ran
         # Both items: item 0 from parallel checkpoint, item 1 re-run
         assert sorted(result) == [
-            "start:a->worker->collect",
-            "start:b->worker->collect",
+            "start:a->worker_0->collect",
+            "start:b->worker_1->collect",
         ]
 
     @pytest.mark.asyncio
@@ -708,8 +708,8 @@ class TestRecursiveResume:
 
         result = await collect_runner_payloads(runner, chat_inputs="start")
         assert sorted(result) == [
-            "start->entry:a->worker->collect",
-            "start->entry:b->worker->collect",
+            "start->entry:a->worker_0->collect",
+            "start->entry:b->worker_1->collect",
         ]
 
         # Runner checkpoint

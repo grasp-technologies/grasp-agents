@@ -398,7 +398,7 @@ class TestParallelProcessorCheckpoint:
         ctx: RunContext[None] = RunContext(state=None)
 
         result = await run_parallel(par, ctx, in_args=["a", "b", "c"])
-        assert sorted(result) == ["a->worker", "b->worker", "c->worker"]
+        assert sorted(result) == ["a->worker_0", "b->worker_1", "c->worker_2"]
 
     @pytest.mark.asyncio
     async def test_checkpoint_saved_per_completion(self) -> None:
@@ -454,7 +454,7 @@ class TestParallelProcessorCheckpoint:
         result = await run_parallel(par2, ctx2, step=0)
 
         # "a" from checkpoint, "FAIL" re-run successfully
-        assert sorted(result) == ["FAIL->worker", "a->worker"]
+        assert sorted(result) == ["FAIL->worker_1", "a->worker_0"]
 
     @pytest.mark.asyncio
     async def test_resume_no_pending_is_noop(self) -> None:
@@ -476,7 +476,7 @@ class TestParallelProcessorCheckpoint:
         )
 
         result = await run_parallel(par2, ctx2, step=0)
-        assert sorted(result) == ["a->worker", "b->worker"]
+        assert sorted(result) == ["a->worker_0", "b->worker_1"]
         assert subproc2.call_count == 0
 
     @pytest.mark.asyncio
@@ -638,7 +638,7 @@ class TestCrashAfterCompletion:
         result = await run_workflow(wf2, ctx2)
         assert fan2.call_count == 0  # skipped
         assert worker2.call_count == 0  # all items from checkpoint
-        assert sorted(result) == ["start:a->worker", "start:b->worker"]
+        assert sorted(result) == ["start:a->worker_0", "start:b->worker_1"]
 
 
 # ---------- Store failure propagation ----------

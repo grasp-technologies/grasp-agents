@@ -142,6 +142,3 @@ class RunnerCheckpoint(ProcessorCheckpoint):
 
     pending_events: list[ProcPacketOutEvent]
     active_steps: dict[str, int] = Field(default_factory=dict)
-
-
-# TODO: Put TaskREcord here too?

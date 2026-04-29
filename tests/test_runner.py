@@ -276,7 +276,10 @@ class TestRunnerBasicExecution:
         )
 
         result = await run_runner(runner, chat_inputs="s")
-        assert sorted(result) == ["s:x->worker->collector", "s:y->worker->collector"]
+        assert sorted(result) == [
+            "s:x->worker_0->collector",
+            "s:y->worker_1->collector",
+        ]
 
 
 # ---------- Checkpoint saving ----------
@@ -499,7 +502,10 @@ class TestRunnerComposableCheckpointing:
         )
 
         result = await run_runner(runner, chat_inputs="s")
-        assert sorted(result) == ["s:x->worker->collector", "s:y->worker->collector"]
+        assert sorted(result) == [
+            "s:x->worker_0->collector",
+            "s:y->worker_1->collector",
+        ]
 
         # ParallelProcessor should have its own checkpoint in the store
         par_key = f"run-comp/parallel/{par.name}"

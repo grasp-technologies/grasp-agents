@@ -46,12 +46,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
 
         self._drop_failed = drop_failed
 
-        # This disables recipient selection in the subprocessor,
-        # but preserves subproc.select_recipients_impl
-
-        # TODO: Is it still needed?
-        subproc.recipients = None
-
     # --- Checkpointing ---
 
     def _propagate_to_children(self) -> None:
@@ -101,7 +95,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             return self._subproc.select_recipients_impl(
                 output=output, ctx=ctx, exec_id=exec_id
             )
-        # subproc.recipients was cleared; fall back to our own copy
         return cast("list[ProcName]", self.recipients or [])
 
     def validate_inputs(
@@ -183,21 +176,18 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         for idx, pkt in completed_map.items():
             out_packets_map[idx] = cast("Packet[OutT]", pkt)
 
-        # Create replicas only for uncompleted indices. Each replica
-        # gets a one-segment combined identifier ``"<subproc_name>_<i>"``
-        # appended to the parallel processor's own path, so resumable
-        # subprocs (e.g. LLMAgent) don't share a checkpoint key across
-        # siblings. The combined segment encodes both the template
-        # subproc's name and the replica index in one path component.
+        # Replicas get unique names ``"<subproc_name>_<i>"`` so checkpoint
+        # keys, event sources, and printer output all distinguish them.
         pending_indices = [i for i in range(len(all_in_args)) if i not in completed_map]
         if pending_indices:
             replicas: dict[int, Processor[InT, OutT, CtxT]] = {}
+            replica_names: set[str] = set()
             for i in pending_indices:
-                # TODO: Perhaps each replica should get a unique name?
-                # Then we can use on_adopted instead of set_path.
                 rep = self._subproc.copy()
-                rep.set_path([*self._path, f"{self._subproc.name}_{i}"])
+                rep.name = f"{self._subproc.name}_{i}"
+                rep.on_adopted(self._path)
                 replicas[i] = rep
+                replica_names.add(rep.name)
 
             streams = [
                 replicas[i].run_stream(
@@ -215,7 +205,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 real_idx = pending_indices[stream_idx]
                 if (
                     isinstance(event, ProcPacketOutEvent)
-                    and event.source == self._subproc.name
+                    and event.source in replica_names
                 ):
                     out_packets_map[real_idx] = event.data
                     completed_map[real_idx] = event.data

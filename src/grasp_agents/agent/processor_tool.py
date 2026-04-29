@@ -60,18 +60,14 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         *,
         path: Sequence[str] | None = None,
     ) -> Processor[_InT, _OutT, CtxT]:
-        """Return a fresh copy when ``ctx`` has a store; else the shared instance."""
-        if Processor.is_resumable(ctx):
-            # TODO: why do we copy only when resumable?
-            proc = self._processor.copy()
-            if path is not None:
-                proc.set_path(list(path))
-            return proc
-
+        """Return a fresh copy with ``path`` set; ``_processor`` is the template."""
+        del ctx
+        proc = self._processor.copy()
+        if path is not None:
+            proc.set_path(list(path))
         if self._reset_memory_on_run:
-            self._processor.memory.reset()
-
-        return self._processor
+            proc.memory.reset()
+        return proc
 
     async def _run(
         self,

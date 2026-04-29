@@ -6,7 +6,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Final,
     Generic,
     Self,
     TypeVar,
@@ -113,7 +112,7 @@ class Processor(
     # that support resuming override this with a ``CheckpointKind`` value.
     _checkpoint_kind: ClassVar[CheckpointKind | None] = None
 
-    name: Final[str]
+    name: str
 
     max_retries: int
     recipients: Sequence[ProcName] | None
