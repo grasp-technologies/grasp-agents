@@ -812,7 +812,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "0.6.46"
+version = "0.6.47"
 source = { editable = "." }
 dependencies = [
     { name = "dotenv" },
