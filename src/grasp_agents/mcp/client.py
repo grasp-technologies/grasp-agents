@@ -72,6 +72,7 @@ class MCPClient:
             list[MCPTool | MCPListResourcesTool | MCPReadResourceTool] | None
         ) = None
         self._capabilities: ServerCapabilities | None = None
+        self._instructions: str | None = None
 
     @property
     def name(self) -> str:
@@ -81,6 +82,11 @@ class MCPClient:
     def server_capabilities(self) -> ServerCapabilities | None:
         """Server capabilities discovered during connection."""
         return self._capabilities
+
+    @property
+    def instructions(self) -> str | None:
+        """Server-supplied instructions text (per MCP ``InitializeResult``)."""
+        return self._instructions
 
     async def connect(self) -> None:
         """Connect to the MCP server and discover tools."""
@@ -114,6 +120,7 @@ class MCPClient:
         )
         init_result = await self._session.initialize()
         self._capabilities = init_result.capabilities
+        self._instructions = init_result.instructions
 
         tools: list[MCPTool | MCPListResourcesTool | MCPReadResourceTool] = []
 

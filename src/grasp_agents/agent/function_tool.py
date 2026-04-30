@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, overload
 
 from pydantic import BaseModel, create_model
 
-from ..run_context import RunContext
 from ..types.tool import BaseTool, ToolProgressCallback
+
+if TYPE_CHECKING:
+    from ..run_context import RunContext
 
 # Parameters with these names are passed through from the executor,
 # not included in the tool's input schema.

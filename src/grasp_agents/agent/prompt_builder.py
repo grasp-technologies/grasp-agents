@@ -1,10 +1,14 @@
+from __future__ import annotations
+
+import inspect
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeAlias, cast, final
 
 from pydantic import BaseModel, TypeAdapter
 
-from ..run_context import CtxT, RunContext
+from ..run_context import CtxT
 from ..types.content import (
     Content,
     InputImage,
@@ -16,11 +20,32 @@ from ..types.errors import InputPromptBuilderError
 from ..utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
+    from ..run_context import RunContext
     from ..types.hooks import InputContentBuilder, SystemPromptBuilder
 from ..types.io import InT, LLMPrompt
 from ..types.items import InputMessageItem
 
 PromptArgumentType: TypeAlias = str | bool | int
+
+SectionCompute: TypeAlias = Callable[
+    ..., "str | Awaitable[str | None] | None"
+]
+
+
+@dataclass(frozen=True)
+class SystemPromptSection:
+    """
+    A named, lazy block appended to the system prompt at run time.
+
+    ``compute`` is invoked with ``(ctx, exec_id)`` per agent run, may be sync
+    or async, and returns the rendered text or ``None`` (omit). ``cache_break``
+    is a forward-compat placeholder for provider-level cache control; it is
+    not honored by any provider today.
+    """
+
+    name: str
+    compute: SectionCompute
+    cache_break: bool = False
 
 
 class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
@@ -41,6 +66,12 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         self.system_prompt_builder: SystemPromptBuilder[CtxT] | None = None
         self.input_content_builder: InputContentBuilder[InT, CtxT] | None = None
 
+        # Sections appended to the system prompt at run time. Each section's
+        # compute receives (ctx, exec_id) and may be sync or async. Order is
+        # preserved; ``None`` outputs are dropped. Skills (and later memory)
+        # plug in here.
+        self.system_prompt_sections: list[SystemPromptSection] = []
+
     @property
     def sys_prompt(self) -> LLMPrompt | None:
         return self._sys_prompt
@@ -49,12 +80,34 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
     def in_prompt(self) -> LLMPrompt | None:
         return self._in_prompt
 
-    @final
-    def build_system_prompt(self, *, ctx: RunContext[CtxT], exec_id: str) -> str | None:
-        if self.system_prompt_builder is not None:
-            return self.system_prompt_builder(ctx=ctx, exec_id=exec_id)
+    def add_system_prompt_section(self, section: SystemPromptSection) -> None:
+        self.system_prompt_sections.append(section)
 
-        return self.sys_prompt
+    @final
+    async def build_system_prompt(
+        self, *, ctx: RunContext[CtxT], exec_id: str
+    ) -> str | None:
+        if self.system_prompt_builder is not None:
+            base = self.system_prompt_builder(ctx=ctx, exec_id=exec_id)
+        else:
+            base = self.sys_prompt
+
+        if not self.system_prompt_sections:
+            return base
+
+        rendered: list[str] = []
+        for section in self.system_prompt_sections:
+            result = section.compute(ctx=ctx, exec_id=exec_id)
+            if inspect.isawaitable(result):
+                result = await result
+            if result:
+                rendered.append(result)
+
+        if not rendered:
+            return base
+        if not base:
+            return "\n\n".join(rendered)
+        return "\n\n".join([base, *rendered])
 
     @final
     def build_input_message(

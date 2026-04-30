@@ -336,22 +336,25 @@ class TestBuildInputMessage:
 class TestSystemPromptBuilder:
     """Test system prompt hook."""
 
-    def test_default_returns_sys_prompt(self):
+    @pytest.mark.anyio
+    async def test_default_returns_sys_prompt(self):
         builder = _make_builder(str, sys_prompt="Be helpful.")
-        result = builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
+        result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result == "Be helpful."
 
-    def test_hook_overrides_sys_prompt(self):
+    @pytest.mark.anyio
+    async def test_hook_overrides_sys_prompt(self):
         builder = _make_builder(str, sys_prompt="Original.")
 
         def custom_sys(*, ctx, exec_id):
             return "Dynamic prompt"
 
         builder.system_prompt_builder = custom_sys  # type: ignore[assignment]
-        result = builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
+        result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result == "Dynamic prompt"
 
-    def test_no_sys_prompt_returns_none(self):
+    @pytest.mark.anyio
+    async def test_no_sys_prompt_returns_none(self):
         builder = _make_builder(str)
-        result = builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
+        result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result is None

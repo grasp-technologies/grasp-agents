@@ -17,6 +17,10 @@ from .agent.approval_store import (
     PendingApproval,
     build_store_approval,
 )
+from .agent.env_section import (
+    ENV_INFO_SECTION_NAME,
+    make_env_info_section,
+)
 from .agent.function_tool import FunctionTool, function_tool
 from .agent.llm_agent import LLMAgent
 from .agent.llm_agent_memory import LLMAgentMemory
@@ -57,6 +61,25 @@ from .printer import Printer, print_event_stream
 from .processors.parallel_processor import ParallelProcessor
 from .processors.processor import Processor
 from .run_context import RunContext
+from .skills import (
+    ParsedSlashCommand,
+    Skill,
+    SkillError,
+    SkillFormatError,
+    SkillFrontmatter,
+    SkillNotFoundError,
+    SkillRegistry,
+    attach_skills,
+    discover_skills,
+    list_skills,
+    load_skill,
+    load_skill_md,
+    parse_named_args,
+    parse_skill_md,
+    parse_slash_command,
+    render_available_skills_block,
+    skills_system_prompt_section,
+)
 from .types.content import Content, InputImage, InputRenderable
 from .types.events import (
     BackgroundTaskCompletedEvent,
@@ -109,19 +132,23 @@ from .utils.schema import exclude_fields
 
 try:
     from .mcp import (
+        MCP_INSTRUCTIONS_SECTION_NAME,
         MCPClient,
         MCPListResourcesTool,
         MCPReadResourceTool,
         MCPServerSSE,
         MCPServerStdio,
         MCPTool,
+        make_mcp_instructions_section,
     )
 except ImportError:
     pass
 
 __all__ = [
     "DEFAULT_DENY_MESSAGE",
+    "ENV_INFO_SECTION_NAME",
     "LLM",
+    "MCP_INSTRUCTIONS_SECTION_NAME",
     "AgentCheckpoint",
     "AgentTool",
     "AgentToolInput",
@@ -181,6 +208,7 @@ __all__ = [
     "OutputMessageItemEvent",
     "Packet",
     "ParallelProcessor",
+    "ParsedSlashCommand",
     "PendingApproval",
     "Printer",
     "ProcName",
@@ -192,6 +220,12 @@ __all__ = [
     "Response",
     "RetryPolicy",
     "RunContext",
+    "Skill",
+    "SkillError",
+    "SkillFormatError",
+    "SkillFrontmatter",
+    "SkillNotFoundError",
+    "SkillRegistry",
     "StopReason",
     "SystemMessage",
     "TaskRecord",
@@ -205,17 +239,29 @@ __all__ = [
     "TurnStartEvent",
     "UserMessage",
     "WebSearchCallItem",
+    "attach_skills",
     "build_callback_approval",
     "build_store_approval",
     "classify_error",
     "count_tokens",
     "decide_next_step",
+    "discover_skills",
     "exclude_fields",
     "function_tool",
     "get_context_window",
     "get_model_capabilities",
     "is_retryable",
+    "list_skills",
+    "load_skill",
+    "load_skill_md",
+    "make_env_info_section",
+    "make_mcp_instructions_section",
+    "parse_named_args",
+    "parse_skill_md",
+    "parse_slash_command",
     "print_event_stream",
     "register_recovery_hint",
+    "render_available_skills_block",
+    "skills_system_prompt_section",
     "stream_events",
 ]

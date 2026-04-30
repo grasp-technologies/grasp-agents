@@ -2,7 +2,10 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, ClassVar, Final, Generic, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, cast, final
+
+if TYPE_CHECKING:
+    from .prompt_builder import SystemPromptSection
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -237,6 +240,24 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return cast("LLMAgentMemory", self._memory)
 
     @property
+    def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:
+        """Read-only view of registered system-prompt sections, in order."""
+        return tuple(self._prompt_builder.system_prompt_sections)
+
+    async def build_system_prompt(
+        self, ctx: RunContext[CtxT], exec_id: str = ""
+    ) -> str | None:
+        """
+        Render the agent's full system prompt (base + every section).
+
+        Useful for inspection / debugging — consumers don't normally need to
+        call this; the agent invokes it internally on every run.
+        """
+        return await self._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id=exec_id
+        )
+
+    @property
     def _has_build_memory_impl(self) -> bool:
         return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
 
@@ -333,7 +354,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         )
         await self._serialize_checkpoint(ctx, checkpoint)
 
-    def _memorize_inputs(
+    async def _memorize_inputs(
         self,
         *,
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
@@ -343,7 +364,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> list[InputMessageItem]:
         call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
 
-        formatted_sys_prompt = self._prompt_builder.build_system_prompt(
+        formatted_sys_prompt = await self._prompt_builder.build_system_prompt(
             ctx=ctx, exec_id=exec_id
         )
         fresh_init = self.reset_memory_on_run or self.memory.is_empty
@@ -458,7 +479,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # loaded from checkpoint, skip memorization.
         if not is_redelivery:
             self._loop.turn = 0
-            messages_to_expose = self._memorize_inputs(
+            messages_to_expose = await self._memorize_inputs(
                 chat_inputs=chat_inputs, in_args=inp, **call_kwargs
             )
             self._print_messages(messages_to_expose, **call_kwargs)
@@ -612,6 +633,18 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> SystemPromptBuilder[CtxT]:
         self._prompt_builder.system_prompt_builder = func
         return func
+
+    def add_system_prompt_section(self, section: "SystemPromptSection") -> None:
+        """
+        Append a :class:`SystemPromptSection` to the agent's prompt builder.
+
+        Sections are rendered after the user's ``sys_prompt`` /
+        ``system_prompt_builder`` output, in registration order. Skills, env
+        info, MCP instructions, and (later) memory plug in via this method.
+        Names are not enforced unique — the same section may appear twice if
+        you register it twice; deduplicate on the caller side if needed.
+        """
+        self._prompt_builder.add_system_prompt_section(section)
 
     def add_input_content_builder(
         self, func: InputContentBuilder[InT, CtxT]

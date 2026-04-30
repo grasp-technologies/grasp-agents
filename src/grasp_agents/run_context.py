@@ -3,15 +3,20 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .agent.approval_store import ApprovalStore
-from .durability.checkpoint_store import CheckpointStore
-from .printer import Printer
-from .tools.file_edit.store import FileEditStore
-from .types.io import ProcName
-from .types.response import Response
-from .usage_tracker import UsageTracker
-
+# CtxT must be defined before the skills import below, because
+# ``skills.registry`` (via injection → prompt_builder) imports CtxT from this
+# module. Keeping it at the top breaks the load-order circular dependency
+# without forcing every consumer through ``TYPE_CHECKING``.
 CtxT = TypeVar("CtxT")
+
+from .agent.approval_store import ApprovalStore  # noqa: E402
+from .durability.checkpoint_store import CheckpointStore  # noqa: E402
+from .printer import Printer  # noqa: E402
+from .skills.registry import SkillRegistry  # noqa: E402
+from .tools.file_edit.store import FileEditStore  # noqa: E402
+from .types.io import ProcName  # noqa: E402
+from .types.response import Response  # noqa: E402
+from .usage_tracker import UsageTracker  # noqa: E402
 
 
 class RunContext(BaseModel, Generic[CtxT]):
@@ -42,5 +47,11 @@ class RunContext(BaseModel, Generic[CtxT]):
     # ``grasp_agents.tools.file_edit`` route their state lookups through
     # this store keyed by ``session_key``.
     file_edit_store: FileEditStore | None = Field(default=None, exclude=True)
+
+    # Skills registry consumed by the top-level ``load_skill`` /
+    # ``list_skills`` tools and the ``skills_system_prompt_section``.
+    # Attach via ``grasp_agents.skills.attach_skills(agent)`` and pass the
+    # populated registry on the ``RunContext``.
+    skills: SkillRegistry | None = Field(default=None, exclude=True)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
