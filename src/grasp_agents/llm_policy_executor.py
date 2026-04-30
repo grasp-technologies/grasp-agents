@@ -456,7 +456,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
             extra_llm_settings=extra_llm_settings,
         ):
             yield event
-
         final_answer = self.get_final_answer()
         if final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, call_id=call_id)
@@ -522,7 +521,12 @@ class LLMPolicyExecutor(Generic[CtxT]):
                 async for event in self._force_generate_final_answer_stream(
                     extra_llm_settings=_extra_llm_settings, **call_kwargs
                 ):
+                    if isinstance(event, GenMessageEvent):
+                        gen_message = event.data
                     yield event
+                await self.on_after_generate(
+                    gen_message, num_turns=turns, **call_kwargs
+                )
                 logger.info(
                     f"Max turns reached: {self.max_turns}. Exiting the tool call loop."
                 )
