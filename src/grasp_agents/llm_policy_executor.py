@@ -463,8 +463,10 @@ class LLMPolicyExecutor(Generic[CtxT]):
         overridden_tool_choice = _extra_llm_settings.pop("tool_choice", None)
         if overridden_tool_choice is not None:
             logger.warning(
-                "tool_choice in extra_llm_settings was ignored during force-generate;"
-                "force_final_answer requires a fixed NamedToolChoice"
+                "Ignoring tool_choice=%r from extra_llm_settings during forced final-answer "
+                "generation; pinned to %r instead.",
+                overridden_tool_choice,
+                tool_choice,
             )
         gen_message: AssistantMessage | None = None
         async for event in self.generate_message_stream(
@@ -554,8 +556,6 @@ class LLMPolicyExecutor(Generic[CtxT]):
                     num_turns=turns,
                     **call_kwargs,
                 ):
-                    if isinstance(event, GenMessageEvent):
-                        gen_message = event.data
                     yield event
                 logger.info(
                     f"Max turns reached: {self.max_turns}. Exiting the tool call loop."
