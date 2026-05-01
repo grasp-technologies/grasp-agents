@@ -1,16 +1,23 @@
-"""Tests pinning where ``on_after_generate`` fires when the policy executor
-runs out of turns and falls back to ``_force_generate_final_answer_stream``.
+"""Tests pinning when ``on_before_generate`` and ``on_after_generate`` fire
+during ``_force_generate_final_answer_stream`` and how those firings are
+observed end-to-end through ``execute_stream``.
 
-The contract under test:
-- ``_force_generate_final_answer_stream`` is a pure event producer; consumed in
-  isolation, it must NOT invoke the hook.
-- ``execute_stream`` is the orchestrator; after consuming the force-generate
-  stream it MUST fire ``on_after_generate`` exactly once, with the gen message
-  produced by the force-generate phase and the current ``num_turns``.
-- Events emitted by the force-generate stream must be forwarded to the outer
-  consumer of ``execute_stream``.
-- The hook must fire AFTER all force-generate events have been delivered, not
-  interleaved with them.
+Producer contract under test:
+- ``_force_generate_final_answer_stream`` MUST fire ``on_before_generate``
+  exactly once, AFTER the synthetic user-prompt event has been yielded and
+  BEFORE any ``GenMessageEvent`` is yielded.
+- It MUST fire ``on_after_generate`` exactly once, AFTER every event from
+  the underlying generation has been yielded, with the produced
+  ``gen_message`` and the ``num_turns`` it was called with.
+- Mutations the before-hook makes to its ``extra_llm_settings`` argument
+  MUST flow into ``generate_message_stream`` — that is the contract
+  subclasses (e.g. usage trackers, per-call parameter injectors) rely on.
+
+Orchestrator contract under test:
+- ``execute_stream``, when ``max_turns`` is exhausted, surfaces both
+  hook firings to subscribers: a before+after pair for the first generation,
+  and a before+after pair for the force-generate. Prior to PRO-2052 the
+  force-generate's pair was missing, which undercounted usage.
 """
 
 import sys
@@ -43,8 +50,7 @@ from grasp_agents.typing.tool import BaseTool, ToolChoice
 
 class _StubLLM:
     """Stand-in for the ``LLM`` argument. Never invoked because the test
-    subclass overrides ``generate_message_stream`` to bypass the LLM entirely.
-    """
+    subclass overrides ``generate_message_stream``."""
 
     model_name: str = "stub-model"
 
@@ -68,9 +74,9 @@ class _DummyTool(BaseTool[_DummyToolIn, None, Any]):
 
 
 class _StubExecutor(LLMPolicyExecutor[Any]):
-    """Bypasses the LLM by yielding canned ``GenMessageEvent``s in the same
-    order they appear in ``canned_messages``. Updates memory the same way the
-    real ``generate_message_stream`` does, so ``get_final_answer`` works.
+    """Bypasses the LLM by yielding canned ``GenMessageEvent``s. Also captures
+    the ``extra_llm_settings`` dict it was called with so the before-hook
+    propagation test can verify mutations made by the hook reach the LLM call.
     """
 
     def __init__(
@@ -82,6 +88,7 @@ class _StubExecutor(LLMPolicyExecutor[Any]):
         super().__init__(*args, **kwargs)
         self._canned_messages = list(canned_messages)
         self._gen_count = 0
+        self.observed_settings: list[dict[str, Any]] = []
 
     async def generate_message_stream(  # type: ignore[override]
         self,
@@ -91,6 +98,10 @@ class _StubExecutor(LLMPolicyExecutor[Any]):
         call_id: str,
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
+        # Snapshot what the LLM call would see, then behave like the real
+        # ``generate_message_stream``: emit one GenMessageEvent and update
+        # memory so ``get_final_answer`` works.
+        self.observed_settings.append(dict(extra_llm_settings))
         msg = self._canned_messages[self._gen_count]
         self._gen_count += 1
         self.memory.update([msg])
@@ -121,11 +132,11 @@ def _msg(content: str) -> AssistantMessage:
     return AssistantMessage(content=content)
 
 
-class _HookRecorder:
-    """Records every invocation of ``on_after_generate_impl`` together with the
-    list of events that have already been delivered to the outer consumer at
-    hook time. The latter is what lets the ordering test prove the hook fires
-    AFTER all preceding events have been yielded.
+class _AfterHookRecorder:
+    """Records every invocation of ``on_after_generate_impl`` together with
+    the events delivered to the consumer at the moment the hook fired.
+    The latter pins ordering — proving the hook fires AFTER its preceding
+    events have been yielded.
     """
 
     def __init__(self, observed_events: list[Event[Any]]) -> None:
@@ -150,45 +161,75 @@ class _HookRecorder:
         )
 
 
-# ---------------------- Tests ----------------------
+class _BeforeHookRecorder:
+    """Records every invocation of ``on_before_generate_impl``. Captures both
+    a snapshot of ``extra_llm_settings`` (so later mutations don't bleed into
+    the record) and the live reference (so the propagation test can verify
+    the hook receives the same dict the LLM call will see).
+    """
 
+    def __init__(self, observed_events: list[Event[Any]]) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._observed_events = observed_events
 
-class TestForceGenerateAfterGenerateHook(unittest.IsolatedAsyncioTestCase):
-    async def test_force_generate_stream_does_not_fire_hook(self) -> None:
-        # Pure-producer invariant: calling the force-generate stream directly
-        # must not invoke the hook. The hook is the orchestrator's
-        # responsibility, not the producer's.
-        executor = _make_executor(
-            max_turns=1, canned_messages=[_msg("forced")]
+    async def __call__(
+        self,
+        *,
+        ctx: RunContext[Any],
+        call_id: str,
+        num_turns: int,
+        extra_llm_settings: dict[str, Any],
+    ) -> None:
+        self.calls.append(
+            {
+                "extra_llm_settings": dict(extra_llm_settings),
+                "extra_llm_settings_ref": extra_llm_settings,
+                "num_turns": num_turns,
+                "call_id": call_id,
+                "events_seen_so_far": list(self._observed_events),
+            }
         )
-        recorder = _HookRecorder(observed_events=[])
+
+
+# ---------------------- After-generate hook tests ----------------------
+
+
+class TestForceGenerateAfterHook(unittest.IsolatedAsyncioTestCase):
+    async def test_producer_fires_after_hook_with_correct_args(self) -> None:
+        # Producer-in-isolation contract: ``on_after_generate`` fires exactly
+        # once, carrying the produced gen_message and the ``num_turns`` the
+        # caller passed in.
+        forced = _msg("forced")
+        executor = _make_executor(max_turns=1, canned_messages=[forced])
+
+        events: list[Event[Any]] = []
+        recorder = _AfterHookRecorder(observed_events=events)
         executor.on_after_generate_impl = recorder  # type: ignore[method-assign]
 
         ctx: RunContext[Any] = RunContext()
-        events: list[Event[Any]] = []
         async for event in executor._force_generate_final_answer_stream(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-            ctx=ctx, call_id="cid", extra_llm_settings={}
+            ctx=ctx, call_id="cid", extra_llm_settings={}, num_turns=7
         ):
             events.append(event)
 
-        self.assertEqual(recorder.calls, [])
-        # And the producer still emits its expected events.
-        self.assertTrue(any(isinstance(e, UserMessageEvent) for e in events))
-        self.assertTrue(any(isinstance(e, GenMessageEvent) for e in events))
+        self.assertEqual(len(recorder.calls), 1)
+        call = recorder.calls[0]
+        self.assertEqual(call["gen_message"], forced)
+        self.assertEqual(call["num_turns"], 7)
+        self.assertEqual(call["call_id"], "cid")
 
-    async def test_execute_stream_fires_hook_after_force_generate(self) -> None:
-        # With max_turns=0 the executor: (1) generates once, (2) enters the
-        # loop, sees turns >= max_turns, (3) runs the force-generate path and
-        # returns. The hook must fire after each generation — twice total —
-        # and the second call must carry the *force-generate's* gen message.
+    async def test_execute_stream_fires_after_hook_for_force_generated_message(
+        self,
+    ) -> None:
+        # End-to-end: with ``max_turns=0`` the executor (1) generates once,
+        # (2) hits the force-generate branch. After-hook must fire TWICE,
+        # the second call carrying the force-generated message.
         first = _msg("first turn")
         forced = _msg("forced final answer")
-        executor = _make_executor(
-            max_turns=0, canned_messages=[first, forced]
-        )
+        executor = _make_executor(max_turns=0, canned_messages=[first, forced])
 
         observed: list[Event[Any]] = []
-        recorder = _HookRecorder(observed_events=observed)
+        recorder = _AfterHookRecorder(observed_events=observed)
         executor.on_after_generate_impl = recorder  # type: ignore[method-assign]
 
         ctx: RunContext[Any] = RunContext()
@@ -207,13 +248,12 @@ class TestForceGenerateAfterGenerateHook(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_call["call_id"], "cid")
 
     async def test_force_generate_events_are_forwarded(self) -> None:
-        # Events from the force-generate stream (synthetic user prompt + the
-        # gen message) must reach the outer consumer of ``execute_stream``.
+        # Events produced inside the force-generate stream (synthetic user
+        # prompt + the final gen message) must reach ``execute_stream``'s
+        # outer consumer.
         first = _msg("first turn")
         forced = _msg("forced final answer")
-        executor = _make_executor(
-            max_turns=0, canned_messages=[first, forced]
-        )
+        executor = _make_executor(max_turns=0, canned_messages=[first, forced])
 
         ctx: RunContext[Any] = RunContext()
         events: list[Event[Any]] = []
@@ -233,39 +273,164 @@ class TestForceGenerateAfterGenerateHook(unittest.IsolatedAsyncioTestCase):
             str(user_events[0].data.content),
         )
 
-    async def test_hook_fires_after_all_force_generate_events_yielded(
+    async def test_after_hook_fires_after_all_force_generate_events_yielded(
         self,
     ) -> None:
-        # Ordering invariant: when the hook fires, every event from the
-        # just-completed generation must already be visible to the consumer.
-        # Proving this rules out any "hook runs mid-stream" regression.
+        # Ordering invariant: by the time the after-hook fires, every event
+        # from the just-completed generation must already be visible to the
+        # outer consumer. Rules out a "hook runs mid-stream" regression.
         first = _msg("first turn")
         forced = _msg("forced final answer")
-        executor = _make_executor(
-            max_turns=0, canned_messages=[first, forced]
-        )
+        executor = _make_executor(max_turns=0, canned_messages=[first, forced])
 
         observed: list[Event[Any]] = []
-        recorder = _HookRecorder(observed_events=observed)
+        recorder = _AfterHookRecorder(observed_events=observed)
         executor.on_after_generate_impl = recorder  # type: ignore[method-assign]
 
         ctx: RunContext[Any] = RunContext()
         async for event in executor.execute_stream(ctx=ctx, call_id="cid"):
             observed.append(event)
 
-        # First hook fires after the first generation: 1 GenMessageEvent
-        # has been delivered.
+        # First after-hook (regular path): one GenMessageEvent has been
+        # delivered to the consumer.
         first_seen = recorder.calls[0]["events_seen_so_far"]
         self.assertEqual(len(first_seen), 1)
         self.assertIsInstance(first_seen[0], GenMessageEvent)
 
-        # Second hook fires after the force-generate: by then the consumer
-        # has seen all three events in order — Gen, User, Gen.
+        # Second after-hook (force-generate path) fires from inside the
+        # producer, after every one of its events has been forwarded —
+        # Gen, User, Gen.
         second_seen = recorder.calls[1]["events_seen_so_far"]
         self.assertEqual(len(second_seen), 3)
         self.assertIsInstance(second_seen[0], GenMessageEvent)
         self.assertIsInstance(second_seen[1], UserMessageEvent)
         self.assertIsInstance(second_seen[2], GenMessageEvent)
+
+
+# ---------------------- Before-generate hook tests ----------------------
+
+
+class TestForceGenerateBeforeHook(unittest.IsolatedAsyncioTestCase):
+    async def test_producer_fires_before_hook_with_correct_args(self) -> None:
+        # Producer-in-isolation contract: ``on_before_generate`` fires
+        # exactly once with the caller-supplied ``num_turns`` / ``call_id``,
+        # and is handed the deep-copied settings dict (NOT the caller's
+        # original — mutations must not leak back).
+        executor = _make_executor(max_turns=1, canned_messages=[_msg("forced")])
+        events: list[Event[Any]] = []
+        recorder = _BeforeHookRecorder(observed_events=events)
+        executor.on_before_generate_impl = recorder  # type: ignore[method-assign]
+
+        original_settings: dict[str, Any] = {"temperature": 0.5}
+        ctx: RunContext[Any] = RunContext()
+        async for event in executor._force_generate_final_answer_stream(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            ctx=ctx,
+            call_id="cid",
+            extra_llm_settings=original_settings,
+            num_turns=4,
+        ):
+            events.append(event)
+
+        self.assertEqual(len(recorder.calls), 1)
+        call = recorder.calls[0]
+        self.assertEqual(call["num_turns"], 4)
+        self.assertEqual(call["call_id"], "cid")
+        self.assertEqual(call["extra_llm_settings"], {"temperature": 0.5})
+        # Deep-copy boundary: the dict the hook sees is not the caller's.
+        self.assertIsNot(call["extra_llm_settings_ref"], original_settings)
+
+    async def test_before_hook_fires_after_user_event_before_gen_event(
+        self,
+    ) -> None:
+        # Ordering inside the producer: synthetic UserMessageEvent first,
+        # THEN before-hook, THEN GenMessageEvent. Pins the hook between the
+        # prompt-injection and the LLM call.
+        executor = _make_executor(max_turns=1, canned_messages=[_msg("forced")])
+        events: list[Event[Any]] = []
+        recorder = _BeforeHookRecorder(observed_events=events)
+        executor.on_before_generate_impl = recorder  # type: ignore[method-assign]
+
+        ctx: RunContext[Any] = RunContext()
+        async for event in executor._force_generate_final_answer_stream(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            ctx=ctx, call_id="cid", extra_llm_settings={}, num_turns=0
+        ):
+            events.append(event)
+
+        # When the before-hook fired, exactly one UserMessageEvent had been
+        # delivered, and zero GenMessageEvents.
+        seen = recorder.calls[0]["events_seen_so_far"]
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], UserMessageEvent)
+        # And the producer ultimately yielded the gen message AFTER the hook.
+        gen_events = [e for e in events if isinstance(e, GenMessageEvent)]
+        self.assertEqual(len(gen_events), 1)
+
+    async def test_before_hook_mutations_propagate_to_generate_message_stream(
+        self,
+    ) -> None:
+        # Subclass contract: the before-hook receives a mutable settings dict
+        # and any keys it adds must reach ``generate_message_stream``. This
+        # is how per-call LLM parameter injection is wired.
+        executor = _make_executor(max_turns=1, canned_messages=[_msg("forced")])
+
+        async def _injecting_hook(
+            *,
+            ctx: RunContext[Any],
+            call_id: str,
+            num_turns: int,
+            extra_llm_settings: dict[str, Any],
+        ) -> None:
+            extra_llm_settings["injected"] = "by_before_hook"
+
+        executor.on_before_generate_impl = _injecting_hook  # type: ignore[method-assign]
+
+        ctx: RunContext[Any] = RunContext()
+        async for _ in executor._force_generate_final_answer_stream(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            ctx=ctx, call_id="cid", extra_llm_settings={}, num_turns=0
+        ):
+            pass
+
+        self.assertEqual(len(executor.observed_settings), 1)
+        self.assertEqual(
+            executor.observed_settings[0].get("injected"), "by_before_hook"
+        )
+
+    async def test_execute_stream_fires_before_hook_for_force_generate_path(
+        self,
+    ) -> None:
+        # End-to-end: with ``max_turns=0`` the before-hook must fire for both
+        # the first generation and the force-generate. Prior to the fix, the
+        # force-generate's before-hook was missing — usage trackers that key
+        # off it never observed the forced generation's settings.
+        first = _msg("first turn")
+        forced = _msg("forced final answer")
+        executor = _make_executor(max_turns=0, canned_messages=[first, forced])
+
+        observed: list[Event[Any]] = []
+        recorder = _BeforeHookRecorder(observed_events=observed)
+        executor.on_before_generate_impl = recorder  # type: ignore[method-assign]
+
+        ctx: RunContext[Any] = RunContext()
+        async for event in executor.execute_stream(ctx=ctx, call_id="cid"):
+            observed.append(event)
+
+        self.assertEqual(len(recorder.calls), 2)
+        first_call, second_call = recorder.calls
+
+        # First before-hook (regular first generation): nothing yielded yet.
+        self.assertEqual(first_call["num_turns"], 0)
+        self.assertEqual(first_call["call_id"], "cid")
+        self.assertEqual(len(first_call["events_seen_so_far"]), 0)
+
+        # Second before-hook (force-generate path) fires AFTER the first
+        # GenMessageEvent and the synthetic UserMessageEvent have reached
+        # the consumer, and BEFORE the forced GenMessageEvent.
+        self.assertEqual(second_call["num_turns"], 0)
+        self.assertEqual(second_call["call_id"], "cid")
+        seen = second_call["events_seen_so_far"]
+        self.assertEqual(len(seen), 2)
+        self.assertIsInstance(seen[0], GenMessageEvent)
+        self.assertIsInstance(seen[1], UserMessageEvent)
 
 
 if __name__ == "__main__":
