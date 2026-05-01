@@ -429,7 +429,11 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
     @task(name="force_generate_final_answer")  # type: ignore
     async def _force_generate_final_answer_stream(
-        self, ctx: RunContext[CtxT], call_id: str, extra_llm_settings: dict[str, Any]
+        self,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        extra_llm_settings: dict[str, Any] | None,
+        num_turns: int = 0,
     ) -> AsyncIterator[Event[Any]]:
         # NOTE: Might not need the user message when forcing the tool call
         user_message = UserMessage.from_text(
@@ -449,22 +453,49 @@ class LLMPolicyExecutor(Generic[CtxT]):
             if self._final_answer_as_tool_call
             else None
         )
+        _extra_llm_settings = deepcopy(extra_llm_settings or {})
+        await self.on_before_generate(
+            extra_llm_settings=_extra_llm_settings,
+            num_turns=num_turns,
+            ctx=ctx,
+            call_id=call_id,
+        )
+        overridden_tool_choice = _extra_llm_settings.pop("tool_choice", None)
+        if overridden_tool_choice is not None:
+            logger.warning(
+                "tool_choice in extra_llm_settings was ignored during force-generate;"
+                "force_final_answer requires a fixed NamedToolChoice"
+            )
+        gen_message: AssistantMessage | None = None
         async for event in self.generate_message_stream(
             tool_choice=tool_choice,
             ctx=ctx,
             call_id=call_id,
-            extra_llm_settings=extra_llm_settings,
+            extra_llm_settings=_extra_llm_settings,
         ):
+            if isinstance(event, GenMessageEvent):
+                gen_message = event.data
             yield event
+        if gen_message is not None:
+            await self.on_after_generate(
+                gen_message, num_turns=num_turns, ctx=ctx, call_id=call_id
+            )
         final_answer = self.get_final_answer()
         if final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, call_id=call_id)
 
     async def _force_generate_final_answer(
-        self, ctx: RunContext[CtxT], call_id: str, extra_llm_settings: dict[str, Any]
+        self,
+        ctx: RunContext[CtxT],
+        call_id: str,
+        extra_llm_settings: dict[str, Any] | None,
+        num_turns: int,
     ) -> str:
         async for _ in self._force_generate_final_answer_stream(
-            ctx=ctx, call_id=call_id, extra_llm_settings=extra_llm_settings
+            ctx=ctx,
+            call_id=call_id,
+            extra_llm_settings=extra_llm_settings,
+            num_turns=num_turns,
         ):
             pass
         return cast("str", self.get_final_answer())
@@ -519,14 +550,13 @@ class LLMPolicyExecutor(Generic[CtxT]):
 
             if turns >= self.max_turns:
                 async for event in self._force_generate_final_answer_stream(
-                    extra_llm_settings=_extra_llm_settings, **call_kwargs
+                    extra_llm_settings=extra_llm_settings,
+                    num_turns=turns,
+                    **call_kwargs,
                 ):
                     if isinstance(event, GenMessageEvent):
                         gen_message = event.data
                     yield event
-                await self.on_after_generate(
-                    gen_message, num_turns=turns, **call_kwargs
-                )
                 logger.info(
                     f"Max turns reached: {self.max_turns}. Exiting the tool call loop."
                 )
