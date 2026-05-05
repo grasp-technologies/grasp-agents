@@ -62,6 +62,9 @@ class LiteLLM(CloudLLM):
     mock_response: str | None = None
     # Fallback models to use if the main model fails
     fallbacks: list[LiteLLMModelName] = field(default_factory=list[LiteLLMModelName])
+    model_specific_settings: dict[str, dict[str, Any]] = field(
+        default_factory=dict[str, dict[str, Any]]
+    )
     # Mock falling back to other models in the fallbacks list for testing
     mock_testing_fallbacks: bool = False
 
@@ -124,12 +127,18 @@ class LiteLLM(CloudLLM):
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
+        def _build_litellm_params(model: str) -> dict[str, Any]:
+            params: dict[str, Any] = {"model": model}
+            params.update(self.model_specific_settings.get(model, {}))
+            return params
+
         main_litellm_model = {
             "model_name": self.model_name,
-            "litellm_params": {"model": self.model_name},
+            "litellm_params": _build_litellm_params(self.model_name),
         }
         fallback_litellm_models = [
-            {"model_name": fb, "litellm_params": {"model": fb}} for fb in self.fallbacks
+            {"model_name": fb, "litellm_params": _build_litellm_params(fb)}
+            for fb in self.fallbacks
         ]
 
         _router = Router(
