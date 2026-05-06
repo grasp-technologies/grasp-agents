@@ -101,6 +101,6 @@ from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
 
-from .lite_llm import LiteLLM, LiteLLMSettings
+from .lite_llm import LiteLLM, LiteLLMModel, LiteLLMSettings
 
-__all__ = ["LiteLLM", "LiteLLMSettings"]
+__all__ = ["LiteLLM", "LiteLLMModel", "LiteLLMSettings"]

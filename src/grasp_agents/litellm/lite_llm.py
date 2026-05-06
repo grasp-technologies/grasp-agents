@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
@@ -43,6 +43,12 @@ class LiteLLMSettings(OpenAILLMSettings, total=False):
     thinking: AnthropicThinkingParam | None
 
 
+@dataclass(frozen=True)
+class LiteLLMModel:
+    name: str
+    settings: dict[str, Any] = field(default_factory=dict[str, Any])
+
+
 LiteLLMModelName = str
 
 
@@ -61,10 +67,10 @@ class LiteLLM(CloudLLM):
     # Mock LLM response for testing
     mock_response: str | None = None
     # Fallback models to use if the main model fails
-    fallbacks: list[LiteLLMModelName] = field(default_factory=list[LiteLLMModelName])
-    model_specific_settings: dict[str, dict[str, Any]] = field(
-        default_factory=dict[str, dict[str, Any]]
+    fallbacks: Sequence[LiteLLMModelName | LiteLLMModel] = field(
+        default_factory=list[LiteLLMModelName | LiteLLMModel]
     )
+    main_model_settings: dict[str, Any] = field(default_factory=dict[str, Any])
     # Mock falling back to other models in the fallbacks list for testing
     mock_testing_fallbacks: bool = False
 
@@ -75,6 +81,8 @@ class LiteLLM(CloudLLM):
     )
 
     def __post_init__(self) -> None:
+        main = LiteLLMModel(self.model_name, self.main_model_settings)
+        fbs = [_coerce(fb) for fb in self.fallbacks]
         super().__post_init__()
 
         self._lite_llm_completion_params.update(
@@ -127,23 +135,17 @@ class LiteLLM(CloudLLM):
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
-        def _build_litellm_params(model: str) -> dict[str, Any]:
-            params: dict[str, Any] = {"model": model}
-            params.update(self.model_specific_settings.get(model, {}))
-            return params
+        def _build_litellm_params(model: LiteLLMModel) -> dict[str, Any]:
+            return {"model": model.name, **model.settings}
 
-        main_litellm_model = {
-            "model_name": self.model_name,
-            "litellm_params": _build_litellm_params(self.model_name),
-        }
-        fallback_litellm_models = [
-            {"model_name": fb, "litellm_params": _build_litellm_params(fb)}
-            for fb in self.fallbacks
+        model_list = [
+            {"model_name": m.name, "litellm_params": _build_litellm_params(m)}
+            for m in (main, *fbs)
         ]
 
         _router = Router(
-            model_list=[main_litellm_model, *fallback_litellm_models],
-            fallbacks=[{self.model_name: self.fallbacks}],
+            model_list=model_list,
+            fallbacks=[{main.name: [fb.name for fb in fbs]}],
             num_retries=self.max_client_retries,
             timeout=self.client_timeout,
         )
@@ -276,3 +278,7 @@ class LiteLLM(CloudLLM):
         yield CompletionChunkEvent(
             data=completion_chunk, src_name=proc_name, call_id=call_id
         )
+
+
+def _coerce(value: str | LiteLLMModel) -> LiteLLMModel:
+    return value if isinstance(value, LiteLLMModel) else LiteLLMModel(value)

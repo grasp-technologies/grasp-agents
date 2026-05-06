@@ -1,18 +1,25 @@
-"""Tests for ``LiteLLM.model_specific_settings``.
+"""Tests for ``LiteLLM`` per-model settings.
 
-Pins how per-model overrides supplied via ``model_specific_settings`` are
-merged into each Router entry's ``litellm_params``:
+Pins how settings flow into each Router ``model_list`` entry's
+``litellm_params`` after the move from a string-keyed
+``model_specific_settings`` dict to inline declarations:
 
-- The main model receives its overrides on top of ``{"model": <name>}``.
-- Each fallback receives its own overrides independently.
-- A model entry that matches neither the main model nor a declared fallback is
-  silently ignored (it has no Router entry to attach to).
-- When ``model_specific_settings`` is empty, no per-model overrides leak in.
+- ``main_model_settings`` is merged into the main entry's ``litellm_params``
+  on top of ``{"model": model_name}``.
+- A fallback declared as a bare string yields ``{"model": name}`` and nothing
+  else (env-var auth path).
+- A fallback declared as ``LiteLLMModel(name, settings)`` carries its
+  per-model settings inline; they reach only that fallback's
+  ``litellm_params``.
+- Settings on one model never bleed into another.
+- The Router's ``fallbacks`` list contains the resolved names regardless of
+  whether each fallback was declared as a plain string or a ``LiteLLMModel``.
+- The common ``llm_settings`` (completion-time layer) is unaffected by the
+  per-model (routing-time) layer — they live on different code paths.
 
-The Router itself adds defaulted keys (e.g. ``use_in_pass_through``,
-``merge_reasoning_content_in_choices``) on top of what we pass, so assertions
-check that our keys are present with the right values rather than equality on
-the whole ``litellm_params`` dict.
+The Router itself adds defaulted keys (e.g. ``use_in_pass_through``) on top
+of what we pass, so assertions check that *our* keys are present with the
+right values rather than equality on the whole ``litellm_params`` dict.
 """
 
 import sys
@@ -25,7 +32,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from grasp_agents.litellm.lite_llm import LiteLLM
+from grasp_agents.litellm.lite_llm import LiteLLM, LiteLLMModel
 
 
 def _build_llm(**overrides: Any) -> LiteLLM:
@@ -42,84 +49,177 @@ def _params_by_name(llm: LiteLLM) -> dict[str, dict[str, Any]]:
     return {entry["model_name"]: entry["litellm_params"] for entry in model_list}
 
 
-class TestLiteLLMModelSpecificSettings(unittest.TestCase):
-    def test_default_field_is_empty_dict(self):
+def _router_fallback_names(llm: LiteLLM) -> list[str]:
+    """Router stores fallbacks as ``[{main_name: [fb1, fb2, ...]}]`` — extract
+    the ordered fallback names so tests can assert on them directly."""
+    fallbacks_cfg: list[dict[str, list[str]]] = llm.router.fallbacks  # type: ignore[assignment]
+    assert len(fallbacks_cfg) == 1
+    [(_, names)] = fallbacks_cfg[0].items()
+    return list(names)
+
+
+class TestLiteLLMModelClass(unittest.TestCase):
+    def test_default_settings_is_empty(self):
+        m = LiteLLMModel("gpt-4o")
+        self.assertEqual(m.settings, {})
+
+    def test_settings_carried_on_instance(self):
+        m = LiteLLMModel("gpt-4o", {"api_key": "k", "api_base": "b"})
+        self.assertEqual(m.name, "gpt-4o")
+        self.assertEqual(m.settings, {"api_key": "k", "api_base": "b"})
+
+
+class TestMainModelSettings(unittest.TestCase):
+    def test_default_main_model_settings_is_empty_dict(self):
         llm = _build_llm()
-        self.assertEqual(llm.model_specific_settings, {})
+        self.assertEqual(llm.main_model_settings, {})
 
-    def test_no_overrides_when_settings_empty(self):
-        llm = _build_llm(fallbacks=["gpt-4o"])
-        params = _params_by_name(llm)
+    def test_default_fallbacks_is_empty_list(self):
+        llm = _build_llm()
+        self.assertEqual(llm.fallbacks, [])
 
-        self.assertEqual(set(params), {"gpt-4o-mini", "gpt-4o"})
-        for name, entry in params.items():
-            self.assertEqual(entry["model"], name)
-            self.assertNotIn("api_key", entry)
-            self.assertNotIn("api_base", entry)
+    def test_main_entry_has_only_model_when_no_settings(self):
+        llm = _build_llm()
+        params = _params_by_name(llm)["gpt-4o-mini"]
+        self.assertEqual(params["model"], "gpt-4o-mini")
+        self.assertNotIn("api_key", params)
+        self.assertNotIn("api_base", params)
 
-    def test_overrides_applied_to_main_model(self):
+    def test_main_model_settings_flow_into_main_entry(self):
         llm = _build_llm(
-            model_specific_settings={
-                "gpt-4o-mini": {"api_key": "key-main", "api_base": "https://main"}
-            },
+            main_model_settings={"api_key": "key-main", "api_base": "https://main"}
         )
-        main_params = _params_by_name(llm)["gpt-4o-mini"]
+        params = _params_by_name(llm)["gpt-4o-mini"]
+        self.assertEqual(params["model"], "gpt-4o-mini")
+        self.assertEqual(params["api_key"], "key-main")
+        self.assertEqual(params["api_base"], "https://main")
 
-        self.assertEqual(main_params["model"], "gpt-4o-mini")
-        self.assertEqual(main_params["api_key"], "key-main")
-        self.assertEqual(main_params["api_base"], "https://main")
-
-    def test_overrides_applied_to_fallback_only(self):
+    def test_main_settings_do_not_bleed_into_fallback(self):
         llm = _build_llm(
+            main_model_settings={"api_key": "key-main"},
             fallbacks=["gpt-4o"],
-            model_specific_settings={"gpt-4o": {"api_key": "key-fb"}},
         )
         params = _params_by_name(llm)
-
-        self.assertNotIn("api_key", params["gpt-4o-mini"])
-        self.assertEqual(params["gpt-4o"]["api_key"], "key-fb")
-        self.assertEqual(params["gpt-4o"]["model"], "gpt-4o")
-
-    def test_overrides_are_independent_per_model(self):
-        llm = _build_llm(
-            fallbacks=["gpt-4o", "gpt-3.5-turbo"],
-            model_specific_settings={
-                "gpt-4o-mini": {"api_key": "main-key"},
-                "gpt-3.5-turbo": {"api_key": "legacy-key", "api_base": "https://legacy"},
-            },
-        )
-        params = _params_by_name(llm)
-
-        self.assertEqual(params["gpt-4o-mini"]["api_key"], "main-key")
-        # Fallback without an override entry must not pick up another model's keys.
+        self.assertEqual(params["gpt-4o-mini"]["api_key"], "key-main")
         self.assertNotIn("api_key", params["gpt-4o"])
-        self.assertEqual(params["gpt-3.5-turbo"]["api_key"], "legacy-key")
-        self.assertEqual(params["gpt-3.5-turbo"]["api_base"], "https://legacy")
 
-    def test_settings_for_unknown_model_are_ignored(self):
+    def test_main_model_settings_can_override_seeded_model(self):
+        # Implementation builds ``{"model": name}`` then spreads
+        # ``main_model_settings``, so a deliberate ``"model"`` override (e.g.
+        # routing to a deployment-qualified id) wins.
+        llm = _build_llm(main_model_settings={"model": "azure/my-deployment"})
+        params = _params_by_name(llm)["gpt-4o-mini"]
+        self.assertEqual(params["model"], "azure/my-deployment")
+
+
+class TestFallbackDeclarations(unittest.TestCase):
+    def test_bare_string_fallback_has_no_extra_settings(self):
+        llm = _build_llm(fallbacks=["gpt-4o"])
+        params = _params_by_name(llm)["gpt-4o"]
+        self.assertEqual(params["model"], "gpt-4o")
+        self.assertNotIn("api_key", params)
+        self.assertNotIn("api_base", params)
+
+    def test_litellm_model_fallback_carries_its_settings(self):
         llm = _build_llm(
-            fallbacks=["gpt-4o"],
-            model_specific_settings={"some-other-model": {"api_key": "stray"}},
+            fallbacks=[LiteLLMModel("gpt-4o", {"api_key": "fb-key"})],
+        )
+        params = _params_by_name(llm)["gpt-4o"]
+        self.assertEqual(params["model"], "gpt-4o")
+        self.assertEqual(params["api_key"], "fb-key")
+
+    def test_mixed_fallback_forms_coexist(self):
+        llm = _build_llm(
+            fallbacks=[
+                "gpt-4o",
+                LiteLLMModel("claude-sonnet-4-5", {"api_key": "ant-key"}),
+                "gpt-3.5-turbo",
+            ],
         )
         params = _params_by_name(llm)
+        self.assertEqual(
+            set(params),
+            {"gpt-4o-mini", "gpt-4o", "claude-sonnet-4-5", "gpt-3.5-turbo"},
+        )
+        self.assertNotIn("api_key", params["gpt-4o"])
+        self.assertEqual(params["claude-sonnet-4-5"]["api_key"], "ant-key")
+        self.assertNotIn("api_key", params["gpt-3.5-turbo"])
 
-        # Stray entry produces no Router model and never bleeds into the others.
-        self.assertEqual(set(params), {"gpt-4o-mini", "gpt-4o"})
-        for entry in params.values():
-            self.assertNotIn("api_key", entry)
-
-    def test_override_can_replace_model_field(self):
-        # The implementation seeds ``{"model": <name>}`` first and then applies
-        # ``model_specific_settings[name]`` via ``dict.update``, so a deliberate
-        # ``"model"`` override (e.g. routing to a deployment-qualified id) wins.
+    def test_per_fallback_settings_are_independent(self):
         llm = _build_llm(
-            model_specific_settings={
-                "gpt-4o-mini": {"model": "azure/my-deployment"}
-            },
+            fallbacks=[
+                LiteLLMModel("gpt-4o", {"api_key": "k1"}),
+                LiteLLMModel(
+                    "claude-sonnet-4-5",
+                    {"api_key": "k2", "api_base": "https://anthropic"},
+                ),
+            ],
+        )
+        params = _params_by_name(llm)
+        self.assertEqual(params["gpt-4o"]["api_key"], "k1")
+        self.assertNotIn("api_base", params["gpt-4o"])
+        self.assertEqual(params["claude-sonnet-4-5"]["api_key"], "k2")
+        self.assertEqual(params["claude-sonnet-4-5"]["api_base"], "https://anthropic")
+
+    def test_fallback_settings_do_not_bleed_into_main(self):
+        llm = _build_llm(
+            fallbacks=[LiteLLMModel("gpt-4o", {"api_key": "fb-only"})],
         )
         main_params = _params_by_name(llm)["gpt-4o-mini"]
+        self.assertNotIn("api_key", main_params)
 
-        self.assertEqual(main_params["model"], "azure/my-deployment")
+
+class TestRouterFallbackList(unittest.TestCase):
+    def test_router_fallback_names_from_bare_strings(self):
+        llm = _build_llm(fallbacks=["gpt-4o", "gpt-3.5-turbo"])
+        self.assertEqual(_router_fallback_names(llm), ["gpt-4o", "gpt-3.5-turbo"])
+
+    def test_router_fallback_names_from_litellm_models(self):
+        llm = _build_llm(
+            fallbacks=[
+                LiteLLMModel("gpt-4o", {"api_key": "k"}),
+                LiteLLMModel("claude-sonnet-4-5"),
+            ],
+        )
+        self.assertEqual(
+            _router_fallback_names(llm), ["gpt-4o", "claude-sonnet-4-5"]
+        )
+
+    def test_router_fallback_names_preserve_order_in_mixed_input(self):
+        llm = _build_llm(
+            fallbacks=[
+                "gpt-3.5-turbo",
+                LiteLLMModel("claude-sonnet-4-5", {"api_key": "k"}),
+                "gpt-4o",
+            ],
+        )
+        self.assertEqual(
+            _router_fallback_names(llm),
+            ["gpt-3.5-turbo", "claude-sonnet-4-5", "gpt-4o"],
+        )
+
+
+class TestSettingsLayeringIsolation(unittest.TestCase):
+    """Pins that the per-model (routing-time) layer doesn't disturb the
+    common ``llm_settings`` (completion-time) layer — they live on different
+    code paths and shouldn't cross-contaminate."""
+
+    def test_llm_settings_does_not_leak_into_per_model_litellm_params(self):
+        llm = _build_llm(
+            llm_settings={"temperature": 0.42},
+            main_model_settings={"api_key": "key-main"},
+            fallbacks=[LiteLLMModel("gpt-4o", {"api_key": "fb-k"})],
+        )
+        # llm_settings stays on the LLM instance for the completion path.
+        assert llm.llm_settings is not None
+        self.assertEqual(llm.llm_settings.get("temperature"), 0.42)
+        # Per-model layer still works.
+        params = _params_by_name(llm)
+        self.assertEqual(params["gpt-4o-mini"]["api_key"], "key-main")
+        self.assertEqual(params["gpt-4o"]["api_key"], "fb-k")
+        # llm_settings does NOT leak into Router-level litellm_params.
+        for entry in params.values():
+            self.assertNotIn("temperature", entry)
 
 
 if __name__ == "__main__":
