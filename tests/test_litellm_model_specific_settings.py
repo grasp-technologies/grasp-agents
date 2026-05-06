@@ -25,7 +25,7 @@ right values rather than equality on the whole ``litellm_params`` dict.
 import sys
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -51,9 +51,16 @@ def _params_by_name(llm: LiteLLM) -> dict[str, dict[str, Any]]:
 
 def _router_fallback_names(llm: LiteLLM) -> list[str]:
     """Router stores fallbacks as ``[{main_name: [fb1, fb2, ...]}]`` — extract
-    the ordered fallback names so tests can assert on them directly."""
+    the ordered fallback names so tests can assert on them directly.
+
+    Raises ``AssertionError`` explicitly (not via bare ``assert``) so the
+    invariant holds under ``python -O``."""
     fallbacks_cfg: list[dict[str, list[str]]] = llm.router.fallbacks  # type: ignore[assignment]
-    assert len(fallbacks_cfg) == 1
+    if len(fallbacks_cfg) != 1:
+        raise AssertionError(
+            f"Expected exactly one fallback group, got {len(fallbacks_cfg)}: "
+            f"{fallbacks_cfg!r}"
+        )
     [(_, names)] = fallbacks_cfg[0].items()
     return list(names)
 
@@ -211,8 +218,11 @@ class TestSettingsLayeringIsolation(unittest.TestCase):
             fallbacks=[LiteLLMModel("gpt-4o", {"api_key": "fb-k"})],
         )
         # llm_settings stays on the LLM instance for the completion path.
-        assert llm.llm_settings is not None
-        self.assertEqual(llm.llm_settings.get("temperature"), 0.42)
+        self.assertIsNotNone(llm.llm_settings)
+        # Cast for the type checker — the runtime check above is what guards
+        # the test, and survives ``python -O`` (unlike a bare ``assert``).
+        llm_settings = cast("dict[str, Any]", llm.llm_settings)
+        self.assertEqual(llm_settings.get("temperature"), 0.42)
         # Per-model layer still works.
         params = _params_by_name(llm)
         self.assertEqual(params["gpt-4o-mini"]["api_key"], "key-main")
