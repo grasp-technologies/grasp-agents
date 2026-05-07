@@ -7,14 +7,15 @@ Pins the contract of the two mutually-exclusive ways to configure settings:
 - ``llm_group_settings``: a per-model settings dict ``{model_name: settings}``
   baked into each Router ``model_list`` entry's ``litellm_params``. When
   provided, it must contain *exactly* the routed models (``model_name`` plus
-  every fallback target) — no missing keys, no extras. ``{}`` is the
+  every entry of ``fallbacks``) — no missing keys, no extras. ``{}`` is the
   explicit way to say "this model is routed but needs no specific settings."
 
 Supplying both raises ``ValueError``. Supplying neither leaves every Router
 entry with only ``{"model": name}``.
 
-Fallbacks follow litellm Router's native shape:
-``[{main_name: [fb1, fb2, ...]}]``.
+``fallbacks`` on ``LiteLLM`` is a plain ``list[str]`` of model names; we
+internally wrap it into litellm Router's native ``[{main: [fb1, fb2]}]``
+shape at the boundary.
 
 The Router itself adds defaulted keys (``use_in_pass_through``, etc.) on top
 of what we pass, so assertions check that *our* keys are present with the
@@ -88,7 +89,7 @@ class TestLlmSettingsCommon(unittest.TestCase):
     def test_llm_settings_does_not_leak_into_litellm_params(self):
         llm = _build_llm(
             llm_settings={"temperature": 0.42, "max_completion_tokens": 100},
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o"]}],
+            fallbacks=["gpt-4o"],
         )
         params = _params_by_name(llm)
         for entry in params.values():
@@ -98,7 +99,7 @@ class TestLlmSettingsCommon(unittest.TestCase):
     def test_llm_settings_with_fallbacks_includes_all_routed_models(self):
         llm = _build_llm(
             llm_settings={"temperature": 0.5},
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5"]}],
+            fallbacks=["gpt-4o", "claude-sonnet-4-5"],
         )
         params = _params_by_name(llm)
         self.assertEqual(
@@ -112,7 +113,7 @@ class TestLlmGroupSettingsPerModel(unittest.TestCase):
 
     def test_per_model_settings_reach_each_entry(self):
         llm = _build_llm(
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o"]}],
+            fallbacks=["gpt-4o"],
             llm_group_settings={
                 "gpt-4o-mini": {"api_key": "K-main", "api_base": "https://main"},
                 "gpt-4o":      {"api_key": "K-fb"},
@@ -130,7 +131,7 @@ class TestLlmGroupSettingsPerModel(unittest.TestCase):
         # no specific settings. The entry exists in model_list but with only
         # ``{"model": name}``.
         llm = _build_llm(
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o"]}],
+            fallbacks=["gpt-4o"],
             llm_group_settings={
                 "gpt-4o-mini": {"api_key": "K"},
                 "gpt-4o":      {},
@@ -143,7 +144,7 @@ class TestLlmGroupSettingsPerModel(unittest.TestCase):
 
     def test_per_model_settings_do_not_bleed_between_entries(self):
         llm = _build_llm(
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5"]}],
+            fallbacks=["gpt-4o", "claude-sonnet-4-5"],
             llm_group_settings={
                 "gpt-4o-mini":      {"api_key": "K1"},
                 "gpt-4o":           {"api_key": "K2", "api_base": "https://b"},
@@ -186,7 +187,7 @@ class TestStrictValidation(unittest.TestCase):
     def test_missing_main_model_in_group_settings(self):
         with self.assertRaises(ValueError) as ctx:
             _build_llm(
-                fallbacks=[{"gpt-4o-mini": ["gpt-4o"]}],
+                fallbacks=["gpt-4o"],
                 llm_group_settings={"gpt-4o": {}},
             )
         self.assertIn("Missing", str(ctx.exception))
@@ -195,7 +196,7 @@ class TestStrictValidation(unittest.TestCase):
     def test_missing_fallback_target_in_group_settings(self):
         with self.assertRaises(ValueError) as ctx:
             _build_llm(
-                fallbacks=[{"gpt-4o-mini": ["gpt-4o"]}],
+                fallbacks=["gpt-4o"],
                 llm_group_settings={"gpt-4o-mini": {}},
             )
         self.assertIn("Missing", str(ctx.exception))
@@ -234,7 +235,7 @@ class TestFallbacksWithoutGroupSettings(unittest.TestCase):
 
     def test_model_list_includes_main_and_all_fallback_targets(self):
         llm = _build_llm(
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5"]}],
+            fallbacks=["gpt-4o", "claude-sonnet-4-5"],
         )
         params = _params_by_name(llm)
         self.assertEqual(
@@ -242,40 +243,47 @@ class TestFallbacksWithoutGroupSettings(unittest.TestCase):
         )
 
     def test_each_fallback_entry_has_no_extra_settings(self):
-        llm = _build_llm(
-            fallbacks=[{"gpt-4o-mini": ["gpt-4o"]}],
-        )
+        llm = _build_llm(fallbacks=["gpt-4o"])
         params = _params_by_name(llm)
         self.assertEqual(params["gpt-4o"]["model"], "gpt-4o")
         self.assertNotIn("api_key", params["gpt-4o"])
         self.assertNotIn("api_base", params["gpt-4o"])
 
-    def test_main_appearing_as_fallback_target_is_deduped(self):
-        # Pathological but possible: main is also listed as a fallback target
-        # somewhere. The else branch builds model_list from a set, so the
-        # entry appears exactly once.
-        llm = _build_llm(
-            fallbacks=[
-                {"gpt-4o-mini": ["gpt-4o"]},
-                # gpt-4o-mini also a fallback target in another group.
-                {"some-other": ["gpt-4o-mini"]},
-            ],
-        )
+    def test_main_appearing_in_fallbacks_is_deduped(self):
+        # Pathological but possible: main is also listed as a fallback. The
+        # else branch builds model_list from a set, so the entry appears
+        # exactly once.
+        llm = _build_llm(fallbacks=["gpt-4o-mini", "gpt-4o"])
         model_list: list[dict[str, Any]] = llm.router.model_list  # type: ignore[assignment]
         names = [e["model_name"] for e in model_list]
         self.assertEqual(names.count("gpt-4o-mini"), 1)
+        self.assertEqual(set(names), {"gpt-4o-mini", "gpt-4o"})
+
+    def test_duplicate_fallback_names_dedupe_in_model_list(self):
+        # A duplicate in fallbacks shouldn't produce a duplicate Router entry
+        # (set-union dedupes). The Router's fallback list is passed through
+        # as-is, so duplicates there are litellm's concern.
+        llm = _build_llm(fallbacks=["gpt-4o", "gpt-4o"])
+        params = _params_by_name(llm)
+        self.assertEqual(set(params), {"gpt-4o-mini", "gpt-4o"})
 
 
-class TestRouterFallbacksPassedThrough(unittest.TestCase):
-    """``self.fallbacks`` is passed verbatim to the Router as its native
-    fallback config. This pins that the litellm-native shape is preserved
-    end-to-end."""
+class TestRouterFallbacksWrapping(unittest.TestCase):
+    """The public ``fallbacks: list[str]`` is wrapped into litellm Router's
+    native ``[{main_name: [fb1, fb2]}]`` shape at the Router boundary."""
 
-    def test_router_fallbacks_match_input(self):
-        fallbacks_in = [{"gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5"]}]
-        llm = _build_llm(fallbacks=fallbacks_in)
+    def test_non_empty_fallbacks_wrapped_for_router(self):
+        llm = _build_llm(fallbacks=["gpt-4o", "claude-sonnet-4-5"])
         router_fallbacks: list[dict[str, list[str]]] = llm.router.fallbacks  # type: ignore[assignment]
-        self.assertEqual(router_fallbacks, fallbacks_in)
+        self.assertEqual(
+            router_fallbacks,
+            [{"gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5"]}],
+        )
+
+    def test_empty_fallbacks_still_wrapped(self):
+        llm = _build_llm()
+        router_fallbacks: list[dict[str, list[str]]] = llm.router.fallbacks  # type: ignore[assignment]
+        self.assertEqual(router_fallbacks, [{"gpt-4o-mini": []}])
 
 
 if __name__ == "__main__":

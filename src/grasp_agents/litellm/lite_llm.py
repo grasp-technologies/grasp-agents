@@ -61,9 +61,7 @@ class LiteLLM(CloudLLM):
     # Mock LLM response for testing
     mock_response: str | None = None
     # Fallback models to use if the main model fails
-    fallbacks: list[dict[LiteLLMModelName, list[LiteLLMModelName]]] = field(
-        default_factory=list[dict[LiteLLMModelName, list[LiteLLMModelName]]]
-    )
+    fallbacks: list[LiteLLMModelName] = field(default_factory=list[LiteLLMModelName])
     llm_group_settings: dict[LiteLLMModelName, LiteLLMSettings] | None = None
     # Mock falling back to other models in the fallbacks list for testing
     mock_testing_fallbacks: bool = False
@@ -140,10 +138,7 @@ class LiteLLM(CloudLLM):
                 return {"model": model_name, **settings}
             return {"model": model_name}
 
-        fallback_targets: set[LiteLLMModelName] = {
-            n for fb in self.fallbacks for names in fb.values() for n in names
-        }
-        routed_models = {self.model_name} | fallback_targets
+        routed_models = {self.model_name} | set(self.fallbacks)
 
         if self.llm_group_settings is not None:
             missing = routed_models - set(self.llm_group_settings)
@@ -174,7 +169,7 @@ class LiteLLM(CloudLLM):
 
         _router = Router(
             model_list=model_list,
-            fallbacks=self.fallbacks,
+            fallbacks=[{self.model_name: self.fallbacks}],
             num_retries=self.max_client_retries,
             timeout=self.client_timeout,
         )
