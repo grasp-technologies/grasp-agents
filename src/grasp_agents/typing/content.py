@@ -22,7 +22,7 @@ class ImageData(BaseModel):
     base64: str | None = None
 
     # Supported by OpenAI API
-    detail: ImageDetail = "high"
+    detail: ImageDetail = "auto"
 
     @classmethod
     def from_base64(cls, base64_encoding: str, **kwargs: Any) -> "ImageData":

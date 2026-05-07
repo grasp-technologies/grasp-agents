@@ -62,6 +62,7 @@ class LiteLLM(CloudLLM):
     mock_response: str | None = None
     # Fallback models to use if the main model fails
     fallbacks: list[LiteLLMModelName] = field(default_factory=list[LiteLLMModelName])
+    llm_group_settings: dict[LiteLLMModelName, LiteLLMSettings] | None = None
     # Mock falling back to other models in the fallbacks list for testing
     mock_testing_fallbacks: bool = False
 
@@ -72,6 +73,12 @@ class LiteLLM(CloudLLM):
     )
 
     def __post_init__(self) -> None:
+        if self.llm_settings is not None and self.llm_group_settings is not None:
+            raise ValueError(
+                "Provide either `llm_settings` (common to all models) or "
+                "`llm_group_settings` (per-model, must include `model_name` and "
+                "every fallback target as keys). Not both."
+            )
         super().__post_init__()
 
         self._lite_llm_completion_params.update(
@@ -124,16 +131,44 @@ class LiteLLM(CloudLLM):
                 "Custom HTTP clients are not yet supported when using LiteLLM."
             )
 
-        main_litellm_model = {
-            "model_name": self.model_name,
-            "litellm_params": {"model": self.model_name},
-        }
-        fallback_litellm_models = [
-            {"model_name": fb, "litellm_params": {"model": fb}} for fb in self.fallbacks
-        ]
+        def _build_litellm_params(
+            model_name: LiteLLMModelName, settings: LiteLLMSettings | None = None
+        ) -> dict[str, Any]:
+            if settings is not None:
+                return {"model": model_name, **settings}
+            return {"model": model_name}
+
+        routed_models = {self.model_name} | set(self.fallbacks)
+
+        if self.llm_group_settings is not None:
+            missing = routed_models - set(self.llm_group_settings)
+            extra = set(self.llm_group_settings) - routed_models
+            if missing or extra:
+                raise ValueError(
+                    "`llm_group_settings` must contain exactly the routed "
+                    "models (`model_name` + every fallback target). "
+                    f"Missing: {sorted(missing) or 'none'}. "
+                    f"Unexpected: {sorted(extra) or 'none'}. "
+                    "For models that don't need specific settings, pass `{}`."
+                )
+            model_list = [
+                {
+                    "model_name": name,
+                    "litellm_params": _build_litellm_params(name, settings),
+                }
+                for name, settings in self.llm_group_settings.items()
+            ]
+        else:
+            model_list = [
+                {
+                    "model_name": name,
+                    "litellm_params": _build_litellm_params(name),
+                }
+                for name in routed_models
+            ]
 
         _router = Router(
-            model_list=[main_litellm_model, *fallback_litellm_models],
+            model_list=model_list,
             fallbacks=[{self.model_name: self.fallbacks}],
             num_retries=self.max_client_retries,
             timeout=self.client_timeout,
