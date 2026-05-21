@@ -1,9 +1,11 @@
 """
-Top-level skill tools and the ``attach_skills`` helper.
+Top-level skill tools ``load_skill`` and ``list_skills``.
 
-``load_skill`` and ``list_skills`` are global :class:`FunctionTool` instances
-that read ``ctx.skills`` at call time. ``attach_skills(agent)`` adds them to
-the agent's tool list and registers the skills system-prompt section.
+Both are global :class:`FunctionTool` instances that read ``ctx.skills`` at
+call time. Add them to an agent the same way you add any other tool — pass
+them in the ``tools=[...]`` ctor kwarg. The ``skills`` system-prompt
+section auto-attaches on every ``LLMAgent`` and consults ``ctx.skills``;
+no separate ``attach_*`` step is needed.
 """
 
 from __future__ import annotations
@@ -11,16 +13,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..agent.function_tool import function_tool
-from .injection import (
-    LOAD_INSTRUCTION,
-    render_available_skills_block,
-    skills_system_prompt_section,
-)
+from .injection import LOAD_INSTRUCTION, render_available_skills_block
 from .loader import parse_skill_md
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
-    from ..agent.llm_agent import LLMAgent
     from ..run_context import RunContext
 
 LOAD_SKILL_DESCRIPTION = (
@@ -73,19 +70,3 @@ async def list_skills(  # noqa: RUF029
     if not rendered:
         return "No skills available."
     return f"{rendered}\n\n{LOAD_INSTRUCTION}"
-
-
-def attach_skills(agent: LLMAgent[Any, Any, Any]) -> None:
-    """
-    Add the skill tools and the ``<available_skills>`` system-prompt section.
-
-    The actual skill registry lives on the :class:`RunContext` you pass to
-    :meth:`LLMAgent.run` (``ctx.skills``); this helper only wires the agent's
-    tools and prompt section to read from it.
-    """
-    tools = agent.tools
-    if "load_skill" not in tools:
-        tools[load_skill.name] = load_skill
-    if "list_skills" not in tools:
-        tools[list_skills.name] = list_skills
-    agent.add_system_prompt_section(skills_system_prompt_section)

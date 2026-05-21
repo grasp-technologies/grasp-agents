@@ -1,4 +1,4 @@
-"""End-to-end tests: skills attached to LLMAgent via RunContext."""
+"""Tests: skills section auto-attaches on LLMAgent + reads RunContext.skills."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.run_context import RunContext
 from grasp_agents.skills import (
     SkillRegistry,
-    attach_skills,
     list_skills,
     load_skill,
 )
@@ -55,11 +54,17 @@ def _write_skill(
     return skill_md
 
 
-def _make_agent() -> LLMAgent[str, str, _State]:
+def _make_agent(
+    *,
+    env_info: bool = False,
+    with_skill_tools: bool = False,
+) -> LLMAgent[str, str, _State]:
     return LLMAgent[str, str, _State](
         name="skills_test_agent",
         llm=MockLLM(responses_queue=[]),
         stream_llm=True,
+        env_info=env_info,
+        tools=[load_skill, list_skills] if with_skill_tools else None,
     )
 
 
@@ -69,28 +74,24 @@ async def _build_system_prompt(
     return await agent.build_system_prompt(ctx, exec_id="e1")
 
 
-# ---------- attach_skills wiring ----------
+# ---------- Auto-attached skills section ----------
 
 
-class TestAttachSkills:
-    def test_no_skills_no_section_no_tools(self) -> None:
+class TestAutoAttach:
+    def test_section_auto_registered(self) -> None:
         agent = _make_agent()
+        names = {s.name for s in agent.system_prompt_sections}
+        assert "skills" in names
+
+    def test_load_list_tools_opt_in(self) -> None:
+        agent = _make_agent()
+        # The load/list tools are NOT registered until the user passes them in
+        # `tools=[...]`; the section auto-attaches regardless.
         assert "load_skill" not in agent.tools
         assert "list_skills" not in agent.tools
-        assert agent.system_prompt_sections == ()
 
-    def test_attach_adds_tools_and_section(self) -> None:
-        agent = _make_agent()
-        attach_skills(agent)
-        assert "load_skill" in agent.tools
-        assert "list_skills" in agent.tools
-        assert any(s.name == "skills" for s in agent.system_prompt_sections)
-
-    def test_attach_is_idempotent(self) -> None:
-        agent = _make_agent()
-        attach_skills(agent)
-        attach_skills(agent)
-        # Tools list intact, but section may be re-registered (consumer-controlled).
+    def test_load_list_tools_via_tools_kwarg(self) -> None:
+        agent = _make_agent(with_skill_tools=True)
         assert "load_skill" in agent.tools
         assert "list_skills" in agent.tools
 
@@ -103,7 +104,6 @@ class TestSystemPromptSection:
     async def test_empty_registry_no_block(self, tmp_path: Path) -> None:
         del tmp_path
         agent = _make_agent()
-        attach_skills(agent)
         ctx: RunContext[_State] = RunContext(state=_State())
         # No ctx.skills set
         prompt = await _build_system_prompt(agent, ctx)
@@ -113,7 +113,6 @@ class TestSystemPromptSection:
     async def test_section_renders_catalog(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill description.")
         agent = _make_agent()
-        attach_skills(agent)
         ctx: RunContext[_State] = RunContext(
             state=_State(),
             skills=SkillRegistry.from_path(tmp_path),
@@ -132,8 +131,8 @@ class TestSystemPromptSection:
             llm=MockLLM(responses_queue=[]),
             sys_prompt="You are a helper.",
             stream_llm=True,
+            env_info=False,
         )
-        attach_skills(agent)
         ctx: RunContext[_State] = RunContext(
             state=_State(),
             skills=SkillRegistry.from_path(tmp_path),
@@ -147,7 +146,6 @@ class TestSystemPromptSection:
     async def test_combines_with_dynamic_builder(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x")
         agent = _make_agent()
-        attach_skills(agent)
 
         def dyn(*, ctx: RunContext[_State], exec_id: str) -> str:
             del ctx, exec_id
@@ -181,7 +179,6 @@ class TestRelevanceFilter:
         registry.set_filter(keep_alpha)
 
         agent = _make_agent()
-        attach_skills(agent)
         ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is not None
@@ -209,7 +206,6 @@ class TestRelevanceFilter:
         registry.set_filter(filter_fn)
 
         agent = _make_agent()
-        attach_skills(agent)
         ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is not None
@@ -227,7 +223,6 @@ class TestRelevanceFilter:
         registry.set_filter(empty_filter)
 
         agent = _make_agent()
-        attach_skills(agent)
         ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is None

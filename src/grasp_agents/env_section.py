@@ -15,12 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from .prompt_builder import SystemPromptSection
+from .agent.prompt_builder import SystemPromptSection
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from ..run_context import RunContext
+    from .run_context import RunContext
 
 
 ENV_INFO_SECTION_NAME = "env_info"

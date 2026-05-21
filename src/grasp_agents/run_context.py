@@ -11,6 +11,7 @@ CtxT = TypeVar("CtxT")
 
 from .agent.approval_store import ApprovalStore  # noqa: E402
 from .durability.checkpoint_store import CheckpointStore  # noqa: E402
+from .memory.provider import MemoryProvider  # noqa: E402
 from .printer import Printer  # noqa: E402
 from .skills.registry import SkillRegistry  # noqa: E402
 from .tools.file_edit.store import FileEditStore  # noqa: E402
@@ -32,9 +33,7 @@ class RunContext(BaseModel, Generic[CtxT]):
     # Identifier for the conversational session this RunContext is
     # currently serving. Used by every session-scoped store attached
     # below (``approval_store``, ``file_edit_store``, etc.) to route
-    # lookups. Callers mutate this as sessions begin, resume, or
-    # continue — re-keying into the same slot recovers the prior
-    # session's state if the store has it.
+    # lookups.
     session_key: str = Field(default="default", exclude=True)
 
     # Set ``approval_store`` to enable the approval gate built via
@@ -53,5 +52,11 @@ class RunContext(BaseModel, Generic[CtxT]):
     # Attach via ``grasp_agents.skills.attach_skills(agent)`` and pass the
     # populated registry on the ``RunContext``.
     skills: SkillRegistry | None = Field(default=None, exclude=True)
+
+    # Cross-session memory provider consumed by the
+    # ``memory_system_prompt_section``. Attach via
+    # ``grasp_agents.memory.attach_memory(agent)`` and pass the populated
+    # provider on the ``RunContext``.
+    memory: MemoryProvider | None = Field(default=None, exclude=True)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)

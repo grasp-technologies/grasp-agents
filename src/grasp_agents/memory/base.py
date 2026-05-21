@@ -1,9 +1,20 @@
+"""
+Working-memory ABC consumed by :class:`Processor`.
+
+This is the per-processor scratchpad — distinct from the cross-session
+memdir under :class:`MemoryProvider`. ``LLMAgentMemory`` is the concrete
+implementation used by ``LLMAgent``.
+"""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from .run_context import RunContext
+if TYPE_CHECKING:
+    from ..run_context import RunContext
 
 
 class Memory(BaseModel, ABC):
@@ -36,7 +47,7 @@ class DummyMemory(Memory):
     def reset(
         self, *args: Any, ctx: RunContext[Any] | None = None, **kwargs: Any
     ) -> None:
-        pass
+        del args, ctx, kwargs
 
     def erase(self) -> None:
         pass
@@ -44,7 +55,7 @@ class DummyMemory(Memory):
     def update(
         self, *args: Any, ctx: RunContext[Any] | None = None, **kwargs: Any
     ) -> None:
-        pass
+        del args, ctx, kwargs
 
     @property
     def is_empty(self) -> bool:

@@ -6,6 +6,7 @@ try:
         MCP_INSTRUCTIONS_SECTION_NAME,
         make_mcp_instructions_section,
     )
+    from .spec import MCPClientSpec
     from .tool import MCPTool
 except ImportError:
     pass
@@ -13,6 +14,7 @@ except ImportError:
 __all__ = [
     "MCP_INSTRUCTIONS_SECTION_NAME",
     "MCPClient",
+    "MCPClientSpec",
     "MCPListResourcesTool",
     "MCPReadResourceTool",
     "MCPServerConfig",

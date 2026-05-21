@@ -40,10 +40,10 @@ if TYPE_CHECKING:
     # imports ``RunContext``), and importing them at package load would
     # short-circuit the run-context construction during ``grasp_agents``
     # startup.
-    from .tools import attach_skills, list_skills, load_skill
+    from .tools import list_skills, load_skill
 
 
-_LAZY_TOOLS = {"attach_skills", "list_skills", "load_skill"}
+_LAZY_TOOLS = {"list_skills", "load_skill"}
 
 
 def __getattr__(name: str) -> Any:
@@ -63,7 +63,6 @@ __all__ = [
     "SkillFrontmatter",
     "SkillNotFoundError",
     "SkillRegistry",
-    "attach_skills",
     "discover_skills",
     "list_skills",
     "load_skill",

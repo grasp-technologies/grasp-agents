@@ -14,9 +14,12 @@ from ..durability import AgentCheckpoint
 from ..durability.checkpoints import AgentCheckpointLocation, CheckpointKind
 from ..durability.context_serialization import rehydrate_context, serialize_context
 from ..durability.resume import prepare_messages_for_resume
+from ..env_section import make_env_info_section
 from ..llm.llm import LLM
+from ..memory.injection import memory_system_prompt_section
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..skills.injection import skills_system_prompt_section
 from ..telemetry import SpanKind
 from ..types.content import Content, InputImage
 from ..types.errors import ProcInputValidationError
@@ -51,6 +54,12 @@ from .agent_loop import AgentLoop
 from .llm_agent_memory import LLMAgentMemory
 from .prompt_builder import PromptBuilder
 from .tool_decision import ToolCallDecision
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from ..mcp.client import MCPClient
+    from ..mcp.spec import MCPClientSpec
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +113,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Session persistence
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
+        # MCP integration (clients must be ``connect()``-ed before the
+        # agent is constructed; pass a ``MCPClientSpec`` to filter tools)
+        mcp_clients: "Sequence[MCPClient | MCPClientSpec] | None" = None,
+        # Auto-attached system-prompt sections
+        env_info: bool = True,
         # Tracing
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
@@ -145,6 +159,40 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._prompt_builder = PromptBuilder[self.in_type, CtxT](
             agent_name=self.name, sys_prompt=sys_prompt, in_prompt=in_prompt
         )
+
+        # MCP clients. The auto-attached ``mcp_instructions`` system-prompt
+        # section reads this list at compute time, so adding / removing
+        # clients mid-life is reflected automatically. Populated below from
+        # the ``mcp_clients`` ctor kwarg and / or :meth:`add_mcp_client`.
+        self.mcp_clients: list[MCPClient] = []
+
+        # Auto-attached sections. Each compute returns ``None`` when its
+        # input is absent (no ``ctx.skills``, no ``ctx.memory``, no MCP
+        # clients) so registering them unconditionally is harmless. Users
+        # override any of these by adding a section with the same name —
+        # ``add_system_prompt_section`` dedupes by name.
+        self._prompt_builder.add_system_prompt_section(skills_system_prompt_section)
+        self._prompt_builder.add_system_prompt_section(memory_system_prompt_section)
+        if env_info:
+            self._prompt_builder.add_system_prompt_section(
+                make_env_info_section(model_name=llm.model_name)
+            )
+        # Local import to dodge the ``mcp`` package's optional-dependency
+        # import guard at module load.
+        from ..mcp.section import make_mcp_instructions_section  # noqa: PLC0415
+        from ..mcp.spec import MCPClientSpec as _MCPClientSpec  # noqa: PLC0415
+
+        self._prompt_builder.add_system_prompt_section(
+            make_mcp_instructions_section(lambda: self.mcp_clients)
+        )
+
+        for item in mcp_clients or []:
+            if isinstance(item, _MCPClientSpec):
+                self.add_mcp_client(
+                    item.client, include=item.include, exclude=item.exclude
+                )
+            else:
+                self.add_mcp_client(item)
 
         # Agent loop
 
@@ -210,6 +258,40 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # via _propagate_to_children.
 
         self.set_path(path)
+
+    def add_mcp_client(
+        self,
+        client: "MCPClient",
+        *,
+        include: "Iterable[str] | None" = None,
+        exclude: "Iterable[str] | None" = None,
+    ) -> None:
+        """
+        Register an :class:`MCPClient`'s tools (filtered by ``include`` /
+        ``exclude``) and track the client so the auto-attached
+        ``mcp_instructions`` system-prompt section can read its
+        ``instructions`` at compute time.
+
+        ``include`` (when set) is an allowlist of tool names; only matching
+        tools are exposed. ``exclude`` (when set) is a denylist. Both set:
+        intersection (allow-listed ∧ not denied). ``include=set()`` blocks
+        every tool but still surfaces the server's instructions to the prompt.
+
+        The client must be ``connect()``-ed first — tools are only
+        discoverable after the MCP handshake completes. Adding the same
+        client twice is a no-op for the client list (tool dict is
+        re-overwritten, which is harmless).
+        """
+        include_set = set(include) if include is not None else None
+        exclude_set = set(exclude) if exclude is not None else None
+        for tool in client.tools():
+            if include_set is not None and tool.name not in include_set:
+                continue
+            if exclude_set is not None and tool.name in exclude_set:
+                continue
+            self.tools[tool.name] = cast("BaseTool[BaseModel, Any, CtxT]", tool)
+        if client not in self.mcp_clients:
+            self.mcp_clients.append(client)
 
     @property
     def llm(self) -> LLM:

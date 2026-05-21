@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from ..agent.prompt_builder import SystemPromptSection
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from ..run_context import RunContext
     from .client import MCPClient
@@ -27,14 +27,17 @@ _BLOCK_HEADING = "## MCP server instructions"
 
 
 def make_mcp_instructions_section(
-    clients: Sequence[MCPClient],
+    clients: Sequence[MCPClient] | Callable[[], Sequence[MCPClient]],
     *,
     section_name: str = MCP_INSTRUCTIONS_SECTION_NAME,
 ) -> SystemPromptSection:
     """
     Build a section that renders every connected client's instructions.
 
-    Pass the same ``MCPClient`` instances you attached to the agent's tools.
+    ``clients`` may be a static :class:`Sequence` (snapshot at section-
+    construction time) or a zero-arg callable that returns the current
+    sequence — useful when clients connect / disconnect across the agent's
+    lifetime, so the section reflects whatever is wired *now*.
     Disconnected clients (no instructions, or never connected) are skipped.
     The section returns ``None`` when no client supplies instructions, so the
     block is omitted from the prompt entirely.
@@ -44,8 +47,9 @@ def make_mcp_instructions_section(
         *, ctx: RunContext[Any] | None = None, exec_id: str | None = None
     ) -> str | None:
         del ctx, exec_id
+        current = clients() if callable(clients) else clients
         blocks: list[str] = []
-        for client in clients:
+        for client in current:
             text = client.instructions
             if not text:
                 continue

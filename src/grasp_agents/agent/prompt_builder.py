@@ -81,6 +81,19 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         return self._in_prompt
 
     def add_system_prompt_section(self, section: SystemPromptSection) -> None:
+        """
+        Register ``section``. If a section with the same name is already
+        registered, replace it in place — the later definition wins.
+
+        This makes auto-attached sections (e.g. ``env_info``, ``skills``,
+        ``memory``, ``mcp_instructions``) trivially overridable: pass a
+        custom-configured section with the same name and it supersedes the
+        default without leaving a duplicate behind.
+        """
+        for i, existing in enumerate(self.system_prompt_sections):
+            if existing.name == section.name:
+                self.system_prompt_sections[i] = section
+                return
         self.system_prompt_sections.append(section)
 
     @final
