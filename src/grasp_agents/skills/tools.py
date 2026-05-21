@@ -66,7 +66,7 @@ async def list_skills(  # noqa: RUF029
         return "No skills are configured for this run."
     if refresh:
         ctx.skills.refresh()
-    rendered = render_available_skills_block(ctx.skills.all)
+    rendered = render_available_skills_block(ctx.skills.all, include_license=True)
     if not rendered:
         return "No skills available."
     return f"{rendered}\n\n{LOAD_INSTRUCTION}"

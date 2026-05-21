@@ -167,16 +167,22 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self.mcp_clients: list[MCPClient] = []
 
         # Auto-attached sections. Each compute returns ``None`` when its
-        # input is absent (no ``ctx.skills``, no ``ctx.memory``, no MCP
+        # input is absent (no ``ctx.memory``, no ``ctx.skills``, no MCP
         # clients) so registering them unconditionally is harmless. Users
         # override any of these by adding a section with the same name —
         # ``add_system_prompt_section`` dedupes by name.
-        self._prompt_builder.add_system_prompt_section(skills_system_prompt_section)
+        #
+        # Order mirrors Claude Code's dynamic-tail layout (memory → env_info
+        # → mcp_instructions in ``constants/prompts.ts``). Skills slot
+        # between env_info and mcp_instructions — both surface "what the
+        # agent can do", with MCP last because servers connect / disconnect
+        # mid-session and the section is ``cache_break=True``.
         self._prompt_builder.add_system_prompt_section(memory_system_prompt_section)
         if env_info:
             self._prompt_builder.add_system_prompt_section(
                 make_env_info_section(model_name=llm.model_name)
             )
+        self._prompt_builder.add_system_prompt_section(skills_system_prompt_section)
         # Local import to dodge the ``mcp`` package's optional-dependency
         # import guard at module load.
         from ..mcp.section import make_mcp_instructions_section  # noqa: PLC0415

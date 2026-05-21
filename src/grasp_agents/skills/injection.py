@@ -20,14 +20,23 @@ def _xml_escape(value: str) -> str:
     return escape(value)
 
 
-def render_available_skills_block(skills: Sequence[Skill]) -> str:
+def render_available_skills_block(
+    skills: Sequence[Skill], *, include_license: bool = False
+) -> str:
     """
     Render the ``<available_skills>`` XML catalog injected into the system prompt.
 
-    Skills with ``metadata.grasp.inject_body == true`` get their body appended
-    after the catalog (eager-load); the rest are stubs the model can resolve
-    via ``load_skill``. Skills with ``disable_model_invocation == true`` are
-    excluded.
+    Per-skill emitted elements: ``<name>``, ``<description>``, ``<location>``,
+    plus ``<compatibility>`` and ``<allowed-tools>`` when set on the
+    frontmatter (informational — ``allowed-tools`` is *not* enforced here;
+    see :class:`BeforeToolHook` for the authoritative permission gate).
+    ``<license>`` is emitted only when ``include_license=True`` — the
+    system-prompt section keeps it off to stay lean; ``list_skills`` (the
+    tool) turns it on.
+
+    Skills with ``metadata.grasp.inject_body == true`` get their body
+    appended after the catalog. Skills with
+    ``disable_model_invocation == true`` are excluded.
     """
     visible = [s for s in skills if not s.disable_model_invocation]
     if not visible:
@@ -35,15 +44,30 @@ def render_available_skills_block(skills: Sequence[Skill]) -> str:
 
     lines: list[str] = ["## Available skills", "", "<available_skills>"]
     for skill in visible:
-        lines.extend(
-            [
-                "  <skill>",
-                f"    <name>{_xml_escape(skill.name)}</name>",
-                f"    <description>{_xml_escape(skill.description)}</description>",
-                f"    <location>{_xml_escape(str(skill.path))}</location>",
-                "  </skill>",
-            ]
-        )
+        skill_lines: list[str] = [
+            "  <skill>",
+            f"    <name>{_xml_escape(skill.name)}</name>",
+            f"    <description>{_xml_escape(skill.description)}</description>",
+            f"    <location>{_xml_escape(str(skill.path))}</location>",
+        ]
+        if skill.frontmatter.compatibility:
+            skill_lines.append(
+                "    <compatibility>"
+                f"{_xml_escape(skill.frontmatter.compatibility)}"
+                "</compatibility>"
+            )
+        if skill.frontmatter.allowed_tools:
+            skill_lines.append(
+                "    <allowed-tools>"
+                f"{_xml_escape(skill.frontmatter.allowed_tools)}"
+                "</allowed-tools>"
+            )
+        if include_license and skill.frontmatter.license:
+            skill_lines.append(
+                f"    <license>{_xml_escape(skill.frontmatter.license)}</license>"
+            )
+        skill_lines.append("  </skill>")
+        lines.extend(skill_lines)
     lines.extend(["</available_skills>", "", LOAD_INSTRUCTION])
 
     for skill in visible:
