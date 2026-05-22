@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 import grasp_agents
 from grasp_agents.agent.agent_loop import AgentLoop, ResponseCapture
-from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.agent.tool_decision import (
     AllowTool,
     RaiseToolException,
@@ -178,16 +178,16 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
-) -> tuple[AgentLoop[None], LLMAgentMemory, MockLLM]:
+) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
-    memory = LLMAgentMemory()
+    memory = LLMAgentTranscript()
     memory.reset(instructions="sys")
     memory.update([InputMessageItem.from_text("go", role="user")])
 
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
-        memory=memory,
+        transcript=memory,
         tools=tools,
         max_turns=max_turns,
         stream_llm=False,

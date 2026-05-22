@@ -109,7 +109,7 @@ class TestStateBuilder:
             received.append(checkpoint)
             ctx.state.loaded_from_db = True
             ctx.state.pathway_id = "p-42"
-            ctx.state.message_count_at_load = len(agent2.memory.messages)
+            ctx.state.message_count_at_load = len(agent2.transcript.messages)
 
         agent2.add_state_builder(rebuild)
 

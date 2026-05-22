@@ -51,7 +51,7 @@ from ..utils.callbacks import is_method_overridden
 from ..utils.io import get_prompt
 from ..utils.validation import validate_obj_from_json_or_py_string
 from .agent_loop import AgentLoop
-from .llm_agent_memory import LLMAgentMemory
+from .llm_agent_transcript import LLMAgentTranscript
 from .prompt_builder import PromptBuilder
 from .tool_decision import ToolCallDecision
 
@@ -78,7 +78,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         1: "_out_type",
     }
 
-    reset_memory_on_run: Final[bool]
+    reset_transcript_on_run: Final[bool]
 
     def __init__(
         self,
@@ -100,9 +100,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         max_turns: int = 100,
         force_react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
-        # Agent memory management
-        memory: LLMAgentMemory | None = None,
-        reset_memory_on_run: bool = False,
+        # Per-run message history (the LLM agent's transcript). Cross-session
+        # knowledge memory is separate and lives on ``RunContext.memory``.
+        transcript: LLMAgentTranscript | None = None,
+        reset_transcript_on_run: bool = False,
         # Agent run retries
         max_retries: int = 0,
         # Multi-agent routing
@@ -124,7 +125,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> None:
         super().__init__(
             name=name,
-            memory=memory,
             recipients=recipients,
             max_retries=max_retries,
             path=path,
@@ -137,18 +137,16 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             for tool in tools or []:
                 tool.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        # Memory
+        # Transcript (per-run message history)
+        self._transcript = transcript or LLMAgentTranscript()
+        self.reset_transcript_on_run = reset_transcript_on_run
 
-        # Don't narrow the base '_memory' type (Memory in Processor)
-        self._memory = memory or LLMAgentMemory()
-        self.reset_memory_on_run = reset_memory_on_run
-
-        # Wire parent context for AgentTool instances (after memory init)
+        # Wire parent context for AgentTool instances (after transcript init)
         from .agent_tool import AgentTool  # noqa: PLC0415
 
         for tool in tools or []:
             if isinstance(tool, AgentTool):
-                tool.set_parent_memory(self._memory)
+                tool.set_parent_transcript(self._transcript)
                 tool.set_parent_tools(tools or [])
 
         # Prompt builder
@@ -227,7 +225,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             agent_name=self.name,
             llm=llm,
             tools=tools,
-            memory=self.memory,
+            transcript=self.transcript,
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
             force_react_mode=force_react_mode,
@@ -324,8 +322,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return self._prompt_builder.in_prompt
 
     @property
-    def memory(self) -> LLMAgentMemory:
-        return cast("LLMAgentMemory", self._memory)
+    def transcript(self) -> LLMAgentTranscript:
+        return self._transcript
 
     @property
     def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:
@@ -370,7 +368,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         exec_id: str | None = None,
     ) -> AgentCheckpoint | None:
         """Load session checkpoint from store on first run (if available)."""
-        if not self.memory.is_empty:
+        if not self.transcript.is_empty:
             return None  # Already has messages — don't reload
 
         checkpoint = await self._deserialize_checkpoint(ctx, AgentCheckpoint)
@@ -378,7 +376,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             return None
 
         resume_state = prepare_messages_for_resume(checkpoint.messages)
-        self.memory.messages = resume_state.messages
+        self.transcript.messages = resume_state.messages
         self._loop.turn = checkpoint.turn
         self.prompt_cache_key = checkpoint.prompt_cache_key
 
@@ -430,7 +428,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         checkpoint = AgentCheckpoint(
             session_key=ctx.session_key,
             processor_name=self.name,
-            messages=list(self.memory.messages),
+            messages=list(self.transcript.messages),
             session_metadata=self._session_metadata,
             step=self._delivery_step,
             turn=turn,
@@ -455,10 +453,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         formatted_sys_prompt = await self._prompt_builder.build_system_prompt(
             ctx=ctx, exec_id=exec_id
         )
-        fresh_init = self.reset_memory_on_run or self.memory.is_empty
+        fresh_init = self.reset_transcript_on_run or self.transcript.is_empty
 
         if fresh_init and not self._has_build_memory_impl:
-            self.memory.reset(formatted_sys_prompt)
+            self.transcript.reset(formatted_sys_prompt)
         elif self._has_build_memory_impl:
             self.build_memory_impl(
                 instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
@@ -466,7 +464,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         messages_to_expose: list[InputMessageItem] = []
         if fresh_init:
-            for msg in self.memory.messages:
+            for msg in self.transcript.messages:
                 if isinstance(msg, InputMessageItem):
                     messages_to_expose.append(msg)
 
@@ -474,7 +472,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
         )
         if input_message:
-            self.memory.update([input_message])
+            self.transcript.update([input_message])
             messages_to_expose.append(input_message)
 
         return messages_to_expose

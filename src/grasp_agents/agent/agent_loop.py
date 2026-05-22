@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     )
     from grasp_agents.types.response import Response
 
-    from .llm_agent_memory import LLMAgentMemory
+    from .llm_agent_transcript import LLMAgentTranscript
 
 logger = getLogger(__name__)
 
@@ -125,7 +125,7 @@ class AgentLoop(Generic[CtxT]):
     stream_tools: Final[bool]
 
     # Mutable state
-    memory: LLMAgentMemory
+    transcript: LLMAgentTranscript
     tools: dict[str, BaseTool[BaseModel, Any, CtxT]]
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
@@ -152,7 +152,7 @@ class AgentLoop(Generic[CtxT]):
         *,
         agent_name: str,
         llm: LLM,
-        memory: LLMAgentMemory,
+        transcript: LLMAgentTranscript,
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
         llm_output_schema: Any | None = None,
         max_turns: int,
@@ -168,7 +168,7 @@ class AgentLoop(Generic[CtxT]):
 
         self.final_answer = None
         self.turn = 0
-        self.memory = memory
+        self.transcript = transcript
 
         self.agent_name = agent_name
         self.llm = llm
@@ -204,7 +204,7 @@ class AgentLoop(Generic[CtxT]):
 
         self.bg_tasks = BackgroundTaskManager[CtxT](
             agent_name=agent_name,
-            memory=memory,
+            transcript=transcript,
             tools=self.tools,
             path=path,
         )
@@ -365,7 +365,7 @@ class AgentLoop(Generic[CtxT]):
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         llm_params: dict[str, Any] = {
-            "input": self.memory.messages,
+            "input": self.transcript.messages,
             "output_schema": self.llm_output_schema,
             "tools": self.tools or None,
             "tool_choice": tool_choice,
@@ -382,7 +382,7 @@ class AgentLoop(Generic[CtxT]):
                         item,
                         (OutputMessageItem, FunctionToolCallItem, ReasoningItem),
                     ):
-                        self.memory.update([item], ctx=ctx)
+                        self.transcript.update([item], ctx=ctx)
 
                     if isinstance(item, FunctionToolCallItem):
                         yield ToolCallItemEvent(
@@ -411,7 +411,7 @@ class AgentLoop(Generic[CtxT]):
 
         else:
             response = await self.llm.generate_response(**llm_params)
-            self.memory.update(response.output_items, ctx=ctx)
+            self.transcript.update(response.output_items, ctx=ctx)
 
             for item in response.output_items:
                 if isinstance(item, FunctionToolCallItem):
@@ -536,7 +536,7 @@ class AgentLoop(Generic[CtxT]):
                 output, call, ctx=ctx, exec_id=exec_id
             )
             tool_messages.append(msg)
-            self.memory.update([msg], ctx=ctx)
+            self.transcript.update([msg], ctx=ctx)
             yield ToolOutputItemEvent(
                 source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
@@ -561,7 +561,7 @@ class AgentLoop(Generic[CtxT]):
             "Exceeded the maximum number of turns: provide a final answer now!",
             role="user",
         )
-        self.memory.update([user_message])
+        self.transcript.update([user_message])
         # TODO: set source
         yield UserMessageEvent(
             source=None,
@@ -595,7 +595,7 @@ class AgentLoop(Generic[CtxT]):
 
         assert stream.response is not None
 
-        self.memory.update(stream.response.output_items)
+        self.transcript.update(stream.response.output_items)
         self._process_response(stream.response, ctx=ctx)
 
         self.final_answer = self._extract_final_answer(
@@ -651,7 +651,7 @@ class AgentLoop(Generic[CtxT]):
         Inject synthetic tool outputs for tool calls that will never execute.
 
         When the loop stops (e.g. max_turns) after ACT generated tool calls,
-        those calls are already in memory but have no outputs. Most LLM APIs
+        those calls are already in the transcript but have no outputs. Most LLM APIs
         reject requests with unmatched tool_use/tool_result pairs. This method
         adds cancellation outputs so the conversation stays valid.
         """
@@ -666,7 +666,7 @@ class AgentLoop(Generic[CtxT]):
             )
             for tc in tool_calls
         ]
-        self.memory.update(cancellations)
+        self.transcript.update(cancellations)
 
         return cancellations
 
@@ -782,7 +782,7 @@ class AgentLoop(Generic[CtxT]):
                 )
                 tool_msgs.append(msg)
                 rejection_msgs.append(msg)
-                self.memory.update([msg], ctx=ctx)
+                self.transcript.update([msg], ctx=ctx)
                 yield ToolOutputItemEvent(
                     source=call.name,
                     destination=self.agent_name,

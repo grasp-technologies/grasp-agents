@@ -1,20 +1,30 @@
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
-from ..memory import Memory
 from ..run_context import RunContext
 from ..types.io import LLMPrompt
 from ..types.items import InputItem, InputMessageItem
 
 
-class LLMAgentMemory(Memory):
+class LLMAgentTranscript(BaseModel):
+    """
+    Per-run message history for :class:`LLMAgent`.
+
+    Owned by the agent (``agent.transcript``), persisted via the agent's
+    checkpoint, and rebuilt on resume. Distinct from cross-session memory
+    on :class:`RunContext.memory` (the memdir-backed knowledge store).
+    """
+
     messages: list[InputItem] = Field(default_factory=list[InputItem])
 
     def reset(
-        self, instructions: LLMPrompt | None = None, ctx: RunContext[Any] | None = None
-    ):
+        self,
+        instructions: LLMPrompt | None = None,
+        ctx: RunContext[Any] | None = None,
+    ) -> None:
+        del ctx
         self.messages = (
             [InputMessageItem.from_text(instructions, role="system")]
             if instructions is not None
@@ -29,7 +39,8 @@ class LLMAgentMemory(Memory):
         new_messages: Sequence[InputItem],
         *,
         ctx: RunContext[Any] | None = None,
-    ):
+    ) -> None:
+        del ctx
         self.messages.extend(new_messages)
 
     @property
@@ -47,4 +58,4 @@ class LLMAgentMemory(Memory):
         return None
 
     def __repr__(self) -> str:
-        return f"LLMAgentMemory with message history of length {len(self.messages)}"
+        return f"LLMAgentTranscript(len={len(self.messages)})"

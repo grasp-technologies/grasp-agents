@@ -28,7 +28,7 @@ from grasp_agents.agent.agent_tool import (
 )
 from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import (
@@ -431,7 +431,7 @@ class TestAgentToolPromptBuilders:
         child_llm = _make_child_llm("ok")
 
         def build_sys(
-            prompt: str, memory: LLMAgentMemory, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
         ) -> str:
             return f"Dynamic: {prompt}"
 
@@ -477,7 +477,7 @@ class TestAgentToolPromptBuilders:
                 return _text_response("done")
 
         def build_input(
-            prompt: str, memory: LLMAgentMemory, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
         ) -> str:
             return f"[enriched] {prompt}"
 
@@ -497,12 +497,12 @@ class TestAgentToolPromptBuilders:
         assert any("[enriched] raw task" in c for c in captured)
 
     @pytest.mark.anyio
-    async def test_builder_receives_parent_memory(self) -> None:
+    async def test_builder_receives_parent_transcript(self) -> None:
         """Builder receives the parent agent's memory."""
-        received_memory: list[LLMAgentMemory | None] = []
+        received_memory: list[LLMAgentTranscript | None] = []
 
         def build_sys(
-            prompt: str, memory: LLMAgentMemory, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
         ) -> str:
             received_memory.append(memory)
             return "sys"
@@ -516,11 +516,11 @@ class TestAgentToolPromptBuilders:
         )
 
         # Wire parent memory manually (normally done by LLMAgent.__init__)
-        parent_mem = LLMAgentMemory()
+        parent_mem = LLMAgentTranscript()
         from grasp_agents.types.items import InputMessageItem
 
         parent_mem.update([InputMessageItem.from_text("user said hi", role="user")])
-        agent_tool.set_parent_memory(parent_mem)
+        agent_tool.set_parent_transcript(parent_mem)
 
         ctx: RunContext[None] = RunContext()
         await agent_tool._run(AgentToolInput(prompt="go"), ctx=ctx, exec_id="x")
@@ -534,7 +534,7 @@ class TestAgentToolPromptBuilders:
         child_llm = _make_child_llm("ok")
 
         async def async_build(
-            prompt: str, memory: LLMAgentMemory, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
         ) -> str:
             return f"async: {prompt}"
 
@@ -581,7 +581,7 @@ class TestAgentToolPromptBuilders:
             name="parent", llm=parent_llm, tools=[agent_tool]
         )
 
-        assert agent_tool._parent_memory is parent._memory
+        assert agent_tool._parent_transcript is parent._transcript
 
 
 class TestToolCopy:

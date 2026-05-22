@@ -11,17 +11,15 @@ The ``memory`` system-prompt section auto-attaches to every :class:`LLMAgent`
 at construction and reads ``ctx.memory`` at compute time, so populating that
 field with a :class:`MemoryProvider` is the only wiring step.
 
-This package also re-exports :class:`Memory` and :class:`DummyMemory` — the
-working-memory ABC consumed by :class:`Processor` (distinct concern, kept
-here for backwards compatibility with the previous ``grasp_agents.memory``
-module).
+Distinct from :class:`LLMAgentTranscript` (the per-run message history owned
+by an agent). "Transcript" = within-run conversation; "memory" =
+cross-session knowledge.
 
 See ``docs/roadmap/13-memory-system.md``.
 """
 
 from __future__ import annotations
 
-from .base import DummyMemory, Memory
 from .injection import (
     MEMORY_SECTION_NAME,
     memory_system_prompt_section,
@@ -63,10 +61,8 @@ __all__ = [
     "MAX_MEMORY_FILES",
     "MEMORY_SECTION_NAME",
     "MEMORY_TYPES",
-    "DummyMemory",
     "FileMemoryProvider",
     "InMemoryMemoryProvider",
-    "Memory",
     "MemoryEntry",
     "MemoryError",
     "MemoryFormatError",

@@ -17,7 +17,7 @@ from openai.types.responses.response_usage import (
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.llm_agent_memory import LLMAgentMemory
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
@@ -218,13 +218,13 @@ class TestExecutorTextResponse:
         """Single LLM call returns text → final answer."""
         response = _make_text_response("The answer is 42.")
         llm = MockLLM(model_name="mock", responses_queue=[response])
-        memory = LLMAgentMemory()
+        memory = LLMAgentTranscript()
         memory.reset(instructions="Be helpful.")
 
         executor = AgentLoop(
             agent_name="test_agent",
             llm=llm,
-            memory=memory,
+            transcript=memory,
             tools=None,
             max_turns=3,
             stream_llm=False,
@@ -254,13 +254,13 @@ class TestExecutorTextResponse:
         """Streaming mode also produces LLMStreamEvents."""
         response = _make_text_response("Hello!")
         llm = MockLLM(model_name="mock", responses_queue=[response])
-        memory = LLMAgentMemory()
+        memory = LLMAgentTranscript()
         memory.reset(instructions="sys")
 
         executor = AgentLoop(
             agent_name="agent",
             llm=llm,
-            memory=memory,
+            transcript=memory,
             tools=None,
             max_turns=1,
             stream_llm=True,
@@ -294,7 +294,7 @@ class TestExecutorToolCalling:
             model_name="mock",
             responses_queue=[tool_response, final_response],
         )
-        memory = LLMAgentMemory()
+        memory = LLMAgentTranscript()
         memory.reset(instructions="You can add numbers.")
 
         tool = AddTool()
@@ -302,7 +302,7 @@ class TestExecutorToolCalling:
             AgentLoop(
                 agent_name="calc",
                 llm=llm,
-                memory=memory,
+                transcript=memory,
                 tools=[tool],
                 max_turns=3,
                 stream_llm=False,
@@ -362,14 +362,14 @@ class TestExecutorToolCalling:
         responses.append(_make_text_response("Forced answer"))
 
         llm = MockLLM(model_name="mock", responses_queue=responses)
-        memory = LLMAgentMemory()
+        memory = LLMAgentTranscript()
         memory.reset(instructions="sys")
 
         tool = AddTool()
         executor = AgentLoop(
             agent_name="agent",
             llm=llm,
-            memory=memory,
+            transcript=memory,
             tools=[tool],
             max_turns=2,
             stream_llm=False,
@@ -399,13 +399,13 @@ class TestExecutorUsageTracking:
         """Response usage is tracked in RunContext.usage_tracker."""
         response = _make_text_response("answer")
         llm = MockLLM(model_name="mock", responses_queue=[response])
-        memory = LLMAgentMemory()
+        memory = LLMAgentTranscript()
         memory.reset(instructions="sys")
 
         executor = AgentLoop(
             agent_name="test_agent",
             llm=llm,
-            memory=memory,
+            transcript=memory,
             tools=None,
             max_turns=1,
             stream_llm=False,
@@ -440,14 +440,14 @@ class TestExecutorMemoryIntegrity:
             model_name="mock",
             responses_queue=[tool_response, final_response],
         )
-        memory = LLMAgentMemory()
+        memory = LLMAgentTranscript()
         memory.reset(instructions="calc")
 
         executor = _with_final_answer_extractor(
             AgentLoop(
                 agent_name="agent",
                 llm=llm,
-                memory=memory,
+                transcript=memory,
                 tools=[AddTool()],
                 max_turns=3,
                 stream_llm=False,

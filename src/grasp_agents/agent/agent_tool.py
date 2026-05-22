@@ -10,7 +10,7 @@ from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 
-from .llm_agent_memory import LLMAgentMemory
+from .llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable
@@ -26,7 +26,7 @@ class AgentToolPromptBuilder(Protocol):
     Builds a prompt string for an AgentTool child agent.
 
     Receives the task prompt from ``AgentToolInput.prompt``, the
-    parent agent's :class:`LLMAgentMemory`, and the current
+    parent agent's :class:`LLMAgentTranscript`, and the current
     :class:`RunContext`.
 
     May be sync or async — the framework awaits when the return value
@@ -34,17 +34,17 @@ class AgentToolPromptBuilder(Protocol):
     """
 
     def __call__(
-        self, prompt: str, memory: LLMAgentMemory, ctx: RunContext[Any]
+        self, prompt: str, transcript: LLMAgentTranscript, ctx: RunContext[Any]
     ) -> str | Awaitable[str]: ...
 
 
 async def _resolve_builder(
     builder: AgentToolPromptBuilder,
     prompt: str,
-    memory: LLMAgentMemory,
+    transcript: LLMAgentTranscript,
     ctx: RunContext[Any],
 ) -> str:
-    result = builder(prompt, memory, ctx)
+    result = builder(prompt, transcript, ctx)
     if asyncio.iscoroutine(result) or asyncio.isfuture(result):
         return await result  # type: ignore[misc]
     return result  # type: ignore[return-value]
@@ -100,7 +100,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         self.inherit_tools = inherit_tools
         self._own_tools = tools or []
         self._parent_tools: list[BaseTool[Any, Any, CtxT]] = []
-        self._parent_memory: LLMAgentMemory | None = None
+        self._parent_transcript: LLMAgentTranscript | None = None
 
         self._in_type = AgentToolInput
         self._out_type = str
@@ -117,9 +117,9 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         """Called by parent LLMAgent to provide sibling tools."""
         self._parent_tools = tools
 
-    def set_parent_memory(self, memory: LLMAgentMemory) -> None:
-        """Called by parent LLMAgent to provide access to its memory."""
-        self._parent_memory = memory
+    def set_parent_transcript(self, transcript: LLMAgentTranscript) -> None:
+        """Called by parent LLMAgent to provide access to its transcript."""
+        self._parent_transcript = transcript
 
     def _resolve_tools(self) -> list[BaseTool[Any, Any, CtxT]] | None:
         """Build the child's tool list, excluding AgentTool instances."""
@@ -143,19 +143,19 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         self, prompt: str, ctx: RunContext[Any] | None = None
     ) -> tuple[str | None, str]:
         """Resolve sys_prompt and user message via builders or defaults."""
-        memory = self._parent_memory or LLMAgentMemory()
+        transcript = self._parent_transcript or LLMAgentTranscript()
         sys_prompt = self._sys_prompt
         in_prompt = prompt
 
         if ctx is not None:
             if self._sys_prompt_builder is not None:
                 sys_prompt = await _resolve_builder(
-                    self._sys_prompt_builder, prompt, memory, ctx
+                    self._sys_prompt_builder, prompt, transcript, ctx
                 )
 
             if self._in_prompt_builder is not None:
                 in_prompt = await _resolve_builder(
-                    self._in_prompt_builder, prompt, memory, ctx
+                    self._in_prompt_builder, prompt, transcript, ctx
                 )
 
         return sys_prompt, in_prompt

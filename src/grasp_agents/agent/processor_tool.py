@@ -28,7 +28,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         name: str,
         description: str,
         background: bool = False,
-        reset_memory_on_run: bool = True,
+        reset_transcript_on_run: bool = True,
     ) -> None:
         super().__init__(
             name=name,
@@ -36,7 +36,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
             background=background,
         )
         self._processor = processor
-        self._reset_memory_on_run = reset_memory_on_run
+        self._reset_transcript_on_run = reset_transcript_on_run
 
         # Resolve types from the processor at runtime
         self._in_type = processor.in_type
@@ -65,8 +65,13 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         proc = self._processor.copy()
         if path is not None:
             proc.set_path(list(path))
-        if self._reset_memory_on_run:
-            proc.memory.reset()
+        if self._reset_transcript_on_run:
+            # Only LLM agents carry a transcript — other processors have no
+            # working-state slot to reset.
+            from .llm_agent import LLMAgent  # noqa: PLC0415
+
+            if isinstance(proc, LLMAgent):
+                proc.transcript.reset()
         return proc
 
     async def _run(

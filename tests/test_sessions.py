@@ -200,14 +200,14 @@ def _make_agent(
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     session_key: str | None = None,
     store: InMemoryCheckpointStore | None = None,
-    reset_memory_on_run: bool = False,
+    reset_transcript_on_run: bool = False,
 ) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
     llm = MockLLM(responses_queue=responses)
     agent = LLMAgent[str, str, None](
         name="test_agent",
         llm=llm,
         tools=tools,
-        reset_memory_on_run=reset_memory_on_run,
+        reset_transcript_on_run=reset_transcript_on_run,
         stream_llm=True,
     )
     ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
@@ -544,23 +544,23 @@ class TestAgentSessionPersistence:
         assert checkpoint_count >= 2
 
     @pytest.mark.anyio
-    async def test_reset_memory_on_run_with_store(self):
-        """reset_memory_on_run=True wipes memory even with a store."""
+    async def test_reset_transcript_on_run_with_store(self):
+        """reset_transcript_on_run=True wipes memory even with a store."""
         store = InMemoryCheckpointStore()
 
         # First run -- saves session
         agent1, ctx = _make_agent(
             [_text_response("first")],
-            reset_memory_on_run=True,
+            reset_transcript_on_run=True,
             session_key="s1",
             store=store,
         )
         await agent1.run("hi", ctx=ctx)
 
-        # Second run -- reset_memory_on_run=True wipes prior messages
+        # Second run -- reset_transcript_on_run=True wipes prior messages
         agent2, ctx = _make_agent(
             [_text_response("second")],
-            reset_memory_on_run=True,
+            reset_transcript_on_run=True,
             session_key="s1",
             store=store,
         )
@@ -649,7 +649,7 @@ class TestAgentSessionPersistence:
 def _count_user_messages(agent: LLMAgent[Any, Any, Any]) -> int:
     return sum(
         1
-        for m in agent.memory.messages
+        for m in agent.transcript.messages
         if isinstance(m, InputMessageItem) and m.role == "user"
     )
 
@@ -1372,7 +1372,7 @@ class TestPendingTaskResume:
         await agent.run("continue", ctx=ctx, step=0)
 
         # The interruption notification should be in memory
-        memory_texts = [str(m) for m in agent.memory.messages]
+        memory_texts = [str(m) for m in agent.transcript.messages]
         interruption_msgs = [
             t for t in memory_texts if "interrupted" in t and "abc123" in t
         ]
@@ -1434,7 +1434,7 @@ class TestPendingTaskResume:
         await agent.run("continue", ctx=ctx, step=0)
 
         # Result notification should be in memory
-        memory_texts = [str(m) for m in agent.memory.messages]
+        memory_texts = [str(m) for m in agent.transcript.messages]
         result_msgs = [t for t in memory_texts if "completed" in t and "xyz789" in t]
         assert len(result_msgs) >= 1
 
@@ -1497,7 +1497,7 @@ class TestPendingTaskResume:
         await agent.run("continue", ctx=ctx, step=0)
 
         # Should NOT have duplicate notification
-        memory_texts = [str(m) for m in agent.memory.messages]
+        memory_texts = [str(m) for m in agent.transcript.messages]
         completed_msgs = [t for t in memory_texts if "completed" in t and "done1" in t]
         assert len(completed_msgs) == 1
 
@@ -1539,7 +1539,7 @@ class TestPendingTaskResume:
         await agent.run("continue", ctx=ctx, step=0)
 
         # No interruption notification injected for already-failed records
-        memory_texts = [str(m) for m in agent.memory.messages]
+        memory_texts = [str(m) for m in agent.transcript.messages]
         fail_msgs = [t for t in memory_texts if "fail1" in t]
         assert len(fail_msgs) == 0
 
@@ -1597,7 +1597,7 @@ class TestPendingTaskResume:
         await agent.run("continue", ctx=ctx, step=0)
 
         # Both should have interruption notifications
-        memory_texts = [str(m) for m in agent.memory.messages]
+        memory_texts = [str(m) for m in agent.transcript.messages]
         t1_msgs = [t for t in memory_texts if "t1" in t and "interrupted" in t]
         t2_msgs = [t for t in memory_texts if "t2" in t and "interrupted" in t]
         assert len(t1_msgs) >= 1
@@ -1758,7 +1758,7 @@ class TestChildTaskResume:
         await parent.run("continue", ctx=ctx, step=0)
 
         # Should NOT have "interrupted" in memory — child was re-spawned
-        memory_texts = [str(m) for m in parent.memory.messages]
+        memory_texts = [str(m) for m in parent.transcript.messages]
         interrupted = [t for t in memory_texts if "interrupted" in t]
         assert len(interrupted) == 0
 
@@ -1826,7 +1826,7 @@ class TestChildTaskResume:
         await parent.run("continue", ctx=ctx, step=0)
 
         # Should have "interrupted" notification (not re-spawned)
-        memory_texts = [str(m) for m in parent.memory.messages]
+        memory_texts = [str(m) for m in parent.transcript.messages]
         interrupted = [t for t in memory_texts if "interrupted" in t and "t1" in t]
         assert len(interrupted) >= 1
 
@@ -1919,7 +1919,7 @@ class TestChildTaskResume:
         await parent.run("continue", ctx=ctx, step=0)
 
         # Both children should have completed (not interrupted)
-        memory_texts = [str(m) for m in parent.memory.messages]
+        memory_texts = [str(m) for m in parent.transcript.messages]
         interrupted = [t for t in memory_texts if "interrupted" in t]
         assert len(interrupted) == 0
 

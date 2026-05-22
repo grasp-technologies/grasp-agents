@@ -29,7 +29,7 @@ from grasp_agents.types.events import (
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 from grasp_agents.types.tool import BaseTool
 
-from .llm_agent_memory import LLMAgentMemory
+from .llm_agent_transcript import LLMAgentTranscript
 
 logger = getLogger(__name__)
 
@@ -98,12 +98,12 @@ class BackgroundTaskManager(Generic[CtxT]):
         self,
         *,
         agent_name: str,
-        memory: LLMAgentMemory,
+        transcript: LLMAgentTranscript,
         tools: dict[str, BaseTool[BaseModel, Any, CtxT]] | None,
         path: list[str] | None = None,
     ) -> None:
         self._agent_name = agent_name
-        self._memory = memory
+        self._transcript = transcript
         self._tools = tools
         self._path = path
         self._tasks: dict[str, PendingTask] = {}
@@ -210,7 +210,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                 ),
                 role="user",
             )
-            self._memory.update([notification])
+            self._transcript.update([notification])
 
             # Mark record as DELIVERED. Records are kept for post-hoc
             # observability / debugging; run ``prune_delivered(older_than)``
@@ -353,7 +353,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                 continue
 
             await store.save(key, record.model_dump_json().encode())
-            self._memory.update([notification])
+            self._transcript.update([notification])
 
         logger.info(
             "Handled %d task records for session %s", len(keys), ctx.session_key

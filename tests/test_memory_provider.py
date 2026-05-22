@@ -187,7 +187,7 @@ class TestProviderDefaults:
     @pytest.mark.anyio
     async def test_on_pre_compress_default_empty(self) -> None:
         p = _ROProvider()
-        out = await p.on_pre_compress(memory=None)  # type: ignore[arg-type]
+        out = await p.on_pre_compress(transcript=None)  # type: ignore[arg-type]
         assert not out
 
     @pytest.mark.anyio

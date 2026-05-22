@@ -27,7 +27,6 @@ from grasp_agents.types.errors import (
 
 from ..durability.checkpoints import CheckpointKind
 from ..durability.persist import CheckpointPersistMixin
-from ..memory import DummyMemory, Memory
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
 from ..types.events import (
@@ -123,7 +122,6 @@ class Processor(
         self,
         name: ProcName,
         max_retries: int = 0,
-        memory: Memory | None = None,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
@@ -142,8 +140,6 @@ class Processor(
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        self._memory: Memory = memory or DummyMemory()
-
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
         self.set_path(path)
@@ -157,10 +153,6 @@ class Processor(
     @property
     def out_type(self) -> type[OutT]:
         return self._out_type
-
-    @property
-    def memory(self) -> Memory:
-        return self._memory
 
     @property
     def path(self) -> list[str]:
@@ -496,7 +488,7 @@ class Processor(
         self,
         tool_name: str,
         tool_description: str,
-        reset_memory_on_run: bool = True,
+        reset_transcript_on_run: bool = True,
         background: bool = False,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
         from ..agent.processor_tool import (  # noqa: PLC0415
@@ -514,5 +506,5 @@ class Processor(
             name=tool_name,
             description=tool_description,
             background=background,
-            reset_memory_on_run=reset_memory_on_run,
+            reset_transcript_on_run=reset_transcript_on_run,
         )

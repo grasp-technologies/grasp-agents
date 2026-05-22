@@ -19,7 +19,7 @@ from .agent.approval_store import (
 )
 from .agent.function_tool import FunctionTool, function_tool
 from .agent.llm_agent import LLMAgent
-from .agent.llm_agent_memory import LLMAgentMemory
+from .agent.llm_agent_transcript import LLMAgentTranscript
 from .agent.loop_state import (
     NextStep,
     NextStepContinue,
@@ -58,10 +58,8 @@ from .llm.resilience import RetryPolicy
 from .memory import (
     MEMORY_SECTION_NAME,
     MEMORY_TYPES,
-    DummyMemory,
     FileMemoryProvider,
     InMemoryMemoryProvider,
-    Memory,
     MemoryEntry,
     MemoryFrontmatter,
     MemoryProvider,
@@ -188,7 +186,6 @@ __all__ = [
     "CheckpointStore",
     "Content",
     "DeveloperMessage",
-    "DummyMemory",
     "Event",
     "EventConsole",
     "FallbackLLM",
@@ -201,7 +198,7 @@ __all__ = [
     "InputImage",
     "InputRenderable",
     "LLMAgent",
-    "LLMAgentMemory",
+    "LLMAgentTranscript",
     "LLMPrompt",
     "LLMSettings",
     "LLMStreamEvent",
@@ -223,7 +220,6 @@ __all__ = [
     "MCPServerSSE",
     "MCPServerStdio",
     "MCPTool",
-    "Memory",
     "MemoryEntry",
     "MemoryFrontmatter",
     "MemoryProvider",
