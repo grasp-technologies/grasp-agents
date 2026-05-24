@@ -27,7 +27,9 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .atomic_write import atomic_write_bytes, atomic_write_text
-    from .backend import FileBackend, FileEntry, FileStat, LocalFileBackend
+    from .backend import FileBackend, FileEntry, FileStat
+    from .local_backend import LocalFileBackend
+    from .delete import DeleteInput, DeleteResult, DeleteTool
     from .edit import EditInput, EditResult, EditTool
     from .fuzzy_match import (
         UNICODE_MAP,
@@ -61,7 +63,10 @@ _LAZY: dict[str, str] = {
     "FileBackend": "backend",
     "FileEntry": "backend",
     "FileStat": "backend",
-    "LocalFileBackend": "backend",
+    "LocalFileBackend": "local_backend",
+    "DeleteInput": "delete",
+    "DeleteResult": "delete",
+    "DeleteTool": "delete",
     "EditInput": "edit",
     "EditResult": "edit",
     "EditTool": "edit",
@@ -106,6 +111,9 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "UNICODE_MAP",
     "DefaultSecretRedactor",
+    "DeleteInput",
+    "DeleteResult",
+    "DeleteTool",
     "EditInput",
     "EditResult",
     "EditTool",

@@ -35,8 +35,8 @@ from .injection import (
     make_memory_section,
     memory_relevance_attachment,
     memory_system_prompt_section,
-    render_auto_memory_instructions,
-    render_memory_block,
+    render_memory_index,
+    render_memory_instructions,
 )
 from .loader import (
     INDEX_FILE_NAME,
@@ -56,6 +56,14 @@ from .provider import (
     MemorySelector,
     MemorySnapshot,
     default_memdir_path,
+)
+from .selectors import (
+    DEFAULT_MAX_SELECT,
+    DEFAULT_MAX_TOKENS,
+    SELECT_MEMORIES_SYSTEM_PROMPT,
+    extract_latest_user_text,
+    format_manifest,
+    make_llm_relevance_selector,
 )
 from .types import (
     MEMORY_TYPES,
@@ -87,6 +95,8 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "DEFAULT_MAX_SELECT",
+    "DEFAULT_MAX_TOKENS",
     "DEFAULT_STALE_AFTER",
     "INDEX_FILE_NAME",
     "MAX_INDEX_BYTES",
@@ -95,6 +105,7 @@ __all__ = [
     "MEMORY_RELEVANCE_ATTACHMENT_NAME",
     "MEMORY_SECTION_NAME",
     "MEMORY_TYPES",
+    "SELECT_MEMORIES_SYSTEM_PROMPT",
     "FileMemoryProvider",
     "InMemoryMemoryProvider",
     "MCPMemoryProvider",
@@ -108,13 +119,16 @@ __all__ = [
     "MemorySnapshot",
     "MemoryType",
     "default_memdir_path",
+    "extract_latest_user_text",
+    "format_manifest",
     "load_memory_entry",
+    "make_llm_relevance_selector",
     "make_memory_section",
     "memory_relevance_attachment",
     "memory_system_prompt_section",
     "parse_memory_md",
-    "render_auto_memory_instructions",
-    "render_memory_block",
+    "render_memory_index",
+    "render_memory_instructions",
     "scan_memdir",
     "truncate_index",
 ]

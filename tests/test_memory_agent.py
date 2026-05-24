@@ -169,11 +169,12 @@ class TestAutoMemoryInstructions:
         assert prompt is not None
         assert "<memory-index>" in prompt  # index sub-block
         assert "# Memory" in prompt  # instructions sub-block
-        assert "`user`" in prompt
-        # File-tool authoring is mentioned by name; no specialized
+        # Taxonomy names appear inside <type><name>…</name>…</type> blocks.
+        assert "<name>user</name>" in prompt
+        assert "<name>feedback</name>" in prompt
+        # File-tool authoring is mentioned generically; no specialized
         # save_memory / list_memories names appear.
-        assert "Write" in prompt
-        assert "Edit" in prompt
+        assert "file tools" in prompt
 
     @pytest.mark.anyio
     async def test_instructions_do_not_enumerate_tools(self) -> None:

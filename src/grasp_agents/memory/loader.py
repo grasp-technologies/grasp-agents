@@ -27,6 +27,14 @@ _FRONTMATTER_RE = re.compile(
 )
 
 
+def strip_frontmatter(text: str) -> str:
+    """Drop a leading ``--- ... ---`` YAML block; pass-through if absent."""
+    match = _FRONTMATTER_RE.match(text)
+    if match is None:
+        return text
+    return match.group(2).lstrip("\n")
+
+
 def parse_memory_md(
     text: str, *, path: Path | None = None
 ) -> tuple[MemoryFrontmatter, str]:
@@ -103,15 +111,17 @@ def truncate_index(content: str) -> tuple[str, bool]:
 
 
 def scan_memdir(
-    root: Path | str,
+    root: Path,
     *,
     max_files: int = MAX_MEMORY_FILES,
-) -> tuple[str | None, int | None, list[MemoryEntry]]:
+) -> tuple[str | None, int | None, bool, list[MemoryEntry]]:
     """
-    Walk a memdir root and return ``(index_text, index_mtime_ms, entries)``.
+    Walk a memdir root and return ``(index_text, index_mtime_ms,
+    index_truncated, entries)``.
 
     - ``index_text``: ``MEMORY.md`` content (already line/byte-capped) or ``None``.
     - ``index_mtime_ms``: filesystem mtime of ``MEMORY.md`` or ``None``.
+    - ``index_truncated``: ``True`` when the caps cut content.
     - ``entries``: every successfully-parsed topic ``.md`` file under ``root``,
       sorted by mtime (newest first), capped at ``max_files``. Topic files
       that fail to parse are logged and skipped.
@@ -119,17 +129,17 @@ def scan_memdir(
     ``MEMORY.md`` is excluded from ``entries``. Hidden files (``.``-prefixed)
     and non-``.md`` files are skipped.
     """
-    path = Path(root).expanduser()
+    path = root.expanduser()
     if not path.is_dir():
-        return None, None, []
+        return None, None, False, []
 
     index_text: str | None = None
     index_mtime_ms: int | None = None
+    index_truncated = False
     index_path = path / INDEX_FILE_NAME
     if index_path.is_file():
         raw = index_path.read_text(encoding="utf-8")
-        capped, _ = truncate_index(raw)
-        index_text = capped
+        index_text, index_truncated = truncate_index(raw)
         index_mtime_ms = int(index_path.stat().st_mtime * 1000)
 
     entries: list[MemoryEntry] = []
@@ -147,4 +157,4 @@ def scan_memdir(
     if len(entries) > max_files:
         entries = entries[:max_files]
 
-    return index_text, index_mtime_ms, entries
+    return index_text, index_mtime_ms, index_truncated, entries

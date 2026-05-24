@@ -31,7 +31,8 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from typing import TYPE_CHECKING, Any, Literal, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from pydantic import BaseModel, Field
 
@@ -40,8 +41,6 @@ from ..file_edit.backend import GrepRawResult
 from ..file_edit.paths import PathAccessError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ...run_context import RunContext
     from ..file_edit.backend import FileBackend
 
@@ -198,7 +197,7 @@ async def _run_rg(args: list[str]) -> tuple[bytes, bytes, int]:
 def _build_args(
     *,
     pattern: str,
-    resolved_path: str,
+    resolved_path: Path,
     mode: OutputMode,
     glob: str | None,
     file_type: str | None,
@@ -237,18 +236,18 @@ def _build_args(
             if after_context is not None:
                 args.extend(["--after-context", str(after_context)])
 
-    args.extend(["--", pattern, resolved_path])
+    args.extend(["--", pattern, str(resolved_path)])
     return args
 
 
-def _parse_files_with_matches(stdout: bytes) -> list[str]:
+def _parse_files_with_matches(stdout: bytes) -> list[Path]:
     text = stdout.decode("utf-8", errors="replace")
-    return [line for line in text.splitlines() if line]
+    return [Path(line) for line in text.splitlines() if line]
 
 
-def _parse_count(stdout: bytes) -> list[tuple[str, int]]:
+def _parse_count(stdout: bytes) -> list[tuple[Path, int]]:
     r"""Parse ``path:N\n`` output; ``N == 0`` lines are omitted by rg."""
-    entries: list[tuple[str, int]] = []
+    entries: list[tuple[Path, int]] = []
     text = stdout.decode("utf-8", errors="replace")
     for line in text.splitlines():
         if not line:
@@ -256,7 +255,7 @@ def _parse_count(stdout: bytes) -> list[tuple[str, int]]:
         path, _, count_s = line.rpartition(":")
         if not path or not count_s.isdigit():
             continue
-        entries.append((path, int(count_s)))
+        entries.append((Path(path), int(count_s)))
     return entries
 
 
@@ -321,7 +320,7 @@ def _parse_json_content(
 
 async def local_backend_grep(
     *,
-    root: str,
+    root: Path,
     pattern: str,
     glob: str | None,
     file_type: str | None,
@@ -388,9 +387,12 @@ async def local_backend_grep(
 # ---------------------------------------------------------------------------
 
 
+_T = TypeVar("_T")
+
+
 def _slice(
-    entries: list[str], *, offset: int, head_limit: int | None
-) -> tuple[list[str], bool]:
+    entries: list[_T], *, offset: int, head_limit: int | None
+) -> tuple[list[_T], bool]:
     """Apply ``offset`` + ``head_limit``; return sliced list + trunc flag."""
     total = len(entries)
     start = min(offset, total)
@@ -428,9 +430,9 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from ..file_edit.backend import LocalFileBackend  # noqa: PLC0415
+        from ..file_edit.local_backend import LocalFileBackend  # noqa: PLC0415
 
-        self._allowed_roots = [str(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
         self._backend = backend or LocalFileBackend()
 
     async def _run(
@@ -444,7 +446,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         del ctx, exec_id, progress_callback
 
         raw_path = (
-            inp.path if inp.path is not None else self._allowed_roots[0]
+            Path(inp.path) if inp.path is not None else self._allowed_roots[0]
         )
         try:
             resolved = await self._backend.validate_path(
@@ -470,11 +472,11 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         offset = inp.offset or 0
 
         if inp.output_mode == "files_with_matches":
-            sliced, truncated = _slice(
+            sliced_paths, truncated = _slice(
                 raw.files, offset=offset, head_limit=inp.head_limit
             )
             return GrepResult(
-                output="\n".join(sliced),
+                output="\n".join(str(p) for p in sliced_paths),
                 output_mode=inp.output_mode,
                 num_matches=raw.num_matches,
                 num_files_matched=raw.num_files_matched,

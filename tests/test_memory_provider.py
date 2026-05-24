@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,7 +23,7 @@ from grasp_agents.memory import (
 from grasp_agents.memory.provider import GRASP_MEMORY_ENV
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    pass
 
 
 def _topic_file(path: Path, name: str, body: str = "B") -> Path:
@@ -182,24 +183,28 @@ class TestProviderDefaults:
         p = _ROProvider()
         await p.refresh()  # no exception
 
-    def test_root_default_none(self) -> None:
-        # Providers that don't expose a memdir return None — callers can
-        # check before constructing a file toolkit.
+    def test_root_default_is_empty_path(self) -> None:
+        # Base provider returns ``Path()`` (cwd-equivalent) by default —
+        # subclasses override ``root`` to surface a real memdir. Callers
+        # always get a ``Path``, never ``None``, so they can pass it
+        # uniformly to file-toolkit constructors.
         p = _ROProvider()
-        assert p.root is None
+        assert isinstance(p.root, Path)
+        assert p.root == Path()
 
-    def test_make_file_toolkit_requires_root(self) -> None:
-        # No root → can't build a toolkit. Raises with a clear message.
+    def test_make_file_toolkit_uses_root(self) -> None:
+        # ``make_file_toolkit`` rooted at the provider's ``root`` —
+        # always succeeds because ``root`` is always a Path.
         p = _ROProvider()
-        with pytest.raises(ValueError, match="no memdir root"):
-            p.make_file_toolkit()
+        toolkit = p.make_file_toolkit()
+        assert toolkit is not None
 
     def test_make_file_toolkit_with_root(self, tmp_path: Path) -> None:
         # FileMemoryProvider exposes its memdir root and can produce a
         # toolkit rooted there.
         p = FileMemoryProvider(tmp_path)
         toolkit = p.make_file_toolkit()
-        assert str(tmp_path) in toolkit.allowed_roots
+        assert tmp_path in toolkit.allowed_roots
 
 
 # ---------- default_memdir_path ----------

@@ -88,6 +88,18 @@ class MCPClient:
         """Server-supplied instructions text (per MCP ``InitializeResult``)."""
         return self._instructions
 
+    @property
+    def session(self) -> ClientSession:
+        """
+        Return the underlying :class:`ClientSession`.
+
+        Raises :class:`RuntimeError` if the client is not connected. Lets
+        adapters that wrap an MCP client (file backend, memory provider,
+        resource index) share the same session without reaching into
+        private attributes.
+        """
+        return self._require_session()
+
     async def connect(self) -> None:
         """Connect to the MCP server and discover tools."""
         if self._session is not None:

@@ -20,23 +20,21 @@ Guards:
 
 from __future__ import annotations
 
+import stat as stat_module
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
-
-import stat as stat_module
 
 from ...types.tool import BaseTool, ToolProgressCallback
 from ..file_edit.paths import PathAccessError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ...run_context import RunContext
     from ..file_edit.backend import FileBackend, FileStat
 
 
-def _is_directory(stat: "FileStat") -> bool:
+def _is_directory(stat: FileStat) -> bool:
     """
     Best-effort isdir check.
 
@@ -52,6 +50,7 @@ def _is_directory(stat: "FileStat") -> bool:
     # explicitly via stat_file (which returns ``is_dir``); rooting Glob
     # at a non-dir is the unusual case.
     return True
+
 
 # Default cap on the returned ``files`` list. 250 balances "enough to see
 # the shape of the repo" against "context bloat". Callers raise via the
@@ -115,9 +114,9 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from ..file_edit.backend import LocalFileBackend  # noqa: PLC0415
+        from ..file_edit.local_backend import LocalFileBackend  # noqa: PLC0415
 
-        self._allowed_roots = [str(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
         self._backend = backend or LocalFileBackend()
         self._head_limit = head_limit
         self._include_hidden = include_hidden
@@ -132,9 +131,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
     ) -> GlobResult:
         del ctx, exec_id, progress_callback
 
-        raw_root = (
-            inp.path if inp.path is not None else self._allowed_roots[0]
-        )
+        raw_root = Path(inp.path) if inp.path is not None else self._allowed_roots[0]
         try:
             resolved = await self._backend.validate_path(
                 raw_root, self._allowed_roots, must_exist=True
@@ -144,9 +141,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
 
         stat = await self._backend.stat(resolved)
         if not _is_directory(stat):
-            raise ValueError(
-                f"Glob search path must be a directory: {resolved}"
-            )
+            raise ValueError(f"Glob search path must be a directory: {resolved}")
 
         matched, truncated = await self._backend.find_files(
             resolved,
@@ -161,7 +156,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
         is_truncated = truncated or len(matched) > self._head_limit
 
         return GlobResult(
-            files=[m.path for m in kept],
+            files=[str(m.path) for m in kept],
             num_files=len(kept),
             truncated=is_truncated,
         )

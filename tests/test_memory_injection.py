@@ -1,4 +1,4 @@
-"""Tests for the memory system-prompt section + render_memory_block."""
+"""Tests for the memory system-prompt section + render helpers."""
 
 from __future__ import annotations
 
@@ -8,20 +8,20 @@ import pytest
 
 from grasp_agents.memory import (
     memory_system_prompt_section,
-    render_auto_memory_instructions,
-    render_memory_block,
+    render_memory_index,
+    render_memory_instructions,
 )
 
 
-class TestRenderMemoryBlock:
+class TestRenderMemoryIndex:
     def test_none_index_returns_none(self) -> None:
-        assert render_memory_block(None) is None
+        assert render_memory_index(None) is None
 
     def test_blank_index_returns_none(self) -> None:
-        assert render_memory_block("   \n  ") is None
+        assert render_memory_index("   \n  ") is None
 
     def test_index_renders(self) -> None:
-        out = render_memory_block("# header\nbody\n")
+        out = render_memory_index("# header\nbody\n")
         assert out is not None
         # Wrapped in <memory-index> so the user's internal headings
         # don't clash with the surrounding section hierarchy.
@@ -31,7 +31,7 @@ class TestRenderMemoryBlock:
         assert "body" in out
 
     def test_freshness_warning_prepended(self) -> None:
-        out = render_memory_block(
+        out = render_memory_index(
             "# idx",
             freshness_warning=(
                 "<system-reminder>This memory is 14 days old"
@@ -46,6 +46,16 @@ class TestRenderMemoryBlock:
         assert out.index("<system-reminder>") < out.index("<memory-index>")
         assert out.index("<memory-index>") < out.index("# idx")
 
+    def test_truncation_marker_surfaced(self) -> None:
+        # When the index is truncated by line / byte caps, the renderer
+        # appends a `[truncated]` marker so the model knows it's only
+        # seeing a partial map and can act accordingly.
+        out = render_memory_index("# idx\n- a\n- b\n", truncated=True)
+        assert out is not None
+        assert "truncated" in out.lower()
+        # Marker is inside the block so it travels with the index text.
+        assert out.index("truncated") > out.index("<memory-index>")
+
 
 class TestMemorySection:
     def test_section_name_is_memory(self) -> None:
@@ -59,84 +69,84 @@ class TestMemorySection:
         assert result is None
 
 
-class TestRenderAutoMemoryInstructions:
+class TestRenderMemoryInstructions:
     def test_emits_taxonomy_unconditionally(self) -> None:
-        # The instructions describe the substrate (taxonomy, format
-        # rule, edit loop) — they do NOT depend on which tools the
-        # agent has wired. The system prompt stays cache-stable.
-        out = render_auto_memory_instructions()
+        # The instructions describe the substrate (taxonomy, format,
+        # save/use loop) — independent of which tools the agent has wired.
+        # The system prompt stays cache-stable.
+        out = render_memory_instructions()
         assert "# Memory" in out
-        assert "`user`" in out
-        assert "`feedback`" in out
-        assert "`project`" in out
-        assert "`reference`" in out
+        assert "user" in out
+        assert "feedback" in out
+        assert "project" in out
+        assert "reference" in out
 
     def test_explains_memory_md_format(self) -> None:
-        out = render_auto_memory_instructions()
+        out = render_memory_instructions()
         assert "MEMORY.md" in out
         assert "[name](file.md)" in out
 
-    def test_uses_generic_file_tools(self) -> None:
-        # CC-aligned: no specialized save_memory / load_memory / etc.
-        # Authoring uses Read / Write / Edit on the memdir directly.
-        out = render_auto_memory_instructions()
-        assert "Read" in out
-        assert "Write" in out
-        assert "Edit" in out
-        # Old specialized-tool names must NOT leak into the prompt —
-        # they don't exist anymore.
+    def test_no_specialized_memory_tools_referenced(self) -> None:
+        # Authoring uses generic file tools on the memdir directly —
+        # there are no save_memory / load_memory / etc. shortcuts.
+        out = render_memory_instructions()
         assert "save_memory" not in out
         assert "load_memory" not in out
         assert "list_memories" not in out
-        assert "update_memory_index" not in out
         assert "delete_memory" not in out
 
     def test_memdir_path_substitution(self) -> None:
-        # When the caller passes the memdir path, it lands in the lead
-        # paragraph so the agent knows where to author.
-        out = render_auto_memory_instructions(memdir="/tmp/memdir")
+        # Caller-passed memdir lands in the lead paragraph so the agent
+        # knows where to author.
+        out = render_memory_instructions(memdir="/tmp/memdir")
         assert "`/tmp/memdir`" in out
-        # And the placeholder phrasing is replaced.
+        # Placeholder phrasing is replaced.
         assert "rooted at the memdir." not in out
 
     def test_memdir_unset_keeps_placeholder(self) -> None:
-        out = render_auto_memory_instructions()
-        # No path supplied → the lead paragraph keeps the generic
-        # "rooted at the memdir" phrasing so the prompt still reads.
+        out = render_memory_instructions()
+        # No path supplied → keep the generic "rooted at the memdir"
+        # phrasing so the prompt still reads.
         assert "rooted at the memdir." in out
 
     def test_selector_adds_per_turn_note(self) -> None:
-        out = render_auto_memory_instructions(has_selector=True)
+        out = render_memory_instructions(has_selector=True)
         assert "surfaced into each turn" in out
 
     def test_no_selector_omits_per_turn_note(self) -> None:
-        out = render_auto_memory_instructions(has_selector=False)
+        out = render_memory_instructions(has_selector=False)
         assert "surfaced into each turn" not in out
 
     def test_verify_warning_present(self) -> None:
-        out = render_auto_memory_instructions()
-        # Per-turn verification reminder — keep before-acting cue.
-        assert "verify before asserting" in out
-
-    def test_save_discipline_present(self) -> None:
-        # Inspired by CC's ``## What NOT to save`` — the substrate spells
-        # out the failure modes we hit before (saved fabricated bodies,
-        # duplicate near-identical topics).
-        out = render_auto_memory_instructions()
-        assert "Don't save" in out
-        assert "Guesswork" in out
-        assert "near-duplicate" in out
+        out = render_memory_instructions()
+        # Per-turn verification reminder — recall isn't proof.
+        assert "verify" in out.lower()
 
     def test_index_discipline_present(self) -> None:
-        # The index is a *map* (links), not a store: one-line entries
-        # capped at ~150 chars, no topic bodies inlined, watch length.
-        # The "never inline ..." phrasing may wrap across a newline, so
-        # normalize whitespace before matching.
-        out = " ".join(render_auto_memory_instructions().split())
-        assert "never inline a topic body" in out.lower()
+        # The index is a map (links), not a store: one-line entries
+        # capped at ~150 chars, no topic bodies inlined, mention of
+        # truncation cap.
+        out = " ".join(render_memory_instructions().split())
+        assert "never inline topic bodies into it" in out.lower()
         assert "~150" in out
         assert "truncated" in out
 
-    def test_search_fallback_present(self) -> None:
-        out = render_auto_memory_instructions()
-        assert "search the memdir directly" in out
+    def test_no_coding_agent_assumptions(self) -> None:
+        # The framework is general-purpose. Memory instructions must
+        # not assume the agent is a coding agent (grep, git log,
+        # CLAUDE.md / GRASP.md are not universal).
+        out = render_memory_instructions().lower()
+        assert "grep" not in out
+        assert "git log" not in out
+        assert "claude.md" not in out
+        assert "grasp.md" not in out
+
+    def test_template_variables_substituted(self) -> None:
+        # No raw placeholder strings should leak through — every
+        # template var the prompt references must be filled in.
+        out = render_memory_instructions(memdir="/tmp/memdir")
+        for token in ("{memdir}", "{index_file}", "{index_path}",
+                      "{memory_types}", "{max_lines}", "{max_bytes}",
+                      "{selector_instructions}", "${MAX_ENTRYPOINT_LINES}",
+                      "${MEMORY_TYPES.join"):
+            assert token not in out, f"leaked placeholder: {token!r}"

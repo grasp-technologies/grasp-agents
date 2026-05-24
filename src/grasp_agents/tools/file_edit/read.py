@@ -24,6 +24,7 @@ After a successful read the file is registered in the session state's
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -147,12 +148,12 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         super().__init__(timeout=timeout)
         # Local import — keeps the backend module out of the
         # ``types.tool``-triggered import path used by ``RunContext``.
-        from .backend import LocalFileBackend  # noqa: PLC0415
+        from .local_backend import LocalFileBackend  # noqa: PLC0415
 
         self._store = store
         self._backend = backend or LocalFileBackend()
         self._default_session_key = default_session_key
-        self._allowed_roots = [str(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
         self._redactor = redactor
         self._include_dotfiles = include_dotfiles
         self._max_read_chars = max_read_chars
@@ -189,7 +190,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
 
         try:
             resolved = await self._backend.validate_path(
-                inp.path,
+                Path(inp.path),
                 self._allowed_roots,
                 must_exist=True,
                 dotfile_overrides=state.dotfile_overrides,
@@ -209,7 +210,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         state.record_read(resolved, mtime)
 
         return ReadResult(
-            path=resolved,
+            path=str(resolved),
             content=formatted,
             total_lines=total_lines,
         )

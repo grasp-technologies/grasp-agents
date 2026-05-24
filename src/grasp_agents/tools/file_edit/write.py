@@ -24,6 +24,7 @@ re-trip the staleness check on their own prior writes.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -92,12 +93,12 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from .backend import LocalFileBackend  # noqa: PLC0415
+        from .local_backend import LocalFileBackend  # noqa: PLC0415
 
         self._store = store
         self._backend = backend or LocalFileBackend()
         self._default_session_key = default_session_key
-        self._allowed_roots = [str(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
         self._include_dotfiles = include_dotfiles
         self._new_file_mode = new_file_mode
 
@@ -121,7 +122,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
 
         try:
             resolved = await self._backend.validate_path(
-                inp.path,
+                Path(inp.path),
                 self._allowed_roots,
                 must_exist=False,
                 dotfile_overrides=state.dotfile_overrides,
@@ -172,7 +173,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         state.record_write(resolved, new_mtime)
 
         return WriteResult(
-            path=resolved,
+            path=str(resolved),
             bytes_written=len(data),
             created=not target_exists,
         )

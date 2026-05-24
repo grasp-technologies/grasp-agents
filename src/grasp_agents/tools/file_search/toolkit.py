@@ -24,7 +24,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..file_edit.backend import FileBackend, LocalFileBackend
+from ..file_edit.backend import FileBackend
+from ..file_edit.local_backend import LocalFileBackend
 from .glob import DEFAULT_HEAD_LIMIT as DEFAULT_GLOB_HEAD_LIMIT
 from .glob import GlobTool
 from .grep import GrepTool
@@ -64,10 +65,10 @@ class FileSearchToolkit:
 
         """
         if allowed_roots is None:
-            roots: list[str] = [str(Path.cwd())]
+            roots: list[Path] = [Path.cwd()]
         else:
-            roots = [str(r) for r in allowed_roots]
-        self._allowed_roots: list[str] = roots
+            roots = [Path(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = roots
         self._backend: FileBackend = backend or LocalFileBackend()
         self._tool_timeout = tool_timeout
 
@@ -97,7 +98,7 @@ class FileSearchToolkit:
         return self._backend
 
     @property
-    def allowed_roots(self) -> list[str]:
+    def allowed_roots(self) -> list[Path]:
         return list(self._allowed_roots)
 
     def tools(self) -> list[BaseTool[Any, Any, Any]]:

@@ -112,7 +112,7 @@ class TestMemoryFrontmatter:
     def test_description_max_length(self) -> None:
         with pytest.raises(ValidationError):
             MemoryFrontmatter.model_validate(
-                {"name": "x", "description": "a" * 1025}
+                {"name": "x", "description": "a" * 2049}
             )
 
     def test_extra_fields_preserved(self) -> None:
@@ -217,14 +217,14 @@ class TestTruncateIndex:
 
 class TestScanMemdir:
     def test_empty_or_missing_dir(self, tmp_path: Path) -> None:
-        index, mtime, entries = scan_memdir(tmp_path / "missing")
+        index, mtime, _, entries = scan_memdir(tmp_path / "missing")
         assert index is None
         assert mtime is None
         assert entries == []
 
     def test_index_only(self, tmp_path: Path) -> None:
         _write(tmp_path / INDEX_FILE_NAME, "# index body\n")
-        index, mtime, entries = scan_memdir(tmp_path)
+        index, mtime, _, entries = scan_memdir(tmp_path)
         assert index is not None
         assert "index body" in index
         assert mtime is not None
@@ -232,7 +232,7 @@ class TestScanMemdir:
 
     def test_topic_only(self, tmp_path: Path) -> None:
         _write(tmp_path / "alpha.md", _topic("alpha", "Alpha"))
-        index, _, entries = scan_memdir(tmp_path)
+        index, _, _, entries = scan_memdir(tmp_path)
         assert index is None
         assert len(entries) == 1
         assert entries[0].name == "alpha"
@@ -241,20 +241,20 @@ class TestScanMemdir:
         _write(tmp_path / INDEX_FILE_NAME, "# idx\n")
         _write(tmp_path / "alpha.md", _topic("alpha", "Alpha"))
         _write(tmp_path / "beta.md", _topic("beta", "Beta"))
-        index, _, entries = scan_memdir(tmp_path)
+        index, _, _, entries = scan_memdir(tmp_path)
         assert index is not None
         assert {e.name for e in entries} == {"alpha", "beta"}
 
     def test_index_excluded_from_entries(self, tmp_path: Path) -> None:
         _write(tmp_path / INDEX_FILE_NAME, "# idx\n")
-        _, _, entries = scan_memdir(tmp_path)
+        _, _, _, entries = scan_memdir(tmp_path)
         assert all(e.path.name != INDEX_FILE_NAME for e in entries)
 
     def test_hidden_files_skipped(self, tmp_path: Path) -> None:
         hidden = tmp_path / ".hidden"
         hidden.mkdir()
         _write(hidden / "x.md", _topic("x", "y"))
-        _, _, entries = scan_memdir(tmp_path)
+        _, _, _, entries = scan_memdir(tmp_path)
         assert entries == []
 
     def test_sort_newest_first(self, tmp_path: Path) -> None:
@@ -264,25 +264,25 @@ class TestScanMemdir:
         # Force ordering: f1 older, f2 newer
         old = time.time() - 100
         os.utime(f1, (old, old))
-        _, _, entries = scan_memdir(tmp_path)
+        _, _, _, entries = scan_memdir(tmp_path)
         assert [e.name for e in entries] == ["beta", "alpha"]
         del f2
 
     def test_max_files_cap(self, tmp_path: Path) -> None:
         for i in range(10):
             _write(tmp_path / f"m{i}.md", _topic(f"m{i}", "x"))
-        _, _, entries = scan_memdir(tmp_path, max_files=3)
+        _, _, _, entries = scan_memdir(tmp_path, max_files=3)
         assert len(entries) == 3
 
     def test_malformed_skipped(self, tmp_path: Path) -> None:
         _write(tmp_path / "good.md", _topic("good", "g"))
         _write(tmp_path / "bad.md", "no frontmatter")
-        _, _, entries = scan_memdir(tmp_path)
+        _, _, _, entries = scan_memdir(tmp_path)
         assert [e.name for e in entries] == ["good"]
 
     def test_recursive_walk(self, tmp_path: Path) -> None:
         sub = tmp_path / "team"
         sub.mkdir()
         _write(sub / "shared.md", _topic("shared", "s"))
-        _, _, entries = scan_memdir(tmp_path)
+        _, _, _, entries = scan_memdir(tmp_path)
         assert [e.name for e in entries] == ["shared"]

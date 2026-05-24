@@ -36,8 +36,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .backend import FileBackend, LocalFileBackend
+from .backend import FileBackend
+from .delete import DeleteTool
 from .edit import EditTool
+from .local_backend import LocalFileBackend
 from .read import DEFAULT_MAX_READ_CHARS, ReadTool
 from .redact import DefaultSecretRedactor, SecretRedactor
 from .store import FileEditStore, InMemoryFileEditStore
@@ -102,10 +104,10 @@ class FileEditToolkit:
 
         """
         if allowed_roots is None:
-            roots: list[str] = [str(Path.cwd())]
+            roots: list[Path] = [Path.cwd()]
         else:
-            roots = [str(r) for r in allowed_roots]
-        self._allowed_roots: list[str] = roots
+            roots = [Path(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = roots
         self._backend: FileBackend = backend or LocalFileBackend()
         self._include_dotfiles = include_dotfiles
         self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
@@ -142,6 +144,14 @@ class FileEditToolkit:
             include_dotfiles=self._include_dotfiles,
             timeout=tool_timeout,
         )
+        self._delete_tool = DeleteTool(
+            store=self._store,
+            backend=self._backend,
+            allowed_roots=self._allowed_roots,
+            default_session_key=default_session_key,
+            include_dotfiles=self._include_dotfiles,
+            timeout=tool_timeout,
+        )
 
     # ---- Tool accessors ----------------------------------------------------
 
@@ -157,9 +167,18 @@ class FileEditToolkit:
     def edit(self) -> EditTool:
         return self._edit_tool
 
+    @property
+    def delete(self) -> DeleteTool:
+        return self._delete_tool
+
     def tools(self) -> list[BaseTool[Any, Any, Any]]:
         """Return the configured tools as a list, ready to attach to an agent."""
-        return [self._read_tool, self._write_tool, self._edit_tool]
+        return [
+            self._read_tool,
+            self._write_tool,
+            self._edit_tool,
+            self._delete_tool,
+        ]
 
     # ---- Store + session -----------------------------------------------------
 
@@ -173,7 +192,7 @@ class FileEditToolkit:
         return self._backend
 
     @property
-    def allowed_roots(self) -> list[str]:
+    def allowed_roots(self) -> list[Path]:
         return list(self._allowed_roots)
 
     @property
@@ -208,4 +227,4 @@ class FileEditToolkit:
         resolved = (
             Path(path).expanduser().resolve()  # noqa: ASYNC240
         )
-        state.add_dotfile_override(str(resolved))
+        state.add_dotfile_override(resolved)

@@ -28,6 +28,7 @@ for the detailed contract.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -110,12 +111,12 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from .backend import LocalFileBackend  # noqa: PLC0415
+        from .local_backend import LocalFileBackend  # noqa: PLC0415
 
         self._store = store
         self._backend = backend or LocalFileBackend()
         self._default_session_key = default_session_key
-        self._allowed_roots = [str(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
         self._include_dotfiles = include_dotfiles
 
     async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
@@ -146,7 +147,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
 
         try:
             resolved = await self._backend.validate_path(
-                inp.path,
+                Path(inp.path),
                 self._allowed_roots,
                 must_exist=True,
                 dotfile_overrides=state.dotfile_overrides,
@@ -218,7 +219,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         state.record_write(resolved, new_mtime)
 
         return EditResult(
-            path=resolved,
+            path=str(resolved),
             edits_applied=len(matches),
             strategy=strategy or "unknown",
             bytes_written=len(data),

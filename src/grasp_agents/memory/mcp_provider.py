@@ -1,33 +1,36 @@
 """
 MCP-backed memory provider — read-shaped adapter.
 
-Wraps an :class:`MCPClient` and routes :class:`MemoryProvider`
-**reads** to:
+Wraps an :class:`MCPClient` and routes :class:`MemoryProvider` reads
+through a shared :class:`MCPResourceIndex`:
 
-* MCP **resources** for the snapshot — ``resources/list`` to discover
-  topics and ``resources/read`` for ``MEMORY.md`` / topic bodies.
+* ``load`` — discovers topics via ``resources/list`` (one round-trip
+  per session, cached).
+* ``fetch_body`` — ``resources/read`` against the entry's URI.
+* ``render_index`` — pre-fetched alongside ``load`` from the same
+  ``resources/list`` payload.
 
-**Authoring** (creating / updating / deleting topic files and the
-index) does NOT go through the provider — it uses the generic
+**Authoring** does NOT go through the provider — it uses the generic
 file-edit tools rooted at the memdir, with an
 :class:`MCPFileBackend` constructed from the same client. The MCP
-server is expected to expose both surfaces (resources for browsing,
-file-protocol tools for editing); see
-``src/grasp_agents/examples/mcp_memory_server.py`` for a reference
-implementation.
+server is expected to expose:
 
-Tool / URI conventions are configurable in case the server doesn't
-follow the defaults.
+* Resources for every memdir file (``file://<memdir>/...`` URIs).
+* ``write_file`` + ``delete_file`` MCP tools for mutations.
+
+See ``src/grasp_agents/examples/mcp_memory_server.py`` for a reference
+implementation.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..mcp.resource_index import AnyUrl, MCPResourceIndex
+from .loader import strip_frontmatter
 from .provider import MemoryProvider, MemorySnapshot
 from .types import (
     DEFAULT_STALE_AFTER,
@@ -49,17 +52,17 @@ except ImportError as _err:
 if TYPE_CHECKING:
     from datetime import timedelta
 
-    from mcp import ClientSession
+    from ..mcp.client import MCPClient
+    from ..run_context import RunContext
+    from ..tools.file_edit.mcp_backend import MCPFileBackend
 
-    from grasp_agents.mcp.client import MCPClient
-    from grasp_agents.run_context import RunContext
-    from grasp_agents.tools.file_edit.mcp_backend import MCPFileBackend
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_URI_SCHEME = "file://"
 DEFAULT_MEMDIR_PATH = "/memdir"
+INDEX_FILE = "MEMORY.md"
 
 
 class MCPMemoryProvider(MemoryProvider):
@@ -67,20 +70,15 @@ class MCPMemoryProvider(MemoryProvider):
     Read-shaped :class:`MemoryProvider` backed by an :class:`MCPClient`.
 
     Pass a *connected* :class:`MCPClient`; the provider re-uses its
-    session. ``memdir_path`` is the server-side path holding the
-    memdir. The provider lists the server's resources, filters those
-    under ``file://<memdir_path>/`` (the convention of the reference
-    server in :mod:`grasp_agents.examples.mcp_memory_server`), and
-    reads ``MEMORY.md`` at ``file://<memdir_path>/MEMORY.md``.
+    session. ``root`` is the server-side path holding the memdir. The
+    provider lists the server's resources, filters those under
+    ``<scheme><root>/``, and reads ``MEMORY.md`` at
+    ``<scheme><root>/MEMORY.md``.
 
-    Read flow:
-
-    * :meth:`load` — single ``resources/list`` call, builds a snapshot
-      of metadata-only entries (``body=None``, ``uri`` set). Cached for
-      the session; :meth:`refresh` invalidates the cache.
-    * :meth:`fetch_body` — ``resources/read(entry.uri)``, strips YAML
-      frontmatter so callers see just the topic body.
-    * :meth:`render_index` — ``resources/read("file://<memdir>/MEMORY.md")``.
+    Construction is lightweight — nothing is fetched until the first
+    :meth:`load`. The underlying :class:`MCPResourceIndex` can be passed
+    in to share with a co-built :class:`MCPFileBackend`, saving a
+    duplicate ``resources/list``.
 
     Server contract: see ``docs/roadmap/13-memory-system.md`` and the
     reference implementation in
@@ -94,20 +92,15 @@ class MCPMemoryProvider(MemoryProvider):
         root: str | None = None,
         uri_scheme: str = DEFAULT_URI_SCHEME,
         stale_after: timedelta = DEFAULT_STALE_AFTER,
+        index: MCPResourceIndex | None = None,
     ) -> None:
         super().__init__()
         self._client = client
-        # Keep the as-given path for ``root`` (so callers see the path
-        # they passed in — and the file toolkit roots at exactly the
-        # same string). For URI matching, also stash a *resolved*
-        # variant so the provider tolerates symlinks the server may
-        # follow (macOS' /tmp → /private/tmp is the recurring case).
+        # Resolve once so symlink-divergent platforms (macOS' /tmp →
+        # /private/tmp is the recurring case) compare equal.
         self._root = Path(root or DEFAULT_MEMDIR_PATH).resolve()
-
         self._uri_scheme = uri_scheme
-
-        self._root_uri = f"{uri_scheme}{self._root}/"
-        self._index_uri = f"{self._root_uri}MEMORY.md"
+        self._index = index or MCPResourceIndex(client, uri_scheme=uri_scheme)
         self._stale_after = stale_after
         self._cached: MemorySnapshot | None = None
         self._lock = asyncio.Lock()
@@ -121,15 +114,22 @@ class MCPMemoryProvider(MemoryProvider):
     def client(self) -> MCPClient:
         return self._client
 
+    @property
+    def resource_index(self) -> MCPResourceIndex:
+        """Expose the resource index so adapters can share the cache."""
+        return self._index
+
     def make_file_backend(self) -> MCPFileBackend:
-        """Construct an :class:`MCPFileBackend` over the same MCP session."""
-        # Local import — keeps the file-edit module out of the optional-MCP
-        # import path until the user actually wants the file toolkit.
-        from grasp_agents.tools.file_edit.mcp_backend import (  # noqa: PLC0415
+        """Construct an :class:`MCPFileBackend` sharing this index."""
+        from ..tools.file_edit.mcp_backend import (  # noqa: PLC0415
             MCPFileBackend,
         )
 
-        return MCPFileBackend(client=self._client)
+        return MCPFileBackend(
+            client=self._client,
+            resource_uri_scheme=self._uri_scheme,
+            index=self._index,
+        )
 
     def make_file_toolkit(self, **kwargs: Any) -> Any:
         """
@@ -139,7 +139,9 @@ class MCPMemoryProvider(MemoryProvider):
         from ..tools.file_edit import FileEditToolkit  # noqa: PLC0415
 
         return FileEditToolkit(
-            allowed_roots=[self._root], backend=self.make_file_backend(), **kwargs
+            allowed_roots=[self._root],
+            backend=self.make_file_backend(),
+            **kwargs,
         )
 
     # ---- MemoryProvider overrides -------------------------------------------
@@ -158,6 +160,7 @@ class MCPMemoryProvider(MemoryProvider):
     async def refresh(self) -> None:
         async with self._lock:
             self._cached = None
+        await self._index.refresh()
 
     async def fetch_body(self, name: str, *, ctx: RunContext[Any] | None = None) -> str:
         snapshot = await self.load(ctx=ctx)
@@ -171,48 +174,38 @@ class MCPMemoryProvider(MemoryProvider):
             )
         # The MCP server returns the full file (including frontmatter).
         # Strip frontmatter so callers see only the body.
-        return _strip_frontmatter(text)
+        return strip_frontmatter(text)
 
     # ---- Internals -----------------------------------------------------------
 
     async def _load_uncached(self) -> MemorySnapshot:
-        session = self._session()
-        resources_result = await session.list_resources()
-
         entries: list[MemoryEntry] = []
         index_mtime_ms: int | None = None
-        for resource in resources_result.resources:
-            uri_str = str(resource.uri)
-            if not uri_str.startswith(self._root_uri):
-                continue
-            meta: dict[str, Any] = resource.meta or {}
-            updated_ms_raw = meta.get("updated_ms", 0)
-            try:
-                updated_ms = int(updated_ms_raw)
-            except (TypeError, ValueError):
-                updated_ms = 0
-            if uri_str == self._index_uri:
-                index_mtime_ms = updated_ms or None
+        index_uri = self._index.make_uri(self._root / INDEX_FILE)
+
+        for resource in await self._index.list_under(self._root):
+            if resource.uri == index_uri:
+                index_mtime_ms = resource.mtime_ms or None
                 continue
             # Server-set name (read from frontmatter) is the canonical
             # topic name. The URI's basename is the filename, which may
             # diverge from the frontmatter ``name``; trust the server.
-            name = (resource.name or "").strip()
-            if not name:
+            if not resource.name:
                 continue
-            description = resource.description or name
-            raw_type = meta.get("type")
+            raw_type = resource.meta.get("type")
             if raw_type not in MEMORY_TYPES:
                 raw_type = None
             try:
                 frontmatter = MemoryFrontmatter(
-                    name=name, description=description, type=raw_type
+                    name=resource.name,
+                    description=resource.description or resource.name,
+                    type=raw_type,
                 )
             except Exception as exc:
                 logger.warning(
                     "MCPMemoryProvider: skipping resource %s with invalid "
                     "frontmatter: %s",
-                    uri_str,
+                    resource.uri,
                     exc,
                 )
                 continue
@@ -221,8 +214,8 @@ class MCPMemoryProvider(MemoryProvider):
                     frontmatter=frontmatter,
                     body=None,
                     path=None,
-                    uri=uri_str,
-                    mtime_ms=updated_ms,
+                    uri=resource.uri,
+                    mtime_ms=resource.mtime_ms,
                 )
             )
 
@@ -236,11 +229,10 @@ class MCPMemoryProvider(MemoryProvider):
         # section just renders without an index sub-block.
         index_text: str | None = None
         try:
-            index_text = await self._read_resource_text(self._index_uri)
+            index_text = await self._read_resource_text(index_uri)
         except MemoryNotFoundError:
             logger.debug(
-                "MCPMemoryProvider: no index resource at %s",
-                self._index_uri,
+                "MCPMemoryProvider: no index resource at %s", index_uri
             )
 
         from .provider import build_snapshot  # noqa: PLC0415
@@ -254,9 +246,7 @@ class MCPMemoryProvider(MemoryProvider):
         )
 
     async def _read_resource_text(self, uri: str) -> str | None:
-        from pydantic import AnyUrl  # noqa: PLC0415
-
-        session = self._session()
+        session = self._client.session
         try:
             result = await session.read_resource(AnyUrl(uri))
         except Exception as exc:
@@ -268,26 +258,3 @@ class MCPMemoryProvider(MemoryProvider):
             if isinstance(content, TextResourceContents):
                 return content.text
         return None
-
-    def _session(self) -> ClientSession:
-        session: ClientSession | None = self._client._session  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        if session is None:
-            msg = (
-                f"MCPClient {self._client.name!r} is not connected; "
-                "call connect() or use it as an async context manager first."
-            )
-            raise RuntimeError(msg)
-        return session
-
-
-_FRONTMATTER_RE = re.compile(
-    r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)\Z", re.DOTALL
-)
-
-
-def _strip_frontmatter(text: str) -> str:
-    """Drop a leading ``--- ... ---`` YAML block; pass-through if absent."""
-    match = _FRONTMATTER_RE.match(text)
-    if match is None:
-        return text
-    return match.group(2).lstrip("\n")

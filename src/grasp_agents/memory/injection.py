@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from grasp_agents.agent.prompt_builder import InputAttachment, SystemPromptSection
 
-from .types import INDEX_FILE_NAME
+from .types import INDEX_FILE_NAME, MAX_INDEX_BYTES, MAX_INDEX_LINES, MEMORY_TYPES
+
+if TYPE_CHECKING:
+    from .types import MemoryEntry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -44,25 +48,36 @@ def render_memory_instructions(
     where to author.
     """
     selector_instructions = MEMORY_SELECTOR_INSTRUCTIONS if has_selector else ""
-    memdir = (" " + memdir) if memdir else ""
-    index_path = str(memdir + "/" + INDEX_FILE_NAME) if memdir else INDEX_FILE_NAME
+    memdir_lead = (" `" + memdir + "`") if memdir else ""
+    index_path = (memdir + "/" + INDEX_FILE_NAME) if memdir else INDEX_FILE_NAME
 
     return MEMORY_INSTRUCTIONS.format(
         selector_instructions=selector_instructions,
-        memdir=memdir,
+        memdir=memdir_lead,
         index_file=INDEX_FILE_NAME,
         index_path=index_path,
+        memory_types=", ".join(MEMORY_TYPES),
+        max_lines=MAX_INDEX_LINES,
+        max_bytes=MAX_INDEX_BYTES,
     )
 
 
 def render_memory_index(
-    index: str | None, *, freshness_warning: str | None = None
+    index: str | None,
+    *,
+    freshness_warning: str | None = None,
+    truncated: bool = False,
 ) -> str | None:
     """
     Render the ``MEMORY.md`` index sub-block.
 
     The content is wrapped in a ``<memory-index>...</memory-index>`` tag
     to avoid markdown heading clashes with the surrounding system prompt.
+
+    When ``truncated`` is True, a marker is appended inside the block so
+    the model knows it's looking at a partial map (caps in
+    :mod:`.loader` cut content past ``MAX_INDEX_LINES`` /
+    ``MAX_INDEX_BYTES``).
     """
     if index is None or not index.strip():
         return None
@@ -70,7 +85,17 @@ def render_memory_index(
     parts: list[str] = []
     if freshness_warning:
         parts.extend([freshness_warning, ""])
-    parts.extend(["<memory-index>", index.strip(), "</memory-index>"])
+    body = [index.strip()]
+    if truncated:
+        body.extend(
+            [
+                "",
+                f"[truncated — only the first {MAX_INDEX_LINES} lines / "
+                f"{MAX_INDEX_BYTES:,} bytes are shown; "
+                f"there are more entries below]",
+            ]
+        )
+    parts.extend(["<memory-index>", "\n".join(body), "</memory-index>"])
 
     return "\n".join(parts)
 
@@ -98,12 +123,16 @@ def make_memory_section(
         snapshot = await ctx.memory.load(session_id=exec_id or "", ctx=ctx)
         index_text = await ctx.memory.render_index(ctx=ctx)
         index_block = render_memory_index(
-            index_text, freshness_warning=snapshot.index_freshness_warning
+            index_text,
+            freshness_warning=snapshot.index_freshness_warning,
+            truncated=snapshot.index_truncated,
         )
 
-        instructions_block: str | None = None
         root = ctx.memory.root
-        memdir_str = str(root) if root is not None else None
+        # ``Path()`` renders to "." — that's our sentinel for "no explicit
+        # memdir". Treat it as unset so the prompt keeps its generic
+        # phrasing instead of telling the agent to write into ".".
+        memdir_str = str(root) if str(root) != "." else None
         instructions_block = render_memory_instructions(
             has_selector=ctx.memory.selector is not None,
             memdir=memdir_str,
@@ -120,6 +149,33 @@ def make_memory_section(
 memory_system_prompt_section = make_memory_section()
 
 
+def _format_mtime(mtime_ms: int) -> str:
+    """ISO-8601 (UTC) timestamp from a ms-since-epoch value; "" if unset."""
+    if mtime_ms <= 0:
+        return ""
+    return (
+        datetime.fromtimestamp(mtime_ms / 1000, tz=timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _format_entry_heading(entry: MemoryEntry) -> str:
+    """
+    One-line header per surfaced memory.
+
+    Mirrors CC's manifest line format ``[type] name (updated TS): desc`` —
+    type tag tells the agent how to treat the memory (e.g. ``feedback``
+    is normative), timestamp telegraphs staleness, description gives a
+    hook so the agent can decide relevance without reading the body.
+    """
+    type_tag = f"[{entry.memory_type}] " if entry.memory_type else ""
+    ts = _format_mtime(entry.mtime_ms)
+    ts_suffix = f" (updated {ts})" if ts else ""
+    return f"### {type_tag}{entry.name}{ts_suffix}"
+
+
 async def _compute_relevant_memories(
     *,
     user_message: InputMessageItem,
@@ -131,9 +187,9 @@ async def _compute_relevant_memories(
     Surface relevance-selected topic memories into the user message.
 
     Returns ``None`` (no attachment) when ``ctx.memory`` is missing or no
-    selector is registered. Otherwise renders the bodies of every entry the
-    selector picks, headed by ``## Relevant memories``. The result is wrapped
-    in ``<system-reminder>`` by the default
+    selector is registered. Otherwise renders each selected entry as a
+    ``[type] name (updated TS)`` heading plus the entry's description and
+    body. The result is wrapped in ``<system-reminder>`` by the default
     :class:`InputAttachment.wrap_in_system_reminder`.
     """
     del user_message
@@ -153,15 +209,14 @@ async def _compute_relevant_memories(
             body = await ctx.memory.fetch_body(entry.name, ctx=ctx)
         except Exception:
             continue
-        lines.extend(
-            [
-                f"### {entry.name}",
-                entry.description,
-                "",
-                body,
-                "",
-            ]
-        )
+        lines.extend([_format_entry_heading(entry), entry.description, ""])
+        # Per-entry freshness warning, computed at snapshot time so the
+        # rendered prompt stays stable within a session. Lands above the
+        # body so the model sees the staleness cue before the content.
+        warning = snapshot.entry_freshness_warnings.get(entry.name)
+        if warning:
+            lines.extend([warning, ""])
+        lines.extend([body, ""])
     return "\n".join(lines).rstrip()
 
 

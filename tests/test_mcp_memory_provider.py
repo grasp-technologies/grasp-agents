@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -68,7 +69,10 @@ class _FakeSession:
         self.read_calls: list[str] = []
         self.tool_calls: list[tuple[str, Mapping[str, Any]]] = []
 
-    async def list_resources(self) -> _FakeListResourcesResult:  # noqa: RUF029
+    async def list_resources(  # noqa: RUF029
+        self, *, params: Any = None
+    ) -> _FakeListResourcesResult:
+        del params
         self.list_calls += 1
         return _FakeListResourcesResult(resources=list(self._resources))
 
@@ -96,11 +100,17 @@ class _FakeSession:
 
 
 class _FakeClient:
-    """Stub MCPClient — only ``_session`` and ``name`` are touched."""
+    """Stub MCPClient — only ``session`` and ``name`` are touched."""
 
     def __init__(self, *, session: _FakeSession | None) -> None:
         self._session = session
         self.name = "fake-mcp"
+
+    @property
+    def session(self) -> _FakeSession:
+        if self._session is None:
+            raise RuntimeError("Not connected")
+        return self._session
 
 
 # ---------- Tests ----------
@@ -129,7 +139,7 @@ class TestLoadAndListing:
         ]
         provider = MCPMemoryProvider(
             client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         snap = await provider.load()
         names = [e.name for e in snap.entries]
@@ -154,7 +164,7 @@ class TestLoadAndListing:
         ]
         provider = MCPMemoryProvider(
             client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         snap = await provider.load()
         assert len(snap.entries) == 1
@@ -174,7 +184,7 @@ class TestLoadAndListing:
         ]
         provider = MCPMemoryProvider(
             client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         snap = await provider.load()
         assert snap.entries[0].memory_type is None
@@ -193,7 +203,7 @@ class TestLoadAndListing:
         ]
         provider = MCPMemoryProvider(
             client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         snap = await provider.load()
         # Only `good` survives — invalid frontmatter is logged and skipped.
@@ -204,7 +214,7 @@ class TestLoadAndListing:
         session = _FakeSession(resources=[])
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         await provider.load()
         await provider.load()
@@ -229,7 +239,7 @@ class TestFetchBody:
         )
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         body = await provider.fetch_body("alpha")
         assert body == "ALPHA BODY HERE"
@@ -254,7 +264,7 @@ class TestFetchBody:
         )
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         body = await provider.fetch_body("alpha")
         assert body.strip() == "Actual body content here."
@@ -269,7 +279,7 @@ class TestFetchBody:
         )
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         with pytest.raises(MemoryNotFoundError):
             await provider.fetch_body("alpha")
@@ -285,7 +295,7 @@ class TestRenderIndex:
         )
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         text = await provider.render_index()
         assert text == "# Memory index"
@@ -300,7 +310,7 @@ class TestRenderIndex:
         session = _FakeSession(resource_text={})
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         text = await provider.render_index()
         assert text is None
@@ -312,7 +322,7 @@ class TestRenderIndex:
         )
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
             uri_scheme="grasp://",
         )
         text = await provider.render_index()
@@ -334,7 +344,7 @@ class TestRenderIndex:
         )
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
         snap = await provider.load()
         assert snap.index == "# idx"
@@ -353,18 +363,18 @@ class TestFileToolkitWiring:
         session = _FakeSession(resources=[])
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path="/srv/memdir",
+            root="/srv/memdir",
         )
-        assert provider.root == "/srv/memdir"
+        assert provider.root == Path("/srv/memdir")
 
     def test_make_file_toolkit_rooted_at_memdir(self) -> None:
         session = _FakeSession(resources=[])
         provider = MCPMemoryProvider(
             client=_FakeClient(session=session),  # type: ignore[arg-type]
-            memdir_path="/srv/memdir",
+            root="/srv/memdir",
         )
         toolkit = provider.make_file_toolkit()
-        assert toolkit.allowed_roots == ["/srv/memdir"]
+        assert toolkit.allowed_roots == [Path("/srv/memdir")]
         # The toolkit uses an MCP backend talking to the same client.
         assert toolkit.backend.name.startswith("mcp:")
 
@@ -374,7 +384,7 @@ class TestNotConnected:
     async def test_load_without_session_raises(self) -> None:
         provider = MCPMemoryProvider(
             client=_FakeClient(session=None),  # type: ignore[arg-type]
-            memdir_path=MEMDIR,
+            root=MEMDIR,
         )
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="not connected|Not connected"):
             await provider.load()

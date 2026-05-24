@@ -35,18 +35,21 @@ def _error_message(result: Any) -> str:
 
 def test_toolkit_default_root_is_cwd() -> None:
     tk = FileEditToolkit()
-    # Allowed roots are normalized to strings — the backend resolves
+    # Allowed roots are :class:`pathlib.Path` — the backend resolves
     # them to its own address space at validate_path time.
-    assert tk.allowed_roots == [str(Path.cwd())]
+    assert tk.allowed_roots == [Path.cwd()]
 
 
-def test_toolkit_returns_three_tools(tmp_path: Path) -> None:
+def test_toolkit_returns_four_tools(tmp_path: Path) -> None:
+    from grasp_agents.tools.file_edit import DeleteTool  # noqa: PLC0415
+
     tk = FileEditToolkit(allowed_roots=[tmp_path])
     tools = tk.tools()
-    assert len(tools) == 3
+    assert len(tools) == 4
     assert isinstance(tools[0], ReadTool)
     assert isinstance(tools[1], WriteTool)
     assert isinstance(tools[2], EditTool)
+    assert isinstance(tools[3], DeleteTool)
 
 
 def test_tools_share_store(tmp_path: Path) -> None:
@@ -119,7 +122,7 @@ async def test_allow_dotfile_adds_resolved_path(tmp_path: Path) -> None:
     tk = FileEditToolkit(allowed_roots=[tmp_path])
     await tk.allow_dotfile(tmp_path / ".env")
     state = await tk.store.get_session_state(tk.default_session_key)
-    assert str((tmp_path / ".env").resolve()) in state.dotfile_overrides
+    assert (tmp_path / ".env").resolve() in state.dotfile_overrides
 
 
 @pytest.mark.asyncio
