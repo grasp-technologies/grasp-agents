@@ -1,5 +1,5 @@
 r"""
-``Read`` — read a file under the toolkit's allowed roots.
+``Read`` — read a file via the configured :class:`FileBackend`.
 
 Output is line-numbered in ``cat -n`` format (``<line-number>\t<content>``),
 with 1-indexed ``offset`` (starting line) and ``limit`` (max lines) for
@@ -7,14 +7,15 @@ paginated reads.
 
 Guards, applied in order:
 
-1. Device-path blocklist — ``/dev/stdin`` & friends hang the reader.
-2. Binary-extension block — image/archive/binary bytes pollute context.
-3. ``allowed_roots`` + ``Path.resolve(strict=True)`` — sandbox enforcement,
-   rejects symlink escapes.
-4. Char cap — reject reads whose formatted output would exceed
+1. Binary-extension block — image/archive/binary bytes pollute context
+   (universal — applies to every backend; cheap suffix check).
+2. ``backend.validate_path`` — sandbox + sensitive-path policy. Local-FS
+   backends additionally enforce device-path blocks and the credential
+   dotfile deny list; MCP backends trust their server.
+3. Char cap — reject reads whose formatted output would exceed
    ``max_read_chars`` (default 100 KiB); guidance steers the model toward
    ``offset`` / ``limit``.
-5. Secret redaction (if configured) — final pass before the content returns.
+4. Secret redaction (if configured) — final pass before content returns.
 
 After a successful read the file is registered in the session state's
 ``read_file_state`` map, enabling read-before-write enforcement in
@@ -23,29 +24,22 @@ After a successful read the file is registered in the session state's
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from .paths import (
-    PathAccessError,
-    has_binary_extension,
-    is_blocked_device,
-    resolve_safe,
-)
+from .paths import PathAccessError, has_binary_extension
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ...run_context import RunContext
+    from .backend import FileBackend
     from .redact import SecretRedactor
     from .session_state import FileEditSessionState
     from .store import FileEditStore
 
 # Default char cap on the formatted read output. 100 KiB is ~25-35K
-# tokens across typical tokenisers — a sensible hazard limit for the
+# tokens across common tokenizations — a sensible hazard limit for the
 # context window. Configurable via the toolkit.
 DEFAULT_MAX_READ_CHARS = 100_000
 DEFAULT_READ_LIMIT = 500
@@ -85,27 +79,19 @@ class ReadResult(BaseModel):
     total_lines: int
 
 
-def _read_file_sync(
-    resolved: Path,
+def _format_window(
+    text: str,
     offset: int | None,
     limit: int | None,
     max_read_chars: int,
-) -> tuple[str, int, float]:
+) -> tuple[str, int]:
     """
-    Synchronous read + format. Called via ``asyncio.to_thread``.
+    Slice ``text`` to the requested window and format with ``cat -n``.
 
-    Returns ``(formatted_content, total_lines, mtime)``. Raises
-    :class:`ValueError` if the formatted content exceeds
-    ``max_read_chars`` (converted to a ToolError at the boundary).
+    Returns ``(formatted_content, total_lines)``. Raises ``ValueError``
+    if the formatted output exceeds ``max_read_chars``.
     """
-    mtime = resolved.stat().st_mtime
-
-    # ``errors="replace"`` lets us read files with stray invalid bytes
-    # without raising. The binary-extension guard already filters the
-    # obvious binary cases; this is for the mixed / accidental cases.
-    with resolved.open("r", encoding="utf-8", errors="replace") as f:
-        lines = f.readlines()
-
+    lines = text.splitlines(keepends=True)
     total_lines = len(lines)
 
     start = (offset or 1) - 1
@@ -125,12 +111,12 @@ def _read_file_sync(
             f"to narrow the range. File has {total_lines} lines total."
         )
 
-    return formatted, total_lines, mtime
+    return formatted, total_lines
 
 
 class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
     """
-    Read a file with pagination.
+    Read a text file with pagination via the configured backend.
 
     Attach via :class:`FileEditToolkit`; do not instantiate directly
     unless you're constructing a custom toolkit.
@@ -150,17 +136,25 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         self,
         *,
         store: FileEditStore,
-        allowed_roots: list[Path],
+        allowed_roots: list[str] | list[Any],
         redactor: SecretRedactor,
+        backend: FileBackend | None = None,
+        include_dotfiles: bool = True,
         default_session_key: str = "default",
         max_read_chars: int = DEFAULT_MAX_READ_CHARS,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
+        # Local import — keeps the backend module out of the
+        # ``types.tool``-triggered import path used by ``RunContext``.
+        from .backend import LocalFileBackend  # noqa: PLC0415
+
         self._store = store
+        self._backend = backend or LocalFileBackend()
         self._default_session_key = default_session_key
-        self._allowed_roots = allowed_roots
+        self._allowed_roots = [str(r) for r in allowed_roots]
         self._redactor = redactor
+        self._include_dotfiles = include_dotfiles
         self._max_read_chars = max_read_chars
 
     async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
@@ -185,44 +179,37 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
     ) -> ReadResult:
         del exec_id, progress_callback
 
-        # 1. Device-path guard — literal path, no resolve.
-        if is_blocked_device(inp.path):
-            raise ValueError(
-                f"Cannot read device path {inp.path!r}: would block or "
-                "produce infinite output."
-            )
-
-        # 2. Binary-extension guard.
         if has_binary_extension(inp.path):
             raise ValueError(
                 f"Cannot read binary file {inp.path!r}. Use a dedicated "
                 "tool for this format."
             )
 
-        # 3. Sandbox check (must_exist=True for Read).
+        state = await self._resolve_state(ctx)
+
         try:
-            resolved = resolve_safe(inp.path, self._allowed_roots, must_exist=True)
+            resolved = await self._backend.validate_path(
+                inp.path,
+                self._allowed_roots,
+                must_exist=True,
+                dotfile_overrides=state.dotfile_overrides,
+                include_dotfiles=self._include_dotfiles,
+            )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        # 4. Perform the read off the event loop.
-        formatted, total_lines, mtime = await asyncio.to_thread(
-            _read_file_sync,
-            resolved,
-            inp.offset,
-            inp.limit,
-            self._max_read_chars,
+        content, mtime = await self._backend.read_text(resolved)
+
+        formatted, total_lines = _format_window(
+            content, inp.offset, inp.limit, self._max_read_chars
         )
 
-        # 5. Redaction pass.
         formatted = self._redactor(formatted)
 
-        # 6. Register the read for read-before-write + staleness checks.
-        state = await self._resolve_state(ctx)
         state.record_read(resolved, mtime)
 
         return ReadResult(
-            path=str(resolved),
+            path=resolved,
             content=formatted,
             total_lines=total_lines,
         )

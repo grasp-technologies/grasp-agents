@@ -3,10 +3,11 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from ..types.selector import Selector
 from .loader import discover_skills
 from .types import SkillNotFoundError
 
@@ -14,15 +15,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
     from ..run_context import RunContext
+    from ..types.items import InputItem
     from .types import Skill
 
 logger = logging.getLogger(__name__)
 
 
-SkillFilter: TypeAlias = Callable[
-    ...,
-    Sequence["Skill"] | Awaitable[Sequence["Skill"]],
-]
+SkillSelector: TypeAlias = Selector["Skill"]
+"""Relevance selector for the skills catalog. See :class:`Selector`."""
 
 INVOCATION_WRAPPER = "[SYSTEM: user invoked skill {name}]"
 
@@ -37,14 +37,14 @@ class SkillRegistry:
     next session's rescan; mid-session edits to *existing* skill bodies are
     visible on the next ``load_skill`` call (the tool re-reads the file).
 
-    Optionally carries a relevance filter (:meth:`set_filter`) that the
+    Optionally carries a relevance selector (:meth:`set_selector`) that the
     skills system-prompt section consults before rendering the catalog.
     """
 
     def __init__(self, skills: Iterable[Skill] = ()) -> None:
         self._by_name: dict[str, Skill] = {}
         self._sources: list[Path] = []
-        self._filter: SkillFilter | None = None
+        self._selector: SkillSelector | None = None
         for skill in skills:
             self.register(skill)
 
@@ -133,33 +133,34 @@ class SkillRegistry:
         """Skills the LLM can see and call (model_invocation not disabled)."""
         return [s for s in self._by_name.values() if not s.disable_model_invocation]
 
-    # ---- Relevance filter ----------------------------------------------------
+    # ---- Catalog selector ----------------------------------------------------
 
-    def set_filter(self, fn: SkillFilter | None) -> None:
+    def set_selector(self, fn: SkillSelector | None) -> None:
         """
-        Register a relevance filter consulted by the catalog renderer.
+        Register a relevance selector consulted by the catalog renderer.
 
-        ``fn(skills, ctx, exec_id)`` receives the visible skills and returns
-        a (possibly smaller, possibly reordered) subsequence. Sync or async.
-        Pass ``None`` to clear.
+        See :class:`Selector` for the call shape. Pass ``None`` to clear.
         """
-        self._filter = fn
+        self._selector = fn
 
     @property
-    def filter(self) -> SkillFilter | None:
-        return self._filter
+    def selector(self) -> SkillSelector | None:
+        return self._selector
 
-    async def apply_filter(
+    async def select_relevant(
         self,
         *,
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
+        messages: Sequence[InputItem] | None = None,
     ) -> list[Skill]:
-        """Run the filter (if any) and return the resulting skills."""
+        """Run the selector (if any) and return the resulting skills."""
         skills = self.visible
-        if self._filter is None:
+        if self._selector is None:
             return skills
-        result = self._filter(skills=skills, ctx=ctx, exec_id=exec_id)
+        result = self._selector(
+            entries=skills, ctx=ctx, exec_id=exec_id, messages=messages
+        )
         if inspect.isawaitable(result):
             result = await result
         return list(result)
@@ -188,9 +189,7 @@ class SkillRegistry:
         return f"{INVOCATION_WRAPPER.format(name=name)}\n\n{body}"
 
 
-def _substitute_args(
-    body: str, args: str | Mapping[str, str] | None
-) -> str:
+def _substitute_args(body: str, args: str | Mapping[str, str] | None) -> str:
     if args is None:
         full = ""
         named: Mapping[str, str] = {}

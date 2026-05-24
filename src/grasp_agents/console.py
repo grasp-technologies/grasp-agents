@@ -888,6 +888,8 @@ async def stream_events(
     show_input_messages: bool = False,
     show_packets: bool = False,
     trunc_len: int = 10000,
+    max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
+    max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
     console: Console | None = None,
 ) -> AsyncIterator[Event[Any]]:
     """
@@ -908,6 +910,8 @@ async def stream_events(
         show_input_messages=show_input_messages,
         show_packets=show_packets,
         trunc_len=trunc_len,
+        max_tool_output_lines=max_tool_output_lines,
+        max_input_msg_lines=max_input_msg_lines,
     )
     async for event in ec.stream(events):
         yield event

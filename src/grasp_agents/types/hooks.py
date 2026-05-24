@@ -45,10 +45,29 @@ from grasp_agents.types.items import (
     ToolOutputPart,
 )
 from grasp_agents.types.response import Response
+from grasp_agents.types.selector import Selector
 
 _InT_contra = TypeVar("_InT_contra", contravariant=True)
 _OutT_co = TypeVar("_OutT_co", covariant=True)
 _OutT_contra = TypeVar("_OutT_contra", contravariant=True)
+
+__all__ = [
+    "AfterLlmHook",
+    "AfterToolHook",
+    "BeforeLlmHook",
+    "BeforeToolHook",
+    "FinalAnswerExtractor",
+    "InputContentBuilder",
+    "MemoryBuilder",
+    "OutputParser",
+    "RecipientSelector",
+    "Selector",
+    "StateBuilder",
+    "SystemPromptBuilder",
+    "ToolInputConverter",
+    "ToolOutputConverter",
+    "WorkflowLoopTerminator",
+]
 
 
 # --- Agent Loop Hooks ---
@@ -202,3 +221,10 @@ class WorkflowLoopTerminator(Protocol[_OutT_contra, CtxT]):
         ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> bool: ...
+
+
+# --- Catalog Selectors ---
+# ``Selector`` lives in ``types.selector`` to avoid a circular import:
+# ``run_context`` imports ``memory/provider`` which references ``Selector``;
+# this module imports ``run_context`` itself, so the Protocol can't live
+# here. Re-exported above.

@@ -1,19 +1,21 @@
 """
-``Write`` — create or overwrite a file under the toolkit's roots.
+``Write`` — create or overwrite a file via the configured :class:`FileBackend`.
 
 Invariants enforced on every call:
 
-1. ``allowed_roots`` + sensitive-path deny list (system baseline +
-   dotfile additions). No overwriting ``/etc/passwd`` or ``~/.ssh/id_rsa``.
+1. ``backend.validate_path`` — sandbox + sensitive-path policy. Local-FS
+   backends layer credential-dotfile blocks on top of the system-path
+   baseline; MCP backends trust their server's containment policy.
 2. **Read-before-write** on existing files. The model must have ``Read``
    the target within this session; otherwise the write is refused.
    Fresh files (parent exists, target doesn't) skip this check.
 3. **mtime staleness refusal** on existing files. If the file's current
    ``mtime`` differs from the one recorded at the last ``Read``, the
-   write is refused with guidance to re-read. Prevents the
-   "model clobbers concurrent edit" bug.
-4. Atomic tmpfile + ``os.replace`` so partial / torn files never appear.
-5. Preserve the existing file's permission bits when overwriting.
+   write is refused with guidance to re-read.
+4. Atomic write (backend-specific — local uses tmpfile + ``os.replace``;
+   MCP backends defer to the server).
+5. Preserve the existing file's permission bits when overwriting (local
+   backend only — MCP servers may not honor the ``mode`` argument).
 
 On success the session state's ``read_file_state`` is refreshed with
 the post-write mtime — consecutive edits by the same agent don't
@@ -22,19 +24,16 @@ re-trip the staleness check on their own prior writes.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from .atomic_write import atomic_write_bytes
-from .paths import PathAccessError, check_sensitive_path, resolve_safe
+from .paths import PathAccessError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ...run_context import RunContext
+    from .backend import FileBackend
     from .session_state import FileEditSessionState
     from .store import FileEditStore
 
@@ -65,7 +64,7 @@ class WriteResult(BaseModel):
 
 class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
     """
-    Create or overwrite a file atomically.
+    Create or overwrite a file atomically via the configured backend.
 
     Attach via :class:`FileEditToolkit`; do not instantiate directly
     unless you're constructing a custom toolkit.
@@ -85,26 +84,25 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         self,
         *,
         store: FileEditStore,
-        allowed_roots: list[Path],
+        allowed_roots: list[str] | list[Any],
+        backend: FileBackend | None = None,
         default_session_key: str = "default",
         include_dotfiles: bool = True,
         new_file_mode: int = DEFAULT_NEW_FILE_MODE,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
+        from .backend import LocalFileBackend  # noqa: PLC0415
+
         self._store = store
+        self._backend = backend or LocalFileBackend()
         self._default_session_key = default_session_key
-        self._allowed_roots = allowed_roots
+        self._allowed_roots = [str(r) for r in allowed_roots]
         self._include_dotfiles = include_dotfiles
         self._new_file_mode = new_file_mode
 
     async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
-        """
-        Pick the session state this call should read/write.
-
-        Prefers the store + session key on ``ctx``; falls back to the
-        tool's own store with ``default_session_key``.
-        """
+        """Pick the session state this call should read/write."""
         if ctx is not None and ctx.file_edit_store is not None:
             return await ctx.file_edit_store.get_session_state(ctx.session_key)
         return await self._store.get_session_state(self._default_session_key)
@@ -121,25 +119,20 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
 
         state = await self._resolve_state(ctx)
 
-        # Resolve with must_exist=False — Write may create new files.
         try:
-            resolved = resolve_safe(inp.path, self._allowed_roots, must_exist=False)
+            resolved = await self._backend.validate_path(
+                inp.path,
+                self._allowed_roots,
+                must_exist=False,
+                dotfile_overrides=state.dotfile_overrides,
+                include_dotfiles=self._include_dotfiles,
+            )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        # Sensitive-path check (system baseline + optional dotfiles).
-        err = check_sensitive_path(
-            resolved,
-            include_dotfiles=self._include_dotfiles,
-            session_overrides=state.dotfile_overrides,
-        )
-        if err is not None:
-            raise ValueError(err)
-
-        target_exists = resolved.exists()
+        target_exists = await self._backend.exists(resolved)
 
         if target_exists:
-            # Read-before-write enforcement.
             record = state.get_read_record(resolved)
             if record is None:
                 raise ValueError(
@@ -148,41 +141,38 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
                     "files whose current content the model hasn't seen."
                 )
 
-            # Staleness refusal — file was modified since the last Read.
-            current_mtime = await asyncio.to_thread(lambda: resolved.stat().st_mtime)
-            if current_mtime != record.mtime:
+            current_stat = await self._backend.stat(resolved)
+            if current_stat.mtime != record.mtime:
                 raise ValueError(
                     f"{resolved} was modified since you last read it "
                     f"(recorded mtime {record.mtime!r}, "
-                    f"current {current_mtime!r}). Re-Read before writing."
+                    f"current {current_stat.mtime!r}). Re-Read before writing."
                 )
 
-            # Preserve existing mode when overwriting.
-            mode = resolved.stat().st_mode & 0o7777
+            # Preserve existing mode when overwriting. Mask off the
+            # file-type bits — the backend returns full ``st_mode`` so
+            # callers can isdir/isfile-check.
+            mode = current_stat.mode & 0o7777
         else:
             mode = self._new_file_mode
 
         # Parent directory must exist — refuse to silently create missing
-        # intermediate dirs. If the model wants that, it can Write to the
-        # parent first.
-        if not resolved.parent.exists():
+        # intermediate dirs.
+        if not await self._backend.parent_exists(resolved):
             raise ValueError(
-                f"Parent directory does not exist: {resolved.parent}. "
+                f"Parent directory for {resolved} does not exist. "
                 "Create it explicitly first."
             )
 
         data = inp.content.encode("utf-8")
-        await asyncio.to_thread(
-            atomic_write_bytes, resolved, data, mode=mode, overwrite=True
+        new_mtime = await self._backend.write_bytes(
+            resolved, data, mode=mode, overwrite=True
         )
 
-        # Refresh read_file_state with the new mtime so the next Edit
-        # doesn't see its own write as an external modification.
-        new_mtime = await asyncio.to_thread(lambda: resolved.stat().st_mtime)
         state.record_write(resolved, new_mtime)
 
         return WriteResult(
-            path=str(resolved),
+            path=resolved,
             bytes_written=len(data),
             created=not target_exists,
         )

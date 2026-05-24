@@ -178,22 +178,28 @@ class _ROProvider(MemoryProvider):
 
 class TestProviderDefaults:
     @pytest.mark.anyio
-    async def test_write_default_raises(self, tmp_path: Path) -> None:
-        e = _aged_entry("alpha", 10, tmp_path)
-        p = _ROProvider()
-        with pytest.raises(NotImplementedError):
-            await p.write(entry=e)
-
-    @pytest.mark.anyio
-    async def test_on_pre_compress_default_empty(self) -> None:
-        p = _ROProvider()
-        out = await p.on_pre_compress(transcript=None)  # type: ignore[arg-type]
-        assert not out
-
-    @pytest.mark.anyio
     async def test_refresh_default_noop(self) -> None:
         p = _ROProvider()
         await p.refresh()  # no exception
+
+    def test_root_default_none(self) -> None:
+        # Providers that don't expose a memdir return None — callers can
+        # check before constructing a file toolkit.
+        p = _ROProvider()
+        assert p.root is None
+
+    def test_make_file_toolkit_requires_root(self) -> None:
+        # No root → can't build a toolkit. Raises with a clear message.
+        p = _ROProvider()
+        with pytest.raises(ValueError, match="no memdir root"):
+            p.make_file_toolkit()
+
+    def test_make_file_toolkit_with_root(self, tmp_path: Path) -> None:
+        # FileMemoryProvider exposes its memdir root and can produce a
+        # toolkit rooted there.
+        p = FileMemoryProvider(tmp_path)
+        toolkit = p.make_file_toolkit()
+        assert str(tmp_path) in toolkit.allowed_roots
 
 
 # ---------- default_memdir_path ----------

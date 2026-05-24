@@ -3,8 +3,9 @@ Unit tests for :class:`FileEditSessionState`.
 
 The session state carries only the invariant-related maps now:
 ``read_file_state`` (for read-before-write + staleness) and
-``dotfile_overrides`` (per-session user opt-ins). Dedup and loop
-counters were deliberately removed — see ``session_state.py`` docstring.
+``dotfile_overrides`` (per-session user opt-ins). Keys are resolved
+*path strings* — the backend's :meth:`validate_path` returns strings
+so the same shape works for both local-FS and MCP backends.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def test_record_read_populates_read_file_state(
 ) -> None:
     p = Path("/tmp/file_a")
     state.record_read(p, mtime=111.0)
-    assert state.read_file_state[p] == ReadRecord(mtime=111.0)
+    assert state.read_file_state[str(p)] == ReadRecord(mtime=111.0)
 
 
 def test_record_read_overwrites_prior_record(
@@ -39,7 +40,7 @@ def test_record_read_overwrites_prior_record(
     p = Path("/tmp/file_a")
     state.record_read(p, 111.0)
     state.record_read(p, 222.0)
-    assert state.read_file_state[p].mtime == 222.0
+    assert state.read_file_state[str(p)].mtime == 222.0
 
 
 def test_get_read_record_unknown_path_returns_none(
@@ -63,15 +64,38 @@ def test_record_write_refreshes_read_state(
     assert record.mtime == 200.0
 
 
+def test_record_read_accepts_string_keys(
+    state: FileEditSessionState,
+) -> None:
+    """Backend resolved-path strings are the native key form."""
+    state.record_read("/tmp/file_a", 111.0)
+    assert state.get_read_record("/tmp/file_a") == ReadRecord(mtime=111.0)
+
+
+def test_string_and_path_keys_are_equivalent(
+    state: FileEditSessionState,
+) -> None:
+    """Recording with Path and looking up with str (or vice versa) match."""
+    p = Path("/tmp/file_a")
+    state.record_read(p, 111.0)
+    assert state.get_read_record(str(p)) == ReadRecord(mtime=111.0)
+
+
 def test_reset_session_clears_everything(state: FileEditSessionState) -> None:
     p = Path("/tmp/file_a")
     state.record_read(p, 111.0)
-    state.dotfile_overrides.add(Path("/home/u/.env"))
+    state.add_dotfile_override(Path("/home/u/.env"))
 
     state.reset_session()
 
     assert state.read_file_state == {}
     assert state.dotfile_overrides == set()
+
+
+def test_add_dotfile_override(state: FileEditSessionState) -> None:
+    """``add_dotfile_override`` normalizes to a string entry."""
+    state.add_dotfile_override(Path("/home/u/.env"))
+    assert "/home/u/.env" in state.dotfile_overrides
 
 
 def test_cap_evicts_oldest_read_file_state() -> None:
@@ -81,6 +105,6 @@ def test_cap_evicts_oldest_read_file_state() -> None:
 
     # Capped at 3 → oldest-first eviction: f0/f1 gone, f2/f3/f4 remain.
     assert len(state.read_file_state) == 3
-    assert Path("/tmp/f0") not in state.read_file_state
-    assert Path("/tmp/f1") not in state.read_file_state
-    assert Path("/tmp/f4") in state.read_file_state
+    assert "/tmp/f0" not in state.read_file_state
+    assert "/tmp/f1" not in state.read_file_state
+    assert "/tmp/f4" in state.read_file_state

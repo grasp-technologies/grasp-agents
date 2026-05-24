@@ -1,27 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+from grasp_agents.types.selector import Selector
 
 from .loader import scan_memdir
+from .types import DEFAULT_STALE_AFTER
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import timedelta
 
-    from ..agent.llm_agent_memory import LLMAgentMemory
-    from ..run_context import RunContext
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.types.items import InputItem
+
     from .types import MemoryEntry
 
-logger = logging.getLogger(__name__)
 
-DEFAULT_STALE_AFTER = timedelta(days=7)
+MemorySelector: TypeAlias = Selector["MemoryEntry"]
+"""Relevance selector for the memory topic catalog. See :class:`Selector`."""
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -29,19 +36,13 @@ class MemorySnapshot:
     """
     Frozen-snapshot of a memdir loaded once per session.
 
-    Mirrors the Hermes "load once, never re-fetch mid-session" pattern: the
-    snapshot is what the system-prompt section renders against for the whole
-    session, even if the underlying files are edited (those edits show up on
-    the next session's load).
-
     ``index`` is the always-loaded ``MEMORY.md`` content (line/byte-capped).
-    ``entries`` carries every parsed topic file — currently surfaced only by
-    direct lookup, not by the system-prompt section (the relevance selector
-    that would inject top-K topic files is deferred).
+    ``entries`` carries every parsed topic file; the relevance selector
+    consumed by :data:`memory_relevance_attachment` filters this list per
+    turn.
 
     Freshness strings are pre-computed at snapshot-creation time so the
-    rendered prompt does not drift turn-to-turn ("3 days ago" → "4 days ago"
-    would otherwise bust the prompt cache).
+    rendered prompt does not drift turn-to-turn.
     """
 
     index: str | None = None
@@ -49,9 +50,10 @@ class MemorySnapshot:
     index_freshness_warning: str | None = None
     entries: tuple[MemoryEntry, ...] = ()
     entry_freshness_warnings: dict[str, str] = field(
-        compare=False, default_factory=lambda: dict[str, str]()  # noqa: PLW0108
+        compare=False,
+        default_factory=lambda: dict[str, str](),  # noqa: PLW0108
     )
-    root: Path | None = field(compare=False, default=None)
+    root: Path = field(compare=False, default_factory=Path)
 
     @property
     def is_empty(self) -> bool:
@@ -68,12 +70,49 @@ class MemoryProvider(ABC):
     """
     Cross-session memory loader. One instance per session/agent setup.
 
-    The default contract is read-only: :meth:`load` returns a frozen snapshot
-    captured once and reused for the rest of the session. :meth:`write` and
-    :meth:`on_pre_compress` are optional opt-ins (default: ``NotImplemented``
-    / no-op) so applications can adopt this without wiring authoring or
-    compaction up front.
+    The provider is **read-shaped** — it surfaces the memdir snapshot to the
+    system-prompt section and per-turn relevance attachment, but does NOT
+    expose write / delete tools of its own. Authoring goes through the
+    generic file-edit tools rooted at the memdir; that aligns with Claude
+    Code's design (``buildMemoryLines`` instructs the agent to use ``Read``
+    / ``Write`` / ``Edit`` rather than a specialized memory-tool surface).
+
+    Carries an optional relevance selector (:meth:`set_selector`) consumed
+    by per-turn user-message attachments (e.g. the memory_relevance
+    attachment) to pick which topic memories are surfaced into the running
+    conversation. The system-prompt section does NOT consult the selector
+    — it stays cache-stable across turns. Default = identity (return every
+    entry).
     """
+
+    def __init__(self) -> None:
+        self._selector: MemorySelector | None = None
+
+    @property
+    def root(self) -> Path:
+        """
+        Address of the memdir in the *backend's* address space.
+
+        Local backends return a :class:`pathlib.Path`; MCP-backed providers
+        return the root path the server uses (e.g. ``"/memdir"``).
+        Consumed by :meth:`make_file_toolkit` and by the memory
+        system-prompt section so the agent knows where to author.
+        """
+        return Path()
+
+    def make_file_toolkit(self, **kwargs: Any) -> Any:
+        """
+        Construct a :class:`FileEditToolkit` rooted at this provider's
+        memdir.
+
+        Convenience helper for the common pattern of wiring the file
+        toolkit and the memory provider against the same store. Override
+        on subclasses that need to inject a custom :class:`FileBackend`
+        (see :class:`MCPMemoryProvider.make_file_toolkit`).
+        """
+        from grasp_agents.tools.file_edit import FileEditToolkit  # noqa: PLC0415
+
+        return FileEditToolkit(allowed_roots=[self.root], **kwargs)
 
     @abstractmethod
     async def load(
@@ -81,28 +120,79 @@ class MemoryProvider(ABC):
     ) -> MemorySnapshot:
         """Return a frozen memdir snapshot. Implementations should cache."""
 
-    async def write(
-        self,
-        *,
-        entry: MemoryEntry,
-        ctx: RunContext[Any] | None = None,
-    ) -> None:
-        """Persist a memory entry. Default raises ``NotImplementedError``."""
-        del entry, ctx
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement memory writes; "
-            "edit topic files directly or override write()."
-        )
+    async def fetch_body(self, name: str, *, ctx: RunContext[Any] | None = None) -> str:
+        """
+        Return the full body of memory ``name``.
 
-    async def on_pre_compress(
-        self, *, memory: LLMAgentMemory
-    ) -> str:
-        """Insights to prepend to a compaction summary prompt. Default empty."""
-        del memory
-        return ""
+        Default implementation reads from the cached snapshot. Lazy backends
+        (e.g. :class:`MCPMemoryProvider`) override this to fetch on demand.
+        Raises :class:`MemoryNotFoundError` when the entry doesn't exist or
+        carries no body.
+        """
+        from .types import MemoryNotFoundError  # noqa: PLC0415
 
-    async def refresh(self) -> None:  # noqa: B027
+        snapshot = await self.load(ctx=ctx)
+        entry = snapshot.get(name)
+        if entry is None:
+            raise MemoryNotFoundError(f"Topic memory {name!r} is not available.")
+        if entry.body is None:
+            raise MemoryNotFoundError(
+                f"Topic memory {name!r} has no body available; "
+                f"override fetch_body() on {type(self).__name__}."
+            )
+
+        return entry.body
+
+    async def render_index(self, *, ctx: RunContext[Any] | None = None) -> str | None:
+        """
+        Return the ``MEMORY.md`` index text (already line/byte-capped).
+
+        Default implementation reads from the cached snapshot. Lazy backends
+        override this to fetch the index resource on demand.
+        """
+        snapshot = await self.load(ctx=ctx)
+
+        return snapshot.index
+
+    async def refresh(self) -> None:
         """Invalidate any cached snapshot. Default no-op."""
+        return
+
+    # ---- Catalog selector ----------------------------------------------------
+
+    def set_selector(self, fn: MemorySelector | None) -> None:
+        """
+        Register a relevance selector consulted by the catalog renderer.
+
+        See :class:`Selector` for the call shape. Pass ``None`` to clear.
+        """
+        self._selector = fn
+
+    @property
+    def selector(self) -> MemorySelector | None:
+        return self._selector
+
+    async def select_relevant(
+        self,
+        snapshot: MemorySnapshot,
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        messages: Sequence[InputItem] | None = None,
+    ) -> tuple[MemoryEntry, ...]:
+        """Run the selector (if any) and return the resulting entries."""
+        if self._selector is None:
+            return snapshot.entries
+        result = self._selector(
+            entries=snapshot.entries,
+            ctx=ctx,
+            exec_id=exec_id,
+            messages=messages,
+        )
+        if inspect.isawaitable(result):
+            result = await result
+
+        return tuple(result)
 
 
 class InMemoryMemoryProvider(MemoryProvider):
@@ -115,8 +205,9 @@ class InMemoryMemoryProvider(MemoryProvider):
         entries: Sequence[MemoryEntry] = (),
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> None:
+        super().__init__()
         self._stale_after = stale_after
-        self._snapshot = _build_snapshot(
+        self._snapshot = build_snapshot(
             root=None,
             index=index,
             index_mtime_ms=None,
@@ -139,6 +230,9 @@ class FileMemoryProvider(MemoryProvider):
     the rest of the session, and re-walks on :meth:`refresh`. Default ``root``
     is :func:`default_memdir_path`. Staleness warnings are computed at load
     time and frozen on the snapshot.
+
+    :meth:`fetch_body` re-reads the topic file off disk on every call so
+    mid-session edits are immediately visible.
     """
 
     def __init__(
@@ -147,6 +241,7 @@ class FileMemoryProvider(MemoryProvider):
         *,
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> None:
+        super().__init__()
         self._root = Path(root).expanduser() if root else default_memdir_path()
         self._stale_after = stale_after
         self._cached: MemorySnapshot | None = None
@@ -171,9 +266,32 @@ class FileMemoryProvider(MemoryProvider):
         async with self._lock:
             self._cached = None
 
+    async def fetch_body(self, name: str, *, ctx: RunContext[Any] | None = None) -> str:
+        from .loader import parse_memory_md  # noqa: PLC0415
+        from .types import MemoryNotFoundError  # noqa: PLC0415
+
+        snapshot = await self.load(ctx=ctx)
+        entry = snapshot.get(name)
+        if entry is None or entry.path is None:
+            raise MemoryNotFoundError(f"Topic memory {name!r} is not available.")
+
+        try:
+            text = await asyncio.to_thread(entry.path.read_text, encoding="utf-8")
+        except OSError as exc:
+            raise MemoryNotFoundError(
+                f"Topic memory {name!r} could not be read: {exc}"
+            ) from exc
+
+        try:
+            _, body = parse_memory_md(text, path=entry.path)
+        except Exception:
+            return entry.body or ""
+
+        return body
+
     def _load_sync(self) -> MemorySnapshot:
         index, index_mtime, entries = scan_memdir(self._root)
-        return _build_snapshot(
+        return build_snapshot(
             root=self._root,
             index=index,
             index_mtime_ms=index_mtime,
@@ -182,7 +300,7 @@ class FileMemoryProvider(MemoryProvider):
         )
 
 
-def _build_snapshot(
+def build_snapshot(
     *,
     root: Path | None,
     index: str | None,
@@ -212,7 +330,7 @@ def _build_snapshot(
         index_freshness_warning=index_warning,
         entries=tuple(entries),
         entry_freshness_warnings=entry_warnings,
-        root=root,
+        root=root or Path(),
     )
 
 
@@ -257,6 +375,7 @@ def default_memdir_path(cwd: Path | None = None) -> Path:
         return Path(override)
     base = Path.home() / GRASP_HOME_DIR_NAME / PROJECTS_DIR_NAME
     sanitized = _sanitize_path((cwd or Path.cwd()).resolve())
+
     return base / sanitized / MEMDIR_DIR_NAME
 
 

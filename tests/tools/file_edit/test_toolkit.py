@@ -35,8 +35,9 @@ def _error_message(result: Any) -> str:
 
 def test_toolkit_default_root_is_cwd() -> None:
     tk = FileEditToolkit()
-    # Private-member access intentional: asserting internal wiring.
-    assert tk._allowed_roots == [Path.cwd()]  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    # Allowed roots are normalized to strings — the backend resolves
+    # them to its own address space at validate_path time.
+    assert tk.allowed_roots == [str(Path.cwd())]
 
 
 def test_toolkit_returns_three_tools(tmp_path: Path) -> None:
@@ -118,7 +119,7 @@ async def test_allow_dotfile_adds_resolved_path(tmp_path: Path) -> None:
     tk = FileEditToolkit(allowed_roots=[tmp_path])
     await tk.allow_dotfile(tmp_path / ".env")
     state = await tk.store.get_session_state(tk.default_session_key)
-    assert (tmp_path / ".env").resolve() in state.dotfile_overrides
+    assert str((tmp_path / ".env").resolve()) in state.dotfile_overrides
 
 
 @pytest.mark.asyncio

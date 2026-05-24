@@ -1,10 +1,16 @@
 """
-``Grep`` — regex search over files under the toolkit's allowed roots.
+``Grep`` — regex search over files routed through the configured
+:class:`FileBackend`.
 
-Shells out to ``rg`` (ripgrep): it already honours ``.gitignore``, skips
-hidden files, does binary detection, and is orders of magnitude faster
-than a pure-Python walk+regex. Callers must have ``rg`` on ``PATH`` —
-the tool raises a structured error otherwise, pointing at the install.
+The :class:`LocalFileBackend` drives ``rg`` (ripgrep) directly:
+``rg`` already honours ``.gitignore``, skips hidden files, does binary
+detection, and is orders of magnitude faster than a pure-Python
+walk+regex. Callers must have ``rg`` on ``PATH`` — the tool raises a
+structured error otherwise, pointing at the install.
+
+Other backends (e.g. :class:`MCPFileBackend`) may expose their own grep
+implementation; backends that don't ship one raise
+:class:`NotImplementedError` with a clear message.
 
 Three output modes, chosen via ``output_mode``:
 
@@ -15,9 +21,9 @@ Three output modes, chosen via ``output_mode``:
 - ``content``: ``path:line:<content>`` per matching line. Supports
   ``-A`` / ``-B`` / ``-C`` context lines and ``-n`` line numbers.
 
-``head_limit`` / ``offset`` slice the output after rg returns. The tool
-reports ``truncated=True`` when ``head_limit`` cut results so the model
-can narrow the query instead of paging blindly.
+``head_limit`` / ``offset`` slice the output after the backend returns.
+The tool reports ``truncated=True`` when ``head_limit`` cut results so
+the model can narrow the query instead of paging blindly.
 """
 
 from __future__ import annotations
@@ -30,12 +36,14 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from ..file_edit.paths import PathAccessError, resolve_safe
+from ..file_edit.backend import GrepRawResult
+from ..file_edit.paths import PathAccessError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from ...run_context import RunContext
+    from ..file_edit.backend import FileBackend
 
 DEFAULT_HEAD_LIMIT = 250
 
@@ -156,6 +164,11 @@ class GrepError(ValueError):
     """Raised when ``rg`` is missing or fails with a non-zero-non-1 exit."""
 
 
+# ---------------------------------------------------------------------------
+# Local backend implementation — drives rg directly
+# ---------------------------------------------------------------------------
+
+
 async def _run_rg(args: list[str]) -> tuple[bytes, bytes, int]:
     """Run rg with ``args`` and return ``(stdout, stderr, returncode)``."""
     try:
@@ -182,47 +195,49 @@ async def _run_rg(args: list[str]) -> tuple[bytes, bytes, int]:
     return stdout, stderr, proc.returncode or 0
 
 
-def _build_args(inp: GrepInput, resolved_path: Path, mode: OutputMode) -> list[str]:
-    """Translate ``GrepInput`` into the rg CLI args for ``mode``."""
-    # ``--sort path`` disables rg's parallel walking in exchange for
-    # deterministic output. Needed for pagination (offset + head_limit)
-    # to partition the result set reproducibly, and costs negligibly on
-    # any sensible codebase.
+def _build_args(
+    *,
+    pattern: str,
+    resolved_path: str,
+    mode: OutputMode,
+    glob: str | None,
+    file_type: str | None,
+    case_insensitive: bool,
+    multiline: bool,
+    before_context: int | None,
+    after_context: int | None,
+    context: int | None,
+) -> list[str]:
+    """Translate grep params into the rg CLI args for ``mode``."""
     args: list[str] = ["--sort", "path"]
 
-    if inp.case_insensitive:
+    if case_insensitive:
         args.append("--ignore-case")
 
-    if inp.multiline:
+    if multiline:
         args.extend(["--multiline", "--multiline-dotall"])
 
-    if inp.glob is not None:
-        args.extend(["--glob", inp.glob])
+    if glob is not None:
+        args.extend(["--glob", glob])
 
-    if inp.type is not None:
-        args.extend(["--type", inp.type])
+    if file_type is not None:
+        args.extend(["--type", file_type])
 
     if mode == "files_with_matches":
         args.append("--files-with-matches")
     elif mode == "count":
         args.append("--count")
     else:
-        # content mode — structured JSON output
         args.append("--json")
-        # rg --json always emits line numbers; ``show_line_numbers=False``
-        # is honoured post-parse by stripping ``:line:`` from the format.
-        if inp.context is not None:
-            args.extend(["--context", str(inp.context)])
+        if context is not None:
+            args.extend(["--context", str(context)])
         else:
-            if inp.before_context is not None:
-                args.extend(["--before-context", str(inp.before_context)])
-            if inp.after_context is not None:
-                args.extend(["--after-context", str(inp.after_context)])
+            if before_context is not None:
+                args.extend(["--before-context", str(before_context)])
+            if after_context is not None:
+                args.extend(["--after-context", str(after_context)])
 
-    # Terminate flag parsing so a pattern starting with ``-`` is not
-    # interpreted as a flag.
-    args.extend(["--", inp.pattern, str(resolved_path)])
-
+    args.extend(["--", pattern, resolved_path])
     return args
 
 
@@ -238,11 +253,8 @@ def _parse_count(stdout: bytes) -> list[tuple[str, int]]:
     for line in text.splitlines():
         if not line:
             continue
-        # Filenames can contain colons; split from the right once.
         path, _, count_s = line.rpartition(":")
         if not path or not count_s.isdigit():
-            # Malformed line — surface as zero rather than crash the
-            # parse. Should not happen with rg's own output.
             continue
         entries.append((path, int(count_s)))
     return entries
@@ -253,8 +265,6 @@ def _get_text(obj: dict[str, Any], key: str) -> str | None:
     nested = obj.get(key)
     if not isinstance(nested, dict):
         return None
-    # Narrow the dict's generic parameters; the leaf ``isinstance(text, str)``
-    # below remains the only runtime shape check we rely on.
     text = cast("dict[str, Any]", nested).get("text")
     return text if isinstance(text, str) else None
 
@@ -264,10 +274,6 @@ def _parse_json_content(
 ) -> tuple[list[str], int, set[str]]:
     r"""
     Parse rg's ``--json`` stream into ``(lines, num_matches, paths)``.
-
-    Each rendered line is ``path:line:content`` or ``path:content`` per
-    ``show_line_numbers``. Context lines use ``-`` as the separator so
-    the model can tell matches apart from context (rg's own convention).
     """
     lines: list[str] = []
     num_matches = 0
@@ -300,7 +306,6 @@ def _parse_json_content(
         if msg_type in {"match", "context"}:
             path = _get_text(data, "path") or current_path or ""
             line_no = data.get("line_number")
-            # Strip the trailing newline rg embeds in ``lines.text``.
             text = (_get_text(data, "lines") or "").rstrip("\n")
             sep = ":" if msg_type == "match" else "-"
             if show_line_numbers and isinstance(line_no, int):
@@ -314,16 +319,79 @@ def _parse_json_content(
     return lines, num_matches, paths
 
 
+async def local_backend_grep(
+    *,
+    root: str,
+    pattern: str,
+    glob: str | None,
+    file_type: str | None,
+    case_insensitive: bool,
+    multiline: bool,
+    output_mode: OutputMode,
+    show_line_numbers: bool,
+    before_context: int | None,
+    after_context: int | None,
+    context: int | None,
+) -> GrepRawResult:
+    """
+    Local-FS grep via rg. Used by :meth:`LocalFileBackend.grep`. Public
+    so alternate backends can share the rg invocation if they shell to
+    a local rg too.
+    """
+    args = _build_args(
+        pattern=pattern,
+        resolved_path=root,
+        mode=output_mode,
+        glob=glob,
+        file_type=file_type,
+        case_insensitive=case_insensitive,
+        multiline=multiline,
+        before_context=before_context,
+        after_context=after_context,
+        context=context,
+    )
+    stdout, stderr, rc = await _run_rg(args)
+    if rc not in {0, 1}:
+        err = stderr.decode("utf-8", errors="replace").strip() or "unknown error"
+        raise GrepError(f"rg exited with code {rc}: {err}")
+
+    if output_mode == "files_with_matches":
+        files = _parse_files_with_matches(stdout)
+        return GrepRawResult(
+            files=files,
+            num_matches=len(files),
+            num_files_matched=len(files),
+        )
+
+    if output_mode == "count":
+        entries = _parse_count(stdout)
+        total_matches = sum(n for _, n in entries)
+        return GrepRawResult(
+            counts=entries,
+            num_matches=total_matches,
+            num_files_matched=len(entries),
+        )
+
+    # content mode
+    lines, num_matches, paths = _parse_json_content(
+        stdout, show_line_numbers=show_line_numbers
+    )
+    return GrepRawResult(
+        lines=lines,
+        num_matches=num_matches,
+        num_files_matched=len(paths),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool — delegates to ``backend.grep``
+# ---------------------------------------------------------------------------
+
+
 def _slice(
     entries: list[str], *, offset: int, head_limit: int | None
 ) -> tuple[list[str], bool]:
-    """
-    Apply ``offset`` + ``head_limit``; return sliced list and truncation flag.
-
-    ``truncated`` is True when there are entries past the returned window
-    — the model should interpret it as "narrow the query or paginate
-    with ``offset``".
-    """
+    """Apply ``offset`` + ``head_limit``; return sliced list + trunc flag."""
     total = len(entries)
     start = min(offset, total)
     if head_limit is None:
@@ -334,10 +402,10 @@ def _slice(
 
 class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
     """
-    Regex search via ripgrep.
+    Regex search via the configured :class:`FileBackend`.
 
     Attach via :class:`FileSearchToolkit` or instantiate directly with
-    ``allowed_roots``.
+    ``allowed_roots`` (defaults to a :class:`LocalFileBackend`).
     """
 
     name = "Grep"
@@ -355,11 +423,15 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
     def __init__(
         self,
         *,
-        allowed_roots: list[Path],
+        allowed_roots: list[Path] | list[str],
+        backend: FileBackend | None = None,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        self._allowed_roots = allowed_roots
+        from ..file_edit.backend import LocalFileBackend  # noqa: PLC0415
+
+        self._allowed_roots = [str(r) for r in allowed_roots]
+        self._backend = backend or LocalFileBackend()
 
     async def _run(
         self,
@@ -371,58 +443,65 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
     ) -> GrepResult:
         del ctx, exec_id, progress_callback
 
-        raw_path = inp.path if inp.path is not None else str(self._allowed_roots[0])
+        raw_path = (
+            inp.path if inp.path is not None else self._allowed_roots[0]
+        )
         try:
-            resolved = resolve_safe(raw_path, self._allowed_roots, must_exist=True)
+            resolved = await self._backend.validate_path(
+                raw_path, self._allowed_roots, must_exist=True
+            )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        args = _build_args(inp, resolved, inp.output_mode)
-        stdout, stderr, rc = await _run_rg(args)
-
-        # rg exit codes: 0 = matches found, 1 = no matches, 2 = error.
-        if rc not in {0, 1}:
-            err = stderr.decode("utf-8", errors="replace").strip() or "unknown error"
-            raise GrepError(f"rg exited with code {rc}: {err}")
+        raw = await self._backend.grep(
+            root=resolved,
+            pattern=inp.pattern,
+            glob=inp.glob,
+            file_type=inp.type,
+            case_insensitive=inp.case_insensitive,
+            multiline=inp.multiline,
+            output_mode=inp.output_mode,
+            show_line_numbers=inp.show_line_numbers,
+            before_context=inp.before_context,
+            after_context=inp.after_context,
+            context=inp.context,
+        )
 
         offset = inp.offset or 0
 
         if inp.output_mode == "files_with_matches":
-            files = _parse_files_with_matches(stdout)
-            sliced, truncated = _slice(files, offset=offset, head_limit=inp.head_limit)
+            sliced, truncated = _slice(
+                raw.files, offset=offset, head_limit=inp.head_limit
+            )
             return GrepResult(
                 output="\n".join(sliced),
                 output_mode=inp.output_mode,
-                num_matches=len(files),
-                num_files_matched=len(files),
+                num_matches=raw.num_matches,
+                num_files_matched=raw.num_files_matched,
                 truncated=truncated,
             )
 
         if inp.output_mode == "count":
-            entries = _parse_count(stdout)
-            total_matches = sum(n for _, n in entries)
-            rendered = [f"{p}:{n}" for p, n in entries]
+            rendered = [f"{p}:{n}" for p, n in raw.counts]
             sliced, truncated = _slice(
                 rendered, offset=offset, head_limit=inp.head_limit
             )
             return GrepResult(
                 output="\n".join(sliced),
                 output_mode=inp.output_mode,
-                num_matches=total_matches,
-                num_files_matched=len(entries),
+                num_matches=raw.num_matches,
+                num_files_matched=raw.num_files_matched,
                 truncated=truncated,
             )
 
-        # content mode
-        lines, num_matches, paths = _parse_json_content(
-            stdout, show_line_numbers=inp.show_line_numbers
+        sliced, truncated = _slice(
+            raw.lines, offset=offset, head_limit=inp.head_limit
         )
-        sliced, truncated = _slice(lines, offset=offset, head_limit=inp.head_limit)
         return GrepResult(
             output="\n".join(sliced),
             output_mode=inp.output_mode,
-            num_matches=num_matches,
-            num_files_matched=len(paths),
+            num_matches=raw.num_matches,
+            num_files_matched=raw.num_files_matched,
             truncated=truncated,
         )
 

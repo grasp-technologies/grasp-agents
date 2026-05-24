@@ -58,12 +58,14 @@ def _make_agent(
     *,
     env_info: bool = False,
     with_skill_tools: bool = False,
+    enable_skills: bool = True,
 ) -> LLMAgent[str, str, _State]:
     return LLMAgent[str, str, _State](
         name="skills_test_agent",
         llm=MockLLM(responses_queue=[]),
         stream_llm=True,
         env_info=env_info,
+        enable_skills=enable_skills,
         tools=[load_skill, list_skills] if with_skill_tools else None,
     )
 
@@ -77,20 +79,57 @@ async def _build_system_prompt(
 # ---------- Auto-attached skills section ----------
 
 
-class TestAutoAttach:
-    def test_section_auto_registered(self) -> None:
-        agent = _make_agent()
+class TestEnableSkills:
+    def test_section_registered_when_enabled(self) -> None:
+        agent = _make_agent()  # helper passes enable_skills=True
         names = {s.name for s in agent.system_prompt_sections}
         assert "skills" in names
 
-    def test_load_list_tools_opt_in(self) -> None:
-        agent = _make_agent()
-        # The load/list tools are NOT registered until the user passes them in
-        # `tools=[...]`; the section auto-attaches regardless.
+    def test_section_dropped_when_disabled(self) -> None:
+        agent = _make_agent(enable_skills=False)
+        names = {s.name for s in agent.system_prompt_sections}
+        assert "skills" not in names
+
+    def test_default_off_means_no_section(self) -> None:
+        # The framework default is enable_skills=False — agents don't
+        # silently gain the skills section.
+        agent = LLMAgent[str, str, _State](
+            name="default",
+            llm=MockLLM(responses_queue=[]),
+            stream_llm=True,
+            env_info=False,
+        )
+        names = {s.name for s in agent.system_prompt_sections}
+        assert "skills" not in names
         assert "load_skill" not in agent.tools
+
+    def test_load_skill_auto_attaches_in_agentic_mode(self) -> None:
+        agent = LLMAgent[str, str, _State](
+            name="agentic",
+            llm=MockLLM(responses_queue=[]),
+            stream_llm=True,
+            env_info=False,
+            enable_skills=True,
+            tools=[],
+        )
+        # load_skill rides in; list_skills stays opt-in (catalog is in
+        # the system prompt — calling it again per-turn is bloat).
+        assert "load_skill" in agent.tools
         assert "list_skills" not in agent.tools
 
-    def test_load_list_tools_via_tools_kwarg(self) -> None:
+    def test_load_skill_not_attached_in_structured_mode(self) -> None:
+        # tools=None → structured-output mode; no tool auto-attach.
+        agent = LLMAgent[str, str, _State](
+            name="structured",
+            llm=MockLLM(responses_queue=[]),
+            stream_llm=True,
+            env_info=False,
+            enable_skills=True,
+            tools=None,
+        )
+        assert "load_skill" not in agent.tools
+
+    def test_explicit_list_skills_via_tools_kwarg(self) -> None:
         agent = _make_agent(with_skill_tools=True)
         assert "load_skill" in agent.tools
         assert "list_skills" in agent.tools
@@ -132,6 +171,7 @@ class TestSystemPromptSection:
             sys_prompt="You are a helper.",
             stream_llm=True,
             env_info=False,
+            enable_skills=True,
         )
         ctx: RunContext[_State] = RunContext(
             state=_State(),
@@ -163,69 +203,56 @@ class TestSystemPromptSection:
         assert "<available_skills>" in prompt
 
 
-# ---------- Relevance filter hook ----------
+# ---------- Catalog selector hook ----------
 
 
-class TestRelevanceFilter:
+class TestCatalogSelectorHelper:
+    """
+    The selector is NOT applied at ``build_system_prompt`` time — the
+    catalog stays cache-stable. The selector API is still consulted
+    elsewhere (e.g. via :meth:`SkillRegistry.select_relevant` directly, or
+    in future ``InputAttachment``-style per-turn surfacing).
+    """
+
     @pytest.mark.anyio
-    async def test_sync_filter(self, tmp_path: Path) -> None:
+    async def test_select_relevant_filters(self, tmp_path: Path) -> None:
+        from collections.abc import Sequence  # noqa: PLC0415
+
+        from grasp_agents.skills import Skill  # noqa: PLC0415
+
         _write_skill(tmp_path, "alpha", "Alpha")
         _write_skill(tmp_path, "beta", "Beta")
         registry = SkillRegistry.from_path(tmp_path)
 
-        def keep_alpha(*, skills: list[Any], **_: Any) -> list[Any]:
-            return [s for s in skills if s.name == "alpha"]
+        def keep_alpha(*, entries: Sequence[Skill], **_: Any) -> Sequence[Skill]:
+            return [s for s in entries if s.name == "alpha"]
 
-        registry.set_filter(keep_alpha)
+        registry.set_selector(keep_alpha)
+        kept = await registry.select_relevant()
+        assert [s.name for s in kept] == ["alpha"]
+
+    @pytest.mark.anyio
+    async def test_system_prompt_ignores_selector(self, tmp_path: Path) -> None:
+        from collections.abc import Sequence  # noqa: PLC0415
+
+        from grasp_agents.skills import Skill  # noqa: PLC0415
+
+        _write_skill(tmp_path, "alpha", "Alpha")
+        _write_skill(tmp_path, "beta", "Beta")
+        registry = SkillRegistry.from_path(tmp_path)
+
+        def keep_alpha(*, entries: Sequence[Skill], **_: Any) -> Sequence[Skill]:
+            return [s for s in entries if s.name == "alpha"]
+
+        registry.set_selector(keep_alpha)
 
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is not None
+        # Both skills still in the catalog — selector is NOT applied.
         assert "<name>alpha</name>" in prompt
-        assert "<name>beta</name>" not in prompt
-
-    @pytest.mark.anyio
-    async def test_async_filter_receives_ctx(self, tmp_path: Path) -> None:
-        _write_skill(tmp_path, "alpha", "Alpha")
-        _write_skill(tmp_path, "beta", "Beta")
-        registry = SkillRegistry.from_path(tmp_path)
-
-        seen_ctx: list[RunContext[_State] | None] = []
-
-        async def filter_fn(  # noqa: RUF029
-            *,
-            skills: list[Any],
-            ctx: RunContext[_State] | None = None,
-            exec_id: str | None = None,
-        ) -> list[Any]:
-            del exec_id
-            seen_ctx.append(ctx)
-            return [s for s in skills if s.name != "beta"]
-
-        registry.set_filter(filter_fn)
-
-        agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
-        prompt = await _build_system_prompt(agent, ctx)
-        assert prompt is not None
-        assert "<name>beta</name>" not in prompt
-        assert seen_ctx == [ctx]
-
-    @pytest.mark.anyio
-    async def test_filter_returning_empty_drops_section(self, tmp_path: Path) -> None:
-        _write_skill(tmp_path, "alpha", "Alpha")
-        registry = SkillRegistry.from_path(tmp_path)
-
-        def empty_filter(**_: Any) -> list[Any]:
-            return []
-
-        registry.set_filter(empty_filter)
-
-        agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
-        prompt = await _build_system_prompt(agent, ctx)
-        assert prompt is None
+        assert "<name>beta</name>" in prompt
 
 
 # ---------- load_skill / list_skills tools ----------

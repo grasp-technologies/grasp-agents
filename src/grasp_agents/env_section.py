@@ -82,7 +82,10 @@ def make_env_info_section(
     extra = dict(extra_fields or {})
 
     def compute(
-        *, ctx: RunContext[Any] | None = None, exec_id: str | None = None
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        **_: Any,
     ) -> str | None:
         del ctx, exec_id
         rows: list[str] = []

@@ -9,6 +9,10 @@ import yaml
 from pydantic import ValidationError
 
 from .types import (
+    INDEX_FILE_NAME,
+    MAX_INDEX_BYTES,
+    MAX_INDEX_LINES,
+    MAX_MEMORY_FILES,
     MemoryEntry,
     MemoryFormatError,
     MemoryFrontmatter,
@@ -16,14 +20,6 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-INDEX_FILE_NAME = "MEMORY.md"
-
-# CC's caps on the always-loaded MEMORY.md index.
-MAX_INDEX_LINES = 200
-MAX_INDEX_BYTES = 25_000
-
-# Silent cap from CC's memoryScan.
-MAX_MEMORY_FILES = 200
 
 _FRONTMATTER_RE = re.compile(
     r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)\Z",
@@ -65,9 +61,7 @@ def parse_memory_md(
     try:
         frontmatter = MemoryFrontmatter.model_validate(loaded)
     except ValidationError as exc:
-        raise MemoryFormatError(
-            path, f"Frontmatter validation failed: {exc}"
-        ) from exc
+        raise MemoryFormatError(path, f"Frontmatter validation failed: {exc}") from exc
 
     return frontmatter, body.strip("\n")
 
@@ -80,14 +74,12 @@ def load_memory_entry(path: Path) -> MemoryEntry:
     text = path.read_text(encoding="utf-8")
     frontmatter, body = parse_memory_md(text, path=path)
     mtime_ms = int(path.stat().st_mtime * 1000)
-    return MemoryEntry(
-        frontmatter=frontmatter, body=body, path=path, mtime_ms=mtime_ms
-    )
+    return MemoryEntry(frontmatter=frontmatter, body=body, path=path, mtime_ms=mtime_ms)
 
 
 def truncate_index(content: str) -> tuple[str, bool]:
     """
-    Apply CC-style line + byte caps to ``MEMORY.md`` content.
+    Apply line + byte caps to ``MEMORY.md`` content.
 
     Truncates by line first; if still over the byte cap, truncates at the
     last newline before the byte limit. Returns ``(content, was_truncated)``.
@@ -106,6 +98,7 @@ def truncate_index(content: str) -> tuple[str, bool]:
             cut = cut[:last_nl]
         text = cut.decode("utf-8", errors="ignore")
         truncated = True
+
     return text, truncated
 
 
@@ -153,4 +146,5 @@ def scan_memdir(
     entries.sort(key=lambda e: e.mtime_ms, reverse=True)
     if len(entries) > max_files:
         entries = entries[:max_files]
+
     return index_text, index_mtime_ms, entries

@@ -1,11 +1,18 @@
 """
-``FileEditToolkit`` — factory that bundles a ``FileEditStore`` with a
-matching set of file-edit tools.
+``FileEditToolkit`` — factory that bundles a :class:`FileEditStore`,
+a :class:`FileBackend`, and a matching set of file-edit tools.
 
 Usage::
 
+    # Local filesystem (default).
     toolkit = FileEditToolkit(allowed_roots=[Path.cwd()])
     agent.tools = [*toolkit.tools(), my_custom_tool]
+
+    # MCP-backed filesystem.
+    toolkit = FileEditToolkit(
+        allowed_roots=["/memdir"],
+        backend=MCPFileBackend(client=mcp_client),
+    )
 
     # Production: route state through ``RunContext`` so sub-agents and
     # later calls in the same session share read-before-write records.
@@ -29,6 +36,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .backend import FileBackend, LocalFileBackend
 from .edit import EditTool
 from .read import DEFAULT_MAX_READ_CHARS, ReadTool
 from .redact import DefaultSecretRedactor, SecretRedactor
@@ -41,9 +49,11 @@ if TYPE_CHECKING:
 
 class FileEditToolkit:
     """
-    Build and hold the store + a matching set of file-edit tools.
+    Build and hold the store, backend, and a matching set of file-edit
+    tools.
 
     The toolkit owns one :class:`FileEditStore` (in-memory by default)
+    and one :class:`FileBackend` (:class:`LocalFileBackend` by default)
     shared by every tool it constructs. Tools prefer the
     ``RunContext``'s store when the caller wires one up; otherwise they
     read/write state through the toolkit's own store keyed by
@@ -53,7 +63,8 @@ class FileEditToolkit:
     def __init__(
         self,
         *,
-        allowed_roots: list[Path] | None = None,
+        allowed_roots: list[Path | str] | None = None,
+        backend: FileBackend | None = None,
         include_dotfiles: bool = True,
         redactor: SecretRedactor | None = None,
         store: FileEditStore | None = None,
@@ -66,22 +77,21 @@ class FileEditToolkit:
         Create a toolkit.
 
         Args:
-            allowed_roots: Directories the tools may read / write under.
-                Defaults to ``[Path.cwd()]``. Each entry is expanded and
-                resolved at tool-call time.
+            allowed_roots: Directories the tools may read / write under,
+                in the backend's address space. Defaults to ``[Path.cwd()]``
+                for the local backend; MCP backends typically pass a
+                server-side root like ``"/memdir"``.
+            backend: I/O substrate. Defaults to
+                :class:`LocalFileBackend` (host filesystem).
             include_dotfiles: If True (default), the sensitive-path deny
                 list adds common credential-dotfile patterns (``.env``,
-                ``~/.ssh``, etc.) on top of the system-path baseline. Set
-                False to only block system paths.
+                ``~/.ssh``, etc.) on top of the system-path baseline.
+                Local-FS only.
             redactor: Secret-redaction strategy for Read output.
-                Defaults to :class:`DefaultSecretRedactor` — pass
-                :class:`NullRedactor()` to opt out.
-            store: Session-keyed backing store. Defaults to
-                :class:`InMemoryFileEditStore`. Pass a custom
-                implementation to plug in persistence or shared backends.
+            store: Session-keyed backing store for read-before-write
+                state. Defaults to :class:`InMemoryFileEditStore`.
             default_session_key: Key used when tools are called without
                 a ``RunContext`` that provides its own ``file_edit_store``.
-                Lets the same toolkit serve standalone / test use.
             max_read_chars: Character cap on the formatted output of a
                 single Read call. Default ``100_000``.
             new_file_mode: File permissions applied to freshly-created
@@ -91,9 +101,12 @@ class FileEditToolkit:
                 disables the timeout.
 
         """
-        self._allowed_roots: list[Path] = (
-            list(allowed_roots) if allowed_roots is not None else [Path.cwd()]
-        )
+        if allowed_roots is None:
+            roots: list[str] = [str(Path.cwd())]
+        else:
+            roots = [str(r) for r in allowed_roots]
+        self._allowed_roots: list[str] = roots
+        self._backend: FileBackend = backend or LocalFileBackend()
         self._include_dotfiles = include_dotfiles
         self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
         self._store: FileEditStore = store or InMemoryFileEditStore()
@@ -104,7 +117,9 @@ class FileEditToolkit:
 
         self._read_tool = ReadTool(
             store=self._store,
+            backend=self._backend,
             allowed_roots=self._allowed_roots,
+            include_dotfiles=self._include_dotfiles,
             redactor=self._redactor,
             default_session_key=default_session_key,
             max_read_chars=self._max_read_chars,
@@ -112,6 +127,7 @@ class FileEditToolkit:
         )
         self._write_tool = WriteTool(
             store=self._store,
+            backend=self._backend,
             allowed_roots=self._allowed_roots,
             default_session_key=default_session_key,
             include_dotfiles=self._include_dotfiles,
@@ -120,6 +136,7 @@ class FileEditToolkit:
         )
         self._edit_tool = EditTool(
             store=self._store,
+            backend=self._backend,
             allowed_roots=self._allowed_roots,
             default_session_key=default_session_key,
             include_dotfiles=self._include_dotfiles,
@@ -152,6 +169,14 @@ class FileEditToolkit:
         return self._store
 
     @property
+    def backend(self) -> FileBackend:
+        return self._backend
+
+    @property
+    def allowed_roots(self) -> list[str]:
+        return list(self._allowed_roots)
+
+    @property
     def default_session_key(self) -> str:
         return self._default_session_key
 
@@ -167,17 +192,20 @@ class FileEditToolkit:
     # ---- Dotfile-override management ---------------------------------------
 
     async def allow_dotfile(
-        self, path: Path, *, session_key: str | None = None
+        self, path: Path | str, *, session_key: str | None = None
     ) -> None:
         """
         Whitelist a specific sensitive dotfile for a session.
 
         Bypasses the user-dotfile deny list for ``path``. The system-path
         baseline is not overridable. Defaults to the toolkit's own
-        ``default_session_key``.
+        ``default_session_key``. Only meaningful for local-FS backends.
         """
         key = session_key or self._default_session_key
         state = await self._store.get_session_state(key)
         # ``expanduser`` + ``resolve`` here are cheap path manipulations
         # that don't block on disk; the async-path lint doesn't apply.
-        state.dotfile_overrides.add(path.expanduser().resolve())  # noqa: ASYNC240
+        resolved = (
+            Path(path).expanduser().resolve()  # noqa: ASYNC240
+        )
+        state.add_dotfile_override(str(resolved))

@@ -97,7 +97,8 @@ async def test_write_refuses_when_parent_missing(
 ) -> None:
     target = tmp_path / "missing" / "sub" / "f.txt"
     result = await write_tool.run(WriteInput(path=str(target), content="x"))
-    assert "Parent directory does not exist" in _error_message(result)
+    assert "Parent directory" in _error_message(result)
+    assert "does not exist" in _error_message(result)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +198,7 @@ async def test_write_dotfile_allowed_after_explicit_override(
 ) -> None:
     target = tmp_path / ".env"
     state = await store.get_session_state(TEST_KEY)
-    state.dotfile_overrides.add(target.resolve())
+    state.add_dotfile_override(target.resolve())
 
     result = await write_tool.run(WriteInput(path=str(target), content="DEBUG=1\n"))
     assert isinstance(result, WriteResult)

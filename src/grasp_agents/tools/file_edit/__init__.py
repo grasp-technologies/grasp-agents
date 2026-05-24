@@ -2,9 +2,11 @@
 File-edit tool package.
 
 Provides ``Read`` / ``Write`` / ``Edit`` primitives and a
-:class:`FileEditToolkit` factory that owns per-session state. Not
-auto-installed on any agent — consumers explicitly attach the tools
-they want.
+:class:`FileEditToolkit` factory that owns per-session state plus a
+pluggable :class:`FileBackend`. Default backend is
+:class:`LocalFileBackend` (host filesystem); :class:`MCPFileBackend`
+routes the same calls to an MCP server speaking the file-tool
+protocol.
 
 Usage::
 
@@ -25,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .atomic_write import atomic_write_bytes, atomic_write_text
+    from .backend import FileBackend, FileEntry, FileStat, LocalFileBackend
     from .edit import EditInput, EditResult, EditTool
     from .fuzzy_match import (
         UNICODE_MAP,
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
         fuzzy_find_and_replace,
         preserve_quote_style,
     )
+    from .mcp_backend import MCPFileBackend
     from .paths import (
         PathAccessError,
         check_sensitive_path,
@@ -54,6 +58,10 @@ if TYPE_CHECKING:
 _LAZY: dict[str, str] = {
     "atomic_write_bytes": "atomic_write",
     "atomic_write_text": "atomic_write",
+    "FileBackend": "backend",
+    "FileEntry": "backend",
+    "FileStat": "backend",
+    "LocalFileBackend": "backend",
     "EditInput": "edit",
     "EditResult": "edit",
     "EditTool": "edit",
@@ -62,6 +70,7 @@ _LAZY: dict[str, str] = {
     "fuzzy_find": "fuzzy_match",
     "fuzzy_find_and_replace": "fuzzy_match",
     "preserve_quote_style": "fuzzy_match",
+    "MCPFileBackend": "mcp_backend",
     "PathAccessError": "paths",
     "check_sensitive_path": "paths",
     "has_binary_extension": "paths",
@@ -100,10 +109,15 @@ __all__ = [
     "EditInput",
     "EditResult",
     "EditTool",
+    "FileBackend",
     "FileEditSessionState",
     "FileEditStore",
     "FileEditToolkit",
+    "FileEntry",
+    "FileStat",
     "InMemoryFileEditStore",
+    "LocalFileBackend",
+    "MCPFileBackend",
     "NullRedactor",
     "PathAccessError",
     "ReadInput",

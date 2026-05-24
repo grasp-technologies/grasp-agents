@@ -16,7 +16,7 @@ from ..durability.context_serialization import rehydrate_context, serialize_cont
 from ..durability.resume import prepare_messages_for_resume
 from ..env_section import make_env_info_section
 from ..llm.llm import LLM
-from ..memory.injection import memory_system_prompt_section
+from ..memory.injection import make_memory_section, memory_relevance_attachment
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..skills.injection import skills_system_prompt_section
@@ -119,6 +119,22 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         mcp_clients: "Sequence[MCPClient | MCPClientSpec] | None" = None,
         # Auto-attached system-prompt sections
         env_info: bool = True,
+        # Memory feature toggle (opt-in). When True, the agent gets:
+        # - the ``memory`` system-prompt section (taxonomy + index)
+        # - the ``memory_relevance_attachment`` (per-turn surfacing)
+        # - in agentic mode, a :class:`FileEditToolkit` rooted at the
+        #   memdir auto-attached so the agent can author topic files
+        #   and maintain ``MEMORY.md`` with generic file tools (CC's
+        #   model — no specialized memory tools).
+        # Default is False — the agent should know it's adding memory
+        # to its system prompt before it happens.
+        enable_memory: bool = False,
+        # Skills feature toggle (opt-in). When True, the agent gets:
+        # - the ``skills`` system-prompt section (catalog of available
+        #   skills, when ``ctx.skills`` is set)
+        # - in agentic mode, the ``load_skill`` tool appended
+        # Default is False — same rationale as ``enable_memory``.
+        enable_skills: bool = False,
         # Tracing
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
@@ -133,8 +149,34 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
+        # Distinguish ``tools=None`` (structured-output mode, no agentic
+        # loop) from ``tools=[]`` / ``tools=[...]`` (agentic mode). Used
+        # below to gate the default llm_output_schema and to scope the
+        # memory / skills tool auto-attach.
+        agentic_mode = tools is not None
+        tools = list(tools or [])
+
+        if agentic_mode:
+            existing_names = {t.name for t in tools}
+            # ``enable_memory`` no longer auto-attaches memory-specific
+            # tools. Memory authoring goes through the generic file
+            # tools rooted at the memdir — wire a ``FileEditToolkit``
+            # (local FS) or one configured with an ``MCPFileBackend``
+            # explicitly. The system-prompt section names the memdir
+            # path so the model knows where to read / write.
+            #
+            # Auto-attach the skill loader when the skills feature is on.
+            # ``list_skills`` stays opt-in — the catalog is already in the
+            # system prompt.
+            if enable_skills:
+                from ..skills.tools import load_skill  # noqa: PLC0415
+
+                if load_skill.name not in existing_names:
+                    tools.append(load_skill)
+                    existing_names.add(load_skill.name)
+
         if tracing_exclude_input_fields:
-            for tool in tools or []:
+            for tool in tools:
                 tool.tracing_exclude_input_fields = tracing_exclude_input_fields
 
         # Transcript (per-run message history)
@@ -144,10 +186,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Wire parent context for AgentTool instances (after transcript init)
         from .agent_tool import AgentTool  # noqa: PLC0415
 
-        for tool in tools or []:
+        for tool in tools:
             if isinstance(tool, AgentTool):
                 tool.set_parent_transcript(self._transcript)
-                tool.set_parent_tools(tools or [])
+                tool.set_parent_tools(tools)
 
         # Prompt builder
 
@@ -166,21 +208,32 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         # Auto-attached sections. Each compute returns ``None`` when its
         # input is absent (no ``ctx.memory``, no ``ctx.skills``, no MCP
-        # clients) so registering them unconditionally is harmless. Users
-        # override any of these by adding a section with the same name —
+        # clients) so registering them by feature flag is safe — they
+        # just no-op when the relevant data isn't wired. Users override
+        # any of them by adding a section with the same name —
         # ``add_system_prompt_section`` dedupes by name.
         #
-        # Order mirrors Claude Code's dynamic-tail layout (memory → env_info
-        # → mcp_instructions in ``constants/prompts.ts``). Skills slot
-        # between env_info and mcp_instructions — both surface "what the
-        # agent can do", with MCP last because servers connect / disconnect
-        # mid-session and the section is ``cache_break=True``.
-        self._prompt_builder.add_system_prompt_section(memory_system_prompt_section)
+        # Order mirrors Claude Code's dynamic-tail layout (memory →
+        # env_info → mcp_instructions in ``constants/prompts.ts``).
+        # Skills slot between env_info and mcp_instructions — both
+        # surface "what the agent can do", with MCP last because
+        # servers connect / disconnect mid-session and the section is
+        # ``cache_break=True``.
+        if enable_memory:
+            self._prompt_builder.add_system_prompt_section(
+                make_memory_section()
+            )
+            self._prompt_builder.add_input_attachment(
+                memory_relevance_attachment
+            )
         if env_info:
             self._prompt_builder.add_system_prompt_section(
                 make_env_info_section(model_name=llm.model_name)
             )
-        self._prompt_builder.add_system_prompt_section(skills_system_prompt_section)
+        if enable_skills:
+            self._prompt_builder.add_system_prompt_section(
+                skills_system_prompt_section
+            )
         # Local import to dodge the ``mcp`` package's optional-dependency
         # import guard at module load.
         from ..mcp.section import make_mcp_instructions_section  # noqa: PLC0415
@@ -213,7 +266,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._used_default_llm_output_schema = False
         if (
             llm_output_schema is None
-            and tools is None
+            and not agentic_mode
             and not is_method_overridden(
                 "parse_output_impl", self, LLMAgent[Any, Any, Any]
             )
@@ -472,6 +525,12 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
         )
         if input_message:
+            input_message = await self._prompt_builder.apply_input_attachments(
+                input_message,
+                ctx=ctx,
+                exec_id=exec_id,
+                messages=list(self.transcript.messages),
+            )
             self.transcript.update([input_message])
             messages_to_expose.append(input_message)
 

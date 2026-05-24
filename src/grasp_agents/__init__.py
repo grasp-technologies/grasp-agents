@@ -28,6 +28,12 @@ from .agent.loop_state import (
     NextStepStop,
     decide_next_step,
 )
+from .agent.prompt_builder import (
+    InputAttachment,
+    InputAttachmentCompute,
+    SectionCompute,
+    SystemPromptSection,
+)
 from .agent.tool_decision import (
     AllowTool,
     RaiseToolException,
@@ -56,6 +62,7 @@ from .llm.model_info import (
 )
 from .llm.resilience import RetryPolicy
 from .memory import (
+    MEMORY_RELEVANCE_ATTACHMENT_NAME,
     MEMORY_SECTION_NAME,
     MEMORY_TYPES,
     FileMemoryProvider,
@@ -63,12 +70,16 @@ from .memory import (
     MemoryEntry,
     MemoryFrontmatter,
     MemoryProvider,
+    MemorySelector,
     MemorySnapshot,
     MemoryType,
     default_memdir_path,
     load_memory_entry,
+    make_memory_section,
+    memory_relevance_attachment,
     memory_system_prompt_section,
     parse_memory_md,
+    render_auto_memory_instructions,
     render_memory_block,
     scan_memdir,
 )
@@ -157,6 +168,7 @@ try:
         MCPTool,
         make_mcp_instructions_section,
     )
+    from .memory.mcp_provider import MCPMemoryProvider
 except ImportError:
     pass
 
@@ -165,6 +177,7 @@ __all__ = [
     "ENV_INFO_SECTION_NAME",
     "LLM",
     "MCP_INSTRUCTIONS_SECTION_NAME",
+    "MEMORY_RELEVANCE_ATTACHMENT_NAME",
     "MEMORY_SECTION_NAME",
     "MEMORY_TYPES",
     "AgentCheckpoint",
@@ -195,6 +208,8 @@ __all__ = [
     "InMemoryApprovalStore",
     "InMemoryCheckpointStore",
     "InMemoryMemoryProvider",
+    "InputAttachment",
+    "InputAttachmentCompute",
     "InputImage",
     "InputRenderable",
     "LLMAgent",
@@ -216,6 +231,7 @@ __all__ = [
     "MCPClient",
     "MCPClientSpec",
     "MCPListResourcesTool",
+    "MCPMemoryProvider",
     "MCPReadResourceTool",
     "MCPServerSSE",
     "MCPServerStdio",
@@ -223,6 +239,7 @@ __all__ = [
     "MemoryEntry",
     "MemoryFrontmatter",
     "MemoryProvider",
+    "MemorySelector",
     "MemorySnapshot",
     "MemoryType",
     "NextStep",
@@ -245,6 +262,7 @@ __all__ = [
     "Response",
     "RetryPolicy",
     "RunContext",
+    "SectionCompute",
     "Skill",
     "SkillError",
     "SkillFormatError",
@@ -253,6 +271,7 @@ __all__ = [
     "SkillRegistry",
     "StopReason",
     "SystemMessage",
+    "SystemPromptSection",
     "TaskRecord",
     "TaskStatus",
     "ToolCallDecision",
@@ -282,6 +301,8 @@ __all__ = [
     "load_skill_md",
     "make_env_info_section",
     "make_mcp_instructions_section",
+    "make_memory_section",
+    "memory_relevance_attachment",
     "memory_system_prompt_section",
     "parse_memory_md",
     "parse_named_args",
@@ -289,6 +310,7 @@ __all__ = [
     "parse_slash_command",
     "print_event_stream",
     "register_recovery_hint",
+    "render_auto_memory_instructions",
     "render_available_skills_block",
     "render_memory_block",
     "scan_memdir",

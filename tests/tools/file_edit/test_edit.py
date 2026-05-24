@@ -298,7 +298,7 @@ async def test_edit_dotfile_allowed_after_override(
     target = tmp_path / ".env"
     target.write_text("DEBUG=0\n")
     state = await store.get_session_state(TEST_KEY)
-    state.dotfile_overrides.add(target.resolve())
+    state.add_dotfile_override(target.resolve())
 
     await read_tool.run(ReadInput(path=str(target)))
     result = await edit_tool.run(

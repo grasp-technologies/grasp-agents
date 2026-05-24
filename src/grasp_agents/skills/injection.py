@@ -80,13 +80,19 @@ def render_available_skills_block(
 SKILLS_SECTION_NAME = "skills"
 
 
-async def _compute_skills_section(
-    *, ctx: RunContext[Any] | None = None, exec_id: str | None = None
+async def _compute_skills_section(  # noqa: RUF029
+    *,
+    ctx: RunContext[Any] | None = None,
+    exec_id: str | None = None,
+    **_: Any,
 ) -> str | None:
+    del exec_id
     if ctx is None or ctx.skills is None or len(ctx.skills) == 0:
         return None
-    skills = await ctx.skills.apply_filter(ctx=ctx, exec_id=exec_id)
-    rendered = render_available_skills_block(skills)
+    # The catalog is cache-stable: it renders every visible skill. Per-turn
+    # skill-relevance selection belongs on a ``InputAttachment`` so
+    # the static system prompt stays cached across turns.
+    rendered = render_available_skills_block(ctx.skills.visible)
     return rendered or None
 
 

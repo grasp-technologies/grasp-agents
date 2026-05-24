@@ -44,7 +44,10 @@ def make_mcp_instructions_section(
     """
 
     async def compute(  # noqa: RUF029
-        *, ctx: RunContext[Any] | None = None, exec_id: str | None = None
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        **_: Any,
     ) -> str | None:
         del ctx, exec_id
         current = clients() if callable(clients) else clients
