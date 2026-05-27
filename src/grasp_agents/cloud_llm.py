@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Required
 
 import httpx
+from opentelemetry import trace
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from .llm import LLM, LLMSettings
+from .llm import LLM, LLMSettings, make_refusal_completion
 from .rate_limiting.rate_limiter import RateLimiter, limit_rate
 from .typing.completion import Completion
 from .typing.completion_chunk import CompletionChunk
@@ -168,6 +169,16 @@ class CloudLLM(LLM):
         api_completion = await self._get_api_completion(**completion_kwargs)
 
         completion = self.converters.from_completion(api_completion, name=self.model_id)
+        trace.get_current_span().set_attribute(
+            "llm.finish_reason", str(completion.finish_reason)
+        )
+        if completion.finish_reason == "content_filter":
+            return make_refusal_completion(
+                self.model_name,
+                RuntimeError(
+                    f"Model refused to generate ({completion.finish_reason})."
+                ),
+            )
 
         # if not self.apply_response_schema_via_provider:
         self._validate_response(
@@ -218,6 +229,16 @@ class CloudLLM(LLM):
             api_completion_chunks, response_schema=response_schema, tools=tools
         )
         completion = self.converters.from_completion(api_completion, name=self.model_id)
+        trace.get_current_span().set_attribute(
+            "llm.finish_reason", str(completion.finish_reason)
+        )
+        if completion.finish_reason == "content_filter":
+            completion = make_refusal_completion(
+                self.model_name,
+                RuntimeError(f"Model refused to generate ({completion.finish_reason})"),
+            )
+            yield CompletionEvent(data=completion, src_name=proc_name, call_id=call_id)
+            return
 
         yield CompletionEvent(data=completion, src_name=proc_name, call_id=call_id)
 
