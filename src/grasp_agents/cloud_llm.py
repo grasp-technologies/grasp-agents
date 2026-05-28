@@ -175,9 +175,7 @@ class CloudLLM(LLM):
         if completion.finish_reason == "content_filter":
             return make_refusal_completion(
                 self.model_name,
-                RuntimeError(
-                    f"Model refused to generate ({completion.finish_reason})."
-                ),
+                RuntimeError(completion.finish_reason),
             )
 
         # if not self.apply_response_schema_via_provider:
@@ -235,7 +233,7 @@ class CloudLLM(LLM):
         if completion.finish_reason == "content_filter":
             completion = make_refusal_completion(
                 self.model_name,
-                RuntimeError(f"Model refused to generate ({completion.finish_reason})"),
+                RuntimeError(completion.finish_reason),
             )
             yield CompletionEvent(data=completion, src_name=proc_name, call_id=call_id)
             return
