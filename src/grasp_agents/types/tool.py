@@ -91,6 +91,14 @@ class BaseTool(
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
         self._llm_in_type: type[BaseModel] | None = None
 
+    def on_adopted(self, parent: "Any") -> None:
+        """
+        Lifecycle hook fired when this tool is attached to a parent
+        :class:`Processor`. Default no-op for stateless tools; subclasses
+        like :class:`ProcessorTool` override to forward adoption onto a
+        wrapped processor.
+        """
+
     @property
     def in_type(self) -> type[_InT]:
         return self._in_type
@@ -202,9 +210,7 @@ class BaseTool(
         # ``_run`` is known to accept the kwarg). Plain tools keep the
         # short signature and never see it.
         extra: dict[str, Any] = (
-            {"path": path}
-            if self.resumable and path is not None
-            else {}
+            {"path": path} if self.resumable and path is not None else {}
         )
         try:
             coro = self._run(
@@ -233,9 +239,7 @@ class BaseTool(
     ) -> AsyncIterator[Event[Any]]:
         # See ``_run_with_timeout`` for the forwarding rule.
         extra: dict[str, Any] = (
-            {"path": path}
-            if self.resumable and path is not None
-            else {}
+            {"path": path} if self.resumable and path is not None else {}
         )
         stream = self._run_stream(
             inp,

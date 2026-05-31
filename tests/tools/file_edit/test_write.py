@@ -11,23 +11,29 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from grasp_agents.run_context import RunContext
 from grasp_agents.tools.file_edit import (
-    InMemoryFileEditStore,
+    FileEditSessionState,
+    LocalFileBackend,
     NullRedactor,
     ReadInput,
     ReadTool,
     WriteInput,
     WriteResult,
     WriteTool,
+    reset_current_file_edit_state,
+    set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    pass
 
 pytestmark = pytest.mark.asyncio
 
@@ -43,28 +49,31 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def store() -> InMemoryFileEditStore:
-    return InMemoryFileEditStore()
+def state() -> Iterator[FileEditSessionState]:
+    """Per-test file-edit state, activated via the ContextVar."""
+    s = FileEditSessionState()
+    token = set_current_file_edit_state(s)
+    try:
+        yield s
+    finally:
+        reset_current_file_edit_state(token)
 
 
 @pytest.fixture
-def read_tool(tmp_path: Path, store: InMemoryFileEditStore) -> ReadTool:
-    return ReadTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
-        redactor=NullRedactor(),
-    )
+def ctx(tmp_path: Path, state: FileEditSessionState) -> RunContext[Any]:
+    del state
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
 
 
 @pytest.fixture
-def write_tool(tmp_path: Path, store: InMemoryFileEditStore) -> WriteTool:
-    return WriteTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
-        include_dotfiles=True,
-    )
+def read_tool() -> ReadTool:
+    return ReadTool(redactor=NullRedactor())
+
+
+@pytest.fixture
+def write_tool() -> WriteTool:
+    return WriteTool()
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +81,13 @@ def write_tool(tmp_path: Path, store: InMemoryFileEditStore) -> WriteTool:
 # ---------------------------------------------------------------------------
 
 
-async def test_write_new_file(tmp_path: Path, write_tool: WriteTool) -> None:
+async def test_write_new_file(
+    tmp_path: Path, ctx: RunContext[Any], write_tool: WriteTool
+) -> None:
     target = tmp_path / "new.txt"
-    result = await write_tool.run(WriteInput(path=str(target), content="hello\n"))
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="hello\n"), ctx=ctx
+    )
     assert isinstance(result, WriteResult)
     assert result.created is True
     assert result.bytes_written == 6
@@ -82,21 +95,25 @@ async def test_write_new_file(tmp_path: Path, write_tool: WriteTool) -> None:
 
 
 async def test_write_registers_post_write_mtime(
-    tmp_path: Path, store: InMemoryFileEditStore, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    state: FileEditSessionState,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "new.txt"
-    await write_tool.run(WriteInput(path=str(target), content="hi"))
-    state = await store.get_session_state(TEST_KEY)
+    await write_tool.run(WriteInput(path=str(target), content="hi"), ctx=ctx)
     record = state.get_read_record(target.resolve())
     assert record is not None
     assert record.mtime == target.stat().st_mtime
 
 
 async def test_write_refuses_when_parent_missing(
-    tmp_path: Path, write_tool: WriteTool
+    tmp_path: Path, ctx: RunContext[Any], write_tool: WriteTool
 ) -> None:
     target = tmp_path / "missing" / "sub" / "f.txt"
-    result = await write_tool.run(WriteInput(path=str(target), content="x"))
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="x"), ctx=ctx
+    )
     assert "Parent directory" in _error_message(result)
     assert "does not exist" in _error_message(result)
 
@@ -107,25 +124,32 @@ async def test_write_refuses_when_parent_missing(
 
 
 async def test_write_refuses_existing_without_prior_read(
-    tmp_path: Path, write_tool: WriteTool
+    tmp_path: Path, ctx: RunContext[Any], write_tool: WriteTool
 ) -> None:
     target = tmp_path / "existing.txt"
     target.write_text("original")
 
-    result = await write_tool.run(WriteInput(path=str(target), content="overwritten"))
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="overwritten"), ctx=ctx
+    )
     assert "Must Read" in _error_message(result)
     # File untouched.
     assert target.read_text() == "original"
 
 
 async def test_write_allowed_after_prior_read(
-    tmp_path: Path, read_tool: ReadTool, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    read_tool: ReadTool,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "existing.txt"
     target.write_text("original")
 
-    await read_tool.run(ReadInput(path=str(target)))
-    result = await write_tool.run(WriteInput(path=str(target), content="overwritten"))
+    await read_tool.run(ReadInput(path=str(target)), ctx=ctx)
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="overwritten"), ctx=ctx
+    )
     assert isinstance(result, WriteResult)
     assert result.created is False
     assert target.read_text() == "overwritten"
@@ -137,11 +161,14 @@ async def test_write_allowed_after_prior_read(
 
 
 async def test_write_refuses_on_stale_mtime(
-    tmp_path: Path, read_tool: ReadTool, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    read_tool: ReadTool,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "existing.txt"
     target.write_text("original")
-    await read_tool.run(ReadInput(path=str(target)))
+    await read_tool.run(ReadInput(path=str(target)), ctx=ctx)
 
     # External modification. asyncio.sleep (not time.sleep) advances
     # the event loop cleanly and lets the filesystem mtime tick forward.
@@ -149,14 +176,19 @@ async def test_write_refuses_on_stale_mtime(
     target.write_text("changed externally")
     os.utime(target, None)
 
-    result = await write_tool.run(WriteInput(path=str(target), content="my changes"))
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="my changes"), ctx=ctx
+    )
     assert "modified since you last read" in _error_message(result)
     # Externally-modified content is preserved.
     assert target.read_text() == "changed externally"
 
 
 async def test_consecutive_writes_do_not_trip_staleness(
-    tmp_path: Path, read_tool: ReadTool, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    read_tool: ReadTool,
+    write_tool: WriteTool,
 ) -> None:
     """
     The tool's own prior Write refreshes the recorded mtime so a
@@ -164,12 +196,14 @@ async def test_consecutive_writes_do_not_trip_staleness(
     """
     target = tmp_path / "t.txt"
     target.write_text("v0")
-    await read_tool.run(ReadInput(path=str(target)))
+    await read_tool.run(ReadInput(path=str(target)), ctx=ctx)
 
-    await write_tool.run(WriteInput(path=str(target), content="v1"))
+    await write_tool.run(WriteInput(path=str(target), content="v1"), ctx=ctx)
     # No staleness complaint on the second Write, despite mtime having
-    # moved (the tool refreshed the record post-write).
-    result = await write_tool.run(WriteInput(path=str(target), content="v2"))
+    # moved (the backend refreshed the record post-write).
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="v2"), ctx=ctx
+    )
     assert isinstance(result, WriteResult)
     assert target.read_text() == "v2"
 
@@ -180,7 +214,7 @@ async def test_consecutive_writes_do_not_trip_staleness(
 
 
 async def test_write_refuses_dotfile_by_default(
-    tmp_path: Path, write_tool: WriteTool
+    tmp_path: Path, ctx: RunContext[Any], write_tool: WriteTool
 ) -> None:
     # Create ~/.ssh-like layout under the tmp root.
     ssh_dir = tmp_path / ".ssh"
@@ -188,39 +222,48 @@ async def test_write_refuses_dotfile_by_default(
     target = ssh_dir / "id_rsa"
 
     result = await write_tool.run(
-        WriteInput(path=str(target), content="PRIVATE KEY DATA")
+        WriteInput(path=str(target), content="PRIVATE KEY DATA"), ctx=ctx
     )
     assert "credential-sensitive directory" in _error_message(result)
 
 
 async def test_write_dotfile_allowed_after_explicit_override(
-    tmp_path: Path, store: InMemoryFileEditStore, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    state: FileEditSessionState,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / ".env"
-    state = await store.get_session_state(TEST_KEY)
     state.add_dotfile_override(target.resolve())
 
-    result = await write_tool.run(WriteInput(path=str(target), content="DEBUG=1\n"))
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="DEBUG=1\n"), ctx=ctx
+    )
     assert isinstance(result, WriteResult)
     assert result.created is True
     assert target.read_text() == "DEBUG=1\n"
 
 
 async def test_write_refuses_dotfile_when_include_dotfiles_false(
-    tmp_path: Path, store: InMemoryFileEditStore
+    tmp_path: Path,
+    state: FileEditSessionState,
 ) -> None:
     """
-    With dotfiles disabled, ``.env`` writes are permitted — the
-    toolkit-level knob only affects the default deny-list composition.
+    With ``include_dotfiles=False`` on the backend, ``.env`` writes are
+    permitted — the backend-level knob only affects the default
+    deny-list composition.
     """
-    lenient_write = WriteTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
-        include_dotfiles=False,
+    del state  # activated by the ``state`` fixture's ContextVar set
+    lenient_backend = LocalFileBackend(
+        allowed_roots=[tmp_path], include_dotfiles=False
+    )
+    ctx: RunContext[Any] = RunContext(
+        file_backend=lenient_backend, session_key=TEST_KEY
     )
     target = tmp_path / ".env"
-    result = await lenient_write.run(WriteInput(path=str(target), content="DEBUG=1\n"))
+    result = await WriteTool().run(
+        WriteInput(path=str(target), content="DEBUG=1\n"), ctx=ctx
+    )
     assert isinstance(result, WriteResult)
     assert result.created is True
 
@@ -232,15 +275,19 @@ async def test_write_refuses_dotfile_when_include_dotfiles_false(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 async def test_write_preserves_existing_executable_bit(
-    tmp_path: Path, read_tool: ReadTool, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    read_tool: ReadTool,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "script.sh"
     target.write_text("#!/bin/sh\necho hi\n")
     target.chmod(0o755)
 
-    await read_tool.run(ReadInput(path=str(target)))
+    await read_tool.run(ReadInput(path=str(target)), ctx=ctx)
     await write_tool.run(
-        WriteInput(path=str(target), content="#!/bin/sh\necho updated\n")
+        WriteInput(path=str(target), content="#!/bin/sh\necho updated\n"),
+        ctx=ctx,
     )
 
     mode = stat.S_IMODE(target.stat().st_mode)
@@ -249,15 +296,10 @@ async def test_write_preserves_existing_executable_bit(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 async def test_new_file_uses_default_mode(
-    tmp_path: Path, store: InMemoryFileEditStore
+    tmp_path: Path, ctx: RunContext[Any]
 ) -> None:
-    tool = WriteTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
-        new_file_mode=0o640,
-    )
+    tool = WriteTool(new_file_mode=0o640)
     target = tmp_path / "new.txt"
-    await tool.run(WriteInput(path=str(target), content="x"))
+    await tool.run(WriteInput(path=str(target), content="x"), ctx=ctx)
     mode = stat.S_IMODE(target.stat().st_mode)
     assert mode == 0o640

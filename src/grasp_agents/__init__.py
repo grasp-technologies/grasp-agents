@@ -65,7 +65,6 @@ from .memory import (
     MEMORY_RELEVANCE_ATTACHMENT_NAME,
     MEMORY_SECTION_NAME,
     MEMORY_TYPES,
-    FileMemoryProvider,
     InMemoryMemoryProvider,
     MemoryEntry,
     MemoryFrontmatter,
@@ -79,8 +78,8 @@ from .memory import (
     memory_relevance_attachment,
     memory_system_prompt_section,
     parse_memory_md,
-    render_auto_memory_instructions,
-    render_memory_block,
+    render_memory_index,
+    render_memory_instructions,
     scan_memdir,
 )
 from .packet import Packet
@@ -100,10 +99,12 @@ from .skills import (
     list_skills,
     load_skill,
     load_skill_md,
+    make_skills_section,
     parse_named_args,
     parse_skill_md,
     parse_slash_command,
     render_available_skills_block,
+    render_skill_instructions,
     skills_system_prompt_section,
 )
 from .types.content import Content, InputImage, InputRenderable
@@ -168,7 +169,6 @@ try:
         MCPTool,
         make_mcp_instructions_section,
     )
-    from .memory.mcp_provider import MCPMemoryProvider
 except ImportError:
     pass
 
@@ -202,7 +202,6 @@ __all__ = [
     "Event",
     "EventConsole",
     "FallbackLLM",
-    "FileMemoryProvider",
     "FunctionTool",
     "GenerationEndEvent",
     "InMemoryApprovalStore",
@@ -231,7 +230,6 @@ __all__ = [
     "MCPClient",
     "MCPClientSpec",
     "MCPListResourcesTool",
-    "MCPMemoryProvider",
     "MCPReadResourceTool",
     "MCPServerSSE",
     "MCPServerStdio",
@@ -302,6 +300,7 @@ __all__ = [
     "make_env_info_section",
     "make_mcp_instructions_section",
     "make_memory_section",
+    "make_skills_section",
     "memory_relevance_attachment",
     "memory_system_prompt_section",
     "parse_memory_md",
@@ -310,9 +309,10 @@ __all__ = [
     "parse_slash_command",
     "print_event_stream",
     "register_recovery_hint",
-    "render_auto_memory_instructions",
     "render_available_skills_block",
-    "render_memory_block",
+    "render_memory_index",
+    "render_memory_instructions",
+    "render_skill_instructions",
     "scan_memdir",
     "skills_system_prompt_section",
     "stream_events",

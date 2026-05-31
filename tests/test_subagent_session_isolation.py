@@ -66,9 +66,11 @@ def _make_child_tool(responses: list[Any]) -> AgentTool[None]:
 def _make_parent_agent(
     parent_llm: LLM,
     child_tool: AgentTool[None],
+    ctx: RunContext[None] | None = None,
 ) -> LLMAgent[str, str, None]:
     return LLMAgent[str, str, None](
         name="parent",
+        ctx=ctx,
         llm=parent_llm,
         tools=[child_tool],
         stream_llm=True,
@@ -89,10 +91,9 @@ async def test_parent_and_child_keys_dont_collide() -> None:
         ]
     )
     child_tool = _make_child_tool([_text_response("child final")])
-    parent = _make_parent_agent(parent_llm, child_tool)
-
     ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
-    await parent.run("start", ctx=ctx)
+    parent = _make_parent_agent(parent_llm, child_tool, ctx=ctx)
+    await parent.run("start")
 
     # Parent checkpoint at "<session>/agent/parent" (root processor uses
     # its own name as the first path segment).
@@ -129,10 +130,9 @@ async def test_sibling_child_calls_dont_collide() -> None:
     child_tool = _make_child_tool(
         [_text_response("child one"), _text_response("child two")]
     )
-    parent = _make_parent_agent(parent_llm, child_tool)
-
     ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s2")
-    await parent.run("start", ctx=ctx)
+    parent = _make_parent_agent(parent_llm, child_tool, ctx=ctx)
+    await parent.run("start")
 
     assert await store.load("s2/agent/parent/tc_call_one") is not None
     assert await store.load("s2/agent/parent/tc_call_two") is not None
@@ -147,8 +147,12 @@ async def test_parallel_processor_replicas_dont_collide() -> None:
     fix, all N copies would overwrite each other at the same key.
     """
     store = InMemoryCheckpointStore()
+    ctx: RunContext[None] = RunContext(
+        checkpoint_store=store, session_key="par-s", state=None
+    )
     subproc = LLMAgent[str, str, None](
         name="worker",
+        ctx=ctx,
         llm=MockLLM(
             responses_queue=[
                 _text_response("out-0"),
@@ -158,12 +162,9 @@ async def test_parallel_processor_replicas_dont_collide() -> None:
         ),
         stream_llm=True,
     )
-    par = ParallelProcessor[str, str, None](subproc=subproc)
-    ctx: RunContext[None] = RunContext(
-        checkpoint_store=store, session_key="par-s", state=None
-    )
+    par = ParallelProcessor[str, str, None](subproc=subproc, ctx=ctx)
 
-    await par.run(in_args=["a", "b", "c"], ctx=ctx)
+    await par.run(in_args=["a", "b", "c"])
 
     # ParallelProcessor's own checkpoint lives at
     # ``"<session>/parallel/<parallel_name>"``; each replica's LLMAgent
@@ -254,8 +255,12 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
 
     # Resume: fresh subproc; its LLM only needs the final answer for
     # replica 1 (indices 0 and 2 are redelivered from the parallel cp).
+    ctx: RunContext[None] = RunContext(
+        checkpoint_store=store, session_key="par-ms", state=None
+    )
     subproc = LLMAgent[str, str, None](
         name="worker",
+        ctx=ctx,
         llm=MockLLM(
             responses_queue=[
                 Response(
@@ -272,13 +277,10 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
         tools=[_EchoTool()],
         stream_llm=True,
     )
-    par = ParallelProcessor[str, str, None](subproc=subproc)
-    ctx: RunContext[None] = RunContext(
-        checkpoint_store=store, session_key="par-ms", state=None
-    )
+    par = ParallelProcessor[str, str, None](subproc=subproc, ctx=ctx)
 
     payloads: list[str] = []
-    async for event in par.run_stream(ctx=ctx, exec_id="resume", step=0):
+    async for event in par.run_stream(exec_id="resume", step=0):
         if isinstance(event, ProcPacketOutEvent) and event.source == par.name:
             payloads = list(event.data.payloads)
 

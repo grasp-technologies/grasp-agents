@@ -59,9 +59,11 @@ def _make_agent(
     env_info: bool = False,
     with_skill_tools: bool = False,
     enable_skills: bool = True,
+    ctx: RunContext[_State] | None = None,
 ) -> LLMAgent[str, str, _State]:
     return LLMAgent[str, str, _State](
         name="skills_test_agent",
+        ctx=ctx,
         llm=MockLLM(responses_queue=[]),
         stream_llm=True,
         env_info=env_info,
@@ -73,7 +75,8 @@ def _make_agent(
 async def _build_system_prompt(
     agent: LLMAgent[str, str, _State], ctx: RunContext[_State]
 ) -> str | None:
-    return await agent.build_system_prompt(ctx, exec_id="e1")
+    agent.set_ctx(ctx)
+    return await agent.build_system_prompt(exec_id="e1")
 
 
 # ---------- Auto-attached skills section ----------

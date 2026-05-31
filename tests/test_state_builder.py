@@ -45,15 +45,16 @@ def _make_agent(
     session_key: str,
     store: InMemoryCheckpointStore,
 ) -> tuple[LLMAgent[str, str, _AppState], RunContext[_AppState]]:
-    agent = LLMAgent[str, str, _AppState](
-        name="test_agent",
-        llm=MockLLM(responses_queue=responses),
-        stream_llm=True,
-    )
     ctx: RunContext[_AppState] = RunContext(
         checkpoint_store=store,
         session_key=session_key,
         state=_AppState(),
+    )
+    agent = LLMAgent[str, str, _AppState](
+        name="test_agent",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=responses),
+        stream_llm=True,
     )
     return agent, ctx
 
@@ -79,7 +80,7 @@ class TestStateBuilder:
 
         agent.add_state_builder(rebuild)
 
-        await agent.run("hi", ctx=ctx)
+        await agent.run("hi")
         assert calls == []
 
     @pytest.mark.anyio
@@ -91,7 +92,7 @@ class TestStateBuilder:
         agent1, ctx1 = _make_agent(
             [_text_response("hello")], session_key="s1", store=store
         )
-        await agent1.run("hi", ctx=ctx1)
+        await agent1.run("hi")
 
         # Fresh agent; register state builder BEFORE load.
         agent2, ctx2 = _make_agent(
@@ -113,7 +114,7 @@ class TestStateBuilder:
 
         agent2.add_state_builder(rebuild)
 
-        cp = await agent2.load_checkpoint(ctx2)
+        cp = await agent2.load_checkpoint()
         assert cp is not None
         assert len(received) == 1
         assert received[0].session_key == "s1"
@@ -137,7 +138,7 @@ class TestStateBuilder:
             store=store,
         )
         # Run once to populate memory in-process.
-        await agent.run("hi", ctx=ctx)
+        await agent.run("hi")
 
         calls = 0
 
@@ -153,7 +154,7 @@ class TestStateBuilder:
 
         agent.add_state_builder(rebuild)
 
-        result = await agent.load_checkpoint(ctx)
+        result = await agent.load_checkpoint()
         assert result is None
         assert calls == 0
 
@@ -164,7 +165,7 @@ class TestStateBuilder:
         _seed_agent, seed_ctx = _make_agent(
             [_text_response("seed")], session_key="s2", store=store
         )
-        await _seed_agent.run("hi", ctx=seed_ctx)
+        await _seed_agent.run("hi")
 
         class _MyAgent(LLMAgent[str, str, _AppState]):
             build_state_calls: list[AgentCheckpoint]
@@ -184,16 +185,17 @@ class TestStateBuilder:
                 self.build_state_calls.append(checkpoint)
                 ctx.state.loaded_from_db = True
 
-        agent = _MyAgent(
-            name="test_agent",
-            llm=MockLLM(responses_queue=[_text_response("follow")]),
-            stream_llm=True,
-        )
         ctx: RunContext[_AppState] = RunContext(
             checkpoint_store=store, session_key="s2", state=_AppState()
         )
+        agent = _MyAgent(
+            name="test_agent",
+            ctx=ctx,
+            llm=MockLLM(responses_queue=[_text_response("follow")]),
+            stream_llm=True,
+        )
 
-        cp = await agent.load_checkpoint(ctx)
+        cp = await agent.load_checkpoint()
         assert cp is not None
         assert len(agent.build_state_calls) == 1
         assert ctx.state.loaded_from_db is True
@@ -205,7 +207,7 @@ class TestStateBuilder:
         agent1, ctx1 = _make_agent(
             [_text_response("hello")], session_key="s3", store=store
         )
-        await agent1.run("hi", ctx=ctx1)
+        await agent1.run("hi")
 
         agent2, ctx2 = _make_agent(
             [_text_response("world")], session_key="s3", store=store
@@ -222,9 +224,9 @@ class TestStateBuilder:
 
         agent2.add_state_builder(rebuild)
 
-        await agent2.load_checkpoint(ctx2)
+        await agent2.load_checkpoint()
         assert ctx2.state.pathway_id == "rebuilt"
 
-        await agent2.run("follow up", ctx=ctx2)
+        await agent2.run("follow up")
         # State still set after a post-resume run completes.
         assert ctx2.state.pathway_id == "rebuilt"

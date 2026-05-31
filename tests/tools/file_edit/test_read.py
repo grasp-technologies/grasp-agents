@@ -1,34 +1,38 @@
 """
 Unit tests for :class:`ReadTool`.
 
-Uses the public ``.run(...)`` API: errors return a ``ToolErrorInfo``
-value (not an exception), matching how the agent loop sees tool calls.
-The :func:`_error_message` helper unwraps.
+Uses the public ``.run(...)`` API with a ctx-driven backend: errors
+return a ``ToolErrorInfo`` value (not an exception), matching how the
+agent loop sees tool calls. The :func:`_error_message` helper unwraps.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from grasp_agents.run_context import RunContext
 from grasp_agents.tools.file_edit import (
     DefaultSecretRedactor,
-    InMemoryFileEditStore,
+    FileEditSessionState,
+    LocalFileBackend,
     NullRedactor,
     ReadInput,
     ReadResult,
     ReadTool,
+    reset_current_file_edit_state,
+    set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    pass
 
 pytestmark = pytest.mark.asyncio
 
-# Test-only session key used consistently with ``ReadTool(default_session_key=...)``
-# so state inspection via ``store.get_session_state(TEST_KEY)`` matches.
 TEST_KEY = "test"
 
 
@@ -41,19 +45,26 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def store() -> InMemoryFileEditStore:
-    return InMemoryFileEditStore()
+def state() -> Iterator[FileEditSessionState]:
+    """Per-test file-edit state, activated via the ContextVar."""
+    s = FileEditSessionState()
+    token = set_current_file_edit_state(s)
+    try:
+        yield s
+    finally:
+        reset_current_file_edit_state(token)
 
 
 @pytest.fixture
-def read_tool(tmp_path: Path, store: InMemoryFileEditStore) -> ReadTool:
-    return ReadTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
-        redactor=NullRedactor(),
-        max_read_chars=100_000,
-    )
+def ctx(tmp_path: Path, state: FileEditSessionState) -> RunContext[Any]:
+    del state  # activated by the ``state`` fixture's ContextVar set
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
+
+
+@pytest.fixture
+def read_tool() -> ReadTool:
+    return ReadTool(redactor=NullRedactor(), max_read_chars=100_000)
 
 
 # ---------------------------------------------------------------------------
@@ -62,12 +73,12 @@ def read_tool(tmp_path: Path, store: InMemoryFileEditStore) -> ReadTool:
 
 
 async def test_read_returns_line_numbered_content(
-    tmp_path: Path, read_tool: ReadTool
+    tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
 ) -> None:
     f = tmp_path / "a.py"
     f.write_text("line one\nline two\nline three\n")
 
-    result = await read_tool.run(ReadInput(path=str(f)))
+    result = await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
 
     assert isinstance(result, ReadResult)
     assert "     1\tline one" in result.content
@@ -77,12 +88,14 @@ async def test_read_returns_line_numbered_content(
 
 
 async def test_read_respects_offset_and_limit(
-    tmp_path: Path, read_tool: ReadTool
+    tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
 ) -> None:
     f = tmp_path / "a.txt"
     f.write_text("\n".join(f"line {i}" for i in range(1, 11)) + "\n")
 
-    result = await read_tool.run(ReadInput(path=str(f), offset=3, limit=2))
+    result = await read_tool.run(
+        ReadInput(path=str(f), offset=3, limit=2), ctx=ctx
+    )
     assert isinstance(result, ReadResult)
     # Lines 3 and 4 only.
     assert "     3\tline 3" in result.content
@@ -93,21 +106,23 @@ async def test_read_respects_offset_and_limit(
 
 
 async def test_read_records_state_for_read_before_write(
-    tmp_path: Path, store: InMemoryFileEditStore, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: RunContext[Any],
+    state: FileEditSessionState,
+    read_tool: ReadTool,
 ) -> None:
     f = tmp_path / "a.txt"
     f.write_text("hi\n")
 
-    await read_tool.run(ReadInput(path=str(f)))
+    await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
 
-    state = await store.get_session_state(TEST_KEY)
     record = state.get_read_record(f.resolve())
     assert record is not None
     assert record.mtime == f.stat().st_mtime
 
 
 async def test_repeat_read_returns_fresh_content(
-    tmp_path: Path, read_tool: ReadTool
+    tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
 ) -> None:
     """
     Re-reading the same region returns the content again — no dedup
@@ -116,8 +131,8 @@ async def test_repeat_read_returns_fresh_content(
     f = tmp_path / "a.txt"
     f.write_text("hello\n")
 
-    first = await read_tool.run(ReadInput(path=str(f)))
-    second = await read_tool.run(ReadInput(path=str(f)))
+    first = await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
+    second = await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
 
     assert isinstance(first, ReadResult)
     assert isinstance(second, ReadResult)
@@ -129,47 +144,61 @@ async def test_repeat_read_returns_fresh_content(
 # ---------------------------------------------------------------------------
 
 
-async def test_device_path_refused(read_tool: ReadTool) -> None:
-    result = await read_tool.run(ReadInput(path="/dev/stdin"))
+async def test_device_path_refused(
+    ctx: RunContext[Any], read_tool: ReadTool
+) -> None:
+    result = await read_tool.run(ReadInput(path="/dev/stdin"), ctx=ctx)
     assert "device path" in _error_message(result)
 
 
-async def test_binary_extension_refused(tmp_path: Path, read_tool: ReadTool) -> None:
+async def test_binary_extension_refused(
+    tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
+) -> None:
     f = tmp_path / "image.png"
     f.write_bytes(b"\x89PNG\r\n\x1a\n\x00")
-    result = await read_tool.run(ReadInput(path=str(f)))
+    result = await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
     assert "binary" in _error_message(result)
 
 
-async def test_path_outside_root_refused(tmp_path: Path, read_tool: ReadTool) -> None:
+async def test_path_outside_root_refused(
+    tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
+) -> None:
     outside = tmp_path.parent / "escape.txt"
     outside.write_text("secret")
     try:
-        result = await read_tool.run(ReadInput(path=str(outside)))
+        result = await read_tool.run(ReadInput(path=str(outside)), ctx=ctx)
         assert "outside allowed roots" in _error_message(result)
     finally:
         outside.unlink(missing_ok=True)
 
 
-async def test_nonexistent_file_refused(tmp_path: Path, read_tool: ReadTool) -> None:
-    result = await read_tool.run(ReadInput(path=str(tmp_path / "nope.txt")))
+async def test_nonexistent_file_refused(
+    tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
+) -> None:
+    result = await read_tool.run(
+        ReadInput(path=str(tmp_path / "nope.txt")), ctx=ctx
+    )
     assert "does not exist" in _error_message(result)
 
 
 async def test_char_cap_refuses_oversized_read(
-    tmp_path: Path, store: InMemoryFileEditStore
+    tmp_path: Path, ctx: RunContext[Any]
 ) -> None:
     tool = ReadTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
         redactor=NullRedactor(),
         max_read_chars=50,  # tiny cap to trip the guard
     )
     f = tmp_path / "big.txt"
     f.write_text("\n".join("x" * 20 for _ in range(20)) + "\n")
-    result = await tool.run(ReadInput(path=str(f)))
+    result = await tool.run(ReadInput(path=str(f)), ctx=ctx)
     assert "exceeding the safety limit" in _error_message(result)
+
+
+async def test_read_without_ctx_refused() -> None:
+    """Stateless tools refuse to run without a wired backend."""
+    tool = ReadTool(redactor=NullRedactor())
+    result = await tool.run(ReadInput(path="/tmp/x.txt"))
+    assert "ctx.file_backend" in _error_message(result)
 
 
 # ---------------------------------------------------------------------------
@@ -178,17 +207,12 @@ async def test_char_cap_refuses_oversized_read(
 
 
 async def test_default_redactor_masks_aws_key(
-    tmp_path: Path, store: InMemoryFileEditStore
+    tmp_path: Path, ctx: RunContext[Any]
 ) -> None:
-    tool = ReadTool(
-        store=store,
-        default_session_key=TEST_KEY,
-        allowed_roots=[tmp_path],
-        redactor=DefaultSecretRedactor(),
-    )
+    tool = ReadTool(redactor=DefaultSecretRedactor())
     f = tmp_path / "secret.py"
     f.write_text("AKIAIOSFODNN7EXAMPLE\n")
-    result = await tool.run(ReadInput(path=str(f)))
+    result = await tool.run(ReadInput(path=str(f)), ctx=ctx)
     assert isinstance(result, ReadResult)
     assert "AKIAIOSFODNN7EXAMPLE" not in result.content
     assert "<REDACTED:AWS_ACCESS_KEY>" in result.content

@@ -1,4 +1,4 @@
-"""Tests for MemoryProvider and the default backends."""
+"""Tests for the unified :class:`MemoryProvider` and the InMemory fixture."""
 
 from __future__ import annotations
 
@@ -6,24 +6,21 @@ import os
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 import pytest
 
 from grasp_agents.memory import (
     DEFAULT_STALE_AFTER,
-    FileMemoryProvider,
     InMemoryMemoryProvider,
     MemoryEntry,
     MemoryFrontmatter,
     MemoryProvider,
-    MemorySnapshot,
     default_memdir_path,
 )
-from grasp_agents.memory.provider import GRASP_MEMORY_ENV
-
-if TYPE_CHECKING:
-    pass
+from grasp_agents.memory.default_path import GRASP_MEMORY_ENV
+from grasp_agents.run_context import RunContext
+from grasp_agents.tools.file_edit.local_backend import LocalFileBackend
 
 
 def _topic_file(path: Path, name: str, body: str = "B") -> Path:
@@ -40,6 +37,14 @@ def _aged_entry(name: str, age_seconds: float, tmp_path: Path) -> MemoryEntry:
     fm = MemoryFrontmatter.model_validate({"name": name, "description": "D"})
     return MemoryEntry(
         frontmatter=fm, body="B", path=f, mtime_ms=int(old * 1000)
+    )
+
+
+def _make_ctx(memdir: Path) -> RunContext[Any]:
+    """Build a ctx wired to LocalFileBackend + MemoryProvider over memdir."""
+    backend = LocalFileBackend(allowed_roots=[memdir])
+    return RunContext[Any](
+        file_backend=backend, memory=MemoryProvider(memdir)
     )
 
 
@@ -71,16 +76,17 @@ class TestInMemoryProvider:
         assert snap.get("missing") is None
 
 
-# ---------- FileMemoryProvider ----------
+# ---------- MemoryProvider over LocalFileBackend ----------
 
 
-class TestFileMemoryProvider:
+class TestMemoryProviderLocal:
     @pytest.mark.anyio
     async def test_load_from_disk(self, tmp_path: Path) -> None:
         (tmp_path / "MEMORY.md").write_text("# idx\n", encoding="utf-8")
         _topic_file(tmp_path / "alpha.md", "alpha")
-        p = FileMemoryProvider(tmp_path)
-        snap = await p.load()
+        ctx = _make_ctx(tmp_path)
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
         assert snap.index is not None
         assert "idx" in snap.index
         assert {e.name for e in snap.entries} == {"alpha"}
@@ -88,35 +94,53 @@ class TestFileMemoryProvider:
     @pytest.mark.anyio
     async def test_load_caches(self, tmp_path: Path) -> None:
         _topic_file(tmp_path / "alpha.md", "alpha")
-        p = FileMemoryProvider(tmp_path)
-        first = await p.load()
+        ctx = _make_ctx(tmp_path)
+        assert ctx.memory is not None
+        first = await ctx.memory.load()
         # Mutate disk; without refresh() the cached snapshot wins.
         _topic_file(tmp_path / "beta.md", "beta")
-        second = await p.load()
+        second = await ctx.memory.load()
         assert first is second
         assert {e.name for e in second.entries} == {"alpha"}
 
     @pytest.mark.anyio
     async def test_refresh_picks_up_changes(self, tmp_path: Path) -> None:
         _topic_file(tmp_path / "alpha.md", "alpha")
-        p = FileMemoryProvider(tmp_path)
-        first = await p.load()
+        ctx = _make_ctx(tmp_path)
+        assert ctx.memory is not None
+        first = await ctx.memory.load()
         _topic_file(tmp_path / "beta.md", "beta")
-        await p.refresh()
-        second = await p.load()
+        await ctx.memory.refresh()
+        second = await ctx.memory.load()
         assert first is not second
         assert {e.name for e in second.entries} == {"alpha", "beta"}
 
     @pytest.mark.anyio
     async def test_missing_root(self, tmp_path: Path) -> None:
-        p = FileMemoryProvider(tmp_path / "missing")
-        snap = await p.load()
+        missing = tmp_path / "missing"
+        # Use the parent dir for allowed_roots so validation accepts the
+        # nested-missing path; the provider returns an empty snapshot.
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](
+            file_backend=backend, memory=MemoryProvider(missing)
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
         assert snap.is_empty
 
     @pytest.mark.anyio
     async def test_root_property(self, tmp_path: Path) -> None:
-        p = FileMemoryProvider(tmp_path)
+        p = MemoryProvider(tmp_path)
         assert p.root == tmp_path
+
+    @pytest.mark.anyio
+    async def test_load_requires_file_backend(self, tmp_path: Path) -> None:
+        # Validator catches missing backend at RunContext construction,
+        # but call ``load`` directly with a hand-rolled namespace to
+        # exercise the runtime guard too.
+        p = MemoryProvider(tmp_path)
+        with pytest.raises(ValueError, match="file_backend"):
+            await p.load()
 
 
 # ---------- Freshness ----------
@@ -129,8 +153,13 @@ class TestFreshness:
         idx.write_text("# idx\n", encoding="utf-8")
         old = time.time() - 30 * 86400  # 30 days
         os.utime(idx, (old, old))
-        p = FileMemoryProvider(tmp_path, stale_after=timedelta(days=7))
-        snap = await p.load()
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(tmp_path, stale_after=timedelta(days=7)),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
         assert snap.index_freshness_warning is not None
         assert "30" in snap.index_freshness_warning
         assert "<system-reminder>" in snap.index_freshness_warning
@@ -138,8 +167,13 @@ class TestFreshness:
     @pytest.mark.anyio
     async def test_fresh_index_no_warning(self, tmp_path: Path) -> None:
         (tmp_path / "MEMORY.md").write_text("# idx\n", encoding="utf-8")
-        p = FileMemoryProvider(tmp_path, stale_after=timedelta(days=7))
-        snap = await p.load()
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(tmp_path, stale_after=timedelta(days=7)),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
         assert snap.index_freshness_warning is None
 
     @pytest.mark.anyio
@@ -147,8 +181,13 @@ class TestFreshness:
         f = _topic_file(tmp_path / "alpha.md", "alpha")
         old = time.time() - 100 * 86400
         os.utime(f, (old, old))
-        p = FileMemoryProvider(tmp_path, stale_after=timedelta(days=30))
-        snap = await p.load()
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(tmp_path, stale_after=timedelta(days=30)),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
         assert "alpha" in snap.entry_freshness_warnings
 
     @pytest.mark.anyio
@@ -157,54 +196,15 @@ class TestFreshness:
         idx.write_text("# idx\n", encoding="utf-8")
         old = time.time() - 30 * 86400
         os.utime(idx, (old, old))
-        p = FileMemoryProvider(tmp_path, stale_after=timedelta())
-        snap = await p.load()
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(tmp_path, stale_after=timedelta()),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
         assert snap.index_freshness_warning is None
         assert snap.entry_freshness_warnings == {}
-
-
-# ---------- ABC defaults ----------
-
-
-class _ROProvider(MemoryProvider):
-    async def load(
-        self,
-        *,
-        session_id: str = "",
-        ctx: object | None = None,
-    ) -> MemorySnapshot:
-        del session_id, ctx
-        return MemorySnapshot()
-
-
-class TestProviderDefaults:
-    @pytest.mark.anyio
-    async def test_refresh_default_noop(self) -> None:
-        p = _ROProvider()
-        await p.refresh()  # no exception
-
-    def test_root_default_is_empty_path(self) -> None:
-        # Base provider returns ``Path()`` (cwd-equivalent) by default —
-        # subclasses override ``root`` to surface a real memdir. Callers
-        # always get a ``Path``, never ``None``, so they can pass it
-        # uniformly to file-toolkit constructors.
-        p = _ROProvider()
-        assert isinstance(p.root, Path)
-        assert p.root == Path()
-
-    def test_make_file_toolkit_uses_root(self) -> None:
-        # ``make_file_toolkit`` rooted at the provider's ``root`` —
-        # always succeeds because ``root`` is always a Path.
-        p = _ROProvider()
-        toolkit = p.make_file_toolkit()
-        assert toolkit is not None
-
-    def test_make_file_toolkit_with_root(self, tmp_path: Path) -> None:
-        # FileMemoryProvider exposes its memdir root and can produce a
-        # toolkit rooted there.
-        p = FileMemoryProvider(tmp_path)
-        toolkit = p.make_file_toolkit()
-        assert tmp_path in toolkit.allowed_roots
 
 
 # ---------- default_memdir_path ----------

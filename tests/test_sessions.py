@@ -202,18 +202,19 @@ def _make_agent(
     store: InMemoryCheckpointStore | None = None,
     reset_transcript_on_run: bool = False,
 ) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+    ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
+    if session_key is not None:
+        ctx_kwargs["session_key"] = session_key
+    ctx: RunContext[None] = RunContext(**ctx_kwargs)
     llm = MockLLM(responses_queue=responses)
     agent = LLMAgent[str, str, None](
         name="test_agent",
+        ctx=ctx,
         llm=llm,
         tools=tools,
         reset_transcript_on_run=reset_transcript_on_run,
         stream_llm=True,
     )
-    ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
-    if session_key is not None:
-        ctx_kwargs["session_key"] = session_key
-    ctx: RunContext[None] = RunContext(**ctx_kwargs)
     return agent, ctx
 
 
@@ -468,7 +469,7 @@ class TestAgentSessionPersistence:
             store=store,
         )
 
-        result = await agent.run("hi", ctx=ctx)
+        result = await agent.run("hi")
         assert result.payloads[0] == "hello"
 
         # Snapshot should be persisted
@@ -490,7 +491,7 @@ class TestAgentSessionPersistence:
             session_key="s1",
             store=store,
         )
-        await agent1.run("hi", ctx=ctx)
+        await agent1.run("hi")
 
         # Get saved message count
         data = await store.load("s1/agent/test_agent")
@@ -505,8 +506,8 @@ class TestAgentSessionPersistence:
             session_key="s1",
             store=store,
         )
-        await agent2.load_checkpoint(ctx)
-        await agent2.run("follow up", ctx=ctx)
+        await agent2.load_checkpoint()
+        await agent2.run("follow up")
 
         # Snapshot should have more messages now
         data2 = await store.load("s1/agent/test_agent")
@@ -538,7 +539,7 @@ class TestAgentSessionPersistence:
             store=store,
         )
 
-        await agent.run("use echo", ctx=ctx)
+        await agent.run("use echo")
 
         # At least 2 checkpoints: after tool turn + after final answer
         assert checkpoint_count >= 2
@@ -555,7 +556,7 @@ class TestAgentSessionPersistence:
             session_key="s1",
             store=store,
         )
-        await agent1.run("hi", ctx=ctx)
+        await agent1.run("hi")
 
         # Second run -- reset_transcript_on_run=True wipes prior messages
         agent2, ctx = _make_agent(
@@ -564,7 +565,7 @@ class TestAgentSessionPersistence:
             session_key="s1",
             store=store,
         )
-        await agent2.run("follow up", ctx=ctx)
+        await agent2.run("follow up")
 
         # Checkpoint should only have messages from the second run
         data = await store.load("s1/agent/test_agent")
@@ -581,7 +582,7 @@ class TestAgentSessionPersistence:
     async def test_no_store_works_normally(self):
         """Agent without store/session_key works exactly as before."""
         agent, ctx = _make_agent([_text_response("hello")])
-        result = await agent.run("hi", ctx=ctx)
+        result = await agent.run("hi")
         assert result.payloads[0] == "hello"
 
     @pytest.mark.anyio
@@ -595,7 +596,8 @@ class TestAgentSessionPersistence:
             session_metadata={"pathway_id": "pw_123"},
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
-        await agent.run("hi", ctx=ctx)
+        agent.set_ctx(ctx)
+        await agent.run("hi")
 
         data = await store.load("s1/agent/test_agent")
         assert data is not None
@@ -616,7 +618,7 @@ class TestAgentSessionPersistence:
             store=store,
         )
 
-        await agent.run("go", ctx=ctx)
+        await agent.run("go")
 
         data = await store.load("s1/agent/test_agent")
         assert data is not None
@@ -633,7 +635,7 @@ class TestAgentSessionPersistence:
             store=store,
         )
 
-        events = await _drain_stream(agent.run_stream("hi", ctx=ctx))
+        events = await _drain_stream(agent.run_stream("hi"))
         assert len(events) > 0
 
         # Should have persisted
@@ -706,7 +708,7 @@ class TestResumeInputDetection:
         agent, ctx = _make_agent(
             [_text_response("world")], session_key="s1", store=store
         )
-        await agent.run(ctx=ctx, step=0)  # no input — pure resume
+        await agent.run(step=0)  # no input — pure resume
 
         assert (
             _count_user_messages(agent) == 1
@@ -731,7 +733,7 @@ class TestResumeInputDetection:
         agent, ctx = _make_agent(
             [_text_response("world")], session_key="s1", store=store
         )
-        await agent.run(in_args="hello", ctx=ctx, step=0)  # same input re-delivered
+        await agent.run(in_args="hello", step=0)  # same input re-delivered
 
         assert _count_user_messages(agent) == 1  # not duplicated
 
@@ -754,7 +756,7 @@ class TestResumeInputDetection:
         agent, ctx = _make_agent(
             [_text_response("done")], session_key="s1", store=store
         )
-        await agent.run("start", ctx=ctx, step=0)  # same chat_inputs re-delivered
+        await agent.run("start", step=0)  # same chat_inputs re-delivered
 
         assert _count_user_messages(agent) == 1  # not duplicated
 
@@ -781,8 +783,8 @@ class TestResumeInputDetection:
         agent, ctx = _make_agent(
             [_text_response("goodbye")], session_key="s1", store=store
         )
-        await agent.load_checkpoint(ctx)
-        await agent.run("follow up", ctx=ctx)
+        await agent.load_checkpoint()
+        await agent.run("follow up")
 
         assert _count_user_messages(agent) == 2  # "hello" + "follow up"
 
@@ -800,13 +802,13 @@ class TestResumeInputDetection:
             store=store,
         )
 
-        await agent.run("turn1", ctx=ctx)
+        await agent.run("turn1")
         assert _count_user_messages(agent) == 1
 
-        await agent.run("turn2", ctx=ctx)
+        await agent.run("turn2")
         assert _count_user_messages(agent) == 2
 
-        await agent.run("turn3", ctx=ctx)
+        await agent.run("turn3")
         assert _count_user_messages(agent) == 3
 
     @pytest.mark.anyio
@@ -836,11 +838,11 @@ class TestResumeInputDetection:
             session_key="s1",
             store=store,
         )
-        await agent.run(ctx=ctx, step=0)  # resume
+        await agent.run(step=0)  # resume
         assert _count_user_messages(agent) == 1
 
         # Continuation: new input added
-        await agent.run("follow up", ctx=ctx)
+        await agent.run("follow up")
         assert _count_user_messages(agent) == 2
 
 
@@ -861,7 +863,6 @@ class _AppendProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from grasp_agents.types.events import ProcPayloadOutEvent
@@ -885,7 +886,6 @@ class _CountingAppendProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         from grasp_agents.types.events import ProcPayloadOutEvent
@@ -914,14 +914,13 @@ class _CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
 
     async def save_checkpoint(
         self,
-        ctx: RunContext[None],
         *,
         completed_step: int,
         packet: Packet[Any],
     ) -> None:
         if completed_step == self._crash_after_step:
             raise RuntimeError(f"Simulated crash after step {completed_step}")
-        await super().save_checkpoint(ctx, completed_step=completed_step, packet=packet)
+        await super().save_checkpoint(completed_step=completed_step, packet=packet)
 
 
 class TestResumeIntegration:
@@ -952,9 +951,10 @@ class TestResumeIntegration:
             crash_after_step=1,
         )
         ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
+        wf1.set_ctx(ctx1)
 
         with pytest.raises(ProcRunError):
-            async for _ in wf1.run_stream(in_args="start", ctx=ctx1, exec_id="e1"):
+            async for _ in wf1.run_stream(in_args="start", exec_id="e1"):
                 pass
 
         # Agent checkpoint saved (clean completion)
@@ -980,8 +980,9 @@ class TestResumeIntegration:
             subprocs=[a2, agent2],
         )
         ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
+        wf2.set_ctx(ctx2)
 
-        async for _ in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
+        async for _ in wf2.run_stream(exec_id="e2", step=0):
             pass
 
         assert a2.call_count == 0  # step 0 skipped
@@ -1019,9 +1020,10 @@ class TestResumeIntegration:
             crash_after_step=1,
         )
         ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
+        wf1.set_ctx(ctx1)
 
         with pytest.raises(ProcRunError):
-            async for _ in wf1.run_stream("start", ctx=ctx1, exec_id="e1"):
+            async for _ in wf1.run_stream("start", exec_id="e1"):
                 pass
 
         # Agent checkpoint: clean completion
@@ -1042,9 +1044,10 @@ class TestResumeIntegration:
             subprocs=[agent2, b2],
         )
         ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
+        wf2.set_ctx(ctx2)
 
         payloads: list[str] = []
-        async for event in wf2.run_stream(ctx=ctx2, exec_id="e2", step=0):
+        async for event in wf2.run_stream(exec_id="e2", step=0):
             from grasp_agents.types.events import ProcPacketOutEvent
 
             if isinstance(event, ProcPacketOutEvent) and event.source == "wf":
@@ -1227,7 +1230,7 @@ class TestTaskRecordPersistence:
             store=store,
         )
 
-        await agent.run("go", ctx=ctx)
+        await agent.run("go")
 
         # Should have a task record under task/s1/
         keys = await store.list_keys(task_prefix("s1"))
@@ -1255,7 +1258,7 @@ class TestTaskRecordPersistence:
             store=store,
         )
 
-        await agent.run("go", ctx=ctx)
+        await agent.run("go")
 
         keys = await store.list_keys(task_prefix("s1"))
         assert len(keys) == 1
@@ -1287,8 +1290,9 @@ class TestTaskRecordPersistence:
             stream_llm=True,
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
+        agent.set_ctx(ctx)
 
-        await agent.run("go", ctx=ctx)
+        await agent.run("go")
 
         keys = await store.list_keys(task_prefix("s1"))
         assert len(keys) == 1
@@ -1311,7 +1315,7 @@ class TestTaskRecordPersistence:
             tools=[SlowTool(delay=0.05)],
         )
 
-        await agent.run("go", ctx=ctx)
+        await agent.run("go")
         # No store → nothing to check, just verify no errors
 
 
@@ -1369,7 +1373,7 @@ class TestPendingTaskResume:
             session_key="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, step=0)
+        await agent.run("continue", step=0)
 
         # The interruption notification should be in memory
         memory_texts = [str(m) for m in agent.transcript.messages]
@@ -1431,7 +1435,7 @@ class TestPendingTaskResume:
             session_key="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, step=0)
+        await agent.run("continue", step=0)
 
         # Result notification should be in memory
         memory_texts = [str(m) for m in agent.transcript.messages]
@@ -1494,7 +1498,7 @@ class TestPendingTaskResume:
             session_key="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, step=0)
+        await agent.run("continue", step=0)
 
         # Should NOT have duplicate notification
         memory_texts = [str(m) for m in agent.transcript.messages]
@@ -1536,7 +1540,7 @@ class TestPendingTaskResume:
             session_key="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, step=0)
+        await agent.run("continue", step=0)
 
         # No interruption notification injected for already-failed records
         memory_texts = [str(m) for m in agent.transcript.messages]
@@ -1594,7 +1598,7 @@ class TestPendingTaskResume:
             session_key="s1",
             store=store,
         )
-        await agent.run("continue", ctx=ctx, step=0)
+        await agent.run("continue", step=0)
 
         # Both should have interruption notifications
         memory_texts = [str(m) for m in agent.transcript.messages]
@@ -1657,7 +1661,7 @@ class TestChildTaskResume:
             session_key="parent_s1",
             store=store,
         )
-        await parent.run("go", ctx=ctx)
+        await parent.run("go")
 
         keys = await store.list_keys(task_prefix("parent_s1"))
         assert len(keys) == 1
@@ -1755,7 +1759,7 @@ class TestChildTaskResume:
             session_key="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx, step=0)
+        await parent.run("continue", step=0)
 
         # Should NOT have "interrupted" in memory — child was re-spawned
         memory_texts = [str(m) for m in parent.transcript.messages]
@@ -1823,7 +1827,7 @@ class TestChildTaskResume:
             session_key="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx, step=0)
+        await parent.run("continue", step=0)
 
         # Should have "interrupted" notification (not re-spawned)
         memory_texts = [str(m) for m in parent.transcript.messages]
@@ -1916,7 +1920,7 @@ class TestChildTaskResume:
             session_key="parent_s1",
             store=store,
         )
-        await parent.run("continue", ctx=ctx, step=0)
+        await parent.run("continue", step=0)
 
         # Both children should have completed (not interrupted)
         memory_texts = [str(m) for m in parent.transcript.messages]

@@ -75,13 +75,23 @@ class TestEnableMemory:
         names = {s.name for s in agent.system_prompt_sections}
         assert "env_info" not in names
 
-    def test_enable_memory_does_not_auto_attach_tools(self) -> None:
+    def test_enable_memory_auto_attaches_file_toolkits(self) -> None:
         """
-        Memory authoring now goes through generic file tools, NOT a
-        specialized save/load/delete surface. So the agent's tool set
-        stays exactly what the caller passed — no quiet additions.
+        Memory authoring goes through generic file tools. When
+        ``enable_memory=True`` in agentic mode, the file-edit + file-search
+        toolkits get auto-attached so the agent can read / write the
+        memdir without manual wiring.
         """
         agent = _make_agent(agentic_mode=True)
+        tool_names = set(agent.tools)
+        assert {"Read", "Write", "Edit", "Delete", "Glob", "Grep"} <= tool_names
+
+    def test_disable_memory_keeps_tool_set_empty(self) -> None:
+        """
+        Without ``enable_memory`` the toolkits stay opt-in — the agent's
+        tool set is exactly what the caller passed.
+        """
+        agent = _make_agent(agentic_mode=True, enable_memory=False)
         assert list(agent.tools) == []
 
 

@@ -250,7 +250,7 @@ async def _collect_events(
     ctx: RunContext[None],
 ) -> list[Event[Any]]:
     events: list[Event[Any]] = []
-    async for event in executor.execute_stream(ctx=ctx, exec_id="t"):
+    async for event in executor.execute_stream(exec_id="t"):
         events.append(event)
     return events
 

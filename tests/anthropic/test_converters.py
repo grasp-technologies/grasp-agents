@@ -313,6 +313,55 @@ class TestResponseToMessage:
         assert system == "Rule 1\n\nRule 2"
         assert len(messages) == 1
 
+    def test_system_with_cache_break_emitted_as_block_list(self):
+        """
+        When any system content part carries
+        ``anthropic:cache_control``, the system field switches from a
+        joined string to ``list[TextBlockParam]`` so per-block cache
+        markers reach the API.
+        """
+        from grasp_agents.types.content import InputText  # noqa: PLC0415
+
+        sys_msg = InputMessageItem(
+            content_parts=[
+                InputText(
+                    text="STATIC",
+                    provider_specific_fields={
+                        "anthropic:cache_control": {"type": "ephemeral"}
+                    },
+                ),
+                InputText(text="DYNAMIC"),
+            ],
+            role="system",
+        )
+        items = [sys_msg, InputMessageItem.from_text("hi")]
+
+        system, _ = items_to_anthropic_messages(items)
+
+        assert isinstance(system, list)
+        assert len(system) == 2
+        assert system[0]["text"] == "STATIC"
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        assert system[1]["text"] == "DYNAMIC"
+        assert system[1].get("cache_control") is None
+
+    def test_system_without_cache_break_stays_joined_string(self):
+        """
+        Default behavior is unchanged when no part carries cache_control
+        — system text is joined and passed as a string.
+        """
+        from grasp_agents.types.content import InputText  # noqa: PLC0415
+
+        sys_msg = InputMessageItem(
+            content_parts=[InputText(text="A"), InputText(text="B")],
+            role="system",
+        )
+        items = [sys_msg, InputMessageItem.from_text("hi")]
+
+        system, _ = items_to_anthropic_messages(items)
+
+        assert system == "A\n\nB"
+
     def test_user_message_simple_text(self):
         items = [InputMessageItem.from_text("What is 2+2?")]
         system, messages = items_to_anthropic_messages(items)

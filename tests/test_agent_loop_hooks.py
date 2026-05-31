@@ -149,6 +149,7 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
+    ctx: RunContext[None] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
@@ -160,6 +161,7 @@ def _make_executor(
         llm=llm,
         transcript=memory,
         tools=tools,
+        ctx=ctx,
         max_turns=max_turns,
         stream_llm=False,
     )
@@ -167,7 +169,11 @@ def _make_executor(
 
 
 async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
-    stream = ResponseCapture(executor.execute_stream(ctx=ctx, exec_id="t"))
+    # The bound ctx on the executor is what's used internally; the ctx
+    # arg here is kept in the test signature to mark intent and so the
+    # bound ctx can be reused via the executor if needed.
+    del ctx
+    stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
         pass
     assert stream.response is not None
@@ -252,12 +258,11 @@ class TestBeforeAfterLlmHooks:
         # Monkey-patch query_llm to capture tool_choice
         original_gen = executor.query_llm
 
-        async def capturing_gen(*, tool_choice=None, ctx, exec_id, extra_llm_settings):
+        async def capturing_gen(*, tool_choice=None, exec_id, extra_llm_settings):
             nonlocal injected_tool_choice
             injected_tool_choice = tool_choice
             async for event in original_gen(
                 tool_choice=tool_choice,
-                ctx=ctx,
                 exec_id=exec_id,
                 extra_llm_settings=extra_llm_settings,
             ):
@@ -552,7 +557,7 @@ class TestToolInputConverter:
                 self, inp: EchoInput, *, ctx: Any = None, **kwargs: Any
             ) -> str:  # type: ignore[override]
                 received_inputs.append(inp)
-                return await original_run(self, inp, ctx=ctx, **kwargs)
+                return await original_run(self, inp, **kwargs)
 
         responses = [
             _tool_call_response("echo", '{"text":"hello"}', "tc1"),

@@ -68,7 +68,7 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
 
         self._path = path or []
         for proc in procs:
-            proc.on_adopted(self.path)
+            proc.on_adopted(self)
 
         self._session_metadata: dict[str, Any] = session_metadata or {}
 
@@ -224,7 +224,6 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
         async for out_event in proc.run_stream(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
-            ctx=self._ctx,
             exec_id=exec_id,
             step=step,
             **run_kwargs,

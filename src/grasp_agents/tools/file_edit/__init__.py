@@ -1,23 +1,25 @@
 """
 File-edit tool package.
 
-Provides ``Read`` / ``Write`` / ``Edit`` primitives and a
-:class:`FileEditToolkit` factory that owns per-session state plus a
-pluggable :class:`FileBackend`. Default backend is
-:class:`LocalFileBackend` (host filesystem); :class:`MCPFileBackend`
-routes the same calls to an MCP server speaking the file-tool
-protocol.
+Provides ``Read`` / ``Write`` / ``Edit`` / ``Delete`` primitives and a
+:class:`FileEditToolkit` factory bundling them. Read-before-write
+bookkeeping lives on the *agent* (each :class:`AgentLoop` owns its own
+:class:`FileEditSessionState`); the :class:`FileBackend` itself is
+pure I/O. Default backend is :class:`LocalFileBackend` (host
+filesystem); :class:`MCPFileBackend` routes the same calls to an MCP
+server speaking the file-tool protocol.
 
 Usage::
 
     from grasp_agents.tools.file_edit import FileEditToolkit
 
-    toolkit = FileEditToolkit(allowed_roots=[Path.cwd()])
-    agent.tools = [*toolkit.tools(), ...]
+    backend = LocalFileBackend(allowed_roots=[Path.cwd()])
+    ctx = RunContext(state=..., file_backend=backend)
+    toolkit = FileEditToolkit()
+    agent = LLMAgent(..., tools=[*toolkit.tools(), my_custom_tool])
 
-Imports are lazy (PEP 562): accessing the full tool set does not trigger
-``types.tool`` during ``RunContext`` construction, so ``FileEditStore``
-can live in this package without creating an import cycle.
+Imports are lazy (PEP 562) to avoid pulling :mod:`types.tool` into
+:class:`RunContext` construction.
 """
 
 from __future__ import annotations
@@ -26,9 +28,13 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .agent_state import (
+        get_current_file_edit_state,
+        reset_current_file_edit_state,
+        set_current_file_edit_state,
+    )
     from .atomic_write import atomic_write_bytes, atomic_write_text
     from .backend import FileBackend, FileEntry, FileStat
-    from .local_backend import LocalFileBackend
     from .delete import DeleteInput, DeleteResult, DeleteTool
     from .edit import EditInput, EditResult, EditTool
     from .fuzzy_match import (
@@ -38,6 +44,7 @@ if TYPE_CHECKING:
         fuzzy_find_and_replace,
         preserve_quote_style,
     )
+    from .local_backend import LocalFileBackend
     from .mcp_backend import MCPFileBackend
     from .paths import (
         PathAccessError,
@@ -49,7 +56,6 @@ if TYPE_CHECKING:
     from .read import ReadInput, ReadResult, ReadTool
     from .redact import DefaultSecretRedactor, NullRedactor, SecretRedactor
     from .session_state import FileEditSessionState, ReadRecord
-    from .store import FileEditStore, InMemoryFileEditStore
     from .toolkit import FileEditToolkit
     from .write import WriteInput, WriteResult, WriteTool
 
@@ -58,6 +64,9 @@ if TYPE_CHECKING:
 # is the single source of truth for ``__all__`` + the ``__getattr__``
 # lookup; keep them in sync.
 _LAZY: dict[str, str] = {
+    "get_current_file_edit_state": "agent_state",
+    "reset_current_file_edit_state": "agent_state",
+    "set_current_file_edit_state": "agent_state",
     "atomic_write_bytes": "atomic_write",
     "atomic_write_text": "atomic_write",
     "FileBackend": "backend",
@@ -89,8 +98,6 @@ _LAZY: dict[str, str] = {
     "SecretRedactor": "redact",
     "FileEditSessionState": "session_state",
     "ReadRecord": "session_state",
-    "FileEditStore": "store",
-    "InMemoryFileEditStore": "store",
     "FileEditToolkit": "toolkit",
     "WriteInput": "write",
     "WriteResult": "write",
@@ -119,11 +126,9 @@ __all__ = [
     "EditTool",
     "FileBackend",
     "FileEditSessionState",
-    "FileEditStore",
     "FileEditToolkit",
     "FileEntry",
     "FileStat",
-    "InMemoryFileEditStore",
     "LocalFileBackend",
     "MCPFileBackend",
     "NullRedactor",
@@ -142,8 +147,11 @@ __all__ = [
     "check_sensitive_path",
     "fuzzy_find",
     "fuzzy_find_and_replace",
+    "get_current_file_edit_state",
     "has_binary_extension",
     "is_blocked_device",
     "preserve_quote_style",
+    "reset_current_file_edit_state",
     "resolve_safe",
+    "set_current_file_edit_state",
 ]

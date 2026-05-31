@@ -96,10 +96,9 @@ class _AppendProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        del ctx, step
+        del step
         base = in_args if in_args is not None else [str(chat_inputs)]
         for inp in base:
             yield ProcPayloadOutEvent(
@@ -124,9 +123,10 @@ class TestFailingStoreCoverage:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="agent-fail"
         )
+        agent.set_ctx(ctx)
 
         with pytest.raises(ProcRunError) as exc:
-            await agent.run("hi", ctx=ctx)
+            await agent.run("hi")
         assert isinstance(exc.value.__cause__, OSError)
 
     async def test_runner_save_failure_kills_run(self) -> None:
@@ -162,9 +162,10 @@ class TestFailingStoreCoverage:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="task-fail"
         )
+        agent.set_ctx(ctx)
 
         with pytest.raises(ProcRunError) as exc:
-            await agent.run("spawn", ctx=ctx)
+            await agent.run("spawn")
         # The OSError is the root cause somewhere in the chain.
         root = exc.value
         while root.__cause__ is not None:
@@ -191,8 +192,9 @@ class TestCorruptCheckpointTolerance:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="corrupt-a"
         )
+        agent.set_ctx(ctx)
 
-        result = await agent.run("hi", ctx=ctx)
+        result = await agent.run("hi")
         assert result.payloads[0] == "fresh"
 
         # A fresh checkpoint now sits at the key — the corrupt one was
@@ -383,7 +385,8 @@ class TestEndToEndGC:
             stream_llm=True,
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="e2e")
-        await agent.run("go", ctx=ctx)
+        agent.set_ctx(ctx)
+        await agent.run("go")
 
         # Exactly one DELIVERED record.
         keys = await store.list_keys(task_prefix("e2e"))

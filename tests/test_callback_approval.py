@@ -170,6 +170,7 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
+    ctx: RunContext[Any] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
@@ -181,6 +182,7 @@ def _make_executor(
         llm=llm,
         transcript=memory,
         tools=tools,
+        ctx=ctx,
         max_turns=max_turns,
         stream_llm=False,
     )
@@ -193,7 +195,8 @@ def _make_executor(
 
 
 async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
-    stream = ResponseCapture(executor.execute_stream(ctx=ctx, exec_id="t"))
+    executor._ctx = ctx
+    stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
         pass
     assert stream.response is not None
@@ -237,7 +240,8 @@ class TestAllowPath:
             _tool_call_response([("echo", '{"text":"x"}', "tc-abc")]),
             _text_response("done"),
         ]
-        executor, _, _ = _make_executor(responses, tools=[EchoTool()])
+        ctx = RunContext[str](state="sentinel")
+        executor, _, _ = _make_executor(responses, tools=[EchoTool()], ctx=ctx)
 
         captured: dict[str, Any] = {}
 
@@ -251,8 +255,7 @@ class TestAllowPath:
 
         executor.before_tool_hook = build_callback_approval(approve)  # type: ignore[assignment]
 
-        ctx = RunContext[str](state="sentinel")
-        stream = ResponseCapture(executor.execute_stream(ctx=ctx, exec_id="run-xyz"))
+        stream = ResponseCapture(executor.execute_stream(exec_id="run-xyz"))
         async for _ in stream:
             pass
 
@@ -412,8 +415,8 @@ class TestFastPath:
         ]
 
         result = await hook(
-            tool_calls=calls,
             ctx=RunContext[None](),
+            tool_calls=calls,
             exec_id="t",
         )
         assert result is None
@@ -433,8 +436,8 @@ class TestFastPath:
         ]
 
         result = await hook(
-            tool_calls=calls,
             ctx=RunContext[None](),
+            tool_calls=calls,
             exec_id="t",
         )
         assert result is not None

@@ -195,7 +195,8 @@ def _make_executor(
 
 
 async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
-    stream = ResponseCapture(executor.execute_stream(ctx=ctx, exec_id="t"))
+    executor._ctx = ctx
+    stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
         pass
     assert stream.response is not None

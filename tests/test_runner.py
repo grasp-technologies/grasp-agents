@@ -52,7 +52,6 @@ class AppendProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
@@ -73,7 +72,6 @@ class CountingProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
@@ -102,7 +100,6 @@ class FailOnCallProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
@@ -127,7 +124,6 @@ class FanOutProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
@@ -166,7 +162,6 @@ class RoutingProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):

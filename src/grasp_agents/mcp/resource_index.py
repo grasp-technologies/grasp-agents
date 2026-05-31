@@ -1,12 +1,11 @@
 """
 Cached :class:`MCPResourceIndex` — one ``resources/list`` per session.
 
-Both :class:`grasp_agents.tools.file_edit.mcp_backend.MCPFileBackend` and
-:class:`grasp_agents.memory.mcp_provider.MCPMemoryProvider` walk the
-same MCP server, look up resources by URI prefix, and want metadata
-(``mtime``, ``size``) cheaply. Without sharing, each one re-issues the
-same ``resources/list`` round-trip — wasteful, and they can drift if
-one refreshes while the other doesn't.
+:class:`grasp_agents.tools.file_edit.mcp_backend.MCPFileBackend` walks
+an MCP server's resources to back the file-edit tools, and the same
+listings drive memdir discovery for :class:`MemoryProvider`. The index
+keeps a cached :meth:`resources/list` so both surfaces avoid duplicate
+round-trips.
 
 This module owns:
 
@@ -32,7 +31,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 try:
-    from mcp.types import PaginatedRequestParams
+    from mcp.types import PaginatedRequestParams, Resource
     from pydantic import AnyUrl
 except ImportError as _err:  # pragma: no cover — same MCP-extra import path as client
     msg = (
@@ -186,7 +185,7 @@ class MCPResourceIndex:
         return index
 
 
-def _entry_from_resource(uri: str, resource: Any, scheme: str) -> ResourceEntry:
+def _entry_from_resource(uri: str, resource: Resource, scheme: str) -> ResourceEntry:
     """Build a :class:`ResourceEntry` from an MCP resource block."""
     meta: dict[str, Any] = dict(resource.meta) if resource.meta else {}
 

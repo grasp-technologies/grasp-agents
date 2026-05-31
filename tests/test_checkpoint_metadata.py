@@ -51,6 +51,7 @@ def _make_agent(
         session_key=session_key,
         state=state_type(),
     )
+    agent.set_ctx(ctx)
     return agent, ctx
 
 
@@ -83,7 +84,7 @@ class TestContextRoundTrip:
         ctx.state.pathway_id = "p-1"
         ctx.state.count = 7
 
-        await agent.run("hello", ctx=ctx)
+        await agent.run("hello")
 
         data = await store.load("s1/agent/test_agent")
         assert data is not None
@@ -99,14 +100,14 @@ class TestContextRoundTrip:
         )
         ctx1.state.pathway_id = "p-42"
         ctx1.state.count = 3
-        await agent1.run("hello", ctx=ctx1)
+        await agent1.run("hello")
 
         # Fresh agent + ctx; state is default-initialized. Load rehydrates.
         agent2, ctx2 = _make_agent(
             [_text_response("follow")], session_key="s1", store=store
         )
         assert not ctx2.state.pathway_id  # baseline
-        await agent2.load_checkpoint(ctx2)
+        await agent2.load_checkpoint()
         assert ctx2.state.pathway_id == "p-42"
         assert ctx2.state.count == 3
 
@@ -121,7 +122,8 @@ class TestContextRoundTrip:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="s2", state=None
         )
-        await agent.run("hello", ctx=ctx)
+        agent.set_ctx(ctx)
+        await agent.run("hello")
 
         snap = AgentCheckpoint.model_validate_json(
             await store.load("s2/agent/test_agent") or b"{}"
@@ -145,21 +147,21 @@ class TestPromptCacheKey:
         )
         # Simulate a provider writing the cache key post-LLM.
         agent1.prompt_cache_key = "cache-abc"
-        await agent1.run("hello", ctx=ctx1)
+        await agent1.run("hello")
 
         # Fresh agent resumes — cache key must restore.
         agent2, ctx2 = _make_agent(
             [_text_response("follow")], session_key="s1", store=store
         )
         assert agent2.prompt_cache_key is None
-        await agent2.load_checkpoint(ctx2)
+        await agent2.load_checkpoint()
         assert agent2.prompt_cache_key == "cache-abc"
 
     @pytest.mark.anyio
     async def test_defaults_to_none_when_never_set(self) -> None:
         store = InMemoryCheckpointStore()
         agent, ctx = _make_agent([_text_response("hi")], session_key="s", store=store)
-        await agent.run("hello", ctx=ctx)
+        await agent.run("hello")
 
         snap = AgentCheckpoint.model_validate_json(await store.load("s/agent/test_agent") or b"{}")
         assert snap.prompt_cache_key is None
@@ -212,8 +214,9 @@ class TestPrePersistInput:
             session_key="s-pp",
             state=_MyState(),
         )
+        agent.set_ctx(ctx)
 
-        await agent.run("hello", ctx=ctx)
+        await agent.run("hello")
 
         assert observed_on_llm_call, "LLM was never called"
         first = observed_on_llm_call[0]

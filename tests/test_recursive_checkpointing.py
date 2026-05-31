@@ -51,7 +51,6 @@ class AppendProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
@@ -73,7 +72,6 @@ class CountingProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         self.call_count += 1
@@ -95,7 +93,6 @@ class FanOutProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
@@ -120,7 +117,6 @@ class InputFailProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
@@ -149,7 +145,6 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
 
     async def save_checkpoint(
         self,
-        ctx: RunContext[None],
         *,
         completed_step: int,
         packet: Packet[Any],
@@ -159,7 +154,7 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
                 f"Simulated crash before saving step {completed_step}"
             )
         await super().save_checkpoint(
-            ctx, completed_step=completed_step, packet=packet
+            completed_step=completed_step, packet=packet
         )
 
 
@@ -185,7 +180,6 @@ class ChatAppendProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
@@ -206,7 +200,6 @@ class ChatFanOutProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in _resolve_inputs(chat_inputs, in_args):
@@ -227,9 +220,10 @@ async def collect_payloads(
     step: int | None = None,
 ) -> list[str]:
     """Run a processor via run_stream and collect final payloads."""
+    proc.set_ctx(ctx)
     payloads: list[str] = []
     async for event in proc.run_stream(
-        in_args=in_args, ctx=ctx, exec_id="test", step=step
+        in_args=in_args, exec_id="test", step=step
     ):
         if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
             payloads = list(event.data.payloads)
@@ -307,25 +301,25 @@ class TestRecursiveSessionPropagation:
         assert y.path == ["outer", "inner", "Y"]
 
     def test_is_resumable_depends_on_ctx(self) -> None:
-        """Processor.is_resumable() is inferred from ctx.checkpoint_store."""
-        worker = AppendProcessor("worker")
-
+        """Processor.is_resumable is inferred from ctx.checkpoint_store."""
         # No ctx -> not resumable
-        assert not Processor.is_resumable(None)
+        worker_default = AppendProcessor("worker")
+        assert not worker_default.is_resumable
 
         # Ctx with no checkpoint_store -> not resumable
         ctx_empty: RunContext[None] = RunContext(state=None)
-        assert not Processor.is_resumable(ctx_empty)
+        worker_empty = AppendProcessor("worker")
+        worker_empty.set_ctx(ctx_empty)
+        assert not worker_empty.is_resumable
 
         # Ctx with checkpoint_store -> resumable
         store = InMemoryCheckpointStore()
         ctx_with_store: RunContext[None] = RunContext(
             state=None, checkpoint_store=store
         )
-        assert Processor.is_resumable(ctx_with_store)
-
-        # worker not used for runtime; only docs its path
-        _ = worker
+        worker_with_store = AppendProcessor("worker")
+        worker_with_store.set_ctx(ctx_with_store)
+        assert worker_with_store.is_resumable
 
     def test_runner_propagates_through_workflow_and_parallel(self) -> None:
         """Runner -> Workflow -> Parallel -> worker: 4-level propagation."""
@@ -338,8 +332,9 @@ class TestRecursiveSessionPropagation:
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
         ctx: RunContext[None] = RunContext(state=None)
+        wf.set_ctx(ctx)
         Runner[str, None](
-            entry_proc=entry, procs=[entry, wf], ctx=ctx, name="r"
+            entry_proc=entry, procs=[entry, wf], name="r"
         )
 
         # Runner adopts each top-level proc at empty parent path, so
@@ -370,6 +365,7 @@ class TestRecursiveCheckpointStorage:
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="s1"
         )
+        wf.set_ctx(ctx)
 
         result = await collect_payloads(wf, ctx, in_args="start")
         assert sorted(result) == [
@@ -403,6 +399,7 @@ class TestRecursiveCheckpointStorage:
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="s2"
         )
+        outer.set_ctx(ctx)
 
         result = await collect_payloads(outer, ctx, in_args="start")
         assert result == ["start->A->X->Y"]
@@ -425,6 +422,7 @@ class TestRecursiveCheckpointStorage:
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="deep"
         )
+        wf.set_ctx(ctx)
 
         await collect_payloads(wf, ctx, in_args="start")
 
@@ -461,6 +459,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r1"
         )
+        par1.set_ctx(ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -486,6 +485,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r1"
         )
+        wf2.set_ctx(ctx2)
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -519,6 +519,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r2"
         )
+        par1.set_ctx(ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -542,6 +543,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r2"
         )
+        wf2.set_ctx(ctx2)
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -576,6 +578,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r3"
         )
+        inner1.set_ctx(ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -597,6 +600,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r3"
         )
+        outer2.set_ctx(ctx2)
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -637,6 +641,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r4"
         )
+        outer1.set_ctx(ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -672,6 +677,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r4"
         )
+        outer2.set_ctx(ctx2)
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -703,7 +709,8 @@ class TestRecursiveResume:
             state=None, checkpoint_store=store, session_key="rs"
         )
         runner = Runner[str, None](
-            entry_proc=entry, procs=[entry, wf], ctx=ctx, name="r"
+            ctx=ctx,
+            entry_proc=entry, procs=[entry, wf], name="r"
         )
 
         result = await collect_runner_payloads(runner, chat_inputs="start")

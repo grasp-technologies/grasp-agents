@@ -23,6 +23,8 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
     def __init__(
         self,
         subproc: Processor[InT, OutT, CtxT],
+        *,
+        ctx: RunContext[CtxT] | None = None,
         drop_failed: bool = False,
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
@@ -33,6 +35,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
 
         super().__init__(
             name=subproc.name + "_par",
+            ctx=ctx if ctx is not None else subproc.ctx,
             recipients=subproc.recipients,
             max_retries=0,
             path=path,
@@ -49,14 +52,14 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
     # --- Checkpointing ---
 
     def _propagate_to_children(self) -> None:
-        self._subproc.on_adopted(self.path)
+        self._subproc.on_adopted(self)
 
-    async def load_checkpoint(self, ctx: RunContext[CtxT]) -> ParallelCheckpoint | None:
-        checkpoint = await self._deserialize_checkpoint(ctx, ParallelCheckpoint)
+    async def load_checkpoint(self) -> ParallelCheckpoint | None:
+        checkpoint = await self._deserialize_checkpoint(self._ctx, ParallelCheckpoint)
         if checkpoint is not None:
             logger.info(
                 "Loaded parallel checkpoint %s (%d/%d completed)",
-                self._checkpoint_store_key(ctx),
+                self._checkpoint_store_key(self._ctx),
                 len(checkpoint.completed),
                 len(checkpoint.input_packet.payloads),
             )
@@ -64,19 +67,18 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
 
     async def save_checkpoint(
         self,
-        ctx: RunContext[CtxT],
         *,
         input_packet: Packet[Any],
         completed: dict[int, Packet[Any]],
     ) -> None:
         checkpoint = ParallelCheckpoint(
-            session_key=ctx.session_key,
+            session_key=self._ctx.session_key,
             processor_name=self.name,
             session_metadata=self._session_metadata,
             input_packet=input_packet,
             completed=completed,
         )
-        await self._serialize_checkpoint(ctx, checkpoint)
+        await self._serialize_checkpoint(self._ctx, checkpoint)
 
     # --- Core ---
 
@@ -103,17 +105,15 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and Processor.is_resumable(ctx):
+        if not has_input and self.is_resumable:
             return None
         return super().validate_inputs(
             exec_id=exec_id,
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
-            ctx=ctx,
         )
 
     def _validate_in_args(
@@ -152,11 +152,10 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        ctx: RunContext[CtxT],
         step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         # --- Resume from checkpoint ---
-        checkpoint = await self.load_checkpoint(ctx)
+        checkpoint = await self.load_checkpoint()
         completed_map: dict[int, Packet[Any]] = {}
 
         if checkpoint is not None:
@@ -185,7 +184,10 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             for i in pending_indices:
                 rep = self._subproc.copy()
                 rep.name = f"{self._subproc.name}_{i}"
-                rep.on_adopted(self._path)
+                # ``on_adopted`` re-derives path from ``self.path`` + new
+                # ``rep.name`` and refreshes ctx (already shared via
+                # ``RunContext.__deepcopy__``, but kept for symmetry).
+                rep.on_adopted(self)
                 replicas[i] = rep
                 replica_names.add(rep.name)
 
@@ -193,7 +195,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 replicas[i].run_stream(
                     in_args=all_in_args[i],
                     exec_id=f"{exec_id}/{i}",
-                    ctx=ctx,
                     step=0,
                 )
                 for i in pending_indices
@@ -210,7 +211,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                     out_packets_map[real_idx] = event.data
                     completed_map[real_idx] = event.data
                     await self.save_checkpoint(
-                        ctx,
                         input_packet=input_packet,
                         completed=completed_map,
                     )

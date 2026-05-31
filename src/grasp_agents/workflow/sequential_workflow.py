@@ -19,6 +19,8 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         self,
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, CtxT]],
+        *,
+        ctx: RunContext[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
@@ -30,6 +32,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             start_proc=subprocs[0],
             end_proc=subprocs[-1],
             name=name,
+            ctx=ctx,
             recipients=recipients,
             path=path,
             session_metadata=session_metadata,
@@ -51,13 +54,12 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        ctx: RunContext[CtxT],
         step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         start_step = 0
 
-        checkpoint = await self.load_checkpoint(ctx)
+        checkpoint = await self.load_checkpoint()
         if checkpoint is not None:
             packet = checkpoint.packet
             start_step = checkpoint.completed_step + 1
@@ -79,7 +81,6 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 chat_inputs=chat_inputs,
                 in_packet=packet,
                 exec_id=f"{exec_id}/{subproc.name}",
-                ctx=ctx,
                 step=0,  # each subproc is called exactly once
             ):
                 yield event
@@ -90,7 +91,7 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     packet = event.data
 
             await self.save_checkpoint(
-                ctx, completed_step=idx, packet=cast("Packet[Any]", packet)
+                completed_step=idx, packet=cast("Packet[Any]", packet)
             )
 
             if subproc is self.end_proc:

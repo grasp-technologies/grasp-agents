@@ -93,7 +93,7 @@ class SplitterProcessor(Processor[str, TopicIdea, None]):
         inputs = in_args or ([str(chat_inputs)] if chat_inputs is not None else [])
         topics: list[TopicIdea] = []
         for inp in inputs:
-            result = await self._agent.run(chat_inputs=inp, ctx=ctx, exec_id=exec_id)
+            result = await self._agent.run(chat_inputs=inp, exec_id=exec_id)
             for payload in result.payloads:
                 topics.extend(payload.ideas)
         return topics
@@ -170,7 +170,8 @@ class TestRunnerWithAgents:
 
         ctx: RunContext[None] = RunContext(state=None)
         runner = Runner[str, None](
-            entry_proc=agent_a, procs=[agent_a, agent_b], ctx=ctx, name="r"
+            ctx=ctx,
+            entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
         )
 
         result = await runner.run(chat_inputs="Science")
@@ -200,9 +201,10 @@ class TestParallelProcessorWithAgents:
         )
         par = ParallelProcessor[str, str, None](subproc=writer)
         ctx: RunContext[None] = RunContext(state=None)
+        par.set_ctx(ctx)
 
         result = await par.run(
-            in_args=["black holes", "photosynthesis", "jazz music"], ctx=ctx
+            in_args=["black holes", "photosynthesis", "jazz music"]
         )
         payloads = list(result.payloads)
         assert len(payloads) == 3
@@ -253,9 +255,9 @@ class TestRunnerParallelFanout:
 
         ctx: RunContext[None] = RunContext(state=None)
         runner = Runner[str, None](
+            ctx=ctx,
             entry_proc=splitter,
             procs=[splitter, par, collector],
-            ctx=ctx,
             name="content_pipeline",
         )
 
@@ -297,7 +299,8 @@ class TestRunnerDurability:
             state=None, checkpoint_store=store, session_key="int-1"
         )
         runner = Runner[str, None](
-            entry_proc=agent_a, procs=[agent_a, agent_b], ctx=ctx, name="r"
+            ctx=ctx,
+            entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
         )
 
         result = await runner.run(chat_inputs="Mathematics")
@@ -344,7 +347,8 @@ class TestSequentialWorkflowInRunner:
 
         ctx: RunContext[None] = RunContext(state=None)
         runner = Runner[str, None](
-            entry_proc=entry, procs=[entry, wf], ctx=ctx, name="wf_runner"
+            ctx=ctx,
+            entry_proc=entry, procs=[entry, wf], name="wf_runner"
         )
 
         result = await runner.run(chat_inputs="The ocean at sunset")
@@ -442,7 +446,8 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="agent-crash-1"
         )
         runner1 = Runner[str, None](
-            entry_proc=entry1, procs=[entry1, agent1, crasher1], ctx=ctx1, name="r"
+            ctx=ctx1,
+            entry_proc=entry1, procs=[entry1, agent1, crasher1], name="r"
         )
 
         with pytest.raises(ExceptionGroup):
@@ -486,7 +491,8 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="agent-crash-1"
         )
         runner2 = Runner[str, None](
-            entry_proc=entry2, procs=[entry2, agent2, crasher2], ctx=ctx2, name="r"
+            ctx=ctx2,
+            entry_proc=entry2, procs=[entry2, agent2, crasher2], name="r"
         )
 
         result = await runner2.run()
@@ -545,7 +551,8 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="mid-agent-1"
         )
         runner1 = Runner[str, None](
-            entry_proc=entry1, procs=[entry1, agent1], ctx=ctx1, name="r"
+            ctx=ctx1,
+            entry_proc=entry1, procs=[entry1, agent1], name="r"
         )
 
         with pytest.raises(Exception):
@@ -595,7 +602,8 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="mid-agent-1"
         )
         runner2 = Runner[str, None](
-            entry_proc=entry2, procs=[entry2, agent2], ctx=ctx2, name="r"
+            ctx=ctx2,
+            entry_proc=entry2, procs=[entry2, agent2], name="r"
         )
 
         result = await runner2.run()
@@ -658,7 +666,8 @@ class TestWorkflowCrashResume:
             state=None, checkpoint_store=store, session_key="wf-crash-1"
         )
         runner1 = Runner[str, None](
-            entry_proc=entry1, procs=[entry1, wf1], ctx=ctx1, name="r"
+            ctx=ctx1,
+            entry_proc=entry1, procs=[entry1, wf1], name="r"
         )
 
         with pytest.raises(Exception):
@@ -696,7 +705,8 @@ class TestWorkflowCrashResume:
             state=None, checkpoint_store=store, session_key="wf-crash-1"
         )
         runner2 = Runner[str, None](
-            entry_proc=entry2, procs=[entry2, wf2], ctx=ctx2, name="r"
+            ctx=ctx2,
+            entry_proc=entry2, procs=[entry2, wf2], name="r"
         )
 
         result = await runner2.run()

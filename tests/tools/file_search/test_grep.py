@@ -8,10 +8,13 @@ parsing and slicing paths).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from grasp_agents.run_context import RunContext
+from grasp_agents.tools.file_edit import LocalFileBackend
 from grasp_agents.tools.file_search import (
     GrepInput,
     GrepResult,
@@ -19,9 +22,6 @@ from grasp_agents.tools.file_search import (
     rg_available,
 )
 from grasp_agents.types.events import ToolErrorInfo
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -37,8 +37,14 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def grep_tool(tmp_path: Path) -> GrepTool:
-    return GrepTool(allowed_roots=[tmp_path])
+def ctx(tmp_path: Path) -> RunContext[Any]:
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    return RunContext[Any](file_backend=backend)
+
+
+@pytest.fixture
+def grep_tool() -> GrepTool:
+    return GrepTool()
 
 
 @pytest.fixture
@@ -58,9 +64,11 @@ def repo(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-async def test_files_with_matches_default(repo: Path, grep_tool: GrepTool) -> None:
+async def test_files_with_matches_default(
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     del repo  # fixture used for its side effects (populated tmp_path)
-    result = await grep_tool.run(GrepInput(pattern=r"def \w+"))
+    result = await grep_tool.run(GrepInput(pattern=r"def \w+"), ctx=ctx)
     assert isinstance(result, GrepResult)
     assert result.output_mode == "files_with_matches"
     # Three .py files contain a ``def``; the .md file does not.
@@ -71,10 +79,12 @@ async def test_files_with_matches_default(repo: Path, grep_tool: GrepTool) -> No
     assert not result.truncated
 
 
-async def test_glob_filter_narrows_to_md(repo: Path, grep_tool: GrepTool) -> None:
+async def test_glob_filter_narrows_to_md(
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     del repo
     result = await grep_tool.run(
-        GrepInput(pattern=r"TODO", glob="*.md")
+        GrepInput(pattern=r"TODO", glob="*.md"), ctx=ctx
     )
     assert isinstance(result, GrepResult)
     lines = [line for line in result.output.splitlines() if line]
@@ -82,9 +92,11 @@ async def test_glob_filter_narrows_to_md(repo: Path, grep_tool: GrepTool) -> Non
     assert lines[0].endswith("notes.md")
 
 
-async def test_type_filter_narrows_to_py(repo: Path, grep_tool: GrepTool) -> None:
+async def test_type_filter_narrows_to_py(
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     del repo
-    result = await grep_tool.run(GrepInput(pattern=r"TODO", type="py"))
+    result = await grep_tool.run(GrepInput(pattern=r"TODO", type="py"), ctx=ctx)
     assert isinstance(result, GrepResult)
     assert not result.output
     assert result.num_files_matched == 0
@@ -95,10 +107,12 @@ async def test_type_filter_narrows_to_py(repo: Path, grep_tool: GrepTool) -> Non
 # ---------------------------------------------------------------------------
 
 
-async def test_count_mode(repo: Path, grep_tool: GrepTool) -> None:
+async def test_count_mode(
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     del repo
     result = await grep_tool.run(
-        GrepInput(pattern=r"def \w+", output_mode="count")
+        GrepInput(pattern=r"def \w+", output_mode="count"), ctx=ctx
     )
     assert isinstance(result, GrepResult)
     assert result.output_mode == "count"
@@ -115,11 +129,11 @@ async def test_count_mode(repo: Path, grep_tool: GrepTool) -> None:
 
 
 async def test_content_mode_with_line_numbers(
-    repo: Path, grep_tool: GrepTool
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
 ) -> None:
     del repo
     result = await grep_tool.run(
-        GrepInput(pattern=r"hello", output_mode="content")
+        GrepInput(pattern=r"hello", output_mode="content"), ctx=ctx
     )
     assert isinstance(result, GrepResult)
     assert result.output_mode == "content"
@@ -135,13 +149,14 @@ async def test_content_mode_with_line_numbers(
 
 
 async def test_content_mode_without_line_numbers(
-    repo: Path, grep_tool: GrepTool
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
 ) -> None:
     del repo
     result = await grep_tool.run(
         GrepInput(
             pattern=r"hello", output_mode="content", show_line_numbers=False
-        )
+        ),
+        ctx=ctx,
     )
     assert isinstance(result, GrepResult)
     # Line format now ``path:content`` — exactly one colon on normal content.
@@ -152,10 +167,12 @@ async def test_content_mode_without_line_numbers(
         assert not parts[1].split(" ")[0].isdigit() or "def" in parts[1]
 
 
-async def test_content_mode_with_context(repo: Path, grep_tool: GrepTool) -> None:
+async def test_content_mode_with_context(
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     del repo
     result = await grep_tool.run(
-        GrepInput(pattern=r"hello", output_mode="content", context=1)
+        GrepInput(pattern=r"hello", output_mode="content", context=1), ctx=ctx
     )
     assert isinstance(result, GrepResult)
     # Context lines use ``-`` instead of ``:`` as a separator.
@@ -170,23 +187,28 @@ async def test_content_mode_with_context(repo: Path, grep_tool: GrepTool) -> Non
 # ---------------------------------------------------------------------------
 
 
-async def test_case_insensitive(repo: Path, grep_tool: GrepTool) -> None:
+async def test_case_insensitive(
+    repo: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     del repo
     result = await grep_tool.run(
-        GrepInput(pattern=r"HELLO", case_insensitive=True)
+        GrepInput(pattern=r"HELLO", case_insensitive=True), ctx=ctx
     )
     assert isinstance(result, GrepResult)
     assert result.num_files_matched >= 1
 
 
-async def test_multiline_pattern(tmp_path: Path, grep_tool: GrepTool) -> None:
+async def test_multiline_pattern(
+    tmp_path: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     (tmp_path / "ml.py").write_text("def outer():\n    def inner():\n        pass\n")
     result = await grep_tool.run(
         GrepInput(
             pattern=r"outer.*inner",
             output_mode="content",
             multiline=True,
-        )
+        ),
+        ctx=ctx,
     )
     assert isinstance(result, GrepResult)
     assert result.num_matches >= 1
@@ -197,25 +219,35 @@ async def test_multiline_pattern(tmp_path: Path, grep_tool: GrepTool) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_head_limit_truncates(tmp_path: Path) -> None:
-    tool = GrepTool(allowed_roots=[tmp_path])
+async def test_head_limit_truncates(
+    tmp_path: Path, ctx: RunContext[Any]
+) -> None:
+    tool = GrepTool()
     for i in range(10):
         (tmp_path / f"f{i}.py").write_text("target\n")
 
-    result = await tool.run(GrepInput(pattern=r"target", head_limit=3))
+    result = await tool.run(
+        GrepInput(pattern=r"target", head_limit=3), ctx=ctx
+    )
     assert isinstance(result, GrepResult)
     assert result.truncated
     assert len([line for line in result.output.splitlines() if line]) == 3
 
 
-async def test_offset_pagination(tmp_path: Path) -> None:
-    tool = GrepTool(allowed_roots=[tmp_path])
+async def test_offset_pagination(
+    tmp_path: Path, ctx: RunContext[Any]
+) -> None:
+    tool = GrepTool()
     for i in range(10):
         (tmp_path / f"f{i}.py").write_text("target\n")
 
-    first = await tool.run(GrepInput(pattern=r"target", head_limit=5))
+    first = await tool.run(
+        GrepInput(pattern=r"target", head_limit=5), ctx=ctx
+    )
     assert isinstance(first, GrepResult)
-    second = await tool.run(GrepInput(pattern=r"target", head_limit=5, offset=5))
+    second = await tool.run(
+        GrepInput(pattern=r"target", head_limit=5, offset=5), ctx=ctx
+    )
     assert isinstance(second, GrepResult)
     first_set = set(first.output.splitlines())
     second_set = set(second.output.splitlines())
@@ -229,14 +261,14 @@ async def test_offset_pagination(tmp_path: Path) -> None:
 
 
 async def test_path_outside_root_refused(
-    tmp_path: Path, grep_tool: GrepTool
+    tmp_path: Path, ctx: RunContext[Any], grep_tool: GrepTool
 ) -> None:
     outside = tmp_path.parent / "escape_grep_dir"
     outside.mkdir(exist_ok=True)
     (outside / "secret.py").write_text("def leak(): pass\n")
     try:
         result = await grep_tool.run(
-            GrepInput(pattern=r"def", path=str(outside))
+            GrepInput(pattern=r"def", path=str(outside)), ctx=ctx
         )
         assert "outside allowed roots" in _error_message(result)
     finally:
@@ -245,8 +277,10 @@ async def test_path_outside_root_refused(
         outside.rmdir()
 
 
-async def test_nonexistent_path_refused(tmp_path: Path, grep_tool: GrepTool) -> None:
+async def test_nonexistent_path_refused(
+    tmp_path: Path, ctx: RunContext[Any], grep_tool: GrepTool
+) -> None:
     result = await grep_tool.run(
-        GrepInput(pattern=r"x", path=str(tmp_path / "nope"))
+        GrepInput(pattern=r"x", path=str(tmp_path / "nope")), ctx=ctx
     )
     assert "does not exist" in _error_message(result)

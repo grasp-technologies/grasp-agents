@@ -1,36 +1,36 @@
 """
-Integration tests for store-via-``RunContext`` routing.
+Integration tests for state-on-agent file-edit routing.
 
-These cover the production path where the caller sets
-``ctx.file_edit_store`` + ``ctx.session_key`` and tools resolve state
-from the context rather than their construction-time store. Ensures:
-
-* tools prefer the ctx store when one is set;
-* different session keys keep state isolated on the same store;
-* sub-agents (or any code sharing the same RunContext) see the same
-  read-before-write records;
-* ``reset_session(key)`` on the store clears exactly one slot.
+Read-before-write bookkeeping lives on the active agent's
+:class:`FileEditSessionState`, surfaced to the tools via the
+:mod:`agent_state` ContextVar. Tools share state when they share the
+same activation; switching the activation (mirroring a parent → child
+agent transition) isolates state.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools.file_edit import (
+    FileEditSessionState,
     FileEditToolkit,
-    InMemoryFileEditStore,
+    LocalFileBackend,
     NullRedactor,
     ReadInput,
     WriteInput,
     WriteResult,
+    reset_current_file_edit_state,
+    set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    pass
 
 pytestmark = pytest.mark.asyncio
 
@@ -42,137 +42,145 @@ def _error_message(result: Any) -> str:
     return result.error
 
 
-async def test_ctx_store_overrides_tool_default_store(tmp_path: Path) -> None:
+async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
     """
-    When ``ctx.file_edit_store`` is set, tools route through it. A prior
-    Read recorded via ctx.store under session_key "alice" satisfies a
-    later Write via the same ctx — even though the toolkit's own store
-    has no record.
+    Read + Write under the same activated state compose: the Read
+    record satisfies the Write's read-before-write check.
     """
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    ctx_store = InMemoryFileEditStore()
-    ctx = RunContext[None](file_edit_store=ctx_store, session_key="alice")
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    tk = FileEditToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("original")
 
-    await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
-    result = await tk.write.run(WriteInput(path=str(f), content="updated"), ctx=ctx)
+    state = FileEditSessionState()
+    token = set_current_file_edit_state(state)
+    try:
+        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
+        result = await tk.write.run(
+            WriteInput(path=str(f), content="updated"), ctx=ctx
+        )
+    finally:
+        reset_current_file_edit_state(token)
+
     assert isinstance(result, WriteResult)
     assert f.read_text() == "updated"
-
-    # State landed in ctx_store, not in the toolkit's default store.
-    alice_state = await ctx_store.get_session_state("alice")
-    assert alice_state.read_file_state
-    tk_state = await tk.store.get_session_state(tk.default_session_key)
-    assert not tk_state.read_file_state
+    assert state.read_file_state, "state should hold a read record"
 
 
-async def test_separate_session_keys_are_isolated(tmp_path: Path) -> None:
+async def test_separate_activations_are_isolated(tmp_path: Path) -> None:
     """
-    Two ctxs sharing the same store but with different ``session_key``
-    don't see each other's read records — alice reading does not
-    satisfy bob's read-before-write invariant.
+    Different activations (parent vs. child agent) don't see each
+    other's reads — a Read under activation A does not satisfy a Write
+    under activation B even when both share the backend.
     """
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    shared = InMemoryFileEditStore()
-    ctx_alice = RunContext[None](file_edit_store=shared, session_key="alice")
-    ctx_bob = RunContext[None](file_edit_store=shared, session_key="bob")
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    tk = FileEditToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("x")
 
-    # Alice reads.
-    await tk.read.run(ReadInput(path=str(f)), ctx=ctx_alice)
-    # Alice can now write.
-    result_alice = await tk.write.run(
-        WriteInput(path=str(f), content="alice-wrote"), ctx=ctx_alice
-    )
-    assert isinstance(result_alice, WriteResult)
+    state_parent = FileEditSessionState()
+    state_child = FileEditSessionState()
 
-    # Bob has never read — his write is refused, even though Alice read
-    # the same path on the same store.
-    result_bob = await tk.write.run(
-        WriteInput(path=str(f), content="bob-wrote"), ctx=ctx_bob
-    )
-    assert "Must Read" in _error_message(result_bob)
+    # Parent activation: Read + Write succeed.
+    token = set_current_file_edit_state(state_parent)
+    try:
+        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
+        result_parent = await tk.write.run(
+            WriteInput(path=str(f), content="parent-wrote"), ctx=ctx
+        )
+    finally:
+        reset_current_file_edit_state(token)
+    assert isinstance(result_parent, WriteResult)
+
+    # Child activation: same backend, but no prior Read in its state.
+    token = set_current_file_edit_state(state_child)
+    try:
+        result_child = await tk.write.run(
+            WriteInput(path=str(f), content="child-wrote"), ctx=ctx
+        )
+    finally:
+        reset_current_file_edit_state(token)
+    assert "Must Read" in _error_message(result_child)
 
 
-async def test_shared_ctx_mimics_subagent_sharing(tmp_path: Path) -> None:
+async def test_shared_state_mimics_one_agent_two_toolkits(tmp_path: Path) -> None:
     """
-    Two *different* toolkits built on top of the same ctx store share
-    read state — the shape a parent agent + sub-agent-as-tool get when
-    both are wired to the same ``RunContext``. The parent's Read
-    satisfies the sub-agent's Write even though the sub-agent's
-    toolkit has its own (empty) default store.
+    Two *different* toolkit instances drawing the same activated state
+    can compose Read → Write — the shape a single agent gets when its
+    tools come from multiple sources but share its :class:`FileEditSessionState`.
     """
-    shared = InMemoryFileEditStore()
-
-    # "Parent" toolkit — reads the file.
-    parent_tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    # "Sub-agent" toolkit — a completely separate toolkit instance,
-    # simulating a ProcessorTool-wrapped child agent.
-    child_tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    tk_a = FileEditToolkit(redactor=NullRedactor())
+    tk_b = FileEditToolkit(redactor=NullRedactor())
 
     f = tmp_path / "shared.txt"
     f.write_text("from the file")
 
-    ctx = RunContext[None](file_edit_store=shared, session_key="shared-sess")
+    token = set_current_file_edit_state(FileEditSessionState())
+    try:
+        await tk_a.read.run(ReadInput(path=str(f)), ctx=ctx)
+        result = await tk_b.write.run(
+            WriteInput(path=str(f), content="child-wrote"), ctx=ctx
+        )
+    finally:
+        reset_current_file_edit_state(token)
 
-    await parent_tk.read.run(ReadInput(path=str(f)), ctx=ctx)
-    # Child toolkit's Write honors the parent's Read because both route
-    # through ctx.file_edit_store.
-    result = await child_tk.write.run(
-        WriteInput(path=str(f), content="child-wrote"), ctx=ctx
-    )
     assert isinstance(result, WriteResult)
     assert f.read_text() == "child-wrote"
 
 
-async def test_store_reset_session_affects_only_that_key(tmp_path: Path) -> None:
+async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
     """
-    Reset on the store drops exactly one session's state; other
-    sessions' read records survive.
+    Allocating a fresh :class:`FileEditSessionState` is the equivalent
+    of "starting a new agent" — earlier reads don't carry over.
     """
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    shared = InMemoryFileEditStore()
-    ctx_a = RunContext[None](file_edit_store=shared, session_key="A")
-    ctx_b = RunContext[None](file_edit_store=shared, session_key="B")
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    tk = FileEditToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("x")
 
-    await tk.read.run(ReadInput(path=str(f)), ctx=ctx_a)
-    await tk.read.run(ReadInput(path=str(f)), ctx=ctx_b)
+    state_a = FileEditSessionState()
+    token = set_current_file_edit_state(state_a)
+    try:
+        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
+    finally:
+        reset_current_file_edit_state(token)
+    assert state_a.read_file_state
 
-    await shared.reset_session("A")
+    # New agent → new state → no prior reads.
+    state_b = FileEditSessionState()
+    token = set_current_file_edit_state(state_b)
+    try:
+        result = await tk.write.run(
+            WriteInput(path=str(f), content="y"), ctx=ctx
+        )
+    finally:
+        reset_current_file_edit_state(token)
+    assert "Must Read" in _error_message(result)
 
-    # A's Write is refused (state cleared); B's still allowed.
-    result_a = await tk.write.run(WriteInput(path=str(f), content="a"), ctx=ctx_a)
-    assert "Must Read" in _error_message(result_a)
 
-    result_b = await tk.write.run(WriteInput(path=str(f), content="b"), ctx=ctx_b)
-    assert isinstance(result_b, WriteResult)
-
-
-async def test_session_resumption_via_session_key(tmp_path: Path) -> None:
+async def test_standalone_tool_use_without_state(tmp_path: Path) -> None:
     """
-    Setting ``ctx.session_key`` to a previously-used key re-keys into
-    the existing slot — a session can be 'resumed' (in memory) by
-    reusing its key.
+    With no active state (no agent in scope), tools still work but
+    skip read-before-write enforcement — the power-user escape hatch.
     """
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    shared = InMemoryFileEditStore()
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    tk = FileEditToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
-    f.write_text("x")
+    f.write_text("orig")
 
-    # Session 1 reads.
-    ctx1 = RunContext[None](file_edit_store=shared, session_key="conv-42")
-    await tk.read.run(ReadInput(path=str(f)), ctx=ctx1)
-
-    # A new RunContext with the same session_key — simulating a fresh
-    # turn in the same logical conversation — sees the prior Read.
-    ctx2 = RunContext[None](file_edit_store=shared, session_key="conv-42")
-    result = await tk.write.run(WriteInput(path=str(f), content="y"), ctx=ctx2)
+    # No ContextVar activation — Write proceeds without prior Read.
+    result = await tk.write.run(
+        WriteInput(path=str(f), content="updated"), ctx=ctx
+    )
     assert isinstance(result, WriteResult)
+    assert f.read_text() == "updated"

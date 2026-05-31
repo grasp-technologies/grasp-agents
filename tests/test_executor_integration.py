@@ -197,7 +197,7 @@ async def _collect_events(
     response: Response | None = None
     extra: dict[str, Any] = {}
     async for event in executor.execute_stream(
-        ctx=ctx, exec_id=exec_id, extra_llm_settings=extra
+        exec_id=exec_id, extra_llm_settings=extra
     ):
         events.append(event)
         if isinstance(event, LLMStreamEvent) and isinstance(
@@ -231,6 +231,7 @@ class TestExecutorTextResponse:
         )
 
         ctx = RunContext[None]()
+        executor._ctx = ctx
         memory.update([InputMessageItem.from_text("What is 42?", role="user")])
 
         events, last_response = await _collect_events(executor, ctx)
@@ -267,6 +268,7 @@ class TestExecutorTextResponse:
         )
 
         ctx = RunContext[None]()
+        executor._ctx = ctx
         memory.update([InputMessageItem.from_text("Hi", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
@@ -376,6 +378,7 @@ class TestExecutorToolCalling:
         )
 
         ctx = RunContext[None]()
+        executor._ctx = ctx
         memory.update([InputMessageItem.from_text("loop", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
@@ -412,6 +415,7 @@ class TestExecutorUsageTracking:
         )
 
         ctx = RunContext[None]()
+        executor._ctx = ctx
         memory.update([InputMessageItem.from_text("q", role="user")])
         await _collect_events(executor, ctx)
 

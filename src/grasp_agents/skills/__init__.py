@@ -17,7 +17,9 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 from .injection import (
+    make_skills_section,
     render_available_skills_block,
+    render_skill_instructions,
     skills_system_prompt_section,
 )
 from .loader import discover_skills, load_skill_md, parse_skill_md
@@ -67,9 +69,11 @@ __all__ = [
     "list_skills",
     "load_skill",
     "load_skill_md",
+    "make_skills_section",
     "parse_named_args",
     "parse_skill_md",
     "parse_slash_command",
     "render_available_skills_block",
+    "render_skill_instructions",
     "skills_system_prompt_section",
 ]

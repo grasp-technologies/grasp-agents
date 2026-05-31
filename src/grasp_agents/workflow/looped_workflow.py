@@ -22,6 +22,8 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, CtxT]],
         exit_proc: Processor[Any, OutT, CtxT],
+        *,
+        ctx: RunContext[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
         max_iterations: int = 10,
         path: list[str] | None = None,
@@ -34,6 +36,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             name=name,
             start_proc=subprocs[0],
             end_proc=exit_proc,
+            ctx=ctx,
             recipients=recipients,
             path=path,
             session_metadata=session_metadata,
@@ -76,11 +79,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
 
     @final
     def terminate_workflow_loop(
-        self, out_packet: Packet[OutT], *, ctx: RunContext[CtxT], **kwargs: Any
+        self, out_packet: Packet[OutT], **kwargs: Any
     ) -> bool:
         base_cls = LoopedWorkflow[Any, Any, Any]
         if is_method_overridden("terminate_workflow_loop_impl", self, base_cls):
-            return self.terminate_workflow_loop_impl(out_packet, ctx=ctx, **kwargs)
+            return self.terminate_workflow_loop_impl(
+                out_packet, ctx=self._ctx, **kwargs
+            )
 
         return False
 
@@ -91,7 +96,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        ctx: RunContext[CtxT],
         step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
@@ -100,7 +104,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         max_global_steps = self._max_iterations * n
         start_global = 0
 
-        checkpoint = await self.load_checkpoint(ctx)
+        checkpoint = await self.load_checkpoint()
         if checkpoint is not None:
             packet = checkpoint.packet
             start_global = checkpoint.completed_step + 1
@@ -109,7 +113,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             if checkpoint.completed_step % n == exit_idx:
                 exit_packet = cast("Packet[OutT]", packet)
                 if (
-                    self.terminate_workflow_loop(exit_packet, ctx=ctx)
+                    self.terminate_workflow_loop(exit_packet)
                     or start_global >= max_global_steps
                 ):
                     for p in exit_packet.payloads:
@@ -129,7 +133,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                 chat_inputs=chat_inputs,
                 in_packet=packet,
                 exec_id=f"{exec_id}/{subproc.name}/iter_{iteration}",
-                ctx=ctx,
                 step=iteration,
             ):
                 yield event
@@ -140,7 +143,6 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     packet = event.data
 
             await self.save_checkpoint(
-                ctx,
                 completed_step=global_step,
                 packet=cast("Packet[Any]", packet),
             )
@@ -150,7 +152,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             if subproc is self.end_proc:
                 exit_packet = cast("Packet[OutT]", packet)
 
-                if self.terminate_workflow_loop(exit_packet, ctx=ctx):
+                if self.terminate_workflow_loop(exit_packet):
                     for p in exit_packet.payloads:
                         yield ProcPayloadOutEvent(
                             data=p, source=self.name, exec_id=exec_id

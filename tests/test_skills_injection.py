@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
+from typing import Any
 
-from grasp_agents.skills import Skill, SkillFrontmatter, render_available_skills_block
+import pytest
+
+from grasp_agents.agent.prompt_builder import SystemPromptSection
+from grasp_agents.run_context import RunContext
+from grasp_agents.skills import (
+    Skill,
+    SkillFrontmatter,
+    SkillRegistry,
+    make_skills_section,
+    render_available_skills_block,
+    render_skill_instructions,
+)
+
+
+async def _run_section(section: SystemPromptSection, ctx: RunContext[Any]) -> str | None:
+    """Invoke a section's compute and resolve any awaitable return."""
+    result = section.compute(ctx=ctx, exec_id="test")
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
 
 def _skill(
@@ -56,13 +77,15 @@ class TestRenderAvailableSkillsBlock:
 
     def test_single_visible_skill(self) -> None:
         block = render_available_skills_block([_skill("alpha", "Does alpha things.")])
-        assert "## Available skills" in block
+        # The catalog renders the XML element only; the surrounding
+        # instructions ("## Skills", "use load_skill ...") live in the
+        # separate ``render_skill_instructions`` block.
+        assert "## Available skills" not in block
         assert "<available_skills>" in block
         assert "<name>alpha</name>" in block
         assert "<description>Does alpha things.</description>" in block
         assert "<location>/skills/alpha/SKILL.md</location>" in block
         assert "</available_skills>" in block
-        assert "load_skill" in block
 
     def test_disabled_skills_filtered(self) -> None:
         block = render_available_skills_block(
@@ -159,3 +182,77 @@ class TestRenderAvailableSkillsBlock:
             [_skill("alpha", "x", compatibility="needs <psql> & jq")]
         )
         assert "<compatibility>needs &lt;psql&gt; &amp; jq</compatibility>" in block
+
+
+class TestRenderSkillInstructions:
+    def test_non_empty(self) -> None:
+        text = render_skill_instructions()
+        assert text
+
+    def test_describes_load_loop(self) -> None:
+        text = render_skill_instructions()
+        # The instructions teach the agent to call load_skill — that's
+        # the one promise the section must keep, since the catalog no
+        # longer carries the load hint itself.
+        assert "load_skill" in text
+
+    def test_distinguishes_skills_from_memory_and_tasks(self) -> None:
+        text = render_skill_instructions()
+        # Persistence-comparison block guards against the agent reaching
+        # for skills when it should reach for memory / a plan / tasks.
+        assert "memory" in text.lower()
+        assert "tasks" in text.lower()
+
+
+class TestMakeSkillsSection:
+    def _ctx(self, skills: list[Skill] | None = None) -> RunContext[Any]:
+        registry: SkillRegistry | None
+        if skills is None:
+            registry = None
+        else:
+            registry = SkillRegistry(skills)
+        return RunContext[Any](skills=registry)
+
+    @pytest.mark.anyio
+    async def test_no_skills_attr_returns_none(self) -> None:
+        result = await _run_section(make_skills_section(), self._ctx())
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_empty_registry_returns_none(self) -> None:
+        result = await _run_section(make_skills_section(), self._ctx([]))
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_all_disabled_returns_none(self) -> None:
+        result = await _run_section(
+            make_skills_section(),
+            self._ctx(
+                [
+                    _skill("hidden-a", "x", disabled=True),
+                    _skill("hidden-b", "y", disabled=True),
+                ]
+            ),
+        )
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_visible_skill_renders_both_blocks(self) -> None:
+        result = await _run_section(
+            make_skills_section(),
+            self._ctx([_skill("alpha", "Does alpha things.")]),
+        )
+        assert result is not None
+        # Instructions block (above) — agent-facing how-to.
+        assert "# Skills" in result
+        assert "load_skill" in result
+        # Catalog block (below) — XML data.
+        assert "<available_skills>" in result
+        assert "<name>alpha</name>" in result
+        # Order: instructions heading first, catalog payload second.
+        assert result.index("# Skills") < result.index("<name>alpha</name>")
+
+    @pytest.mark.anyio
+    async def test_section_name_overridable(self) -> None:
+        section = make_skills_section(section_name="my_skills")
+        assert section.name == "my_skills"

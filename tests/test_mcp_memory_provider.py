@@ -1,4 +1,14 @@
-"""Tests for MCPMemoryProvider using a fake MCP client + session."""
+"""
+End-to-end wiring test: :class:`MemoryProvider` over :class:`MCPFileBackend`.
+
+The unified :class:`MemoryProvider` walks ``ctx.file_backend.list_dir`` and
+``ctx.file_backend.read_text``. With an :class:`MCPFileBackend` against a
+fake MCP client, the provider sees the same shape it sees against a real
+local filesystem — that's the contract this file exercises.
+
+Deep MCP-resource-index behaviour is tested in
+``tests/test_mcp_resource_index.py`` and ``tests/test_mcp_client.py``.
+"""
 
 from __future__ import annotations
 
@@ -14,13 +24,11 @@ if TYPE_CHECKING:
 
 pytest.importorskip("mcp")
 
-from grasp_agents.memory import (  # noqa: E402
-    MCPMemoryProvider,
-    MemoryNotFoundError,
-)
+from grasp_agents.memory import MemoryProvider  # noqa: E402
+from grasp_agents.run_context import RunContext  # noqa: E402
+from grasp_agents.tools.file_edit.mcp_backend import MCPFileBackend  # noqa: E402
 
 
-# Default memdir for tests — picks the standard ``file://`` URI scheme.
 MEMDIR = "/memdir"
 
 
@@ -55,7 +63,7 @@ class _FakeReadResult:
 
 
 class _FakeSession:
-    """Stub MCP ClientSession exposing only the methods used by the provider."""
+    """Stub MCP ClientSession exposing only the methods used by the backend."""
 
     def __init__(
         self,
@@ -92,12 +100,6 @@ class _FakeSession:
             ]
         )
 
-    async def call_tool(  # noqa: RUF029
-        self, name: str, args: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        self.tool_calls.append((name, dict(args)))
-        return {"status": "ok"}
-
 
 class _FakeClient:
     """Stub MCPClient — only ``session`` and ``name`` are touched."""
@@ -113,278 +115,100 @@ class _FakeClient:
         return self._session
 
 
-# ---------- Tests ----------
+def _topic_text(name: str, *, body: str = "Body text.") -> str:
+    return (
+        f"---\nname: {name}\ndescription: {name.title()} memory\n---\n"
+        f"{body}\n"
+    )
 
 
-class TestLoadAndListing:
+def _make_ctx(session: _FakeSession) -> RunContext[Any]:
+    """Build a RunContext wired to ``MemoryProvider`` over ``MCPFileBackend``."""
+    backend = MCPFileBackend(
+        client=_FakeClient(session=session),  # type: ignore[arg-type]
+        allowed_roots=[Path(MEMDIR)],
+    )
+    return RunContext[Any](
+        file_backend=backend,
+        memory=MemoryProvider(root=MEMDIR),
+    )
+
+
+class TestLoadOverMCP:
     @pytest.mark.anyio
-    async def test_filters_by_prefix_and_skips_index(self) -> None:
-        resources = [
-            _FakeResource(
-                uri=topic_uri("alpha"),
-                name="alpha",
-                description="Alpha mem",
-                meta={"type": "user", "updated_ms": 2000},
-            ),
-            _FakeResource(
-                uri=topic_uri("beta"),
-                name="beta",
-                description="Beta mem",
-                meta={"type": "project", "updated_ms": 1000},
-            ),
-            # Index lives at MEMORY.md — should NOT be in entries.
-            _FakeResource(uri=index_uri(), name="MEMORY.md"),
-            # Unrelated resource — should be filtered out.
-            _FakeResource(uri="other://x", name="x"),
-        ]
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        snap = await provider.load()
-        names = [e.name for e in snap.entries]
-        # Sorted newest first by updated_ms.
-        assert names == ["alpha", "beta"]
-        alpha = snap.entries[0]
-        assert alpha.uri == topic_uri("alpha")
-        assert alpha.body is None
-        assert alpha.path is None
-        assert alpha.memory_type == "user"
-        assert alpha.mtime_ms == 2000
-
-    @pytest.mark.anyio
-    async def test_missing_meta_graceful(self) -> None:
-        resources = [
-            _FakeResource(
-                uri=topic_uri("alpha"),
-                name="alpha",
-                description="A",
-                meta=None,
-            ),
-        ]
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        snap = await provider.load()
-        assert len(snap.entries) == 1
-        entry = snap.entries[0]
-        assert entry.memory_type is None
-        assert entry.mtime_ms == 0
-
-    @pytest.mark.anyio
-    async def test_unknown_type_dropped_to_none(self) -> None:
-        resources = [
-            _FakeResource(
-                uri=topic_uri("alpha"),
-                name="alpha",
-                description="A",
-                meta={"type": "not-a-real-type"},
-            ),
-        ]
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        snap = await provider.load()
-        assert snap.entries[0].memory_type is None
-
-    @pytest.mark.anyio
-    async def test_invalid_frontmatter_resource_skipped(self) -> None:
-        resources = [
-            _FakeResource(
-                uri=topic_uri("bad"),
-                name="Bad Name!",
-                description="invalid",
-            ),
-            _FakeResource(
-                uri=topic_uri("good"), name="good", description="ok"
-            ),
-        ]
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=_FakeSession(resources=resources)),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        snap = await provider.load()
-        # Only `good` survives — invalid frontmatter is logged and skipped.
-        assert [e.name for e in snap.entries] == ["good"]
-
-    @pytest.mark.anyio
-    async def test_load_is_cached(self) -> None:
-        session = _FakeSession(resources=[])
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        await provider.load()
-        await provider.load()
-        assert session.list_calls == 1
-        await provider.refresh()
-        await provider.load()
-        assert session.list_calls == 2
-
-
-class TestFetchBody:
-    @pytest.mark.anyio
-    async def test_reads_resource_text(self) -> None:
+    async def test_filters_to_memdir_and_skips_index(self) -> None:
         session = _FakeSession(
             resources=[
                 _FakeResource(
                     uri=topic_uri("alpha"),
-                    name="alpha",
-                    description="A",
-                )
-            ],
-            resource_text={topic_uri("alpha"): "ALPHA BODY HERE"},
-        )
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        body = await provider.fetch_body("alpha")
-        assert body == "ALPHA BODY HERE"
-        # The first call resolves via list_resources (cached) then read_resource.
-        assert session.read_calls[-1] == topic_uri("alpha")
-
-    @pytest.mark.anyio
-    async def test_strips_frontmatter(self) -> None:
-        text = (
-            "---\nname: alpha\ndescription: A\n---\n"
-            "Actual body content here.\n"
-        )
-        session = _FakeSession(
-            resources=[
+                    name="alpha.md",
+                    description="Alpha",
+                    meta={"updated_ms": 2000},
+                ),
                 _FakeResource(
-                    uri=topic_uri("alpha"),
-                    name="alpha",
-                    description="A",
-                )
-            ],
-            resource_text={topic_uri("alpha"): text},
-        )
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        body = await provider.fetch_body("alpha")
-        assert body.strip() == "Actual body content here."
-
-    @pytest.mark.anyio
-    async def test_missing_body_raises(self) -> None:
-        session = _FakeSession(
-            resources=[
-                _FakeResource(uri=topic_uri("alpha"), name="alpha")
-            ],
-            resource_text={},
-        )
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        with pytest.raises(MemoryNotFoundError):
-            await provider.fetch_body("alpha")
-
-
-class TestRenderIndex:
-    @pytest.mark.anyio
-    async def test_reads_index_resource(self) -> None:
-        # Index is fetched once during ``load`` and cached on the snapshot
-        # so render_index returns it without hitting the network.
-        session = _FakeSession(
-            resource_text={index_uri(): "# Memory index"},
-        )
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        text = await provider.render_index()
-        assert text == "# Memory index"
-        assert session.read_calls == [index_uri()]
-        # A second call hits the cache, no new network round-trip.
-        text2 = await provider.render_index()
-        assert text2 == "# Memory index"
-        assert session.read_calls == [index_uri()]
-
-    @pytest.mark.anyio
-    async def test_missing_index_returns_none(self) -> None:
-        session = _FakeSession(resource_text={})
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        text = await provider.render_index()
-        assert text is None
-
-    @pytest.mark.anyio
-    async def test_custom_uri_scheme(self) -> None:
-        session = _FakeSession(
-            resource_text={f"grasp://{MEMDIR}/MEMORY.md": "## Main"},
-        )
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-            uri_scheme="grasp://",
-        )
-        text = await provider.render_index()
-        assert text == "## Main"
-
-    @pytest.mark.anyio
-    async def test_index_meta_drives_freshness(self) -> None:
-        # The index resource's ``_meta.updated_ms`` flows into the snapshot
-        # so the standard pre-computed staleness warning works against it.
-        session = _FakeSession(
-            resources=[
+                    uri=topic_uri("beta"),
+                    name="beta.md",
+                    description="Beta",
+                    meta={"updated_ms": 1000},
+                ),
                 _FakeResource(
                     uri=index_uri(),
                     name="MEMORY.md",
-                    meta={"updated_ms": 12345},
-                )
+                    meta={"updated_ms": 3000},
+                ),
+                _FakeResource(uri="other://x", name="x.md"),
             ],
+            resource_text={
+                topic_uri("alpha"): _topic_text("alpha"),
+                topic_uri("beta"): _topic_text("beta"),
+                index_uri(): "# Memory index",
+            },
+        )
+        ctx = _make_ctx(session)
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+
+        names = [e.name for e in snap.entries]
+        # Sorted newest first by mtime.
+        assert names == ["alpha", "beta"]
+        # Index loaded separately.
+        assert snap.index == "# Memory index"
+
+    @pytest.mark.anyio
+    async def test_skipped_invalid_frontmatter_logged(self) -> None:
+        session = _FakeSession(
+            resources=[
+                _FakeResource(
+                    uri=topic_uri("bad"),
+                    name="bad.md",
+                    description="invalid",
+                ),
+                _FakeResource(
+                    uri=topic_uri("good"),
+                    name="good.md",
+                    description="ok",
+                ),
+            ],
+            resource_text={
+                # ``bad.md`` has no frontmatter — provider logs + skips.
+                topic_uri("bad"): "No frontmatter here.\n",
+                topic_uri("good"): _topic_text("good"),
+            },
+        )
+        ctx = _make_ctx(session)
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert [e.name for e in snap.entries] == ["good"]
+
+
+class TestRenderIndexOverMCP:
+    @pytest.mark.anyio
+    async def test_reads_index_resource(self) -> None:
+        session = _FakeSession(
+            resources=[_FakeResource(uri=index_uri(), name="MEMORY.md")],
             resource_text={index_uri(): "# idx"},
         )
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        snap = await provider.load()
-        assert snap.index == "# idx"
-        assert snap.index_mtime_ms == 12345
-
-
-class TestFileToolkitWiring:
-    """
-    MCPMemoryProvider is read-shaped — authoring goes through the
-    generic file-edit tools rooted at the memdir, backed by
-    :class:`MCPFileBackend`. The provider exposes a convenience
-    helper for the common wiring.
-    """
-
-    def test_root_returns_memdir_path(self) -> None:
-        session = _FakeSession(resources=[])
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root="/srv/memdir",
-        )
-        assert provider.root == Path("/srv/memdir")
-
-    def test_make_file_toolkit_rooted_at_memdir(self) -> None:
-        session = _FakeSession(resources=[])
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=session),  # type: ignore[arg-type]
-            root="/srv/memdir",
-        )
-        toolkit = provider.make_file_toolkit()
-        assert toolkit.allowed_roots == [Path("/srv/memdir")]
-        # The toolkit uses an MCP backend talking to the same client.
-        assert toolkit.backend.name.startswith("mcp:")
-
-
-class TestNotConnected:
-    @pytest.mark.anyio
-    async def test_load_without_session_raises(self) -> None:
-        provider = MCPMemoryProvider(
-            client=_FakeClient(session=None),  # type: ignore[arg-type]
-            root=MEMDIR,
-        )
-        with pytest.raises(RuntimeError, match="not connected|Not connected"):
-            await provider.load()
+        ctx = _make_ctx(session)
+        assert ctx.memory is not None
+        text = await ctx.memory.render_index()
+        assert text == "# idx"

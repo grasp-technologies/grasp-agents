@@ -1,9 +1,12 @@
 """
-Integration tests for :class:`FileEditToolkit`.
+Tests for :class:`FileEditToolkit`.
 
-Checks that the toolkit wires its three tools to a single backing store,
-per-session reset clears the right slot, and the end-to-end Read → Write
-and Read → Edit flows compose.
+The toolkit is **stateless**: backend + allowed_roots live on the
+:class:`FileBackend` wired onto :attr:`RunContext.file_backend`, and
+read-before-write bookkeeping lives on the active :class:`AgentLoop`
+via :class:`FileEditSessionState`. These tests cover what the toolkit
+itself owns (tool selection + per-tool configuration) and the
+end-to-end Read → Write flow via ctx + the agent-state ContextVar.
 """
 
 from __future__ import annotations
@@ -13,37 +16,25 @@ from typing import Any
 
 import pytest
 
+from grasp_agents.run_context import RunContext
 from grasp_agents.tools.file_edit import (
+    DeleteTool,
     EditTool,
+    FileEditSessionState,
     FileEditToolkit,
+    LocalFileBackend,
     NullRedactor,
     ReadInput,
     ReadTool,
     WriteInput,
     WriteTool,
+    reset_current_file_edit_state,
+    set_current_file_edit_state,
 )
-from grasp_agents.types.events import ToolErrorInfo
 
 
-def _error_message(result: Any) -> str:
-    """Unwrap a ``ToolErrorInfo`` returned from ``.run(...)``."""
-    assert isinstance(result, ToolErrorInfo), (
-        f"Expected a ToolErrorInfo, got {type(result).__name__}: {result!r}"
-    )
-    return result.error
-
-
-def test_toolkit_default_root_is_cwd() -> None:
+def test_toolkit_returns_four_tools() -> None:
     tk = FileEditToolkit()
-    # Allowed roots are :class:`pathlib.Path` — the backend resolves
-    # them to its own address space at validate_path time.
-    assert tk.allowed_roots == [Path.cwd()]
-
-
-def test_toolkit_returns_four_tools(tmp_path: Path) -> None:
-    from grasp_agents.tools.file_edit import DeleteTool  # noqa: PLC0415
-
-    tk = FileEditToolkit(allowed_roots=[tmp_path])
     tools = tk.tools()
     assert len(tools) == 4
     assert isinstance(tools[0], ReadTool)
@@ -52,92 +43,42 @@ def test_toolkit_returns_four_tools(tmp_path: Path) -> None:
     assert isinstance(tools[3], DeleteTool)
 
 
-def test_tools_share_store(tmp_path: Path) -> None:
-    """
-    All tools must point at the same backing store; otherwise
-    read-before-write can never succeed.
-    """
-    tk = FileEditToolkit(allowed_roots=[tmp_path])
-    shared = tk.store
-    # Private-member access intentional: asserting the invariant.
-    assert tk.read._store is shared  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert tk.write._store is shared  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert tk.edit._store is shared  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+def test_toolkit_per_tool_accessors() -> None:
+    tk = FileEditToolkit()
+    assert isinstance(tk.read, ReadTool)
+    assert isinstance(tk.write, WriteTool)
+    assert isinstance(tk.edit, EditTool)
+    assert isinstance(tk.delete, DeleteTool)
+
+
+def test_toolkit_passes_redactor_to_read() -> None:
+    redactor = NullRedactor()
+    tk = FileEditToolkit(redactor=redactor)
+    # Private member access — verifying the configuration flow-through.
+    assert tk.read._redactor is redactor  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+def test_toolkit_passes_new_file_mode_to_write() -> None:
+    tk = FileEditToolkit(new_file_mode=0o640)
+    assert tk.write._new_file_mode == 0o640  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio
 async def test_read_then_write_composes(tmp_path: Path) -> None:
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
+    """End-to-end: ctx-wired backend + agent-state ContextVar."""
+    backend = LocalFileBackend(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(
+        file_backend=backend, session_key="default"
+    )
+    tk = FileEditToolkit(redactor=NullRedactor())
     f = tmp_path / "a.txt"
     f.write_text("original")
 
-    await tk.read.run(ReadInput(path=str(f)))
-    await tk.write.run(WriteInput(path=str(f), content="updated"))
+    token = set_current_file_edit_state(FileEditSessionState())
+    try:
+        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
+        await tk.write.run(WriteInput(path=str(f), content="updated"), ctx=ctx)
+    finally:
+        reset_current_file_edit_state(token)
 
     assert f.read_text() == "updated"
-
-
-@pytest.mark.asyncio
-async def test_reset_session_clears_everything(tmp_path: Path) -> None:
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    f = tmp_path / "a.txt"
-    f.write_text("x")
-    await tk.read.run(ReadInput(path=str(f)))
-    await tk.allow_dotfile(tmp_path / ".env")
-
-    # State exists pre-reset.
-    state_before = await tk.store.get_session_state(tk.default_session_key)
-    assert state_before.read_file_state
-    assert state_before.dotfile_overrides
-
-    await tk.reset_session()
-
-    # Post-reset get_session_state returns a freshly-created state.
-    state_after = await tk.store.get_session_state(tk.default_session_key)
-    assert state_after.read_file_state == {}
-    assert state_after.dotfile_overrides == set()
-
-
-@pytest.mark.asyncio
-async def test_reset_session_invalidates_read_before_write(
-    tmp_path: Path,
-) -> None:
-    """
-    After reset_session the Write tool sees no prior read, so writes to
-    existing files are refused until re-read.
-    """
-    tk = FileEditToolkit(allowed_roots=[tmp_path], redactor=NullRedactor())
-    f = tmp_path / "a.txt"
-    f.write_text("x")
-    await tk.read.run(ReadInput(path=str(f)))
-
-    await tk.reset_session()
-
-    result = await tk.write.run(WriteInput(path=str(f), content="y"))
-    assert "Must Read" in _error_message(result)
-
-
-@pytest.mark.asyncio
-async def test_allow_dotfile_adds_resolved_path(tmp_path: Path) -> None:
-    tk = FileEditToolkit(allowed_roots=[tmp_path])
-    await tk.allow_dotfile(tmp_path / ".env")
-    state = await tk.store.get_session_state(tk.default_session_key)
-    assert (tmp_path / ".env").resolve() in state.dotfile_overrides
-
-
-@pytest.mark.asyncio
-async def test_reset_session_isolated_per_key(tmp_path: Path) -> None:
-    """
-    ``reset_session(key)`` affects only the given key; other sessions'
-    state survives.
-    """
-    tk = FileEditToolkit(allowed_roots=[tmp_path])
-    await tk.allow_dotfile(tmp_path / ".env", session_key="alice")
-    await tk.allow_dotfile(tmp_path / ".env", session_key="bob")
-
-    await tk.reset_session(session_key="alice")
-
-    alice = await tk.store.get_session_state("alice")
-    bob = await tk.store.get_session_state("bob")
-    assert alice.dotfile_overrides == set()
-    assert bob.dotfile_overrides  # Bob unaffected
