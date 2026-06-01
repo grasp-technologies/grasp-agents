@@ -136,9 +136,7 @@ _BLOCKED_DEVICE_PATHS: frozenset[str] = frozenset(
 # Binary-extension guard
 # ---------------------------------------------------------------------------
 
-# Conservative set covering the obvious binary families. Consumers who
-# want to read/write more exotic binary formats can extend via toolkit
-# config (exposed when FileEditToolkit lands in Step 2).
+# Conservative set covering the obvious binary families.
 _BINARY_EXTENSIONS: frozenset[str] = frozenset(
     {
         # Images

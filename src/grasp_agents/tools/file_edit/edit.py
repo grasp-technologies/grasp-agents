@@ -1,6 +1,6 @@
 """
 ``Edit`` — targeted string replacement inside an existing file, via
-the configured :class:`FileBackend`.
+``ctx.file_backend``.
 
 Invariants (same family as :class:`WriteTool`, plus matching rules):
 
@@ -19,8 +19,8 @@ Invariants (same family as :class:`WriteTool`, plus matching rules):
 8. Atomic write (backend-specific).
 9. Mode preservation — the file keeps its permission bits across the
    edit (local backend only).
-10. Post-write mtime refresh on the session state so a following
-    ``Edit`` doesn't see its own write as external drift.
+10. Post-write mtime refresh by the backend so a following ``Edit``
+    doesn't see its own write as external drift.
 
 The fuzzy-match chain is **9 strategies deep** — see :mod:`fuzzy_match`
 for the detailed contract.
@@ -34,14 +34,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from .agent_state import get_current_file_edit_state
 from .fuzzy_match import apply_replacements, fuzzy_find, preserve_quote_style
 from .paths import PathAccessError, has_binary_extension
 
 if TYPE_CHECKING:
     from ...run_context import RunContext
-    from .backend import FileBackend
-    from .session_state import FileEditSessionState
-    from .store import FileEditStore
 
 
 class EditInput(BaseModel):
@@ -50,7 +48,7 @@ class EditInput(BaseModel):
     path: str = Field(
         description=(
             "Path to the file to edit. Must exist and must resolve under "
-            "one of the toolkit's allowed roots."
+            "one of the backend's allowed roots."
         )
     )
     old_string: str = Field(
@@ -84,46 +82,34 @@ class EditResult(BaseModel):
 
 class EditTool(BaseTool[EditInput, EditResult, Any]):
     """
-    Find-and-replace a string inside an existing file via the configured backend.
+    Find-and-replace a string inside an existing file via ``ctx.file_backend``.
 
-    Attach via :class:`FileEditToolkit`; do not instantiate directly unless
-    you're constructing a custom toolkit.
+    Stateless: backend, allowed_roots, and read-state bookkeeping all
+    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
     """
 
     name = "Edit"
     description = (
-        "Replace an exact text block inside an existing file. You must "
-        "have Read the file earlier in this session and it must not have "
-        "changed on disk since. Matching tolerates whitespace / "
-        "indentation / smart-quote drift via a 9-strategy chain; "
-        "ambiguous matches are refused unless `replace_all` is True. Use "
-        "`Write` to create a new file or replace a file's whole content."
+        "Replace an exact text block inside an existing file. `old_string` "
+        "must be non-empty — `Edit` is find-and-replace, not append. Treat "
+        "`old_string` as a unique anchor: a line or block from the existing "
+        "file at the place you want to edit. The replacement occurs where that "
+        "anchor matches. To insert before/after the anchor, include the anchor "
+        "and the new text in `new_string`. To append to a file, use the file's "
+        "current final text as the anchor and include it followed by the "
+        "appended text in `new_string`. You must have Read the file earlier in "
+        "this session and it must not have changed on disk since. Fuzzy matching "
+        "is attempted when the exact `old_string` is not found. Ambiguous matches "
+        "are refused unless `replace_all` is True. To replace a file's whole "
+        "content or to create a new file, use the `Write` tool instead."
     )
 
     def __init__(
         self,
         *,
-        store: FileEditStore,
-        allowed_roots: list[str] | list[Any],
-        backend: FileBackend | None = None,
-        default_session_key: str = "default",
-        include_dotfiles: bool = True,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from .local_backend import LocalFileBackend  # noqa: PLC0415
-
-        self._store = store
-        self._backend = backend or LocalFileBackend()
-        self._default_session_key = default_session_key
-        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
-        self._include_dotfiles = include_dotfiles
-
-    async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
-        """Pick the session state this call should read/write."""
-        if ctx is not None and ctx.file_edit_store is not None:
-            return await ctx.file_edit_store.get_session_state(ctx.session_key)
-        return await self._store.get_session_state(self._default_session_key)
 
     async def _run(
         self,
@@ -135,6 +121,12 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
     ) -> EditResult:
         del exec_id, progress_callback
 
+        if ctx is None or ctx.file_backend is None:
+            raise ValueError(
+                "Edit requires ctx.file_backend. Wire a FileBackend on "
+                "RunContext before running the agent."
+            )
+
         if inp.old_string == inp.new_string:
             raise ValueError("old_string and new_string are identical; no-op refused.")
 
@@ -143,40 +135,47 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
                 f"Cannot edit binary file {inp.path!r}. Edit is text-only."
             )
 
-        state = await self._resolve_state(ctx)
-
+        backend = ctx.file_backend
+        state = get_current_file_edit_state()
+        overrides = (
+            set(state.dotfile_overrides)
+            if state is not None and state.dotfile_overrides
+            else None
+        )
         try:
-            resolved = await self._backend.validate_path(
+            resolved = await backend.validate_path(
                 Path(inp.path),
-                self._allowed_roots,
                 must_exist=True,
-                dotfile_overrides=state.dotfile_overrides,
-                include_dotfiles=self._include_dotfiles,
+                dotfile_overrides=overrides,
             )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        record = state.get_read_record(resolved)
-        if record is None:
-            raise ValueError(
-                f"Must Read {resolved} before editing it. "
-                "Read-before-edit enforcement prevents editing files whose "
-                "current content the model hasn't seen."
-            )
+        if state is not None:
+            record = state.get_read_record(resolved)
+            if record is None:
+                raise ValueError(
+                    f"Must Read {resolved} before editing it. "
+                    "Read-before-edit enforcement prevents editing files whose "
+                    "current content the model hasn't seen."
+                )
 
-        current_stat = await self._backend.stat(resolved)
-        if current_stat.mtime != record.mtime:
-            raise ValueError(
-                f"{resolved} was modified since you last read it "
-                f"(recorded mtime {record.mtime!r}, current {current_stat.mtime!r}). "
-                "Re-Read before editing."
-            )
+            current_stat = await backend.stat(resolved)
+            if current_stat.mtime != record.mtime:
+                raise ValueError(
+                    f"{resolved} was modified since you last read it "
+                    f"(recorded mtime {record.mtime!r}, "
+                    f"current {current_stat.mtime!r}). "
+                    "Re-Read before editing."
+                )
+        else:
+            current_stat = await backend.stat(resolved)
 
         # Preserve existing permission bits across the edit. The backend
         # returns full ``st_mode``; mask off the type bits for chmod.
         mode = current_stat.mode & 0o7777
 
-        original_bytes, _ = await self._backend.read_bytes(resolved)
+        original_bytes, _ = await backend.read_bytes(resolved)
         try:
             content = original_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -212,11 +211,14 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         new_content = apply_replacements(content, matches, adjusted_new)
         data = new_content.encode("utf-8")
 
-        new_mtime = await self._backend.write_bytes(
-            resolved, data, mode=mode, overwrite=True
+        new_mtime = await backend.write_bytes(
+            resolved,
+            data,
+            mode=mode,
+            overwrite=True,
         )
-
-        state.record_write(resolved, new_mtime)
+        if state is not None:
+            state.record_write(resolved, new_mtime)
 
         return EditResult(
             path=str(resolved),

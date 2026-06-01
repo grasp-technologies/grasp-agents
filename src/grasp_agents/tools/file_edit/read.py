@@ -1,5 +1,5 @@
 r"""
-``Read`` — read a file via the configured :class:`FileBackend`.
+``Read`` — read a file via ``ctx.file_backend``.
 
 Output is line-numbered in ``cat -n`` format (``<line-number>\t<content>``),
 with 1-indexed ``offset`` (starting line) and ``limit`` (max lines) for
@@ -12,14 +12,17 @@ Guards, applied in order:
 2. ``backend.validate_path`` — sandbox + sensitive-path policy. Local-FS
    backends additionally enforce device-path blocks and the credential
    dotfile deny list; MCP backends trust their server.
-3. Char cap — reject reads whose formatted output would exceed
-   ``max_read_chars`` (default 100 KiB); guidance steers the model toward
-   ``offset`` / ``limit``.
-4. Secret redaction (if configured) — final pass before content returns.
+3. Size gate — reject files larger than ``max_file_bytes`` (default
+   10 MB): too large to open at all, even paginated.
+4. Char cap — when the formatted window would exceed ``max_read_chars``
+   (default 100 KiB) it is truncated at a line boundary and a notice is
+   appended steering the model toward ``offset`` / ``limit``. Reads are
+   no longer rejected for being too wide — only whole files past the
+   size gate are.
+5. Secret redaction (if configured) — final pass before content returns.
 
-After a successful read the file is registered in the session state's
-``read_file_state`` map, enabling read-before-write enforcement in
-:class:`WriteTool` and staleness detection in :class:`EditTool`.
+The backend records the read internally so subsequent writes pass the
+read-before-write check.
 """
 
 from __future__ import annotations
@@ -30,20 +33,23 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from .agent_state import get_current_file_edit_state
 from .paths import PathAccessError, has_binary_extension
 
 if TYPE_CHECKING:
     from ...run_context import RunContext
-    from .backend import FileBackend
     from .redact import SecretRedactor
-    from .session_state import FileEditSessionState
-    from .store import FileEditStore
 
 # Default char cap on the formatted read output. 100 KiB is ~25-35K
 # tokens across common tokenizations — a sensible hazard limit for the
 # context window. Configurable via the toolkit.
 DEFAULT_MAX_READ_CHARS = 100_000
 DEFAULT_READ_LIMIT = 500
+# Whole-file hard ceiling. Files past this are refused outright (pagination
+# can't help: ``read_text`` loads the whole file into memory regardless of
+# the requested window). Well above ``max_read_chars`` so ordinary large
+# source files can still be read in windows.
+DEFAULT_MAX_FILE_BYTES = 10_000_000
 
 
 class ReadInput(BaseModel):
@@ -52,7 +58,7 @@ class ReadInput(BaseModel):
     path: str = Field(
         description=(
             "Absolute, relative, or ~-expanded path to the file to read. "
-            "Must resolve under one of the toolkit's allowed roots."
+            "Must resolve under one of the backend's allowed roots."
         )
     )
     offset: int | None = Field(
@@ -78,6 +84,7 @@ class ReadResult(BaseModel):
     path: str
     content: str
     total_lines: int
+    truncated: bool = False
 
 
 def _format_window(
@@ -85,42 +92,56 @@ def _format_window(
     offset: int | None,
     limit: int | None,
     max_read_chars: int,
-) -> tuple[str, int]:
+) -> tuple[str, int, int, bool]:
     """
     Slice ``text`` to the requested window and format with ``cat -n``.
 
-    Returns ``(formatted_content, total_lines)``. Raises ``ValueError``
-    if the formatted output exceeds ``max_read_chars``.
+    Returns ``(formatted_content, total_lines, last_line, truncated)``.
+    ``last_line`` is the 1-indexed number of the last line included.
+    When the formatted window would exceed ``max_read_chars`` it is cut at
+    a line boundary and ``truncated`` is True — the caller appends a notice
+    so the model can continue with ``offset=last_line + 1`` rather than
+    receiving an error.
     """
     lines = text.splitlines(keepends=True)
     total_lines = len(lines)
 
     start = (offset or 1) - 1
     effective_limit = limit if limit is not None else DEFAULT_READ_LIMIT
-    end = start + effective_limit
+    end = min(start + effective_limit, total_lines)
     window = lines[start:end]
 
     formatted_parts: list[str] = []
+    used = 0
+    truncated = False
     for i, line in enumerate(window, start=start + 1):
-        formatted_parts.append(f"{i:>6}\t{line.rstrip(chr(10))}")
+        rendered = f"{i:>6}\t{line.rstrip(chr(10))}"
+        # +1 for the newline that joins this line to the previous one.
+        added = len(rendered) + (1 if formatted_parts else 0)
+        if formatted_parts and used + added > max_read_chars:
+            truncated = True
+            break
+        formatted_parts.append(rendered)
+        used += added
+
     formatted = "\n".join(formatted_parts)
 
+    # A single line longer than the cap: keep the first line but hard-cut
+    # it so the returned output never exceeds the budget.
     if len(formatted) > max_read_chars:
-        raise ValueError(
-            f"Read produced {len(formatted):,} characters, exceeding the "
-            f"safety limit ({max_read_chars:,}). Use `offset` and `limit` "
-            f"to narrow the range. File has {total_lines} lines total."
-        )
+        formatted = formatted[:max_read_chars]
+        truncated = True
 
-    return formatted, total_lines
+    last_line = start + len(formatted_parts)
+    return formatted, total_lines, last_line, truncated
 
 
 class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
     """
-    Read a text file with pagination via the configured backend.
+    Read a text file with pagination via ``ctx.file_backend``.
 
-    Attach via :class:`FileEditToolkit`; do not instantiate directly
-    unless you're constructing a custom toolkit.
+    Stateless: backend, allowed_roots, and read-state bookkeeping all
+    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
     """
 
     name = "Read"
@@ -136,39 +157,17 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
     def __init__(
         self,
         *,
-        store: FileEditStore,
-        allowed_roots: list[str] | list[Any],
-        redactor: SecretRedactor,
-        backend: FileBackend | None = None,
-        include_dotfiles: bool = True,
-        default_session_key: str = "default",
+        redactor: SecretRedactor | None = None,
         max_read_chars: int = DEFAULT_MAX_READ_CHARS,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        # Local import — keeps the backend module out of the
-        # ``types.tool``-triggered import path used by ``RunContext``.
-        from .local_backend import LocalFileBackend  # noqa: PLC0415
+        from .redact import DefaultSecretRedactor  # noqa: PLC0415
 
-        self._store = store
-        self._backend = backend or LocalFileBackend()
-        self._default_session_key = default_session_key
-        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
-        self._redactor = redactor
-        self._include_dotfiles = include_dotfiles
+        self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
         self._max_read_chars = max_read_chars
-
-    async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
-        """
-        Pick the session state this call should read/write.
-
-        Prefers the store + session key on ``ctx`` (production path —
-        multi-session safe) and falls back to the tool's own store with
-        ``default_session_key`` (standalone/testing path).
-        """
-        if ctx is not None and ctx.file_edit_store is not None:
-            return await ctx.file_edit_store.get_session_state(ctx.session_key)
-        return await self._store.get_session_state(self._default_session_key)
+        self._max_file_bytes = max_file_bytes
 
     async def _run(
         self,
@@ -180,37 +179,64 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
     ) -> ReadResult:
         del exec_id, progress_callback
 
+        if ctx is None or ctx.file_backend is None:
+            raise ValueError(
+                "Read requires ctx.file_backend. Wire a FileBackend on "
+                "RunContext before running the agent."
+            )
+
         if has_binary_extension(inp.path):
             raise ValueError(
                 f"Cannot read binary file {inp.path!r}. Use a dedicated "
                 "tool for this format."
             )
 
-        state = await self._resolve_state(ctx)
-
+        backend = ctx.file_backend
+        state = get_current_file_edit_state()
+        overrides = (
+            set(state.dotfile_overrides)
+            if state is not None and state.dotfile_overrides
+            else None
+        )
         try:
-            resolved = await self._backend.validate_path(
+            resolved = await backend.validate_path(
                 Path(inp.path),
-                self._allowed_roots,
                 must_exist=True,
-                dotfile_overrides=state.dotfile_overrides,
-                include_dotfiles=self._include_dotfiles,
+                dotfile_overrides=overrides,
             )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        content, mtime = await self._backend.read_text(resolved)
+        # Hard size gate: a file too large to open at all. Pagination can't
+        # rescue it — ``read_text`` reads the whole file into memory first.
+        file_size = (await backend.stat(resolved)).size
+        if file_size > self._max_file_bytes:
+            raise ValueError(
+                f"File is {file_size:,} bytes, exceeding the maximum "
+                f"readable size ({self._max_file_bytes:,}). It is too large "
+                "to open; use a targeted tool (e.g. grep) to inspect it."
+            )
 
-        formatted, total_lines = _format_window(
+        content, mtime = await backend.read_text(resolved)
+        if state is not None:
+            state.record_read(resolved, mtime)
+
+        formatted, total_lines, last_line, truncated = _format_window(
             content, inp.offset, inp.limit, self._max_read_chars
         )
 
         formatted = self._redactor(formatted)
-
-        state.record_read(resolved, mtime)
+        if truncated:
+            formatted += (
+                f"\n\n[Read truncated: showing lines {(inp.offset or 1)}-"
+                f"{last_line} of {total_lines}. Output hit the "
+                f"{self._max_read_chars:,}-char limit — continue with "
+                f"offset={last_line + 1}.]"
+            )
 
         return ReadResult(
             path=str(resolved),
             content=formatted,
             total_lines=total_lines,
+            truncated=truncated,
         )

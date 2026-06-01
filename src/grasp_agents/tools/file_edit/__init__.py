@@ -1,22 +1,15 @@
 """
 File-edit tool package.
 
-Provides ``Read`` / ``Write`` / ``Edit`` / ``Delete`` primitives and a
-:class:`FileEditToolkit` factory bundling them. Read-before-write
-bookkeeping lives on the *agent* (each :class:`AgentLoop` owns its own
-:class:`FileEditSessionState`); the :class:`FileBackend` itself is
-pure I/O. Default backend is :class:`LocalFileBackend` (host
-filesystem); :class:`MCPFileBackend` routes the same calls to an MCP
-server speaking the file-tool protocol.
+Provides the ``Read`` / ``Write`` / ``Edit`` / ``Delete`` primitives.
+Read-before-write bookkeeping lives on the *agent* (each
+:class:`AgentLoop` owns its own :class:`FileEditSessionState`); the
+:class:`FileBackend` itself is pure I/O. Default backend is
+:class:`LocalFileBackend` (host filesystem); :class:`MCPFileBackend`
+routes the same calls to an MCP server speaking the file-tool protocol.
 
-Usage::
-
-    from grasp_agents.tools.file_edit import FileEditToolkit
-
-    backend = LocalFileBackend(allowed_roots=[Path.cwd()])
-    ctx = RunContext(state=..., file_backend=backend)
-    toolkit = FileEditToolkit()
-    agent = LLMAgent(..., tools=[*toolkit.tools(), my_custom_tool])
+To bundle these with the search tools (``Glob`` / ``Grep``), use
+:class:`grasp_agents.tools.FileToolkit`.
 
 Imports are lazy (PEP 562) to avoid pulling :mod:`types.tool` into
 :class:`RunContext` construction.
@@ -56,7 +49,6 @@ if TYPE_CHECKING:
     from .read import ReadInput, ReadResult, ReadTool
     from .redact import DefaultSecretRedactor, NullRedactor, SecretRedactor
     from .session_state import FileEditSessionState, ReadRecord
-    from .toolkit import FileEditToolkit
     from .write import WriteInput, WriteResult, WriteTool
 
 
@@ -98,7 +90,6 @@ _LAZY: dict[str, str] = {
     "SecretRedactor": "redact",
     "FileEditSessionState": "session_state",
     "ReadRecord": "session_state",
-    "FileEditToolkit": "toolkit",
     "WriteInput": "write",
     "WriteResult": "write",
     "WriteTool": "write",
@@ -126,7 +117,6 @@ __all__ = [
     "EditTool",
     "FileBackend",
     "FileEditSessionState",
-    "FileEditToolkit",
     "FileEntry",
     "FileStat",
     "LocalFileBackend",

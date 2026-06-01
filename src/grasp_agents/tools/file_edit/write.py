@@ -1,5 +1,5 @@
 """
-``Write`` — create or overwrite a file via the configured :class:`FileBackend`.
+``Write`` — create or overwrite a file via ``ctx.file_backend``.
 
 Invariants enforced on every call:
 
@@ -17,9 +17,9 @@ Invariants enforced on every call:
 5. Preserve the existing file's permission bits when overwriting (local
    backend only — MCP servers may not honor the ``mode`` argument).
 
-On success the session state's ``read_file_state`` is refreshed with
-the post-write mtime — consecutive edits by the same agent don't
-re-trip the staleness check on their own prior writes.
+On success the backend refreshes its read record with the post-write
+mtime so consecutive edits by the same agent don't re-trip the
+staleness check on their own prior writes.
 """
 
 from __future__ import annotations
@@ -30,13 +30,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from .agent_state import get_current_file_edit_state
 from .paths import PathAccessError
 
 if TYPE_CHECKING:
     from ...run_context import RunContext
-    from .backend import FileBackend
-    from .session_state import FileEditSessionState
-    from .store import FileEditStore
 
 # Permissions applied to newly-created files. Existing files preserve
 # their current mode (e.g. an executable script stays executable).
@@ -65,48 +63,33 @@ class WriteResult(BaseModel):
 
 class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
     """
-    Create or overwrite a file atomically via the configured backend.
+    Create or overwrite a file atomically via ``ctx.file_backend``.
 
-    Attach via :class:`FileEditToolkit`; do not instantiate directly
-    unless you're constructing a custom toolkit.
+    Stateless: backend, allowed_roots, and read-state bookkeeping all
+    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
     """
 
     name = "Write"
     description = (
-        "Create or overwrite a file. For existing files you must have "
-        "Read them earlier in this session and the file must not have "
-        "changed on disk since — otherwise the write is refused. Parent "
-        "directory must exist. Writes are atomic: a crash leaves either "
-        "the old content or the new content, never partial bytes. Use "
-        "`Edit` for targeted string replacement in large files."
+        "Create a new file or replace an existing file's entire content. "
+        "Prefer `Edit` for any targeted change to an existing file "
+        "(adding a line, updating a field, fixing a typo) — `Write` "
+        "REPLACES the file, so anything not in your `content` is lost. "
+        "For existing files you must have `Read` them earlier in this "
+        "session and the file must not have changed on disk since — "
+        "otherwise the write is refused. Parent directory must exist. "
+        "Writes are atomic: a crash leaves either the old content or "
+        "the new content, never partial bytes."
     )
 
     def __init__(
         self,
         *,
-        store: FileEditStore,
-        allowed_roots: list[str] | list[Any],
-        backend: FileBackend | None = None,
-        default_session_key: str = "default",
-        include_dotfiles: bool = True,
         new_file_mode: int = DEFAULT_NEW_FILE_MODE,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from .local_backend import LocalFileBackend  # noqa: PLC0415
-
-        self._store = store
-        self._backend = backend or LocalFileBackend()
-        self._default_session_key = default_session_key
-        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
-        self._include_dotfiles = include_dotfiles
         self._new_file_mode = new_file_mode
-
-    async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
-        """Pick the session state this call should read/write."""
-        if ctx is not None and ctx.file_edit_store is not None:
-            return await ctx.file_edit_store.get_session_state(ctx.session_key)
-        return await self._store.get_session_state(self._default_session_key)
 
     async def _run(
         self,
@@ -118,59 +101,77 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
     ) -> WriteResult:
         del exec_id, progress_callback
 
-        state = await self._resolve_state(ctx)
+        if ctx is None or ctx.file_backend is None:
+            raise ValueError(
+                "Write requires ctx.file_backend. Wire a FileBackend on "
+                "RunContext before running the agent."
+            )
 
+        backend = ctx.file_backend
+        state = get_current_file_edit_state()
+        overrides = (
+            set(state.dotfile_overrides)
+            if state is not None and state.dotfile_overrides
+            else None
+        )
         try:
-            resolved = await self._backend.validate_path(
+            resolved = await backend.validate_path(
                 Path(inp.path),
-                self._allowed_roots,
                 must_exist=False,
-                dotfile_overrides=state.dotfile_overrides,
-                include_dotfiles=self._include_dotfiles,
+                dotfile_overrides=overrides,
             )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        target_exists = await self._backend.exists(resolved)
+        target_exists = await backend.exists(resolved)
 
         if target_exists:
-            record = state.get_read_record(resolved)
-            if record is None:
-                raise ValueError(
-                    f"Must Read {resolved} before writing to it. "
-                    "Read-before-write enforcement prevents clobbering "
-                    "files whose current content the model hasn't seen."
-                )
+            # Read-before-write only enforced inside an agent — standalone
+            # tool use (state is None) is a power-user escape hatch.
+            if state is not None:
+                record = state.get_read_record(resolved)
+                if record is None:
+                    raise ValueError(
+                        f"Must Read {resolved} before writing to it. "
+                        "Read-before-write enforcement prevents clobbering "
+                        "files whose current content the model hasn't seen."
+                    )
 
-            current_stat = await self._backend.stat(resolved)
-            if current_stat.mtime != record.mtime:
-                raise ValueError(
-                    f"{resolved} was modified since you last read it "
-                    f"(recorded mtime {record.mtime!r}, "
-                    f"current {current_stat.mtime!r}). Re-Read before writing."
-                )
+                current_stat = await backend.stat(resolved)
+                if current_stat.mtime != record.mtime:
+                    raise ValueError(
+                        f"{resolved} was modified since you last read it "
+                        f"(recorded mtime {record.mtime!r}, "
+                        f"current {current_stat.mtime!r}). Re-Read before writing."
+                    )
 
-            # Preserve existing mode when overwriting. Mask off the
-            # file-type bits — the backend returns full ``st_mode`` so
-            # callers can isdir/isfile-check.
-            mode = current_stat.mode & 0o7777
+                # Preserve existing mode when overwriting. Mask off the
+                # file-type bits — the backend returns full ``st_mode``
+                # so callers can isdir/isfile-check.
+                mode = current_stat.mode & 0o7777
+            else:
+                current_stat = await backend.stat(resolved)
+                mode = current_stat.mode & 0o7777
         else:
             mode = self._new_file_mode
 
         # Parent directory must exist — refuse to silently create missing
         # intermediate dirs.
-        if not await self._backend.parent_exists(resolved):
+        if not await backend.parent_exists(resolved):
             raise ValueError(
                 f"Parent directory for {resolved} does not exist. "
                 "Create it explicitly first."
             )
 
         data = inp.content.encode("utf-8")
-        new_mtime = await self._backend.write_bytes(
-            resolved, data, mode=mode, overwrite=True
+        new_mtime = await backend.write_bytes(
+            resolved,
+            data,
+            mode=mode,
+            overwrite=True,
         )
-
-        state.record_write(resolved, new_mtime)
+        if state is not None:
+            state.record_write(resolved, new_mtime)
 
         return WriteResult(
             path=str(resolved),

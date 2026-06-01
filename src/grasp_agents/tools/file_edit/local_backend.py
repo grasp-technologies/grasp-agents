@@ -6,6 +6,10 @@ Holds the path-safety guards (sandbox roots, sensitive-path deny list,
 device-path block) — the tools call :meth:`validate_path` before any
 I/O. Search delegates to ``rg`` for grep (see :mod:`..file_search.grep`)
 and ``os.walk`` for find_files.
+
+Read-before-write bookkeeping lives on the *agent* (each
+:class:`AgentLoop` owns its own :class:`FileEditSessionState`); the
+backend itself is pure I/O.
 """
 
 from __future__ import annotations
@@ -80,38 +84,52 @@ class LocalFileBackend:
     """
     Default :class:`FileBackend` operating on the host filesystem.
 
-    All path-safety guards (sandbox roots, sensitive-path deny list,
-    device-path block) live here; the tools just call
-    :meth:`validate_path` before reading or writing.
+    Args:
+        allowed_roots: Directories the backend will accept paths under.
+            Defaults to ``[Path.cwd()]``.
+        include_dotfiles: If True (default), the sensitive-path deny list
+            adds common credential-dotfile patterns (``.env``, ``~/.ssh``,
+            etc.) on top of the system-path baseline.
+
     """
 
     name: str = "local"
 
+    def __init__(
+        self,
+        *,
+        allowed_roots: list[Path | str] | None = None,
+        include_dotfiles: bool = True,
+    ) -> None:
+        if allowed_roots is None:
+            roots: list[Path] = [Path.cwd()]
+        else:
+            roots = [Path(r) for r in allowed_roots]
+        self._allowed_roots: list[Path] = roots
+        self._include_dotfiles = include_dotfiles
+
+    @property
+    def allowed_roots(self) -> list[Path]:
+        return list(self._allowed_roots)
+
     async def validate_path(
         self,
         path: Path,
-        allowed_roots: list[Path],
         *,
         must_exist: bool,
-        dotfile_overrides: Iterable[Path] | None = None,
-        include_dotfiles: bool = True,
+        dotfile_overrides: set[Path] | None = None,
     ) -> Path:
         if is_blocked_device(path):
             raise PathAccessError(
-                f"Cannot access device path {path}: blocks or produces "
-                "infinite output."
+                f"Cannot access device path {path}: blocks or produces infinite output."
             )
 
-        resolved = resolve_safe(path, allowed_roots, must_exist=must_exist)
-
-        override_paths: set[Path] | None = (
-            set(dotfile_overrides) if dotfile_overrides else None
-        )
+        resolved = resolve_safe(path, self._allowed_roots, must_exist=must_exist)
 
         err = check_sensitive_path(
             resolved,
-            include_dotfiles=include_dotfiles,
-            session_overrides=override_paths,
+            include_dotfiles=self._include_dotfiles,
+            session_overrides=dotfile_overrides,
         )
         if err is not None:
             raise PathAccessError(err)
@@ -133,33 +151,47 @@ class LocalFileBackend:
 
     async def read_text(self, path: Path) -> tuple[str, float]:
         def _read() -> tuple[str, float]:
-            mtime = path.stat().st_mtime
-            return path.read_text(encoding="utf-8", errors="replace"), mtime
+            resolved = path.resolve(strict=True)
+            mtime = resolved.stat().st_mtime
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+            return text, mtime
 
         return await asyncio.to_thread(_read)
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
         def _read() -> tuple[bytes, float]:
-            mtime = path.stat().st_mtime
-            return path.read_bytes(), mtime
+            resolved = path.resolve(strict=True)
+            mtime = resolved.stat().st_mtime
+            return resolved.read_bytes(), mtime
 
         return await asyncio.to_thread(_read)
 
     async def write_bytes(
-        self, path: Path, data: bytes, *, mode: int, overwrite: bool = True
+        self,
+        path: Path,
+        data: bytes,
+        *,
+        mode: int,
+        overwrite: bool = True,
     ) -> float:
         def _write() -> float:
             atomic_write_bytes(path, data, mode=mode, overwrite=overwrite)
-            return path.stat().st_mtime
+            # ``resolve`` after the write so a brand-new file's parent
+            # symlinks (if any) follow the same canonicalization as
+            # reads.
+            resolved = path.resolve(strict=True)
+            return resolved.stat().st_mtime
 
         return await asyncio.to_thread(_write)
 
     async def delete(self, path: Path) -> None:
         await asyncio.to_thread(path.unlink)
 
-    async def list_dir(
-        self, path: Path, *, recursive: bool = False
-    ) -> list[FileEntry]:
+    async def mkdir(self, path: Path) -> None:
+        resolved = await self.validate_path(path, must_exist=False)
+        await asyncio.to_thread(lambda: resolved.mkdir(parents=True, exist_ok=True))
+
+    async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
         def _walk() -> list[FileEntry]:
             if not path.is_dir():
                 return []
@@ -289,9 +321,7 @@ def glob_filter_entries(
         except ValueError:
             continue
         rel_str = str(rel)
-        if not include_hidden and any(
-            part.startswith(".") for part in rel.parts
-        ):
+        if not include_hidden and any(part.startswith(".") for part in rel.parts):
             continue
         if not _glob_matches(pattern, rel_str):
             continue

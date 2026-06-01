@@ -1,6 +1,5 @@
 """
-``Glob`` — fast path-pattern matching routed through the configured
-:class:`FileBackend`.
+``Glob`` — fast path-pattern matching routed through ``ctx.file_backend``.
 
 Accepts standard glob patterns (``*.py``, ``**/*.tsx``, ``src/**/test_*.py``)
 and returns matching file paths sorted by mtime (newest first) — useful for
@@ -9,7 +8,7 @@ and returns matching file paths sorted by mtime (newest first) — useful for
 Guards:
 
 1. ``allowed_roots`` — the search root must be under one of the configured
-   roots; the backend resolves and enforces containment.
+   roots on the backend; the backend resolves and enforces containment.
 2. Result cap — large result sets are truncated to ``head_limit`` (default
    250) and ``truncated=True`` is returned so the model can narrow the
    pattern instead of parsing an unbounded list.
@@ -27,11 +26,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from ..file_edit.agent_state import get_current_file_edit_state
 from ..file_edit.paths import PathAccessError
 
 if TYPE_CHECKING:
     from ...run_context import RunContext
-    from ..file_edit.backend import FileBackend, FileStat
+    from ..file_edit.backend import FileStat
 
 
 def _is_directory(stat: FileStat) -> bool:
@@ -73,7 +73,7 @@ class GlobInput(BaseModel):
         default=None,
         description=(
             "Directory to search within. Must resolve under one of the "
-            "toolkit's allowed roots. Defaults to the first allowed root."
+            "backend's allowed roots. Defaults to the first allowed root."
         ),
     )
 
@@ -90,8 +90,8 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
     """
     Match file paths against a glob pattern, sorted by mtime.
 
-    Attach via :class:`FileSearchToolkit` or instantiate directly with
-    ``allowed_roots`` and (optionally) a backend.
+    Stateless: backend + allowed_roots live on
+    :attr:`RunContext.file_backend`.
     """
 
     name = "Glob"
@@ -107,17 +107,11 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
     def __init__(
         self,
         *,
-        allowed_roots: list[Path] | list[str],
-        backend: FileBackend | None = None,
         head_limit: int = DEFAULT_HEAD_LIMIT,
         include_hidden: bool = False,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from ..file_edit.local_backend import LocalFileBackend  # noqa: PLC0415
-
-        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
-        self._backend = backend or LocalFileBackend()
         self._head_limit = head_limit
         self._include_hidden = include_hidden
 
@@ -129,21 +123,44 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> GlobResult:
-        del ctx, exec_id, progress_callback
+        del exec_id, progress_callback
 
-        raw_root = Path(inp.path) if inp.path is not None else self._allowed_roots[0]
+        if ctx is None or ctx.file_backend is None:
+            raise ValueError(
+                "Glob requires ctx.file_backend. Wire a FileBackend on "
+                "RunContext before running the agent."
+            )
+
+        backend = ctx.file_backend
+        roots = backend.allowed_roots
+        if inp.path is not None:
+            raw_root = Path(inp.path)
+        elif roots:
+            raw_root = roots[0]
+        else:
+            raise ValueError(
+                "Glob requires a path or a backend with at least one "
+                "allowed_root."
+            )
+
+        state = get_current_file_edit_state()
+        overrides = (
+            set(state.dotfile_overrides)
+            if state is not None and state.dotfile_overrides
+            else None
+        )
         try:
-            resolved = await self._backend.validate_path(
-                raw_root, self._allowed_roots, must_exist=True
+            resolved = await backend.validate_path(
+                raw_root, must_exist=True, dotfile_overrides=overrides
             )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        stat = await self._backend.stat(resolved)
+        stat = await backend.stat(resolved)
         if not _is_directory(stat):
             raise ValueError(f"Glob search path must be a directory: {resolved}")
 
-        matched, truncated = await self._backend.find_files(
+        matched, truncated = await backend.find_files(
             resolved,
             inp.pattern,
             include_hidden=self._include_hidden,

@@ -1,5 +1,5 @@
 """
-``Delete`` — remove a file via the configured :class:`FileBackend`.
+``Delete`` — remove a file via ``ctx.file_backend``.
 
 Same safety family as :class:`WriteTool` and :class:`EditTool`:
 
@@ -15,8 +15,9 @@ Same safety family as :class:`WriteTool` and :class:`EditTool`:
    removing a directory tree should be an explicit user-level action
    outside the agent loop.
 
-Successful deletion clears the corresponding ``read_file_state`` entry
-so a later ``Write`` to the same path creates a fresh file.
+Successful deletion clears the corresponding read record in the
+backend's session state so a later ``Write`` to the same path creates a
+fresh file.
 """
 
 from __future__ import annotations
@@ -27,13 +28,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from .agent_state import get_current_file_edit_state
 from .paths import PathAccessError
 
 if TYPE_CHECKING:
     from ...run_context import RunContext
-    from .backend import FileBackend
-    from .session_state import FileEditSessionState
-    from .store import FileEditStore
 
 
 class DeleteInput(BaseModel):
@@ -42,7 +41,7 @@ class DeleteInput(BaseModel):
     path: str = Field(
         description=(
             "Path to the file to delete. Must exist and must resolve "
-            "under one of the toolkit's allowed roots."
+            "under one of the backend's allowed roots."
         )
     )
 
@@ -56,10 +55,10 @@ class DeleteResult(BaseModel):
 
 class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
     """
-    Delete a file via the configured backend.
+    Delete a file via ``ctx.file_backend``.
 
-    Attach via :class:`FileEditToolkit`; do not instantiate directly
-    unless you're constructing a custom toolkit.
+    Stateless: backend, allowed_roots, and read-state bookkeeping all
+    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
     """
 
     name = "Delete"
@@ -74,27 +73,9 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
     def __init__(
         self,
         *,
-        store: FileEditStore,
-        allowed_roots: list[Path] | list[str],
-        backend: FileBackend | None = None,
-        default_session_key: str = "default",
-        include_dotfiles: bool = True,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from .local_backend import LocalFileBackend  # noqa: PLC0415
-
-        self._store = store
-        self._backend = backend or LocalFileBackend()
-        self._default_session_key = default_session_key
-        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
-        self._include_dotfiles = include_dotfiles
-
-    async def _resolve_state(self, ctx: RunContext[Any] | None) -> FileEditSessionState:
-        """Pick the session state this call should read/write."""
-        if ctx is not None and ctx.file_edit_store is not None:
-            return await ctx.file_edit_store.get_session_state(ctx.session_key)
-        return await self._store.get_session_state(self._default_session_key)
 
     async def _run(
         self,
@@ -106,20 +87,29 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
     ) -> DeleteResult:
         del exec_id, progress_callback
 
-        state = await self._resolve_state(ctx)
+        if ctx is None or ctx.file_backend is None:
+            raise ValueError(
+                "Delete requires ctx.file_backend. Wire a FileBackend on "
+                "RunContext before running the agent."
+            )
 
+        backend = ctx.file_backend
+        state = get_current_file_edit_state()
+        overrides = (
+            set(state.dotfile_overrides)
+            if state is not None and state.dotfile_overrides
+            else None
+        )
         try:
-            resolved = await self._backend.validate_path(
+            resolved = await backend.validate_path(
                 Path(inp.path),
-                self._allowed_roots,
                 must_exist=True,
-                dotfile_overrides=state.dotfile_overrides,
-                include_dotfiles=self._include_dotfiles,
+                dotfile_overrides=overrides,
             )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        current_stat = await self._backend.stat(resolved)
+        current_stat = await backend.stat(resolved)
         # Reject deletes on directories — :class:`DeleteTool` is for
         # files. Walking and recursively deleting trees should be an
         # explicit user-level action.
@@ -133,25 +123,24 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
                     "outside the agent loop."
                 )
 
-        record = state.get_read_record(resolved)
-        if record is None:
-            raise ValueError(
-                f"Must Read {resolved} before deleting it. "
-                "Read-before-delete enforcement prevents removing files "
-                "whose current content the model hasn't seen."
-            )
+        if state is not None:
+            record = state.get_read_record(resolved)
+            if record is None:
+                raise ValueError(
+                    f"Must Read {resolved} before deleting it. "
+                    "Read-before-delete enforcement prevents removing files "
+                    "whose current content the model hasn't seen."
+                )
 
-        if current_stat.mtime != record.mtime:
-            raise ValueError(
-                f"{resolved} was modified since you last read it "
-                f"(recorded mtime {record.mtime!r}, "
-                f"current {current_stat.mtime!r}). Re-Read before deleting."
-            )
+            if current_stat.mtime != record.mtime:
+                raise ValueError(
+                    f"{resolved} was modified since you last read it "
+                    f"(recorded mtime {record.mtime!r}, "
+                    f"current {current_stat.mtime!r}). Re-Read before deleting."
+                )
 
-        await self._backend.delete(resolved)
-
-        # Drop the read record so a later Write to the same path creates
-        # a fresh file (no leftover staleness check from the dead file).
-        state.read_file_state.pop(resolved, None)
+        await backend.delete(resolved)
+        if state is not None:
+            state.read_file_state.pop(resolved, None)
 
         return DeleteResult(path=str(resolved), deleted=True)

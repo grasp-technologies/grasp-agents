@@ -32,9 +32,6 @@ from grasp_agents.tools.file_edit import (
 )
 from grasp_agents.types.events import ToolErrorInfo
 
-if TYPE_CHECKING:
-    pass
-
 pytestmark = pytest.mark.asyncio
 
 TEST_KEY = "test"

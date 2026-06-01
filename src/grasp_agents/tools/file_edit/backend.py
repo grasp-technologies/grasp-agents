@@ -2,12 +2,25 @@
 Backend protocol + shared dataclasses for the file-edit + file-search tools.
 
 A :class:`FileBackend` is the I/O substrate the :class:`ReadTool`,
-:class:`WriteTool`, :class:`EditTool`, :class:`GlobTool`, and
-:class:`GrepTool` route through. The default implementation
-:class:`LocalFileBackend` (in :mod:`.local_backend`) operates on the
-host filesystem; alternative implementations
-(e.g. :class:`MCPFileBackend` in :mod:`.mcp_backend`) route the same
-calls to a remote MCP server.
+:class:`WriteTool`, :class:`EditTool`, :class:`DeleteTool`,
+:class:`GlobTool`, and :class:`GrepTool` route through. The default
+:class:`LocalFileBackend` (in :mod:`.local_backend`) operates on the host
+filesystem; alternative implementations (e.g. :class:`MCPFileBackend` in
+:mod:`.mcp_backend`) route the same calls to a remote MCP server.
+
+A backend owns:
+
+* its own :class:`allowed_roots` — the address space it accepts paths in;
+* path-safety policy (sandbox containment + sensitive-path deny list).
+
+Read-before-write bookkeeping lives on the *agent*, not the backend —
+each :class:`AgentLoop` carries its own :class:`FileEditSessionState`
+and tools consult the active state via :mod:`.agent_state` before
+deciding whether a write is allowed.
+
+Hosts wire one backend instance onto :attr:`RunContext.file_backend`
+and the tools route every call through it. There is no static
+``allowed_roots`` plumbing on the tools or toolkits.
 
 All paths flowing across this protocol are :class:`pathlib.Path`. Each
 backend is free to translate Path into its own address form (POSIX
@@ -24,7 +37,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from pathlib import Path
 
 
@@ -80,26 +92,36 @@ class FileBackend(Protocol):
 
     1. Path safety (sandbox containment + sensitive-path policy).
     2. Raw I/O (stat, read, write, delete, list).
-    3. Search (find_files, grep) — optional; backends that don't ship a
-       fast path raise :class:`NotImplementedError` so tools can surface
-       a clear error.
+    3. Search (find_files, grep) — backends that don't ship a fast path
+       raise :class:`NotImplementedError` so tools can surface a clear
+       error.
+
+    Read-before-write enforcement lives on the *agent*: tools consult
+    the active :class:`FileEditSessionState` via :mod:`.agent_state` and
+    record reads/writes there directly. Backends are pure I/O.
     """
 
     @property
     def name(self) -> str: ...
 
+    @property
+    def allowed_roots(self) -> list[Path]: ...
+
     async def validate_path(
         self,
         path: Path,
-        allowed_roots: list[Path],
         *,
         must_exist: bool,
-        dotfile_overrides: Iterable[Path] | None = None,
-        include_dotfiles: bool = True,
+        dotfile_overrides: set[Path] | None = None,
     ) -> Path:
         """
         Resolve ``path`` to an absolute, canonical Path and enforce the
         backend's safety policy. Returns the resolved Path.
+
+        ``dotfile_overrides`` (if provided) is a set of resolved paths
+        the caller has explicitly whitelisted for this run, bypassing
+        the local-FS credential-dotfile deny list. Remote backends
+        ignore it (sandbox policy lives server-side).
 
         Raises:
             PathAccessError: On policy violations (out of allowed roots,
@@ -116,7 +138,13 @@ class FileBackend(Protocol):
     async def parent_exists(self, path: Path) -> bool: ...
 
     async def read_text(self, path: Path) -> tuple[str, float]:
-        """Return ``(content, mtime)``. ``errors='replace'`` for utf-8."""
+        """
+        Return ``(content, mtime)``. ``errors='replace'`` for utf-8.
+
+        Read-before-write bookkeeping happens in the caller — tools
+        consult :func:`get_current_file_edit_state` and record the read
+        themselves.
+        """
         ...
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
@@ -124,12 +152,34 @@ class FileBackend(Protocol):
         ...
 
     async def write_bytes(
-        self, path: Path, data: bytes, *, mode: int, overwrite: bool = True
+        self,
+        path: Path,
+        data: bytes,
+        *,
+        mode: int,
+        overwrite: bool = True,
     ) -> float:
-        """Atomically write ``data``. Returns the post-write mtime."""
+        """
+        Atomically write ``data``. Returns the post-write mtime.
+
+        The caller refreshes its :class:`FileEditSessionState` read
+        record with the returned mtime so a following :class:`EditTool`
+        doesn't trip on its own write.
+        """
         ...
 
-    async def delete(self, path: Path) -> None: ...
+    async def delete(self, path: Path) -> None:
+        """Remove ``path``. Callers clear their read record separately."""
+        ...
+
+    async def mkdir(self, path: Path) -> None:
+        """
+        Create directory ``path`` and any missing parents. Idempotent — no
+        error if it already exists. Used to bootstrap store layouts (e.g.
+        the memdir before its index file is first written). Backends with a
+        flat or implicit namespace (e.g. MCP resources) may no-op.
+        """
+        ...
 
     async def list_dir(
         self, path: Path, *, recursive: bool = False

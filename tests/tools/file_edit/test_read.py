@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 
@@ -27,9 +27,6 @@ from grasp_agents.tools.file_edit import (
     set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
-
-if TYPE_CHECKING:
-    pass
 
 pytestmark = pytest.mark.asyncio
 
@@ -93,9 +90,7 @@ async def test_read_respects_offset_and_limit(
     f = tmp_path / "a.txt"
     f.write_text("\n".join(f"line {i}" for i in range(1, 11)) + "\n")
 
-    result = await read_tool.run(
-        ReadInput(path=str(f), offset=3, limit=2), ctx=ctx
-    )
+    result = await read_tool.run(ReadInput(path=str(f), offset=3, limit=2), ctx=ctx)
     assert isinstance(result, ReadResult)
     # Lines 3 and 4 only.
     assert "     3\tline 3" in result.content
@@ -144,9 +139,7 @@ async def test_repeat_read_returns_fresh_content(
 # ---------------------------------------------------------------------------
 
 
-async def test_device_path_refused(
-    ctx: RunContext[Any], read_tool: ReadTool
-) -> None:
+async def test_device_path_refused(ctx: RunContext[Any], read_tool: ReadTool) -> None:
     result = await read_tool.run(ReadInput(path="/dev/stdin"), ctx=ctx)
     assert "device path" in _error_message(result)
 
@@ -175,23 +168,39 @@ async def test_path_outside_root_refused(
 async def test_nonexistent_file_refused(
     tmp_path: Path, ctx: RunContext[Any], read_tool: ReadTool
 ) -> None:
-    result = await read_tool.run(
-        ReadInput(path=str(tmp_path / "nope.txt")), ctx=ctx
-    )
+    result = await read_tool.run(ReadInput(path=str(tmp_path / "nope.txt")), ctx=ctx)
     assert "does not exist" in _error_message(result)
 
 
-async def test_char_cap_refuses_oversized_read(
+async def test_char_cap_truncates_oversized_read(
     tmp_path: Path, ctx: RunContext[Any]
 ) -> None:
+    """A window past the char cap is truncated with a notice, not refused."""
     tool = ReadTool(
         redactor=NullRedactor(),
-        max_read_chars=50,  # tiny cap to trip the guard
+        max_read_chars=50,  # tiny cap to force truncation
     )
     f = tmp_path / "big.txt"
     f.write_text("\n".join("x" * 20 for _ in range(20)) + "\n")
     result = await tool.run(ReadInput(path=str(f)), ctx=ctx)
-    assert "exceeding the safety limit" in _error_message(result)
+    assert isinstance(result, ReadResult)
+    assert result.truncated
+    assert result.total_lines == 20
+    assert "Read truncated" in result.content
+    # The content before the notice stays within the cap.
+    body = result.content.split("\n\n[Read truncated")[0]
+    assert len(body) <= 50
+
+
+async def test_size_gate_refuses_huge_file(
+    tmp_path: Path, ctx: RunContext[Any]
+) -> None:
+    """A file past ``max_file_bytes`` is refused outright (too large to open)."""
+    tool = ReadTool(redactor=NullRedactor(), max_file_bytes=100)
+    f = tmp_path / "huge.txt"
+    f.write_text("x" * 500)
+    result = await tool.run(ReadInput(path=str(f)), ctx=ctx)
+    assert "too large to open" in _error_message(result)
 
 
 async def test_read_without_ctx_refused() -> None:

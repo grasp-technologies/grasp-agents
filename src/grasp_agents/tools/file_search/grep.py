@@ -37,12 +37,12 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from ..file_edit.agent_state import get_current_file_edit_state
 from ..file_edit.backend import GrepRawResult
 from ..file_edit.paths import PathAccessError
 
 if TYPE_CHECKING:
     from ...run_context import RunContext
-    from ..file_edit.backend import FileBackend
 
 DEFAULT_HEAD_LIMIT = 250
 
@@ -404,10 +404,10 @@ def _slice(
 
 class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
     """
-    Regex search via the configured :class:`FileBackend`.
+    Regex search via ``ctx.file_backend``.
 
-    Attach via :class:`FileSearchToolkit` or instantiate directly with
-    ``allowed_roots`` (defaults to a :class:`LocalFileBackend`).
+    Stateless: backend + allowed_roots live on
+    :attr:`RunContext.file_backend`.
     """
 
     name = "Grep"
@@ -425,15 +425,9 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
     def __init__(
         self,
         *,
-        allowed_roots: list[Path] | list[str],
-        backend: FileBackend | None = None,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from ..file_edit.local_backend import LocalFileBackend  # noqa: PLC0415
-
-        self._allowed_roots: list[Path] = [Path(r) for r in allowed_roots]
-        self._backend = backend or LocalFileBackend()
 
     async def _run(
         self,
@@ -443,19 +437,40 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> GrepResult:
-        del ctx, exec_id, progress_callback
+        del exec_id, progress_callback
 
-        raw_path = (
-            Path(inp.path) if inp.path is not None else self._allowed_roots[0]
+        if ctx is None or ctx.file_backend is None:
+            raise ValueError(
+                "Grep requires ctx.file_backend. Wire a FileBackend on "
+                "RunContext before running the agent."
+            )
+
+        backend = ctx.file_backend
+        roots = backend.allowed_roots
+        if inp.path is not None:
+            raw_path = Path(inp.path)
+        elif roots:
+            raw_path = roots[0]
+        else:
+            raise ValueError(
+                "Grep requires a path or a backend with at least one "
+                "allowed_root."
+            )
+
+        state = get_current_file_edit_state()
+        overrides = (
+            set(state.dotfile_overrides)
+            if state is not None and state.dotfile_overrides
+            else None
         )
         try:
-            resolved = await self._backend.validate_path(
-                raw_path, self._allowed_roots, must_exist=True
+            resolved = await backend.validate_path(
+                raw_path, must_exist=True, dotfile_overrides=overrides
             )
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
-        raw = await self._backend.grep(
+        raw = await backend.grep(
             root=resolved,
             pattern=inp.pattern,
             glob=inp.glob,
