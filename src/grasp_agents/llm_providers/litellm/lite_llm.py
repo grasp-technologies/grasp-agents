@@ -14,10 +14,10 @@ from litellm.litellm_core_utils.get_supported_openai_params import (
 )
 from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.utils import (
-    supports_output_schema,
     supports_parallel_function_calling,
     supports_prompt_caching,
     supports_reasoning,
+    supports_response_schema,
     supports_tool_choice,
 )
 
@@ -134,7 +134,9 @@ class LiteLLM(CloudLLM):
 
     @property
     def supports_output_schema(self) -> bool:
-        return supports_output_schema(model=self.model_name)
+        # litellm renamed this helper ``supports_output_schema`` →
+        # ``supports_response_schema``; our property name is unchanged.
+        return supports_response_schema(model=self.model_name)
 
     @property
     def supports_tool_choice(self) -> bool:
