@@ -19,6 +19,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.run_context import CtxT
 from grasp_agents.types.content import (
+    CacheControl,
     Content,
     InputImage,
     InputPart,
@@ -71,14 +72,15 @@ class SystemPromptSection:
     A named, lazy block appended to the system prompt at run time.
 
     ``compute`` is invoked with ``(ctx, exec_id)`` per agent run, may be sync
-    or async, and returns the rendered text or ``None`` (omit). ``cache_break``
-    is a forward-compat placeholder for provider-level cache control; it is
-    not honored by any provider today.
+    or async, and returns the rendered text or ``None`` (omit).
+    ``cache_control``, when set, marks a prompt-cache checkpoint on this
+    section's block — providers with prompt caching (e.g. Anthropic) cache
+    the prefix up to and including it; the rest ignore it.
     """
 
     name: str
     compute: SectionCompute
-    cache_break: bool = False
+    cache_control: CacheControl | None = None
 
 
 @runtime_checkable
@@ -201,27 +203,62 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         ctx: RunContext[CtxT],
         exec_id: str,
     ) -> str | None:
+        """
+        Render the full system prompt as a single joined string.
+
+        Use :meth:`build_system_prompt_parts` instead when you need
+        per-section :class:`CacheControl` checkpoints preserved (Anthropic
+        prompt caching, etc.) — that method returns the same content as a
+        list of :class:`InputText` parts carrying their ``cache_control``.
+        """
+        parts = await self.build_system_prompt_parts(ctx=ctx, exec_id=exec_id)
+        if parts is None:
+            return None
+        return "\n\n".join(p.text for p in parts)
+
+    @final
+    async def build_system_prompt_parts(
+        self,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+    ) -> list[InputText] | None:
+        """
+        Render the full system prompt as a list of :class:`InputText`
+        parts — one per section, preceded by the base prompt (when set).
+
+        The base ``system_prompt_builder`` may itself return a sequence of
+        :class:`InputText` (not just a string), so a custom builder can lay
+        out its own :class:`CacheControl` checkpoints across several parts.
+        Each section's ``cache_control`` rides on its part; providers with
+        prompt caching honor it and the rest ignore it.
+
+        Returns ``None`` when there's no base prompt and every section
+        renders empty.
+        """
         if self.system_prompt_builder is not None:
             base = self.system_prompt_builder(ctx=ctx, exec_id=exec_id)
         else:
             base = self.sys_prompt
 
-        if not self.system_prompt_sections:
-            return base
+        parts: list[InputText] = []
+        if base:
+            if isinstance(base, str):
+                parts.append(InputText(text=base))
+            else:
+                parts.extend(base)
 
-        rendered: list[str] = []
         for section in self.system_prompt_sections:
             result = section.compute(ctx=ctx, exec_id=exec_id)
             if inspect.isawaitable(result):
                 result = await result
-            if result:
-                rendered.append(result)
+            if not result:
+                continue
+            parts.append(InputText(text=result, cache_control=section.cache_control))
 
-        if not rendered:
-            return base
-        if not base:
-            return "\n\n".join(rendered)
-        return "\n\n".join([base, *rendered])
+        if not parts:
+            return None
+        return parts
 
     @final
     async def apply_input_attachments(

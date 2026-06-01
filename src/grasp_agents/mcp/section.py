@@ -4,8 +4,9 @@
 Each :class:`MCPClient` may report an ``instructions`` string when it
 connects (per the MCP ``InitializeResult`` spec). This module builds a
 single section that concatenates the instructions of every connected
-client. The section is marked ``cache_break=True`` because servers
-connect / disconnect across turns and the text is not cache-stable.
+client. The section carries a ``cache_control`` checkpoint: it is rendered
+last, so the marker caches the whole system-prompt prefix up to and
+including it.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..agent.prompt_builder import SystemPromptSection
+from ..types.content import CacheControl
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -64,5 +66,5 @@ def make_mcp_instructions_section(
     return SystemPromptSection(
         name=section_name,
         compute=compute,
-        cache_break=True,
+        cache_control=CacheControl(),
     )

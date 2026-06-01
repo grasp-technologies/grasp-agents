@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from .run_context import RunContext
+    from .types.content import CacheControl
 
 
 ENV_INFO_SECTION_NAME = "env_info"
@@ -63,7 +64,7 @@ def make_env_info_section(
     model_name: str | None = None,
     extra_fields: dict[str, str] | None = None,
     section_name: str = ENV_INFO_SECTION_NAME,
-    cache_break: bool = False,
+    cache_control: CacheControl | None = None,
 ) -> SystemPromptSection:
     """
     Build a section listing the requested environment facts.
@@ -75,8 +76,10 @@ def make_env_info_section(
     ``{"Project": "grasp-agents"}``).
 
     The compute is sync; the date is recomputed each turn but the rest is
-    process-level constant. Set ``cache_break=True`` if you include
-    ``datetime`` and want the section to break the prompt cache every turn.
+    process-level constant. ``cache_control`` marks a prompt-cache
+    checkpoint on this block — leave it ``None`` unless the section sits at
+    a stable prefix boundary you want cached (a per-turn ``datetime`` field
+    would only fragment the cache, so don't pair the two).
     """
     selected = tuple(include)
     extra = dict(extra_fields or {})
@@ -104,5 +107,5 @@ def make_env_info_section(
     return SystemPromptSection(
         name=section_name,
         compute=compute,
-        cache_break=cache_break,
+        cache_control=cache_control,
     )

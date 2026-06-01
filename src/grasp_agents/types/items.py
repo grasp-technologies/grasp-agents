@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic.json import pydantic_encoder
 
 from .content import (
+    CacheControl,
     Citation,
     InputFile,
     InputImage,
@@ -203,6 +204,7 @@ class FunctionToolCallItem(ResponseFunctionToolCall):
     # Provider-specific opaque data for round-trip fidelity
     # (e.g. Gemini thought_signature on function_call parts)
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
 
 class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
@@ -226,6 +228,7 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
 
     # Provider-specific opaque data for round-trip fidelity
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
     @property
     def text(self) -> str:
@@ -432,6 +435,7 @@ class WebSearchCallItem(BaseModel):
     # Provider-specific opaque data for round-trip fidelity
     # (e.g. Anthropic per-URL encrypted content for web search results)
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
 
 AssistantMessage = OutputMessageItem

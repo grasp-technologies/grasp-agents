@@ -302,7 +302,12 @@ class TestResponseToMessage:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
-    def test_multiple_system_messages_concatenated(self):
+    def test_multiple_system_messages_emit_blocks(self):
+        """
+        Multiple system parts are emitted as a ``list[TextBlockParam]``
+        (one block each) rather than manually concatenated — Anthropic
+        accepts a block array for ``system`` and the boundaries are kept.
+        """
         items = [
             InputMessageItem.from_text("Rule 1", role="system"),
             InputMessageItem.from_text("Rule 2", role="developer"),
@@ -310,26 +315,25 @@ class TestResponseToMessage:
         ]
         system, messages = items_to_anthropic_messages(items)
 
-        assert system == "Rule 1\n\nRule 2"
+        assert isinstance(system, list)
+        assert [block["text"] for block in system] == ["Rule 1", "Rule 2"]
+        assert all(block.get("cache_control") is None for block in system)
         assert len(messages) == 1
 
-    def test_system_with_cache_break_emitted_as_block_list(self):
+    def test_system_with_cache_control_emitted_as_block_list(self):
         """
-        When any system content part carries
-        ``anthropic:cache_control``, the system field switches from a
-        joined string to ``list[TextBlockParam]`` so per-block cache
-        markers reach the API.
+        A structured :class:`CacheControl` on a system part rides through
+        to a per-block ``cache_control`` marker; the system field is a
+        ``list[TextBlockParam]`` so the marker reaches the API.
         """
-        from grasp_agents.types.content import InputText  # noqa: PLC0415
+        from grasp_agents.types.content import (  # noqa: PLC0415
+            CacheControl,
+            InputText,
+        )
 
         sys_msg = InputMessageItem(
             content_parts=[
-                InputText(
-                    text="STATIC",
-                    provider_specific_fields={
-                        "anthropic:cache_control": {"type": "ephemeral"}
-                    },
-                ),
+                InputText(text="STATIC", cache_control=CacheControl()),
                 InputText(text="DYNAMIC"),
             ],
             role="system",
@@ -345,22 +349,39 @@ class TestResponseToMessage:
         assert system[1]["text"] == "DYNAMIC"
         assert system[1].get("cache_control") is None
 
-    def test_system_without_cache_break_stays_joined_string(self):
+    def test_cache_control_ttl_passed_through(self):
+        """``CacheControl.ttl`` reaches the Anthropic cache_control param."""
+        from grasp_agents.types.content import (  # noqa: PLC0415
+            CacheControl,
+            InputText,
+        )
+
+        sys_msg = InputMessageItem(
+            content_parts=[
+                InputText(text="STATIC", cache_control=CacheControl(ttl="1h"))
+            ],
+            role="system",
+        )
+        system, _ = items_to_anthropic_messages(
+            [sys_msg, InputMessageItem.from_text("hi")]
+        )
+
+        assert isinstance(system, list)
+        assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_single_system_part_collapses_to_string(self):
         """
-        Default behavior is unchanged when no part carries cache_control
-        — system text is joined and passed as a string.
+        The trivial single-part, no-cache case stays a bare string — no
+        block list and no concatenation are involved.
         """
         from grasp_agents.types.content import InputText  # noqa: PLC0415
 
-        sys_msg = InputMessageItem(
-            content_parts=[InputText(text="A"), InputText(text="B")],
-            role="system",
-        )
+        sys_msg = InputMessageItem(content_parts=[InputText(text="A")], role="system")
         items = [sys_msg, InputMessageItem.from_text("hi")]
 
         system, _ = items_to_anthropic_messages(items)
 
-        assert system == "A\n\nB"
+        assert system == "A"
 
     def test_user_message_simple_text(self):
         items = [InputMessageItem.from_text("What is 2+2?")]

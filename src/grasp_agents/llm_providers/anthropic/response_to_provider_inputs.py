@@ -9,7 +9,7 @@ takes it as a top-level parameter, not inside the messages array.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 from anthropic.types import (
     Base64ImageSourceParam,
@@ -37,6 +37,7 @@ from anthropic.types.web_search_tool_request_error_param import (
 )
 from grasp_agents.types.content import (
     BASE64_DATA_PREFIX,
+    CacheControl,
     InputImage,
     InputText,
     OutputMessageRefusal,
@@ -59,18 +60,17 @@ if TYPE_CHECKING:
 
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
-_CACHE_CONTROL_KEY = "anthropic:cache_control"
 
-
-def _get_cache_control(
-    psf: dict[str, Any] | None,
+def _to_cache_control(
+    cc: CacheControl | None,
 ) -> CacheControlEphemeralParam | None:
-    if psf is None:
+    """Map the provider-neutral :class:`CacheControl` to Anthropic's param."""
+    if cc is None:
         return None
-    cc: Any = psf.get(_CACHE_CONTROL_KEY)
-    if not isinstance(cc, dict):
-        return None
-    return cast("CacheControlEphemeralParam", cc)
+    param = CacheControlEphemeralParam(type="ephemeral")
+    if cc.ttl is not None:
+        param["ttl"] = cc.ttl
+    return param
 
 
 def items_to_provider_inputs(
@@ -80,9 +80,13 @@ def items_to_provider_inputs(
     Convert memory items to Anthropic message format.
 
     Returns ``(system, messages)`` where *system* is extracted from
-    system/developer role items.
+    system/developer role items. Each system-role text part becomes its
+    own :class:`TextBlockParam` (Anthropic accepts a block array for
+    ``system``), so per-block :class:`CacheControl` checkpoints reach the
+    API and multi-part prompts are never flattened. The payload collapses
+    to a plain string only in the trivial single-part, no-cache case.
     """
-    system_parts: list[str] = []
+    system_blocks: list[TextBlockParam] = []
     messages: list[MessageParam] = []
     i = 0
     n = len(items)
@@ -92,7 +96,16 @@ def items_to_provider_inputs(
 
         if isinstance(item, InputMessageItem):
             if item.role in {"system", "developer"}:
-                system_parts.append(item.text)
+                for part in item.content_parts:
+                    if not isinstance(part, InputText):
+                        continue
+                    system_blocks.append(
+                        TextBlockParam(
+                            type="text",
+                            text=part.text,
+                            cache_control=_to_cache_control(part.cache_control),
+                        )
+                    )
                 i += 1
             else:
                 messages.append(
@@ -114,9 +127,7 @@ def items_to_provider_inputs(
                         type="tool_result",
                         tool_use_id=tool_item.call_id,
                         content=_convert_content_parts(tool_item.output_parts),  # type: ignore[assignment]
-                        cache_control=_get_cache_control(
-                            tool_item.provider_specific_fields
-                        ),
+                        cache_control=_to_cache_control(tool_item.cache_control),
                     )
                 )
                 i += 1
@@ -140,14 +151,17 @@ def items_to_provider_inputs(
             messages.append(_output_group_to_message_param(output_items))
 
     system: str | list[TextBlockParam] | None = None
-    if system_parts:
-        system = "\n\n".join(system_parts)
+    if system_blocks:
+        if len(system_blocks) == 1 and system_blocks[0].get("cache_control") is None:
+            system = system_blocks[0]["text"]
+        else:
+            system = system_blocks
 
     return system, messages
 
 
 def _image_to_block(img: InputImage) -> ImageBlockParam:
-    cc = _get_cache_control(img.provider_specific_fields)
+    cc = _to_cache_control(img.cache_control)
 
     if img.is_base64 and img.image_url:
         data = img.image_url.removeprefix(BASE64_DATA_PREFIX)
@@ -181,7 +195,7 @@ def _convert_content_parts(
 
     for part in content_parts:
         if isinstance(part, InputText):
-            cc = _get_cache_control(part.provider_specific_fields)
+            cc = _to_cache_control(part.cache_control)
             if cc:
                 has_cache_control = True
             content.append(
@@ -193,7 +207,7 @@ def _convert_content_parts(
             )
 
         elif isinstance(part, InputImage):  # type: ignore[unreachable]
-            if _get_cache_control(part.provider_specific_fields):
+            if part.cache_control is not None:
                 has_cache_control = True
             content.append(_image_to_block(part))
 
@@ -228,7 +242,7 @@ def _output_group_to_message_param(output_items: Sequence[OutputItem]) -> Messag
                     id=item.call_id,
                     name=item.name,
                     input=json.loads(item.arguments),
-                    cache_control=_get_cache_control(item.provider_specific_fields),
+                    cache_control=_to_cache_control(item.cache_control),
                 )
             )
 
@@ -258,7 +272,7 @@ def _output_message_to_blocks(item: OutputMessageItem) -> list[TextBlockParam]:
                 )
             )
 
-        cc = _get_cache_control(part.provider_specific_fields)
+        cc = _to_cache_control(part.cache_control)
         blocks.append(
             TextBlockParam(
                 type="text",
@@ -314,7 +328,7 @@ def _web_search_to_blocks(
         id=item.id,
         name=_WS_TOOL_NAME,
         input={"query": action.queries[0] if action.queries else ""},
-        cache_control=_get_cache_control(item.provider_specific_fields),
+        cache_control=_to_cache_control(item.cache_control),
     )
 
     psf = item.provider_specific_fields or {}

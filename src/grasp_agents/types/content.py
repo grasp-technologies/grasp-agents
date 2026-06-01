@@ -27,6 +27,24 @@ from pydantic import BaseModel, Field, model_validator
 ImageDetail = Literal["low", "medium", "high", "ultra_high", "auto"]
 
 
+class CacheControl(BaseModel):
+    """
+    Provider-neutral prompt-cache checkpoint for a content part.
+
+    Set it on a content part to ask the provider to cache the prompt prefix
+    *up to and including* that part. Place it on the last stable part of a
+    prefix you expect to reuse across turns. Providers with prompt caching
+    honor it (Anthropic emits a cache breakpoint); the rest ignore it.
+
+    ``ttl`` selects the cache lifetime where the provider supports tiers
+    (Anthropic: ``"5m"`` default, ``"1h"`` extended); ``None`` uses the
+    provider default.
+    """
+
+    type: Literal["ephemeral"] = "ephemeral"
+    ttl: Literal["5m", "1h"] | None = None
+
+
 @runtime_checkable
 class InputRenderable(Protocol):
     """
@@ -84,6 +102,7 @@ class InputImage(ResponseInputImage):
 
     mime_type: str | None = None
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -186,6 +205,7 @@ class InputText(ResponseInputText):
     # grasp-agents fields:
 
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
 
 class InputFile(ResponseInputFile):
@@ -207,6 +227,7 @@ class InputFile(ResponseInputFile):
     # grasp-agents fields:
 
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
     # check if only one of file_data, file_url, or file_id is provided
     @model_validator(mode="before")
@@ -317,6 +338,7 @@ class OutputMessageText(ResponseOutputText):
 
     citations: list[Citation] = Field(default_factory=list[Citation])
     provider_specific_fields: dict[str, Any] | None = None
+    cache_control: CacheControl | None = None
 
     @model_validator(mode="before")
     @classmethod
