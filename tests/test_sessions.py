@@ -1391,6 +1391,58 @@ class TestPendingTaskResume:
         assert updated.status == TaskStatus.FAILED
 
     @pytest.mark.anyio
+    async def test_resume_ignores_other_agents_tasks(self):
+        """handle_pending scopes to this agent's path, not the whole session."""
+        store = InMemoryCheckpointStore()
+
+        snapshot = AgentCheckpoint(
+            session_key="s1",
+            processor_name="test_agent",
+            messages=[
+                InputMessageItem.from_text("system prompt", role="system"),
+                InputMessageItem.from_text("go", role="user"),
+                FunctionToolCallItem(
+                    call_id="fc_1", name="slow", arguments='{"text":"data"}'
+                ),
+                FunctionToolOutputItem.from_tool_result(
+                    call_id="fc_1",
+                    output="Task launched in background (id: mine)",
+                ),
+            ],
+            checkpoint_number=1,
+            step=0,
+        )
+        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+
+        # This agent's own PENDING task.
+        own = TaskRecord(
+            task_id="mine", session_key="s1", tool_call_id="fc_1", tool_name="slow"
+        )
+        await store.save(
+            _agent_task_key("s1", "test_agent", "fc_1"), own.model_dump_json().encode()
+        )
+        # A sibling agent's PENDING task in the same session — must be left alone.
+        other_key = _agent_task_key("s1", "other_agent", "fc_9")
+        other = TaskRecord(
+            task_id="theirs", session_key="s1", tool_call_id="fc_9", tool_name="slow"
+        )
+        await store.save(other_key, other.model_dump_json().encode())
+
+        agent, ctx = _make_agent(
+            [_text_response("recovered")], session_key="s1", store=store
+        )
+        await agent.run("continue", step=0)
+
+        # Our task was handled → FAILED.
+        mine_data = await store.load(_agent_task_key("s1", "test_agent", "fc_1"))
+        assert mine_data is not None
+        assert TaskRecord.model_validate_json(mine_data).status == TaskStatus.FAILED
+        # The sibling's task is untouched (still PENDING).
+        other_data = await store.load(other_key)
+        assert other_data is not None
+        assert TaskRecord.model_validate_json(other_data).status == TaskStatus.PENDING
+
+    @pytest.mark.anyio
     async def test_completed_record_injects_result(self):
         """On resume, a COMPLETED record whose result isn't in memory gets injected."""
         store = InMemoryCheckpointStore()

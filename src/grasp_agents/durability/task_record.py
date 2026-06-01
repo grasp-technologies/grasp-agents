@@ -19,7 +19,7 @@ class TaskRecord(PersistedRecord):
     Lifecycle of a single background tool invocation.
 
     Tracks PENDING → COMPLETED → DELIVERED (or FAILED / CANCELLED) at
-    ``"<session_key>/<parent_kind>/<parent_path>/tc_<call_id>/lifecycle"``.
+    ``"<session_key>/task/<parent_path>/tc_<call_id>"``.
     """
 
     task_id: str

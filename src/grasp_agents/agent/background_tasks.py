@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from grasp_agents.durability.checkpoint_store import CheckpointStore
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.durability.store_keys import (
     make_store_key,
@@ -78,15 +79,43 @@ class PendingTask:
 async def _stream_to_result(
     stream: AsyncIterator[Event[Any]],
     queue: asyncio.Queue[Event[Any] | None],
+    *,
+    store: CheckpointStore | None = None,
+    task_key: str | None = None,
 ) -> Any:
-    """Run a tool's run_stream, forwarding events to queue. Return result."""
+    """
+    Run a tool's run_stream, forwarding events to ``queue``. Return result.
+
+    On a successful result, persist a ``COMPLETED`` TaskRecord carrying the
+    result *before* signalling completion. This closes the window between a
+    task finishing and :meth:`BackgroundTaskManager.drain` delivering it: a
+    crash in that window leaves a ``COMPLETED`` record that resume re-injects
+    (see :meth:`handle_pending`), instead of a ``PENDING`` record that forces
+    a re-run or loses the result.
+    """
     result: Any = None
+    failed = False
     async for event in stream:
         if isinstance(event, ToolOutputEvent):
             result = event.data
         elif isinstance(event, ToolErrorEvent):
             result = event.data  # ToolErrorInfo
+            failed = True
         await queue.put(event)
+
+    if store is not None and task_key is not None and not failed:
+        existing = await store.load(task_key)
+        if existing:
+            record = TaskRecord.model_validate_json(existing)
+            record = record.model_copy(
+                update={
+                    "status": TaskStatus.COMPLETED,
+                    "result": str(result),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await store.save(task_key, record.model_dump_json().encode())
+
     await queue.put(None)  # sentinel: stream finished
     return result
 
@@ -127,9 +156,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         child_path = make_tool_call_path(self._path, call.call_id)
         task_key: str | None = None
         if store is not None and child_path is not None:
-            task_key = make_store_key(
-                ctx.session_key, CheckpointKind.TASK, child_path
-            )
+            task_key = make_store_key(ctx.session_key, CheckpointKind.TASK, child_path)
             record = TaskRecord(
                 session_key=ctx.session_key,
                 task_id=task_id,
@@ -147,7 +174,9 @@ class BackgroundTaskManager(Generic[CtxT]):
             exec_id=exec_id,
             path=child_path,
         )
-        async_task = asyncio.create_task(_stream_to_result(stream, queue))
+        async_task = asyncio.create_task(
+            _stream_to_result(stream, queue, store=store, task_key=task_key)
+        )
 
         self._tasks[task_id] = PendingTask(
             task_id=task_id,
@@ -270,9 +299,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                             "updated_at": datetime.now(UTC),
                         }
                     )
-                    await store.save(
-                        pt.task_key, record.model_dump_json().encode()
-                    )
+                    await store.save(pt.task_key, record.model_dump_json().encode())
 
         tasks = [pt.task for pt in self._tasks.values()]
         for t in tasks:
@@ -294,8 +321,14 @@ class BackgroundTaskManager(Generic[CtxT]):
         if store is None or ctx is None:
             return
 
-        # Only this session's keys, only the lifecycle leaves.
-        keys = await store.list_keys(task_prefix(ctx.session_key))
+        # Scope to *this* manager's own background tasks. Records live at
+        # ``<session>/task/<path>/tc_<call_id>``; sibling agents and nested
+        # sub-agents own separate subtrees and resume via their own managers,
+        # so a session-wide scan would make us handle (and mis-route) their
+        # tasks. Keep only direct ``tc_*`` children — a deeper segment belongs
+        # to a nested sub-agent.
+        prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self._path) + "/"
+        keys = [k for k in await store.list_keys(prefix) if "/" not in k[len(prefix) :]]
 
         for key in keys:
             record = await store.load_json(key, TaskRecord, subject="task record")
@@ -370,10 +403,15 @@ class BackgroundTaskManager(Generic[CtxT]):
         """
         Delete ``DELIVERED`` task records older than ``older_than``.
 
-        Records are normally deleted at delivery (see :meth:`drain`), so
-        this is primarily for stragglers left by older code or crashed
-        deliveries. Returns the number of records pruned. Short-circuits
-        with ``0`` when no store is attached.
+        :meth:`drain` marks a task ``DELIVERED`` and keeps the record for
+        post-hoc observability; this offline sweep reclaims the old ones.
+        Returns the number pruned. Short-circuits with ``0`` when no store
+        is attached.
+
+        Unlike :meth:`handle_pending` (agent-scoped — it re-spawns tasks
+        and injects into a specific agent's transcript), this is a static,
+        session-wide GC: deleting a terminal ``DELIVERED`` record is safe
+        regardless of which agent owns it, so one sweep cleans the session.
         """
         store = ctx.checkpoint_store
         if store is None:
@@ -408,9 +446,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         if not tool or not tool.resumable:
             return False
 
-        child_path = make_tool_call_path(
-            self._path, record.tool_call_id
-        )
+        child_path = make_tool_call_path(self._path, record.tool_call_id)
 
         queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
         stream = tool.resume_stream(
@@ -418,7 +454,11 @@ class BackgroundTaskManager(Generic[CtxT]):
             exec_id=exec_id,
             path=child_path,
         )
-        async_task = asyncio.create_task(_stream_to_result(stream, queue))
+        async_task = asyncio.create_task(
+            _stream_to_result(
+                stream, queue, store=ctx.checkpoint_store, task_key=task_key
+            )
+        )
 
         self._tasks[record.task_id] = PendingTask(
             task_id=record.task_id,
@@ -431,7 +471,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         )
 
         logger.info(
-            "Re-spawned child task %s (%s) at lifecycle key %s",
+            "Re-spawned child task %s (%s) at task key %s",
             record.task_id,
             record.tool_name,
             task_key,
