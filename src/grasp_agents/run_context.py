@@ -86,11 +86,13 @@ class RunContext(BaseModel, Generic[CtxT]):
     @model_validator(mode="after")
     def _validate_memory_under_backend_roots(self) -> "RunContext[CtxT]":
         """
-        Catch misconfigurations at session start:
+        Wire memory to the session's file backend at start:
 
         - When :attr:`memory` is set with a concrete ``root``, :attr:`file_backend`
-          is required (memory I/O routes through it) and ``root`` must sit
-          under one of ``file_backend.allowed_roots``. The backend is bound
+          is required (memory I/O routes through it). The memdir is admitted
+          into the backend's address space (:meth:`FileBackend.add_allowed_root`)
+          so memory authoring via the file tools works without the host
+          repeating the memdir in ``allowed_roots``. The backend is then bound
           on the provider so its methods can fetch bytes without re-receiving
           a ctx kwarg.
         - When :attr:`memory.root` is the ``Path()`` sentinel (e.g.
@@ -109,14 +111,10 @@ class RunContext(BaseModel, Generic[CtxT]):
                 "LocalFileBackend(allowed_roots=...) or "
                 "MCPFileBackend(client=..., allowed_roots=...) explicitly."
             )
-        allowed = self.file_backend.allowed_roots
-        if not any(root == r or r in root.parents for r in allowed):
-            raise ValueError(
-                f"MemoryProvider.root={root} is not under any of "
-                f"file_backend.allowed_roots={allowed}. Broaden the "
-                "backend's allowed_roots or point memory at a path "
-                "within them."
-            )
+        # Admit the configured memdir so memory authoring through the file
+        # tools is allowed without the host repeating it in allowed_roots
+        # (idempotent if already covered).
+        self.file_backend.add_allowed_root(root)
         # Wire the backend onto the provider so its methods can read
         # bytes without callers threading ctx through again.
         self.memory.bind_backend(self.file_backend)
