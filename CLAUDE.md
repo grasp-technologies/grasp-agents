@@ -2,7 +2,7 @@
 
 ## What this project is
 
-grasp-agents is a lightweight, type-safe Python framework for building structured LLM-powered workflows with agentic capabilities. It is designed to be embedded inside applications (not used as a standalone agent). The primary production consumer is **grasp-core** (at `../grasp-core`), which uses it to power an edtech platform: course generation, lesson writing, interactive tutoring, exercise grading, and resource recommendation.
+grasp-agents is a lightweight, type-safe Python framework for building LLM-powered applications: both purely agentic and structured. Its design must enable both embedding inside larger production systems as well as usage as a personal assistant agent. The primary production consumer is **grasp-core** (at `../grasp-core`), which uses it to power an edtech platform: course generation, lesson writing, interactive tutoring, exercise grading, and resource recommendation.
 
 Key principles:
 - Transparent, clean, easily extensible architecture
@@ -38,8 +38,17 @@ Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.
 - Pydantic `BaseModel` for all data types that cross API boundaries (tool inputs, agent outputs, state)
 - Async throughout — all agent/tool `run()` methods are `async`
 - Commit messages: short imperative descriptions (e.g., "update LiteLLM", "version bump", "fix copilot comments")
-- **Comments and docstrings are for framework users, not implementers.** Default to none; add one only when the *why* is non-obvious or there's a contract a caller must honor. Skip restating types, paraphrasing the code, or explaining design history (that belongs in commits / memory, not in source). One short line is almost always enough; no multi-paragraph rationale, no "previously / now" narratives, no "verbatim — the caller supplies …" essays. If a comment couldn't credibly land on the API reference page, it's too long.
 
+
+## Comments and docstrings guidance**
+
+* Comments and docstrings are **for framework users, not implementers.** Default to none; add one only when the *why* is non-obvious or there's a contract a caller must honor.
+* Never explain design history (that belongs in commits / memory, not in source). Only explain the current design and follow the rule above when doing so.
+* Never refer to our plans, roadmap, or your memory.
+* Never refer to other frameworks (e.g. "similar to OpenClaw's tool call events"), unless the code is copied verbatim (to avoid breaking any license rules). Keep such notes in your memory.
+* Do not state variable types when they are clear from type annotations.
+* You are free to edit existing comments/docstrings that violate these rules without asking.
+  
 ## Architecture overview
 
 ### Core hierarchy
@@ -49,9 +58,10 @@ Processor[InT, OutT, CtxT]          # generic computation unit with routing
   └─ LLMAgent[InT, OutT, CtxT]      # agent with LLM + tools + agentic loop (AgentLoop)
   └─ ParallelProcessor[...]         # fan-out over the same processor
   └─ WorkflowProcessor[...]         # Sequential/Looped workflows
+  └─ Runner[...]                    # "agent team" orchestration with dynamic routing
 ```
 
-`Processor` is the single base class for all computation units — no separate `BaseProcessor` layer. Routing between processors (used by `Runner` in multi-agent setups) is dynamic: any `Processor` can override `select_recipients_impl(output, ctx, exec_id)` to pick downstream recipients per-payload based on content, state, or LLM judgment.
+`Processor` is the base class for all computation units. Routing between processors (used by `Runner` in multi-agent setups) is dynamic: any `Processor` can override `select_recipients_impl(output, ctx, exec_id)` to pick downstream recipients per-payload based on content, state, or LLM judgment.
 
 ### Key components
 
@@ -98,7 +108,7 @@ Agents are customized through decorator hooks on an `LLMAgent` instance. Subclas
 @agent.add_input_content_builder    # format input from typed args + state
 @agent.add_output_parser            # parse LLM text into typed output
 @agent.add_final_answer_extractor   # choose when a turn's output is the final answer
-@agent.add_memory_builder           # custom memory initialization
+@agent.add_transcript_builder       # custom transcript initialization
 @agent.add_before_llm_hook          # inspect/modify settings before each LLM call
 @agent.add_after_llm_hook           # observe completed LLM responses
 @agent.add_before_tool_hook         # pre-tool hook (per tool call)
