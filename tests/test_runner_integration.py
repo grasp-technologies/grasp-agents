@@ -58,7 +58,6 @@ class Passthrough(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> list[str]:
         if in_args is not None:
@@ -87,7 +86,6 @@ class SplitterProcessor(Processor[str, TopicIdea, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> list[TopicIdea]:
         inputs = in_args or ([str(chat_inputs)] if chat_inputs is not None else [])
@@ -108,7 +106,6 @@ class CollectorProcessor(Processor[Paragraph, str, None]):
         *,
         in_args: list[Paragraph] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> list[str]:
         paragraphs = in_args or []
@@ -201,7 +198,7 @@ class TestParallelProcessorWithAgents:
         )
         par = ParallelProcessor[str, str, None](subproc=writer)
         ctx: RunContext[None] = RunContext(state=None)
-        par.set_ctx(ctx)
+        par.on_adopted(ctx=ctx)
 
         result = await par.run(
             in_args=["black holes", "photosynthesis", "jazz music"]
@@ -306,7 +303,10 @@ class TestRunnerDurability:
         result = await runner.run(chat_inputs="Mathematics")
         assert len(list(result.payloads)) == 1
 
-        raw = await store.load("runner/int-1")
+        # Session-first layout: "<session_key>/<kind>[/<path>]". The Runner's
+        # path is empty (one runner per session), so the key is just
+        # "<session_key>/runner".
+        raw = await store.load("int-1/runner")
         assert raw is not None
         cp = RunnerCheckpoint.model_validate_json(raw)
         assert len(cp.pending_events) == 0
@@ -400,7 +400,6 @@ class _FailingProcessor(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> list[str]:
         self.call_count += 1
@@ -649,7 +648,6 @@ class TestWorkflowCrashResume:
                 *,
                 in_args: Any = None,
                 exec_id: str,
-                ctx: RunContext[None],
                 step: int | None = None,
             ) -> list[str]:
                 raise RuntimeError("Refiner crash")

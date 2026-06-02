@@ -6,7 +6,7 @@ from typing import Any, cast
 from ..durability.checkpoints import CheckpointKind, WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
+from ..run_context import CtxT, RunContext, shared_child_ctx
 from ..telemetry import SpanKind
 from ..types.errors import WorkflowConstructionError
 from ..types.io import InT, OutT, ProcName
@@ -25,6 +25,8 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         subprocs: Sequence[Processor[Any, Any, CtxT]],
         start_proc: Processor[InT, Any, CtxT],
         end_proc: Processor[Any, OutT, CtxT],
+        *,
+        ctx: RunContext[CtxT] | None = None,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
@@ -50,6 +52,11 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
 
         super().__init__(
             name=name,
+            # No arbitrary borrow from ``start_proc``: inherit a single ctx
+            # the subprocs were built with (if any), else the base ctor
+            # creates a fresh one. Either way ``_propagate_to_children`` then
+            # shares it with every subproc.
+            ctx=ctx if ctx is not None else shared_child_ctx(subprocs),
             recipients=(recipients or end_proc.recipients),
             max_retries=0,
             path=path,
@@ -63,7 +70,7 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
 
     def _propagate_to_children(self) -> None:
         for subproc in self._subprocs:
-            subproc.on_adopted(self._path)
+            subproc.on_adopted(self)
 
     def validate_inputs(
         self,
@@ -71,10 +78,9 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and Processor.is_resumable(ctx):
+        if not has_input and self.is_resumable:
             return None
 
         return super().validate_inputs(
@@ -82,34 +88,32 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
-            ctx=ctx,
         )
 
-    async def load_checkpoint(self, ctx: RunContext[CtxT]) -> WorkflowCheckpoint | None:
-        checkpoint = await self._deserialize_checkpoint(ctx, WorkflowCheckpoint)
+    async def load_checkpoint(self) -> WorkflowCheckpoint | None:
+        checkpoint = await self._deserialize_checkpoint(self._ctx, WorkflowCheckpoint)
         if checkpoint is not None:
             logger.info(
                 "Loaded workflow checkpoint %s (completed_step=%d)",
-                self._checkpoint_store_key(ctx),
+                self._checkpoint_store_key(self._ctx),
                 checkpoint.completed_step,
             )
         return checkpoint
 
     async def save_checkpoint(
         self,
-        ctx: RunContext[CtxT],
         *,
         completed_step: int,
         packet: Packet[Any],
     ) -> None:
         checkpoint = WorkflowCheckpoint(
-            session_key=ctx.session_key,
+            session_key=self._ctx.session_key,
             processor_name=self.name,
             session_metadata=self._session_metadata,
             completed_step=completed_step,
             packet=packet,
         )
-        await self._serialize_checkpoint(ctx, checkpoint)
+        await self._serialize_checkpoint(self._ctx, checkpoint)
 
     def select_recipients_impl(
         self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str

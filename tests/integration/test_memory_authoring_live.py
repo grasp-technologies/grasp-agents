@@ -1,4 +1,5 @@
-"""Live integration test — exercises the memory_skills_demo step-2 flow
+"""
+Live integration test — exercises the memory_skills_demo step-2 flow
 end-to-end against a real LLM, to verify the prompt/tool-description
 changes drive the agent toward Edit-not-Write and topic-scope discipline.
 

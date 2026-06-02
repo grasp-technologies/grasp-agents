@@ -11,7 +11,7 @@ from ..durability.checkpoints import CheckpointKind, RunnerCheckpoint
 from ..durability.persist import CheckpointPersistMixin
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
+from ..run_context import CtxT, RunContext, shared_child_ctx
 from ..types.errors import RunnerError
 from ..types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
 from ..types.io import OutT
@@ -64,7 +64,15 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
 
         self._event_bus = EventBus()
 
-        self._ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
+        # Like the workflow/parallel containers: inherit a single ctx the
+        # procs were built with (if any), else create a fresh one. The
+        # ``on_adopted`` loop below then shares it with every proc, so all
+        # subprocessors and the Runner hold one ctx instance.
+        self._ctx = (
+            ctx
+            if ctx is not None
+            else (shared_child_ctx(procs) or RunContext[CtxT](state=None))  # type: ignore
+        )
 
         self._path = path or []
         for proc in procs:

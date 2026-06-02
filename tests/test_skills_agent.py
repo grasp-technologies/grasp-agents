@@ -75,7 +75,7 @@ def _make_agent(
 async def _build_system_prompt(
     agent: LLMAgent[str, str, _State], ctx: RunContext[_State]
 ) -> str | None:
-    agent.set_ctx(ctx)
+    agent.on_adopted(ctx=ctx)
     return await agent.build_system_prompt(exec_id="e1")
 
 

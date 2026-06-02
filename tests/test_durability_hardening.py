@@ -48,6 +48,7 @@ def _agent_task_key(session_key: str, parent_name: str, call_id: str) -> str:
         [parent_name, f"tc_{call_id}"],
     )
 
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -123,7 +124,7 @@ class TestFailingStoreCoverage:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="agent-fail"
         )
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
 
         with pytest.raises(ProcRunError) as exc:
             await agent.run("hi")
@@ -162,7 +163,7 @@ class TestFailingStoreCoverage:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="task-fail"
         )
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
 
         with pytest.raises(ProcRunError) as exc:
             await agent.run("spawn")
@@ -192,7 +193,7 @@ class TestCorruptCheckpointTolerance:
         ctx: RunContext[None] = RunContext(
             checkpoint_store=store, session_key="corrupt-a"
         )
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
 
         result = await agent.run("hi")
         assert result.payloads[0] == "fresh"
@@ -385,7 +386,7 @@ class TestEndToEndGC:
             stream_llm=True,
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="e2e")
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
         await agent.run("go")
 
         # Exactly one DELIVERED record.

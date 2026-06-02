@@ -177,6 +177,7 @@ def _make_executor(
     memory.reset(instructions="sys")
     memory.update([InputMessageItem.from_text("go", role="user")])
 
+    ctx = ctx if ctx is not None else RunContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,

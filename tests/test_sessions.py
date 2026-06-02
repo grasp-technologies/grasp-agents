@@ -596,7 +596,7 @@ class TestAgentSessionPersistence:
             session_metadata={"pathway_id": "pw_123"},
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
         await agent.run("hi")
 
         data = await store.load("s1/agent/test_agent")
@@ -951,7 +951,7 @@ class TestResumeIntegration:
             crash_after_step=1,
         )
         ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
-        wf1.set_ctx(ctx1)
+        wf1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream(in_args="start", exec_id="e1"):
@@ -980,7 +980,7 @@ class TestResumeIntegration:
             subprocs=[a2, agent2],
         )
         ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
-        wf2.set_ctx(ctx2)
+        wf2.on_adopted(ctx=ctx2)
 
         async for _ in wf2.run_stream(exec_id="e2", step=0):
             pass
@@ -1020,7 +1020,7 @@ class TestResumeIntegration:
             crash_after_step=1,
         )
         ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
-        wf1.set_ctx(ctx1)
+        wf1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
             async for _ in wf1.run_stream("start", exec_id="e1"):
@@ -1044,7 +1044,7 @@ class TestResumeIntegration:
             subprocs=[agent2, b2],
         )
         ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
-        wf2.set_ctx(ctx2)
+        wf2.on_adopted(ctx=ctx2)
 
         payloads: list[str] = []
         async for event in wf2.run_stream(exec_id="e2", step=0):
@@ -1290,7 +1290,7 @@ class TestTaskRecordPersistence:
             stream_llm=True,
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
 
         await agent.run("go")
 

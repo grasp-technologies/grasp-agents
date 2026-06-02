@@ -179,13 +179,15 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
 
         agent = _LLMAgent[AgentToolInput, str, CtxT](
             name=self.name,
+            ctx=ctx,
             llm=self._llm,
             tools=self._resolve_tools(),
             sys_prompt=sys_prompt,
             max_turns=self._max_turns,
         )
-        if path is not None:
-            agent.set_path(path)
+        # Adopt the tool's tracing settings (excludes + enabled, themselves
+        # inherited from the host) and stamp the per-call path lineage.
+        agent.on_adopted(parent=self, path=path)
 
         return agent, in_prompt
 
@@ -202,7 +204,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         agent, in_prompt = await self._prepare_child(
             inp, ctx=ctx, exec_id=exec_id, path=path
         )
-        result = await agent.run(chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id)
+        result = await agent.run(chat_inputs=in_prompt, exec_id=exec_id)
 
         return result.payloads[0]
 
@@ -220,7 +222,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             inp=inp, ctx=ctx, exec_id=exec_id, path=path
         )
         async for event in self._yield_child_events(
-            agent, chat_inputs=in_prompt, ctx=ctx, exec_id=exec_id
+            agent, chat_inputs=in_prompt, exec_id=exec_id
         ):
             yield event
 
@@ -235,7 +237,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             inp=None, ctx=ctx, exec_id=exec_id, path=path
         )
         async for event in self._yield_child_events(
-            agent, chat_inputs=None, ctx=ctx, exec_id=exec_id
+            agent, chat_inputs=None, exec_id=exec_id
         ):
             yield event
 
@@ -243,12 +245,11 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         self,
         agent: LLMAgent[AgentToolInput, str, CtxT],
         *,
-        ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         chat_inputs: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in agent.run_stream(
-            chat_inputs=chat_inputs, ctx=ctx, exec_id=exec_id
+            chat_inputs=chat_inputs, exec_id=exec_id
         ):
             if isinstance(event, ProcPacketOutEvent) and event.source == agent.name:
                 yield ToolOutputEvent(

@@ -121,6 +121,8 @@ class Processor(
     def __init__(
         self,
         name: ProcName,
+        *,
+        ctx: RunContext[CtxT] | None = None,
         max_retries: int = 0,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
@@ -142,7 +144,19 @@ class Processor(
 
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
-        self.set_path(path)
+        # Records whether the caller handed us a ctx (vs. the fresh
+        # placeholder below). Container processors read this on their
+        # children to decide whose session to share — see
+        # :func:`~grasp_agents.run_context.shared_child_ctx`.
+        self._ctx_explicit: bool = ctx is not None
+        # ``ctx`` is an immutable instance attribute (passing a different
+        # ``ctx`` to ``run`` / ``run_stream`` is unsupported). Set both
+        # session axes, then cascade to any children built before us.
+        self._ctx: RunContext[CtxT] = (
+            ctx if ctx is not None else RunContext[CtxT](state=None)  # type: ignore
+        )
+        self._path: list[str] = [self.name] if path is None else list(path)
+        self._propagate_to_children()
 
     # --- Identity & utilities ---
 
@@ -166,27 +180,79 @@ class Processor(
     def checkpoint_kind(self) -> "CheckpointKind | None":
         return self._checkpoint_kind
 
+    @property
+    def ctx(self) -> RunContext[CtxT]:
+        """Session bound at construction. Immutable after init."""
+        return self._ctx
+
     # --- Session persistence ---
 
-    @staticmethod
-    def is_resumable(ctx: RunContext[Any] | None) -> bool:
-        """True if ``ctx`` has a checkpoint store wired up."""
-        return ctx is not None and ctx.checkpoint_store is not None
+    @property
+    def is_resumable(self) -> bool:
+        """True if the bound ``ctx`` has a checkpoint store wired up."""
+        return self._ctx.checkpoint_store is not None
 
-    def set_path(self, path: list[str] | None = None) -> None:
-        """Set the session path verbatim. ``None`` resets to ``[self.name]``."""
-        if path is None:
-            self._path = [self.name]
-        else:
+    def on_adopted(
+        self,
+        parent: Any = None,
+        *,
+        ctx: RunContext[CtxT] | None = None,
+        path: Sequence[str] | None = None,
+    ) -> None:
+        """
+        Bind this processor's session, then cascade it to children.
+
+        Usually called as ``child.on_adopted(parent)`` when a container
+        attaches a subproc: the child inherits the parent's ctx, path lineage
+        (``[*parent.path, self.name]``), and tracing settings. ``ctx`` / ``path``
+        override what the parent would supply — e.g. a tool dispatching a
+        fresh copy under a per-call ``path``, or a test re-pointing a built
+        tree at a new ``ctx``. Whatever ends up set is cascaded to every
+        subproc / tool (a leaf has none, so the cascade is a no-op there).
+
+        ``parent`` is duck-typed: a container exposes ``ctx`` + ``path`` (so
+        :class:`Runner`, not itself a :class:`Processor`, can adopt too); a
+        :class:`BaseTool` parent contributes only tracing settings, with
+        ``ctx`` / ``path`` passed explicitly.
+        """
+        if parent is not None:
+            self._inherit_tracing(parent)
+            if ctx is None:
+                ctx = getattr(parent, "ctx", None)
+            if path is None:
+                parent_path = getattr(parent, "path", None)
+                if parent_path is not None:
+                    path = [*parent_path, self.name]
+        if ctx is not None:
+            self._ctx = ctx
+            self._ctx_explicit = True
+        if path is not None:
             self._path = list(path)
         self._propagate_to_children()
 
-    def on_adopted(self, parent_path: Sequence[str]) -> None:
-        """Adoption hook: ``_path = [*parent_path, self.name]``."""
-        self.set_path([*parent_path, self.name])
+    def _inherit_tracing(self, parent: Any) -> None:
+        # Tracing restrictions propagate downward: a parent that disables
+        # tracing, or masks an input field, forces the same on every
+        # descendant (a child can't widen what an ancestor restricted).
+        # ``getattr`` keeps it robust to parents (e.g. ``Runner``) that don't
+        # carry these attributes. ``on_adopted`` runs this before the cascade
+        # so grandchildren see the merged settings.
+        if not getattr(parent, "tracing_enabled", True):
+            self.tracing_enabled = False
+        parent_fields = getattr(parent, "tracing_exclude_input_fields", None)
+        if parent_fields:
+            self.tracing_exclude_input_fields = (
+                self.tracing_exclude_input_fields or set()
+            ) | set(parent_fields)
 
     def _propagate_to_children(self) -> None:
-        """Override in container processors to (re-)adopt child subprocs."""
+        """
+        Override in container processors to (re-)adopt child subprocs.
+
+        No-op for leaf processors. Container overrides iterate subprocs and
+        call ``child.on_adopted(self)``, which re-derives a child's ctx,
+        path, and tracing settings from the parent in one walk.
+        """
 
     # ``_checkpoint_store_key`` / ``_deserialize_checkpoint`` /
     # ``_serialize_checkpoint`` are provided by ``CheckpointPersistMixin``.
@@ -199,7 +265,6 @@ class Processor(
         chat_inputs: Any | None = None,
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
-        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002
     ) -> list[InT] | None:
         err_kwargs = {"proc_name": self.name, "exec_id": exec_id}
 
@@ -305,11 +370,11 @@ class Processor(
 
     @final
     def select_recipients(
-        self, output: OutT, ctx: RunContext[CtxT], exec_id: str
+        self, output: OutT, exec_id: str
     ) -> Sequence[ProcName]:
         if is_method_overridden("select_recipients_impl", self, Processor):
             recipients = self.select_recipients_impl(
-                output=output, ctx=ctx, exec_id=exec_id
+                output=output, ctx=self._ctx, exec_id=exec_id
             )
             self._validate_recipients(recipients, exec_id=exec_id)
             return recipients
@@ -324,7 +389,6 @@ class Processor(
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        ctx: RunContext[CtxT],
         step: int | None = None,
     ) -> list[OutT]:
         """
@@ -336,6 +400,8 @@ class Processor(
         - Override ``_process_stream`` only → ``_process`` collects payload events.
         - Override both → each uses its own logic.
         - Override neither → passthrough (returns ``in_args``).
+
+        Subclasses read the bound session via :attr:`ctx`.
         """
         # If _process_stream is overridden (and we're the base _process — which
         # we must be, since an overriding subclass wouldn't reach this code),
@@ -346,7 +412,6 @@ class Processor(
                 chat_inputs=chat_inputs,
                 in_args=in_args,
                 exec_id=exec_id,
-                ctx=ctx,
                 step=step,
             ):
                 if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
@@ -361,17 +426,13 @@ class Processor(
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        ctx: RunContext[CtxT],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        """
-        Stream events for inputs. See ``_process`` docstring for override rules.
-        """
+        """Stream events for inputs. See ``_process`` docstring for override rules."""
         outputs = await self._process(
             chat_inputs=chat_inputs,
             in_args=in_args,
             exec_id=exec_id,
-            ctx=ctx,
             step=step,
         )
         for output in outputs:
@@ -381,7 +442,6 @@ class Processor(
         self,
         outputs: list[OutT],
         exec_id: str,
-        ctx: RunContext[CtxT],
     ) -> Packet[OutT]:
         for output in outputs:
             self.validate_output(output, exec_id=exec_id)
@@ -390,7 +450,7 @@ class Processor(
         if self.recipients is not None:
             for output in outputs:
                 routings.append(
-                    self.select_recipients(output=output, ctx=ctx, exec_id=exec_id)
+                    self.select_recipients(output=output, exec_id=exec_id)
                 )
 
         joined_routing = [r for r in routings] if routings else None
@@ -417,10 +477,8 @@ class Processor(
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
         exec_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        ctx = ctx or RunContext[CtxT](state=None)  # type: ignore
         exec_id = self.generate_exec_id(exec_id)
 
         val_in_args = self.validate_inputs(
@@ -428,7 +486,6 @@ class Processor(
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
-            ctx=ctx,
         )
 
         outputs: list[OutT] = []
@@ -436,7 +493,6 @@ class Processor(
             chat_inputs=chat_inputs,
             in_args=val_in_args,
             exec_id=exec_id,
-            ctx=ctx,
             step=step,
         ):
             if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
@@ -444,7 +500,7 @@ class Processor(
             else:
                 yield event
 
-        out_packet = self._build_packet(outputs=outputs, exec_id=exec_id, ctx=ctx)
+        out_packet = self._build_packet(outputs=outputs, exec_id=exec_id)
         yield ProcPacketOutEvent(
             id=out_packet.id,
             data=out_packet,
@@ -459,7 +515,6 @@ class Processor(
         in_packet: Packet[InT] | None = None,
         in_args: InT | list[InT] | None = None,
         exec_id: str | None = None,
-        ctx: RunContext[CtxT] | None = None,
         step: int | None = None,
     ) -> Packet[OutT]:
         result = None
@@ -469,7 +524,6 @@ class Processor(
             in_packet=in_packet,
             in_args=in_args,
             exec_id=exec_id,
-            ctx=ctx,
             step=step,
         ):
             if result is not None:

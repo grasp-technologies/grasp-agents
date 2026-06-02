@@ -7,7 +7,7 @@ from grasp_agents.utils.streaming import stream_concurrent
 
 from ..durability.checkpoints import CheckpointKind, ParallelCheckpoint
 from ..packet import Packet
-from ..run_context import CtxT, RunContext
+from ..run_context import CtxT, RunContext, shared_child_ctx
 from ..types.errors import ProcInputValidationError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.io import InT, OutT, ProcName
@@ -35,7 +35,10 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
 
         super().__init__(
             name=subproc.name + "_par",
-            ctx=ctx if ctx is not None else subproc.ctx,
+            # Inherit the subproc's ctx only if it was built with one; else
+            # the base ctor creates a fresh ctx. ``_propagate_to_children``
+            # then shares the result with the subproc + its replicas.
+            ctx=ctx if ctx is not None else shared_child_ctx([subproc]),
             recipients=subproc.recipients,
             max_retries=0,
             path=path,

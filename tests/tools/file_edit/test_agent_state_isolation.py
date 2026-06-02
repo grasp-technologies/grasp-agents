@@ -53,7 +53,7 @@ async def test_set_then_reset() -> None:
 
 async def test_concurrent_tasks_inherit_parent_state() -> None:
     """
-    asyncio task spawn copies the current context — children see the
+    Asyncio task spawn copies the current context — children see the
     parent's state without any explicit threading. This is what makes
     ``stream_concurrent`` / ``asyncio.gather`` work for tool batches.
     """
@@ -122,6 +122,7 @@ async def test_agent_loop_owns_distinct_state_per_instance() -> None:
     from grasp_agents.agent.llm_agent_transcript import (  # noqa: PLC0415
         LLMAgentTranscript,
     )
+    from grasp_agents.run_context import RunContext  # noqa: PLC0415
 
     class _StubLLM:
         model_name = "stub"
@@ -133,6 +134,7 @@ async def test_agent_loop_owns_distinct_state_per_instance() -> None:
             llm=_StubLLM(),  # type: ignore[arg-type]
             transcript=LLMAgentTranscript(),
             tools=None,
+            ctx=RunContext[BaseModel](),  # type: ignore[call-arg]
             max_turns=1,
         )
 

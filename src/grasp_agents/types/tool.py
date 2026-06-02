@@ -49,7 +49,6 @@ class ToolProgressCallback(Protocol):
     ) -> None: ...
 
 
-@traced(name="tool", method_name="__call__", span_kind=SpanKind.TOOL)
 class BaseTool(
     AutoInstanceAttributesMixin,
     ABC,
@@ -70,6 +69,7 @@ class BaseTool(
         description: str | None = None,
         timeout: float | None = None,
         background: bool = False,
+        tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         self._in_type: type[_InT]
@@ -88,16 +88,28 @@ class BaseTool(
 
         self.timeout = timeout
         self.background = background
+        self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
         self._llm_in_type: type[BaseModel] | None = None
 
     def on_adopted(self, parent: "Any") -> None:
         """
         Lifecycle hook fired when this tool is attached to a parent
-        :class:`Processor`. Default no-op for stateless tools; subclasses
-        like :class:`ProcessorTool` override to forward adoption onto a
-        wrapped processor.
+        :class:`Processor`.
+
+        Inherits the parent's tracing settings (downward restriction): if the
+        parent disables tracing the tool's spans are disabled too, and a field
+        the parent masks stays masked in the tool's spans (union). Subclasses
+        like :class:`ProcessorTool` override to additionally forward adoption
+        onto a wrapped processor.
         """
+        if not getattr(parent, "tracing_enabled", True):
+            self.tracing_enabled = False
+        parent_fields = getattr(parent, "tracing_exclude_input_fields", None)
+        if parent_fields:
+            self.tracing_exclude_input_fields = (
+                self.tracing_exclude_input_fields or set()
+            ) | set(parent_fields)
 
     @property
     def in_type(self) -> type[_InT]:
@@ -253,6 +265,7 @@ class BaseTool(
 
     # --- Public API ---
 
+    @traced(name="tool", span_kind=SpanKind.TOOL)
     async def __call__(
         self,
         *,
@@ -269,6 +282,7 @@ class BaseTool(
             progress_callback=progress_callback,
         )
 
+    @traced(name="tool", span_kind=SpanKind.TOOL)
     async def run(
         self,
         inp: _InT,
@@ -286,6 +300,7 @@ class BaseTool(
             path=path,
         )
 
+    @traced(name="tool", span_kind=SpanKind.TOOL)
     async def run_stream(
         self,
         inp: _InT,

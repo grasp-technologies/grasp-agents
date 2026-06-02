@@ -1,4 +1,5 @@
-"""Live integration test for ``mcp_memory_demo.ipynb`` — same flow as the
+"""
+Live integration test for ``mcp_memory_demo.ipynb`` — same flow as the
 local-FS test but routes file I/O through an MCP stdio server.
 
 Requires ``OPENAI_API_KEY`` and the ``mcp`` optional dependency.
@@ -172,7 +173,7 @@ async def test_mcp_memory_flow(memdir: Path) -> None:
                 "Please remember: I'm based in Berlin (CET timezone).",
             )
             print(f"step 2 final: {final2}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"step 2 raised (LLM-side, not framework): {exc!r}")
 
         await provider.refresh()

@@ -489,7 +489,7 @@ class TestAnthropicWebFetch:
         """Web fetch should produce WebSearchCallItem with OpenPageAction."""
         input_items = [
             InputMessageItem.from_text(
-                "Fetch https://httpbin.org/html and summarize it briefly."
+                "Fetch https://example.com and summarize it briefly."
             )
         ]
         response = await llm.generate_response(input_items)
@@ -509,7 +509,7 @@ class TestAnthropicWebFetch:
         """Streaming web fetch should produce WebSearchCallItem events."""
         input_items = [
             InputMessageItem.from_text(
-                "Fetch https://httpbin.org/html and summarize it briefly."
+                "Fetch https://example.com and summarize it briefly."
             )
         ]
         events = [event async for event in llm.generate_response_stream(input_items)]
@@ -531,7 +531,7 @@ class TestAnthropicWebFetch:
     async def test_web_fetch_multi_turn(self, llm: CloudLLM) -> None:
         """Multi-turn: fetch a page, then ask a follow-up about it."""
         user_msg = InputMessageItem.from_text(
-            "Fetch https://httpbin.org/html and tell me the author's name."
+            "Fetch https://example.com and tell me the author's name."
         )
         r1 = await llm.generate_response([user_msg])
 

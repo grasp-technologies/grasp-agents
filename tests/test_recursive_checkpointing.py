@@ -220,7 +220,7 @@ async def collect_payloads(
     step: int | None = None,
 ) -> list[str]:
     """Run a processor via run_stream and collect final payloads."""
-    proc.set_ctx(ctx)
+    proc.on_adopted(ctx=ctx)
     payloads: list[str] = []
     async for event in proc.run_stream(
         in_args=in_args, exec_id="test", step=step
@@ -309,7 +309,7 @@ class TestRecursiveSessionPropagation:
         # Ctx with no checkpoint_store -> not resumable
         ctx_empty: RunContext[None] = RunContext(state=None)
         worker_empty = AppendProcessor("worker")
-        worker_empty.set_ctx(ctx_empty)
+        worker_empty.on_adopted(ctx=ctx_empty)
         assert not worker_empty.is_resumable
 
         # Ctx with checkpoint_store -> resumable
@@ -318,7 +318,7 @@ class TestRecursiveSessionPropagation:
             state=None, checkpoint_store=store
         )
         worker_with_store = AppendProcessor("worker")
-        worker_with_store.set_ctx(ctx_with_store)
+        worker_with_store.on_adopted(ctx=ctx_with_store)
         assert worker_with_store.is_resumable
 
     def test_runner_propagates_through_workflow_and_parallel(self) -> None:
@@ -332,7 +332,7 @@ class TestRecursiveSessionPropagation:
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
         ctx: RunContext[None] = RunContext(state=None)
-        wf.set_ctx(ctx)
+        wf.on_adopted(ctx=ctx)
         Runner[str, None](
             entry_proc=entry, procs=[entry, wf], name="r"
         )
@@ -365,7 +365,7 @@ class TestRecursiveCheckpointStorage:
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="s1"
         )
-        wf.set_ctx(ctx)
+        wf.on_adopted(ctx=ctx)
 
         result = await collect_payloads(wf, ctx, in_args="start")
         assert sorted(result) == [
@@ -399,7 +399,7 @@ class TestRecursiveCheckpointStorage:
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="s2"
         )
-        outer.set_ctx(ctx)
+        outer.on_adopted(ctx=ctx)
 
         result = await collect_payloads(outer, ctx, in_args="start")
         assert result == ["start->A->X->Y"]
@@ -422,7 +422,7 @@ class TestRecursiveCheckpointStorage:
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="deep"
         )
-        wf.set_ctx(ctx)
+        wf.on_adopted(ctx=ctx)
 
         await collect_payloads(wf, ctx, in_args="start")
 
@@ -459,7 +459,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r1"
         )
-        par1.set_ctx(ctx1)
+        par1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -485,7 +485,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r1"
         )
-        wf2.set_ctx(ctx2)
+        wf2.on_adopted(ctx=ctx2)
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -519,7 +519,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r2"
         )
-        par1.set_ctx(ctx1)
+        par1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(wf1, ctx1, in_args="start")
@@ -543,7 +543,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r2"
         )
-        wf2.set_ctx(ctx2)
+        wf2.on_adopted(ctx=ctx2)
 
         result = await collect_payloads(wf2, ctx2, step=0)
 
@@ -578,7 +578,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r3"
         )
-        inner1.set_ctx(ctx1)
+        inner1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -600,7 +600,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r3"
         )
-        outer2.set_ctx(ctx2)
+        outer2.on_adopted(ctx=ctx2)
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
@@ -641,7 +641,7 @@ class TestRecursiveResume:
         ctx1: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r4"
         )
-        outer1.set_ctx(ctx1)
+        outer1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
             await collect_payloads(outer1, ctx1, in_args="start")
@@ -677,7 +677,7 @@ class TestRecursiveResume:
         ctx2: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="r4"
         )
-        outer2.set_ctx(ctx2)
+        outer2.on_adopted(ctx=ctx2)
 
         result = await collect_payloads(outer2, ctx2, step=0)
 
