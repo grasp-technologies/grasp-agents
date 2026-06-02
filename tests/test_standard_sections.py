@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents import make_env_info_section
+from grasp_agents import CacheControl, make_env_info_section
+from grasp_agents.agent.llm_agent import LLMAgent
+
+from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
+    MockLLM,
+)
 
 if TYPE_CHECKING:
     from grasp_agents.agent.prompt_builder import SystemPromptSection
@@ -30,7 +35,7 @@ class TestEnvInfoSection:
     def test_default_includes_date_platform_os_cwd(self) -> None:
         section = make_env_info_section()
         assert section.name == "env_info"
-        assert section.cache_break is False
+        assert section.cache_control is None
         text = _run_compute(section)
         assert text is not None
         assert "## Environment" in text
@@ -84,15 +89,46 @@ class TestEnvInfoSection:
         section = make_env_info_section(include=())
         assert _run_compute(section) is None
 
-    def test_cache_break_propagates(self) -> None:
+    def test_cache_control_propagates(self) -> None:
         section = make_env_info_section(
-            include=("datetime",), cache_break=True
+            include=("datetime",), cache_control=CacheControl()
         )
-        assert section.cache_break is True
+        assert section.cache_control == CacheControl()
 
     def test_custom_section_name(self) -> None:
         section = make_env_info_section(section_name="my_env")
         assert section.name == "my_env"
+
+
+class TestEnvInfoAgentWiring:
+    """The LLMAgent ``env_info`` kwarg: bool toggle OR a configured section."""
+
+    @staticmethod
+    def _names(agent: LLMAgent[str, str, None]) -> set[str]:
+        return {s.name for s in agent.system_prompt_sections}
+
+    def test_true_attaches_default_section(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="a", llm=MockLLM(responses_queue=[]), env_info=True
+        )
+        assert "env_info" in self._names(agent)
+
+    def test_false_attaches_nothing(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="a", llm=MockLLM(responses_queue=[]), env_info=False
+        )
+        assert "env_info" not in self._names(agent)
+
+    def test_custom_section_used_verbatim(self) -> None:
+        custom = make_env_info_section(
+            section_name="my_env", include=("date", "model"), model_name="m"
+        )
+        agent = LLMAgent[str, str, None](
+            name="a", llm=MockLLM(responses_queue=[]), env_info=custom
+        )
+        # The exact section object is registered; the default isn't added.
+        assert custom in agent.system_prompt_sections
+        assert "env_info" not in self._names(agent)
 
 
 # ---------- mcp_instructions ----------
@@ -123,7 +159,7 @@ class TestMcpInstructionsSection:
     @pytest.mark.anyio
     async def test_no_clients_returns_none(self, mcp_section_factory: Any) -> None:
         section = mcp_section_factory([])
-        assert section.cache_break is True
+        assert section.cache_control == CacheControl()
         assert await _await_compute(section) is None
 
     @pytest.mark.anyio

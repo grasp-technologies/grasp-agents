@@ -18,7 +18,7 @@ Prompt Hooks (registered on PromptBuilder via LLMAgent):
     InputContentBuilder  — formats input arguments to Content
 
 Agent Hooks (handled directly by LLMAgent):
-    MemoryBuilder  — custom memory initialization
+    TranscriptBuilder  — custom transcript initialization on fresh init
     StateBuilder   — rebuild CtxT / RunContext.state on resume-from-checkpoint
     OutputParser   — parses LLM text into typed output
 
@@ -36,7 +36,7 @@ from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.packet import Packet
 from grasp_agents.run_context import CtxT, RunContext
-from grasp_agents.types.content import Content
+from grasp_agents.types.content import Content, InputText
 from grasp_agents.types.io import LLMPrompt, ProcName
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -58,7 +58,6 @@ __all__ = [
     "BeforeToolHook",
     "FinalAnswerExtractor",
     "InputContentBuilder",
-    "MemoryBuilder",
     "OutputParser",
     "RecipientSelector",
     "Selector",
@@ -66,6 +65,7 @@ __all__ = [
     "SystemPromptBuilder",
     "ToolInputConverter",
     "ToolOutputConverter",
+    "TranscriptBuilder",
     "WorkflowLoopTerminator",
 ]
 
@@ -150,7 +150,9 @@ class ToolInputConverter(Protocol[CtxT]):
 
 
 class SystemPromptBuilder(Protocol[CtxT]):
-    def __call__(self, *, ctx: RunContext[CtxT], exec_id: str) -> str | None: ...
+    def __call__(
+        self, *, ctx: RunContext[CtxT], exec_id: str
+    ) -> str | Sequence[InputText] | None: ...
 
 
 class InputContentBuilder(Protocol[_InT_contra, CtxT]):
@@ -162,11 +164,24 @@ class InputContentBuilder(Protocol[_InT_contra, CtxT]):
 # --- Agent Hooks ---
 
 
-class MemoryBuilder(Protocol[_InT_contra]):
+class TranscriptBuilder(Protocol[_InT_contra]):
+    """
+    Seed the agent's transcript (conversation history) on fresh init.
+
+    Receives the freshly-built system prompt as ``instructions`` — the same
+    ``str | Sequence[InputText]`` that :meth:`LLMAgentTranscript.reset`
+    accepts, so forwarding it (``agent.transcript.reset(instructions)``)
+    preserves each part's :class:`CacheControl`. The hook populates
+    ``agent.transcript`` (e.g. a custom system message or a primed
+    multi-turn history). Distinct from cross-session
+    :class:`RunContext.memory`. On resume-from-checkpoint this does NOT
+    fire — use :class:`StateBuilder` there instead.
+    """
+
     def __call__(
         self,
         *,
-        instructions: LLMPrompt | None = None,
+        instructions: LLMPrompt | Sequence[InputText] | None = None,
         in_args: _InT_contra | None = None,
         ctx: RunContext[Any],
         exec_id: str,
@@ -181,7 +196,7 @@ class StateBuilder(Protocol[CtxT]):
     Fires exactly once per resume — i.e. when ``_load_checkpoint`` returned
     a non-``None`` checkpoint — after conversation messages have been
     restored into memory and before the agent's next turn. Does not fire
-    on fresh init; use :class:`MemoryBuilder` there instead.
+    on fresh init; use :class:`TranscriptBuilder` there instead.
     """
 
     async def __call__(

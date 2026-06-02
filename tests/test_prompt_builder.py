@@ -22,9 +22,10 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from grasp_agents.agent.prompt_builder import PromptBuilder
+from grasp_agents.agent.prompt_builder import PromptBuilder, SystemPromptSection
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import (
+    CacheControl,
     Content,
     InputImage,
     InputPart,
@@ -358,3 +359,50 @@ class TestSystemPromptBuilder:
         builder = _make_builder(str)
         result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result is None
+
+    @pytest.mark.anyio
+    async def test_section_cache_control_rides_on_part(self):
+        """A section's ``cache_control`` lands on its rendered part as the
+        structured field — no provider-specific leakage."""
+        builder = _make_builder(str, sys_prompt="Base.")
+
+        def compute(*, ctx=None, exec_id=None, **_):
+            return "Cached block."
+
+        builder.add_system_prompt_section(
+            SystemPromptSection(
+                name="cached",
+                compute=compute,
+                cache_control=CacheControl(ttl="1h"),
+            )
+        )
+        parts = await builder.build_system_prompt_parts(ctx=_ctx(), exec_id="c1")
+        assert parts is not None
+        assert [p.text for p in parts] == ["Base.", "Cached block."]
+        # Base part carries no cache control; the section's part does.
+        assert parts[0].cache_control is None
+        assert parts[1].cache_control == CacheControl(ttl="1h")
+        # No provider-specific field is set on either part.
+        assert all(p.provider_specific_fields is None for p in parts)
+
+    @pytest.mark.anyio
+    async def test_builder_can_return_parts(self):
+        """``system_prompt_builder`` may return a list of ``InputText`` so a
+        custom builder lays out its own cache-control checkpoints."""
+        builder = _make_builder(str, sys_prompt="ignored")
+
+        def custom_sys(*, ctx, exec_id):
+            return [
+                InputText(text="Stable.", cache_control=CacheControl()),
+                InputText(text="Volatile."),
+            ]
+
+        builder.system_prompt_builder = custom_sys  # type: ignore[assignment]
+        parts = await builder.build_system_prompt_parts(ctx=_ctx(), exec_id="c1")
+        assert parts is not None
+        assert [p.text for p in parts] == ["Stable.", "Volatile."]
+        assert parts[0].cache_control == CacheControl()
+        assert parts[1].cache_control is None
+        # The string view joins them.
+        joined = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
+        assert joined == "Stable.\n\nVolatile."
