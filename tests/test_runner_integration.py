@@ -536,7 +536,6 @@ class TestAgentCrashResume:
         @agent1.add_before_llm_hook
         async def _crash_on_turn_2(
             *,
-            ctx: Any,
             exec_id: Any,
             turn: int,
             extra_llm_settings: Any,  # noqa: ARG001

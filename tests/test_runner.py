@@ -149,7 +149,7 @@ class RoutingProcessor(Processor[str, str, None]):
         self._route_map = route_map or {}
 
     def select_recipients_impl(
-        self, output: str, *, ctx: RunContext[None], exec_id: str
+        self, output: str, *, exec_id: str
     ) -> Sequence[ProcName]:
         for substr, recipient in self._route_map.items():
             if substr in output:

@@ -281,7 +281,7 @@ class TestBackgroundToolLaunch:
             tools=[SlowTool(delay=0.1)],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )
@@ -344,7 +344,7 @@ class TestMixedImmediateAndBackground:
             tools=[EchoTool(), SlowTool(delay=0.05)],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )
@@ -379,7 +379,7 @@ class TestFinalAnswerSuppression:
             tools=[SlowTool(delay=0.05)],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )
@@ -410,7 +410,7 @@ class TestBackgroundTaskFailure:
             tools=[FailingBgTool()],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )
@@ -459,7 +459,7 @@ class TestMultipleBackgroundTasks:
             ],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )
@@ -500,7 +500,7 @@ class TestMultipleBackgroundTasks:
             ],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )
@@ -627,7 +627,7 @@ class TestNoBackgroundToolsNoop:
             tools=[EchoTool()],
         )
         executor.final_answer_extractor = (
-            lambda *, ctx, exec_id, response=None, **kw: response.output_text
+            lambda *, exec_id, response=None, **kw: response.output_text
             if response and not response.tool_call_items
             else None
         )

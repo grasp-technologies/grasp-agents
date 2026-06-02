@@ -15,7 +15,6 @@ import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.prompt_builder import SystemPromptSection
-from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import CacheControl, InputText
 from grasp_agents.types.items import InputMessageItem
 
@@ -54,10 +53,9 @@ class TestTranscriptBuilderReceivesParts:
             *,
             instructions: str | Sequence[InputText] | None = None,
             in_args: str | None = None,
-            ctx: RunContext[Any],
             exec_id: str,
         ) -> None:
-            del in_args, ctx, exec_id
+            del in_args, exec_id
             received.append(instructions)
             # Forward to reset exactly as a real builder would.
             agent.transcript.reset(instructions)
@@ -93,10 +91,9 @@ class TestTranscriptBuilderReceivesParts:
                 *,
                 instructions: str | Sequence[InputText] | None = None,
                 in_args: str | None = None,
-                ctx: RunContext[Any],
                 exec_id: str,
             ) -> None:
-                del in_args, ctx, exec_id
+                del in_args, exec_id
                 seen.append(instructions)
                 self.transcript.reset(instructions)
 

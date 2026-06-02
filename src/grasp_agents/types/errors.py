@@ -1,3 +1,5 @@
+from typing import Any
+
 # --- Processor errors ---
 
 
@@ -49,6 +51,18 @@ class AgentFinalAnswerError(ProcRunError):
             f"[proc_name={proc_name}; exec_id={exec_id}]",
         )
         self.message = message
+
+
+class TranscriptInvariantError(Exception):
+    """
+    A tool call in the transcript isn't resolved by its result in place.
+
+    Providers require an assistant turn's ``tool_calls`` to be followed by
+    their matching ``tool_result``s before any user / system message, and
+    none may dangle unresolved. The agent loop maintains this by
+    construction; this is raised (before the provider 400s) if a custom
+    hook, converter, or bug violates it.
+    """
 
 
 class WorkflowConstructionError(Exception):
@@ -134,16 +148,29 @@ class CompletionError(Exception):
 
 
 class LLMToolCallValidationError(Exception):
+    """
+    Raised when one or more tool calls in an LLM response reference an
+    unknown tool or carry invalid arguments.
+
+    Carries the bad ``response`` so the caller can commit the failed
+    assistant turn to the transcript and synthesize matching
+    ``FunctionToolOutputItem``s — one per failure — so the next LLM call
+    sees the validation errors as tool results and can correct itself.
+
+    ``failed_calls`` lists every offending tool call as a 3-tuple of
+    ``(call_id, tool_name, error_message)``; ``message`` summarizes them.
+    """
+
     def __init__(
-        self, tool_name: str, tool_args: str, message: str | None = None
+        self,
+        message: str,
+        *,
+        response: Any = None,
+        failed_calls: list[tuple[str, str, str]] | None = None,
     ) -> None:
-        super().__init__(
-            message
-            or f"Failed to validate tool call '{tool_name}' with arguments:"
-            f"\n{tool_args}."
-        )
-        self.tool_name = tool_name
-        self.tool_args = tool_args
+        super().__init__(message)
+        self.response = response
+        self.failed_calls: list[tuple[str, str, str]] = failed_calls or []
 
 
 class LLMResponseValidationError(JSONSchemaValidationError):
@@ -154,3 +181,33 @@ class LLMResponseValidationError(JSONSchemaValidationError):
             message
             or f"Failed to validate LLM response:\n{s}\nExpected type: {schema}",
         )
+
+
+class LLMResponseRefusalError(Exception):
+    """
+    Raised when an LLM response carries no usable content for a *semantic*
+    reason — the model refused, or the provider's content filter blocked
+    the output.
+
+    Distinct from the validation errors above: bad JSON / tool arguments are
+    re-sampled (the model can self-correct), but a refusal or content filter
+    recurs on the same prompt, so this is **not** retried. Catch it to choose
+    an application-level fallback (reroute, soften the request, abort).
+
+    Carries the normalized completion signal read off :class:`Response`:
+    ``status``, ``reason`` (from ``incomplete_details``), and ``refusal`` text.
+    """
+
+    def __init__(
+        self,
+        *,
+        status: str | None = None,
+        reason: str | None = None,
+        refusal: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        detail = refusal or reason or status or "unknown"
+        super().__init__(message or f"LLM declined to produce content: {detail}")
+        self.status = status
+        self.reason = reason
+        self.refusal = refusal

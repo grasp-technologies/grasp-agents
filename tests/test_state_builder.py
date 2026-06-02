@@ -72,10 +72,9 @@ class TestStateBuilder:
         async def rebuild(  # noqa: RUF029
             *,
             checkpoint: AgentCheckpoint,
-            ctx: RunContext[_AppState],
             exec_id: str,
         ) -> None:
-            del ctx, exec_id
+            del exec_id
             calls.append(checkpoint)
 
         agent.add_state_builder(rebuild)
@@ -103,14 +102,13 @@ class TestStateBuilder:
         async def rebuild(  # noqa: RUF029
             *,
             checkpoint: AgentCheckpoint,
-            ctx: RunContext[_AppState],
             exec_id: str,
         ) -> None:
             del exec_id
             received.append(checkpoint)
-            ctx.state.loaded_from_db = True
-            ctx.state.pathway_id = "p-42"
-            ctx.state.message_count_at_load = len(agent2.transcript.messages)
+            ctx2.state.loaded_from_db = True
+            ctx2.state.pathway_id = "p-42"
+            ctx2.state.message_count_at_load = len(agent2.transcript.messages)
 
         agent2.add_state_builder(rebuild)
 
@@ -145,10 +143,9 @@ class TestStateBuilder:
         async def rebuild(  # noqa: RUF029
             *,
             checkpoint: AgentCheckpoint,
-            ctx: RunContext[_AppState],
             exec_id: str,
         ) -> None:
-            del checkpoint, ctx, exec_id
+            del checkpoint, exec_id
             nonlocal calls
             calls += 1
 
@@ -178,12 +175,11 @@ class TestStateBuilder:
                 self,
                 *,
                 checkpoint: AgentCheckpoint,
-                ctx: RunContext[_AppState],
                 exec_id: str,
             ) -> None:
                 del exec_id
                 self.build_state_calls.append(checkpoint)
-                ctx.state.loaded_from_db = True
+                self.ctx.state.loaded_from_db = True
 
         ctx: RunContext[_AppState] = RunContext(
             checkpoint_store=store, session_key="s2", state=_AppState()
@@ -216,11 +212,10 @@ class TestStateBuilder:
         async def rebuild(  # noqa: RUF029
             *,
             checkpoint: AgentCheckpoint,
-            ctx: RunContext[_AppState],
             exec_id: str,
         ) -> None:
             del checkpoint, exec_id
-            ctx.state.pathway_id = "rebuilt"
+            ctx2.state.pathway_id = "rebuilt"
 
         agent2.add_state_builder(rebuild)
 

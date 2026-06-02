@@ -112,6 +112,12 @@ class LocalFileBackend:
     def allowed_roots(self) -> list[Path]:
         return list(self._allowed_roots)
 
+    def add_allowed_root(self, root: Path) -> None:
+        resolved = Path(root).expanduser()
+        if any(resolved == r or r in resolved.parents for r in self._allowed_roots):
+            return
+        self._allowed_roots.append(resolved)
+
     async def validate_path(
         self,
         path: Path,

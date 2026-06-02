@@ -66,13 +66,13 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
         return self._max_iterations
 
     def terminate_workflow_loop_impl(
-        self, out_packet: Packet[OutT], *, ctx: RunContext[CtxT], **kwargs: Any
+        self, out_packet: Packet[OutT], **kwargs: Any
     ) -> bool:
         raise NotImplementedError
 
     def add_workflow_loop_terminator(
-        self, func: WorkflowLoopTerminator[OutT, CtxT]
-    ) -> WorkflowLoopTerminator[OutT, CtxT]:
+        self, func: WorkflowLoopTerminator[OutT]
+    ) -> WorkflowLoopTerminator[OutT]:
         self.terminate_workflow_loop_impl = func
 
         return func
@@ -83,9 +83,7 @@ class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
     ) -> bool:
         base_cls = LoopedWorkflow[Any, Any, Any]
         if is_method_overridden("terminate_workflow_loop_impl", self, base_cls):
-            return self.terminate_workflow_loop_impl(
-                out_packet, ctx=self._ctx, **kwargs
-            )
+            return self.terminate_workflow_loop_impl(out_packet, **kwargs)
 
         return False
 

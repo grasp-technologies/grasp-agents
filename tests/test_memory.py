@@ -4,6 +4,7 @@ import pytest
 
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.errors import TranscriptInvariantError
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -122,13 +123,13 @@ class TestMemoryState:
         mem.reset(instructions="sys")
         assert not mem.is_empty
 
-    def test_erase(self):
-        """erase() clears all messages."""
+    def test_clear(self):
+        """clear() clears all messages."""
         mem = LLMAgentTranscript()
         mem.reset(instructions="sys")
         mem.update([InputMessageItem.from_text("x", role="user")])
 
-        mem.erase()
+        mem.clear()
         assert mem.is_empty
         assert len(mem.messages) == 0
 
@@ -189,3 +190,67 @@ class TestMemoryFullConversation:
             "FunctionToolOutputItem",  # tool result
             "OutputMessageItem",  # final answer
         ]
+
+
+class TestToolCallPairing:
+    """`validate_tool_call_pairing` enforces the provider pairing invariant."""
+
+    @staticmethod
+    def _call(cid: str) -> FunctionToolCallItem:
+        return FunctionToolCallItem(call_id=cid, name="t", arguments="{}")
+
+    @staticmethod
+    def _result(cid: str) -> FunctionToolOutputItem:
+        return FunctionToolOutputItem.from_tool_result(call_id=cid, output="ok")
+
+    def test_valid_pairing_passes(self):
+        mem = LLMAgentTranscript()
+        mem.update(
+            [
+                InputMessageItem.from_text("sys", role="system"),
+                InputMessageItem.from_text("go", role="user"),
+                self._call("c1"),
+                self._result("c1"),
+            ]
+        )
+        mem.validate_tool_call_pairing()  # no raise
+
+    def test_multiple_calls_then_results_pass(self):
+        mem = LLMAgentTranscript()
+        mem.update(
+            [self._call("c1"), self._call("c2"), self._result("c1"), self._result("c2")]
+        )
+        mem.validate_tool_call_pairing()
+
+    def test_same_turn_text_between_call_and_result_allowed(self):
+        """Assistant text/reasoning is same-turn — allowed mid-batch."""
+        mem = LLMAgentTranscript()
+        mem.update(
+            [
+                self._call("c1"),
+                OutputMessageItem(
+                    content_parts=[OutputMessageText(text="thinking")],
+                    status="completed",
+                ),
+                self._result("c1"),
+            ]
+        )
+        mem.validate_tool_call_pairing()
+
+    def test_dangling_tool_call_raises(self):
+        mem = LLMAgentTranscript()
+        mem.update([self._call("c1")])
+        with pytest.raises(TranscriptInvariantError, match="unresolved"):
+            mem.validate_tool_call_pairing()
+
+    def test_user_message_between_call_and_result_raises(self):
+        mem = LLMAgentTranscript()
+        mem.update(
+            [
+                self._call("c1"),
+                InputMessageItem.from_text("interrupt", role="user"),
+                self._result("c1"),
+            ]
+        )
+        with pytest.raises(TranscriptInvariantError, match="not resolved before"):
+            mem.validate_tool_call_pairing()

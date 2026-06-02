@@ -109,7 +109,7 @@ class TestInputRenderableResolution:
         builder = _make_builder(RenderableInput)
         inp = RenderableInput(title="Hello", body="World")
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         assert len(content.parts) == 1
         text = content.parts[0]
@@ -123,7 +123,7 @@ class TestInputRenderableResolution:
             description="A cat", image_url="https://example.com/cat.jpg"
         )
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         assert len(content.parts) == 2
         assert isinstance(content.parts[0], InputImage)
@@ -139,7 +139,7 @@ class TestInputRenderableResolution:
         )
         inp = RenderableInput(title="Hello", body="World")
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         # Should use to_input_parts(), NOT the template
         text = content.parts[0]
@@ -159,13 +159,13 @@ class TestInputContentBuilderHookPriority:
         """InputContentBuilder takes priority over InputRenderable."""
         builder = _make_builder(RenderableInput)
 
-        def custom_builder(in_args, *, ctx, exec_id):
+        def custom_builder(in_args, *, exec_id):
             return Content.from_text(f"CUSTOM: {in_args.title}")
 
         builder.input_content_builder = custom_builder  # type: ignore[assignment]
 
         inp = RenderableInput(title="Hello", body="World")
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         text = content.parts[0]
         assert isinstance(text, InputText)
@@ -177,13 +177,13 @@ class TestInputContentBuilderHookPriority:
             in_prompt="<Q>{query}</Q>\n<C>{context}</C>",
         )
 
-        def custom_builder(in_args, *, ctx, exec_id):
+        def custom_builder(in_args, *, exec_id):
             return Content.from_text(f"OVERRIDE: {in_args.query}")
 
         builder.input_content_builder = custom_builder  # type: ignore[assignment]
 
         inp = SimpleInput(query="test", context="ctx")
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         assert content.parts[0].text == "OVERRIDE: test"  # type: ignore[union-attr]
 
@@ -198,7 +198,7 @@ class TestInPromptTemplate:
         )
         inp = SimpleInput(query="What is AI?", context="CS course")
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         assert len(content.parts) == 1
         text = content.parts[0]
@@ -214,7 +214,7 @@ class TestInPromptTemplate:
         )
         inp = NestedInput(name="test", tags=["a", "b", "c"])
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "Name: test" in text
@@ -229,7 +229,7 @@ class TestInPromptTemplate:
         )
         inp = ExcludedFieldInput(visible="shown", hidden="secret")
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "shown" in text
@@ -243,7 +243,7 @@ class TestJSONFallback:
         builder = _make_builder(SimpleInput)
         inp = SimpleInput(query="hello", context="world")
 
-        content = builder.build_input_content(in_args=inp, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=inp, exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert '"query"' in text
@@ -254,7 +254,7 @@ class TestJSONFallback:
         builder = _make_builder(str)
 
         content = builder.build_input_content(
-            in_args="raw string", ctx=_ctx(), exec_id="c1"
+            in_args="raw string", exec_id="c1"
         )
 
         text = content.parts[0].text  # type: ignore[union-attr]
@@ -263,7 +263,7 @@ class TestJSONFallback:
     def test_int_input_gives_json(self):
         builder = _make_builder(int)
 
-        content = builder.build_input_content(in_args=42, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=42, exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "42" in text
@@ -276,14 +276,14 @@ class TestNoneInputType:
         builder = _make_builder(type(None))
 
         # Should not raise — None is valid when InT is type(None)
-        content = builder.build_input_content(in_args=None, ctx=_ctx(), exec_id="c1")
+        content = builder.build_input_content(in_args=None, exec_id="c1")
         assert content is not None
 
     def test_non_none_input_type_with_none_args_raises(self):
         builder = _make_builder(str)
 
         with pytest.raises(Exception, match="input arguments must be provided"):
-            builder.build_input_content(in_args=None, ctx=_ctx(), exec_id="c1")
+            builder.build_input_content(in_args=None, exec_id="c1")
 
 
 class TestBuildInputMessage:
@@ -292,7 +292,7 @@ class TestBuildInputMessage:
     def test_chat_inputs_string(self):
         builder = _make_builder(type(None))
         msg = builder.build_input_message(
-            chat_inputs="Hello there", exec_id="c1", ctx=_ctx()
+            chat_inputs="Hello there", exec_id="c1"
         )
         assert msg is not None
         assert msg.role == "user"
@@ -302,7 +302,7 @@ class TestBuildInputMessage:
         img = InputImage.from_url("https://example.com/img.jpg")
 
         msg = builder.build_input_message(
-            chat_inputs=["Look at this:", img], exec_id="c1", ctx=_ctx()
+            chat_inputs=["Look at this:", img], exec_id="c1"
         )
         assert msg is not None
         assert len(msg.content_parts) == 2
@@ -317,7 +317,6 @@ class TestBuildInputMessage:
                 chat_inputs="hi",
                 in_args="also hi",
                 exec_id="c1",
-                ctx=_ctx(),
             )
 
     def test_in_args_produces_user_message(self):
@@ -328,7 +327,6 @@ class TestBuildInputMessage:
         msg = builder.build_input_message(
             in_args=SimpleInput(query="test", context="c"),
             exec_id="c1",
-            ctx=_ctx(),
         )
         assert msg is not None
         assert msg.role == "user"
@@ -347,7 +345,7 @@ class TestSystemPromptBuilder:
     async def test_hook_overrides_sys_prompt(self):
         builder = _make_builder(str, sys_prompt="Original.")
 
-        def custom_sys(*, ctx, exec_id):
+        def custom_sys(*, exec_id):
             return "Dynamic prompt"
 
         builder.system_prompt_builder = custom_sys  # type: ignore[assignment]
@@ -362,8 +360,10 @@ class TestSystemPromptBuilder:
 
     @pytest.mark.anyio
     async def test_section_cache_control_rides_on_part(self):
-        """A section's ``cache_control`` lands on its rendered part as the
-        structured field — no provider-specific leakage."""
+        """
+        A section's ``cache_control`` lands on its rendered part as the
+        structured field — no provider-specific leakage.
+        """
         builder = _make_builder(str, sys_prompt="Base.")
 
         def compute(*, ctx=None, exec_id=None, **_):
@@ -387,11 +387,13 @@ class TestSystemPromptBuilder:
 
     @pytest.mark.anyio
     async def test_builder_can_return_parts(self):
-        """``system_prompt_builder`` may return a list of ``InputText`` so a
-        custom builder lays out its own cache-control checkpoints."""
+        """
+        ``system_prompt_builder`` may return a list of ``InputText`` so a
+        custom builder lays out its own cache-control checkpoints.
+        """
         builder = _make_builder(str, sys_prompt="ignored")
 
-        def custom_sys(*, ctx, exec_id):
+        def custom_sys(*, exec_id):
             return [
                 InputText(text="Stable.", cache_control=CacheControl()),
                 InputText(text="Volatile."),

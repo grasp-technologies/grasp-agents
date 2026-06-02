@@ -94,11 +94,11 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         return self._drop_failed
 
     def select_recipients_impl(
-        self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str
+        self, output: OutT, *, exec_id: str
     ) -> Sequence[ProcName]:
         if is_method_overridden("select_recipients_impl", self._subproc, Processor):
             return self._subproc.select_recipients_impl(
-                output=output, ctx=ctx, exec_id=exec_id
+                output=output, exec_id=exec_id
             )
         return cast("list[ProcName]", self.recipients or [])
 

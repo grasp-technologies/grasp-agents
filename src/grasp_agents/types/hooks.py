@@ -73,39 +73,39 @@ __all__ = [
 # --- Agent Loop Hooks ---
 
 
-class BeforeLlmHook(Protocol[CtxT]):
+class BeforeLlmHook(Protocol):
     async def __call__(
         self,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str,
         turn: int,
         extra_llm_settings: dict[str, Any],
     ) -> None: ...
 
 
-class AfterLlmHook(Protocol[CtxT]):
+class AfterLlmHook(Protocol):
     async def __call__(
         self,
         response: Response,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str,
         turn: int,
     ) -> None: ...
 
 
-class FinalAnswerExtractor(Protocol[CtxT]):
+class FinalAnswerExtractor(Protocol):
     def __call__(
         self,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str,
         **kwargs: Any,
     ) -> str | None: ...
 
 
 class BeforeToolHook(Protocol[CtxT]):
+    # Keeps ``ctx``: built by standalone factories (e.g.
+    # ``build_callback_approval`` / ``build_store_approval``) that have no
+    # bound processor to read ``self.ctx`` from.
     async def __call__(
         self,
         *,
@@ -115,33 +115,30 @@ class BeforeToolHook(Protocol[CtxT]):
     ) -> Mapping[str, ToolCallDecision] | None: ...
 
 
-class AfterToolHook(Protocol[CtxT]):
+class AfterToolHook(Protocol):
     async def __call__(
         self,
         *,
         tool_calls: Sequence[FunctionToolCallItem],
         tool_messages: Sequence[FunctionToolOutputItem | InputMessageItem],
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> None: ...
 
 
-class ToolOutputConverter(Protocol[CtxT]):
+class ToolOutputConverter(Protocol):
     async def __call__(
         self,
         tool_output: Any,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str | None,
     ) -> str | list[ToolOutputPart]: ...
 
 
-class ToolInputConverter(Protocol[CtxT]):
+class ToolInputConverter(Protocol):
     async def __call__(
         self,
         llm_args: BaseModel,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str | None,
     ) -> BaseModel: ...
 
@@ -149,16 +146,12 @@ class ToolInputConverter(Protocol[CtxT]):
 # --- Prompt Hooks ---
 
 
-class SystemPromptBuilder(Protocol[CtxT]):
-    def __call__(
-        self, *, ctx: RunContext[CtxT], exec_id: str
-    ) -> str | Sequence[InputText] | None: ...
+class SystemPromptBuilder(Protocol):
+    def __call__(self, *, exec_id: str) -> str | Sequence[InputText] | None: ...
 
 
-class InputContentBuilder(Protocol[_InT_contra, CtxT]):
-    def __call__(
-        self, in_args: _InT_contra, *, ctx: RunContext[CtxT], exec_id: str
-    ) -> Content: ...
+class InputContentBuilder(Protocol[_InT_contra]):
+    def __call__(self, in_args: _InT_contra, *, exec_id: str) -> Content: ...
 
 
 # --- Agent Hooks ---
@@ -183,12 +176,11 @@ class TranscriptBuilder(Protocol[_InT_contra]):
         *,
         instructions: LLMPrompt | Sequence[InputText] | None = None,
         in_args: _InT_contra | None = None,
-        ctx: RunContext[Any],
         exec_id: str,
     ) -> None: ...
 
 
-class StateBuilder(Protocol[CtxT]):
+class StateBuilder(Protocol):
     """
     Rebuild business state (typically ``ctx.state``) from external sources
     after loading a checkpoint.
@@ -203,18 +195,16 @@ class StateBuilder(Protocol[CtxT]):
         self,
         *,
         checkpoint: AgentCheckpoint,
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> None: ...
 
 
-class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
+class OutputParser(Protocol[_InT_contra, _OutT_co]):
     def __call__(
         self,
         final_answer: str,
         *,
         in_args: _InT_contra | None = None,
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> _OutT_co: ...
 
@@ -222,18 +212,16 @@ class OutputParser(Protocol[_InT_contra, _OutT_co, CtxT]):
 # --- Processor Hooks ---
 
 
-class RecipientSelector(Protocol[_OutT_contra, CtxT]):
+class RecipientSelector(Protocol[_OutT_contra]):
     def __call__(
-        self, output: _OutT_contra, *, ctx: RunContext[CtxT], exec_id: str
+        self, output: _OutT_contra, *, exec_id: str
     ) -> Sequence[ProcName]: ...
 
 
-class WorkflowLoopTerminator(Protocol[_OutT_contra, CtxT]):
+class WorkflowLoopTerminator(Protocol[_OutT_contra]):
     def __call__(
         self,
         out_packet: Packet[_OutT_contra],
-        *,
-        ctx: RunContext[CtxT],
         **kwargs: Any,
     ) -> bool: ...
 

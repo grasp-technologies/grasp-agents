@@ -107,6 +107,18 @@ class FileBackend(Protocol):
     @property
     def allowed_roots(self) -> list[Path]: ...
 
+    def add_allowed_root(self, root: Path) -> None:
+        """
+        Widen the backend's address space to include ``root``.
+
+        Idempotent — a no-op when ``root`` is already an allowed root or
+        nested under one. Called by the :class:`RunContext` validator to
+        admit a configured memory directory automatically, so memory
+        authoring through the file tools works without the host repeating
+        the memdir in ``allowed_roots``.
+        """
+        ...
+
     async def validate_path(
         self,
         path: Path,

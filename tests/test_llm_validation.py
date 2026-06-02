@@ -13,12 +13,14 @@ from typing import Any
 
 import httpx
 import pytest
+from openai.types.responses.response import IncompleteDetails
 from pydantic import BaseModel
 
 from grasp_agents.llm.llm import LLM
 from grasp_agents.llm.resilience import RetryPolicy
-from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText
 from grasp_agents.types.errors import (
+    LLMResponseRefusalError,
     LLMResponseValidationError,
     LLMToolCallValidationError,
 )
@@ -60,6 +62,31 @@ def _tool_call_response(name: str, arguments: str) -> Response:
         model="mock",
         output_items=[
             FunctionToolCallItem(call_id="tc_1", name=name, arguments=arguments)
+        ],
+    )
+
+
+def _refusal_response(text: str = "I can't help with that.") -> Response:
+    return Response(
+        model="mock",
+        output_items=[
+            OutputMessageItem(
+                content_parts=[OutputMessageRefusal(refusal=text)],
+                status="completed",
+            )
+        ],
+    )
+
+
+def _content_filter_response() -> Response:
+    return Response(
+        model="mock",
+        status="incomplete",
+        incomplete_details=IncompleteDetails(reason="content_filter"),
+        output_items=[
+            OutputMessageItem(
+                content_parts=[OutputMessageText(text="")], status="incomplete"
+            )
         ],
     )
 
@@ -199,6 +226,27 @@ class TestValidationErrorTypes:
             await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
 
     @pytest.mark.asyncio
+    async def test_multiple_bad_calls_surface_all_errors(self):
+        """Two bad tool calls → both errors carried, not just the first."""
+        response = Response(
+            model="mock",
+            output_items=[
+                FunctionToolCallItem(
+                    call_id="tc_1", name="add", arguments='{"a": "nope", "b": 1}'
+                ),
+                FunctionToolCallItem(call_id="tc_2", name="ghost", arguments="{}"),
+            ],
+        )
+        llm = MockLLM(model_name="mock", responses=[response])
+        with pytest.raises(LLMToolCallValidationError) as ei:
+            await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
+        err = ei.value
+        assert {call_id for call_id, _, _ in err.failed_calls} == {"tc_1", "tc_2"}
+        # Both failures are reflected in the human-readable message too.
+        assert "add" in str(err)
+        assert "not available" in str(err)
+
+    @pytest.mark.asyncio
     async def test_output_schema_raises_response_validation_error(self):
         """Bad response text + output_schema → LLMResponseValidationError."""
         llm = MockLLM(
@@ -211,6 +259,53 @@ class TestValidationErrorTypes:
 
         with pytest.raises(LLMResponseValidationError):
             await llm.generate_response(_USER_MSG, output_schema=StrictModel)
+
+
+class TestRefusalAndContentFilter:
+    """Refusals / content filters raise a dedicated, non-retryable error."""
+
+    @pytest.mark.asyncio
+    async def test_refusal_part_raises_refusal_error(self):
+        llm = MockLLM(model_name="mock", responses=[_refusal_response()])
+        with pytest.raises(LLMResponseRefusalError):
+            await llm.generate_response(_USER_MSG)
+
+    @pytest.mark.asyncio
+    async def test_content_filter_raises_refusal_error(self):
+        llm = MockLLM(model_name="mock", responses=[_content_filter_response()])
+        with pytest.raises(LLMResponseRefusalError) as ei:
+            await llm.generate_response(_USER_MSG)
+        assert ei.value.reason == "content_filter"
+
+    @pytest.mark.asyncio
+    async def test_refusal_takes_precedence_over_schema(self):
+        """A refusal raises the refusal error, not a schema-validation error."""
+        llm = MockLLM(model_name="mock", responses=[_refusal_response()])
+
+        class M(BaseModel):
+            v: int
+
+        with pytest.raises(LLMResponseRefusalError):
+            await llm.generate_response(_USER_MSG, output_schema=M)
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_not_retried(self):
+        """Even with validation retries available, a refusal is terminal."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_refusal_response(), _text_response('{"v": 1}')],
+            retry_policy=RetryPolicy(validation_retries=3),
+        )
+        with pytest.raises(LLMResponseRefusalError):
+            await llm.generate_response(_USER_MSG)
+        assert llm.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_refusal_raised_from_stream_path(self):
+        llm = MockLLM(model_name="mock", responses=[_refusal_response()])
+        with pytest.raises(LLMResponseRefusalError):
+            async for _ in llm.generate_response_stream(_USER_MSG):
+                pass
 
 
 # ---------- Retry behavior ----------

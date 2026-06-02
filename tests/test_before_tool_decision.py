@@ -196,7 +196,7 @@ def _make_executor(
     )
     # Final-answer extractor: stop on text-only responses.
     executor.final_answer_extractor = (
-        lambda *, ctx, exec_id, response=None, **kw: response.output_text
+        lambda *, exec_id, response=None, **kw: response.output_text
         if response and not response.tool_call_items
         else None
     )
@@ -330,7 +330,7 @@ class TestRejectToolContent:
 
         captured: dict[str, Any] = {}
 
-        async def after(*, tool_calls, tool_messages, ctx, exec_id):
+        async def after(*, tool_calls, tool_messages, exec_id):
             captured["num_messages"] = len(tool_messages)
             captured["first_text"] = tool_messages[0].text
 

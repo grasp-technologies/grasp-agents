@@ -299,7 +299,7 @@ class TestLoopedWorkflowCheckpoint:
         )
 
         def _always_terminate(
-            out_packet: Packet[str], *, ctx: RunContext[None], **kwargs: Any
+            out_packet: Packet[str], **kwargs: Any
         ) -> bool:
             return True
 
@@ -321,7 +321,7 @@ class TestLoopedWorkflowCheckpoint:
         iteration_count = 0
 
         def count_terminate(
-            out_packet: Packet[str], *, ctx: RunContext[None], **kwargs: Any
+            out_packet: Packet[str], **kwargs: Any
         ) -> bool:
             nonlocal iteration_count
             iteration_count += 1
@@ -374,7 +374,7 @@ class TestLoopedWorkflowCheckpoint:
         )
 
         def _always_terminate2(
-            out_packet: Packet[str], *, ctx: RunContext[None], **kwargs: Any
+            out_packet: Packet[str], **kwargs: Any
         ) -> bool:
             return True
 

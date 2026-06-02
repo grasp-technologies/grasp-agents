@@ -571,6 +571,28 @@ class TestAgentToolPromptBuilders:
         assert user_msg == "raw"
 
     @pytest.mark.anyio
+    async def test_forwards_llm_agent_params_to_child(self) -> None:
+        """#8: passthrough ctor params land on the spawned child."""
+        child_llm = _make_child_llm("ok")
+        agent_tool = AgentTool[None](
+            name="t",
+            description="d",
+            llm=child_llm,
+            max_turns=7,
+            force_react_mode=True,
+            max_retries=2,
+            stream_llm=True,
+        )
+        ctx: RunContext[None] = RunContext()
+        agent, _ = await agent_tool._prepare_child(
+            AgentToolInput(prompt="raw"), ctx=ctx, exec_id="x"
+        )
+        assert agent._loop.max_turns == 7
+        assert agent._loop.force_react_mode is True
+        assert agent.max_retries == 2
+        assert agent._loop.stream_llm is True
+
+    @pytest.mark.anyio
     async def test_parent_agent_wires_memory(self) -> None:
         """LLMAgent.__init__ automatically wires parent memory to AgentTool."""
         child_llm = _make_child_llm("ok")

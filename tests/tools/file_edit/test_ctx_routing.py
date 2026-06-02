@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools import FileToolkit
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
-    FileEditToolkit,
     LocalFileBackend,
     NullRedactor,
     ReadInput,
@@ -28,9 +28,6 @@ from grasp_agents.tools.file_edit import (
     set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
-
-if TYPE_CHECKING:
-    pass
 
 pytestmark = pytest.mark.asyncio
 
@@ -49,7 +46,7 @@ async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
     """
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
-    tk = FileEditToolkit(redactor=NullRedactor())
+    tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("original")
@@ -58,9 +55,7 @@ async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
     token = set_current_file_edit_state(state)
     try:
         await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
-        result = await tk.write.run(
-            WriteInput(path=str(f), content="updated"), ctx=ctx
-        )
+        result = await tk.write.run(WriteInput(path=str(f), content="updated"), ctx=ctx)
     finally:
         reset_current_file_edit_state(token)
 
@@ -77,7 +72,7 @@ async def test_separate_activations_are_isolated(tmp_path: Path) -> None:
     """
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
-    tk = FileEditToolkit(redactor=NullRedactor())
+    tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("x")
@@ -115,8 +110,8 @@ async def test_shared_state_mimics_one_agent_two_toolkits(tmp_path: Path) -> Non
     """
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
-    tk_a = FileEditToolkit(redactor=NullRedactor())
-    tk_b = FileEditToolkit(redactor=NullRedactor())
+    tk_a = FileToolkit(redactor=NullRedactor())
+    tk_b = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "shared.txt"
     f.write_text("from the file")
@@ -141,7 +136,7 @@ async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
     """
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
-    tk = FileEditToolkit(redactor=NullRedactor())
+    tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("x")
@@ -158,9 +153,7 @@ async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
     state_b = FileEditSessionState()
     token = set_current_file_edit_state(state_b)
     try:
-        result = await tk.write.run(
-            WriteInput(path=str(f), content="y"), ctx=ctx
-        )
+        result = await tk.write.run(WriteInput(path=str(f), content="y"), ctx=ctx)
     finally:
         reset_current_file_edit_state(token)
     assert "Must Read" in _error_message(result)
@@ -173,14 +166,12 @@ async def test_standalone_tool_use_without_state(tmp_path: Path) -> None:
     """
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
-    tk = FileEditToolkit(redactor=NullRedactor())
+    tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
     f.write_text("orig")
 
     # No ContextVar activation — Write proceeds without prior Read.
-    result = await tk.write.run(
-        WriteInput(path=str(f), content="updated"), ctx=ctx
-    )
+    result = await tk.write.run(WriteInput(path=str(f), content="updated"), ctx=ctx)
     assert isinstance(result, WriteResult)
     assert f.read_text() == "updated"

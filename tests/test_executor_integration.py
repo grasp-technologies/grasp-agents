@@ -181,7 +181,7 @@ def _with_final_answer_extractor(
     response has no tool calls, treat the output text as the final answer.
     """
 
-    def _check(*, ctx, exec_id, response=None, **kwargs):  # noqa: ARG001
+    def _check(*, exec_id, response=None, **kwargs):  # noqa: ARG001
         if response and not response.tool_call_items:
             return response.output_text or None
         return None

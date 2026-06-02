@@ -143,8 +143,8 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         self._in_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
 
         # Hook callback slots — set by LLMAgent, None = use defaults
-        self.system_prompt_builder: SystemPromptBuilder[CtxT] | None = None
-        self.input_content_builder: InputContentBuilder[InT, CtxT] | None = None
+        self.system_prompt_builder: SystemPromptBuilder | None = None
+        self.input_content_builder: InputContentBuilder[InT] | None = None
 
         # Sections appended to the system prompt at run time. Each section's
         # compute receives (ctx, exec_id) and may be sync or async. Order is
@@ -237,7 +237,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         renders empty.
         """
         if self.system_prompt_builder is not None:
-            base = self.system_prompt_builder(ctx=ctx, exec_id=exec_id)
+            base = self.system_prompt_builder(exec_id=exec_id)
         else:
             base = self.sys_prompt
 
@@ -315,7 +315,6 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         *,
         in_args: InT | None = None,
         exec_id: str,
-        ctx: RunContext[CtxT],
     ) -> InputMessageItem | None:
         if chat_inputs is not None:
             if in_args is not None:
@@ -334,13 +333,13 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
             ]
             return InputMessageItem(content_parts=input_parts, role="user")
 
-        content = self.build_input_content(in_args=in_args, ctx=ctx, exec_id=exec_id)
+        content = self.build_input_content(in_args=in_args, exec_id=exec_id)
 
         return InputMessageItem(content_parts=content.parts, role="user")
 
     @final
     def build_input_content(
-        self, in_args: InT | None, *, ctx: RunContext[CtxT], exec_id: str
+        self, in_args: InT | None, *, exec_id: str
     ) -> Content:
         if in_args is None and self._in_type is not type(None):
             raise InputPromptBuilderError(
@@ -354,9 +353,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
 
         # 1. InputContentBuilder hook (full custom control)
         if self.input_content_builder is not None:
-            return self.input_content_builder(
-                in_args=val_in_args, ctx=ctx, exec_id=exec_id
-            )
+            return self.input_content_builder(in_args=val_in_args, exec_id=exec_id)
 
         # 2. Model implements InputRenderable.to_input_parts()
         if isinstance(val_in_args, InputRenderable):

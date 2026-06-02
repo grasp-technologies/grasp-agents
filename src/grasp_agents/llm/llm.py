@@ -16,6 +16,7 @@ from typing_extensions import TypedDict
 
 from ..types.errors import (
     JSONSchemaValidationError,
+    LLMResponseRefusalError,
     LLMResponseValidationError,
     LLMToolCallValidationError,
 )
@@ -281,6 +282,28 @@ class LLM(ABC):
 
     # --- Validation ---
 
+    def _check_refusal(self, response: Response) -> None:
+        """
+        Raise :class:`LLMResponseRefusalError` when the response is a
+        refusal or was blocked by the provider's content filter.
+
+        Reads the normalized signal both providers populate: an explicit
+        ``refusal`` content part (OpenAI / LiteLLM) or
+        ``incomplete_details.reason == "content_filter"`` (Anthropic maps
+        its ``stop_reason == "refusal"`` to this). Not retried — re-sampling
+        the same prompt won't clear a filter.
+        """
+        refusal = response.refusal
+        reason = (
+            response.incomplete_details.reason
+            if response.incomplete_details is not None
+            else None
+        )
+        if refusal or reason == "content_filter":
+            raise LLMResponseRefusalError(
+                status=response.status, reason=reason, refusal=refusal
+            )
+
     def _validate_response(
         self,
         response: Response,
@@ -288,6 +311,12 @@ class LLM(ABC):
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
     ) -> None:
+        # A refusal / content filter means there is no usable content to
+        # validate — surface it as a dedicated, non-retryable error before
+        # the tool / schema checks (which would otherwise misfire on the
+        # empty or refusal text).
+        self._check_refusal(response)
+
         if tools is not None:
             self._validate_tool_calls(response, tools)
 
@@ -307,22 +336,43 @@ class LLM(ABC):
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]],
     ) -> None:
         available_tool_names = list(tools)
+        failed: list[tuple[str, str, str]] = []  # (call_id, name, error)
         for tc in response.tool_call_items:
             if tc.name not in available_tool_names:
-                raise LLMToolCallValidationError(
+                failed.append((
+                    tc.call_id,
                     tc.name,
-                    tc.arguments,
-                    message=f"Tool '{tc.name}' is not available "
-                    f"(available: {available_tool_names})",
-                )
+                    (
+                        f"Tool '{tc.name}' is not available "
+                        f"(available: {available_tool_names})"
+                    ),
+                ))
+                continue
             tool = tools[tc.name]
             try:
                 validate_obj_from_json_or_py_string(
                     tc.arguments, schema=tool.llm_in_type
                 )
             except JSONSchemaValidationError as exc:
-                raise LLMToolCallValidationError(
+                failed.append((
+                    tc.call_id,
                     tc.name,
-                    tc.arguments,
-                    message=f"Tool '{tc.name}' arguments failed validation: {exc}",
-                ) from exc
+                    f"Tool '{tc.name}' arguments failed validation: {exc}",
+                ))
+
+        if not failed:
+            return
+
+        # Surface *every* failed call (→ logs + ResponseRetrying), mirroring
+        # ``failed_calls``, which the agent loop turns into one tool_result
+        # per bad call. Avoids first-error-only feedback.
+        names = ", ".join(dict.fromkeys(f"'{name}'" for _, name, _ in failed))
+        detail = "\n".join(f"- {msg}" for _, _, msg in failed)
+        plural = "s" if len(failed) != 1 else ""
+        message = (
+            f"{len(failed)} tool call{plural} failed validation "
+            f"({names}):\n{detail}"
+        )
+        raise LLMToolCallValidationError(
+            message, response=response, failed_calls=failed
+        )

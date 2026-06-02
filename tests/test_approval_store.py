@@ -189,7 +189,7 @@ def _make_executor(
         stream_llm=False,
     )
     executor.final_answer_extractor = (
-        lambda *, ctx, exec_id, response=None, **kw: response.output_text
+        lambda *, exec_id, response=None, **kw: response.output_text
         if response and not response.tool_call_items
         else None
     )

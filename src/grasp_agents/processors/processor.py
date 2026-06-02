@@ -357,25 +357,21 @@ class Processor(
                 )
 
     def select_recipients_impl(
-        self, output: OutT, *, ctx: RunContext[CtxT], exec_id: str
+        self, output: OutT, *, exec_id: str
     ) -> Sequence[ProcName]:
         raise NotImplementedError
 
     def add_recipient_selector(
-        self, func: RecipientSelector[OutT, CtxT]
-    ) -> RecipientSelector[OutT, CtxT]:
+        self, func: RecipientSelector[OutT]
+    ) -> RecipientSelector[OutT]:
         self.select_recipients_impl = func
 
         return func
 
     @final
-    def select_recipients(
-        self, output: OutT, exec_id: str
-    ) -> Sequence[ProcName]:
+    def select_recipients(self, output: OutT, exec_id: str) -> Sequence[ProcName]:
         if is_method_overridden("select_recipients_impl", self, Processor):
-            recipients = self.select_recipients_impl(
-                output=output, ctx=self._ctx, exec_id=exec_id
-            )
+            recipients = self.select_recipients_impl(output=output, exec_id=exec_id)
             self._validate_recipients(recipients, exec_id=exec_id)
             return recipients
 
@@ -449,9 +445,7 @@ class Processor(
         routings: list[Sequence[ProcName]] | None = []
         if self.recipients is not None:
             for output in outputs:
-                routings.append(
-                    self.select_recipients(output=output, exec_id=exec_id)
-                )
+                routings.append(self.select_recipients(output=output, exec_id=exec_id))
 
         joined_routing = [r for r in routings] if routings else None
 
