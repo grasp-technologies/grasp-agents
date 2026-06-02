@@ -15,11 +15,10 @@ TTL / GC — retention is the caller's concern.
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..tools.file_edit.atomic_write import atomic_write_bytes
 from .checkpoint_store import CheckpointStore
 
 if TYPE_CHECKING:
@@ -118,26 +117,15 @@ class FileCheckpointStore(CheckpointStore):
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    """Blocking write — run via :func:`asyncio.to_thread`."""
+    """
+    Blocking write — run via :func:`asyncio.to_thread`.
+
+    Delegates to the shared :func:`atomic_write_bytes` primitive
+    (tmpfile + ``os.replace``); only the parent-dir creation is
+    checkpoint-store-specific.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    # NamedTemporaryFile yields a unique name in the target dir, so the
-    # rename is atomic (same filesystem) and concurrent writers that
-    # bypass the per-key lock (e.g. separate processes) don't clobber
-    # each other's tmp payload.
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=path.name + ".", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        Path(tmp_path).replace(path)
-    except BaseException:
-        # Never leave a stale tmp behind if the replace failed.
-        try:
-            Path(tmp_path).unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    atomic_write_bytes(path, data)
 
 
 def _read_if_exists(path: Path) -> bytes | None:

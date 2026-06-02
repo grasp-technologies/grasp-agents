@@ -5,6 +5,7 @@ from ..types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputItem,
+    InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
 )
@@ -81,7 +82,7 @@ def _detect_interruption(messages: list[InputItem]) -> InterruptionType:
     if isinstance(last, FunctionToolOutputItem):
         return InterruptionType.AFTER_TOOL_RESULT
 
-    if isinstance(last, InputItem) and hasattr(last, "role") and last.role == "user":  # type: ignore[union-attr]
+    if isinstance(last, InputMessageItem) and last.role == "user":
         return InterruptionType.PENDING_USER_MESSAGE
 
     return InterruptionType.NONE

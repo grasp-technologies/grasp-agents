@@ -50,8 +50,9 @@ def _make_agent(
         checkpoint_store=store,
         session_key=session_key,
         state=state_type(),
+        serialize_state=True,
     )
-    agent.set_ctx(ctx)
+    agent.on_adopted(ctx=ctx)
     return agent, ctx
 
 
@@ -120,9 +121,12 @@ class TestContextRoundTrip:
             stream_llm=True,
         )
         ctx: RunContext[None] = RunContext(
-            checkpoint_store=store, session_key="s2", state=None
+            checkpoint_store=store,
+            session_key="s2",
+            state=None,
+            serialize_state=True,
         )
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
         await agent.run("hello")
 
         snap = AgentCheckpoint.model_validate_json(
@@ -130,6 +134,66 @@ class TestContextRoundTrip:
         )
         assert snap.context_kind == ContextKind.OMITTED
         assert snap.context_data is None
+
+
+# ---------------------------------------------------------------------------
+# serialize_state opt-in (default off)
+# ---------------------------------------------------------------------------
+
+
+class TestSerializeStateOptIn:
+    """Default stance: state is rebuilt via state_builder, not the checkpoint."""
+
+    @pytest.mark.anyio
+    async def test_state_not_persisted_by_default(self) -> None:
+        store = InMemoryCheckpointStore()
+        agent = LLMAgent[str, str, _MyState](
+            name="test_agent",
+            llm=MockLLM(responses_queue=[_text_response("hi")]),
+            stream_llm=True,
+        )
+        # No serialize_state -> defaults to False.
+        ctx: RunContext[_MyState] = RunContext(
+            checkpoint_store=store, session_key="s-off", state=_MyState()
+        )
+        ctx.state.pathway_id = "p-1"
+        agent.on_adopted(ctx=ctx)
+        await agent.run("hello")
+
+        snap = AgentCheckpoint.model_validate_json(
+            await store.load("s-off/agent/test_agent") or b"{}"
+        )
+        assert snap.context_kind is None
+        assert snap.context_data is None
+
+    @pytest.mark.anyio
+    async def test_state_not_restored_by_default(self) -> None:
+        store = InMemoryCheckpointStore()
+        agent1 = LLMAgent[str, str, _MyState](
+            name="test_agent",
+            llm=MockLLM(responses_queue=[_text_response("hi")]),
+            stream_llm=True,
+        )
+        ctx1: RunContext[_MyState] = RunContext(
+            checkpoint_store=store, session_key="s-off2", state=_MyState()
+        )
+        ctx1.state.pathway_id = "p-99"
+        agent1.on_adopted(ctx=ctx1)
+        await agent1.run("hello")
+
+        # Fresh agent + baseline state; resume must leave state untouched
+        # (state_builder is responsible for rebuilding it).
+        agent2 = LLMAgent[str, str, _MyState](
+            name="test_agent",
+            llm=MockLLM(responses_queue=[_text_response("follow")]),
+            stream_llm=True,
+        )
+        ctx2: RunContext[_MyState] = RunContext(
+            checkpoint_store=store, session_key="s-off2", state=_MyState()
+        )
+        agent2.on_adopted(ctx=ctx2)
+        await agent2.load_checkpoint()
+        assert not ctx2.state.pathway_id
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +278,7 @@ class TestPrePersistInput:
             session_key="s-pp",
             state=_MyState(),
         )
-        agent.set_ctx(ctx)
+        agent.on_adopted(ctx=ctx)
 
         await agent.run("hello")
 

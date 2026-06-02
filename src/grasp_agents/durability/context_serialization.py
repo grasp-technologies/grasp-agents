@@ -4,9 +4,10 @@ round-trips.
 
 The framework's default stance is that application state is rebuilt on
 resume via ``@agent.add_state_builder`` — the persistent source of truth
-is the app's own database, not the checkpoint. But for tests, notebooks,
-and simple workloads where state is a plain container, it is handy to
-have the framework serialize and restore it automatically.
+is the app's own database, not the checkpoint. Serialization is therefore
+**opt-in**: set ``RunContext(serialize_state=True)`` for tests, notebooks,
+and simple workloads where state is a plain container and round-tripping
+it through the checkpoint is convenient.
 
 We record *how* the state was serialized alongside the payload so the
 restore path knows what to do with it:
@@ -23,7 +24,8 @@ restore path knows what to do with it:
 - ``DATACLASS`` — state is a dataclass instance. Same idea: caller seeds
   the type; we rehydrate via ``type(current_state)(**data)``.
 
-The kind is detected at save time by inspection; no configuration.
+The kind is auto-detected at save time by inspection; only the opt-in
+toggle (``RunContext.serialize_state``) is configured.
 """
 
 from __future__ import annotations
