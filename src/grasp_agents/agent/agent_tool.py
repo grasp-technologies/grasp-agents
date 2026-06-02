@@ -9,15 +9,18 @@ from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.utils.io import get_prompt
 
 from .llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable
+    from pathlib import Path
 
     from grasp_agents.llm.llm import LLM
 
     from .llm_agent import LLMAgent
+    from .prompt_builder import SystemPromptSection
 
 
 @runtime_checkable
@@ -80,10 +83,18 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         sys_prompt: str | None = None,
         sys_prompt_builder: AgentToolPromptBuilder | None = None,
         in_prompt_builder: AgentToolPromptBuilder | None = None,
-        max_turns: int = 30,
         background: bool = False,
         timeout: float | None = None,
         inherit_tools: bool = False,
+        sys_prompt_path: str | Path | None = None,
+        force_react_mode: bool = False,
+        max_turns: int = 30,
+        max_retries: int = 0,
+        env_info: bool | SystemPromptSection = True,
+        stream_llm: bool = False,
+        stream_tools: bool = False,
+        enable_memory: bool = False,
+        enable_skills: bool = False,
     ) -> None:
         super().__init__(
             name=name,
@@ -93,14 +104,25 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         )
         self._llm = llm
 
-        self._sys_prompt = sys_prompt
+        self._sys_prompt = get_prompt(
+            prompt_text=sys_prompt, prompt_path=sys_prompt_path
+        )
         self._sys_prompt_builder = sys_prompt_builder
         self._in_prompt_builder = in_prompt_builder
-        self._max_turns = max_turns
         self.inherit_tools = inherit_tools
         self._own_tools = tools or []
         self._parent_tools: list[BaseTool[Any, Any, CtxT]] = []
         self._parent_transcript: LLMAgentTranscript | None = None
+
+        self._force_react_mode = force_react_mode
+        self._max_turns = max_turns
+        self._max_retries = max_retries
+        self._env_info = env_info
+        self._enable_memory = enable_memory
+        self._enable_skills = enable_skills
+
+        self.stream_llm = stream_llm
+        self.stream_tools = stream_tools
 
         self._in_type = AgentToolInput
         self._out_type = str
@@ -184,6 +206,13 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             tools=self._resolve_tools(),
             sys_prompt=sys_prompt,
             max_turns=self._max_turns,
+            max_retries=self._max_retries,
+            force_react_mode=self._force_react_mode,
+            env_info=self._env_info,
+            enable_memory=self._enable_memory,
+            enable_skills=self._enable_skills,
+            stream_llm=self.stream_llm,
+            stream_tools=self.stream_tools,
         )
         # Adopt the tool's tracing settings (excludes + enabled, themselves
         # inherited from the host) and stamp the per-call path lineage.
@@ -248,9 +277,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         exec_id: str | None = None,
         chat_inputs: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        async for event in agent.run_stream(
-            chat_inputs=chat_inputs, exec_id=exec_id
-        ):
+        async for event in agent.run_stream(chat_inputs=chat_inputs, exec_id=exec_id):
             if isinstance(event, ProcPacketOutEvent) and event.source == agent.name:
                 yield ToolOutputEvent(
                     data=event.data.payloads[0], source=agent.name, exec_id=exec_id
