@@ -15,6 +15,8 @@ from .agent.approval_store import ApprovalStore  # noqa: E402
 from .durability.checkpoint_store import CheckpointStore  # noqa: E402
 from .memory.provider import MemoryProvider  # noqa: E402
 from .printer import Printer  # noqa: E402
+from .sandbox.environment import ExecutionEnvironment  # noqa: E402
+from .sandbox.exec_backend import ExecBackend  # noqa: E402
 from .skills.registry import SkillRegistry  # noqa: E402
 from .tools.file_edit.backend import FileBackend  # noqa: E402
 from .types.io import ProcName  # noqa: E402
@@ -59,6 +61,15 @@ class RunContext(BaseModel, Generic[CtxT]):
     # :mod:`tools.file_edit.agent_state` ContextVar.
     file_backend: FileBackend | None = Field(default=None, exclude=True)
 
+    # Optional :class:`ExecutionEnvironment` owning two co-located surfaces
+    # (file + exec) under one shared :class:`SandboxPolicy`. This is the ONLY
+    # way to grant an exec surface: :attr:`exec_backend` is a read-only
+    # property off this field (below), so an exec backend without a co-located
+    # ``file_backend`` — the divergent-views trap the environment exists to
+    # prevent — is unrepresentable. When set, the validator below sources
+    # :attr:`file_backend` from it.
+    environment: ExecutionEnvironment | None = Field(default=None, exclude=True)
+
     # Skills registry consumed by the top-level ``load_skill`` /
     # ``list_skills`` tools and the ``skills_system_prompt_section``.
     skills: SkillRegistry | None = Field(default=None, exclude=True)
@@ -71,6 +82,21 @@ class RunContext(BaseModel, Generic[CtxT]):
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
+    @property
+    def exec_backend(self) -> ExecBackend | None:
+        """
+        Co-located exec surface, sourced solely from :attr:`environment`.
+
+        Read-only on purpose: exec capability is reachable only through an
+        :class:`ExecutionEnvironment`, which pairs it with a co-located
+        ``file_backend`` under one ``SandboxPolicy``. An exec surface without
+        a co-located filesystem view — the divergent-views trap — is therefore
+        unrepresentable. ``None`` when no environment is wired (file-only or
+        capability-less sessions). Consumed by the ``Bash`` / code-execution
+        tools.
+        """
+        return self.environment.exec_backend if self.environment is not None else None
+
     def __deepcopy__(
         self, memo: dict[int, Any] | None = None
     ) -> "RunContext[CtxT]":
@@ -81,6 +107,36 @@ class RunContext(BaseModel, Generic[CtxT]):
         identity rather than spawning a divergent ctx that silently drops
         checkpoints / usage tracking / file_backend bindings.
         """
+        return self
+
+    @model_validator(mode="after")
+    def _reconcile_environment(self) -> "RunContext[CtxT]":
+        """
+        Source the file surface from the :class:`ExecutionEnvironment` when one
+        is wired, and reject a standalone ``file_backend`` that diverges from
+        it.
+
+        Exec capability is exposed only via the :attr:`exec_backend` property
+        (off :attr:`environment`), so there is no separate exec field to
+        reconcile — co-location with the environment's ``file_backend`` is
+        structural. A ``file_backend`` may still be wired alone for file-only
+        sessions (memory authoring, MCP artifact backends) that need no exec
+        surface. No-op when no environment was provided.
+        """
+        if self.environment is None:
+            return self
+        env_file_backend = self.environment.file_backend
+        if self.file_backend is None:
+            self.file_backend = env_file_backend
+        elif self.file_backend is not env_file_backend:
+            raise ValueError(
+                "RunContext was given both an environment and a different "
+                "file_backend. The environment's file_backend is co-located "
+                "with its exec_backend under one SandboxPolicy; a divergent "
+                "standalone file_backend would break that guarantee. Pass only "
+                "the environment, or set file_backend to "
+                "environment.file_backend."
+            )
         return self
 
     @model_validator(mode="after")

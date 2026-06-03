@@ -133,3 +133,14 @@ unfixable = ["F401"]
 "src/grasp_agents/kits/research/vault/filesystem.py" = ["TC003"]
 # tests: pytestmark before imports; explicit `!= ""` is clearer in assertions
 "tests/kits/**/*.py" = ["E402", "PLC1901", "F841"]
+# sandbox tests: uniformly async under a module pytestmark (RUF029); explicit
+# `== ""` is clearer in output assertions (PLC1901); Path methods in async test
+# bodies are fine on asyncio, not trio (ASYNC240); the Seatbelt tests shell out
+# to sandbox-exec to compile-check generated profiles (S404 / S603).
+"tests/sandbox/**/*.py" = ["ASYNC240", "PLC1901", "RUF029", "S404", "S603"]
+# sandbox: `timeout` is part of the cross-boundary ExecBackend contract
+# (enforced per-backend: asyncio.wait_for / docker exec / remote API), not an
+# asyncio.timeout reinvention — ASYNC109 is a false positive here. S603
+# (subprocess call) is the module's entire purpose — running commands under the
+# shared SandboxPolicy — so it is suppressed here rather than per-call.
+"src/grasp_agents/sandbox/**/*.py" = ["ASYNC109", "S603"]

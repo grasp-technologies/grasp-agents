@@ -41,10 +41,12 @@ if TYPE_CHECKING:
     from .mcp_backend import MCPFileBackend
     from .paths import (
         PathAccessError,
+        SensitivePathRules,
         check_sensitive_path,
         has_binary_extension,
         is_blocked_device,
         resolve_safe,
+        sensitive_path_rules,
     )
     from .read import ReadInput, ReadResult, ReadTool
     from .redact import DefaultSecretRedactor, NullRedactor, SecretRedactor
@@ -78,10 +80,12 @@ _LAZY: dict[str, str] = {
     "preserve_quote_style": "fuzzy_match",
     "MCPFileBackend": "mcp_backend",
     "PathAccessError": "paths",
+    "SensitivePathRules": "paths",
     "check_sensitive_path": "paths",
     "has_binary_extension": "paths",
     "is_blocked_device": "paths",
     "resolve_safe": "paths",
+    "sensitive_path_rules": "paths",
     "ReadInput": "read",
     "ReadResult": "read",
     "ReadTool": "read",
@@ -128,6 +132,7 @@ __all__ = [
     "ReadResult",
     "ReadTool",
     "SecretRedactor",
+    "SensitivePathRules",
     "WriteInput",
     "WriteResult",
     "WriteTool",
@@ -143,5 +148,6 @@ __all__ = [
     "preserve_quote_style",
     "reset_current_file_edit_state",
     "resolve_safe",
+    "sensitive_path_rules",
     "set_current_file_edit_state",
 ]

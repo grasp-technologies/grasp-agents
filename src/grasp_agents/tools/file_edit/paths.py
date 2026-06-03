@@ -36,6 +36,7 @@ binary blobs to the model wastes tokens and can crash the serializer.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -314,3 +315,42 @@ def check_sensitive_path(
             )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Structured view of the deny policy (single source for OS-level enforcers)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SensitivePathRules:
+    """
+    The sensitive-path deny policy in structured form.
+
+    :func:`check_sensitive_path` enforces these rules at the tool layer; an
+    OS-level enforcer (e.g. the macOS Seatbelt SBPL emitter) generates its own
+    deny rules from this *same* data, so the two enforcement points never drift.
+
+    - ``system_write_prefixes``: absolute path prefixes whose subtree is
+      write-denied (read stays allowed — ``/etc/hosts`` etc. must be readable).
+    - ``system_exact``: exact absolute paths that are fully denied.
+    - ``credential_dir_names``: path-component names (``.ssh`` ...) denied
+      read+write wherever they appear.
+    - ``credential_file_names``: basename patterns denied read+write, matching a
+      name exactly or with a dotted suffix (``.env`` also covers ``.env.local``).
+    """
+
+    system_write_prefixes: tuple[str, ...]
+    system_exact: tuple[str, ...]
+    credential_dir_names: tuple[str, ...]
+    credential_file_names: tuple[str, ...]
+
+
+def sensitive_path_rules() -> SensitivePathRules:
+    """Return the deny policy as data, for enforcers other than the tool layer."""
+    return SensitivePathRules(
+        system_write_prefixes=_SYSTEM_SENSITIVE_PREFIXES,
+        system_exact=tuple(sorted(_SYSTEM_SENSITIVE_EXACT)),
+        credential_dir_names=tuple(sorted(_DOTFILE_DENY_DIRS)),
+        credential_file_names=tuple(sorted(_DOTFILE_DENY_NAMES)),
+    )
