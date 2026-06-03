@@ -24,6 +24,7 @@ from .atomic_write import atomic_write_bytes
 from .backend import FileEntry, FileStat, GrepOutputMode, GrepRawResult
 from .paths import (
     PathAccessError,
+    check_access_path,
     check_sensitive_path,
     is_blocked_device,
     resolve_safe,
@@ -31,6 +32,8 @@ from .paths import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from .paths import AccessMode
 
 
 # Directory names always skipped on local Glob traversal — common
@@ -100,6 +103,9 @@ class LocalFileBackend:
         *,
         allowed_roots: list[Path | str] | None = None,
         include_dotfiles: bool = True,
+        deny_read: list[Path | str] | None = None,
+        allow_read: list[Path | str] | None = None,
+        deny_write: list[Path | str] | None = None,
     ) -> None:
         if allowed_roots is None:
             roots: list[Path] = [Path.cwd()]
@@ -107,6 +113,15 @@ class LocalFileBackend:
             roots = [Path(r) for r in allowed_roots]
         self._allowed_roots: list[Path] = roots
         self._include_dotfiles = include_dotfiles
+        self._deny_read = self._resolve_carveouts(deny_read)
+        self._allow_read = self._resolve_carveouts(allow_read)
+        self._deny_write = self._resolve_carveouts(deny_write)
+
+    @staticmethod
+    def _resolve_carveouts(paths: list[Path | str] | None) -> tuple[Path, ...]:
+        if not paths:
+            return ()
+        return tuple(Path(p).expanduser().resolve() for p in paths)
 
     @property
     def allowed_roots(self) -> list[Path]:
@@ -123,6 +138,7 @@ class LocalFileBackend:
         path: Path,
         *,
         must_exist: bool,
+        access: AccessMode = "read",
         dotfile_overrides: set[Path] | None = None,
     ) -> Path:
         if is_blocked_device(path):
@@ -139,6 +155,16 @@ class LocalFileBackend:
         )
         if err is not None:
             raise PathAccessError(err)
+
+        access_err = check_access_path(
+            resolved,
+            access=access,
+            deny_read=self._deny_read,
+            allow_read=self._allow_read,
+            deny_write=self._deny_write,
+        )
+        if access_err is not None:
+            raise PathAccessError(access_err)
 
         return resolved
 
@@ -194,7 +220,7 @@ class LocalFileBackend:
         await asyncio.to_thread(path.unlink)
 
     async def mkdir(self, path: Path) -> None:
-        resolved = await self.validate_path(path, must_exist=False)
+        resolved = await self.validate_path(path, must_exist=False, access="write")
         await asyncio.to_thread(lambda: resolved.mkdir(parents=True, exist_ok=True))
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:

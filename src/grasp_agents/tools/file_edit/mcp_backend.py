@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ...mcp.client import MCPClient
+    from .paths import AccessMode
 
 
 # Canonical names — the grasp-agents :mod:`examples.mcp_memory_server`
@@ -158,9 +159,10 @@ class MCPFileBackend:
         path: Path,
         *,
         must_exist: bool,
+        access: AccessMode = "read",
         dotfile_overrides: set[Path] | None = None,
     ) -> Path:
-        del dotfile_overrides  # MCP defers dotfile policy to server
+        del access, dotfile_overrides  # MCP defers fs policy to the server
 
         if not self._allowed_roots:
             raise PathAccessError("No allowed_roots configured for MCP file backend.")

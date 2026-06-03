@@ -104,6 +104,7 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
             resolved = await backend.validate_path(
                 Path(inp.path),
                 must_exist=True,
+                access="write",
                 dotfile_overrides=overrides,
             )
         except PathAccessError as exc:
@@ -115,13 +116,16 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
         # explicit user-level action.
         import stat as stat_module  # noqa: PLC0415
 
-        if current_stat.mode and stat_module.S_IFMT(current_stat.mode):
-            if stat_module.S_ISDIR(current_stat.mode):
-                raise ValueError(
-                    f"Delete refuses directories: {resolved}. Remove "
-                    "individual files or perform the directory removal "
-                    "outside the agent loop."
-                )
+        if (
+            current_stat.mode
+            and stat_module.S_IFMT(current_stat.mode)
+            and stat_module.S_ISDIR(current_stat.mode)
+        ):
+            raise ValueError(
+                f"Delete refuses directories: {resolved}. Remove "
+                "individual files or perform the directory removal "
+                "outside the agent loop."
+            )
 
         if state is not None:
             record = state.get_read_record(resolved)

@@ -38,6 +38,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+AccessMode = Literal["read", "write"]
 
 
 class PathAccessError(ValueError):
@@ -354,3 +357,35 @@ def sensitive_path_rules() -> SensitivePathRules:
         credential_dir_names=tuple(sorted(_DOTFILE_DENY_DIRS)),
         credential_file_names=tuple(sorted(_DOTFILE_DENY_NAMES)),
     )
+
+
+def _is_under(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def check_access_path(
+    resolved_path: Path,
+    *,
+    access: AccessMode,
+    deny_read: tuple[Path, ...] = (),
+    allow_read: tuple[Path, ...] = (),
+    deny_write: tuple[Path, ...] = (),
+) -> str | None:
+    """
+    Enforce the policy's ``deny_read`` / ``allow_read`` / ``deny_write``
+    carve-outs at the tool plane, returning an error message or ``None``.
+
+    ``resolved_path`` and the carve-out tuples are expected already resolved.
+    For reads, ``allow_read`` overrides ``deny_read``; for writes, ``deny_write``
+    denies within the otherwise-allowed space. Layered on top of
+    :func:`resolve_safe` (allowed-roots containment) + :func:`check_sensitive_path`
+    (credential/system denylist).
+    """
+    if access == "read":
+        if _is_under(resolved_path, deny_read) and not _is_under(
+            resolved_path, allow_read
+        ):
+            return f"Refusing to read {resolved_path}: under a denied-read path."
+    elif _is_under(resolved_path, deny_write):
+        return f"Refusing to write {resolved_path}: under a write-protected path."
+    return None

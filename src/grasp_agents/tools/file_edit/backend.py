@@ -39,6 +39,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from .paths import AccessMode
+
 
 @dataclass(frozen=True)
 class FileStat:
@@ -124,11 +126,16 @@ class FileBackend(Protocol):
         path: Path,
         *,
         must_exist: bool,
+        access: AccessMode = "read",
         dotfile_overrides: set[Path] | None = None,
     ) -> Path:
         """
         Resolve ``path`` to an absolute, canonical Path and enforce the
         backend's safety policy. Returns the resolved Path.
+
+        ``access`` (``"read"`` / ``"write"``) selects which policy carve-outs
+        apply — ``deny_read`` / ``allow_read`` for reads, ``deny_write`` for
+        writes. Mutating tools pass ``"write"``.
 
         ``dotfile_overrides`` (if provided) is a set of resolved paths
         the caller has explicitly whitelisted for this run, bypassing

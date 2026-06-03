@@ -393,7 +393,9 @@ class MemoryProvider:
         """
         try:
             await backend.mkdir(self._root)
-            resolved = await backend.validate_path(index_path, must_exist=False)
+            resolved = await backend.validate_path(
+                index_path, must_exist=False, access="write"
+            )
             mtime = await backend.write_bytes(
                 resolved,
                 DEFAULT_INDEX_CONTENT.encode("utf-8"),

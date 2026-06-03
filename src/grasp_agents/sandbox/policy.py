@@ -34,21 +34,60 @@ class SandboxPolicy:
     """
     The shared address-space + network policy for an environment.
 
-    ``allowed_roots`` is the read+write address space; ``readonly_roots`` adds
-    read-only locations. ``include_dotfile_denylist`` stacks the credential
-    deny list (``.ssh`` / ``.aws`` / ``.env`` / ...) on top; ``dotfile_overrides``
-    are explicit opt-ins that bypass it for this environment. ``network`` +
-    ``allowed_domains`` govern the exec surface's egress; ``env`` is the base
-    environment exposed to subprocesses.
+    Consumed by **both** enforcement planes: the file tools enforce it in
+    ``FileBackend.validate_path`` (host-process I/O), and the exec backend
+    generates its OS confinement (Seatbelt profile / srt settings) from the
+    same fields (subprocess I/O). A path/domain is confined on a given surface
+    only if that surface's plane enforces it.
+
+    Filesystem:
+
+    - ``allowed_roots`` — the read+write workspace (an allowlist). This **is**
+      the write allowlist (srt's ``allowWrite``); there is no separate
+      ``allow_write`` field.
+    - ``readonly_roots`` — readable but not writable additions.
+    - ``deny_read`` / ``allow_read`` — carve unreadable regions out of the
+      readable space; ``allow_read`` re-allows within them (**allow wins**).
+    - ``deny_write`` — carve write-protected regions out of ``allowed_roots``
+      (**deny wins**). There is no write carve-back: as in srt / Claude Code,
+      ``deny_write`` always wins, so protect a sub-region by denying it rather
+      than re-allowing within a denied one.
+    - ``include_dotfile_denylist`` stacks the credential deny set (``.ssh`` /
+      ``.aws`` / ``.env`` / ...) on top; ``dotfile_overrides`` are explicit
+      opt-ins that bypass it.
+
+    The allow/deny precedence is **reversed for reads vs writes — the same
+    reversal srt and Claude Code use**: ``allow_read`` overrides ``deny_read``
+    (carve readable regions back within denied areas), while ``deny_write``
+    overrides ``allowed_roots`` (carve protected regions within the writable
+    workspace). Reads also cannot be positively allowlisted at the OS plane
+    (dev tooling needs broad reads), so under Seatbelt a subprocess sees
+    "everything readable minus ``deny_read``", while the file tools stay
+    confined to ``allowed_roots`` — same policy, stricter on the tool plane.
+
+    Network / env (exec surface only):
+
+    - ``network`` + ``allowed_domains`` + ``denied_domains`` govern egress;
+      ``denied_domains`` is checked first (**denied wins**). Per-domain rules
+      are enforced only by proxy-backed backends (``srt`` / hosted); Seatbelt
+      egress is all-or-nothing.
+    - ``env`` is the base environment set for subprocesses; ``env_scrub`` is a
+      list of ``fnmatch`` patterns (e.g. ``"*_API_KEY"``) removed from the
+      *inherited* host environment so secrets do not leak into commands.
     """
 
     allowed_roots: tuple[Path, ...]
     readonly_roots: tuple[Path, ...] = ()
+    deny_read: tuple[Path, ...] = ()
+    allow_read: tuple[Path, ...] = ()
+    deny_write: tuple[Path, ...] = ()
     include_dotfile_denylist: bool = True
     dotfile_overrides: frozenset[Path] = field(default_factory=frozenset["Path"])
     network: NetworkPolicy = NetworkPolicy.NONE
     allowed_domains: tuple[str, ...] = ()
+    denied_domains: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict[str, str])
+    env_scrub: tuple[str, ...] = ()
 
 
 __all__ = ["NetworkPolicy", "SandboxPolicy"]

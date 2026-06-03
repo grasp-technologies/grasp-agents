@@ -23,6 +23,13 @@ from .exec_backend import ExecBackend, ExecChunk, ExecResult, TerminationReason
 from .policy import NetworkPolicy, SandboxPolicy
 
 if TYPE_CHECKING:
+    from .config import (
+        EnvironmentConfig,
+        ExecConfig,
+        FilesystemConfig,
+        NetworkConfig,
+        load_environment_config,
+    )
     from .local_env import LocalEnvironment, local_environment
     from .local_exec import LocalExecBackend
     from .seatbelt import (
@@ -30,10 +37,16 @@ if TYPE_CHECKING:
         build_seatbelt_profile,
         seatbelt_argv,
     )
+    from .srt import SrtExecBackend, build_srt_settings, srt_argv
     from .supervisor import ExecSpec, ProcessSupervisor, SupervisorLimits
 
 
 _LAZY: dict[str, str] = {
+    "EnvironmentConfig": "config",
+    "ExecConfig": "config",
+    "FilesystemConfig": "config",
+    "NetworkConfig": "config",
+    "load_environment_config": "config",
     "ExecSpec": "supervisor",
     "ProcessSupervisor": "supervisor",
     "SupervisorLimits": "supervisor",
@@ -43,6 +56,9 @@ _LAZY: dict[str, str] = {
     "SeatbeltExecBackend": "seatbelt",
     "build_seatbelt_profile": "seatbelt",
     "seatbelt_argv": "seatbelt",
+    "SrtExecBackend": "srt",
+    "build_srt_settings": "srt",
+    "srt_argv": "srt",
 }
 
 
@@ -57,21 +73,29 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "EnvironmentConfig",
     "ExecBackend",
     "ExecChunk",
+    "ExecConfig",
     "ExecResult",
     "ExecSpec",
     "ExecutionEnvironment",
+    "FilesystemConfig",
     "LocalEnvironment",
     "LocalExecBackend",
+    "NetworkConfig",
     "NetworkPolicy",
     "ProcessSupervisor",
     "SandboxPolicy",
     "SeatbeltExecBackend",
     "SnapshotCapable",
+    "SrtExecBackend",
     "SupervisorLimits",
     "TerminationReason",
     "build_seatbelt_profile",
+    "build_srt_settings",
+    "load_environment_config",
     "local_environment",
     "seatbelt_argv",
+    "srt_argv",
 ]

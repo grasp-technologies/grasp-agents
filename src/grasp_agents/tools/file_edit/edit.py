@@ -146,6 +146,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
             resolved = await backend.validate_path(
                 Path(inp.path),
                 must_exist=True,
+                access="write",
                 dotfile_overrides=overrides,
             )
         except PathAccessError as exc:

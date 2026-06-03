@@ -118,6 +118,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
             resolved = await backend.validate_path(
                 Path(inp.path),
                 must_exist=False,
+                access="write",
                 dotfile_overrides=overrides,
             )
         except PathAccessError as exc:
