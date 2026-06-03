@@ -30,6 +30,12 @@ if TYPE_CHECKING:
         NetworkConfig,
         load_environment_config,
     )
+    from .e2b_backend import (
+        E2BEnvironment,
+        E2BExecBackend,
+        E2BFileBackend,
+        e2b_environment,
+    )
     from .local_env import LocalEnvironment, local_environment
     from .local_exec import LocalExecBackend
     from .seatbelt import (
@@ -47,6 +53,10 @@ _LAZY: dict[str, str] = {
     "FilesystemConfig": "config",
     "NetworkConfig": "config",
     "load_environment_config": "config",
+    "E2BEnvironment": "e2b_backend",
+    "E2BExecBackend": "e2b_backend",
+    "E2BFileBackend": "e2b_backend",
+    "e2b_environment": "e2b_backend",
     "ExecSpec": "supervisor",
     "ProcessSupervisor": "supervisor",
     "SupervisorLimits": "supervisor",
@@ -73,6 +83,9 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "E2BEnvironment",
+    "E2BExecBackend",
+    "E2BFileBackend",
     "EnvironmentConfig",
     "ExecBackend",
     "ExecChunk",
@@ -94,6 +107,7 @@ __all__ = [
     "TerminationReason",
     "build_seatbelt_profile",
     "build_srt_settings",
+    "e2b_environment",
     "load_environment_config",
     "local_environment",
     "seatbelt_argv",

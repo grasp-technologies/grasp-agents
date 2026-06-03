@@ -34,7 +34,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..tools.file_edit.paths import PathAccessError, resolve_safe
-from .exec_backend import ExecChunk, ExecResult
+from .exec_backend import ExecBackend, ExecChunk, ExecResult
 from .supervisor import ExecSpec, ProcessSupervisor
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from .supervisor import SupervisorLimits
 
 
-class LocalExecBackend:
+class LocalExecBackend(ExecBackend):
     """
     Host-subprocess :class:`~grasp_agents.sandbox.exec_backend.ExecBackend`.
 

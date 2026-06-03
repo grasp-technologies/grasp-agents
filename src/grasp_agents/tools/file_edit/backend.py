@@ -103,8 +103,7 @@ class FileBackend(Protocol):
     record reads/writes there directly. Backends are pure I/O.
     """
 
-    @property
-    def name(self) -> str: ...
+    name: str  # a class attr or a property both satisfy this
 
     @property
     def allowed_roots(self) -> list[Path]: ...

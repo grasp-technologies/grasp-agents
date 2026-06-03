@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .atomic_write import atomic_write_bytes
-from .backend import FileEntry, FileStat, GrepOutputMode, GrepRawResult
+from .backend import FileBackend, FileEntry, FileStat, GrepOutputMode, GrepRawResult
 from .paths import (
     PathAccessError,
     check_access_path,
@@ -83,7 +83,7 @@ def _match_segments(pattern_parts: list[str], path_parts: list[str]) -> bool:
     return False
 
 
-class LocalFileBackend:
+class LocalFileBackend(FileBackend):
     """
     Default :class:`FileBackend` operating on the host filesystem.
 

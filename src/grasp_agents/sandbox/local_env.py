@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
 from ..tools.file_edit.local_backend import LocalFileBackend
+from .environment import ExecutionEnvironment
 from .local_exec import LocalExecBackend
 from .policy import NetworkPolicy, SandboxPolicy
 
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
     from .supervisor import ProcessSupervisor
 
 
-class LocalEnvironment:
+class LocalEnvironment(ExecutionEnvironment):
     """
     An :class:`~grasp_agents.sandbox.environment.ExecutionEnvironment` over the
     host: a :class:`LocalFileBackend` and a :class:`LocalExecBackend` sharing
@@ -212,8 +213,7 @@ def _build_exec_backend(
     if resolved == "seatbelt":
         if sys.platform != "darwin":
             raise RuntimeError(
-                "confinement='seatbelt' requires macOS (it shells out to "
-                "sandbox-exec)."
+                "confinement='seatbelt' requires macOS (it shells out to sandbox-exec)."
             )
         if shutil.which("sandbox-exec") is None:
             raise RuntimeError(

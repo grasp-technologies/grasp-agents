@@ -35,7 +35,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ...mcp.resource_index import AnyUrl, MCPResourceIndex
-from .backend import FileEntry, FileStat, GrepRawResult
+from .backend import FileBackend, FileEntry, FileStat, GrepRawResult
 from .local_backend import glob_filter_entries
 from .paths import PathAccessError
 
@@ -62,7 +62,7 @@ DEFAULT_WRITE_TOOL = "write_file"
 DEFAULT_DELETE_TOOL = "delete_file"
 
 
-class MCPFileBackend:
+class MCPFileBackend(FileBackend):
     """
     :class:`FileBackend` backed by an :class:`MCPClient`.
 
@@ -101,15 +101,12 @@ class MCPFileBackend:
         from pathlib import Path as _Path  # noqa: PLC0415
 
         self._client = client
+        self.name = f"mcp:{client.name}"
         self._allowed_roots: list[Path] = [_Path(r) for r in allowed_roots]
         self._uri_scheme = resource_uri_scheme
         self._write_tool = write_tool_name
         self._delete_tool = delete_tool_name
         self._index = index or MCPResourceIndex(client, uri_scheme=resource_uri_scheme)
-
-    @property
-    def name(self) -> str:
-        return f"mcp:{self._client.name}"
 
     @property
     def allowed_roots(self) -> list[Path]:

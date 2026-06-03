@@ -192,9 +192,7 @@ class ProcessSupervisor:
                     rc = await self._kill(proc, eff)
                 else:
                     reason = (
-                        TerminationReason.SIGNAL
-                        if rc < 0
-                        else TerminationReason.EXIT
+                        TerminationReason.SIGNAL if rc < 0 else TerminationReason.EXIT
                     )
             else:
                 rc = await self._kill(proc, eff)
@@ -336,9 +334,7 @@ class ProcessSupervisor:
             return None
 
     @staticmethod
-    async def _kill(
-        proc: asyncio.subprocess.Process, limits: SupervisorLimits
-    ) -> int:
+    async def _kill(proc: asyncio.subprocess.Process, limits: SupervisorLimits) -> int:
         """SIGTERM the process group, then SIGKILL after the grace period."""
         if proc.returncode is not None:
             return proc.returncode

@@ -120,6 +120,9 @@ unfixable = ["F401"]
 [lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "*.ipynb" = ["I"]
+# Tests may white-box internals (access private members) where that is the
+# clearest assertion — e.g. unit-testing pure helper functions directly.
+"tests/**/*.py" = ["SLF001"]
 # data_retrieval: copied from grasp-core, interface compliance kwargs
 "src/grasp_agents/data_retrieval/*.py" = ["ARG002", "TC003"]
 # tools.py: imports used at runtime by @function_tool Pydantic models
@@ -137,7 +140,17 @@ unfixable = ["F401"]
 # `== ""` is clearer in output assertions (PLC1901); Path methods in async test
 # bodies are fine on asyncio, not trio (ASYNC240); the Seatbelt tests shell out
 # to sandbox-exec to compile-check generated profiles (S404 / S603).
-"tests/sandbox/**/*.py" = ["ASYNC240", "PLC1901", "RUF029", "S404", "S603"]
+# ASYNC109: fake exec backends mirror the ExecBackend `timeout` contract (same
+# rationale as the sandbox module); B903: simple test-double data holders.
+"tests/sandbox/**/*.py" = [
+  "ASYNC109",
+  "ASYNC240",
+  "B903",
+  "PLC1901",
+  "RUF029",
+  "S404",
+  "S603",
+]
 # sandbox: `timeout` is part of the cross-boundary ExecBackend contract
 # (enforced per-backend: asyncio.wait_for / docker exec / remote API), not an
 # asyncio.timeout reinvention — ASYNC109 is a false positive here. S603

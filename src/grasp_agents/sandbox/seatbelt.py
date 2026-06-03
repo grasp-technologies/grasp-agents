@@ -152,14 +152,11 @@ def build_seatbelt_profile(policy: SandboxPolicy) -> tuple[str, dict[str, str]]:
             )
             cred_filters.append(f'(regex #"/\\.({alt})(/|$)")')
         cred_filters += [
-            f'(regex #"/{re.escape(nm)}($|\\.)")'
-            for nm in rules.credential_file_names
+            f'(regex #"/{re.escape(nm)}($|\\.)")' for nm in rules.credential_file_names
         ]
         if cred_filters:
             lines.append(
-                "(deny file-read* file-write*\n    "
-                + "\n    ".join(cred_filters)
-                + ")"
+                "(deny file-read* file-write*\n    " + "\n    ".join(cred_filters) + ")"
             )
 
     if policy.network == NetworkPolicy.ALL:

@@ -16,5 +16,13 @@
         "src",
     ],
     "autoSearchPaths": false,
-    "reportMissingTypeStubs": false
+    "reportMissingTypeStubs": false,
+    "executionEnvironments": [
+        {
+            "root": "tests",
+            "extraPaths": [".", "src"],
+            "reportPrivateUsage": "none",
+            "reportUnusedFunction": "none"
+        }
+    ]
 }
