@@ -190,8 +190,8 @@ class TestSystemPromptSection:
         _write_skill(tmp_path, "alpha", "x")
         agent = _make_agent()
 
-        def dyn(*, ctx: RunContext[_State], exec_id: str) -> str:
-            del ctx, exec_id
+        def dyn(*, exec_id: str) -> str:
+            del exec_id
             return "Dynamic header."
 
         agent.add_system_prompt_builder(dyn)

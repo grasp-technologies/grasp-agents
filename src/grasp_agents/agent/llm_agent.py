@@ -5,23 +5,27 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, cast, final
 
 if TYPE_CHECKING:
+    from ..tools.file_edit.session_state import FileEditSessionState
     from .prompt_builder import SystemPromptSection
 
 from pydantic import BaseModel
-from typing_extensions import TypedDict
 
 from ..durability import AgentCheckpoint
 from ..durability.checkpoints import AgentCheckpointLocation, CheckpointKind
-from ..durability.context_serialization import rehydrate_context, serialize_context
+from ..durability.context_serialization import (
+    ContextKind,
+    rehydrate_context,
+    serialize_context,
+)
 from ..durability.resume import prepare_messages_for_resume
 from ..env_section import make_env_info_section
 from ..llm.llm import LLM
-from ..memory.injection import make_memory_section, memory_relevance_attachment
+from ..memory.injection import make_memory_section, relevant_memories_attachment
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
-from ..skills.injection import skills_system_prompt_section
+from ..skills.injection import make_skills_section
 from ..telemetry import SpanKind
-from ..types.content import Content, InputImage
+from ..types.content import Content, InputImage, InputText
 from ..types.errors import ProcInputValidationError
 from ..types.events import (
     Event,
@@ -36,12 +40,12 @@ from ..types.hooks import (
     BeforeToolHook,
     FinalAnswerExtractor,
     InputContentBuilder,
-    MemoryBuilder,
     OutputParser,
     StateBuilder,
     SystemPromptBuilder,
     ToolInputConverter,
     ToolOutputConverter,
+    TranscriptBuilder,
 )
 from ..types.io import InT, LLMPrompt, OutT, ProcName
 from ..types.items import FunctionToolCallItem, InputMessageItem
@@ -64,11 +68,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class CallArgs(TypedDict):
-    ctx: RunContext[Any]
-    exec_id: str
-
-
 class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     _span_kind = SpanKind.AGENT
     _checkpoint_kind = CheckpointKind.AGENT
@@ -84,6 +83,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self,
         name: ProcName,
         *,
+        # Session context — bound at construction. The agent reads/writes
+        # state on this ``ctx`` for its lifetime; passing a different ``ctx``
+        # at ``.run()`` time is not supported.
+        ctx: RunContext[CtxT] | None = None,
         # LLM
         llm: LLM,
         # Tools
@@ -117,15 +120,18 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # MCP integration (clients must be ``connect()``-ed before the
         # agent is constructed; pass a ``MCPClientSpec`` to filter tools)
         mcp_clients: "Sequence[MCPClient | MCPClientSpec] | None" = None,
-        # Auto-attached system-prompt sections
-        env_info: bool = True,
+        # Auto-attached environment-info section. ``True`` attaches the
+        # default block (date / platform / os / cwd / model); ``False``
+        # attaches nothing. Pass a ``SystemPromptSection`` built with
+        # ``make_env_info_section(include=..., extra_fields=..., ...)`` to
+        # control exactly which facts appear.
+        env_info: "bool | SystemPromptSection" = True,
         # Memory feature toggle (opt-in). When True, the agent gets:
         # - the ``memory`` system-prompt section (taxonomy + index)
-        # - the ``memory_relevance_attachment`` (per-turn surfacing)
-        # - in agentic mode, a :class:`FileEditToolkit` rooted at the
-        #   memdir auto-attached so the agent can author topic files
-        #   and maintain ``MEMORY.md`` with generic file tools (CC's
-        #   model — no specialized memory tools).
+        # - the ``relevant_memories_attachment`` (per-turn surfacing)
+        # - in agentic mode, a :class:`FileToolkit` auto-attached so the
+        #   agent can search, author, and maintain memory files with the
+        #   generic file tools (CC's model — no specialized memory tools).
         # Default is False — the agent should know it's adding memory
         # to its system prompt before it happens.
         enable_memory: bool = False,
@@ -141,6 +147,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     ) -> None:
         super().__init__(
             name=name,
+            ctx=ctx,
             recipients=recipients,
             max_retries=max_retries,
             path=path,
@@ -158,13 +165,20 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         if agentic_mode:
             existing_names = {t.name for t in tools}
-            # ``enable_memory`` no longer auto-attaches memory-specific
-            # tools. Memory authoring goes through the generic file
-            # tools rooted at the memdir — wire a ``FileEditToolkit``
-            # (local FS) or one configured with an ``MCPFileBackend``
-            # explicitly. The system-prompt section names the memdir
-            # path so the model knows where to read / write.
-            #
+
+            # Auto-attach the file toolkit when memory is on — memory
+            # authoring (read/edit topic files) and discovery (grep/glob
+            # the memdir) both route through it via ``ctx.file_backend``.
+            # The toolkit is stateless: backend / allowed_roots / read-state
+            # all live on the backend the host wires onto ``RunContext``.
+            if enable_memory:
+                from ..tools import FileToolkit  # noqa: PLC0415
+
+                for tool in FileToolkit().tools():
+                    if tool.name not in existing_names:
+                        tools.append(tool)
+                        existing_names.add(tool.name)
+
             # Auto-attach the skill loader when the skills feature is on.
             # ``list_skills`` stays opt-in — the catalog is already in the
             # system prompt.
@@ -174,10 +188,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 if load_skill.name not in existing_names:
                     tools.append(load_skill)
                     existing_names.add(load_skill.name)
-
-        if tracing_exclude_input_fields:
-            for tool in tools:
-                tool.tracing_exclude_input_fields = tracing_exclude_input_fields
 
         # Transcript (per-run message history)
         self._transcript = transcript or LLMAgentTranscript()
@@ -216,23 +226,25 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Order mirrors Claude Code's dynamic-tail layout (memory →
         # env_info → mcp_instructions in ``constants/prompts.ts``).
         # Skills slot between env_info and mcp_instructions — both
-        # surface "what the agent can do", with MCP last because
-        # servers connect / disconnect mid-session and the section is
-        # ``cache_break=True``.
+        # surface "what the agent can do", with MCP last so its
+        # ``cache_control`` checkpoint caches the whole system-prompt
+        # prefix.
         if enable_memory:
             self._prompt_builder.add_system_prompt_section(
                 make_memory_section()
             )
             self._prompt_builder.add_input_attachment(
-                memory_relevance_attachment
+                relevant_memories_attachment
             )
         if env_info:
             self._prompt_builder.add_system_prompt_section(
                 make_env_info_section(model_name=llm.model_name)
+                if env_info is True
+                else env_info
             )
         if enable_skills:
             self._prompt_builder.add_system_prompt_section(
-                skills_system_prompt_section
+                make_skills_section()
             )
         # Local import to dodge the ``mcp`` package's optional-dependency
         # import guard at module load.
@@ -279,6 +291,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             llm=llm,
             tools=tools,
             transcript=self.transcript,
+            ctx=self._ctx,
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
             force_react_mode=force_react_mode,
@@ -310,11 +323,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         self._register_overridden_implementations()
 
-        # Reset session path after the loop is initialized,
-        # so it is propagated to the loop and its tools
-        # via _propagate_to_children.
-
-        self.set_path(path)
+        # The loop and its tools are built after super().__init__, so the
+        # session set there hasn't reached them yet — cascade it now.
+        self._propagate_to_children()
 
     def add_mcp_client(
         self,
@@ -379,26 +390,43 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         return self._transcript
 
     @property
+    def file_edit_state(self) -> "FileEditSessionState":
+        """
+        This agent's read-before-write / dotfile-override bookkeeping.
+
+        Activated for the duration of each run via a ContextVar so the
+        file-edit tools, file-search tools, and :class:`MemoryProvider`
+        share it. Exposed for inspection and for pre-seeding read records.
+        """
+        return self._loop.file_edit_state
+
+    @property
     def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:
         """Read-only view of registered system-prompt sections, in order."""
         return tuple(self._prompt_builder.system_prompt_sections)
 
     async def build_system_prompt(
-        self, ctx: RunContext[CtxT], exec_id: str = ""
+        self,
+        ctx: "RunContext[CtxT] | None" = None,
+        exec_id: str = "",
     ) -> str | None:
         """
         Render the agent's full system prompt (base + every section).
 
         Useful for inspection / debugging — consumers don't normally need to
-        call this; the agent invokes it internally on every run.
+        call this; the agent invokes it internally on every run. ``ctx`` is
+        accepted positionally for debugging convenience (otherwise the
+        agent's bound ctx is used).
         """
         return await self._prompt_builder.build_system_prompt(
-            ctx=ctx, exec_id=exec_id
+            ctx=ctx if ctx is not None else self._ctx, exec_id=exec_id
         )
 
     @property
-    def _has_build_memory_impl(self) -> bool:
-        return is_method_overridden("build_memory_impl", self, LLMAgent[Any, Any, Any])
+    def _has_build_transcript_impl(self) -> bool:
+        return is_method_overridden(
+            "build_transcript_impl", self, LLMAgent[Any, Any, Any]
+        )
 
     @property
     def _has_build_state_impl(self) -> bool:
@@ -407,16 +435,24 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     # --- Session persistence ---
 
     def _propagate_to_children(self) -> None:
-        # Guarded: super().__init__ calls set_path before _loop is set.
+        # Guarded: ``super().__init__`` runs this hook before ``_loop``
+        # exists. The loop is constructed later and picks up ``self._ctx`` /
+        # ``self.path`` directly from its ctor args; the final
+        # ``_propagate_to_children`` at the end of ``__init__`` then syncs
+        # the tools, so the missed early call is harmless.
         loop = getattr(self, "_loop", None)
         if loop is None:
             return
         loop.path = self.path
         loop.bg_tasks._path = self.path
+        loop._ctx = self._ctx
+        # Forward adoption onto every tool (no-op for stateless tools;
+        # :class:`ProcessorTool` rebinds its wrapped processor).
+        for tool in loop.tools.values():
+            tool.on_adopted(self)
 
     async def load_checkpoint(
         self,
-        ctx: RunContext[CtxT],
         *,
         exec_id: str | None = None,
     ) -> AgentCheckpoint | None:
@@ -424,7 +460,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         if not self.transcript.is_empty:
             return None  # Already has messages — don't reload
 
-        checkpoint = await self._deserialize_checkpoint(ctx, AgentCheckpoint)
+        checkpoint = await self._deserialize_checkpoint(self._ctx, AgentCheckpoint)
         if checkpoint is None:
             return None
 
@@ -433,20 +469,21 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._loop.turn = checkpoint.turn
         self.prompt_cache_key = checkpoint.prompt_cache_key
 
-        # Auto-rehydrate ctx.state for the machine-serializable kinds
-        # (mapping / pydantic / dataclass). OMITTED / CUSTOM leave state
-        # untouched — state_builder fills in below.
-        ctx.state = rehydrate_context(
+        # Restore ctx.state for the machine-serializable kinds (mapping /
+        # pydantic / dataclass) when it was persisted. A None / OMITTED kind
+        # (the default — serialize_state off) leaves state untouched, so
+        # state_builder fills it in below.
+        self._ctx.state = rehydrate_context(
             checkpoint.context_kind,
             checkpoint.context_data,
-            ctx.state,
+            self._ctx.state,
         )
 
         logger.info(
             "Loaded session %s for agent %s "
             "(checkpoints=%d, messages=%d, interruption=%s, "
             "stripped=%d, step=%d, turn=%d)",
-            self._checkpoint_store_key(ctx),
+            self._checkpoint_store_key(self._ctx),
             self.name,
             self.checkpoint_number,
             len(resume_state.messages),
@@ -456,30 +493,36 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             checkpoint.turn,
         )
 
-        await self._loop.bg_tasks.handle_pending(ctx=ctx, exec_id=exec_id)
+        await self._loop.bg_tasks.handle_pending(ctx=self._ctx, exec_id=exec_id)
 
         # Rebuild business state from external sources (DB, etc.) after
         # conversation restoration is complete. Opt-in; fresh init uses
-        # add_memory_builder instead.
+        # add_transcript_builder instead.
         if self._has_build_state_impl:
             await self.build_state_impl(
-                checkpoint=checkpoint, ctx=ctx, exec_id=exec_id or ""
+                checkpoint=checkpoint, exec_id=exec_id or ""
             )
 
         return checkpoint
 
     async def save_checkpoint(
         self,
-        ctx: RunContext[CtxT],
         *,
         turn: int = 0,
         output: str | None = None,
         location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT,
     ) -> None:
         """Persist current conversation state to the store."""
-        context_kind, context_data = serialize_context(ctx.state)
+        # ``ctx.state`` is persisted only when opted in via
+        # ``RunContext.serialize_state``. Off by default: business state is
+        # rebuilt on resume through ``@agent.add_state_builder`` (the app's
+        # database is the source of truth), keeping the checkpoint small.
+        context_kind: ContextKind | None = None
+        context_data: Any | None = None
+        if self._ctx.serialize_state:
+            context_kind, context_data = serialize_context(self._ctx.state)
         checkpoint = AgentCheckpoint(
-            session_key=ctx.session_key,
+            session_key=self._ctx.session_key,
             processor_name=self.name,
             messages=list(self.transcript.messages),
             session_metadata=self._session_metadata,
@@ -491,28 +534,32 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             context_data=context_data,
             prompt_cache_key=self.prompt_cache_key,
         )
-        await self._serialize_checkpoint(ctx, checkpoint)
+        await self._serialize_checkpoint(self._ctx, checkpoint)
 
-    async def _memorize_inputs(
+    async def _prepare_transcript(
         self,
         *,
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         in_args: InT | None = None,
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> list[InputMessageItem]:
-        call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
-
-        formatted_sys_prompt = await self._prompt_builder.build_system_prompt(
-            ctx=ctx, exec_id=exec_id
+        # Build the system prompt as parts so per-section ``cache_control``
+        # flows through to providers that honor it (Anthropic prompt
+        # caching). The build_transcript_impl hook receives the same parts
+        # (the contract mirrors ``transcript.reset``), so a custom builder
+        # can preserve the markers too.
+        sys_prompt_parts = await self._prompt_builder.build_system_prompt_parts(
+            ctx=self._ctx, exec_id=exec_id
         )
         fresh_init = self.reset_transcript_on_run or self.transcript.is_empty
 
-        if fresh_init and not self._has_build_memory_impl:
-            self.transcript.reset(formatted_sys_prompt)
-        elif self._has_build_memory_impl:
-            self.build_memory_impl(
-                instructions=formatted_sys_prompt, in_args=in_args, **call_kwargs
+        if fresh_init and not self._has_build_transcript_impl:
+            self.transcript.reset(sys_prompt_parts)
+        elif self._has_build_transcript_impl:
+            self.build_transcript_impl(
+                instructions=sys_prompt_parts,
+                in_args=in_args,
+                exec_id=exec_id,
             )
 
         messages_to_expose: list[InputMessageItem] = []
@@ -522,12 +569,14 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                     messages_to_expose.append(msg)
 
         input_message = self._prompt_builder.build_input_message(
-            chat_inputs=chat_inputs, in_args=in_args, **call_kwargs
+            chat_inputs=chat_inputs,
+            in_args=in_args,
+            exec_id=exec_id,
         )
         if input_message:
             input_message = await self._prompt_builder.apply_input_attachments(
                 input_message,
-                ctx=ctx,
+                ctx=self._ctx,
                 exec_id=exec_id,
                 messages=list(self.transcript.messages),
             )
@@ -550,14 +599,12 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         final_answer: str,
         *,
         in_args: InT | None = None,
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> OutT:
         if is_method_overridden("parse_output_impl", self, LLMAgent[Any, Any, Any]):
             return self.parse_output_impl(
                 final_answer,
                 in_args=in_args,
-                ctx=ctx,
                 exec_id=exec_id,
             )
 
@@ -569,11 +616,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         chat_inputs: Any = None,
         in_packet: Any = None,
         in_args: Any = None,
-        ctx: RunContext[CtxT] | None = None,
     ) -> list[InT] | None:
-        # Allow no inputs when the ctx has a checkpoint store (resume case)
+        # Allow no inputs when the bound ctx has a checkpoint store (resume case)
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and Processor.is_resumable(ctx):
+        if not has_input and self.is_resumable:
             return None
 
         result = super().validate_inputs(
@@ -581,7 +627,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             chat_inputs=chat_inputs,
             in_packet=in_packet,
             in_args=in_args,
-            ctx=ctx,
         )
         if result is not None and len(result) != 1:
             raise ProcInputValidationError(
@@ -596,17 +641,16 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         *,
         in_args: list[InT] | None = None,
-        ctx: RunContext[CtxT],
         exec_id: str,
         step: int | None = None,
+        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
     ) -> AsyncIterator[Event[Any]]:
-        call_kwargs = CallArgs(ctx=ctx, exec_id=exec_id)
         self._delivery_step = step
 
         inp = in_args[0] if in_args else None
 
         # Always load checkpoint (restores memory, background tasks, turn).
-        checkpoint = await self.load_checkpoint(ctx, exec_id=exec_id)
+        checkpoint = await self.load_checkpoint(exec_id=exec_id)
 
         is_redelivery = (
             step is not None and checkpoint is not None and checkpoint.step == step
@@ -615,7 +659,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Re-delivery with cached output: step already completed, caller
         # re-delivered (e.g. workflow crashed before saving its own checkpoint).
         if is_redelivery and checkpoint is not None and checkpoint.output is not None:
-            output = self.parse_output(checkpoint.output, in_args=inp, **call_kwargs)
+            output = self.parse_output(
+                checkpoint.output, in_args=inp, exec_id=exec_id
+            )
             yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
             return
 
@@ -624,10 +670,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # loaded from checkpoint, skip memorization.
         if not is_redelivery:
             self._loop.turn = 0
-            messages_to_expose = await self._memorize_inputs(
-                chat_inputs=chat_inputs, in_args=inp, **call_kwargs
+            messages_to_expose = await self._prepare_transcript(
+                chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
             )
-            self._print_messages(messages_to_expose, **call_kwargs)
+            self._print_messages(messages_to_expose, exec_id=exec_id)
             for message in messages_to_expose:
                 if message.role == "system":
                     yield SystemMessageEvent(
@@ -642,11 +688,13 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                         exec_id=exec_id,
                     )
 
-        async for event in self._loop.execute_stream(**call_kwargs):
+        async for event in self._loop.execute_stream(exec_id=exec_id):
             yield event
 
         assert self._loop.final_answer is not None
-        output = self.parse_output(self._loop.final_answer, in_args=inp, **call_kwargs)
+        output = self.parse_output(
+            self._loop.final_answer, in_args=inp, exec_id=exec_id
+        )
         yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 
         self.step += 1
@@ -654,23 +702,26 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     def _print_messages(
         self,
         messages: Sequence[Any],
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> None:
-        if ctx.printer:
-            ctx.printer.print_messages(messages, agent_name=self.name, exec_id=exec_id)
+        if self._ctx.printer:
+            self._ctx.printer.print_messages(
+                messages, agent_name=self.name, exec_id=exec_id
+            )
 
     # --- Subclass hook points ---
     #
     # Override these in subclasses for customization.
     # Alternatively, use the @agent.add_* decorators (preferred).
+    # These read the run context off ``self.ctx`` (the single shared
+    # session instance); ``on_before_tool_impl`` keeps an explicit ``ctx``
+    # for symmetry with the standalone approval-hook factories.
 
-    def build_memory_impl(
+    def build_transcript_impl(
         self,
         *,
-        instructions: LLMPrompt | None = None,
+        instructions: LLMPrompt | Sequence[InputText] | None = None,
         in_args: InT | None = None,
-        ctx: RunContext[Any],
         exec_id: str,
     ) -> None:
         raise NotImplementedError
@@ -679,7 +730,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self,
         *,
         checkpoint: AgentCheckpoint,
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> None:
         raise NotImplementedError
@@ -689,25 +739,21 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         final_answer: str,
         *,
         in_args: InT | None = None,
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> OutT:
         raise NotImplementedError
 
     def build_system_prompt_impl(
-        self, *, ctx: RunContext[CtxT], exec_id: str
-    ) -> str | None:
+        self, *, exec_id: str
+    ) -> str | Sequence[InputText] | None:
         raise NotImplementedError
 
-    def build_input_content_impl(
-        self, in_args: InT, *, ctx: RunContext[CtxT], exec_id: str
-    ) -> Content:
+    def build_input_content_impl(self, in_args: InT, *, exec_id: str) -> Content:
         raise NotImplementedError
 
     def extract_final_answer_impl(
         self,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str,
         **kwargs: Any,
     ) -> str | None:
@@ -716,7 +762,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     async def on_before_llm_impl(
         self,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str,
         turn: int,
         extra_llm_settings: dict[str, Any],
@@ -727,7 +772,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self,
         response: Response,
         *,
-        ctx: RunContext[CtxT],
         exec_id: str,
         turn: int,
     ) -> None:
@@ -747,7 +791,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         *,
         tool_calls: Sequence[FunctionToolCallItem],
         tool_messages: Sequence[Any],
-        ctx: RunContext[CtxT],
         exec_id: str,
     ) -> None:
         raise NotImplementedError
@@ -758,24 +801,26 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     # on the appropriate component (AgentLoop or PromptBuilder).
 
     def add_output_parser(
-        self, func: OutputParser[InT, OutT, CtxT]
-    ) -> OutputParser[InT, OutT, CtxT]:
+        self, func: OutputParser[InT, OutT]
+    ) -> OutputParser[InT, OutT]:
         if self._used_default_llm_output_schema:
             self._loop.llm_output_schema = None
         self.parse_output_impl = func
         return func
 
-    def add_memory_builder(self, func: MemoryBuilder[InT]) -> MemoryBuilder[InT]:
-        self.build_memory_impl = func
+    def add_transcript_builder(
+        self, func: TranscriptBuilder[InT]
+    ) -> TranscriptBuilder[InT]:
+        self.build_transcript_impl = func
         return func
 
-    def add_state_builder(self, func: StateBuilder[CtxT]) -> StateBuilder[CtxT]:
+    def add_state_builder(self, func: StateBuilder) -> StateBuilder:
         self.build_state_impl = func
         return func
 
     def add_system_prompt_builder(
-        self, func: SystemPromptBuilder[CtxT]
-    ) -> SystemPromptBuilder[CtxT]:
+        self, func: SystemPromptBuilder
+    ) -> SystemPromptBuilder:
         self._prompt_builder.system_prompt_builder = func
         return func
 
@@ -792,22 +837,22 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._prompt_builder.add_system_prompt_section(section)
 
     def add_input_content_builder(
-        self, func: InputContentBuilder[InT, CtxT]
-    ) -> InputContentBuilder[InT, CtxT]:
+        self, func: InputContentBuilder[InT]
+    ) -> InputContentBuilder[InT]:
         self._prompt_builder.input_content_builder = func
         return func
 
     def add_final_answer_extractor(
-        self, func: FinalAnswerExtractor[CtxT]
-    ) -> FinalAnswerExtractor[CtxT]:
+        self, func: FinalAnswerExtractor
+    ) -> FinalAnswerExtractor:
         self._loop.final_answer_extractor = func
         return func
 
-    def add_before_llm_hook(self, func: BeforeLlmHook[CtxT]) -> BeforeLlmHook[CtxT]:
+    def add_before_llm_hook(self, func: BeforeLlmHook) -> BeforeLlmHook:
         self._loop.before_llm_hook = func
         return func
 
-    def add_after_llm_hook(self, func: AfterLlmHook[CtxT]) -> AfterLlmHook[CtxT]:
+    def add_after_llm_hook(self, func: AfterLlmHook) -> AfterLlmHook:
         self._loop.after_llm_hook = func
         return func
 
@@ -815,19 +860,19 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._loop.before_tool_hook = func
         return func
 
-    def add_after_tool_hook(self, func: AfterToolHook[CtxT]) -> AfterToolHook[CtxT]:
+    def add_after_tool_hook(self, func: AfterToolHook) -> AfterToolHook:
         self._loop.after_tool_hook = func
         return func
 
     def add_tool_input_converter(self, tool_name: str) -> Any:
-        def decorator(func: ToolInputConverter[CtxT]) -> ToolInputConverter[CtxT]:
+        def decorator(func: ToolInputConverter) -> ToolInputConverter:
             self._loop.tool_input_converters[tool_name] = func
             return func
 
         return decorator
 
     def add_tool_output_converter(self, tool_name: str) -> Any:
-        def decorator(func: ToolOutputConverter[CtxT]) -> ToolOutputConverter[CtxT]:
+        def decorator(func: ToolOutputConverter) -> ToolOutputConverter:
             self._loop.tool_output_converters[tool_name] = func
             return func
 

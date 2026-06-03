@@ -123,12 +123,12 @@ class TestRenderMemoryInstructions:
         assert "verify" in out.lower()
 
     def test_index_discipline_present(self) -> None:
-        # The index is a map (links), not a store: one-line entries
-        # capped at ~150 chars, no topic bodies inlined, mention of
-        # truncation cap.
+        # The index is a map (links), not a store: concise entries
+        # capped by line/byte limits, no topic bodies inlined, mention
+        # of the truncation cap.
         out = " ".join(render_memory_instructions().split())
         assert "never inline topic bodies into it" in out.lower()
-        assert "~150" in out
+        assert "keep entries concise" in out.lower()
         assert "truncated" in out
 
     def test_no_coding_agent_assumptions(self) -> None:

@@ -62,9 +62,9 @@ from .llm.model_info import (
 )
 from .llm.resilience import RetryPolicy
 from .memory import (
-    MEMORY_RELEVANCE_ATTACHMENT_NAME,
     MEMORY_SECTION_NAME,
     MEMORY_TYPES,
+    RELEVANT_MEMORIES_ATTACHMENT_NAME,
     InMemoryMemoryProvider,
     MemoryEntry,
     MemoryFrontmatter,
@@ -75,9 +75,9 @@ from .memory import (
     default_memdir_path,
     load_memory_entry,
     make_memory_section,
-    memory_relevance_attachment,
     memory_system_prompt_section,
     parse_memory_md,
+    relevant_memories_attachment,
     render_memory_index,
     render_memory_instructions,
     scan_memdir,
@@ -107,7 +107,7 @@ from .skills import (
     render_skill_instructions,
     skills_system_prompt_section,
 )
-from .types.content import Content, InputImage, InputRenderable
+from .types.content import CacheControl, Content, InputImage, InputRenderable
 from .types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
@@ -177,9 +177,9 @@ __all__ = [
     "ENV_INFO_SECTION_NAME",
     "LLM",
     "MCP_INSTRUCTIONS_SECTION_NAME",
-    "MEMORY_RELEVANCE_ATTACHMENT_NAME",
     "MEMORY_SECTION_NAME",
     "MEMORY_TYPES",
+    "RELEVANT_MEMORIES_ATTACHMENT_NAME",
     "AgentCheckpoint",
     "AgentTool",
     "AgentToolInput",
@@ -196,6 +196,7 @@ __all__ = [
     "BackgroundTaskInfo",
     "BackgroundTaskLaunchedEvent",
     "BaseTool",
+    "CacheControl",
     "CheckpointStore",
     "Content",
     "DeveloperMessage",
@@ -301,7 +302,6 @@ __all__ = [
     "make_mcp_instructions_section",
     "make_memory_section",
     "make_skills_section",
-    "memory_relevance_attachment",
     "memory_system_prompt_section",
     "parse_memory_md",
     "parse_named_args",
@@ -309,6 +309,7 @@ __all__ = [
     "parse_slash_command",
     "print_event_stream",
     "register_recovery_hint",
+    "relevant_memories_attachment",
     "render_available_skills_block",
     "render_memory_index",
     "render_memory_instructions",

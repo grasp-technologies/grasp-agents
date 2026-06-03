@@ -489,7 +489,11 @@ class TestMultipleBackgroundTasks:
                     ("slow_b", '{"text":"bbb"}', "tc2"),
                 ]
             ),
-            _text_response("waiting"),
+            _text_response("waiting"),  # suppressed (tasks may still be pending)
+            # ``drain(wait=True)`` returns on FIRST_COMPLETED, so two equal-delay
+            # tasks can drain on separate turns under load — give the loop a
+            # spare turn so it never runs out of responses mid-drain.
+            _text_response("still waiting"),
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(

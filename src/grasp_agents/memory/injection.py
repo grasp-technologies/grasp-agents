@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from grasp_agents.types.items import InputItem, InputMessageItem
 
 MEMORY_SECTION_NAME = "memory"
-MEMORY_RELEVANCE_ATTACHMENT_NAME = "memory_relevance"
+RELEVANT_MEMORIES_ATTACHMENT_NAME = "relevant_memories"
 
 MEMORY_INSTRUCTIONS = (Path(__file__).parent / "memory_instructions.md").read_text()
 
@@ -117,11 +117,12 @@ def make_memory_section(
         exec_id: str | None = None,
         **_: Any,
     ) -> str | None:
+        del exec_id
         if ctx is None or ctx.memory is None:
             return None
 
-        snapshot = await ctx.memory.load(session_id=exec_id or "", ctx=ctx)
-        index_text = await ctx.memory.render_index(ctx=ctx)
+        snapshot = await ctx.memory.load()
+        index_text = await ctx.memory.render_index()
         index_block = render_memory_index(
             index_text,
             freshness_warning=snapshot.index_freshness_warning,
@@ -154,7 +155,7 @@ def _format_mtime(mtime_ms: int) -> str:
     if mtime_ms <= 0:
         return ""
     return (
-        datetime.fromtimestamp(mtime_ms / 1000, tz=timezone.utc)
+        datetime.fromtimestamp(mtime_ms / 1000, tz=UTC)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
@@ -196,7 +197,7 @@ async def _compute_relevant_memories(
     if ctx is None or ctx.memory is None or ctx.memory.selector is None:
         return None
 
-    snapshot = await ctx.memory.load(ctx=ctx)
+    snapshot = await ctx.memory.load()
     selected = await ctx.memory.select_relevant(
         snapshot, ctx=ctx, exec_id=exec_id, messages=messages
     )
@@ -206,7 +207,7 @@ async def _compute_relevant_memories(
     lines: list[str] = ["## Relevant memories", ""]
     for entry in selected:
         try:
-            body = await ctx.memory.fetch_body(entry.name, ctx=ctx)
+            body = await ctx.memory.fetch_body(entry.name)
         except Exception:
             continue
         lines.extend([_format_entry_heading(entry), entry.description, ""])
@@ -220,7 +221,7 @@ async def _compute_relevant_memories(
     return "\n".join(lines).rstrip()
 
 
-memory_relevance_attachment = InputAttachment(
-    name=MEMORY_RELEVANCE_ATTACHMENT_NAME,
+relevant_memories_attachment = InputAttachment(
+    name=RELEVANT_MEMORIES_ATTACHMENT_NAME,
     compute=_compute_relevant_memories,
 )

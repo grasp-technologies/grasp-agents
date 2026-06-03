@@ -35,17 +35,13 @@ def _aged_entry(name: str, age_seconds: float, tmp_path: Path) -> MemoryEntry:
     old = time.time() - age_seconds
     os.utime(f, (old, old))
     fm = MemoryFrontmatter.model_validate({"name": name, "description": "D"})
-    return MemoryEntry(
-        frontmatter=fm, body="B", path=f, mtime_ms=int(old * 1000)
-    )
+    return MemoryEntry(frontmatter=fm, body="B", path=f, mtime_ms=int(old * 1000))
 
 
 def _make_ctx(memdir: Path) -> RunContext[Any]:
     """Build a ctx wired to LocalFileBackend + MemoryProvider over memdir."""
     backend = LocalFileBackend(allowed_roots=[memdir])
-    return RunContext[Any](
-        file_backend=backend, memory=MemoryProvider(memdir)
-    )
+    return RunContext[Any](file_backend=backend, memory=MemoryProvider(memdir))
 
 
 # ---------- InMemoryMemoryProvider ----------
@@ -119,14 +115,44 @@ class TestMemoryProviderLocal:
     async def test_missing_root(self, tmp_path: Path) -> None:
         missing = tmp_path / "missing"
         # Use the parent dir for allowed_roots so validation accepts the
-        # nested-missing path; the provider returns an empty snapshot.
+        # nested-missing path; with auto-create off the provider returns an
+        # empty snapshot rather than bootstrapping an index.
         backend = LocalFileBackend(allowed_roots=[tmp_path])
         ctx = RunContext[Any](
-            file_backend=backend, memory=MemoryProvider(missing)
+            file_backend=backend,
+            memory=MemoryProvider(missing, auto_create_index=False),
         )
         assert ctx.memory is not None
         snap = await ctx.memory.load()
         assert snap.is_empty
+
+    @pytest.mark.anyio
+    async def test_auto_creates_index(self, tmp_path: Path) -> None:
+        """Default auto-create bootstraps MEMORY.md (and the dir) when absent."""
+        memdir = tmp_path / "mem"
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](file_backend=backend, memory=MemoryProvider(memdir))
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert (memdir / "MEMORY.md").is_file()
+        assert snap.index is not None
+        assert not snap.is_empty
+
+    @pytest.mark.anyio
+    async def test_auto_create_disabled_leaves_index_absent(
+        self, tmp_path: Path
+    ) -> None:
+        memdir = tmp_path / "mem2"
+        memdir.mkdir()
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        ctx = RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(memdir, auto_create_index=False),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert not (memdir / "MEMORY.md").exists()
+        assert snap.index is None
 
     @pytest.mark.anyio
     async def test_root_property(self, tmp_path: Path) -> None:
@@ -141,6 +167,41 @@ class TestMemoryProviderLocal:
         p = MemoryProvider(tmp_path)
         with pytest.raises(ValueError, match="file_backend"):
             await p.load()
+
+
+class TestMemdirAdmission:
+    """The RunContext validator admits the memdir into the backend roots."""
+
+    def test_memdir_outside_allowed_roots_is_auto_added(
+        self, tmp_path: Path
+    ) -> None:
+        # Backend rooted at a sibling dir that does NOT contain the memdir.
+        work = tmp_path / "work"
+        work.mkdir()
+        memdir = tmp_path / "mem"
+        backend = LocalFileBackend(allowed_roots=[work])
+        # No raise — the memdir is admitted into allowed_roots instead.
+        ctx = RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(memdir, auto_create_index=False),
+        )
+        assert ctx.file_backend is not None
+        assert any(
+            memdir == r or r in memdir.parents
+            for r in ctx.file_backend.allowed_roots
+        )
+
+    def test_admission_is_idempotent_when_already_covered(
+        self, tmp_path: Path
+    ) -> None:
+        backend = LocalFileBackend(allowed_roots=[tmp_path])
+        before = len(backend.allowed_roots)
+        RunContext[Any](
+            file_backend=backend,
+            memory=MemoryProvider(tmp_path / "mem", auto_create_index=False),
+        )
+        # memdir already nested under tmp_path → no new root appended.
+        assert len(backend.allowed_roots) == before
 
 
 # ---------- Freshness ----------

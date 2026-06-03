@@ -1,4 +1,5 @@
-"""Live integration test — runs the full ``memory_skills_demo.ipynb`` flow
+"""
+Live integration test — runs the full ``memory_skills_demo.ipynb`` flow
 end-to-end against a real LLM. Verifies that the agent recovers from
 tool-arg validation failures via the synthesis fallback even with a
 weak model.

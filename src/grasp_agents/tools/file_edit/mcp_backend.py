@@ -1,14 +1,12 @@
 """
 :class:`MCPFileBackend` — routes file I/O to an MCP server.
 
-The backend is built around two MCP surfaces:
+Built around two MCP surfaces:
 
 * **resources** — the canonical read-only surface. ``read_text`` calls
   ``resources/read``; ``stat`` / ``exists`` / ``list_dir`` /
   ``find_files`` all query a cached :class:`MCPResourceIndex` populated
-  by a single ``resources/list`` per session. Servers do **not** need to
-  expose ``stat_file`` / ``list_dir`` tools; resource metadata is the
-  source of truth.
+  by a single ``resources/list`` per session.
 
 * **tools** — for mutations only. The server SHOULD expose:
 
@@ -21,8 +19,10 @@ The backend is built around two MCP surfaces:
 Sandbox enforcement (path containment, sensitive-path policy, etc.)
 lives on the server side; the backend's :meth:`validate_path` only
 enforces ``allowed_roots`` membership in the server's address space.
-Device-path and credential-dotfile checks are local-FS concerns and are
-skipped.
+
+Read-before-write bookkeeping lives on the *agent* (each
+:class:`AgentLoop` owns its own :class:`FileEditSessionState`); the
+backend itself is pure I/O.
 
 All paths crossing the public API are :class:`pathlib.Path`; the
 backend renders them as POSIX strings for the wire.
@@ -49,7 +49,6 @@ except ImportError as _err:
     raise ImportError(msg) from _err
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from pathlib import Path
 
     from ...mcp.client import MCPClient
@@ -72,19 +71,19 @@ class MCPFileBackend:
 
     Pass a *connected* :class:`MCPClient`; the backend re-uses its
     session and the client must remain connected for the backend's
-    lifetime. Optionally share an existing :class:`MCPResourceIndex` —
-    handy when an :class:`MCPMemoryProvider` was already built against
-    the same client and you want to avoid a second ``resources/list``.
+    lifetime.
 
     Args:
         client: A connected :class:`MCPClient`.
+        allowed_roots: Directories the backend will accept paths under,
+            in the server's address space (e.g. ``[Path("/memdir")]``).
         resource_uri_scheme: URI scheme used to translate Paths to
-            resource URIs. Default ``"file://"``. Must match the server's
-            scheme.
+            resource URIs. Default ``"file://"``. Must match the
+            server's scheme.
         write_tool_name: Override the default ``write_file`` tool name.
         delete_tool_name: Override the default ``delete_file`` tool name.
-        index: Optional pre-existing :class:`MCPResourceIndex` to share.
-            Defaults to a fresh per-backend index.
+        index: Optional pre-existing :class:`MCPResourceIndex` to share
+            (saves a duplicate ``resources/list``).
 
     """
 
@@ -92,22 +91,36 @@ class MCPFileBackend:
         self,
         client: MCPClient,
         *,
+        allowed_roots: list[Path | str],
         resource_uri_scheme: str = DEFAULT_RESOURCE_URI_SCHEME,
         write_tool_name: str = DEFAULT_WRITE_TOOL,
         delete_tool_name: str = DEFAULT_DELETE_TOOL,
         index: MCPResourceIndex | None = None,
     ) -> None:
+        from pathlib import Path as _Path  # noqa: PLC0415
+
         self._client = client
+        self._allowed_roots: list[Path] = [_Path(r) for r in allowed_roots]
         self._uri_scheme = resource_uri_scheme
         self._write_tool = write_tool_name
         self._delete_tool = delete_tool_name
-        self._index = index or MCPResourceIndex(
-            client, uri_scheme=resource_uri_scheme
-        )
+        self._index = index or MCPResourceIndex(client, uri_scheme=resource_uri_scheme)
 
     @property
     def name(self) -> str:
         return f"mcp:{self._client.name}"
+
+    @property
+    def allowed_roots(self) -> list[Path]:
+        return list(self._allowed_roots)
+
+    def add_allowed_root(self, root: Path) -> None:
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        resolved = _Path(root)
+        if any(resolved == r or r in resolved.parents for r in self._allowed_roots):
+            return
+        self._allowed_roots.append(resolved)
 
     @property
     def index(self) -> MCPResourceIndex:
@@ -125,26 +138,35 @@ class MCPFileBackend:
     def _to_wire(self, path: Path) -> str:
         return str(self._posix(path))
 
+    def _canonical(self, path: Path) -> Path:
+        """
+        Canonical key for read_file_state / write tracking.
+
+        MCP paths live in the server's address space — there are no
+        symlinks to follow client-side. We normalize via PurePosixPath
+        (collapses ``./``, ``../``, trailing slashes) and rebuild in the
+        caller's Path flavor so two equivalent paths from different
+        callers (e.g. ``Read`` post-validate_path vs. ``MemoryProvider``
+        loading the snapshot) hash to the same entry.
+        """
+        return type(path)(str(self._posix(path)))
+
     # ---- FileBackend protocol ------------------------------------------------
 
     async def validate_path(
         self,
         path: Path,
-        allowed_roots: list[Path],
         *,
         must_exist: bool,
-        dotfile_overrides: Iterable[Path] | None = None,
-        include_dotfiles: bool = True,
+        dotfile_overrides: set[Path] | None = None,
     ) -> Path:
-        del dotfile_overrides, include_dotfiles
+        del dotfile_overrides  # MCP defers dotfile policy to server
 
-        if not allowed_roots:
-            raise PathAccessError(
-                "No allowed_roots configured for MCP file backend."
-            )
+        if not self._allowed_roots:
+            raise PathAccessError("No allowed_roots configured for MCP file backend.")
 
         candidate = self._posix(path)
-        for root in allowed_roots:
+        for root in self._allowed_roots:
             root_posix = self._posix(root)
             if candidate == root_posix or root_posix in candidate.parents:
                 # Reconstruct in the caller's Path flavor (PosixPath /
@@ -152,10 +174,8 @@ class MCPFileBackend:
                 resolved = type(path)(str(candidate))
                 break
         else:
-            roots = ", ".join(str(r) for r in allowed_roots)
-            raise PathAccessError(
-                f"Path {path} is outside allowed roots [{roots}]"
-            )
+            roots = ", ".join(str(r) for r in self._allowed_roots)
+            raise PathAccessError(f"Path {path} is outside allowed roots [{roots}]")
 
         if must_exist and not await self.exists(resolved):
             raise PathAccessError(f"Path does not exist: {resolved}")
@@ -194,26 +214,26 @@ class MCPFileBackend:
         try:
             result = await session.read_resource(AnyUrl(uri))
         except Exception as exc:
-            raise OSError(
-                f"MCP resources/read for {uri!r} failed: {exc}"
-            ) from exc
+            raise OSError(f"MCP resources/read for {uri!r} failed: {exc}") from exc
         for content in result.contents:
             if isinstance(content, TextResourceContents):
                 meta = getattr(content, "meta", None) or {}
-                mtime_ms = (
-                    meta.get("updated_ms") if isinstance(meta, dict) else None
-                )
-                return content.text, _ms_to_seconds(mtime_ms)
-        raise OSError(
-            f"MCP resources/read for {uri!r} returned no text content."
-        )
+                mtime_ms = meta.get("mtime_ms") if isinstance(meta, dict) else None
+                mtime = _ms_to_seconds(mtime_ms)
+                return content.text, mtime
+        raise OSError(f"MCP resources/read for {uri!r} returned no text content.")
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
         content, mtime = await self.read_text(path)
         return content.encode("utf-8"), mtime
 
     async def write_bytes(
-        self, path: Path, data: bytes, *, mode: int, overwrite: bool = True
+        self,
+        path: Path,
+        data: bytes,
+        *,
+        mode: int,
+        overwrite: bool = True,
     ) -> float:
         del overwrite  # MCP servers always overwrite atomically
         result = await self._call_tool(
@@ -232,12 +252,14 @@ class MCPFileBackend:
         await self._call_tool(self._delete_tool, {"path": self._to_wire(path)})
         await self._index.refresh()
 
-    async def list_dir(
-        self, path: Path, *, recursive: bool = False
-    ) -> list[FileEntry]:
-        entries = await self._index.children_of(
-            self._posix(path), recursive=recursive
-        )
+    async def mkdir(self, path: Path) -> None:
+        # MCP resource namespaces are flat: directories are implicit and
+        # come into being when a resource is written under them. Nothing
+        # to create.
+        del path
+
+    async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
+        entries = await self._index.children_of(self._posix(path), recursive=recursive)
         return [
             FileEntry(
                 name=e.path.name,
@@ -308,9 +330,7 @@ class MCPFileBackend:
 
     # ---- Internals ----------------------------------------------------------
 
-    async def _call_tool(
-        self, tool_name: str, args: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _call_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         session = self._client.session
         try:
             result = await session.call_tool(tool_name, args)
@@ -356,7 +376,5 @@ def _parse_json_payload(content: Any, tool_name: str) -> dict[str, Any]:
             f"MCP {tool_name} returned non-JSON content: {raw[:160]!r}"
         ) from exc
     if not isinstance(parsed, dict):
-        raise OSError(
-            f"MCP {tool_name} returned non-object JSON: {raw[:160]!r}"
-        )
+        raise OSError(f"MCP {tool_name} returned non-object JSON: {raw[:160]!r}")
     return parsed

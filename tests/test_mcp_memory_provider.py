@@ -24,10 +24,9 @@ if TYPE_CHECKING:
 
 pytest.importorskip("mcp")
 
-from grasp_agents.memory import MemoryProvider  # noqa: E402
-from grasp_agents.run_context import RunContext  # noqa: E402
-from grasp_agents.tools.file_edit.mcp_backend import MCPFileBackend  # noqa: E402
-
+from grasp_agents.memory import MemoryProvider
+from grasp_agents.run_context import RunContext
+from grasp_agents.tools.file_edit.mcp_backend import MCPFileBackend
 
 MEMDIR = "/memdir"
 
@@ -77,7 +76,7 @@ class _FakeSession:
         self.read_calls: list[str] = []
         self.tool_calls: list[tuple[str, Mapping[str, Any]]] = []
 
-    async def list_resources(  # noqa: RUF029
+    async def list_resources(
         self, *, params: Any = None
     ) -> _FakeListResourcesResult:
         del params
@@ -143,18 +142,18 @@ class TestLoadOverMCP:
                     uri=topic_uri("alpha"),
                     name="alpha.md",
                     description="Alpha",
-                    meta={"updated_ms": 2000},
+                    meta={"mtime_ms": 2000},
                 ),
                 _FakeResource(
                     uri=topic_uri("beta"),
                     name="beta.md",
                     description="Beta",
-                    meta={"updated_ms": 1000},
+                    meta={"mtime_ms": 1000},
                 ),
                 _FakeResource(
                     uri=index_uri(),
                     name="MEMORY.md",
-                    meta={"updated_ms": 3000},
+                    meta={"mtime_ms": 3000},
                 ),
                 _FakeResource(uri="other://x", name="x.md"),
             ],

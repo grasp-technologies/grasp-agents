@@ -20,7 +20,9 @@ from grasp_agents.skills import (
 )
 
 
-async def _run_section(section: SystemPromptSection, ctx: RunContext[Any]) -> str | None:
+async def _run_section(
+    section: SystemPromptSection, ctx: RunContext[Any]
+) -> str | None:
     """Invoke a section's compute and resolve any awaitable return."""
     result = section.compute(ctx=ctx, exec_id="test")
     if inspect.isawaitable(result):
@@ -129,8 +131,7 @@ class TestRenderAvailableSkillsBlock:
             [_skill("alpha", "Use when <tag> & similar markup")]
         )
         expected = (
-            "<description>Use when &lt;tag&gt; &amp; "
-            "similar markup</description>"
+            "<description>Use when &lt;tag&gt; &amp; similar markup</description>"
         )
         assert expected in block
         # The actual XML wrapper tags must remain intact.
@@ -158,9 +159,7 @@ class TestRenderAvailableSkillsBlock:
         assert "<allowed-tools>" not in block
 
     def test_license_omitted_by_default(self) -> None:
-        block = render_available_skills_block(
-            [_skill("alpha", "x", license_="MIT")]
-        )
+        block = render_available_skills_block([_skill("alpha", "x", license_="MIT")])
         assert "<license>" not in block
 
     def test_license_surfaced_with_include_license(self) -> None:
@@ -196,12 +195,14 @@ class TestRenderSkillInstructions:
         # longer carries the load hint itself.
         assert "load_skill" in text
 
-    def test_distinguishes_skills_from_memory_and_tasks(self) -> None:
+    def test_distinguishes_skills_from_memory(self) -> None:
         text = render_skill_instructions()
-        # Persistence-comparison block guards against the agent reaching
-        # for skills when it should reach for memory / a plan / tasks.
+        # The "Skills vs memory" block guards against the agent reaching
+        # for skills when it should reach for memory. Plans / tasks are
+        # deliberately not referenced — those subsystems don't exist yet.
         assert "memory" in text.lower()
-        assert "tasks" in text.lower()
+        assert "plan" not in text.lower()
+        assert "tasks" not in text.lower()
 
 
 class TestMakeSkillsSection:

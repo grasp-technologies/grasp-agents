@@ -22,16 +22,18 @@ Usage::
 
     from grasp_agents import LLMAgent
     from grasp_agents.memory import (
-        FileMemoryProvider,
+        MemoryProvider,
         make_llm_relevance_selector,
     )
+    from grasp_agents.tools.file_edit import LocalFileBackend
 
     selector_llm = OpenAILLM(model="gpt-4o-mini")
-    memory = FileMemoryProvider()
+    memory = MemoryProvider(root="/path/to/memdir")
     memory.set_selector(make_llm_relevance_selector(selector_llm))
 
+    backend = LocalFileBackend(allowed_roots=[memory.root])
     agent = LLMAgent(...)
-    ctx = RunContext(state=..., memory=memory)
+    ctx = RunContext(state=..., file_backend=backend, memory=memory)
     await agent.run(..., ctx=ctx)
 """
 
@@ -39,7 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -77,9 +79,6 @@ answering or acting on the query. Be conservative — only include
 memories you are confident will help, based on their description and
 type. Up to {max_select} selections; fewer is better when the query is
 narrow. If nothing is clearly relevant, return an empty list.
-
-Do not include the memory bodies — you only have descriptions to work
-from. If a description is ambiguous, omit the memory.
 """
 
 
@@ -92,11 +91,6 @@ class _MemorySelectionResult(BaseModel):
 def format_manifest(entries: Iterable[MemoryEntry]) -> str:
     """
     Render a manifest line per entry — type, filename, timestamp, description.
-
-    Mirrors Claude Code's ``formatMemoryManifest`` shape:
-    ``- [type] name.md (TS): description``. Sort the entries before
-    calling if you need a particular order (the snapshot already sorts
-    newest-first).
     """
     lines: list[str] = []
     for e in entries:
@@ -104,6 +98,7 @@ def format_manifest(entries: Iterable[MemoryEntry]) -> str:
         ts = _format_mtime(e.mtime_ms)
         ts_part = f" ({ts})" if ts else ""
         lines.append(f"- {type_tag} {e.name}.md{ts_part}: {e.description}")
+
     return "\n".join(lines)
 
 
@@ -132,11 +127,10 @@ def make_llm_relevance_selector(
     """
     Build a relevance selector that asks ``llm`` which memories to surface.
 
-    Modeled on Claude Code's ``findRelevantMemories``. Per call: small
-    system prompt + a single user message with the latest query and a
-    metadata-only manifest, capped at ~256 output tokens via JSON
-    schema. No conversation history is sent — only the most recent
-    user message.
+    Per call: small system prompt + a single user message with the latest
+    query and a metadata-only manifest, capped at ~256 output tokens via
+    JSON schema. No conversation history is sent — only the most recent user
+    message.
 
     Args:
         llm: The selector LLM. A small/cheap model is appropriate
@@ -201,6 +195,7 @@ def make_llm_relevance_selector(
             entry = by_name.get(base)
             if entry is not None and entry not in picked:
                 picked.append(entry)
+
         return tuple(picked)
 
     return select
@@ -213,7 +208,7 @@ def _format_mtime(mtime_ms: int) -> str:
     if mtime_ms <= 0:
         return ""
     return (
-        datetime.fromtimestamp(mtime_ms / 1000, tz=timezone.utc)
+        datetime.fromtimestamp(mtime_ms / 1000, tz=UTC)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")

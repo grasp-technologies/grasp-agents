@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -74,7 +74,7 @@ class _FakeLLM:
 
 class TestFormatManifest:
     def test_includes_type_filename_ts_description(self) -> None:
-        ts_ms = int(datetime(2025, 1, 15, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        ts_ms = int(datetime(2025, 1, 15, 12, 0, tzinfo=UTC).timestamp() * 1000)
         out = format_manifest([_entry("alpha", mtime_ms=ts_ms, type_="user")])
         assert "[user]" in out
         assert "alpha.md" in out
@@ -255,7 +255,7 @@ async def test_per_entry_staleness_warning_surfaced() -> None:
 
     # Build a provider with one stale entry (mtime far in the past).
     stale_ms = int(
-        (datetime.now(timezone.utc) - timedelta(days=30)).timestamp() * 1000
+        (datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000
     )
     entry = _entry("stale_topic", mtime_ms=stale_ms, type_="reference")
     provider = InMemoryMemoryProvider(entries=[entry])

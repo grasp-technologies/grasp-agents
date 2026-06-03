@@ -64,11 +64,11 @@ class TestEnableMemory:
         )
         names = {s.name for s in agent.system_prompt_sections}
         assert "memory" not in names
-        # And no memory_relevance attachment either.
+        # And no relevant_memories attachment either.
         attachment_names = [
             a.name for a in agent._prompt_builder.input_attachments  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         ]
-        assert "memory_relevance" not in attachment_names
+        assert "relevant_memories" not in attachment_names
 
     def test_env_info_off(self) -> None:
         agent = _make_agent(env_info=False)

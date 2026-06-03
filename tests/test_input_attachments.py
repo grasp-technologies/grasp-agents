@@ -1,4 +1,4 @@
-"""Tests for the InputAttachment seam + memory_relevance_attachment."""
+"""Tests for the InputAttachment seam + relevant_memories_attachment."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ from grasp_agents.agent.prompt_builder import (
     PromptBuilder,
 )
 from grasp_agents.memory import (
-    MEMORY_RELEVANCE_ATTACHMENT_NAME,
+    RELEVANT_MEMORIES_ATTACHMENT_NAME,
     InMemoryMemoryProvider,
     MemoryEntry,
     MemoryFrontmatter,
-    memory_relevance_attachment,
+    relevant_memories_attachment,
 )
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import InputImage, InputText
@@ -189,14 +189,14 @@ class TestApplyInputAttachments:
         assert b.input_attachments[0] is second
 
 
-# ---------- memory_relevance_attachment ----------
+# ---------- relevant_memories_attachment ----------
 
 
 class TestMemoryRelevanceAttachment:
     @pytest.mark.anyio
     async def test_no_provider_returns_none(self) -> None:
         ctx: RunContext[_State] = RunContext(state=_State())
-        result = await memory_relevance_attachment.compute(
+        result = await relevant_memories_attachment.compute(
             user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is None
@@ -207,7 +207,7 @@ class TestMemoryRelevanceAttachment:
             entries=[_entry("alpha", "Alpha", "body", tmp_path / "alpha.md")]
         )
         ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
-        result = await memory_relevance_attachment.compute(
+        result = await relevant_memories_attachment.compute(
             user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is None
@@ -227,7 +227,7 @@ class TestMemoryRelevanceAttachment:
 
         provider.set_selector(keep_alpha)
         ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
-        result = await memory_relevance_attachment.compute(
+        result = await relevant_memories_attachment.compute(
             user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is not None
@@ -248,13 +248,13 @@ class TestMemoryRelevanceAttachment:
 
         provider.set_selector(empty)
         ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
-        result = await memory_relevance_attachment.compute(
+        result = await relevant_memories_attachment.compute(
             user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is None
 
 
-# ---------- LLMAgent auto-registers memory_relevance_attachment ----------
+# ---------- LLMAgent auto-registers relevant_memories_attachment ----------
 
 
 class TestLLMAgentAutoRegisters:
@@ -270,7 +270,7 @@ class TestLLMAgentAutoRegisters:
             a.name
             for a in agent._prompt_builder.input_attachments  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         ]
-        assert MEMORY_RELEVANCE_ATTACHMENT_NAME in names
+        assert RELEVANT_MEMORIES_ATTACHMENT_NAME in names
 
     def test_attachment_not_registered_by_default(self) -> None:
         agent = LLMAgent[str, str, _State](
@@ -283,4 +283,4 @@ class TestLLMAgentAutoRegisters:
             a.name
             for a in agent._prompt_builder.input_attachments  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         ]
-        assert MEMORY_RELEVANCE_ATTACHMENT_NAME not in names
+        assert RELEVANT_MEMORIES_ATTACHMENT_NAME not in names

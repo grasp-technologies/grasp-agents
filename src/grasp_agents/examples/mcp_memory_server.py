@@ -3,19 +3,21 @@ Example MCP server backing a memdir on disk with the file-tool protocol.
 
 Two surfaces:
 
-* **Resources** — one per file under ``<root>``, with URI ``file://<absolute-path>``.
-  The MCP-native read path. ``MEMORY.md`` is exposed alongside topic ``.md``
-  files; the resource ``_meta`` field carries ``updated_ms`` (and ``type``
-  for typed memories) so :class:`MCPMemoryProvider` can build its snapshot
-  in one ``resources/list`` call.
+* **Resources** — one per file under ``<root>``, with URI
+  ``file://<absolute-path>``. The MCP-native read path. ``MEMORY.md``
+  is exposed alongside topic ``.md`` files; the resource ``_meta``
+  field carries ``mtime_ms`` (and ``type`` for typed memories) so
+  :class:`MCPFileBackend` can build / refresh its cached index in one
+  ``resources/list`` call. Reads use this surface exclusively,
+  including stat / list_dir / find_files metadata — the backend
+  derives those from the cached resource index.
 
-* **Tools** — ``write_file``, ``stat_file``, ``delete_file``, ``list_dir``
-  matching the protocol that :class:`MCPFileBackend` consumes. The agent
-  reads via resources but writes / inspects via tools (resources are
-  read-only by spec).
+* **Tools** — ``write_file`` and ``delete_file`` only. Resources are
+  read-only by spec, so mutations need a tool surface. Anything else
+  (stat, list, glob) is served by the resource index.
 
-This is the reference implementation: a Postgres-backed or remote server
-implementing the same tool / resource surface would be drop-in compatible.
+This is the reference implementation: a remote or DB-backed server
+exposing the same surface would be drop-in compatible.
 
 Run::
 
@@ -66,7 +68,15 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     )
     if match is None:
         return {}, text
-    raw_fm = yaml.safe_load(match.group(1)) or {}
+    # Tolerate malformed YAML — the agent may have written a file
+    # mid-session whose frontmatter doesn't round-trip through
+    # ``yaml.safe_load`` (e.g. an unquoted value containing colons).
+    # ``list_resources`` runs over every ``.md`` in the memdir, so one
+    # broken file shouldn't poison the whole index.
+    try:
+        raw_fm = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        raw_fm = {}
     if not isinstance(raw_fm, dict):
         raw_fm = {}
     return raw_fm, match.group(2)
@@ -118,7 +128,7 @@ def _build_resources(root: Path) -> list[Resource]:
                 name=INDEX_FILE_NAME,
                 description="MEMORY.md — the always-loaded memory index.",
                 mimeType="text/markdown",
-                _meta={"updated_ms": mtime_ms},
+                _meta={"mtime_ms": mtime_ms},
             )
         )
     for path in _list_topic_files(root):
@@ -129,7 +139,7 @@ def _build_resources(root: Path) -> list[Resource]:
         name = str(fm.get("name") or path.stem)
         description = str(fm.get("description") or name)
         mtime_ms = int(path.stat().st_mtime * 1000)
-        meta: dict[str, Any] = {"updated_ms": mtime_ms}
+        meta: dict[str, Any] = {"mtime_ms": mtime_ms}
         if fm.get("type") in ALLOWED_TYPES:
             meta["type"] = fm["type"]
         resources.append(
@@ -159,12 +169,13 @@ def _read_resource_contents(root: Path, uri: AnyUrl) -> ReadResourceContents:
     return ReadResourceContents(
         content=text,
         mime_type="text/markdown",
-        meta={"updated_ms": mtime_ms},
+        meta={"mtime_ms": mtime_ms},
     )
 
 
 # ---------------------------------------------------------------------------
-# File-tool surface (write, stat, delete, list_dir)
+# File-tool surface (write, delete) — mutations only.
+# Reads (stat / list / find) are served by the resource surface.
 # ---------------------------------------------------------------------------
 
 
@@ -180,23 +191,6 @@ def _tool_write_file(
     return {"mtime_ms": mtime_ms}
 
 
-def _tool_stat_file(root: Path, *, path: str) -> dict[str, Any]:
-    try:
-        resolved = _resolve_under_root(root, path)
-    except ValueError:
-        return {"exists": False}
-    if not resolved.exists():
-        return {"exists": False}
-    st = resolved.stat()
-    return {
-        "exists": True,
-        "mtime_ms": int(st.st_mtime * 1000),
-        "mode": st.st_mode & 0o7777,
-        "is_dir": resolved.is_dir(),
-        "size": st.st_size,
-    }
-
-
 def _tool_delete_file(root: Path, *, path: str) -> dict[str, Any]:
     resolved = _resolve_under_root(root, path)
     if not resolved.exists():
@@ -204,32 +198,6 @@ def _tool_delete_file(root: Path, *, path: str) -> dict[str, Any]:
         raise FileNotFoundError(msg)
     resolved.unlink()
     return {}
-
-
-def _tool_list_dir(
-    root: Path, *, path: str, recursive: bool = False
-) -> dict[str, Any]:
-    resolved = _resolve_under_root(root, path)
-    if not resolved.is_dir():
-        msg = f"Not a directory: {path!r}"
-        raise NotADirectoryError(msg)
-
-    entries: list[dict[str, Any]] = []
-    paths_iter = resolved.rglob("*") if recursive else resolved.iterdir()
-    for p in paths_iter:
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        entries.append(
-            {
-                "name": p.name,
-                "path": str(p),
-                "is_dir": p.is_dir(),
-                "mtime_ms": int(st.st_mtime * 1000),
-            }
-        )
-    return {"entries": entries}
 
 
 # ---------------------------------------------------------------------------
@@ -270,40 +238,11 @@ def build_server(root: Path) -> Server:
                 },
             ),
             Tool(
-                name="stat_file",
-                description=(
-                    "Return file metadata: {exists, mtime_ms?, mode?, "
-                    "is_dir?, size?}. ``exists`` is false for missing paths."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            ),
-            Tool(
                 name="delete_file",
                 description="Remove a file. Errors when no file exists at the path.",
                 inputSchema={
                     "type": "object",
                     "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            ),
-            Tool(
-                name="list_dir",
-                description=(
-                    "List a directory. ``recursive`` defaults to false. "
-                    "Returns {entries: [{name, path, is_dir, mtime_ms}]}."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "recursive": {"type": "boolean"},
-                    },
                     "required": ["path"],
                     "additionalProperties": False,
                 },
@@ -321,16 +260,8 @@ def build_server(root: Path) -> Server:
                 content=arguments["content"],
                 mode=arguments.get("mode"),
             )
-        elif name == "stat_file":
-            result = _tool_stat_file(root, path=arguments["path"])
         elif name == "delete_file":
             result = _tool_delete_file(root, path=arguments["path"])
-        elif name == "list_dir":
-            result = _tool_list_dir(
-                root,
-                path=arguments["path"],
-                recursive=bool(arguments.get("recursive", False)),
-            )
         else:
             msg = f"Unknown tool: {name!r}"
             raise ValueError(msg)

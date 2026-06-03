@@ -55,7 +55,7 @@ class ResourceEntry:
     path: PurePosixPath  # POSIX form for cross-platform comparison
     name: str
     description: str | None
-    mtime_ms: int  # 0 if the server didn't ship ``meta.updated_ms``
+    mtime_ms: int  # 0 if the server didn't ship ``meta.mtime_ms``
     size: int  # ``-1`` if unset
     mime_type: str | None
     is_dir: bool  # ``True`` for resources flagged as directories
@@ -189,7 +189,7 @@ def _entry_from_resource(uri: str, resource: Resource, scheme: str) -> ResourceE
     """Build a :class:`ResourceEntry` from an MCP resource block."""
     meta: dict[str, Any] = dict(resource.meta) if resource.meta else {}
 
-    raw_mtime = meta.get("updated_ms", 0)
+    raw_mtime = meta.get("mtime_ms", 0)
     try:
         mtime_ms = int(raw_mtime)
     except (TypeError, ValueError):

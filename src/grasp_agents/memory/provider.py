@@ -1,21 +1,27 @@
 """
-:class:`MemoryProvider` ABC + in-memory fixture + snapshot helpers.
+Unified :class:`MemoryProvider` — frontmatter-aware view of a memdir
+routed through :attr:`RunContext.file_backend`.
 
-Filesystem- and MCP-backed implementations live in dedicated modules
-(:mod:`.file_provider`, :mod:`.mcp_provider`) — this module stays
-backend-agnostic so it can be imported anywhere without pulling in
-``asyncio``-backed file I/O or the optional ``mcp`` extra.
+The provider knows the memdir layout (``MEMORY.md`` as index, ``.md``
+topic files with YAML frontmatter, freshness from mtime); the
+:class:`FileBackend` knows how to fetch bytes. Locally the backend
+walks the filesystem; over MCP it walks an :class:`MCPResourceIndex`.
+The provider is identical across the two.
+
+For tests / notebooks that don't want any I/O,
+:class:`InMemoryMemoryProvider` returns a fixed snapshot.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from grasp_agents.tools.file_edit.agent_state import get_current_file_edit_state
 from grasp_agents.types.selector import Selector
 
 from .types import DEFAULT_STALE_AFTER
@@ -25,6 +31,8 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from grasp_agents.run_context import RunContext
+    from grasp_agents.tools.file_edit.backend import FileBackend
+    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.items import InputItem
 
     from .types import MemoryEntry
@@ -35,15 +43,19 @@ MemorySelector: TypeAlias = Selector["MemoryEntry"]
 
 logger = logging.getLogger(__name__)
 
+# Stub written when ``auto_create_index`` is on and ``MEMORY.md`` is absent —
+# just a heading the agent can append topic pointers under.
+DEFAULT_INDEX_CONTENT = "# Memory\n"
+
 
 @dataclass(frozen=True)
 class MemorySnapshot:
     """
-    Frozen-snapshot of a memdir loaded once per session.
+    Frozen snapshot of a memdir loaded once per session.
 
     ``index`` is the always-loaded ``MEMORY.md`` content (line/byte-capped).
     ``entries`` carries every parsed topic file; the relevance selector
-    consumed by :data:`memory_relevance_attachment` filters this list per
+    consumed by :data:`relevant_memories_attachment` filters this list per
     turn.
 
     Freshness strings are pre-computed at snapshot-creation time so the
@@ -72,101 +84,151 @@ class MemorySnapshot:
         return None
 
 
-class MemoryProvider(ABC):
+class MemoryProvider:
     """
-    Cross-session memory loader. One instance per session/agent setup.
+    Cross-session memory loader over :attr:`RunContext.file_backend`.
 
-    The provider is **read-shaped** — it surfaces the memdir snapshot to the
-    system-prompt section and per-turn relevance attachment, but does NOT
-    expose write / delete tools of its own. Authoring goes through the
-    generic file-edit tools rooted at the memdir.
+    The provider is **read-shaped** — it surfaces the memdir snapshot to
+    the system-prompt section and per-turn relevance attachment, but does
+    NOT expose write / delete tools of its own. Authoring goes through
+    the generic file-edit tools rooted at the memdir.
 
-    Carries an optional relevance selector (:meth:`set_selector`) consumed
-    by per-turn user-message attachments (e.g. the memory_relevance
-    attachment) to pick which topic memories are surfaced into the running
-    conversation. The system-prompt section does NOT consult the selector
-    — it stays cache-stable across turns. Default = identity (return every
-    entry).
+    Args:
+        root: Address of the memdir in the *backend's* address space.
+            Defaults to :func:`default_memdir_path` (host filesystem layout).
+            For MCP backends, pass the server-side path (e.g.
+            ``Path("/memdir")``).
+        stale_after: Age threshold past which a per-entry freshness
+            warning is computed at snapshot time.
+        auto_create_index: When True (default) and ``MEMORY.md`` is absent,
+            bootstrap an empty index (creating the memdir if needed) on first
+            load so the agent has a file to append topic pointers to. Best-
+            effort: silently falls back to no index if the backend can't
+            write (read-only / no write path). Set False for read-only memdirs.
+
+    Carries an optional relevance selector (:meth:`set_selector`)
+    consumed by per-turn user-message attachments (e.g. the
+    :data:`relevant_memories_attachment`) to pick which topic memories are
+    surfaced into the running conversation. The system-prompt section
+    does NOT consult the selector — it stays cache-stable across turns.
+    Default = identity (return every entry).
+
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        root: Path | str | None = None,
+        *,
+        backend: FileBackend | None = None,
+        stale_after: timedelta = DEFAULT_STALE_AFTER,
+        auto_create_index: bool = True,
+    ) -> None:
+        self._root: Path = (
+            Path(root).expanduser() if root is not None else default_memdir_path()
+        )
+        self._backend: FileBackend | None = backend
+        self._stale_after = stale_after
+        self._auto_create_index = auto_create_index
+        self._cached: MemorySnapshot | None = None
+        self._lock = asyncio.Lock()
         self._selector: MemorySelector | None = None
 
     @property
     def root(self) -> Path:
+        return self._root
+
+    def bind_backend(self, backend: FileBackend) -> None:
         """
-        Address of the memdir in the *backend's* address space.
-
-        Local-FS backends return a host :class:`pathlib.Path`; MCP-backed
-        providers return the path the server uses (e.g. ``/memdir``).
-        Consumed by :meth:`make_file_toolkit` and by the memory
-        system-prompt section so the agent knows where to author.
+        Bind a :class:`FileBackend` after construction. Called by the
+        :class:`RunContext` validator so users don't have to thread the
+        backend explicitly into the provider's ctor.
         """
-        return Path()
+        self._backend = backend
 
-    def make_file_toolkit(self, **kwargs: Any) -> Any:
+    async def load(self) -> MemorySnapshot:
         """
-        Construct a :class:`FileEditToolkit` rooted at this provider's
-        memdir.
+        Return a frozen memdir snapshot. Cached after the first call.
 
-        Convenience helper for the common pattern of wiring the file
-        toolkit and the memory provider together. Override on subclasses
-        that need a non-default :class:`FileBackend` (see
-        :class:`MCPMemoryProvider.make_file_toolkit`).
+        Requires a :class:`FileBackend` to be bound (via ctor or
+        :meth:`bind_backend`). The :class:`RunContext` validator binds
+        the backend automatically when the memory provider is wired onto
+        a context.
         """
-        from grasp_agents.tools.file_edit import FileEditToolkit  # noqa: PLC0415
+        if self._cached is not None:
+            return self._cached
+        if self._backend is None:
+            raise ValueError(
+                "MemoryProvider.load requires a FileBackend. Bind one via "
+                "the ctor or attach the provider to a RunContext with "
+                "file_backend wired — the RunContext validator binds the "
+                "backend onto the provider automatically."
+            )
+        async with self._lock:
+            if self._cached is None:
+                self._cached = await self._load_via_backend(self._backend)
+            return self._cached
 
-        return FileEditToolkit(allowed_roots=[self.root], **kwargs)
+    async def refresh(self) -> None:
+        """Invalidate any cached snapshot."""
+        async with self._lock:
+            self._cached = None
 
-    @abstractmethod
-    async def load(
-        self, *, session_id: str = "", ctx: RunContext[Any] | None = None
-    ) -> MemorySnapshot:
-        """Return a frozen memdir snapshot. Implementations should cache."""
-
-    async def fetch_body(self, name: str, *, ctx: RunContext[Any] | None = None) -> str:
+    async def fetch_body(self, name: str) -> str:
         """
         Return the full body of memory ``name``.
 
-        Default implementation reads from the cached snapshot. Lazy backends
-        (e.g. :class:`MCPMemoryProvider`) override this to fetch on demand.
-        Raises :class:`MemoryNotFoundError` when the entry doesn't exist or
-        carries no body.
+        If a path and backend are available, re-read fresh through the
+        backend so mid-session edits are visible. Otherwise fall back to
+        the body cached on the snapshot (in-memory providers always take
+        this path).
         """
+        from .loader import parse_memory_md  # noqa: PLC0415
         from .types import MemoryNotFoundError  # noqa: PLC0415
 
-        snapshot = await self.load(ctx=ctx)
+        snapshot = await self.load()
         entry = snapshot.get(name)
         if entry is None:
             raise MemoryNotFoundError(f"Topic memory {name!r} is not available.")
-        if entry.body is None:
+
+        no_backend = entry.path is None or self._backend is None
+        if no_backend:
+            if entry.body is None:
+                raise MemoryNotFoundError(
+                    f"Topic memory {name!r} has no body available."
+                )
+            return entry.body
+
+        assert entry.path is not None  # narrowed by no_backend above
+        assert self._backend is not None
+
+        try:
+            text, mtime = await self._backend.read_text(entry.path)
+        except (OSError, ValueError) as exc:
             raise MemoryNotFoundError(
-                f"Topic memory {name!r} has no body available; "
-                f"override fetch_body() on {type(self).__name__}."
-            )
+                f"Topic memory {name!r} could not be read: {exc}"
+            ) from exc
 
-        return entry.body
+        active_state = get_current_file_edit_state()
+        if active_state is not None:
+            active_state.record_read(entry.path, mtime)
 
-    async def render_index(self, *, ctx: RunContext[Any] | None = None) -> str | None:
-        """
-        Return the ``MEMORY.md`` index text (already line/byte-capped).
+        try:
+            _, body = parse_memory_md(text, path=entry.path)
+        except Exception:
+            return entry.body or ""
 
-        Default implementation reads from the cached snapshot. Lazy backends
-        override this to fetch the index resource on demand.
-        """
-        snapshot = await self.load(ctx=ctx)
+        return body
 
+    async def render_index(self) -> str | None:
+        """Return the cached ``MEMORY.md`` index text (line/byte-capped)."""
+        snapshot = await self.load()
         return snapshot.index
-
-    async def refresh(self) -> None:
-        """Invalidate any cached snapshot. Default no-op."""
-        return
 
     # ---- Catalog selector ----------------------------------------------------
 
     def set_selector(self, fn: MemorySelector | None) -> None:
         """
-        Register a relevance selector consulted by the catalog renderer.
+        Register a relevance selector consulted by the per-turn attachment.
 
         See :class:`Selector` for the call shape. Pass ``None`` to clear.
         """
@@ -184,7 +246,13 @@ class MemoryProvider(ABC):
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
     ) -> tuple[MemoryEntry, ...]:
-        """Run the selector (if any) and return the resulting entries."""
+        """
+        Run the selector (if any) and return the resulting entries.
+
+        ``ctx`` is passed through to the user-provided selector (which is
+        a :class:`Selector` keyed off the active session). The provider
+        itself does not consume it.
+        """
         if self._selector is None:
             return snapshot.entries
         result = self._selector(
@@ -198,6 +266,153 @@ class MemoryProvider(ABC):
 
         return tuple(result)
 
+    # ---- Internals -----------------------------------------------------------
+
+    async def _load_via_backend(self, backend: FileBackend) -> MemorySnapshot:
+        """
+        Walk ``self._root`` via ``backend`` and return a frozen snapshot.
+
+        Filters out hidden dirs / non-``.md`` files; reads each topic
+        file via ``backend.read_text`` and parses its frontmatter; the
+        index is read separately. Returns an empty snapshot if the root
+        doesn't exist on the backend.
+
+        The index read is recorded into the active agent's
+        :class:`FileEditSessionState` (it's always in the prompt, so the
+        agent may ``Edit`` it without a redundant ``Read``). Topic-file
+        reads are NOT recorded here — only their body, when surfaced via
+        :meth:`fetch_body`, is.
+        """
+        from .loader import parse_memory_md, truncate_index  # noqa: PLC0415
+        from .types import (  # noqa: PLC0415
+            INDEX_FILE_NAME,
+            MAX_MEMORY_FILES,
+            MemoryEntry,
+            MemoryFormatError,
+        )
+
+        active_state = get_current_file_edit_state()
+
+        root = self._root
+        index_text: str | None = None
+        index_mtime_ms: int | None = None
+        index_truncated = False
+        index_path = root / INDEX_FILE_NAME
+        # Read the index if present. MCP backends have no real
+        # directory entries, so a ``backend.exists(root)`` gate would
+        # short-circuit empty memdirs; instead we just probe the index
+        # file directly and tolerate its absence.
+        if await backend.exists(index_path):
+            try:
+                raw, mtime = await backend.read_text(index_path)
+                index_text, index_truncated = truncate_index(raw)
+                index_mtime_ms = int(mtime * 1000)
+                if active_state is not None:
+                    active_state.record_read(index_path, mtime)
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "MemoryProvider: failed to read index at %s: %s",
+                    index_path,
+                    exc,
+                )
+        elif self._auto_create_index:
+            index_text, index_mtime_ms = await self._create_index(
+                backend, index_path, active_state
+            )
+
+        try:
+            entries_listing = await backend.list_dir(root, recursive=True)
+        except (OSError, ValueError) as exc:
+            logger.warning("MemoryProvider: failed to list memdir %s: %s", root, exc)
+            entries_listing = []
+        entries: list[MemoryEntry] = []
+        for entry in entries_listing:
+            if entry.is_dir:
+                continue
+            if not entry.name.endswith(".md"):
+                continue
+            if entry.name == INDEX_FILE_NAME:
+                continue
+            try:
+                rel = entry.path.relative_to(root)
+            except ValueError:
+                continue
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            try:
+                text, mtime = await backend.read_text(entry.path)
+            except (OSError, ValueError) as exc:
+                logger.warning("MemoryProvider: failed to read %s: %s", entry.path, exc)
+                continue
+            # NB: no ``record_read`` for topic files here. Only their
+            # ``name``/``description`` reach the prompt (via the index);
+            # the body is surfaced — and the read recorded — in
+            # :meth:`fetch_body` when the per-turn attachment pulls it.
+            # Pre-recording every body would let the agent ``Edit`` a
+            # file it never actually saw, defeating read-before-write.
+            try:
+                frontmatter, body = parse_memory_md(text, path=entry.path)
+            except MemoryFormatError:
+                logger.exception("Failed to load memory at %s", entry.path)
+                continue
+            entries.append(
+                MemoryEntry(
+                    frontmatter=frontmatter,
+                    body=body,
+                    path=entry.path,
+                    mtime_ms=int(mtime * 1000),
+                )
+            )
+
+        entries.sort(key=lambda e: e.mtime_ms, reverse=True)
+        if len(entries) > MAX_MEMORY_FILES:
+            entries = entries[:MAX_MEMORY_FILES]
+
+        return build_snapshot(
+            root=root,
+            index=index_text,
+            index_mtime_ms=index_mtime_ms,
+            entries=entries,
+            stale_after=self._stale_after,
+            index_truncated=index_truncated,
+        )
+
+    async def _create_index(
+        self,
+        backend: FileBackend,
+        index_path: Path,
+        active_state: FileEditSessionState | None,
+    ) -> tuple[str | None, int | None]:
+        """
+        Bootstrap an empty ``MEMORY.md`` so the always-loaded index exists.
+
+        Best-effort: if the backend can't create the memdir or write the
+        file (read-only, no write path, etc.), log and fall back to no index
+        — auto-creation must never break loading. Returns
+        ``(index_text, index_mtime_ms)``.
+        """
+        try:
+            await backend.mkdir(self._root)
+            resolved = await backend.validate_path(index_path, must_exist=False)
+            mtime = await backend.write_bytes(
+                resolved,
+                DEFAULT_INDEX_CONTENT.encode("utf-8"),
+                mode=0o644,
+                overwrite=False,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "MemoryProvider: could not auto-create index at %s: %s",
+                index_path,
+                exc,
+            )
+            return None, None
+
+        if active_state is not None:
+            active_state.record_read(resolved, mtime)
+        logger.info("MemoryProvider: created empty memory index at %s", index_path)
+        return DEFAULT_INDEX_CONTENT, int(mtime * 1000)
+
 
 class InMemoryMemoryProvider(MemoryProvider):
     """In-memory backend; useful for tests and notebooks."""
@@ -209,8 +424,15 @@ class InMemoryMemoryProvider(MemoryProvider):
         entries: Sequence[MemoryEntry] = (),
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> None:
-        super().__init__()
+        # Bypass MemoryProvider's default-memdir resolution; nothing on
+        # disk is touched and the snapshot is provided up-front.
+        self._root: Path = Path()
+        self._backend = None
         self._stale_after = stale_after
+        self._auto_create_index = False
+        self._cached: MemorySnapshot | None = None
+        self._lock = asyncio.Lock()
+        self._selector: MemorySelector | None = None
         self._snapshot = build_snapshot(
             root=None,
             index=index,
@@ -219,10 +441,7 @@ class InMemoryMemoryProvider(MemoryProvider):
             stale_after=stale_after,
         )
 
-    async def load(
-        self, *, session_id: str = "", ctx: RunContext[Any] | None = None
-    ) -> MemorySnapshot:
-        del session_id, ctx
+    async def load(self) -> MemorySnapshot:
         return self._snapshot
 
 
@@ -282,16 +501,14 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-# Re-export the filesystem-backed provider + default-path resolver from
-# this module so existing imports (``from grasp_agents.memory.provider
-# import FileMemoryProvider``) keep working. New code should import
-# from :mod:`.file_provider` directly.
-from .file_provider import (  # noqa: E402  re-export for back-compat
+# Re-export the default-path resolver + memdir-name constants for the
+# common case where the host wants the standard memdir layout but the
+# provider doesn't manage filesystem I/O itself.
+from .default_path import (  # noqa: E402  re-export for back-compat
     GRASP_HOME_DIR_NAME,
     GRASP_MEMORY_ENV,
     MEMDIR_DIR_NAME,
     PROJECTS_DIR_NAME,
-    FileMemoryProvider,
     default_memdir_path,
 )
 
@@ -301,7 +518,6 @@ __all__ = [
     "GRASP_MEMORY_ENV",
     "MEMDIR_DIR_NAME",
     "PROJECTS_DIR_NAME",
-    "FileMemoryProvider",
     "InMemoryMemoryProvider",
     "MemoryProvider",
     "MemorySelector",
