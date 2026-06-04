@@ -15,10 +15,10 @@ Confinement: ``"none"`` is a plain subprocess with **no** OS isolation (see
 :class:`LocalExecBackend`); ``"seatbelt"`` (macOS) wraps every command in a
 generated Seatbelt profile confining writes + spawned processes (see
 :class:`~grasp_agents.sandbox.seatbelt.SeatbeltExecBackend`); ``"auto"`` selects
-Seatbelt on macOS; ``"bwrap"`` (Linux) is not built yet. Under ``"none"``,
-``readonly_roots`` are readable but not write-protected and ``network`` is
-recorded-not-enforced; Seatbelt OS-denies writes outside ``allowed_roots`` and
-enforces ``network`` (``NONE`` / ``ALL``).
+Seatbelt on macOS; ``"bwrap"`` (Linux) is not built yet. ``readonly_roots`` are
+write-denied on the file-tool plane under every confinement; on the exec plane
+only Seatbelt OS-denies them (under ``"none"`` shell commands can still write
+there, and ``network`` is recorded-not-enforced).
 """
 
 from __future__ import annotations
@@ -107,10 +107,10 @@ def local_environment(
     Args:
         allowed_roots: Read+write address space. The first entry is the
             default working directory for commands.
-        readonly_roots: Additional readable locations. Under ``"none"`` they
-            are readable but not write-protected (no OS enforcement); under
-            Seatbelt, writes to them are OS-denied (they are not in the
-            writable root set).
+        readonly_roots: Additional readable locations. The file tools deny
+            writes to them under every confinement; on the exec plane they
+            are OS-write-denied under Seatbelt (not in the writable root
+            set) but unprotected under ``"none"``.
         deny_read: Carve unreadable regions out of the readable space.
         allow_read: Re-allow reads within ``deny_read`` regions (allow wins).
         deny_write: Carve write-protected regions out of ``allowed_roots``
@@ -161,7 +161,8 @@ def local_environment(
     )
 
     file_backend = LocalFileBackend(
-        allowed_roots=[*roots, *ro],
+        allowed_roots=list(roots),
+        readonly_roots=list(ro),
         include_dotfiles=include_dotfile_denylist,
         deny_read=list(dr),
         allow_read=list(ar),

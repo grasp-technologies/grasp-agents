@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import stat
-from pathlib import Path  # noqa: TC003 — used at runtime (Path() calls in tests)
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest

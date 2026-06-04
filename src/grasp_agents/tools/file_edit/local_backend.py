@@ -90,6 +90,10 @@ class LocalFileBackend(FileBackend):
     Args:
         allowed_roots: Directories the backend will accept paths under.
             Defaults to ``[Path.cwd()]``.
+        readonly_roots: Additional readable directories with writes denied
+            (``validate_path(access="write")`` refuses paths under them).
+            Equivalent to listing them in both ``allowed_roots`` and
+            ``deny_write``.
         include_dotfiles: If True (default), the sensitive-path deny list
             adds common credential-dotfile patterns (``.env``, ``~/.ssh``,
             etc.) on top of the system-path baseline.
@@ -102,6 +106,7 @@ class LocalFileBackend(FileBackend):
         self,
         *,
         allowed_roots: list[Path | str] | None = None,
+        readonly_roots: list[Path | str] | None = None,
         include_dotfiles: bool = True,
         deny_read: list[Path | str] | None = None,
         allow_read: list[Path | str] | None = None,
@@ -111,11 +116,12 @@ class LocalFileBackend(FileBackend):
             roots: list[Path] = [Path.cwd()]
         else:
             roots = [Path(r) for r in allowed_roots]
-        self._allowed_roots: list[Path] = roots
+        ro = [Path(r) for r in readonly_roots or []]
+        self._allowed_roots: list[Path] = [*roots, *ro]
         self._include_dotfiles = include_dotfiles
         self._deny_read = self._resolve_carveouts(deny_read)
         self._allow_read = self._resolve_carveouts(allow_read)
-        self._deny_write = self._resolve_carveouts(deny_write)
+        self._deny_write = self._resolve_carveouts([*(deny_write or []), *ro])
 
     @staticmethod
     def _resolve_carveouts(paths: list[Path | str] | None) -> tuple[Path, ...]:

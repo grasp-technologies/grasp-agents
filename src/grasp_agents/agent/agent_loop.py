@@ -12,6 +12,11 @@ from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import traced
+from grasp_agents.tools.bash import (
+    BashProcessRegistry,
+    reset_current_bash_registry,
+    set_current_bash_registry,
+)
 from grasp_agents.tools.file_edit.agent_state import (
     reset_current_file_edit_state,
     set_current_file_edit_state,
@@ -236,6 +241,13 @@ class AgentLoop(Generic[CtxT]):
             tools=self.tools,
             path=path,
         )
+
+        # Auto-backgrounded Bash sessions, one registry per loop — the same
+        # isolation rule as ``file_edit_state``: sub-agents and parallel
+        # replicas must not see (or announce) each other's sessions. The bash
+        # tools resolve it through a ContextVar set around each run; the loop
+        # injects completion notes and waits on running sessions in PRE-ACT.
+        self.bash_registry = BashProcessRegistry()
 
     @property
     def llm_output_schema(self) -> Any | None:
@@ -768,6 +780,21 @@ class AgentLoop(Generic[CtxT]):
             bg_tasks_pending=self.bg_tasks.has_pending,
         )
 
+    async def _drain_bash_notes(self, *, exec_id: str) -> AsyncIterator[Event[Any]]:
+        """
+        Inject a user-role message for each backgrounded Bash command that has
+        finished since the last turn (ephemeral — no ``TaskRecord``).
+        """
+        for note in self.bash_registry.collect_notes():
+            message = InputMessageItem.from_text(note, role="user")
+            self.transcript.update([message])
+            yield UserMessageEvent(
+                source=self.agent_name,
+                destination=self.agent_name,
+                exec_id=exec_id,
+                data=message,
+            )
+
     def _close_dangling_tool_calls(
         self, response: Response
     ) -> list[FunctionToolOutputItem]:
@@ -1031,6 +1058,7 @@ class AgentLoop(Generic[CtxT]):
         # the current context, so the value propagates into
         # ``stream_concurrent`` / ``asyncio.gather`` children.
         state_token = set_current_file_edit_state(self.file_edit_state)
+        bash_token = set_current_bash_registry(self.bash_registry)
         try:
             # Checkpoint after input memorization (new step only)
             if self.turn == 0:
@@ -1042,13 +1070,24 @@ class AgentLoop(Generic[CtxT]):
             while self.turn <= self.max_turns:
                 # ── PRE-ACT: prepare for generation ──
 
-                # Drain completed background tasks; wait if LLM has nothing to do
-                should_wait = (
-                    self.turn > 0 and not had_tool_calls and self.bg_tasks.has_pending
-                )
-                async for event in self.bg_tasks.drain(
-                    wait=should_wait, exec_id=exec_id, ctx=self._ctx
-                ):
+                # When the model has nothing to do but wait on background work,
+                # block on the next completion — durable tasks or running
+                # backgrounded Bash commands — instead of spinning poll turns.
+                # (Only tasks can delay a final answer; see JUDGE / has_pending.)
+                if self.turn > 0 and not had_tool_calls:
+                    waitables = [
+                        *self.bg_tasks.pending_futures(),
+                        *self.bash_registry.pending_drains(),
+                    ]
+                    if waitables:
+                        await asyncio.wait(
+                            waitables, return_when=asyncio.FIRST_COMPLETED
+                        )
+
+                async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
+                    yield event
+
+                async for event in self._drain_bash_notes(exec_id=exec_id):
                     yield event
 
                 yield TurnStartEvent(
@@ -1105,6 +1144,7 @@ class AgentLoop(Generic[CtxT]):
 
         finally:
             await self.bg_tasks.cancel_all(ctx=self._ctx)
+            reset_current_bash_registry(bash_token)
             reset_current_file_edit_state(state_token)
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:

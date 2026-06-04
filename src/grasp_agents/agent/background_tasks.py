@@ -139,7 +139,26 @@ class BackgroundTaskManager(Generic[CtxT]):
 
     @property
     def has_pending(self) -> bool:
+        """
+        True while managed background *tasks* are pending.
+
+        Consulted by the JUDGE phase: a pending task blocks even a final
+        answer (its result is part of the answer). Note sources are
+        deliberately excluded — an ephemeral monitor (e.g. a backgrounded
+        Bash build) must never hold the run hostage.
+        """
         return bool(self._tasks)
+
+    def pending_futures(self) -> list[asyncio.Future[Any]]:
+        """
+        In-flight task futures, for the loop's idle wait.
+
+        Lets the loop block on the next task completion instead of spinning.
+        Distinct from :attr:`has_pending`, which gates the *final answer*;
+        ephemeral monitors (e.g. backgrounded Bash) are waited on by the loop
+        directly, not through here.
+        """
+        return [pt.task for pt in self._tasks.values()]
 
     async def spawn(
         self,
@@ -200,15 +219,11 @@ class BackgroundTaskManager(Generic[CtxT]):
         return task_id, event
 
     async def drain(
-        self, *, wait: bool, exec_id: str, ctx: RunContext[CtxT]
+        self, *, exec_id: str, ctx: RunContext[CtxT]
     ) -> AsyncIterator[Event[Any]]:
-        """Check for completed background tasks, optionally waiting."""
+        """Emit events for background tasks that have completed."""
         if not self._tasks:
             return
-
-        if wait:
-            pending = {pt.task for pt in self._tasks.values()}
-            await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
         # Yield buffered subagent events from all tasks
         for pt in self._tasks.values():
