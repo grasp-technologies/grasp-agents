@@ -23,6 +23,22 @@ uv run ruff format .     # format (line-length 88, LF endings)
 uv run pyright           # type check (strict mode, Python 3.11)
 ```
 
+**Integration tests** (real API/network calls — E2B, OpenAI, Anthropic, …) are
+gated behind the `integration` marker and deselected by default
+(`addopts = "-m 'not integration'"` in `pyproject.toml`). Run them by overriding
+the marker:
+
+```bash
+uv run pytest -m integration                      # all integration tests
+uv run pytest tests/sandbox/test_e2b.py -m integration   # one file
+```
+
+Keys come from `.env` (gitignored), loaded by `tests/conftest.py` via
+`load_dotenv()` — `E2B_API_KEY`, `OPENAI_API_KEY`, etc. **Test commands are
+allowed to bypass the command sandbox** (`.claude/settings.local.json`), so
+these live calls work even though the default sandbox blocks the network — i.e.
+you can and should run integration tests directly to verify network/provider code.
+
 Pre-commit hooks: cspell (spell check), large file check, uv sync, uv pip compile.
 
 Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.

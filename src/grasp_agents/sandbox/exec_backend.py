@@ -118,9 +118,61 @@ class ExecBackend(Protocol):
         ...
 
 
+@runtime_checkable
+class ExecSession(Protocol):
+    """
+    A persistent, stateful shell opened from a :class:`SessionCapable` backend.
+
+    Unlike :meth:`ExecBackend.stream` — which spawns a fresh process per call —
+    a session is one long-lived shell: ``cd``, environment changes, and shell
+    variables persist across :meth:`run` calls. It is serial (commands run one
+    at a time) and process-local (it dies with the host; nothing survives a
+    restart).
+    """
+
+    @property
+    def backend(self) -> str: ...
+
+    @property
+    def closed(self) -> bool:
+        """True once the shell has exited or been closed; reopen via the backend."""
+        ...
+
+    def run(
+        self, command: str, *, timeout: float | None = None
+    ) -> AsyncIterator[ExecChunk | ExecResult]:
+        """
+        Run ``command`` in the shell and stream its output exactly like
+        :meth:`ExecBackend.stream` (``ExecChunk`` items then one terminal
+        ``ExecResult``) — but in the persistent shell, so state carries over.
+        ``timeout`` closes the whole session (there is no per-command interrupt).
+        """
+        ...
+
+    async def close(self) -> None:
+        """Terminate the shell and release it."""
+        ...
+
+
+@runtime_checkable
+class SessionCapable(Protocol):
+    """
+    An :class:`ExecBackend` that can open a persistent :class:`ExecSession`.
+
+    Detect with ``isinstance(backend, SessionCapable)``; backends that cannot
+    hold a long-lived shell simply do not implement it.
+    """
+
+    async def open_session(
+        self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
+    ) -> ExecSession: ...
+
+
 __all__ = [
     "ExecBackend",
     "ExecChunk",
     "ExecResult",
+    "ExecSession",
+    "SessionCapable",
     "TerminationReason",
 ]

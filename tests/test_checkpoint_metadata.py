@@ -8,7 +8,6 @@ Integration tests for the B2.c metadata borrows on ``AgentCheckpoint``:
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import pytest
@@ -21,6 +20,7 @@ from grasp_agents.durability import (
     ContextKind,
     InMemoryCheckpointStore,
 )
+from grasp_agents.durability.checkpoints import SCHEMA_VERSION_SUMMARIES
 from grasp_agents.run_context import RunContext
 
 from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
@@ -62,14 +62,19 @@ def _make_agent(
 
 
 class TestSchemaVersion:
-    def test_current_schema_version_is_one(self) -> None:
-        assert CURRENT_SCHEMA_VERSION == 1
+    def test_current_schema_version_has_summary(self) -> None:
+        # v2: read-before-write ledger + fs_snapshot_ref on AgentCheckpoint.
+        assert CURRENT_SCHEMA_VERSION == 2
+        assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
         snap = AgentCheckpoint(session_key="s", processor_name="a", messages=[])
         assert snap.context_kind is None
         assert snap.context_data is None
         assert snap.prompt_cache_key is None
+        assert snap.read_file_state == {}
+        assert snap.dotfile_overrides == []
+        assert snap.fs_snapshot_ref is None
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +232,9 @@ class TestPromptCacheKey:
         agent, ctx = _make_agent([_text_response("hi")], session_key="s", store=store)
         await agent.run("hello")
 
-        snap = AgentCheckpoint.model_validate_json(await store.load("s/agent/test_agent") or b"{}")
+        snap = AgentCheckpoint.model_validate_json(
+            await store.load("s/agent/test_agent") or b"{}"
+        )
         assert snap.prompt_cache_key is None
 
 
@@ -249,7 +256,7 @@ class TestPrePersistInput:
         class _CheckingLLM(MockLLM):
             async def _generate_response_once(
                 self,
-                input: Any,  # noqa: A002
+                input: Any,
                 *,
                 tools: Any = None,
                 output_schema: Any = None,

@@ -2,7 +2,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, cast, final
 
 if TYPE_CHECKING:
     from ..tools.file_edit.session_state import FileEditSessionState
@@ -23,6 +23,7 @@ from ..llm.llm import LLM
 from ..memory.injection import make_memory_section, relevant_memories_attachment
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
+from ..sandbox.environment import SnapshotCapable
 from ..skills.injection import make_skills_section
 from ..telemetry import SpanKind
 from ..types.content import Content, InputImage, InputText
@@ -117,6 +118,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Session persistence
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
+        # Filesystem-snapshot policy for checkpoints. Requires
+        # ``ctx.environment`` to be ``SnapshotCapable`` (e.g. E2B).
+        # ``"off"`` (default): never snapshot. ``"final"``: snapshot at
+        # run-end boundaries (final answer / max turns). ``"turn"``:
+        # snapshot at every checkpoint boundary, including after each
+        # tool batch — strongest rewind granularity, but each snapshot
+        # costs a provider round-trip. The checkpoint stores only the
+        # opaque ref; the bytes live with the snapshot owner.
+        fs_snapshot: Literal["off", "final", "turn"] = "off",
         # MCP integration (clients must be ``connect()``-ed before the
         # agent is constructed; pass a ``MCPClientSpec`` to filter tools)
         mcp_clients: "Sequence[MCPClient | MCPClientSpec] | None" = None,
@@ -192,6 +202,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Transcript (per-run message history)
         self._transcript = transcript or LLMAgentTranscript()
         self.reset_transcript_on_run = reset_transcript_on_run
+        self._fs_snapshot_mode = fs_snapshot
 
         # Wire parent context for AgentTool instances (after transcript init)
         from .agent_tool import AgentTool  # noqa: PLC0415
@@ -444,8 +455,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         if loop is None:
             return
         loop.path = self.path
-        loop.bg_tasks._path = self.path
-        loop._ctx = self._ctx
+        # The agent owns its loop; adoption-time rebinding is friend access.
+        loop.bg_tasks._path = self.path  # noqa: SLF001
+        loop._ctx = self._ctx  # noqa: SLF001
         # Forward adoption onto every tool (no-op for stateless tools;
         # :class:`ProcessorTool` rebinds its wrapped processor).
         for tool in loop.tools.values():
@@ -468,6 +480,29 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self.transcript.messages = resume_state.messages
         self._loop.turn = checkpoint.turn
         self.prompt_cache_key = checkpoint.prompt_cache_key
+
+        # Restore the filesystem before anything that may touch it
+        # (pending background tasks, state_builder). A ref without a
+        # capable environment means the session cannot be resumed
+        # faithfully — crash rather than continue with divergent files.
+        if checkpoint.fs_snapshot_ref is not None:
+            environment = self._ctx.environment
+            if not isinstance(environment, SnapshotCapable):
+                raise RuntimeError(
+                    "Checkpoint carries fs_snapshot_ref="
+                    f"{checkpoint.fs_snapshot_ref!r} but ctx.environment "
+                    f"({type(environment).__name__}) is not SnapshotCapable; "
+                    "wire the same kind of environment the session was "
+                    "saved with."
+                )
+            await environment.restore(checkpoint.fs_snapshot_ref)
+
+        # Restore the read-before-write ledger so the staleness guard
+        # resumes where it left off; files changed while suspended still
+        # trip it and require a re-Read.
+        self._loop.file_edit_state.import_state(
+            checkpoint.read_file_state, checkpoint.dotfile_overrides
+        )
 
         # Restore ctx.state for the machine-serializable kinds (mapping /
         # pydantic / dataclass) when it was persisted. A None / OMITTED kind
@@ -505,6 +540,22 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
 
         return checkpoint
 
+    def _fs_snapshot_due(self, location: AgentCheckpointLocation) -> bool:
+        if self._fs_snapshot_mode == "off":
+            return False
+        if not isinstance(self._ctx.environment, SnapshotCapable):
+            raise TypeError(
+                f"fs_snapshot={self._fs_snapshot_mode!r} requires a "
+                "SnapshotCapable ctx.environment (e.g. an E2BEnvironment); "
+                f"got {type(self._ctx.environment).__name__}."
+            )
+        if self._fs_snapshot_mode == "turn":
+            return True
+        return location in {
+            AgentCheckpointLocation.AFTER_FINAL_ANSWER,
+            AgentCheckpointLocation.AFTER_MAX_TURNS,
+        }
+
     async def save_checkpoint(
         self,
         *,
@@ -521,6 +572,18 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         context_data: Any | None = None
         if self._ctx.serialize_state:
             context_kind, context_data = serialize_context(self._ctx.state)
+
+        # Snapshot the environment filesystem first, so the persisted
+        # (messages, files) pair is consistent: the ref always describes
+        # the filesystem as of this checkpoint. Snapshot failures crash
+        # the save — a checkpoint silently missing its filesystem half
+        # is worse than no checkpoint.
+        fs_snapshot_ref: str | None = None
+        if self._fs_snapshot_due(location):
+            environment = cast("SnapshotCapable", self._ctx.environment)
+            fs_snapshot_ref = await environment.snapshot()
+
+        read_file_state, dotfile_overrides = self._loop.file_edit_state.export_state()
         checkpoint = AgentCheckpoint(
             session_key=self._ctx.session_key,
             processor_name=self.name,
@@ -533,6 +596,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             context_kind=context_kind,
             context_data=context_data,
             prompt_cache_key=self.prompt_cache_key,
+            read_file_state=read_file_state,
+            dotfile_overrides=dotfile_overrides,
+            fs_snapshot_ref=fs_snapshot_ref,
         )
         await self._serialize_checkpoint(self._ctx, checkpoint)
 

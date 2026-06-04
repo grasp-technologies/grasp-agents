@@ -14,8 +14,11 @@ from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import traced
 from grasp_agents.tools.bash import (
     BashProcessRegistry,
+    BashSessionHolder,
     reset_current_bash_registry,
+    reset_current_session_holder,
     set_current_bash_registry,
+    set_current_session_holder,
 )
 from grasp_agents.tools.file_edit.agent_state import (
     reset_current_file_edit_state,
@@ -248,6 +251,9 @@ class AgentLoop(Generic[CtxT]):
         # tools resolve it through a ContextVar set around each run; the loop
         # injects completion notes and waits on running sessions in PRE-ACT.
         self.bash_registry = BashProcessRegistry()
+        # Persistent (stateful) Bash shell — one per loop, same isolation rule.
+        # Opened lazily on first use, closed when the run ends.
+        self.bash_session_holder = BashSessionHolder()
 
     @property
     def llm_output_schema(self) -> Any | None:
@@ -1059,6 +1065,7 @@ class AgentLoop(Generic[CtxT]):
         # ``stream_concurrent`` / ``asyncio.gather`` children.
         state_token = set_current_file_edit_state(self.file_edit_state)
         bash_token = set_current_bash_registry(self.bash_registry)
+        holder_token = set_current_session_holder(self.bash_session_holder)
         try:
             # Checkpoint after input memorization (new step only)
             if self.turn == 0:
@@ -1144,6 +1151,8 @@ class AgentLoop(Generic[CtxT]):
 
         finally:
             await self.bg_tasks.cancel_all(ctx=self._ctx)
+            await self.bash_session_holder.close()
+            reset_current_session_holder(holder_token)
             reset_current_bash_registry(bash_token)
             reset_current_file_edit_state(state_token)
 

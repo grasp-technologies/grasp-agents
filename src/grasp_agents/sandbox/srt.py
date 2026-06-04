@@ -153,5 +153,9 @@ class SrtExecBackend(LocalExecBackend):
             backend=self._name,
         )
 
+    def _session_argv(self) -> tuple[str, ...]:
+        # `-c /bin/sh` runs a persistent shell (reading stdin) under srt.
+        return srt_argv(self._srt, self._settings_path, "/bin/sh")
+
 
 __all__ = ["SrtExecBackend", "build_srt_settings", "srt_argv"]

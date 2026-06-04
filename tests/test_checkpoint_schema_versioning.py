@@ -45,7 +45,6 @@ class _Appender(Processor[str, str, None]):
         *,
         in_args: list[str] | None = None,
         exec_id: str,
-        ctx: RunContext[None],
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
         for inp in in_args or []:
@@ -106,7 +105,7 @@ class TestProcessorCheckpointVersion:
         assert "newer than" in msg
 
     def test_schema_error_is_not_validation_error(self) -> None:
-        """CheckpointSchemaError must propagate past Pydantic ValidationError wrapping."""
+        """CheckpointSchemaError must propagate past Pydantic ValidationError."""
         future = json.dumps(
             {
                 "schema_version": CURRENT_SCHEMA_VERSION + 5,
@@ -175,7 +174,7 @@ class TestDeserializePropagation:
 
     @pytest.mark.asyncio
     async def test_workflow_deserialize_reraises_schema_error(self) -> None:
-        """Plant a future-versioned blob under the workflow's key; loading must raise."""
+        """Plant a future-versioned blob under the workflow key; load must raise."""
         store = InMemoryCheckpointStore()
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[_Appender("A"), _Appender("B")]

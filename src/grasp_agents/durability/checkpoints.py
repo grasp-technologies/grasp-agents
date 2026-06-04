@@ -10,7 +10,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 1
+CURRENT_SCHEMA_VERSION: int = 2
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -20,7 +20,13 @@ changes in a way that older code could not load. Add an entry to
 """
 
 SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
-    1: "Initial versioned schema for processor checkpoints and task records."
+    1: "Initial versioned schema for processor checkpoints and task records.",
+    2: (
+        "AgentCheckpoint gained the read-before-write ledger "
+        "(read_file_state + dotfile_overrides) and fs_snapshot_ref. "
+        "v1 records load fine (fields default); v1 code must not resume "
+        "v2 sessions — it would silently skip the filesystem restore."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -104,6 +110,19 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # avoid invalidating the model-side cache. Providers that ignore
     # this field leave it ``None``.
     prompt_cache_key: str | None = None
+
+    # Read-before-write ledger (resolved path -> last-observed mtime) +
+    # session dotfile overrides. Restored on resume so the staleness
+    # guard keeps working instead of refusing every edit until a
+    # re-``Read``; files that changed while suspended still trip it.
+    read_file_state: dict[str, float] = Field(default_factory=dict)
+    dotfile_overrides: list[str] = Field(default_factory=list)
+
+    # Opaque filesystem-snapshot ref from a ``SnapshotCapable``
+    # environment (e.g. an E2B snapshot id, later a shadow-git sha).
+    # The bytes live with whoever owns the snapshot store — the
+    # checkpoint records only the ref. ``None`` = no snapshot taken.
+    fs_snapshot_ref: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

@@ -220,5 +220,9 @@ class SeatbeltExecBackend(LocalExecBackend):
             backend=self._name,
         )
 
+    def _session_argv(self) -> tuple[str, ...]:
+        profile, defines = build_seatbelt_profile(self._policy)
+        return seatbelt_argv(profile, defines, ("/bin/sh",))
+
 
 __all__ = ["SeatbeltExecBackend", "build_seatbelt_profile", "seatbelt_argv"]

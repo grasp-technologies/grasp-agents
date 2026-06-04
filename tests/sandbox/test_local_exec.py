@@ -92,12 +92,37 @@ async def test_divergent_file_backend_and_environment_raises(tmp_path: Path) -> 
         )
 
 
-async def test_readonly_roots_are_readable(tmp_path: Path) -> None:
+async def test_readonly_roots_are_readable_but_write_denied(tmp_path: Path) -> None:
+    rw = tmp_path / "rw"
     ro = tmp_path / "ro"
+    rw.mkdir()
     ro.mkdir()
-    env = local_environment(allowed_roots=[tmp_path / "rw"], readonly_roots=[ro])
-    (tmp_path / "rw").mkdir()
-    assert ro in env.file_backend.allowed_roots
+    (ro / "ref.txt").write_text("reference")
+    env = local_environment(allowed_roots=[rw], readonly_roots=[ro])
+    backend = env.file_backend
+    assert ro in backend.allowed_roots
+
+    # Readable on the tool plane...
+    resolved = await backend.validate_path(
+        ro / "ref.txt", must_exist=True, access="read"
+    )
+    assert resolved == (ro / "ref.txt").resolve()
+    # ...but write-denied (same rule Seatbelt applies on the exec plane).
+    with pytest.raises(PathAccessError):
+        await backend.validate_path(ro / "new.txt", must_exist=False, access="write")
+    # The rw root is unaffected.
+    await backend.validate_path(rw / "new.txt", must_exist=False, access="write")
+
+
+async def test_backend_readonly_roots_param(tmp_path: Path) -> None:
+    rw = tmp_path / "rw"
+    ro = tmp_path / "ro"
+    rw.mkdir()
+    ro.mkdir()
+    backend = LocalFileBackend(allowed_roots=[rw], readonly_roots=[ro])
+    with pytest.raises(PathAccessError):
+        await backend.validate_path(ro / "x.txt", must_exist=False, access="write")
+    await backend.validate_path(ro, must_exist=True, access="read")
 
 
 async def test_environment_is_async_context_manager(tmp_path: Path) -> None:
@@ -356,8 +381,9 @@ async def test_bash_tool_requires_exec_backend() -> None:
 async def test_bash_tool_timeout_clamped(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(environment=env)
+    # `echo` first: a leading `sleep` is rejected by the blocked-pattern guard.
     result = await Bash(max_timeout=0.3).run(
-        BashInput(command="sleep 5", timeout=100.0), ctx=ctx
+        BashInput(command="echo go && sleep 5", timeout=100.0), ctx=ctx
     )
     assert isinstance(result, BashResult)
     assert result.timed_out

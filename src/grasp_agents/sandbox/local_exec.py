@@ -34,7 +34,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..tools.file_edit.paths import PathAccessError, resolve_safe
-from .exec_backend import ExecBackend, ExecChunk, ExecResult
+from .exec_backend import ExecBackend, ExecChunk, ExecResult, SessionCapable
+from .local_session import LocalExecSession
 from .supervisor import ExecSpec, ProcessSupervisor
 
 if TYPE_CHECKING:
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from .supervisor import SupervisorLimits
 
 
-class LocalExecBackend(ExecBackend):
+class LocalExecBackend(ExecBackend, SessionCapable):
     """
     Host-subprocess :class:`~grasp_agents.sandbox.exec_backend.ExecBackend`.
 
@@ -166,6 +167,28 @@ class LocalExecBackend(ExecBackend):
         if timeout is None:
             return base
         return replace(base, overall_timeout=timeout)
+
+    # --- persistent sessions (SessionCapable) ------------------------------
+
+    def _session_argv(self) -> tuple[str, ...]:
+        """Argv that launches the persistent shell; confined backends wrap it."""
+        return ("/bin/sh",)
+
+    async def open_session(
+        self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
+    ) -> LocalExecSession:
+        """
+        Open a persistent shell that keeps ``cd`` / env / variables across
+        commands (see :class:`LocalExecSession`). Same confinement as one-shot
+        ``stream`` — the wrapper is applied to the shell itself.
+        """
+        return LocalExecSession(
+            argv=self._session_argv(),
+            cwd=self._resolve_cwd(cwd),
+            env=self._merged_env(env),
+            backend=self._name,
+            limits=self._supervisor.limits,
+        )
 
 
 __all__ = ["LocalExecBackend"]

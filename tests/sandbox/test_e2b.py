@@ -197,6 +197,8 @@ class _FakeCommands:
         fg_raises: BaseException | None = None,
     ) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.stdin_writes: list[tuple[int, str]] = []
+        self.killed: list[int] = []
         self._exit_code = exit_code
         self._chunks = chunks
         self._raise = raise_exc
@@ -240,6 +242,12 @@ class _FakeCommands:
         if self._fg_raises is not None:
             raise self._fg_raises
         return _FakeResult(self._fg_stdout, self._fg_exit_code)
+
+    async def send_stdin(self, pid: int, data: str) -> Any:
+        self.stdin_writes.append((pid, data))
+
+    async def kill(self, pid: int) -> Any:
+        self.killed.append(pid)
 
 
 class _FakeSandbox:
@@ -1014,3 +1022,49 @@ async def test_e2b_live_concurrent_commands() -> None:
         results = await asyncio.gather(*(xb.execute(f"echo n{i}") for i in range(6)))
         assert [r.stdout.strip() for r in results] == [f"n{i}" for i in range(6)]
         assert all(r.returncode == 0 for r in results)
+
+
+@pytest.mark.integration
+@_live
+async def test_e2b_live_persistent_session() -> None:
+    from grasp_agents.sandbox.exec_backend import SessionCapable
+
+    async def _collect(
+        session: Any, command: str, **kw: float
+    ) -> tuple[str, str, ExecResult]:
+        out: list[str] = []
+        err: list[str] = []
+        terminal: ExecResult | None = None
+        async for item in session.run(command, **kw):
+            if isinstance(item, ExecResult):
+                terminal = item
+            else:
+                (out if item.stream == "stdout" else err).append(item.data)
+        assert terminal is not None
+        return "".join(out), "".join(err), terminal
+
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        backend = env.exec_backend
+        assert isinstance(backend, SessionCapable)
+        session = await backend.open_session(cwd=Path(_WS))
+        try:
+            # cd and env persist across commands (one long-lived shell).
+            await _collect(session, "mkdir -p sub && cd sub && export FOO=bar")
+            out, _, r = await _collect(session, "pwd && echo $FOO")
+            assert r.returncode == 0
+            assert "sub" in out
+            assert "bar" in out
+            # stdout / stderr stay separate.
+            out2, err2, r2 = await _collect(session, "echo OUT; echo ERR 1>&2")
+            assert r2.returncode == 0
+            assert "OUT" in out2
+            assert "ERR" in err2
+            # non-zero exit propagates and does not break the session.
+            _, _, rf = await _collect(session, "false")
+            assert rf.returncode == 1
+            # timeout kills the shell and closes the session (no SIGINT on E2B).
+            _, _, rt = await _collect(session, "sleep 30", timeout=1.0)
+            assert rt.timed_out
+            assert session.closed
+        finally:
+            await session.close()

@@ -10,10 +10,13 @@ Three tiers:
 * **Compile-validation** (``skipif`` not macOS / no ``sandbox-exec``) — actually
   feed the generated profile to ``sandbox-exec``. A *valid* profile fails only
   at ``sandbox_apply`` (blocked when already sandboxed); a malformed one fails
-  earlier at parse. This runs in-session and catches real SBPL bugs.
+  earlier at parse. This catches real SBPL bugs.
 * **Live confinement** (``skipif`` ``sandbox-exec`` can't apply — i.e. nested /
-  non-macOS) — prove writes are actually confined. Skips inside the agent
-  sandbox; runs on a real macOS host.
+  non-macOS) — prove writes / network are actually confined. Caveat: pytest's
+  ``tmp_path`` lives under ``/private/var/folders`` — inside the scratch temp
+  the profile *deliberately* write-allows — so denied-write probes must target
+  a directory outside both the workspace roots and the temp subtree (allow-
+  shaped and carve-out rules, by contrast, are testable under ``tmp_path``).
 """
 
 from __future__ import annotations
@@ -21,12 +24,11 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from typing import TYPE_CHECKING, Any
+import tempfile
+from pathlib import Path
+from typing import Any
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from grasp_agents.sandbox import (
     NetworkPolicy,
@@ -36,6 +38,7 @@ from grasp_agents.sandbox import (
     local_environment,
     seatbelt_argv,
 )
+from grasp_agents.sandbox import seatbelt as seatbelt_mod
 
 pytestmark = pytest.mark.asyncio
 
@@ -231,15 +234,28 @@ async def test_factory_auto_is_seatbelt_on_macos(tmp_path: Path) -> None:
     assert env.exec_backend.name == "seatbelt"
 
 
-# --- live confinement (skips in-session; runs on a real macOS host) ---------
+# --- live confinement (needs a macOS host where sandbox-exec can apply) -----
+
+
+def _outside_scratch() -> Path | None:
+    """
+    A user-writable dir genuinely OUTSIDE the profile's always-writable temp.
+
+    ``tmp_path`` can't serve as "outside": it sits under
+    ``/private/var/folders``, which the profile write-allows as scratch temp.
+    The repo cwd qualifies on dev hosts; returns None if cwd itself is temp.
+    """
+    cwd = Path.cwd().resolve()
+    temp_prefixes = seatbelt_mod._TMP_WRITABLE_SUBPATHS
+    if any(str(cwd).startswith(prefix) for prefix in temp_prefixes):
+        return None
+    return Path(tempfile.mkdtemp(prefix="sb_outside_", dir=cwd))
 
 
 @pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
 async def test_seatbelt_confines_writes(tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
     env = local_environment(allowed_roots=[work], confinement="seatbelt")
     backend = env.exec_backend
     assert backend is not None
@@ -248,6 +264,58 @@ async def test_seatbelt_confines_writes(tmp_path: Path) -> None:
     assert inside.returncode == 0
     assert (work / "in.txt").exists()
 
-    blocked = await backend.execute(f"echo no > {outside / 'out.txt'}", cwd=work)
+    outside = _outside_scratch()
+    if outside is None:
+        pytest.skip("cwd is inside the always-writable temp subtree")
+    try:
+        blocked = await backend.execute(f"echo no > {outside / 'out.txt'}", cwd=work)
+        assert blocked.returncode != 0
+        assert not (outside / "out.txt").exists()
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_deny_write_carveout_live(tmp_path: Path) -> None:
+    # deny_write is emitted AFTER the workspace/temp allows (last-match-wins),
+    # so it is enforceable even under the always-writable temp subtree.
+    work = tmp_path / "work"
+    protected = work / "protected"
+    protected.mkdir(parents=True)
+    env = local_environment(
+        allowed_roots=[work], deny_write=[protected], confinement="seatbelt"
+    )
+    backend = env.exec_backend
+    assert backend is not None
+
+    ok = await backend.execute("echo hi > ok.txt", cwd=work)
+    assert ok.returncode == 0
+    blocked = await backend.execute(f"echo no > {protected / 'x.txt'}", cwd=work)
     assert blocked.returncode != 0
-    assert not (outside / "out.txt").exists()
+    assert not (protected / "x.txt").exists()
+
+
+# bind() on 127.0.0.1:0 never fails on an unconfined host but is a network op
+# under (deny network*) — a deterministic probe needing no external egress.
+_BIND_PROBE = "import socket; s = socket.socket(); s.bind(('127.0.0.1', 0))"
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_network_none_blocks_live(tmp_path: Path) -> None:
+    env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
+    backend = env.exec_backend
+    assert backend is not None
+    res = await backend.execute(f'python3 -c "{_BIND_PROBE}"', cwd=tmp_path)
+    assert res.returncode != 0
+    assert "PermissionError" in res.stderr or "Operation not permitted" in res.stderr
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_network_all_allows_live(tmp_path: Path) -> None:
+    env = local_environment(
+        allowed_roots=[tmp_path], network=NetworkPolicy.ALL, confinement="seatbelt"
+    )
+    backend = env.exec_backend
+    assert backend is not None
+    res = await backend.execute(f'python3 -c "{_BIND_PROBE}"', cwd=tmp_path)
+    assert res.returncode == 0, res.stderr

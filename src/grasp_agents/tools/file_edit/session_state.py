@@ -34,6 +34,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
 
 # Cap on ``read_file_state`` to bound memory growth on long sessions.
 # Eviction policy: oldest-first (dict insertion order in Python 3.7+).
@@ -88,6 +92,30 @@ class FileEditSessionState:
         """Full reset. Call when starting a new session on a reused toolkit."""
         self.read_file_state.clear()
         self.dotfile_overrides.clear()
+
+    def export_state(self) -> tuple[dict[str, float], list[str]]:
+        """
+        Dump the ledger as JSON-friendly primitives for checkpointing.
+
+        Returns ``(read_file_state, dotfile_overrides)`` with paths as
+        strings; the inverse of :meth:`import_state`.
+        """
+        return (
+            {str(p): rec.mtime for p, rec in self.read_file_state.items()},
+            sorted(str(p) for p in self.dotfile_overrides),
+        )
+
+    def import_state(
+        self,
+        read_file_state: Mapping[str, float],
+        dotfile_overrides: Iterable[str],
+    ) -> None:
+        """Replace the ledger from a checkpoint payload (resume path)."""
+        self.read_file_state = {
+            Path(p): ReadRecord(mtime=mtime) for p, mtime in read_file_state.items()
+        }
+        self.dotfile_overrides = {Path(p) for p in dotfile_overrides}
+        self._cap()
 
     def _cap(self) -> None:
         """Evict oldest entries if ``read_file_state`` exceeds its cap."""

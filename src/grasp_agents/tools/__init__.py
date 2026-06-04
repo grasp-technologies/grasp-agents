@@ -17,14 +17,26 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .bash import Bash, BashInput, BashResult
+    from .bash import (
+        Bash,
+        BashInput,
+        BashOutput,
+        BashProcessRegistry,
+        BashResult,
+        KillBash,
+        bash_tools,
+    )
     from .file_toolkit import FileToolkit
 
 
 _LAZY: dict[str, str] = {
     "Bash": "bash",
     "BashInput": "bash",
+    "BashOutput": "bash",
+    "BashProcessRegistry": "bash",
     "BashResult": "bash",
+    "KillBash": "bash",
+    "bash_tools": "bash",
     "FileToolkit": "file_toolkit",
 }
 
@@ -39,4 +51,13 @@ def __getattr__(name: str) -> Any:
     return attr
 
 
-__all__ = ["Bash", "BashInput", "BashResult", "FileToolkit"]
+__all__ = [
+    "Bash",
+    "BashInput",
+    "BashOutput",
+    "BashProcessRegistry",
+    "BashResult",
+    "FileToolkit",
+    "KillBash",
+    "bash_tools",
+]
