@@ -219,7 +219,7 @@ class TestRunnerBasicExecution:
 
         # D is the END proc and gets invoked twice (once from B, once from C).
         # But only the first RunPacketOutEvent finalizes the runner.
-        result = await run_runner(runner, chat_inputs="s")
+        await run_runner(runner, chat_inputs="s")
         assert b.call_count == 1
         assert c.call_count == 1
 
@@ -232,8 +232,6 @@ class TestRunnerBasicExecution:
             route_map={":x": "B", ":y": "C"},
         )
         fan = FanOutProcessor("fan", recipients=["router"])
-        b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        c = AppendProcessor("C", recipients=[END_PROC_NAME])
         ctx: RunContext[None] = RunContext(state=None)
 
         # fan produces ["s:x", "s:y"], router routes :x→B, :y→C
@@ -445,7 +443,7 @@ class TestRunnerResume:
             entry_proc=a2, procs=[a2, b2, c2, d2], ctx=ctx2, name="r"
         )
 
-        result = await run_runner(runner2)
+        await run_runner(runner2)
         assert a2.call_count == 0
         # C definitely runs
         assert c2.call_count == 1

@@ -12,7 +12,11 @@ from typing import Any
 from opentelemetry import trace
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SpanExporter
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    SimpleSpanProcessor,
+    SpanExporter,
+)
 
 logger = getLogger(__name__)
 
@@ -63,11 +67,6 @@ def add_exporter(
         batch: Use BatchSpanProcessor (True) or SimpleSpanProcessor (False).
 
     """
-    from opentelemetry.sdk.trace.export import (
-        BatchSpanProcessor,
-        SimpleSpanProcessor,
-    )
-
     if provider is None:
         existing = trace.get_tracer_provider()
         if not isinstance(existing, TracerProvider):
@@ -90,7 +89,8 @@ def add_otlp_http_exporter(
 
     Requires: pip install opentelemetry-exporter-otlp-proto-http
     """
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    # Deferred: needs the optional otlp-proto-http exporter package.
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
         OTLPSpanExporter,
     )
 

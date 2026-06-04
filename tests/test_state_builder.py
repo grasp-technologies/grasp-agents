@@ -69,7 +69,7 @@ class TestStateBuilder:
         )
         calls: list[AgentCheckpoint] = []
 
-        async def rebuild(  # noqa: RUF029
+        async def rebuild(
             *,
             checkpoint: AgentCheckpoint,
             exec_id: str,
@@ -99,7 +99,7 @@ class TestStateBuilder:
         )
         received: list[AgentCheckpoint] = []
 
-        async def rebuild(  # noqa: RUF029
+        async def rebuild(
             *,
             checkpoint: AgentCheckpoint,
             exec_id: str,
@@ -140,7 +140,7 @@ class TestStateBuilder:
 
         calls = 0
 
-        async def rebuild(  # noqa: RUF029
+        async def rebuild(
             *,
             checkpoint: AgentCheckpoint,
             exec_id: str,
@@ -209,7 +209,7 @@ class TestStateBuilder:
             [_text_response("world")], session_key="s3", store=store
         )
 
-        async def rebuild(  # noqa: RUF029
+        async def rebuild(
             *,
             checkpoint: AgentCheckpoint,
             exec_id: str,

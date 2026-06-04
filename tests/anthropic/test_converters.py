@@ -11,7 +11,6 @@ import asyncio
 import json
 from typing import Any
 
-import pytest
 from anthropic.types import (
     ContentBlock,
     DocumentBlock,
@@ -60,7 +59,7 @@ from grasp_agents.llm_providers.anthropic.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
-from grasp_agents.types.content import OutputMessageText as OutputMessageText
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -115,7 +114,7 @@ async def _collect_events(
     """Run AnthropicStreamConverter on a list of raw events."""
     converter = AnthropicStreamConverter()
 
-    async def event_stream():  # type: ignore[reportReturnType]  # noqa: RUF029
+    async def event_stream():  # type: ignore[reportReturnType]
         for event in events:
             yield event
 
@@ -326,7 +325,7 @@ class TestResponseToMessage:
         to a per-block ``cache_control`` marker; the system field is a
         ``list[TextBlockParam]`` so the marker reaches the API.
         """
-        from grasp_agents.types.content import (  # noqa: PLC0415
+        from grasp_agents.types.content import (
             CacheControl,
             InputText,
         )
@@ -351,7 +350,7 @@ class TestResponseToMessage:
 
     def test_cache_control_ttl_passed_through(self):
         """``CacheControl.ttl`` reaches the Anthropic cache_control param."""
-        from grasp_agents.types.content import (  # noqa: PLC0415
+        from grasp_agents.types.content import (
             CacheControl,
             InputText,
         )
@@ -374,7 +373,7 @@ class TestResponseToMessage:
         The trivial single-part, no-cache case stays a bare string — no
         block list and no concatenation are involved.
         """
-        from grasp_agents.types.content import InputText  # noqa: PLC0415
+        from grasp_agents.types.content import InputText
 
         sys_msg = InputMessageItem(content_parts=[InputText(text="A")], role="system")
         items = [sys_msg, InputMessageItem.from_text("hi")]
@@ -559,9 +558,9 @@ class _WeatherTool(BaseTool[_WeatherInput, str, None]):
         self,
         inp: _WeatherInput,
         *,
-        ctx: Any = None,  # noqa: ARG002
-        exec_id: str | None = None,  # noqa: ARG002
-        progress_callback: Any = None,  # noqa: ARG002
+        ctx: Any = None,
+        exec_id: str | None = None,
+        progress_callback: Any = None,
     ) -> str:
         return f"Weather in {inp.city}"
 

@@ -47,7 +47,9 @@ class FallbackLLM(LLM):
 
         for llm in candidates:
             try:
-                return await llm._generate_response_once(
+                # Call the un-retried core on purpose: the cascade is the
+                # retry layer here.
+                return await llm._generate_response_once(  # noqa: SLF001
                     input,
                     tools=tools,
                     output_schema=output_schema,
@@ -81,7 +83,7 @@ class FallbackLLM(LLM):
 
         for llm in candidates:
             try:
-                async for event in llm._generate_response_stream_once(
+                async for event in llm._generate_response_stream_once(  # noqa: SLF001
                     input,
                     tools=tools,
                     output_schema=output_schema,

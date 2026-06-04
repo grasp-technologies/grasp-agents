@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
-import pytest
 from openai.types import CompletionUsage
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import (
@@ -168,9 +166,7 @@ class TestGeneratedMessageToItems:
     def test_reasoning_content(self) -> None:
         """Message with reasoning_content attr (e.g. DeepSeek via OpenAI compat)."""
         msg = ChatCompletionMessage(role="assistant", content="Answer: 42")
-        # Simulate a non-standard field via SimpleNamespace overlay
-        msg_ns = SimpleNamespace(**msg.__dict__, reasoning_content="Let me think...")
-        # Patch getattr to work
+        # Simulate a non-standard field
         msg.__dict__["reasoning_content"] = "Let me think..."
 
         items = _chat_completion_message_to_items(
@@ -285,10 +281,11 @@ class TestToolConverters:
         assert to_api_tool_choice("required") == "required"
 
     def test_to_api_tool_choice_named(self) -> None:
-        result = to_api_tool_choice(NamedToolChoice(name="add"))
-
-        assert result["type"] == "function"
-        assert result["function"]["name"] == "add"
+        named = cast(
+            "dict[str, Any]", to_api_tool_choice(NamedToolChoice(name="add"))
+        )
+        assert named["type"] == "function"
+        assert named["function"]["name"] == "add"
 
 
 # ================================================================== #

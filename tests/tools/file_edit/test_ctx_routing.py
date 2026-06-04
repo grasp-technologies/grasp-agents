@@ -10,7 +10,6 @@ agent transition) isolates state.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -28,6 +27,9 @@ from grasp_agents.tools.file_edit import (
     set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.asyncio
 

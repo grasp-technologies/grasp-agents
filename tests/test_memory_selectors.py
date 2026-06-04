@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -49,7 +49,7 @@ class _FakeLLM:
     async def generate_response(
         self,
         *,
-        input: Any,  # noqa: A002
+        input: Any,
         output_schema: Any = None,
         max_output_tokens: int | None = None,
         **kwargs: Any,
@@ -249,7 +249,7 @@ async def test_selector_input_shape() -> None:
 
 async def test_per_entry_staleness_warning_surfaced() -> None:
     """The relevance renderer must surface entry_freshness_warnings."""
-    from grasp_agents.memory.injection import (  # noqa: PLC0415
+    from grasp_agents.memory.injection import (
         _compute_relevant_memories,
     )
 

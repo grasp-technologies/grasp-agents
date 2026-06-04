@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import ValidationError
@@ -17,6 +16,9 @@ from .types import (
     MemoryFormatError,
     MemoryFrontmatter,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

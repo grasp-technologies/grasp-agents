@@ -37,7 +37,7 @@ class Capital(BaseModel):
 @pytest.mark.integration
 class TestLiteLLMIntegration:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         # LiteLLM reads OPENAI_API_KEY from env automatically
@@ -96,7 +96,7 @@ class TestLiteLLMIntegration:
 @pytest.mark.integration
 class TestLiteLLMStructuredOutput:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(
@@ -138,10 +138,7 @@ def _execute_parallel_tools(
     tool_outputs: list[FunctionToolOutputItem] = []
     for tc in tool_calls:
         args = json.loads(tc.arguments)
-        if tc.name == "add":
-            result = args["a"] + args["b"]
-        else:
-            result = args["a"] * args["b"]
+        result = args["a"] + args["b"] if tc.name == "add" else args["a"] * args["b"]
         tool_outputs.append(
             FunctionToolOutputItem.from_tool_result(call_id=tc.call_id, output=result)
         )
@@ -151,7 +148,7 @@ def _execute_parallel_tools(
 @pytest.mark.integration
 class TestLiteLLMParallelToolUse:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(

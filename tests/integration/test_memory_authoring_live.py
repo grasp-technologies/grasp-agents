@@ -11,7 +11,7 @@ Requires OPENAI_API_KEY. Skipped automatically when the env var is absent.
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -28,6 +28,9 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
     OpenAILLMSettings,
 )
 from grasp_agents.tools.file_edit import LocalFileBackend
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 

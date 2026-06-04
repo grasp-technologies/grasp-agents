@@ -119,7 +119,7 @@ class MockLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -133,7 +133,7 @@ class MockLLM(LLM):
 
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -170,7 +170,7 @@ class ErrorLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -183,7 +183,7 @@ class ErrorLLM(LLM):
 
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -316,7 +316,7 @@ class TestRetryBehavior:
 
     @pytest.mark.asyncio
     async def test_api_error_not_retried_by_validation_loop(self):
-        """LlmInternalServerError propagates immediately — validation retries don't catch it."""
+        """LlmInternalServerError propagates immediately; validation won't catch it."""
         llm = ErrorLLM(
             model_name="mock",
             error_to_raise=LlmInternalServerError(
@@ -334,7 +334,7 @@ class TestRetryBehavior:
 
     @pytest.mark.asyncio
     async def test_api_error_not_retried_by_validation_loop_stream(self):
-        """LlmInternalServerError propagates from stream path — validation retries don't catch it."""
+        """LlmInternalServerError propagates from stream; validation won't catch it."""
         llm = ErrorLLM(
             model_name="mock",
             error_to_raise=LlmInternalServerError(

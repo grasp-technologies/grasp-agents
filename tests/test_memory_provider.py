@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import timedelta
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -21,6 +20,9 @@ from grasp_agents.memory import (
 from grasp_agents.memory.default_path import GRASP_MEMORY_ENV
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools.file_edit.local_backend import LocalFileBackend
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _topic_file(path: Path, name: str, body: str = "B") -> Path:

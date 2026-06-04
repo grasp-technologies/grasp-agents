@@ -14,9 +14,8 @@ Verifies:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import BaseModel
@@ -24,7 +23,6 @@ from pydantic import BaseModel
 from grasp_agents.agent.agent_tool import (
     AgentTool,
     AgentToolInput,
-    AgentToolPromptBuilder,
 )
 from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
@@ -49,7 +47,8 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.types.tool import BaseTool
 
-# ruff: noqa: ARG002
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping, Sequence
 
 # ------------------------------------------------------------------ #
 #  Test helpers                                                        #
@@ -654,14 +653,14 @@ class TestToolCopy:
 
     def test_empty_name_raises(self) -> None:
         """Tool with no name raises ValueError."""
+
+        class BadTool(BaseTool[BaseModel, str, None]):
+            description = "no name"
+
+            async def _run(
+                self, inp: BaseModel | None = None, **kwargs: Any
+            ) -> str:  # type: ignore[override]
+                return "ok"
+
         with pytest.raises(ValueError, match="non-empty name"):
-
-            class BadTool(BaseTool[BaseModel, str, None]):
-                description = "no name"
-
-                async def _run(
-                    self, inp: BaseModel | None = None, **kwargs: Any
-                ) -> str:  # type: ignore[override]
-                    return "ok"
-
             BadTool()

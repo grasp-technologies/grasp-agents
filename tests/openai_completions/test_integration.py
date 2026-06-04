@@ -142,10 +142,7 @@ def _execute_parallel_tools(
     tool_outputs: list[FunctionToolOutputItem] = []
     for tc in tool_calls:
         args = json.loads(tc.arguments)
-        if tc.name == "add":
-            result = args["a"] + args["b"]
-        else:
-            result = args["a"] * args["b"]
+        result = args["a"] + args["b"] if tc.name == "add" else args["a"] * args["b"]
         tool_outputs.append(
             FunctionToolOutputItem.from_tool_result(call_id=tc.call_id, output=result)
         )

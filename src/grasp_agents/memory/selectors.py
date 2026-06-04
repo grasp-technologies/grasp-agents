@@ -10,7 +10,7 @@ snapshot down to those entries.
 
 Cost discipline (per call, at Sonnet rates):
 
-* Input: ~300–800 tokens (system + manifest of ~200-cap entries).
+* Input: ~300-800 tokens (system + manifest of ~200-cap entries).
 * Output: capped at 256 tokens via :data:`DEFAULT_MAX_TOKENS`.
 * No conversation history is sent — only the latest user query and
   the metadata-only manifest. Bodies are never serialized into the
@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -152,7 +152,7 @@ def make_llm_relevance_selector(
 
     async def select(
         *,
-        entries: tuple[MemoryEntry, ...],
+        entries: Sequence[MemoryEntry],
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
@@ -238,7 +238,7 @@ def _parse_selected_names(raw_text: str) -> list[str]:
         return []
     if not isinstance(parsed, dict):
         return []
-    names = parsed.get("selected_memories")
+    names = cast("dict[str, Any]", parsed).get("selected_memories")
     if not isinstance(names, list):
         return []
-    return [str(n) for n in names if isinstance(n, str)]
+    return [n for n in cast("list[object]", names) if isinstance(n, str)]

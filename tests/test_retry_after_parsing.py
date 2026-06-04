@@ -9,7 +9,7 @@ Gemini, LiteLLM), so these tests lock in the parser contract once.
 import httpx
 import pytest
 
-from grasp_agents.llm_providers._http_helpers import parse_retry_after  # noqa: PLC2701
+from grasp_agents.llm_providers._http_helpers import parse_retry_after
 
 
 def _response_with_header(value: str | None) -> httpx.Response:

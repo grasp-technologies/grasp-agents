@@ -8,9 +8,10 @@ If no TracerProvider is configured by the application, all spans are no-ops.
 import inspect
 import json
 import os
+import re
 import traceback
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from functools import wraps
 from logging import getLogger
 from typing import Any, TypeVar, cast, overload
@@ -25,7 +26,7 @@ logger = getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class SpanKind(str, Enum):
+class SpanKind(StrEnum):
     WORKFLOW = "workflow"
     TASK = "task"
     AGENT = "agent"
@@ -225,8 +226,6 @@ def _is_async(fn: Callable[..., Any]) -> bool:
 
 
 def _camel_to_snake(name: str) -> str:
-    import re
-
     s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 

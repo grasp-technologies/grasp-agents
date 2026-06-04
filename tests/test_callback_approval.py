@@ -327,7 +327,8 @@ class TestDenyPath:
         # {name} substituted
         assert "Blocked echo with args" in text
         # {arguments} substituted (content visible through JSON escaping)
-        assert "text" in text and '\\"x\\"' in text
+        assert "text" in text
+        assert '\\"x\\"' in text
 
 
 class TestToolNameFilter:

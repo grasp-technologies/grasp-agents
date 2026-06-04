@@ -273,7 +273,7 @@ class TestRetryPolicyAlignment:
                 ),
                 False,
             ),
-            (lambda: LlmContentFilterError(), False),
+            (LlmContentFilterError, False),
             # Non-LlmError should not be retryable via this API.
             (lambda: RuntimeError("mystery"), False),
         ],

@@ -8,7 +8,7 @@ Skipped by default. Run with:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import BaseModel, Field
@@ -24,10 +24,12 @@ from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
-from grasp_agents.types.io import ProcName
 from grasp_agents.types.items import FunctionToolCallItem, FunctionToolOutputItem
 from grasp_agents.types.tool import BaseTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
+
+if TYPE_CHECKING:
+    from grasp_agents.types.io import ProcName
 
 # ---------- Schemas ----------
 
@@ -140,7 +142,7 @@ class TestRunnerWithAgents:
     """Runner graph with real LLMAgent nodes."""
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> Any:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> Any:
         return _make_llm()
 
     @pytest.mark.asyncio
@@ -182,7 +184,7 @@ class TestParallelProcessorWithAgents:
     """ParallelProcessor fan-out with real LLMAgent workers."""
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> Any:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> Any:
         return _make_llm()
 
     @pytest.mark.asyncio
@@ -214,7 +216,7 @@ class TestRunnerParallelFanout:
     """Runner: Splitter → ParallelProcessor(writer) → Collector → END."""
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> Any:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> Any:
         return _make_llm(500, structured=True)
 
     @pytest.mark.asyncio
@@ -271,7 +273,7 @@ class TestRunnerDurability:
     """Runner checkpoint with real LLM agents."""
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> Any:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> Any:
         return _make_llm()
 
     @pytest.mark.asyncio
@@ -318,7 +320,7 @@ class TestSequentialWorkflowInRunner:
     """SequentialWorkflow as a node inside a Runner graph."""
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> Any:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> Any:
         return _make_llm()
 
     @pytest.mark.asyncio
@@ -415,7 +417,7 @@ class TestAgentCrashResume:
     @pytest.mark.asyncio
     async def test_agent_checkpoint_survives_downstream_crash(
         self,
-        openai_api_key: str,  # noqa: ARG002
+        openai_api_key: str,
     ) -> None:
         """
         Runner: entry → calculator (add tool) → crasher → END.
@@ -505,7 +507,7 @@ class TestAgentCrashResume:
     @pytest.mark.asyncio
     async def test_agent_resumes_mid_tool_loop(
         self,
-        openai_api_key: str,  # noqa: ARG002
+        openai_api_key: str,
     ) -> None:
         """
         Runner: entry → calculator (add tool, crashes on turn 2) → END.
@@ -538,7 +540,7 @@ class TestAgentCrashResume:
             *,
             exec_id: Any,
             turn: int,
-            extra_llm_settings: Any,  # noqa: ARG001
+            extra_llm_settings: Any,
         ) -> None:
             turn_counter["count"] += 1
             if turn_counter["count"] == 2:
@@ -621,7 +623,7 @@ class TestWorkflowCrashResume:
     @pytest.mark.asyncio
     async def test_workflow_resumes_after_step_failure(
         self,
-        openai_api_key: str,  # noqa: ARG002
+        openai_api_key: str,
     ) -> None:
         """
         Runner: entry → SequentialWorkflow(drafter → refiner) → END.

@@ -67,7 +67,10 @@ async def main():
         messages=[
             {
                 "role": "user",
-                "content": "Fetch https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf and tell me what it contains.",
+                "content": (
+                    "Fetch https://www.w3.org/WAI/ER/tests/xhtml/testfiles"
+                    "/resources/pdf/dummy.pdf and tell me what it contains."
+                ),
             }
         ],
     )

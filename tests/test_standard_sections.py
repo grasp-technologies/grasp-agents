@@ -137,7 +137,7 @@ class TestEnvInfoAgentWiring:
 @pytest.fixture
 def mcp_section_factory() -> Any:
     pytest.importorskip("mcp")
-    from grasp_agents import make_mcp_instructions_section  # noqa: PLC0415
+    from grasp_agents import make_mcp_instructions_section
 
     return make_mcp_instructions_section
 

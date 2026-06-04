@@ -26,7 +26,7 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel
 
-from grasp_agents.agent.agent_loop import AgentLoop, ResponseCapture
+from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
@@ -524,8 +524,8 @@ class TestMultipleBackgroundTasks:
         # Same set of task IDs
         assert set(launched_ids) == set(completed_ids)
         # Tool names match per task_id
-        for tid in launched_ids:
-            assert launched_ids[tid] == completed_ids[tid]
+        for tid, name in launched_ids.items():
+            assert name == completed_ids[tid]
 
         # Placeholder tool outputs contain the matching task IDs
         from grasp_agents.types.events import ToolMessageEvent

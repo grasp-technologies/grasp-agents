@@ -89,7 +89,7 @@ class _FakeSession:
         if text is None:
             msg = f"resource {uri!s} not found"
             raise RuntimeError(msg)
-        from mcp.types import TextResourceContents  # noqa: PLC0415
+        from mcp.types import TextResourceContents
 
         return _FakeReadResult(
             contents=[

@@ -123,7 +123,8 @@ class AutoInstanceAttributesMixin:
                     if _all_resolved():
                         break
 
-                # Fallback to standard generic introspection if not fully resolved by Pydantic check
+                # Fall back to standard generic introspection if the
+                # Pydantic check did not fully resolve.
                 if not _all_resolved():
                     mro_candidate_origin = getattr(mro_candidate, "__origin__", None)
                     if mro_candidate_origin is target_generic_base:

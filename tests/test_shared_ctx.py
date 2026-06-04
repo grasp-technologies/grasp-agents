@@ -11,14 +11,18 @@ silently resolved.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext, shared_child_ctx
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
-from grasp_agents.types.io import ProcName
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
+
+if TYPE_CHECKING:
+    from grasp_agents.types.io import ProcName
 
 
 class _Pass(Processor[str, str, None]):

@@ -1,4 +1,4 @@
-"""Tests for tool error handling: timeout, on_error hook, concurrent tool failure isolation."""
+"""Tool error handling: timeout, on_error hook, concurrent failure isolation."""
 
 import asyncio
 from typing import Any
@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.run_context import RunContext
-from grasp_agents.types.events import ToolErrorEvent, ToolErrorInfo, ToolOutputEvent
+from grasp_agents.types.events import ToolErrorEvent, ToolErrorInfo
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 
 # ---------- Test tools ----------

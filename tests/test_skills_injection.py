@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.agent.prompt_builder import SystemPromptSection
 from grasp_agents.run_context import RunContext
 from grasp_agents.skills import (
     Skill,
@@ -18,6 +17,9 @@ from grasp_agents.skills import (
     render_available_skills_block,
     render_skill_instructions,
 )
+
+if TYPE_CHECKING:
+    from grasp_agents.agent.prompt_builder import SystemPromptSection
 
 
 async def _run_section(
@@ -208,10 +210,7 @@ class TestRenderSkillInstructions:
 class TestMakeSkillsSection:
     def _ctx(self, skills: list[Skill] | None = None) -> RunContext[Any]:
         registry: SkillRegistry | None
-        if skills is None:
-            registry = None
-        else:
-            registry = SkillRegistry(skills)
+        registry = None if skills is None else SkillRegistry(skills)
         return RunContext[Any](skills=registry)
 
     @pytest.mark.anyio

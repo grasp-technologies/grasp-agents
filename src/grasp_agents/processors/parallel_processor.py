@@ -134,7 +134,7 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
             )
         if in_args is None:
             raise ProcInputValidationError(
-                message=f"ParallelProcessor {self.name} requires in_args to be provided",
+                message=f"ParallelProcessor {self.name} requires in_args",
                 **err_kwargs,
             )
 

@@ -173,9 +173,9 @@ async def test_concurrent_same_key_serializes(tmp_path: Path) -> None:
 )
 async def test_invalid_keys_rejected(tmp_path: Path, bad_key: str) -> None:
     store = FileCheckpointStore(tmp_path)
-    with pytest.raises(ValueError):  # noqa: PT011
+    with pytest.raises(ValueError):
         await store.save(bad_key, b"x")
-    with pytest.raises(ValueError):  # noqa: PT011
+    with pytest.raises(ValueError):
         await store.load(bad_key)
 
 

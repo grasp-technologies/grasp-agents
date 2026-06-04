@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
-from collections.abc import Iterator
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -34,6 +32,10 @@ from grasp_agents.tools.file_edit import (
     set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 pytestmark = pytest.mark.asyncio
 
@@ -124,7 +126,7 @@ async def test_edit_refuses_when_old_equals_new(
     assert "identical" in _error_message(result)
 
 
-async def test_edit_empty_old_string_rejected_by_schema() -> None:  # noqa: RUF029
+async def test_edit_empty_old_string_rejected_by_schema() -> None:
     # Pydantic ``min_length=1`` rejects before the tool runs. This test is
     # synchronous logic but declared ``async`` because the module-level
     # pytestmark enforces the asyncio decorator on every test.

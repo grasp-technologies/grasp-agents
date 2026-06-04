@@ -8,9 +8,7 @@ agent loop sees tool calls. The :func:`_error_message` helper unwraps.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -27,6 +25,10 @@ from grasp_agents.tools.file_edit import (
     set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 pytestmark = pytest.mark.asyncio
 

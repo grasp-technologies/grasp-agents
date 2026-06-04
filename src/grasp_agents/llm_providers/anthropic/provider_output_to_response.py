@@ -174,17 +174,16 @@ def _extract_web_search_data(
     sources: list[SearchSource] = []
     encrypted: dict[str, str] = {}
 
-    if isinstance(result_block.content, list):
-        for result in result_block.content:
-            sources.append(
-                SearchSource(
-                    url=result.url,
-                    title=result.title,
-                    page_age=result.page_age,
-                )
+    for result in result_block.content:
+        sources.append(
+            SearchSource(
+                url=result.url,
+                title=result.title,
+                page_age=result.page_age,
             )
-            if result.encrypted_content:
-                encrypted[result.url] = result.encrypted_content
+        )
+        if result.encrypted_content:
+            encrypted[result.url] = result.encrypted_content
 
     return WebSearchCallItem(
         id=item_id,

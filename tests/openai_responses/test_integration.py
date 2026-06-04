@@ -24,7 +24,6 @@ from grasp_agents.types.items import (
     WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
-    OutputItemDone,
     OutputMessageTextPartTextDelta,
     ResponseCompleted,
 )
@@ -42,7 +41,7 @@ class Capital(BaseModel):
 @pytest.mark.integration
 class TestOpenAIResponsesIntegration:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )
@@ -104,7 +103,7 @@ class TestOpenAIResponsesIntegration:
 @pytest.mark.integration
 class TestOpenAIResponsesStructuredOutput:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )
@@ -145,7 +144,7 @@ class TestOpenAIResponsesStructuredOutput:
 @pytest.mark.integration
 class TestOpenAIResponsesWebSearch:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )
@@ -226,7 +225,7 @@ class TestOpenAIResponsesReasoningContinuity:
     """
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )
@@ -328,7 +327,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
     """
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )
@@ -382,7 +381,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
 
         full_input = [user_msg, *corrupted_items, *tool_outputs]
 
-        with pytest.raises(Exception):  # noqa: B017, PT011
+        with pytest.raises(Exception):
             await llm.generate_response(full_input, tools=tools)
 
     @pytest.mark.asyncio
@@ -424,7 +423,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
 
         full_input = [user_msg, *stripped_items, *tool_outputs]
 
-        with pytest.raises(Exception):  # noqa: B017, PT011
+        with pytest.raises(Exception):
             await llm.generate_response(full_input, tools=tools)
 
 
@@ -433,7 +432,7 @@ class TestOpenAIResponsesWebFetch:
     """Web search with browsing can produce OpenPageAction items."""
 
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )
@@ -567,10 +566,7 @@ def _execute_parallel_tools(
     tool_outputs: list[FunctionToolOutputItem] = []
     for tc in tool_calls:
         args = json.loads(tc.arguments)
-        if tc.name == "add":
-            result = args["a"] + args["b"]
-        else:
-            result = args["a"] * args["b"]
+        result = args["a"] + args["b"] if tc.name == "add" else args["a"] * args["b"]
         tool_outputs.append(
             FunctionToolOutputItem.from_tool_result(call_id=tc.call_id, output=result)
         )
@@ -580,7 +576,7 @@ def _execute_parallel_tools(
 @pytest.mark.integration
 class TestOpenAIResponsesParallelToolUse:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )

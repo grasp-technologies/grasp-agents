@@ -12,8 +12,7 @@ Read → Write flow via ctx + the agent-state ContextVar.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -33,6 +32,9 @@ from grasp_agents.tools.file_edit import (
     set_current_file_edit_state,
 )
 from grasp_agents.tools.file_search import GlobTool, GrepTool
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_toolkit_returns_all_six_tools() -> None:
@@ -66,17 +68,17 @@ def test_per_tool_accessors() -> None:
 def test_passes_redactor_to_read() -> None:
     redactor = NullRedactor()
     tk = FileToolkit(redactor=redactor)
-    assert tk.read._redactor is redactor  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert tk.read._redactor is redactor  # pyright: ignore[reportPrivateUsage]
 
 
 def test_passes_new_file_mode_to_write() -> None:
     tk = FileToolkit(new_file_mode=0o640)
-    assert tk.write._new_file_mode == 0o640  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert tk.write._new_file_mode == 0o640  # pyright: ignore[reportPrivateUsage]
 
 
 def test_passes_max_file_bytes_to_read() -> None:
     tk = FileToolkit(max_file_bytes=123)
-    assert tk.read._max_file_bytes == 123  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert tk.read._max_file_bytes == 123  # pyright: ignore[reportPrivateUsage]
 
 
 def test_timeout_propagates_to_tools() -> None:
@@ -89,7 +91,7 @@ def test_timeout_propagates_to_tools() -> None:
 @pytest.mark.parametrize("include_hidden", [True, False])
 def test_glob_hidden_flag_propagates(include_hidden: bool) -> None:
     tk = FileToolkit(glob_include_hidden=include_hidden)
-    assert tk.glob._include_hidden is include_hidden  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert tk.glob._include_hidden is include_hidden  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio

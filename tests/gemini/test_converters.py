@@ -115,7 +115,7 @@ async def _collect_events(
     """Run GeminiStreamConverter on a list of response chunks."""
     converter = GeminiStreamConverter(model="gemini-2.0-flash")
 
-    async def chunk_stream():  # noqa: RUF029
+    async def chunk_stream():
         for chunk in chunks:
             yield chunk
 
@@ -647,7 +647,7 @@ class TestResponseToProviderInputs:
         assert contents[1].parts[1].text == "Done"  # pyright: ignore[reportUnknownMemberType]
 
     def test_reasoning_encrypted_content_ignored(self):
-        """Gemini doesn't use signatures on thinking parts — encrypted_content is ignored."""
+        """Gemini has no signatures on thinking parts; encrypted_content ignored."""
         items = [
             InputMessageItem.from_text("Think"),
             ReasoningItem(
@@ -686,9 +686,9 @@ class _WeatherTool(BaseTool[_WeatherInput, str, None]):
         self,
         inp: _WeatherInput,
         *,
-        ctx: Any = None,  # noqa: ARG002
-        exec_id: str | None = None,  # noqa: ARG002
-        progress_callback: Any = None,  # noqa: ARG002
+        ctx: Any = None,
+        exec_id: str | None = None,
+        progress_callback: Any = None,
     ) -> str:
         return f"Weather in {inp.city}"
 
@@ -884,7 +884,7 @@ class TestGeminiStreamConverter:
         assert text_deltas[0].delta == "Answer: 42"
 
     def test_thinking_parts_have_no_signature(self):
-        """Gemini doesn't put signatures on thinking parts — encrypted_content stays None."""
+        """Gemini puts no signatures on thinking parts; encrypted_content None."""
         chunks = [
             _thinking_chunk("Reasoning..."),
             _text_chunk("Result"),
@@ -1070,7 +1070,7 @@ class TestUrlContextExtraction:
         )
         items = _gemini_response_to_items(resp)
 
-        wf = [i for i in items if isinstance(i, WebSearchCallItem)][0]
+        wf = next(i for i in items if isinstance(i, WebSearchCallItem))
         assert wf.status == "failed"
         assert isinstance(wf.action, OpenPageAction)
         assert wf.provider_specific_fields is not None
@@ -1091,7 +1091,7 @@ class TestUrlContextExtraction:
         )
         items = _gemini_response_to_items(resp)
 
-        wf = [i for i in items if isinstance(i, WebSearchCallItem)][0]
+        wf = next(i for i in items if isinstance(i, WebSearchCallItem))
         assert wf.status == "failed"
 
     def test_empty(self):

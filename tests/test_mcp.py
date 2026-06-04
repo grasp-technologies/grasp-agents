@@ -4,7 +4,6 @@ Tests for MCP client integration.
 Uses the test MCP server at tests/mcp_test_server.py via stdio transport.
 """
 
-import asyncio
 import math
 import sys
 from pathlib import Path
@@ -470,7 +469,7 @@ class TestMCPClient:
             in_type = tools["add"].in_type
             assert issubclass(in_type, BaseModel)
             # Should accept a=1, b=2
-            instance = in_type(a=1, b=2)
+            instance = in_type.model_validate({"a": 1, "b": 2})
             assert instance.model_dump() == {"a": 1, "b": 2}
 
     @pytest.mark.asyncio
@@ -525,7 +524,7 @@ class TestMCPClient:
 
     @pytest.mark.asyncio
     async def test_structured_output_result(self) -> None:
-        """Calling a structured output tool returns McpToolResult with structuredContent."""
+        """Structured-output tool returns McpToolResult with structuredContent."""
         async with MCPClient("test", server=_SERVER_CONFIG) as client:
             tools = {t.name: t for t in client.tools()}
             multiply = tools["multiply"]

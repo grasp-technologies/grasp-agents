@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from openai.types.responses import Response as OAIResponse
 
@@ -49,10 +49,11 @@ class TestResponsesToolConverters:
         assert to_api_tool_choice("required") == "required"
 
     def test_to_api_tool_choice_named(self) -> None:
-        result = to_api_tool_choice(NamedToolChoice(name="add"))
-
-        assert result["type"] == "function"
-        assert result["name"] == "add"
+        named = cast(
+            "dict[str, Any]", to_api_tool_choice(NamedToolChoice(name="add"))
+        )
+        assert named["type"] == "function"
+        assert named["name"] == "add"
 
 
 # ==== WebSearchCallItem with OpenPageAction ====
@@ -77,7 +78,7 @@ _BASE_RESPONSE: dict[str, Any] = {
 
 
 def _make_oai_response_with_web_fetch() -> OAIResponse:
-    """Build a minimal OpenAI Response containing a web_search_call with OpenPageAction."""
+    """Build a minimal OpenAI Response with a web_search_call OpenPageAction."""
     return OAIResponse.model_validate(
         {
             **_BASE_RESPONSE,

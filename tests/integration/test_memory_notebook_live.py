@@ -11,9 +11,7 @@ sweep models / retry budgets.
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -32,6 +30,10 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
     OpenAILLMSettings,
 )
 from grasp_agents.tools.file_edit import LocalFileBackend
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
 
 pytestmark = pytest.mark.anyio
 

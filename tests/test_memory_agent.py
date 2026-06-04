@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import BaseModel
@@ -19,6 +18,9 @@ from grasp_agents.run_context import RunContext
 from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
     MockLLM,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class _State(BaseModel):
@@ -66,7 +68,7 @@ class TestEnableMemory:
         assert "memory" not in names
         # And no relevant_memories attachment either.
         attachment_names = [
-            a.name for a in agent._prompt_builder.input_attachments  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            a.name for a in agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
         ]
         assert "relevant_memories" not in attachment_names
 

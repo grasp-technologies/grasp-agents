@@ -92,10 +92,8 @@ async def test_sibling_activations_dont_leak() -> None:
             active = get_current_file_edit_state()
             assert active is child
             # Parent record is invisible from inside the child's slot.
-            assert (
-                active is not None
-                and active.get_read_record(Path("/tmp/parent-read")) is None
-            )
+            assert active is not None
+            assert active.get_read_record(Path("/tmp/parent-read")) is None
             child.record_read(Path("/tmp/child-read"), 2.0)
         finally:
             reset_current_file_edit_state(child_token)
@@ -116,13 +114,13 @@ async def test_agent_loop_owns_distinct_state_per_instance() -> None:
     """
     # Import lazily so the test module doesn't pay LLMAgent's import
     # cost when run in isolation.
-    from pydantic import BaseModel  # noqa: PLC0415
+    from pydantic import BaseModel
 
-    from grasp_agents.agent.agent_loop import AgentLoop  # noqa: PLC0415
-    from grasp_agents.agent.llm_agent_transcript import (  # noqa: PLC0415
+    from grasp_agents.agent.agent_loop import AgentLoop
+    from grasp_agents.agent.llm_agent_transcript import (
         LLMAgentTranscript,
     )
-    from grasp_agents.run_context import RunContext  # noqa: PLC0415
+    from grasp_agents.run_context import RunContext
 
     class _StubLLM:
         model_name = "stub"

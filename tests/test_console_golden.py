@@ -85,7 +85,7 @@ def _make_console(**kwargs: Any) -> tuple[EventConsole, StringIO]:
 
 
 async def _collect(ec: EventConsole, events: list[Event[Any]]) -> None:
-    async def gen():  # noqa: RUF029
+    async def gen():
         for e in events:
             yield e
 
@@ -111,7 +111,7 @@ def _assert_golden(actual: str, name: str, *, update: bool) -> None:
 
     expected = golden_path.read_text()
     if clean != expected:
-        import difflib  # noqa: PLC0415
+        import difflib
 
         diff = difflib.unified_diff(
             expected.splitlines(keepends=True),

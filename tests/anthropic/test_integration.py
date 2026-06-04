@@ -239,7 +239,7 @@ class TestAnthropicReasoningContinuity:
 
         full_input = [user_msg, *corrupted_items, *tool_outputs]
 
-        with pytest.raises(Exception):  # noqa: B017, PT011
+        with pytest.raises(Exception):
             await llm.generate_response(full_input, tools=tools)
 
     @pytest.mark.asyncio
@@ -275,7 +275,7 @@ class TestAnthropicReasoningContinuity:
 
         full_input = [user_msg, *stripped_items, *tool_outputs]
 
-        with pytest.raises(Exception):  # noqa: B017, PT011
+        with pytest.raises(Exception):
             await llm.generate_response(full_input, tools=tools)
 
 
@@ -574,10 +574,7 @@ def _execute_parallel_tools(
     tool_outputs: list[FunctionToolOutputItem] = []
     for tc in tool_calls:
         args = json.loads(tc.arguments)
-        if tc.name == "add":
-            result = args["a"] + args["b"]
-        else:
-            result = args["a"] * args["b"]
+        result = args["a"] + args["b"] if tc.name == "add" else args["a"] * args["b"]
         tool_outputs.append(
             FunctionToolOutputItem.from_tool_result(call_id=tc.call_id, output=result)
         )

@@ -43,7 +43,9 @@ async def main():
             messages=[
                 {
                     "role": "user",
-                    "content": "Fetch https://httpbin.org/html and summarize it briefly.",
+                    "content": (
+                        "Fetch https://httpbin.org/html and summarize it briefly."
+                    ),
                 },
                 {"role": "assistant", "content": msg1.content},
                 {
@@ -63,11 +65,11 @@ async def main():
         b
         for b in msg1.content
         if b.type
-        not in (
+        not in {
             "web_fetch_tool_result",
             "server_tool_use",
             "code_execution_tool_result",
-        )
+        }
     ]
     if not stripped:
         stripped = msg1.content  # fallback if everything was stripped
@@ -79,7 +81,9 @@ async def main():
             messages=[
                 {
                     "role": "user",
-                    "content": "Fetch https://httpbin.org/html and summarize it briefly.",
+                    "content": (
+                        "Fetch https://httpbin.org/html and summarize it briefly."
+                    ),
                 },
                 {"role": "assistant", "content": stripped},
                 {

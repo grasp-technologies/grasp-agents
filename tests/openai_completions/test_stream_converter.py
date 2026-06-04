@@ -9,9 +9,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
 
-import pytest
 from openai.types import CompletionUsage
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
@@ -36,9 +34,7 @@ from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs as convert_completion_logprobs,
 )
 from grasp_agents.types.content import (
-    OutputMessageRefusal,
     OutputMessageText,
-    ReasoningSummary,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -57,8 +53,6 @@ from grasp_agents.types.llm_events import (
     OutputMessageRefusalPartDone,
     OutputMessageTextPartTextDelta,
     OutputMessageTextPartTextDone,
-    ReasoningSummaryPartAdded,
-    ReasoningSummaryPartDone,
     ReasoningSummaryPartTextDelta,
     ReasoningSummaryPartTextDone,
     ResponseCompleted,
@@ -1297,7 +1291,7 @@ class TestLiteLLMThinkingBlocks:
             e for e in events if isinstance(e, (OutputItemAdded, OutputItemDone))
         ]
         reasoning_events = [e for e in item_events if isinstance(e.item, ReasoningItem)]
-        # 2 items × (Added + Done) = 4 events, all before message
+        # 2 items x (Added + Done) = 4 events, all before message
         assert len(reasoning_events) == 4
         done_items = [
             e.item

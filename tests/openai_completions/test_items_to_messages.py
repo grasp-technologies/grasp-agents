@@ -7,8 +7,6 @@ to Chat Completions message format for the Completions API providers.
 
 import json
 
-import pytest
-
 from grasp_agents.llm_providers.openai_completions.response_to_provider_inputs import (
     items_to_provider_inputs as items_to_completions_messages,
 )
@@ -201,7 +199,7 @@ class TestToolOutputConversion:
 
 class TestReasoningConversion:
     def test_reasoning_grouped_with_output(self):
-        """ReasoningItem + OutputMessageItem → single assistant message with thinking_blocks."""
+        """ReasoningItem + OutputMessageItem → assistant msg with thinking_blocks."""
         reasoning = ReasoningItem(content_parts=[ReasoningText(text="Let me think...")])
         user = InputMessageItem.from_text("What is 2+2?", role="user")
         output = OutputMessageItem(
@@ -291,7 +289,7 @@ class TestReasoningConversion:
         assert blocks[2]["thinking"] == "Step 3"
 
     def test_reasoning_with_tool_calls_no_output(self):
-        """ReasoningItem followed by tool calls (no OutputMessageItem) → assistant msg."""
+        """ReasoningItem + tool calls (no OutputMessageItem) → assistant msg."""
         reasoning = ReasoningItem(
             content_parts=[ReasoningText(text="I need to search")],
         )
@@ -308,7 +306,7 @@ class TestReasoningConversion:
         assert msgs[0]["thinking_blocks"][0]["thinking"] == "I need to search"
 
     def test_reasoning_standalone(self):
-        """ReasoningItem not followed by output or tool calls → standalone assistant msg."""
+        """ReasoningItem with no output or tool calls → standalone assistant msg."""
         reasoning = ReasoningItem(content_parts=[ReasoningText(text="Just thinking")])
         user = InputMessageItem.from_text("Next question", role="user")
 
@@ -321,7 +319,7 @@ class TestReasoningConversion:
         assert msgs[1]["role"] == "user"
 
     def test_reasoning_output_tool_calls_all_grouped(self):
-        """ReasoningItem + OutputMessageItem + FunctionToolCallItems → single message."""
+        """ReasoningItem + OutputMessageItem + FunctionToolCallItems → one message."""
         reasoning = ReasoningItem(
             content_parts=[ReasoningText(text="Let me check two things")],
             encrypted_content="sig_xyz",
@@ -349,7 +347,7 @@ class TestReasoningConversion:
 
 class TestFullConversation:
     def test_multi_turn_with_tool_use(self):
-        """Full multi-turn conversation: system → user → assistant+tools → tool_output → assistant."""
+        """Multi-turn: system → user → assistant+tools → tool_output → assistant."""
         items = [
             InputMessageItem.from_text("You are a calculator.", role="system"),
             InputMessageItem.from_text("What is 15 * 7?", role="user"),
@@ -432,9 +430,8 @@ class TestFullConversation:
         """Empty items list → empty messages list."""
         assert items_to_completions_messages([]) == []
 
-    @pytest.mark.xfail(reason="Unknown item filtering not yet implemented")
     def test_unknown_item_type_skipped(self):
-        """Unknown item types are silently skipped."""
+        """Unknown item types grouped with assistant output are silently skipped."""
         items = [
             InputMessageItem.from_text("Hello", role="user"),
             {"type": "unknown", "data": "something"},  # not a recognized item

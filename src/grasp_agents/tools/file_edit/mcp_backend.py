@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ...mcp.resource_index import AnyUrl, MCPResourceIndex
 from .backend import FileBackend, FileEntry, FileStat, GrepRawResult
@@ -49,7 +49,10 @@ except ImportError as _err:
     raise ImportError(msg) from _err
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
+
+    from mcp.types import ContentBlock
 
     from ...mcp.client import MCPClient
     from .paths import AccessMode
@@ -216,9 +219,8 @@ class MCPFileBackend(FileBackend):
             raise OSError(f"MCP resources/read for {uri!r} failed: {exc}") from exc
         for content in result.contents:
             if isinstance(content, TextResourceContents):
-                meta = getattr(content, "meta", None) or {}
-                mtime_ms = meta.get("mtime_ms") if isinstance(meta, dict) else None
-                mtime = _ms_to_seconds(mtime_ms)
+                meta = content.meta or {}
+                mtime = _ms_to_seconds(meta.get("mtime_ms"))
                 return content.text, mtime
         raise OSError(f"MCP resources/read for {uri!r} returned no text content.")
 
@@ -354,17 +356,15 @@ def _ms_to_seconds(raw: Any) -> float:
         return 0.0
 
 
-def _text_payload(content: Any) -> str:
-    if not isinstance(content, list):
-        return str(content)
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, TextContent):
-            parts.append(block.text)
-    return "\n".join(parts)
+def _text_payload(content: Sequence[ContentBlock]) -> str:
+    return "\n".join(
+        block.text for block in content if isinstance(block, TextContent)
+    )
 
 
-def _parse_json_payload(content: Any, tool_name: str) -> dict[str, Any]:
+def _parse_json_payload(
+    content: Sequence[ContentBlock], tool_name: str
+) -> dict[str, Any]:
     raw = _text_payload(content).strip()
     if not raw:
         return {}
@@ -376,4 +376,4 @@ def _parse_json_payload(content: Any, tool_name: str) -> dict[str, Any]:
         ) from exc
     if not isinstance(parsed, dict):
         raise OSError(f"MCP {tool_name} returned non-object JSON: {raw[:160]!r}")
-    return parsed
+    return cast("dict[str, Any]", parsed)

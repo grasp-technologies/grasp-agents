@@ -136,7 +136,9 @@ class Response(_SDKResponse):
 
     # conversation: Conversation | None = None
     # prompt: ResponsePrompt | None = None
-    # service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
+    # service_tier: (
+    #     Literal["auto", "default", "flex", "scale", "priority"] | None
+    # ) = None
 
     # Override the SDK's strict literal — OpenAI started returning the
     # snake-case variant ``"in_memory"`` which the SDK's literal

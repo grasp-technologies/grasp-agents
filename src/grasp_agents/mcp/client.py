@@ -17,7 +17,10 @@ try:
         ServerCapabilities,
     )
 except ImportError as _err:
-    msg = "MCP support requires the 'mcp' package. Install with: pip install grasp-agents[mcp]"
+    msg = (
+        "MCP support requires the 'mcp' package. "
+        "Install with: pip install grasp-agents[mcp]"
+    )
     raise ImportError(msg) from _err
 
 _logger = logging.getLogger(__name__)
@@ -51,7 +54,8 @@ class MCPClient:
 
     Usage::
 
-        async with MCPClient("my-server", server=MCPServerStdio(command="python", args=["server.py"])) as client:
+        server = MCPServerStdio(command="python", args=["server.py"])
+        async with MCPClient("my-server", server=server) as client:
             tools = client.tools()
             agent = LLMAgent(..., tools=tools)
     """
@@ -118,7 +122,8 @@ class MCPClient:
             )
         else:
             try:
-                from mcp.client.sse import sse_client
+                # Deferred: SSE transport needs the optional httpx-sse extra.
+                from mcp.client.sse import sse_client  # noqa: PLC0415
             except ImportError as err:
                 msg = "SSE transport requires the 'mcp' package with httpx-sse support."
                 raise ImportError(msg) from err

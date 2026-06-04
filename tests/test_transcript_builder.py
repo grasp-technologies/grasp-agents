@@ -8,8 +8,7 @@ flattened string, so a custom builder can preserve each part's
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -23,6 +22,9 @@ from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[re
     MockLLM,
     _text_response,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def _cached_section() -> SystemPromptSection:

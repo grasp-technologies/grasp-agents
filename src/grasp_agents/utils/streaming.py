@@ -107,7 +107,7 @@ _F = TypeVar("_F")
 
 
 class MissingFinalEventError(RuntimeError):
-    """Raised when the stream finishes without encountering the required final event type."""
+    """The stream finished without the required final event type."""
 
 
 class EventStream(AsyncIterator[Event[Any]], Generic[_F]):

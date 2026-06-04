@@ -13,9 +13,8 @@ it on never re-enables a child that opted out.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 from pydantic import BaseModel
@@ -26,12 +25,14 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.processor_tool import ProcessorTool
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
-from grasp_agents.types.llm_events import LlmEvent
-from grasp_agents.types.response import Response
-from grasp_agents.types.tool import BaseTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
-# ruff: noqa: ARG002, SLF001
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping, Sequence
+
+    from grasp_agents.types.llm_events import LlmEvent
+    from grasp_agents.types.response import Response
+    from grasp_agents.types.tool import BaseTool
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ class _StubLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: Sequence[Any],  # noqa: A002
+        input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -53,7 +54,7 @@ class _StubLLM(LLM):
 
     async def _generate_response_stream_once(
         self,
-        input: Sequence[Any],  # noqa: A002
+        input: Sequence[Any],
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -194,7 +195,7 @@ def test_enabled_is_noop_for_parent_without_the_flag() -> None:
     # so it imposes no tracing restriction.
     class _RunnerLike:
         ctx = RunContext[None]()
-        path = ["runner"]
+        path: ClassVar[list[str]] = ["runner"]
 
     agent.on_adopted(_RunnerLike())
     assert agent.tracing_enabled is True

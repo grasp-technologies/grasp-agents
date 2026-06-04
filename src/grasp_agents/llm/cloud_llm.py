@@ -117,6 +117,7 @@ class CloudLLM(LLM):
         Returns None for unrecognized exceptions (passed through as-is).
         Override in provider subclasses.
         """
+        del err
         return None
 
     # --- LLM interface implementation ---

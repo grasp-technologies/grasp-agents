@@ -40,8 +40,9 @@ def render_memory_instructions(
     The block describes the memory system (taxonomy, frontmatter format,
     index discipline, save/load loop).
 
-    ``has_selector`` gates the "topic memories are surfaced into each turn automatically"
-    line, because that claim is only true when a selector is registered.
+    ``has_selector`` gates the "topic memories are surfaced into each turn
+    automatically" line, because that claim is only true when a selector is
+    registered.
 
     ``memdir`` is the memdir path (in the backend's address space)
     surfaced verbatim in the prompt when provided, so the model knows
@@ -90,9 +91,11 @@ def render_memory_index(
         body.extend(
             [
                 "",
-                f"[truncated — only the first {MAX_INDEX_LINES} lines / "
-                f"{MAX_INDEX_BYTES:,} bytes are shown; "
-                f"there are more entries below]",
+                (
+                    f"[truncated — only the first {MAX_INDEX_LINES} lines / "
+                    f"{MAX_INDEX_BYTES:,} bytes are shown; "
+                    f"there are more entries below]"
+                ),
             ]
         )
     parts.extend(["<memory-index>", "\n".join(body), "</memory-index>"])

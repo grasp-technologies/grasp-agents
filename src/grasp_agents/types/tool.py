@@ -155,7 +155,7 @@ class BaseTool(
     ) -> AsyncIterator[Event[Any]]:
         # Resumable subagent wrappers extend this with a ``session_subpath``
         # kwarg — see :meth:`_run` for the forwarding rule.
-        from .events import ToolOutputEvent  # avoid circular import
+        from .events import ToolOutputEvent  # noqa: PLC0415  (circular import)
 
         out = await self._run(
             inp,
@@ -345,6 +345,7 @@ class BaseTool(
         path: list[str] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         """Resume from a session checkpoint. Override in resumable tools."""
+        del ctx, exec_id, path
         raise NotImplementedError(f"{type(self).__name__} does not support resume")
         yield  # type: ignore[unreachable]  # makes this an async generator
 

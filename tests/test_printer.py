@@ -1,8 +1,5 @@
 """Tests for Printer with Responses API items and LLMStreamEvent."""
 
-import asyncio
-from unittest.mock import patch
-
 import pytest
 
 from grasp_agents.printer import (
@@ -35,7 +32,6 @@ from grasp_agents.types.llm_events import (
     OutputItemAdded,
     OutputItemDone,
     OutputMessageTextPartTextDelta,
-    ReasoningSummaryPartTextDelta,
     ResponseCreated,
 )
 from grasp_agents.types.response import Response
@@ -59,7 +55,6 @@ class TestGetStyle:
         """Agent-based coloring is deterministic per agent name."""
         c1 = get_style(agent_name="agent_a", color_by="agent")
         c2 = get_style(agent_name="agent_a", color_by="agent")
-        c3 = get_style(agent_name="agent_b", color_by="agent")
 
         assert c1 == c2  # same agent → same color
         # different agents may or may not have different colors (hash collision)

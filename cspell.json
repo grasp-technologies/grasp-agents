@@ -29,6 +29,8 @@
                 "ANNOT",
                 "bwrap",
                 "coro",
+                "dedup",
+                "dones",
                 "dtracehelper",
                 "e2b",
                 "evts",
@@ -51,7 +53,9 @@
                 "setrlimit",
                 "seatbelt",
                 "setsid",
+                "srvtoolu",
                 "subprocs",
+                "toolu",
                 "subshell",
                 "templ",
                 "unsandboxed"

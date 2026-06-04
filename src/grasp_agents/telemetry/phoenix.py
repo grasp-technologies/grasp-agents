@@ -16,8 +16,15 @@ def init_phoenix(
     use_llm_provider_instr: bool = True,
     project_name: str = "grasp-agents",
 ) -> None:
-    from openinference.instrumentation.openllmetry import OpenInferenceSpanProcessor
-    from phoenix.otel import BatchSpanProcessor, HTTPSpanExporter, SimpleSpanProcessor
+    # Deferred: these need the optional grasp-agents[phoenix] extra.
+    from openinference.instrumentation.openllmetry import (  # noqa: PLC0415
+        OpenInferenceSpanProcessor,
+    )
+    from phoenix.otel import (  # noqa: PLC0415
+        BatchSpanProcessor,
+        HTTPSpanExporter,
+        SimpleSpanProcessor,
+    )
 
     collector_endpoint = os.getenv("TELEMETRY_COLLECTOR_HTTP_ENDPOINT")
 
@@ -54,10 +61,14 @@ def init_phoenix(
 
     # Auto-instrument LLM providers with OpenInference instrumentors
     if use_litellm_instr:
-        from openinference.instrumentation.litellm import LiteLLMInstrumentor
+        from openinference.instrumentation.litellm import (  # noqa: PLC0415
+            LiteLLMInstrumentor,
+        )
 
         LiteLLMInstrumentor().instrument(tracer_provider=tracer_provider)
     if use_llm_provider_instr:
-        from openinference.instrumentation.openai import OpenAIInstrumentor
+        from openinference.instrumentation.openai import (  # noqa: PLC0415
+            OpenAIInstrumentor,
+        )
 
         OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)

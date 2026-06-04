@@ -21,6 +21,7 @@ from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[re
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 
@@ -40,7 +41,7 @@ def _write_skill(
     skill_dir.mkdir(parents=True, exist_ok=True)
     fm_lines = [f"name: {name}", f"description: {description}"]
     if extra_metadata is not None:
-        import yaml  # noqa: PLC0415
+        import yaml
 
         meta_yaml = yaml.safe_dump(
             {"metadata": extra_metadata}, sort_keys=False
@@ -219,9 +220,7 @@ class TestCatalogSelectorHelper:
 
     @pytest.mark.anyio
     async def test_select_relevant_filters(self, tmp_path: Path) -> None:
-        from collections.abc import Sequence  # noqa: PLC0415
-
-        from grasp_agents.skills import Skill  # noqa: PLC0415
+        from grasp_agents.skills import Skill
 
         _write_skill(tmp_path, "alpha", "Alpha")
         _write_skill(tmp_path, "beta", "Beta")
@@ -236,9 +235,8 @@ class TestCatalogSelectorHelper:
 
     @pytest.mark.anyio
     async def test_system_prompt_ignores_selector(self, tmp_path: Path) -> None:
-        from collections.abc import Sequence  # noqa: PLC0415
 
-        from grasp_agents.skills import Skill  # noqa: PLC0415
+        from grasp_agents.skills import Skill
 
         _write_skill(tmp_path, "alpha", "Alpha")
         _write_skill(tmp_path, "beta", "Beta")

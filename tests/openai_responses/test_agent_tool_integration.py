@@ -13,19 +13,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from pydantic import BaseModel, Field
 
-from grasp_agents.agent.agent_tool import AgentTool, AgentToolInput
+from grasp_agents.agent.agent_tool import AgentTool
 from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     Event,
     LLMStreamEvent,
-    ToolOutputEvent,
-    TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
 )
@@ -37,7 +33,7 @@ if TYPE_CHECKING:
 @pytest.mark.integration
 class TestAgentToolIntegration:
     @pytest.fixture
-    def llm(self, openai_api_key: str) -> CloudLLM:  # noqa: ARG002
+    def llm(self, openai_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.openai_responses.responses_llm import (
             OpenAIResponsesLLM,
         )

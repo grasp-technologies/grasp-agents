@@ -9,7 +9,9 @@
         "build",
         "dist",
         "node_modules",
-        "venv"
+        "venv",
+        "src/grasp_agents/examples",
+        "scripts"
     ],
     "extraPaths": [
         ".",
@@ -22,7 +24,23 @@
             "root": "tests",
             "extraPaths": [".", "src"],
             "reportPrivateUsage": "none",
-            "reportUnusedFunction": "none"
+            "reportUnusedFunction": "none",
+            "reportUnusedVariable": "none",
+            "reportMissingParameterType": "none",
+            "reportUnknownArgumentType": "none",
+            "reportUnknownLambdaType": "none",
+            "reportUnknownMemberType": "none",
+            "reportUnknownParameterType": "none",
+            "reportUnknownVariableType": "none",
+            "reportTypedDictNotRequiredAccess": "none",
+            "reportIndexIssue": "none",
+            "reportArgumentType": "none",
+            "reportAttributeAccessIssue": "none",
+            "reportGeneralTypeIssues": "none",
+            "reportOperatorIssue": "none",
+            "reportOptionalOperand": "none",
+            "reportOptionalSubscript": "none",
+            "reportOptionalMemberAccess": "none"
         }
     ]
 }

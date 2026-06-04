@@ -332,7 +332,6 @@ class TestStreamingThinking:
             ),
             LLMStreamEvent(
                 data=ReasoningSummaryPartTextDelta(
-                    content_index=0,
                     delta="deep thought",
                     summary_index=0,
                     output_index=0,
@@ -361,7 +360,6 @@ class TestStreamingThinking:
             ),
             LLMStreamEvent(
                 data=ReasoningSummaryPartTextDelta(
-                    content_index=0,
                     delta="deep thought",
                     summary_index=0,
                     output_index=0,
@@ -892,7 +890,7 @@ class TestPassthrough:
 class TestStreamEventsFunction:
     @pytest.mark.asyncio
     async def test_stream_events_wrapper(self):
-        """stream_events() is a convenience wrapper that works like EventConsole.stream()."""
+        """stream_events() is a convenience wrapper like EventConsole.stream()."""
         buf = StringIO()
         console = Console(file=buf, no_color=True, highlight=False, width=80)
 
@@ -971,7 +969,6 @@ class TestFullSequence:
             ),
             LLMStreamEvent(
                 data=FunctionCallArgumentsDelta(
-                    call_id="tc_1",
                     delta='{"q": "stats"}',
                     output_index=1,
                     sequence_number=5,

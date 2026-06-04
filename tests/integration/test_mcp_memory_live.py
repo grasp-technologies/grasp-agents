@@ -32,7 +32,7 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
 mcp_module = pytest.importorskip("grasp_agents.mcp")
 MCPClient = mcp_module.MCPClient
 MCPServerStdio = mcp_module.MCPServerStdio
-from grasp_agents.tools.file_edit import MCPFileBackend  # noqa: E402
+from grasp_agents.tools.file_edit import MCPFileBackend
 
 pytestmark = pytest.mark.anyio
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
@@ -12,7 +11,7 @@ from .loader import discover_skills
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
     from ..run_context import RunContext
     from ..types.items import InputItem

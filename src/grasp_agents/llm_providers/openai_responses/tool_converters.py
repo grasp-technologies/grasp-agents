@@ -1,6 +1,8 @@
 from typing import Any
 
-from openai.lib._pydantic import to_strict_json_schema
+# The OpenAI SDK exposes its strict-schema converter only in this private
+# module; it is the same function the SDK itself uses for structured outputs.
+from openai.lib._pydantic import to_strict_json_schema  # noqa: PLC2701
 from openai.types.responses.function_tool_param import (
     FunctionToolParam as OpenAIFunctionToolParam,
 )

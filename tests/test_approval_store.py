@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from openai.types.responses.response_usage import (
@@ -51,6 +49,10 @@ from grasp_agents.types.llm_events import (
 )
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.types.tool import BaseTool
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping, Sequence
+    from pathlib import Path
 
 # ---------- Infrastructure (shared with prior approval tests) ----------
 

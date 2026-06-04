@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
-    ReadableSpan,
     SimpleSpanProcessor,
     SpanExporter,
     SpanExportResult,
@@ -30,6 +28,9 @@ from grasp_agents.telemetry.decorators import (
     _to_plain,
     _truncate_if_needed,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # ---------------------------------------------------------------------------
 # Minimal in-memory span exporter (MemoryExporter removed in OTel 1.39)
@@ -64,7 +65,7 @@ _provider.add_span_processor(SimpleSpanProcessor(_exporter))
 
 # Reset the set-once guard so we can install our test provider.
 # This is the same approach OTel's own test suite uses.
-import opentelemetry.trace as _trace_mod  # noqa: E402
+import opentelemetry.trace as _trace_mod
 
 _trace_mod._TRACER_PROVIDER_SET_ONCE = _trace_mod.Once()  # type: ignore[attr-defined]
 _trace_mod._TRACER_PROVIDER = None  # type: ignore[attr-defined]

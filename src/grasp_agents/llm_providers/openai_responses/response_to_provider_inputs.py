@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from openai.types.responses.response_function_web_search_param import (
     ActionOpenPage as ActionOpenPageParam,
@@ -21,6 +21,9 @@ from openai.types.responses.response_input_item_param import (
 )
 
 from grasp_agents.types.items import InputItem, SearchAction, WebSearchCallItem
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Fields added by grasp-agents that are NOT part of the OpenAI Responses API
 _GRASP_EXTENSION_FIELDS = {

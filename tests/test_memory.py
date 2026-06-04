@@ -143,7 +143,7 @@ class TestMemoryState:
 
 class TestMemoryFullConversation:
     def test_simulates_agentic_loop(self):
-        """Simulates a full agentic loop: system → user → assistant(+tools) → tool_output → assistant."""
+        """Simulate a full loop: system, user, assistant(+tools), tool, assistant."""
         mem = LLMAgentTranscript()
         mem.reset(instructions="You are a calculator.")
 

@@ -8,8 +8,7 @@ parsing and slicing paths).
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -22,6 +21,9 @@ from grasp_agents.tools.file_search import (
     rg_available,
 )
 from grasp_agents.types.events import ToolErrorInfo
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = [
     pytest.mark.asyncio,

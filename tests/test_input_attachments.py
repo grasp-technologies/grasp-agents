@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -29,6 +28,7 @@ from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[re
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 
@@ -166,7 +166,7 @@ class TestApplyInputAttachments:
     async def test_async_attachment(self) -> None:
         b = _builder()
 
-        async def attach(**_: Any) -> str:  # noqa: RUF029
+        async def attach(**_: Any) -> str:
             return "async note"
 
         b.add_input_attachment(
@@ -268,7 +268,7 @@ class TestLLMAgentAutoRegisters:
         )
         names = [
             a.name
-            for a in agent._prompt_builder.input_attachments  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            for a in agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
         ]
         assert RELEVANT_MEMORIES_ATTACHMENT_NAME in names
 
@@ -281,6 +281,6 @@ class TestLLMAgentAutoRegisters:
         )
         names = [
             a.name
-            for a in agent._prompt_builder.input_attachments  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            for a in agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
         ]
         assert RELEVANT_MEMORIES_ATTACHMENT_NAME not in names

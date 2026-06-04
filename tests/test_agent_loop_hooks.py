@@ -26,7 +26,6 @@ from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import OutputMessageText
-from grasp_agents.types.events import Event, LLMStreamEvent
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -291,7 +290,7 @@ class TestBeforeAfterLlmHooks:
         assert executor.after_llm_hook is None
 
         ctx = RunContext[None]()
-        resp = await _drain(executor, ctx)
+        await _drain(executor, ctx)
         assert executor.final_answer == "works"
 
 
@@ -644,8 +643,6 @@ class TestLlmInType:
         When llm_in_type is reduced, validation should reject fields
         that aren't in the LLM schema (the LLM shouldn't generate them).
         """
-        from pydantic import ValidationError
-
         from grasp_agents.utils.schema import exclude_fields
 
         class FullInput(BaseModel):
