@@ -14,6 +14,8 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+from grasp_agents.agent.background_tasks import BackgroundTaskManager
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.bash import (
@@ -21,10 +23,10 @@ from grasp_agents.tools.bash import (
     BashIdInput,
     BashInput,
     BashOutput,
-    BashProcessRegistry,
     KillBash,
     bash_tools,
 )
+from grasp_agents.types.events import UserMessageEvent
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,6 +34,30 @@ pytestmark = pytest.mark.asyncio
 def _ctx(tmp_path: Path) -> RunContext[None]:
     env = local_environment(allowed_roots=[tmp_path])
     return RunContext(environment=env)
+
+
+def _mgr(max_background: int = 16) -> BackgroundTaskManager[None]:
+    """A standalone background task manager for the bash tools (no agent loop)."""
+    transcript = LLMAgentTranscript()
+    transcript.reset(instructions="sys")
+    return BackgroundTaskManager(
+        agent_name="t",
+        transcript=transcript,
+        tools={},
+        path=None,
+        max_background=max_background,
+    )
+
+
+async def _drain_notes(
+    manager: BackgroundTaskManager[None], ctx: RunContext[None]
+) -> list[str]:
+    """The completion notes a single drain pass injects."""
+    return [
+        str(e.data)
+        async for e in manager.drain(exec_id="t", ctx=ctx)
+        if isinstance(e, UserMessageEvent)
+    ]
 
 
 class _ProgressRecorder:
@@ -119,19 +145,19 @@ async def test_fast_command_emits_no_heartbeat(tmp_path: Path) -> None:
 
 
 async def test_fast_command_completes_in_foreground(tmp_path: Path) -> None:
-    registry = BashProcessRegistry()
-    tool = Bash(auto_background_at=5.0, registry=registry)
+    manager = _mgr()
+    tool = Bash(auto_background_at=5.0, manager=manager)
     res = await tool._run(BashInput(command="echo fg"), ctx=_ctx(tmp_path))
     assert res.status == "completed"
     assert res.bash_id is None
     assert res.stdout.strip() == "fg"
-    assert registry._sessions == {}
+    assert manager._tasks == {}
 
 
 async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
-    registry = BashProcessRegistry()
-    tool = Bash(auto_background_at=0.3, registry=registry)
-    poll = BashOutput(registry)
+    manager = _mgr()
+    tool = Bash(auto_background_at=0.3, manager=manager)
+    poll = BashOutput(manager)
 
     res = await tool._run(
         BashInput(command="echo early && sleep 0.8 && echo late"),
@@ -157,14 +183,14 @@ async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
         pytest.fail("backgrounded command never completed")
 
     assert "late" in collected
-    # Finished sessions are removed once their final result is delivered.
-    assert registry._sessions == {}
+    # Finished commands are removed once their final result is delivered.
+    assert manager._tasks == {}
 
 
 async def test_kill_bash_terminates_background_command(tmp_path: Path) -> None:
-    registry = BashProcessRegistry()
-    tool = Bash(auto_background_at=0.2, registry=registry)
-    killer = KillBash(registry)
+    manager = _mgr()
+    tool = Bash(auto_background_at=0.2, manager=manager)
+    killer = KillBash(manager)
 
     marker = tmp_path / "ticks.txt"
     res = await tool._run(
@@ -191,7 +217,7 @@ async def test_kill_bash_terminates_background_command(tmp_path: Path) -> None:
     size_b = marker.stat().st_size if marker.exists() else 0
     assert size_a == size_b
 
-    with pytest.raises(ValueError, match="Unknown bash_id"):
+    with pytest.raises(ValueError, match="Unknown background task id"):
         await killer._run(BashIdInput(bash_id=res.bash_id))
 
 
@@ -219,84 +245,78 @@ async def test_cancelling_foreground_run_kills_process(tmp_path: Path) -> None:
     assert size_a == size_b
 
 
-async def test_registry_caps_sessions(tmp_path: Path) -> None:
-    registry = BashProcessRegistry(max_sessions=1)
-    tool = Bash(auto_background_at=0.1, registry=registry)
+async def test_caps_background_tasks(tmp_path: Path) -> None:
+    manager = _mgr(max_background=1)
+    tool = Bash(auto_background_at=0.1, manager=manager)
     ctx = _ctx(tmp_path)
 
-    first = await tool._run(
-        BashInput(command="echo a && sleep 1", timeout=10), ctx=ctx
-    )
+    first = await tool._run(BashInput(command="echo a && sleep 1", timeout=10), ctx=ctx)
     assert first.status == "backgrounded"
-    with pytest.raises(RuntimeError, match="Too many background commands"):
+    with pytest.raises(RuntimeError, match="Too many background tasks"):
         await tool._run(BashInput(command="echo b && sleep 1", timeout=10), ctx=ctx)
     assert first.bash_id is not None
-    await registry.kill(first.bash_id)
+    await manager.cancel(first.bash_id)
 
 
 # --- completion notes ----------------------------------------------------------
 
 
-async def test_collect_notes_announces_each_finish_once(tmp_path: Path) -> None:
-    registry = BashProcessRegistry()
-    tool = Bash(auto_background_at=0.1, registry=registry)
+async def test_completion_note_announced_once(tmp_path: Path) -> None:
+    manager = _mgr()
+    tool = Bash(auto_background_at=0.1, manager=manager)
+    ctx = _ctx(tmp_path)
     res = await tool._run(
-        BashInput(command="echo done && sleep 0.3", timeout=10), ctx=_ctx(tmp_path)
+        BashInput(command="echo done && sleep 0.3", timeout=10), ctx=ctx
     )
     assert res.status == "backgrounded"
     assert res.bash_id is not None
     # Output produced before backgrounding was already delivered.
     assert "done" in res.stdout
 
-    # Still running — nothing to announce yet.
-    assert registry.collect_notes() == []
+    # Still running — drain emits no completion note yet.
+    assert await _drain_notes(manager, ctx) == []
 
-    session = registry.get(res.bash_id)
-    assert session.drain is not None
-    await session.drain
-
-    notes = registry.collect_notes()
+    # Block until it finishes (mirrors the loop's idle wait), then drain once.
+    await manager.wait_idle()
+    notes = await _drain_notes(manager, ctx)
     assert len(notes) == 1
     assert res.bash_id in notes[0]
     assert "returncode=0" in notes[0]
     assert "BashOutput" in notes[0]
     # Exactly once.
-    assert registry.collect_notes() == []
+    assert await _drain_notes(manager, ctx) == []
     # The final result is still pollable; the cursor skips what the
     # backgrounded response already delivered.
-    out = await BashOutput(registry)._run(BashIdInput(bash_id=res.bash_id))
+    out = await BashOutput(manager)._run(BashIdInput(bash_id=res.bash_id))
     assert out.status == "completed"
     assert out.returncode == 0
     assert out.stdout == ""
 
 
-async def test_idle_wait_primitives_avoid_polling(tmp_path: Path) -> None:
+async def test_idle_wait_avoids_polling(tmp_path: Path) -> None:
     """
-    The pieces the loop composes for its idle wait: a running session exposes
-    a drain future to block on (no poll loop), and once it finishes
-    ``collect_notes`` yields exactly one note, announced once.
+    The loop's idle wait: a running command is waited on (no poll loop), and
+    once it finishes drain yields exactly one completion note, announced once.
     """
-    registry = BashProcessRegistry()
-    tool = Bash(auto_background_at=0.1, registry=registry)
+    manager = _mgr()
+    tool = Bash(auto_background_at=0.1, manager=manager)
+    ctx = _ctx(tmp_path)
     res = await tool._run(
-        BashInput(command="echo bg && sleep 0.4", timeout=10), ctx=_ctx(tmp_path)
+        BashInput(command="echo bg && sleep 0.4", timeout=10), ctx=ctx
     )
     assert res.status == "backgrounded"
-
-    # Still running: a future to block on, no note yet.
-    pending = registry.pending_drains()
-    assert len(pending) == 1
-    assert registry.collect_notes() == []
-
-    # Blocking on the future returns when the command completes — no polling.
-    await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-
-    notes = registry.collect_notes()
-    assert len(notes) == 1
     assert res.bash_id is not None
+
+    # Block until completion — no polling — then drain exactly one note.
+    await manager.wait_idle()
+    notes = await _drain_notes(manager, ctx)
+    assert len(notes) == 1
     assert res.bash_id in notes[0]
-    # Announced once — nothing left to wait on.
-    assert registry.pending_drains() == []
+
+    # Announced once: nothing left pending, so wait_idle returns at once and a
+    # second drain yields nothing.
+    await manager.wait_idle()
+    assert await _drain_notes(manager, ctx) == []
 
 
 async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
@@ -395,9 +415,9 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
         stream_llm=False,
     )
 
-    # Background a command into the loop's own registry; it is still running
-    # when the loop starts.
-    bash = Bash(auto_background_at=0.1, registry=loop.bash_registry)
+    # Background a command into the loop's own task manager; it is still
+    # running when the loop starts.
+    bash = Bash(auto_background_at=0.1, manager=loop.bg_tasks)
     res = await bash._run(
         BashInput(command="echo HELLO && sleep 0.3", timeout=10), ctx=ctx
     )
@@ -460,24 +480,26 @@ async def test_llm_agent_auto_wires_bash_notes() -> None:
 
     tools = bash_tools()
     agent = LLMAgent[str, str, None](name="bash_agent", llm=_StubLLM(), tools=tools)
-    # The loop owns the registry directly (it injects notes / waits on it in
-    # PRE-ACT); the tools resolve it per run through the ContextVar.
-    assert agent._loop.bash_registry is not None
-    # The loop also owns one persistent-session holder (bound per run).
+    # The loop's background task manager runs both subagent tasks and
+    # backgrounded Bash commands; the loop wires it onto its bash tools at setup.
+    assert agent._loop.bg_tasks is not None
+    # The loop also owns one persistent-session holder, wired the same way.
     assert agent._loop.bash_session_holder is not None
     bash = tools[0]
     assert isinstance(bash, Bash)
-    assert bash.registry is None  # no explicit registry — loop-resolved
+    # The agent copies loop-bound tools (interim ownership), so the passed
+    # instance stays unwired and the agent's own copy carries the manager.
+    assert bash.manager is None
+    owned = agent._loop.tools["Bash"]
+    assert isinstance(owned, Bash)
+    assert owned.manager is agent._loop.bg_tasks
 
 
 # --- factory -------------------------------------------------------------------
 
 
-async def test_bash_tools_factory_resolves_loop_registry(tmp_path: Path) -> None:
-    from grasp_agents.tools.bash import (
-        reset_current_bash_registry,
-        set_current_bash_registry,
-    )
+async def test_bash_tools_factory_wired_with_loop_manager(tmp_path: Path) -> None:
+    from grasp_agents.tools.bash import bind_bash_manager
 
     tools = bash_tools(auto_background_at=0.1)
     assert [t.name for t in tools] == ["Bash", "BashOutput", "KillBash"]
@@ -486,104 +508,41 @@ async def test_bash_tools_factory_resolves_loop_registry(tmp_path: Path) -> None
     assert isinstance(kill, KillBash)
     assert "background" in bash.description
 
-    loop_registry = BashProcessRegistry()
-    token = set_current_bash_registry(loop_registry)
-    try:
-        res = await bash._run(
-            BashInput(command="echo x && sleep 0.4", timeout=10), ctx=_ctx(tmp_path)
-        )
-        assert res.status == "backgrounded"
-        assert res.bash_id is not None
-        # The session landed in the loop's registry...
-        assert res.bash_id in loop_registry._sessions
-        # ...where the companions find it too.
-        killed = await kill._run(BashIdInput(bash_id=res.bash_id))
-        assert killed.status == "completed"
-    finally:
-        reset_current_bash_registry(token)
+    loop_manager = _mgr()
+    bind_bash_manager(tools, loop_manager)  # what the agent loop does at setup
+    res = await bash._run(
+        BashInput(command="echo x && sleep 0.4", timeout=10), ctx=_ctx(tmp_path)
+    )
+    assert res.status == "backgrounded"
+    assert res.bash_id is not None
+    # The command landed in the loop's manager...
+    assert res.bash_id in loop_manager._tasks
+    # ...where the companions find it too.
+    killed = await kill._run(BashIdInput(bash_id=res.bash_id))
+    assert killed.status == "completed"
 
 
-async def test_companions_require_a_registry_in_scope() -> None:
-    with pytest.raises(ValueError, match="no bash session registry"):
+async def test_companions_require_a_manager_in_scope() -> None:
+    with pytest.raises(ValueError, match="no background task manager"):
         await BashOutput()._run(BashIdInput(bash_id="bash_1"))
 
 
-async def test_explicit_registry_wins_and_isolates(tmp_path: Path) -> None:
-    from grasp_agents.tools.bash import (
-        reset_current_bash_registry,
-        set_current_bash_registry,
+async def test_explicit_manager_wins_and_isolates(tmp_path: Path) -> None:
+    from grasp_agents.tools.bash import bind_bash_manager
+
+    explicit = _mgr()
+    other = _mgr()
+    tool = Bash(auto_background_at=0.1, manager=explicit)
+    # Binding the loop's manager must not clobber an explicitly-set one.
+    bind_bash_manager([tool], other)
+    res = await tool._run(
+        BashInput(command="echo x && sleep 0.3", timeout=10), ctx=_ctx(tmp_path)
     )
-
-    explicit = BashProcessRegistry()
-    other = BashProcessRegistry()
-    tool = Bash(auto_background_at=0.1, registry=explicit)
-    token = set_current_bash_registry(other)
-    try:
-        res = await tool._run(
-            BashInput(command="echo x && sleep 0.3", timeout=10), ctx=_ctx(tmp_path)
-        )
-        assert res.bash_id is not None
-        assert res.bash_id in explicit._sessions
-        # The ambient registry never sees — or announces — this session.
-        assert other._sessions == {}
-        assert other.collect_notes() == []
-        await explicit.kill(res.bash_id)
-    finally:
-        reset_current_bash_registry(token)
+    assert res.bash_id is not None
+    assert res.bash_id in explicit._tasks
+    # The other manager never sees this command.
+    assert other._tasks == {}
+    await explicit.cancel(res.bash_id)
 
 
-async def test_copies_get_fresh_registries() -> None:
-    import copy
-
-    trio = bash_tools(registry=BashProcessRegistry())
-    clones = copy.deepcopy(trio)
-    bash_clone, poll_clone, kill_clone = clones
-    assert isinstance(bash_clone, Bash)
-    assert isinstance(poll_clone, BashOutput)
-    assert isinstance(kill_clone, KillBash)
-    original = trio[0]
-    assert isinstance(original, Bash)
-    # A copied agent is a new context: fresh, empty registry — one agent's
-    # sessions are never announced into another's transcript...
-    assert bash_clone.registry is not original.registry
-    # ...but the copied trio still shares one registry (deepcopy memo).
-    assert bash_clone.registry is poll_clone._registry
-    assert bash_clone.registry is kill_clone._registry
-
-
-# --- persistent session (default Bash) -----------------------------------------
-
-
-async def test_persistent_bash_keeps_state_across_calls(tmp_path: Path) -> None:
-    from grasp_agents.tools.bash import (
-        BashSessionHolder,
-        reset_current_session_holder,
-        set_current_session_holder,
-    )
-
-    (tmp_path / "sub").mkdir()
-    tool = Bash()  # persistent=True by default
-    holder = BashSessionHolder()
-    token = set_current_session_holder(holder)
-    ctx = _ctx(tmp_path)
-    try:
-        r1 = await tool._run(BashInput(command="cd sub && export FOO=bar"), ctx=ctx)
-        assert r1.returncode == 0
-        # cd and the env var both persist into the next call (same shell).
-        r2 = await tool._run(BashInput(command="pwd && echo $FOO"), ctx=ctx)
-        assert r2.returncode == 0
-        assert "sub" in r2.stdout
-        assert "bar" in r2.stdout
-    finally:
-        await holder.close()
-        reset_current_session_holder(token)
-
-
-async def test_bash_without_holder_is_ephemeral(tmp_path: Path) -> None:
-    (tmp_path / "sub").mkdir()
-    tool = Bash()  # persistent=True, but no holder in scope → one-shot
-    ctx = _ctx(tmp_path)
-    await tool._run(BashInput(command="cd sub"), ctx=ctx)
-    r = await tool._run(BashInput(command="pwd"), ctx=ctx)
-    # Fresh process per call: the earlier cd did not persist.
-    assert not r.stdout.strip().endswith("sub")
+# The persistent-session tool lives in test_shell.py.

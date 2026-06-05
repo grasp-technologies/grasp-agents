@@ -69,6 +69,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _holds_loop_state(tool: BaseTool[Any, Any, Any]) -> bool:
+    """
+    True for tools the agent loop injects per-loop state onto (the bash
+    background-task manager / shell-session holder), identified by their
+    loop-binding setters. See the interim copy in :meth:`LLMAgent.__init__`.
+    """
+    return hasattr(tool, "bind_manager") or hasattr(tool, "bind_holder")
+
+
 class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     _span_kind = SpanKind.AGENT
     _checkpoint_kind = CheckpointKind.AGENT
@@ -171,7 +180,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # below to gate the default llm_output_schema and to scope the
         # memory / skills tool auto-attach.
         agentic_mode = tools is not None
-        tools = list(tools or [])
+        # INTERIM (pending the stateless-tools refactor — see project memory):
+        # copy the tools that hold per-loop state the loop binds onto them (the
+        # bash background-task manager / session holder) so the agent owns its
+        # own instances; a single instance shared across agents would otherwise
+        # collide. The proper fix is stateless tools (per-agent state via the
+        # call context, as Hermes / OpenAI / CC do), which removes this copy.
+        # ``AgentTool`` / ``ProcessorTool`` have the same latent issue (they
+        # store parent refs on the instance) — also covered by that refactor.
+        tools = [t.copy() if _holds_loop_state(t) else t for t in (tools or [])]
 
         if agentic_mode:
             existing_names = {t.name for t in tools}
@@ -241,12 +258,8 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # ``cache_control`` checkpoint caches the whole system-prompt
         # prefix.
         if enable_memory:
-            self._prompt_builder.add_system_prompt_section(
-                make_memory_section()
-            )
-            self._prompt_builder.add_input_attachment(
-                relevant_memories_attachment
-            )
+            self._prompt_builder.add_system_prompt_section(make_memory_section())
+            self._prompt_builder.add_input_attachment(relevant_memories_attachment)
         if env_info:
             self._prompt_builder.add_system_prompt_section(
                 make_env_info_section(model_name=llm.model_name)
@@ -254,9 +267,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 else env_info
             )
         if enable_skills:
-            self._prompt_builder.add_system_prompt_section(
-                make_skills_section()
-            )
+            self._prompt_builder.add_system_prompt_section(make_skills_section())
         # Local import to dodge the ``mcp`` package's optional-dependency
         # import guard at module load.
         from ..mcp.section import make_mcp_instructions_section  # noqa: PLC0415
@@ -528,15 +539,13 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             checkpoint.turn,
         )
 
-        await self._loop.bg_tasks.handle_pending(ctx=self._ctx, exec_id=exec_id)
+        await self._loop.bg_tasks.resume_durable(ctx=self._ctx, exec_id=exec_id)
 
         # Rebuild business state from external sources (DB, etc.) after
         # conversation restoration is complete. Opt-in; fresh init uses
         # add_transcript_builder instead.
         if self._has_build_state_impl:
-            await self.build_state_impl(
-                checkpoint=checkpoint, exec_id=exec_id or ""
-            )
+            await self.build_state_impl(checkpoint=checkpoint, exec_id=exec_id or "")
 
         return checkpoint
 
@@ -725,9 +734,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # Re-delivery with cached output: step already completed, caller
         # re-delivered (e.g. workflow crashed before saving its own checkpoint).
         if is_redelivery and checkpoint is not None and checkpoint.output is not None:
-            output = self.parse_output(
-                checkpoint.output, in_args=inp, exec_id=exec_id
-            )
+            output = self.parse_output(checkpoint.output, in_args=inp, exec_id=exec_id)
             yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
             return
 

@@ -97,9 +97,7 @@ def build_callback_approval(
             if await approve(call, ctx=ctx, exec_id=exec_id):
                 continue
             decisions[call.call_id] = RejectToolContent(
-                content=deny_message.format(
-                    name=call.name, arguments=call.arguments
-                )
+                content=deny_message.format(name=call.name, arguments=call.arguments)
             )
         return decisions or None
 

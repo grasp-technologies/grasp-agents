@@ -162,9 +162,7 @@ class ApprovalStore(Protocol):
         """Snapshot of unresolved requests for ``session_key``."""
         ...
 
-    async def is_pre_approved(
-        self, approval_key: str, *, session_key: str
-    ) -> bool:
+    async def is_pre_approved(self, approval_key: str, *, session_key: str) -> bool:
         """True if ``approval_key`` is in the session or persistent allowlist."""
         ...
 
@@ -193,9 +191,7 @@ class InMemoryApprovalStore:
         self._persist_path = persist_path
         self._lock = asyncio.Lock()
         self._pending: dict[str, dict[str, PendingApproval]] = {}
-        self._futures: dict[
-            tuple[str, str], asyncio.Future[ApprovalDecision]
-        ] = {}
+        self._futures: dict[tuple[str, str], asyncio.Future[ApprovalDecision]] = {}
         self._session_allowlist: dict[str, set[str]] = {}
         self._persistent_allowlist: set[str] = set()
         self._load_persistent()
@@ -239,9 +235,7 @@ class InMemoryApprovalStore:
     ) -> asyncio.Future[ApprovalDecision]:
         loop = asyncio.get_running_loop()
         async with self._lock:
-            self._pending.setdefault(pending.session_key, {})[
-                pending.call_id
-            ] = pending
+            self._pending.setdefault(pending.session_key, {})[pending.call_id] = pending
             fut: asyncio.Future[ApprovalDecision] = loop.create_future()
             self._futures[pending.session_key, pending.call_id] = fut
         return fut
@@ -259,9 +253,9 @@ class InMemoryApprovalStore:
                 self._pending.pop(session_key, None)
             if isinstance(decision, ApprovalAllow) and pending is not None:
                 if decision.scope is ApprovalScope.SESSION:
-                    self._session_allowlist.setdefault(
-                        session_key, set()
-                    ).add(pending.approval_key)
+                    self._session_allowlist.setdefault(session_key, set()).add(
+                        pending.approval_key
+                    )
                 elif decision.scope is ApprovalScope.ALWAYS:
                     self._persistent_allowlist.add(pending.approval_key)
                     self._save_persistent()
@@ -275,28 +269,20 @@ class InMemoryApprovalStore:
         async with self._lock:
             return list(self._pending.get(session_key, {}).values())
 
-    async def is_pre_approved(
-        self, approval_key: str, *, session_key: str
-    ) -> bool:
+    async def is_pre_approved(self, approval_key: str, *, session_key: str) -> bool:
         async with self._lock:
             if approval_key in self._persistent_allowlist:
                 return True
-            return approval_key in self._session_allowlist.get(
-                session_key, set()
-            )
+            return approval_key in self._session_allowlist.get(session_key, set())
 
     async def add_persistent(self, approval_key: str) -> None:
         async with self._lock:
             self._persistent_allowlist.add(approval_key)
             self._save_persistent()
 
-    async def add_session(
-        self, session_key: str, approval_key: str
-    ) -> None:
+    async def add_session(self, session_key: str, approval_key: str) -> None:
         async with self._lock:
-            self._session_allowlist.setdefault(session_key, set()).add(
-                approval_key
-            )
+            self._session_allowlist.setdefault(session_key, set()).add(approval_key)
 
     async def clear_session(self, session_key: str) -> None:
         async with self._lock:
@@ -364,9 +350,7 @@ def build_store_approval(
             if tool_names is not None and call.name not in tool_names:
                 continue
             approval_key = key_fn(call)
-            if await store.is_pre_approved(
-                approval_key, session_key=session_key
-            ):
+            if await store.is_pre_approved(approval_key, session_key=session_key):
                 continue
             pending = PendingApproval(
                 session_key=session_key,
@@ -386,10 +370,7 @@ def build_store_approval(
                     decision = await fut
             except TimeoutError:
                 decisions[call.call_id] = RejectToolContent(
-                    content=(
-                        f"Approval for '{call.name}' timed out "
-                        f"after {timeout}s."
-                    )
+                    content=(f"Approval for '{call.name}' timed out after {timeout}s.")
                 )
                 continue
             except asyncio.CancelledError:
@@ -398,9 +379,7 @@ def build_store_approval(
                 )
                 continue
             if isinstance(decision, ApprovalDeny):
-                decisions[call.call_id] = RejectToolContent(
-                    content=decision.reason
-                )
+                decisions[call.call_id] = RejectToolContent(content=decision.reason)
             # ApprovalAllow → AllowTool default → no entry needed
 
         return decisions or None

@@ -12,10 +12,8 @@ Non-interactive contract: no TTY, and each call is a fresh ``/bin/sh -c`` — no
 shell state (``cd``, environment, started processes) carries over. This is the
 :class:`ExecBackend` contract, uniform across every backend (local subprocess,
 Seatbelt/bwrap, Docker, remote); pass ``cd ... &&`` or ``cwd`` for a different
-directory. The backend owns the real timeout (it kills the process group on
-expiry); the per-call ``timeout`` is clamped to ``max_timeout``. Output is
-captured and size-capped by the backend; ``truncated`` flags when a cap was
-hit.
+directory. For a persistent shell instead, use
+:class:`~grasp_agents.tools.bash_session.BashSession`.
 
 Long-running commands:
 
@@ -24,21 +22,19 @@ Long-running commands:
   ``heartbeat_every`` seconds).
 * **Auto-background** — when ``auto_background_at`` is set and a command
   outlives it, ``Bash`` returns early with ``status="backgrounded"`` and a
-  ``bash_id``; the process keeps running under the supervisor. Poll it with
-  ``BashOutput``, stop it with ``KillBash``. Backgrounded commands still honor
-  the overall timeout they were started with. Build the trio with
-  :func:`bash_tools` so all three resolve the same :class:`BashProcessRegistry`.
+  ``bash_id``; the command keeps running. Poll it with ``BashOutput``, stop it
+  with ``KillBash``; a completion note is injected when it finishes. Build the
+  trio with :func:`bash_tools`.
 
-The registry is deliberately **not durable** (no ``TaskRecord`` /
-``BackgroundTaskManager``): an OS process does not survive the host process,
-so a persisted record would lie on resume. Backgrounded commands die with the
-host; sessions that must survive restarts belong in real background *tools*.
-
-Registry scoping mirrors ``FileEditSessionState``: each :class:`AgentLoop`
-owns one :class:`BashProcessRegistry` and provides it to the tools through a
-ContextVar during runs, so sub-agents and parallel replicas get their own
-sessions — one agent's completion notes and idle waits never leak into
-another's transcript. Passing an explicit ``registry`` to the tools overrides
+A backgrounded command is tracked as a general, *ephemeral*, non-answer-blocking
+task in the agent loop's
+:class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` (the same
+manager that runs background subagent tools), carrying the live
+:class:`~grasp_agents.tools.bash_common.BackgroundCommand` as its monitor. It is
+deliberately **not durable** (no ``TaskRecord``): an OS process does not survive
+the host, so a persisted record would lie on resume. The manager is bound per
+:class:`AgentLoop` through a ContextVar, so sub-agents and parallel replicas
+keep their own background commands; passing an explicit ``manager`` overrides
 the ContextVar (standalone use outside an agent loop).
 """
 
@@ -46,386 +42,32 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
-import shlex
 import time
-from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ..sandbox.exec_backend import (
-    ExecChunk,
-    ExecResult,
-    ExecSession,
-    SessionCapable,
-    TerminationReason,
-)
 from ..types.tool import BaseTool, ToolProgressCallback
+from .bash_common import (
+    DEFAULT_BASH_TIMEOUT,
+    DEFAULT_HEARTBEAT_EVERY,
+    DEFAULT_PROGRESS_AT,
+    LEADING_SLEEP,
+    MAX_BASH_TIMEOUT,
+    BackgroundCommand,
+    BashInput,
+    BashResult,
+    preview,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import Iterable
 
+    from ..agent.background_tasks import BackgroundTaskManager
     from ..run_context import RunContext
 
-DEFAULT_BASH_TIMEOUT = 120.0
-MAX_BASH_TIMEOUT = 600.0
-DEFAULT_PROGRESS_AT = 2.0
-DEFAULT_HEARTBEAT_EVERY = 10.0
 DEFAULT_AUTO_BACKGROUND_AT = 120.0
-DEFAULT_MAX_SESSIONS = 16
-
-# Command-preview length in heartbeats and completion notes.
-_PREVIEW_MAXLEN = 60
-# A command whose first statement is a plain `sleep` blocks the loop for its
-# whole duration and produces nothing — reject it with guidance instead.
-_LEADING_SLEEP = re.compile(r"^\s*sleep\s+\d")
-
-
-def _preview(command: str, maxlen: int = _PREVIEW_MAXLEN) -> str:
-    return command if len(command) <= maxlen else command[: maxlen - 3] + "..."
-
-
-class BashInput(BaseModel):
-    """Input schema for the ``Bash`` tool."""
-
-    command: str = Field(
-        description=(
-            "The shell command to run, non-interactively, via `/bin/sh -c`. "
-            "Quote paths with spaces. Chain steps with `&&`. Do not launch "
-            "interactive programs (there is no TTY) or long-lived servers "
-            "(they cannot be reached and are killed when the run ends)."
-        )
-    )
-    cwd: str | None = Field(
-        default=None,
-        description=(
-            "Working directory for the command. Must resolve under the "
-            "environment's allowed roots. Defaults to the first allowed root."
-        ),
-    )
-    timeout: float | None = Field(
-        default=None,
-        description=(
-            "Overall wall-clock timeout in seconds. Defaults to "
-            f"{DEFAULT_BASH_TIMEOUT:g}s; clamped to {MAX_BASH_TIMEOUT:g}s."
-        ),
-        gt=0,
-    )
-
-
-class BashResult(BaseModel):
-    """
-    Output schema for ``Bash`` / ``BashOutput`` / ``KillBash``.
-
-    ``stdout`` and ``stderr`` are kept separate and labeled so the model can
-    tell them apart (interleave order across the two is not preserved — a
-    single ordered stream needs a PTY-backed session).
-
-    This is the LLM-facing transport schema, not the backend's
-    :class:`ExecResult`: it must also represent the *running* state of a
-    backgrounded command (``returncode is None``, ``reason="running"``), so it
-    is a flat Pydantic model rather than a subclass of the frozen, always-
-    finished ``ExecResult``. Finished results map across in
-    :meth:`_BashSession.final_result`.
-    """
-
-    stdout: str
-    stderr: str
-    returncode: int | None
-    reason: TerminationReason | Literal["running"]
-    status: Literal["completed", "backgrounded"] = "completed"
-    bash_id: str | None = None
-    timed_out: bool = False
-    truncated: bool = False
-    runtime_ms: float = 0.0
-    backend: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Background process registry
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _BashSession:
-    """A live (or finished) backgrounded command and its buffered output."""
-
-    bash_id: str
-    command: str
-    started_at: float
-    chunks: list[ExecChunk] = field(default_factory=list[ExecChunk])
-    result: ExecResult | None = None
-    cursor: int = 0  # chunks already delivered through BashOutput
-    drain: asyncio.Task[None] | None = None
-    announced: bool = False  # completion note already emitted via collect_notes
-
-    def start(self, stream: AsyncIterator[ExecChunk | ExecResult]) -> None:
-        """Begin draining the backend stream into this session's buffer."""
-        self.drain = asyncio.create_task(self._drain(stream))
-
-    async def _drain(self, stream: AsyncIterator[ExecChunk | ExecResult]) -> None:
-        async for item in stream:
-            if isinstance(item, ExecResult):
-                self.result = item
-            else:
-                self.chunks.append(item)
-
-    async def kill(self) -> None:
-        """
-        Stop draining: cancelling the task closes the backend stream, which
-        makes the supervisor kill the process group (SIGTERM, then SIGKILL
-        after the grace period).
-        """
-        if self.drain is not None and not self.drain.done():
-            self.drain.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.drain
-
-    @property
-    def running(self) -> bool:
-        return self.drain is not None and not self.drain.done()
-
-    @property
-    def runtime_ms(self) -> float:
-        return (time.monotonic() - self.started_at) * 1000.0
-
-    def _render(self, since: int) -> tuple[str, str, int]:
-        """Split stdout / stderr from ``chunks[since:]``; return the new cursor."""
-        out: list[str] = []
-        err: list[str] = []
-        for chunk in self.chunks[since:]:
-            (out if chunk.stream == "stdout" else err).append(chunk.data)
-        return "".join(out), "".join(err), len(self.chunks)
-
-    def running_result(self) -> BashResult:
-        """Output since the last read for a still-running session; advances cursor."""
-        stdout, stderr, self.cursor = self._render(self.cursor)
-        return BashResult(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=None,
-            reason="running",
-            status="backgrounded",
-            bash_id=self.bash_id or None,
-            runtime_ms=self.runtime_ms,
-        )
-
-    def final_result(self) -> BashResult:
-        """Final result, output from the cursor to the end of the buffer."""
-        stdout, stderr, self.cursor = self._render(self.cursor)
-        result = self.result
-        if result is None:
-            # Stream ended without a terminal result (killed mid-drain).
-            return BashResult(
-                stdout=stdout,
-                stderr=stderr,
-                returncode=-1,
-                reason=TerminationReason.MANUAL_CANCEL,
-                runtime_ms=self.runtime_ms,
-            )
-        return BashResult(
-            stdout=stdout,
-            stderr=stderr + result.stderr,  # spawn errors arrive on the terminal
-            returncode=result.returncode,
-            reason=result.reason,
-            timed_out=result.timed_out,
-            truncated=result.truncated,
-            runtime_ms=result.runtime_ms,
-            backend=result.backend,
-        )
-
-
-class BashProcessRegistry:
-    """
-    In-memory registry of auto-backgrounded ``Bash`` commands.
-
-    Holds each backgrounded session (its drain task keeps consuming the backend
-    stream — cancelling it makes the supervisor kill the process group) and its
-    buffered output. Foreground commands never enter the registry; only those
-    that outlive the auto-background deadline are :meth:`adopt`-ed. Contents die
-    with the host process by design.
-
-    One registry per :class:`AgentLoop` (see the module docstring): sessions,
-    completion notes, and idle-wait futures are scoped to the agent that
-    started them.
-    """
-
-    def __init__(self, *, max_sessions: int = DEFAULT_MAX_SESSIONS) -> None:
-        self._sessions: dict[str, _BashSession] = {}
-        self._max_sessions = max_sessions
-        self._counter = 0
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> BashProcessRegistry:
-        # Sessions are process-local runtime state (live asyncio tasks are
-        # not copyable, and a copied agent is a *new* context that must not
-        # see — or announce — another agent's sessions). Copies start empty;
-        # the memo keeps one fresh registry per copied object graph, so a
-        # tool trio sharing a registry still shares the copy.
-        fresh = BashProcessRegistry(max_sessions=self._max_sessions)
-        memo[id(self)] = fresh
-        return fresh
-
-    def adopt(self, session: _BashSession) -> str:
-        """
-        Register a still-running session that outlived the auto-background
-        deadline, assigning it a stable ``bash_id``.
-
-        Only backgrounded commands enter the registry, so the ``max_sessions``
-        cap counts live background work, not transient foreground calls.
-        """
-        if len(self._sessions) >= self._max_sessions:
-            raise RuntimeError(
-                f"Too many background commands ({self._max_sessions}); "
-                "kill or drain existing ones with KillBash / BashOutput first."
-            )
-        self._counter += 1
-        session.bash_id = f"bash_{self._counter}"
-        self._sessions[session.bash_id] = session
-        return session.bash_id
-
-    def get(self, bash_id: str) -> _BashSession:
-        session = self._sessions.get(bash_id)
-        if session is None:
-            known = ", ".join(sorted(self._sessions)) or "none"
-            raise ValueError(f"Unknown bash_id {bash_id!r} (known: {known}).")
-        return session
-
-    def remove(self, bash_id: str) -> None:
-        self._sessions.pop(bash_id, None)
-
-    async def kill(self, bash_id: str) -> _BashSession:
-        """Stop the session's command (see :meth:`_BashSession.kill`)."""
-        session = self.get(bash_id)
-        await session.kill()
-        return session
-
-    def pending_drains(self) -> list[asyncio.Future[None]]:
-        """
-        Futures of sessions not yet announced.
-
-        Exposed to the agent loop's idle wait so that a model with nothing
-        else to do blocks until the next completion instead of spinning
-        poll turns. Done-but-unannounced sessions are included — their
-        already-done futures make the wait return immediately so the
-        pending note gets delivered in the same drain cycle.
-        """
-        return [
-            session.drain
-            for session in self._sessions.values()
-            if session.drain is not None and not session.announced
-        ]
-
-    def collect_notes(self) -> list[str]:
-        """
-        Turn-boundary completion notes, one per newly finished session.
-
-        The agent loop that owns the registry polls this in PRE-ACT and
-        injects each note as a user-role message, so the model hears about
-        completions at the next turn instead of polling blind. Each session
-        is announced at most once; its output still arrives through
-        ``BashOutput``.
-        """
-        notes: list[str] = []
-        for session in self._sessions.values():
-            if session.announced or session.drain is None or not session.drain.done():
-                continue
-            session.announced = True
-            rc = session.result.returncode if session.result is not None else None
-            notes.append(
-                f"Background command {session.bash_id} (`{_preview(session.command)}`) "
-                f"finished (returncode={rc}).\nCall BashOutput with "
-                f"bash_id={session.bash_id!r} to read its output."
-            )
-        return notes
-
-
-_current_bash_registry: ContextVar[BashProcessRegistry | None] = ContextVar(
-    "_grasp_current_bash_registry", default=None
-)
-
-
-def get_current_bash_registry() -> BashProcessRegistry | None:
-    """The registry of the agent loop currently running, if any."""
-    return _current_bash_registry.get()
-
-
-def set_current_bash_registry(
-    registry: BashProcessRegistry | None,
-) -> Token[BashProcessRegistry | None]:
-    """Bind ``registry`` for the current async context; returns a reset token."""
-    return _current_bash_registry.set(registry)
-
-
-def reset_current_bash_registry(
-    token: Token[BashProcessRegistry | None],
-) -> None:
-    """Undo a :func:`set_current_bash_registry`."""
-    _current_bash_registry.reset(token)
-
-
-# ---------------------------------------------------------------------------
-# Persistent-session holder
-# ---------------------------------------------------------------------------
-
-
-class BashSessionHolder:
-    """
-    Lazily opens and caches one persistent :class:`ExecSession` per agent loop.
-
-    Scoped through a ContextVar like :class:`BashProcessRegistry`, so sub-agents
-    and parallel replicas each get their own stateful shell. The session is
-    opened on first use and reopened if a command closed it (e.g. a command that
-    ignored the interrupt and forced a session-level kill).
-    """
-
-    def __init__(self) -> None:
-        self._session: ExecSession | None = None
-        self._lock = asyncio.Lock()
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> BashSessionHolder:
-        # A copied agent is a new context: its own (initially unopened) holder.
-        fresh = BashSessionHolder()
-        memo[id(self)] = fresh
-        return fresh
-
-    async def get(self, backend: SessionCapable) -> ExecSession:
-        async with self._lock:
-            if self._session is None or self._session.closed:
-                self._session = await backend.open_session()
-            return self._session
-
-    async def close(self) -> None:
-        session = self._session
-        self._session = None
-        if session is not None and not session.closed:
-            await session.close()
-
-
-_current_session_holder: ContextVar[BashSessionHolder | None] = ContextVar(
-    "_grasp_current_bash_session_holder", default=None
-)
-
-
-def get_current_session_holder() -> BashSessionHolder | None:
-    """The persistent-session holder of the agent loop currently running, if any."""
-    return _current_session_holder.get()
-
-
-def set_current_session_holder(
-    holder: BashSessionHolder | None,
-) -> Token[BashSessionHolder | None]:
-    """Bind ``holder`` for the current async context; returns a reset token."""
-    return _current_session_holder.set(holder)
-
-
-def reset_current_session_holder(
-    token: Token[BashSessionHolder | None],
-) -> None:
-    """Undo a :func:`set_current_session_holder`."""
-    _current_session_holder.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -433,13 +75,37 @@ def reset_current_session_holder(
 # ---------------------------------------------------------------------------
 
 
-class Bash(BaseTool[BashInput, BashResult, Any]):
+class _ManagerBound:
+    """
+    Mixin for bash tools that the agent loop wires its background task manager
+    onto. The manager is otherwise resolved from the tool's own ``_manager``
+    (set explicitly at construction, or :meth:`bind_manager`-ed by the loop).
+    """
+
+    _manager: BackgroundTaskManager[Any] | None
+
+    @property
+    def manager(self) -> BackgroundTaskManager[Any] | None:
+        """The bound background task manager, if any."""
+        return self._manager
+
+    def bind_manager(self, manager: BackgroundTaskManager[Any]) -> None:
+        """Wire ``manager`` unless one was already set explicitly."""
+        if self._manager is None:
+            self._manager = manager
+
+
+class Bash(_ManagerBound, BaseTool[BashInput, BashResult, Any]):
     """
     Execute a shell command in the agent's environment via ``ctx.exec_backend``.
 
     Stateless wrapper around the bound :class:`ExecBackend`; the isolation that
     applies (none / seatbelt / bwrap / docker / e2b / ...) is whatever the
     wired backend provides and is reported back in :attr:`BashResult.backend`.
+    Each call is a fresh process — shell state (``cd`` / env / variables) does
+    not persist across calls; use
+    :class:`~grasp_agents.tools.bash_session.BashSession` for a persistent
+    session.
 
     Args:
         default_timeout: Used when the model passes no ``timeout``.
@@ -450,22 +116,14 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
             return early as ``status="backgrounded"`` with a ``bash_id``
             (prefer :func:`bash_tools`, which also wires the ``BashOutput`` /
             ``KillBash`` companions). ``None`` (default) never backgrounds.
-            Backgrounding needs a registry in scope (the running loop's or an
-            explicit one); without one the command runs in the foreground to
-            completion or timeout.
+            Backgrounding needs a background task manager in scope (the running
+            loop's or an explicit one); without one the command runs in the
+            foreground to completion or timeout.
         block_leading_sleep: Reject commands whose first statement is a bare
             ``sleep`` — they block the loop and produce nothing.
-        persistent: Default ``True``: when the backend is
-            :class:`~grasp_agents.sandbox.exec_backend.SessionCapable` and a
-            session holder is in scope (the agent loop wires one), run commands
-            in one long-lived shell per loop, so ``cd`` / env / variables
-            persist across calls. The session is serial and foreground-only
-            (no auto-background). Falls back to a fresh process per call when no
-            session is available (standalone use, or a non-session backend).
-        registry: Explicit background-session registry for the one-shot
-            (non-persistent) path, overriding the per-agent-loop one. Default
-            ``None``: backgrounded commands go to the running loop's registry.
-            Pass the same registry to all three tools or to none.
+        manager: Explicit background task manager, overriding the per-agent-loop
+            one. Default ``None``: backgrounded commands go to the running
+            loop's manager. Pass the same manager to all three tools or to none.
         timeout: Standard per-tool timeout (outer asyncio ceiling).
 
     """
@@ -491,8 +149,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
         auto_background_at: float | None = None,
         block_leading_sleep: bool = True,
-        persistent: bool = True,
-        registry: BashProcessRegistry | None = None,
+        manager: BackgroundTaskManager[Any] | None = None,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -502,8 +159,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         self._heartbeat_every = heartbeat_every
         self._auto_background_at = auto_background_at
         self._block_leading_sleep = block_leading_sleep
-        self._persistent = persistent
-        self._registry = registry
+        self._manager = manager
         if auto_background_at is not None:
             self.description += (
                 f" Commands running longer than {auto_background_at:g}s are "
@@ -514,11 +170,6 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
                 "KillBash), and KillBash to stop it."
             )
 
-    @property
-    def registry(self) -> BashProcessRegistry | None:
-        """The explicit session registry, if one was provided at construction."""
-        return self._registry
-
     async def _run(
         self,
         inp: BashInput,
@@ -527,15 +178,13 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
     ) -> BashResult:
-        del exec_id
-
         if ctx is None or ctx.exec_backend is None:
             raise ValueError(
                 "Bash requires ctx.exec_backend. Wire an ExecBackend on "
                 "RunContext (e.g. via local_environment(...)) before running "
                 "the agent."
             )
-        if self._block_leading_sleep and _LEADING_SLEEP.match(inp.command):
+        if self._block_leading_sleep and LEADING_SLEEP.match(inp.command):
             raise ValueError(
                 "Blocked: a leading `sleep` stalls the agent loop and "
                 "produces no output. Run the actual command (with a timeout) "
@@ -546,56 +195,44 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         effective_timeout = min(requested, self._max_timeout)
         cwd = Path(inp.cwd) if inp.cwd is not None else None
 
-        # Persistent shell (stateful) takes precedence when enabled and a
-        # session holder is in scope: one long-lived shell per agent loop, so
-        # cd / env / variables carry across calls. It is serial and
-        # foreground-only — no auto-background.
-        exec_session: ExecSession | None = None
-        if self._persistent and isinstance(ctx.exec_backend, SessionCapable):
-            holder = get_current_session_holder()
-            if holder is not None:
-                exec_session = await holder.get(ctx.exec_backend)
+        # Drain in a task and heartbeat while waiting. At the auto-background
+        # deadline, hand the still-running command to the background task
+        # manager (wired by the agent loop, or passed explicitly) and return
+        # early.
+        stream = ctx.exec_backend.stream(
+            inp.command, cwd=cwd, timeout=effective_timeout
+        )
+        manager = self._manager
+        # Background only with a deadline AND a manager to track it in.
+        deadline = self._auto_background_at if manager is not None else None
 
-        if exec_session is not None:
-            command = inp.command
-            if cwd is not None:
-                # One-off cwd: a subshell, so the session's persistent cwd is
-                # left untouched.
-                command = f"( cd -- {shlex.quote(str(cwd))} && {inp.command} )"
-            stream = exec_session.run(command, timeout=effective_timeout)
-            registry = None
-            deadline = None
-        else:
-            # One supervision path: drain in a task and heartbeat while waiting.
-            # At the auto-background deadline, hand the still-running session to
-            # the registry (if one is in scope) and return early. Resolution:
-            # explicit ctor registry > the running agent loop's.
-            stream = ctx.exec_backend.stream(
-                inp.command, cwd=cwd, timeout=effective_timeout
-            )
-            registry = self._registry or get_current_bash_registry()
-            # Background only with a deadline AND a registry to park it in.
-            deadline = self._auto_background_at if registry is not None else None
-
-        session = _BashSession(
+        command = BackgroundCommand(
             bash_id="", command=inp.command, started_at=time.monotonic()
         )
-        session.start(stream)
-        drain = session.drain
+        command.start(stream)
+        drain = command.drain
         assert drain is not None
 
         next_beat = self._progress_at
         try:
             while not drain.done():
-                elapsed = time.monotonic() - session.started_at
+                elapsed = time.monotonic() - command.started_at
                 if deadline is not None and elapsed >= deadline:
-                    assert registry is not None  # implied by deadline is not None
+                    assert manager is not None  # implied by deadline is not None
                     try:
-                        registry.adopt(session)
+                        bash_id = manager.track(
+                            drain,
+                            label="Bash",
+                            exec_id=exec_id or "",
+                            blocks_final_answer=False,
+                            monitor=command,
+                            id_prefix="bash",
+                        )
                     except RuntimeError:
-                        await session.kill()  # cap full: don't leak the process
+                        await command.kill()  # cap full: don't leak the process
                         raise
-                    return session.running_result()
+                    command.bash_id = bash_id
+                    return command.running_result()
 
                 wait = max(0.0, next_beat - elapsed)
                 if deadline is not None:
@@ -607,14 +244,14 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(asyncio.shield(drain), timeout=wait)
 
-                elapsed = time.monotonic() - session.started_at
+                elapsed = time.monotonic() - command.started_at
                 if not drain.done() and elapsed >= next_beat:
                     next_beat = elapsed + self._heartbeat_every
                     if progress_callback is not None:
                         await progress_callback(
                             elapsed,
                             effective_timeout,
-                            f"Bash: `{_preview(inp.command)}` running for "
+                            f"Bash: `{preview(inp.command)}` running for "
                             f"{elapsed:.0f}s",
                         )
 
@@ -623,11 +260,11 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
             # command was still foreground. Cancelling the drain closes the
             # backend stream, so the supervisor kills the process group and we
             # don't leak a live process. Backgrounded commands have already
-            # returned and keep running under the registry.
-            await session.kill()
+            # returned and keep running under the manager.
+            await command.kill()
             raise
 
-        return session.final_result()
+        return command.final_result()
 
 
 class BashIdInput(BaseModel):
@@ -636,27 +273,36 @@ class BashIdInput(BaseModel):
     bash_id: str = Field(description="The id returned by a backgrounded Bash call.")
 
 
-def _resolve_registry(
-    explicit: BashProcessRegistry | None, tool_name: str
-) -> BashProcessRegistry:
-    registry = explicit or get_current_bash_registry()
-    if registry is None:
+def _resolve_manager(
+    manager: BackgroundTaskManager[Any] | None, tool_name: str
+) -> BackgroundTaskManager[Any]:
+    if manager is None:
         raise ValueError(
-            f"{tool_name} found no bash session registry: run under an "
-            "agent loop, or construct the bash tools with one explicit "
-            "shared registry."
+            f"{tool_name} found no background task manager: run under an "
+            "agent loop (which wires one onto its bash tools), or construct "
+            "the tool with an explicit manager."
         )
-    return registry
+    return manager
 
 
-class BashOutput(BaseTool[BashIdInput, BashResult, Any]):
+def _bash_command(
+    manager: BackgroundTaskManager[Any], bash_id: str
+) -> BackgroundCommand:
+    """The :class:`BackgroundCommand` behind ``bash_id``, or a clear error."""
+    monitor = manager.get(bash_id).monitor
+    if isinstance(monitor, BackgroundCommand):
+        return monitor
+    raise ValueError(f"{bash_id!r} is not a backgrounded Bash command.")
+
+
+class BashOutput(_ManagerBound, BaseTool[BashIdInput, BashResult, Any]):
     """
     Poll a backgrounded ``Bash`` command for new output.
 
     Returns output produced since the previous poll. While the command is
     still running, ``status="backgrounded"`` and ``returncode`` is ``None``;
-    once it finishes, the final result fields are filled in and the session
-    is removed from the registry.
+    once it finishes, the final result fields are filled in and the command
+    is removed from the manager.
     """
 
     name = "BashOutput"
@@ -669,9 +315,9 @@ class BashOutput(BaseTool[BashIdInput, BashResult, Any]):
         "KillBash) or to read the output after a completion notice."
     )
 
-    def __init__(self, registry: BashProcessRegistry | None = None) -> None:
+    def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
         super().__init__()
-        self._registry = registry
+        self._manager = manager
 
     async def _run(
         self,
@@ -682,15 +328,15 @@ class BashOutput(BaseTool[BashIdInput, BashResult, Any]):
         progress_callback: ToolProgressCallback | None = None,
     ) -> BashResult:
         del ctx, exec_id, progress_callback
-        registry = _resolve_registry(self._registry, self.name)
-        session = registry.get(inp.bash_id)
-        if not session.running:
-            registry.remove(inp.bash_id)
-            return session.final_result()
-        return session.running_result()
+        manager = _resolve_manager(self._manager, self.name)
+        command = _bash_command(manager, inp.bash_id)
+        if not command.running:
+            manager.remove(inp.bash_id)
+            return command.final_result()
+        return command.running_result()
 
 
-class KillBash(BaseTool[BashIdInput, BashResult, Any]):
+class KillBash(_ManagerBound, BaseTool[BashIdInput, BashResult, Any]):
     """Terminate a backgrounded ``Bash`` command (process group)."""
 
     name = "KillBash"
@@ -699,9 +345,9 @@ class KillBash(BaseTool[BashIdInput, BashResult, Any]):
         "produced since the last poll."
     )
 
-    def __init__(self, registry: BashProcessRegistry | None = None) -> None:
+    def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
         super().__init__()
-        self._registry = registry
+        self._manager = manager
 
     async def _run(
         self,
@@ -712,10 +358,28 @@ class KillBash(BaseTool[BashIdInput, BashResult, Any]):
         progress_callback: ToolProgressCallback | None = None,
     ) -> BashResult:
         del ctx, exec_id, progress_callback
-        registry = _resolve_registry(self._registry, self.name)
-        session = await registry.kill(inp.bash_id)
-        registry.remove(inp.bash_id)
-        return session.final_result()
+        manager = _resolve_manager(self._manager, self.name)
+        command = _bash_command(manager, inp.bash_id)
+        await manager.cancel(inp.bash_id)
+        manager.remove(inp.bash_id)
+        return command.final_result()
+
+
+def bind_bash_manager(
+    tools: Iterable[BaseTool[Any, Any, Any]],
+    manager: BackgroundTaskManager[Any],
+) -> None:
+    """
+    Wire ``manager`` into the bash tools in ``tools`` that don't already have
+    one. The agent loop calls this at setup so its ``Bash`` / ``BashOutput`` /
+    ``KillBash`` tools share the loop's manager; an explicitly-constructed
+    ``manager`` (standalone use) is left untouched. Because the agent owns its
+    tools (deep-copied in ``LLMAgent.__init__``) and ``agent.copy()`` copies the
+    tools and the manager together, a replica's tools point at its own manager.
+    """
+    for tool in tools:
+        if isinstance(tool, _ManagerBound):
+            tool.bind_manager(manager)
 
 
 def bash_tools(
@@ -726,20 +390,20 @@ def bash_tools(
     heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
     auto_background_at: float = DEFAULT_AUTO_BACKGROUND_AT,
     block_leading_sleep: bool = True,
-    registry: BashProcessRegistry | None = None,
+    manager: BackgroundTaskManager[Any] | None = None,
     timeout: float | None = None,
 ) -> list[BaseTool[Any, Any, Any]]:
     """
-    Build the ephemeral ``[Bash, BashOutput, KillBash]`` trio with
-    auto-backgrounding enabled.
+    Build the ``[Bash, BashOutput, KillBash]`` trio with auto-backgrounding
+    enabled.
 
-    This trio is the one-shot / background model (``persistent=False``): each
-    command is a fresh process, and long ones move to the background registry.
-    It resolves the running agent loop's registry at call time, so every agent
-    (including sub-agents and parallel replicas) keeps its own background
-    sessions. Pass an explicit ``registry`` only for standalone use outside a
-    loop. For the stateful shell instead (``cd`` / env persist), use a plain
-    ``Bash()`` (``persistent=True`` by default), which needs no companions.
+    Each command is a fresh process, and long ones move to the agent loop's
+    background task manager. The trio resolves the running agent loop's manager
+    at call time, so every agent (including sub-agents and parallel replicas)
+    keeps its own background commands. Pass an explicit ``manager`` only for
+    standalone use outside a loop. For a stateful shell instead (``cd`` / env
+    persist across calls), use the
+    :class:`~grasp_agents.tools.bash_session.BashSession` tool.
     """
     return [
         Bash(
@@ -749,10 +413,9 @@ def bash_tools(
             heartbeat_every=heartbeat_every,
             auto_background_at=auto_background_at,
             block_leading_sleep=block_leading_sleep,
-            persistent=False,
-            registry=registry,
+            manager=manager,
             timeout=timeout,
         ),
-        BashOutput(registry),
-        KillBash(registry),
+        BashOutput(manager),
+        KillBash(manager),
     ]

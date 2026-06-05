@@ -142,9 +142,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         exec_id: str | None = None,
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        async for event in proc.run_stream(
-            in_args=in_args, exec_id=exec_id, step=step
-        ):
+        async for event in proc.run_stream(in_args=in_args, exec_id=exec_id, step=step):
             if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
                 yield ToolOutputEvent(
                     data=event.data.payloads[0], source=proc.name, exec_id=exec_id

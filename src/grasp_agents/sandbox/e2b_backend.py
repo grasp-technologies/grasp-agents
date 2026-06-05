@@ -38,9 +38,10 @@ native ``pause`` / ``connect``.
    sandbox from it (a true rewind); separately, ``pause()`` / ``resume()`` are
    suspend/resume of the same sandbox (``pause`` / ``connect``).
 
-Requires the optional ``e2b`` package (``pip install grasp-agents[e2b]``); the
-import is lazy so this module loads without it (a friendly error fires only when
-a sandbox is actually created).
+Requires the optional ``e2b`` package (``pip install grasp-agents[e2b]``), which
+is imported at module top (like the Anthropic / Gemini providers). This module
+is loaded lazily by :mod:`grasp_agents.sandbox` (PEP 562), so the extra is only
+needed when the E2B backend is actually used.
 """
 
 from __future__ import annotations
@@ -48,13 +49,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import importlib
 import shlex
 import time
 from dataclasses import replace
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self
+
+from e2b import (
+    AsyncCommandHandle,
+    AsyncSandbox,
+    CommandExitException,
+    EntryInfo,
+    TimeoutException,
+)
 
 from ..tools.file_edit.backend import (
     FileBackend,
@@ -64,88 +71,22 @@ from ..tools.file_edit.backend import (
 )
 from ..tools.file_edit.local_backend import glob_filter_entries
 from ..tools.file_edit.paths import PathAccessError, check_access_path
+from .e2b_session import E2BExecSession
 from .environment import ExecutionEnvironment, SnapshotCapable
 from .exec_backend import (
     ExecBackend,
     ExecChunk,
     ExecResult,
-    ExecSession,
     SessionCapable,
     TerminationReason,
 )
 from .policy import NetworkPolicy, SandboxPolicy
-from .session_protocol import frame_command, parse_exit_code
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
 
     from ..tools.file_edit.backend import GrepOutputMode
     from ..tools.file_edit.paths import AccessMode
-
-
-# Minimal structural views of the slice of the e2b ``AsyncSandbox`` API this
-# adapter touches. Defined here (not imported) so the module type-checks
-# without the optional ``e2b`` package installed: the live sandbox conforms by
-# shape, and the test doubles are checked against the same contract.
-class _E2BEntry(Protocol):
-    name: str
-    path: str
-    type: Any
-    size: int
-    mode: int
-    modified_time: Any  # datetime
-
-
-class _E2BFiles(Protocol):
-    async def read(self, path: str, fmt: str = ...) -> Any: ...
-    async def write(self, path: str, data: bytes) -> Any: ...
-    async def get_info(self, path: str) -> _E2BEntry: ...
-    async def exists(self, path: str) -> bool: ...
-    async def remove(self, path: str) -> Any: ...
-    async def make_dir(self, path: str) -> Any: ...
-    async def list(self, path: str, depth: int = ...) -> list[_E2BEntry]: ...
-
-
-class _E2BCommandHandle(Protocol):
-    pid: int
-    exit_code: int | None
-
-    async def wait(self) -> Any: ...
-
-
-class _E2BCommands(Protocol):
-    async def run(
-        self,
-        cmd: str,
-        *,
-        background: bool = ...,
-        cwd: str | None = ...,
-        envs: dict[str, str] | None = ...,
-        timeout: float | None = ...,
-        stdin: bool = ...,
-        on_stdout: Any = ...,
-        on_stderr: Any = ...,
-    ) -> Any: ...
-
-    async def send_stdin(self, pid: int, data: str) -> Any: ...
-
-    async def kill(self, pid: int) -> Any: ...
-
-
-class _E2BSandbox(Protocol):
-    sandbox_id: str
-
-    @property
-    def files(self) -> _E2BFiles: ...
-
-    @property
-    def commands(self) -> _E2BCommands: ...
-
-    async def pause(self) -> Any: ...
-
-    async def kill(self) -> Any: ...
-
-    async def create_snapshot(self) -> Any: ...
 
 
 # Depth passed to ``files.list`` for a recursive listing. E2B has no "infinite"
@@ -157,41 +98,12 @@ _DEFAULT_EXEC_TIMEOUT = 600.0  # matches the local supervisor's overall default
 _MAX_OUTPUT_CHARS = 1_000_000  # per the local supervisor's per-stream cap
 
 
-@lru_cache(maxsize=1)
-def _e2b_exception_types() -> tuple[type[BaseException], type[BaseException]]:
-    """``(TimeoutException, CommandExitException)`` from the e2b SDK (cached)."""
-    try:
-        exceptions = importlib.import_module("e2b.exceptions")
-        handle = importlib.import_module("e2b.sandbox.commands.command_handle")
-    except ImportError as exc:
-        raise _missing_e2b() from exc
-    return (
-        cast("type[BaseException]", exceptions.TimeoutException),
-        cast("type[BaseException]", handle.CommandExitException),
-    )
-
-
-def _missing_e2b() -> ImportError:
-    return ImportError(
-        "The E2B backend requires the optional 'e2b' package. "
-        "Install with: pip install grasp-agents[e2b]"
-    )
-
-
-def _import_e2b() -> Any:
-    """Import the optional ``e2b`` package or raise a friendly error."""
-    try:
-        return importlib.import_module("e2b")
-    except ImportError as exc:
-        raise _missing_e2b() from exc
-
-
 _TRANSPORT_TIMEOUT_NAMES = frozenset(
     {"ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException"}
 )
 
 
-def _is_timeout(exc: BaseException, timeout_exc: type[BaseException]) -> bool:
+def _is_timeout(exc: BaseException) -> bool:
     """
     True if ``exc`` (or its cause chain) is a command timeout.
 
@@ -203,7 +115,7 @@ def _is_timeout(exc: BaseException, timeout_exc: type[BaseException]) -> bool:
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if isinstance(cur, timeout_exc):
+        if isinstance(cur, TimeoutException):
             return True
         cls = type(cur)
         if cls.__name__ in _TRANSPORT_TIMEOUT_NAMES and cls.__module__.startswith(
@@ -214,12 +126,12 @@ def _is_timeout(exc: BaseException, timeout_exc: type[BaseException]) -> bool:
     return False
 
 
-def _mtime(entry: _E2BEntry) -> float:
+def _mtime(entry: EntryInfo) -> float:
     """Epoch seconds from an e2b ``EntryInfo.modified_time`` (a ``datetime``)."""
     return float(entry.modified_time.timestamp())
 
 
-def _is_dir(entry: _E2BEntry) -> bool:
+def _is_dir(entry: EntryInfo) -> bool:
     """True if an e2b entry is a directory (``entry.type`` is a ``FileType``)."""
     return str(getattr(entry.type, "value", entry.type)) == "dir"
 
@@ -249,17 +161,15 @@ class _SandboxHandle:
 
     Both backends and the environment reference the *same* holder, so a
     ``restore()`` (reconnect/resume) swaps the live sandbox under the file and
-    exec surfaces at once. ``sandbox`` is typed against the :class:`_E2BSandbox`
-    structural view (the e2b ``AsyncSandbox`` conforms by shape), so the adapter
-    type-checks without the optional ``e2b`` package installed.
+    exec surfaces at once.
     """
 
     __slots__ = ("sandbox",)
 
-    def __init__(self, sandbox: _E2BSandbox | None = None) -> None:
-        self.sandbox: _E2BSandbox | None = sandbox
+    def __init__(self, sandbox: AsyncSandbox | None = None) -> None:
+        self.sandbox: AsyncSandbox | None = sandbox
 
-    def require(self) -> _E2BSandbox:
+    def require(self) -> AsyncSandbox:
         if self.sandbox is None:
             raise RuntimeError(
                 "E2B environment is not entered. Use `async with env:` (the "
@@ -379,7 +289,8 @@ class E2BFileBackend(FileBackend):
     ) -> float:
         del mode, overwrite  # E2B writes always overwrite; no mode on the API
         sb = self._holder.require()
-        await sb.files.write(_wire(path), data)
+        # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
+        await sb.files.write(_wire(path), data)  # pyright: ignore[reportUnknownMemberType]
         info = await sb.files.get_info(_wire(path))
         return _mtime(info)
 
@@ -463,225 +374,6 @@ class E2BFileBackend(FileBackend):
         return _parse_grep(stdout, output_mode)
 
 
-_SESSION_SHELL_TIMEOUT = 3600.0  # max lifetime of a persistent session shell
-
-
-class _StreamScanner:
-    """
-    Per-stream marker scanner for :class:`E2BExecSession`.
-
-    Accumulates callback-delivered output, holding back the last ``len(marker)``
-    chars so a marker split across deliveries is never emitted, and caps the
-    emitted total. ``found`` flips once the end-of-command marker is seen; the
-    stdout scanner also captures the exit code.
-    """
-
-    def __init__(self, stream: Literal["stdout", "stderr"], marker: str, cap: int):
-        self.stream: Literal["stdout", "stderr"] = stream
-        self._marker = marker
-        self._cap = cap
-        self._buf = ""
-        self._emitted = 0
-        self.found = False
-        self.rc: int | None = None
-        self.truncated = False
-
-    def feed(self, data: str) -> list[ExecChunk]:
-        self._buf += data
-        marker_len = len(self._marker)
-        idx = self._buf.find(self._marker)
-        if idx != -1:
-            head = self._buf[:idx]
-            self.rc = parse_exit_code(self._buf[idx + marker_len :])
-            self.found = True
-            self._buf = ""
-            return self._emit(head)
-        if len(self._buf) > marker_len:
-            head = self._buf[:-marker_len]
-            self._buf = self._buf[-marker_len:]
-            return self._emit(head)
-        return []
-
-    def _emit(self, text: str) -> list[ExecChunk]:
-        if not text or self._emitted >= self._cap:
-            self.truncated = self.truncated or bool(text)
-            return []
-        allow = text[: self._cap - self._emitted]
-        self._emitted += len(allow)
-        self.truncated = self.truncated or len(allow) < len(text)
-        return [ExecChunk(stream=self.stream, data=allow)]
-
-
-class E2BExecSession(ExecSession):
-    """
-    Persistent (stateful) shell over an E2B sandbox — the remote analogue of
-    :class:`~grasp_agents.sandbox.local_session.LocalExecSession`.
-
-    Runs one long-lived ``/bin/sh`` via ``commands.run(background=True,
-    stdin=True, ...)`` and feeds commands through ``commands.send_stdin``; output
-    arrives on the separate ``on_stdout`` / ``on_stderr`` callbacks, so stdout
-    and stderr stay split. A unique per-command marker on each stream delimits
-    the end of output and carries the exit code, exactly as in the local
-    session. Serial and process-local.
-
-    Unlike the local session there is no per-command interrupt over the
-    ``commands`` API (no SIGINT to a process group), so a timeout kills the
-    shell and closes the session — a fresh one is opened on the next call.
-    """
-
-    def __init__(
-        self,
-        holder: _SandboxHandle,
-        *,
-        cwd: str | None,
-        env: dict[str, str] | None,
-        backend: str,
-        max_output_chars: int,
-    ) -> None:
-        self._holder = holder
-        self._cwd = cwd
-        self._env = env
-        self._backend = backend
-        self._max_output_chars = max_output_chars
-        self._handle: _E2BCommandHandle | None = None
-        self._pid: int | None = None
-        self._queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], str]] = (
-            asyncio.Queue()
-        )
-        self._lock = asyncio.Lock()
-        self._closed = False
-
-    @property
-    def backend(self) -> str:
-        return self._backend
-
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
-    async def _ensure_started(self) -> None:
-        if self._handle is not None:
-            return
-        sb = self._holder.require()
-
-        def on_stdout(data: str) -> None:
-            self._queue.put_nowait(("stdout", data))
-
-        def on_stderr(data: str) -> None:
-            self._queue.put_nowait(("stderr", data))
-
-        self._handle = cast(
-            "_E2BCommandHandle",
-            await sb.commands.run(
-                "/bin/sh",
-                background=True,
-                cwd=self._cwd,
-                envs=self._env,
-                timeout=_SESSION_SHELL_TIMEOUT,
-                stdin=True,
-                on_stdout=on_stdout,
-                on_stderr=on_stderr,
-            ),
-        )
-        self._pid = self._handle.pid
-
-    async def run(
-        self, command: str, *, timeout: float | None = None
-    ) -> AsyncIterator[ExecChunk | ExecResult]:
-        async with self._lock:
-            if self._closed:
-                raise RuntimeError("shell session is closed; open a new one")
-            start = time.monotonic()
-            await self._ensure_started()
-            sb = self._holder.require()
-            assert self._pid is not None
-
-            # Fresh queue per command — the shell is idle between commands, so
-            # the callbacks deliver only this command's output.
-            self._queue = asyncio.Queue()
-            marker, payload = frame_command(command)
-            try:
-                await sb.commands.send_stdin(self._pid, payload)
-            except Exception as exc:
-                self._closed = True
-                yield ExecChunk(stream="stderr", data=str(exc))
-                yield self._result(-1, start, reason=TerminationReason.SIGNAL)
-                return
-
-            scanners = {
-                "stdout": _StreamScanner("stdout", marker, self._max_output_chars),
-                "stderr": _StreamScanner("stderr", marker, self._max_output_chars),
-            }
-            completed = False
-            try:
-                while not (scanners["stdout"].found and scanners["stderr"].found):
-                    wait = (
-                        max(0.0, timeout - (time.monotonic() - start))
-                        if timeout is not None
-                        else None
-                    )
-                    try:
-                        stream, data = await asyncio.wait_for(self._queue.get(), wait)
-                    except TimeoutError:
-                        await self._kill()
-                        self._closed = True
-                        completed = True
-                        yield self._result(
-                            -1,
-                            start,
-                            reason=TerminationReason.OVERALL_TIMEOUT,
-                            truncated=True,
-                        )
-                        return
-                    for chunk in scanners[stream].feed(data):
-                        yield chunk
-                rc = scanners["stdout"].rc
-                truncated = scanners["stdout"].truncated or scanners["stderr"].truncated
-                completed = True
-                yield self._result(
-                    rc if rc is not None else -1,
-                    start,
-                    reason=TerminationReason.EXIT,
-                    truncated=truncated,
-                )
-            finally:
-                if not completed and not self._closed:
-                    # Abandoned mid-command (external cancel): kill the shell so
-                    # the next run starts clean.
-                    await self._kill()
-                    self._closed = True
-
-    def _result(
-        self,
-        returncode: int,
-        start: float,
-        *,
-        reason: TerminationReason,
-        truncated: bool = False,
-    ) -> ExecResult:
-        return ExecResult(
-            stdout="",
-            stderr="",
-            returncode=returncode,
-            reason=reason,
-            runtime_ms=(time.monotonic() - start) * 1000.0,
-            backend=self._backend,
-            truncated=truncated,
-        )
-
-    async def _kill(self) -> None:
-        if self._pid is None:
-            return
-        with contextlib.suppress(Exception):
-            sb = self._holder.require()
-            await sb.commands.kill(self._pid)
-
-    async def close(self) -> None:
-        self._closed = True
-        await self._kill()
-        self._handle = None
-
-
 class E2BExecBackend(ExecBackend, SessionCapable):
     """
     :class:`ExecBackend` over an E2B sandbox's ``commands`` API.
@@ -749,7 +441,6 @@ class E2BExecBackend(ExecBackend, SessionCapable):
         env: Mapping[str, str] | None = None,
     ) -> AsyncIterator[ExecChunk | ExecResult]:
         sb = self._holder.require()
-        timeout_exc, command_exit_exc = _e2b_exception_types()
 
         wrapped = _wrap_stdin(command, stdin)
         eff_timeout = timeout if timeout is not None else self._default_timeout
@@ -782,23 +473,20 @@ class E2BExecBackend(ExecBackend, SessionCapable):
 
         start = time.monotonic()
         try:
-            handle = cast(
-                "_E2BCommandHandle",
-                await sb.commands.run(
-                    wrapped,
-                    background=True,
-                    cwd=cwd_str,
-                    envs=envs,
-                    timeout=eff_timeout,
-                    stdin=False,
-                    on_stdout=on_stdout,
-                    on_stderr=on_stderr,
-                ),
+            handle = await sb.commands.run(
+                wrapped,
+                background=True,
+                cwd=cwd_str,
+                envs=envs,
+                timeout=eff_timeout,
+                stdin=False,
+                on_stdout=on_stdout,
+                on_stderr=on_stderr,
             )
         except BaseException as exc:
             reason = (
                 TerminationReason.OVERALL_TIMEOUT
-                if _is_timeout(exc, timeout_exc)
+                if _is_timeout(exc)
                 else TerminationReason.SPAWN_ERROR
             )
             yield ExecChunk(stream="stderr", data=str(exc))
@@ -835,23 +523,19 @@ class E2BExecBackend(ExecBackend, SessionCapable):
         yield self._terminal(
             handle,
             outcome.get("exc"),
-            timeout_exc=timeout_exc,
-            command_exit_exc=command_exit_exc,
             runtime_ms=(time.monotonic() - start) * 1000,
             truncated=truncated,
         )
 
     def _terminal(
         self,
-        handle: _E2BCommandHandle,
+        handle: AsyncCommandHandle,
         exc: BaseException | None,
         *,
-        timeout_exc: type[BaseException],
-        command_exit_exc: type[BaseException],
         runtime_ms: float,
         truncated: bool,
     ) -> ExecResult:
-        if exc is not None and _is_timeout(exc, timeout_exc):
+        if exc is not None and _is_timeout(exc):
             return ExecResult(
                 stdout="",
                 stderr="",
@@ -861,7 +545,7 @@ class E2BExecBackend(ExecBackend, SessionCapable):
                 backend=self._name,
                 truncated=truncated,
             )
-        if exc is not None and isinstance(exc, command_exit_exc):
+        if exc is not None and isinstance(exc, CommandExitException):
             rc = int(getattr(exc, "exit_code", 1) or 1)
             return ExecResult(
                 stdout="",
@@ -912,7 +596,7 @@ class E2BExecBackend(ExecBackend, SessionCapable):
     ) -> E2BExecSession:
         """Open a persistent shell on the sandbox (see :class:`E2BExecSession`)."""
         return E2BExecSession(
-            self._holder,
+            self._holder.require,
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
@@ -967,7 +651,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
     @classmethod
     def from_sandbox(
         cls,
-        sandbox: _E2BSandbox,
+        sandbox: AsyncSandbox,
         *,
         policy: SandboxPolicy,
         owns_sandbox: bool = False,
@@ -999,11 +683,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                     "E2BEnvironment has no sandbox and no create params; build "
                     "it via e2b_environment(...) or E2BEnvironment.from_sandbox(...)."
                 )
-            e2b_mod = _import_e2b()
-            self._holder.sandbox = cast(
-                "_E2BSandbox",
-                await e2b_mod.AsyncSandbox.create(**self._create_params),
-            )
+            self._holder.sandbox = await AsyncSandbox.create(**self._create_params)
         sandbox = self._holder.require()
         for root in self._file_backend.allowed_roots:
             await sandbox.files.make_dir(_wire(root))
@@ -1040,13 +720,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         + memory at snapshot time) and swap the live handle under both backends.
         The previous sandbox, if owned, is killed.
         """
-        e2b_mod = _import_e2b()
         previous = self._holder.sandbox
         params = dict(self._create_params or {})
         params["template"] = ref  # create from the snapshot, not a base template
-        self._holder.sandbox = cast(
-            "_E2BSandbox", await e2b_mod.AsyncSandbox.create(**params)
-        )
+        self._holder.sandbox = await AsyncSandbox.create(**params)
         if previous is not None and self._owns_sandbox:
             with contextlib.suppress(Exception):
                 await previous.kill()
@@ -1076,10 +753,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                     "resume() needs a sandbox_id when no sandbox is bound."
                 )
             target = str(current.sandbox_id)
-        e2b_mod = _import_e2b()
-        self._holder.sandbox = cast(
-            "_E2BSandbox", await e2b_mod.AsyncSandbox.connect(target)
-        )
+        self._holder.sandbox = await AsyncSandbox.connect(target)
 
 
 def e2b_environment(
@@ -1177,16 +851,15 @@ def e2b_environment(
 
 
 async def _run_capture(
-    sandbox: _E2BSandbox, command: str, *, cwd: str, timeout: float = 60.0
+    sandbox: AsyncSandbox, command: str, *, cwd: str, timeout: float = 60.0
 ) -> tuple[str, int]:
     """
     Run ``command`` in the sandbox and return ``(stdout, exit_code)`` without
     raising on non-zero (so callers like grep can treat exit 1 as "no match").
     """
-    command_exit_exc = _e2b_exception_types()[1]
     try:
         result = await sandbox.commands.run(command, cwd=cwd, timeout=timeout)
-    except command_exit_exc as exc:
+    except CommandExitException as exc:
         return str(getattr(exc, "stdout", "") or ""), int(
             getattr(exc, "exit_code", 1) or 1
         )

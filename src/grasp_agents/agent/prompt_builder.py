@@ -338,9 +338,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         return InputMessageItem(content_parts=content.parts, role="user")
 
     @final
-    def build_input_content(
-        self, in_args: InT | None, *, exec_id: str
-    ) -> Content:
+    def build_input_content(self, in_args: InT | None, *, exec_id: str) -> Content:
         if in_args is None and self._in_type is not type(None):
             raise InputPromptBuilderError(
                 proc_name=self._agent_name,

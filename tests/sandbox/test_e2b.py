@@ -8,11 +8,11 @@ is unit-tested in-session against a fake sandbox, while the end-to-end round
 trip is an ``integration``-marked test guarded by ``e2b`` being installed and
 ``E2B_API_KEY`` being set.
 
-The fake sandbox conforms structurally to the adapter's ``_E2BSandbox`` view
-(``files`` / ``commands`` / ``pause`` / ``kill`` / ``sandbox_id``) and is driven
-only through the public backend API. ``_e2b_exception_types`` (which imports the
-real SDK) is monkeypatched to fake exception classes so the exec paths run
-without the package installed.
+The fake sandbox is cast to ``AsyncSandbox`` and driven only through the public
+backend API; the fake exception classes subclass the real e2b
+``TimeoutException`` / ``CommandExitException`` so the adapter's isinstance
+checks match. The ``e2b`` SDK is imported at module top (installed in the dev
+environment), as in the adapter itself.
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ import asyncio
 import base64
 import contextlib
 import datetime as dt
-import importlib
 import importlib.util
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from e2b import AsyncSandbox, CommandExitException, TimeoutException
 
 from grasp_agents.sandbox import (
     E2BEnvironment,
@@ -49,37 +49,23 @@ pytestmark = pytest.mark.asyncio
 _WS = "/home/user/workspace"
 
 
-# --- fake exception classes + monkeypatch -----------------------------------
+# --- fake exception classes -------------------------------------------------
 
 
-class _FakeTimeout(Exception):
-    pass
+class _FakeTimeout(TimeoutException):
+    """Subclasses the real e2b type so the adapter's isinstance checks match."""
 
 
-class _FakeCommandExit(Exception):
+class _FakeCommandExit(CommandExitException):
+    """Subclasses the real e2b type so the adapter's isinstance checks match."""
+
     def __init__(self, *, stdout: str = "", stderr: str = "", exit_code: int = 1):
-        super().__init__(f"exit {exit_code}")
         self.stdout = stdout
         self.stderr = stderr
         self.exit_code = exit_code
 
 
-@pytest.fixture(autouse=True)
-def _patch_e2b_exceptions(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Live (integration) tests must use the REAL e2b exception types so the
-    # adapter's isinstance checks (CommandExitException -> data, etc.) match.
-    if "integration" in request.keywords:
-        return
-    monkeypatch.setattr(
-        e2b_backend,
-        "_e2b_exception_types",
-        lambda: (_FakeTimeout, _FakeCommandExit),
-    )
-
-
-# --- fake sandbox (conforms to e2b_backend._E2BSandbox by shape) ------------
+# --- fake sandbox (cast to AsyncSandbox; driven via the public backend API) -
 
 
 @dataclass
@@ -281,7 +267,7 @@ def _env(
     fake: _FakeSandbox, *, owns: bool = False, pause_on_exit: bool = False
 ) -> E2BEnvironment:
     return E2BEnvironment.from_sandbox(
-        fake,
+        cast("AsyncSandbox", fake),
         policy=SandboxPolicy(allowed_roots=(Path(_WS),)),
         owns_sandbox=owns,
         pause_on_exit=pause_on_exit,
@@ -424,7 +410,9 @@ async def test_deny_write_carveout_enforced_on_tool_plane() -> None:
         allowed_roots=(Path(_WS),),
         deny_write=(Path(f"{_WS}/protected"),),
     )
-    backend = E2BEnvironment.from_sandbox(_FakeSandbox(), policy=policy).file_backend
+    backend = E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", _FakeSandbox()), policy=policy
+    ).file_backend
     protected = Path(f"{_WS}/protected/x")
     # reads are allowed; writes to the carved-out region are denied
     await backend.validate_path(protected, must_exist=False, access="read")
@@ -599,19 +587,13 @@ async def test_restore_spawns_fresh_sandbox_from_snapshot(
             created.update(kwargs)
             return new_sb
 
-    class _FakeE2BModule:
-        AsyncSandbox = _FakeAsyncSandbox
-
-    real_import = importlib.import_module
-
-    def fake_import(name: str, package: str | None = None) -> Any:
-        return _FakeE2BModule if name == "e2b" else real_import(name, package)
-
-    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(e2b_backend, "AsyncSandbox", _FakeAsyncSandbox)
 
     old = _FakeSandbox(sandbox_id="sbx_old")
     env = E2BEnvironment.from_sandbox(
-        old, policy=SandboxPolicy(allowed_roots=(Path(_WS),)), owns_sandbox=True
+        cast("AsyncSandbox", old),
+        policy=SandboxPolicy(allowed_roots=(Path(_WS),)),
+        owns_sandbox=True,
     )
     await env.restore("snap-xyz")
     assert created["template"] == "snap-xyz"  # spawned from the snapshot
@@ -633,18 +615,10 @@ async def test_resume_reconnects_to_sandbox(
             connected["id"] = sandbox_id
             return resumed
 
-    class _FakeE2BModule:
-        AsyncSandbox = _FakeAsyncSandbox
-
-    real_import = importlib.import_module
-
-    def fake_import(name: str, package: str | None = None) -> Any:
-        return _FakeE2BModule if name == "e2b" else real_import(name, package)
-
-    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(e2b_backend, "AsyncSandbox", _FakeAsyncSandbox)
 
     env = E2BEnvironment.from_sandbox(
-        _FakeSandbox(sandbox_id="sbx_orig"),
+        cast("AsyncSandbox", _FakeSandbox(sandbox_id="sbx_orig")),
         policy=SandboxPolicy(allowed_roots=(Path(_WS),)),
     )
     await env.resume()  # defaults to the currently-bound id
@@ -666,15 +640,7 @@ async def test_enter_creates_sandbox_with_mapped_params(
             created.update(kwargs)
             return fake_sb
 
-    class _FakeE2BModule:
-        AsyncSandbox = _FakeAsyncSandbox
-
-    real_import = importlib.import_module
-
-    def fake_import(name: str, package: str | None = None) -> Any:
-        return _FakeE2BModule if name == "e2b" else real_import(name, package)
-
-    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(e2b_backend, "AsyncSandbox", _FakeAsyncSandbox)
 
     env = e2b_environment(
         allowed_roots=[_WS],

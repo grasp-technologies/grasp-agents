@@ -103,8 +103,7 @@ class GrepInput(BaseModel):
     show_line_numbers: bool = Field(
         default=True,
         description=(
-            "Show line numbers in ``content`` mode (rg ``-n``). Ignored "
-            "in other modes."
+            "Show line numbers in ``content`` mode (rg ``-n``). Ignored in other modes."
         ),
     )
     before_context: int | None = Field(
@@ -453,8 +452,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
             raw_path = roots[0]
         else:
             raise ValueError(
-                "Grep requires a path or a backend with at least one "
-                "allowed_root."
+                "Grep requires a path or a backend with at least one allowed_root."
             )
 
         state = get_current_file_edit_state()
@@ -511,9 +509,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
                 truncated=truncated,
             )
 
-        sliced, truncated = _slice(
-            raw.lines, offset=offset, head_limit=inp.head_limit
-        )
+        sliced, truncated = _slice(raw.lines, offset=offset, head_limit=inp.head_limit)
         return GrepResult(
             output="\n".join(sliced),
             output_mode=inp.output_mode,

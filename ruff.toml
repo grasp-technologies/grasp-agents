@@ -155,6 +155,8 @@ unfixable = ["F401"]
   "RUF059",
   "S106",
   "SLF001",
+  "TC001",
+  "TC003",
 ]
 # data_retrieval: copied from grasp-core, interface compliance kwargs
 "src/grasp_agents/data_retrieval/*.py" = ["ARG002", "TC003"]

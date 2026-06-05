@@ -357,9 +357,7 @@ def _ms_to_seconds(raw: Any) -> float:
 
 
 def _text_payload(content: Sequence[ContentBlock]) -> str:
-    return "\n".join(
-        block.text for block in content if isinstance(block, TextContent)
-    )
+    return "\n".join(block.text for block in content if isinstance(block, TextContent))
 
 
 def _parse_json_payload(

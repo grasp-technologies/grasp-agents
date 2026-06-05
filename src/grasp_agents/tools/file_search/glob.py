@@ -139,8 +139,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
             raw_root = roots[0]
         else:
             raise ValueError(
-                "Glob requires a path or a backend with at least one "
-                "allowed_root."
+                "Glob requires a path or a backend with at least one allowed_root."
             )
 
         state = get_current_file_edit_state()
