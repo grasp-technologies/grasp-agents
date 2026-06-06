@@ -6,6 +6,8 @@ Built-in tool packages for grasp-agents.
 - :class:`FileToolkit` — one factory bundling all of the above.
 - :class:`Bash` — run a shell command (fresh process) via ``ctx.exec_backend``.
 - :class:`BashSession` — run a command in a persistent shell session.
+- :class:`TaskOutput` / :class:`KillTask` — poll / stop any backgrounded tool
+  call by its ``task_id``.
 
 These are imported lazily (PEP 562) so importing :mod:`grasp_agents.tools`
 doesn't pull in the file tools (and their ripgrep-availability checks) or the
@@ -21,24 +23,23 @@ if TYPE_CHECKING:
     from .bash import (
         Bash,
         BashInput,
-        BashOutput,
         BashResult,
-        KillBash,
         bash_tools,
     )
     from .bash_session import BashSession
     from .file_toolkit import FileToolkit
+    from .task_tools import KillTask, TaskOutput
 
 
 _LAZY: dict[str, str] = {
     "Bash": "bash",
     "BashInput": "bash",
-    "BashOutput": "bash",
     "BashResult": "bash",
-    "KillBash": "bash",
     "bash_tools": "bash",
-    "FileToolkit": "file_toolkit",
     "BashSession": "bash_session",
+    "FileToolkit": "file_toolkit",
+    "KillTask": "task_tools",
+    "TaskOutput": "task_tools",
 }
 
 
@@ -55,10 +56,10 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "Bash",
     "BashInput",
-    "BashOutput",
     "BashResult",
     "BashSession",
     "FileToolkit",
-    "KillBash",
+    "KillTask",
+    "TaskOutput",
     "bash_tools",
 ]

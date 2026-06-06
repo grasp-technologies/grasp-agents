@@ -161,7 +161,7 @@ class TestAgentToolIntegration:
             ),
             llm=llm,
             max_turns=1,
-            background=True,
+            auto_background_at=0,
         )
 
         parent = LLMAgent[str, str, None](

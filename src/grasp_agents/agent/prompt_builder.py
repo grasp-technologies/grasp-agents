@@ -32,6 +32,7 @@ from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.run_context import RunContext
     from grasp_agents.types.hooks import InputContentBuilder, SystemPromptBuilder
     from grasp_agents.types.items import InputItem
@@ -63,6 +64,7 @@ class SectionCompute(Protocol):
         *,
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> str | Awaitable[str | None] | None: ...
 
 
@@ -105,6 +107,7 @@ class InputAttachmentCompute(Protocol):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> (
         str | Sequence[InputPart] | Awaitable[str | Sequence[InputPart] | None] | None
     ): ...
@@ -202,6 +205,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
+        agent_ctx: AgentContext | None = None,
     ) -> str | None:
         """
         Render the full system prompt as a single joined string.
@@ -211,7 +215,9 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         prompt caching, etc.) — that method returns the same content as a
         list of :class:`InputText` parts carrying their ``cache_control``.
         """
-        parts = await self.build_system_prompt_parts(ctx=ctx, exec_id=exec_id)
+        parts = await self.build_system_prompt_parts(
+            ctx=ctx, exec_id=exec_id, agent_ctx=agent_ctx
+        )
         if parts is None:
             return None
         return "\n\n".join(p.text for p in parts)
@@ -222,6 +228,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
+        agent_ctx: AgentContext | None = None,
     ) -> list[InputText] | None:
         """
         Render the full system prompt as a list of :class:`InputText`
@@ -249,7 +256,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                 parts.extend(base)
 
         for section in self.system_prompt_sections:
-            result = section.compute(ctx=ctx, exec_id=exec_id)
+            result = section.compute(ctx=ctx, exec_id=exec_id, agent_ctx=agent_ctx)
             if inspect.isawaitable(result):
                 result = await result
             if not result:
@@ -268,6 +275,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
         ctx: RunContext[CtxT],
         exec_id: str,
         messages: Sequence[InputItem] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> InputMessageItem:
         """
         Run every registered :class:`InputAttachment` and append the
@@ -287,6 +295,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                 ctx=ctx,
                 exec_id=exec_id,
                 messages=messages,
+                agent_ctx=agent_ctx,
             )
             if inspect.isawaitable(result):
                 result = await result

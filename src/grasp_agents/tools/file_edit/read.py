@@ -33,10 +33,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from .agent_state import get_current_file_edit_state
 from .paths import PathAccessError, has_binary_extension
 
 if TYPE_CHECKING:
+    from ...agent.agent_context import AgentContext
     from ...run_context import RunContext
     from .redact import SecretRedactor
 
@@ -176,8 +176,10 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> ReadResult:
-        del exec_id, progress_callback
+        del exec_id, progress_callback, path
 
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
@@ -192,7 +194,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
             )
 
         backend = ctx.file_backend
-        state = get_current_file_edit_state()
+        state = agent_ctx.file_edit_state if agent_ctx is not None else None
         overrides = (
             set(state.dotfile_overrides)
             if state is not None and state.dotfile_overrides

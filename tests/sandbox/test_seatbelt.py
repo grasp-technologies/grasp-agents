@@ -21,6 +21,7 @@ Three tiers:
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,7 @@ from typing import Any
 
 import pytest
 
+from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     NetworkPolicy,
     SandboxPolicy,
@@ -39,6 +41,8 @@ from grasp_agents.sandbox import (
     seatbelt_argv,
 )
 from grasp_agents.sandbox import seatbelt as seatbelt_mod
+
+from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
 
 pytestmark = pytest.mark.asyncio
 
@@ -319,3 +323,62 @@ async def test_seatbelt_network_all_allows_live(tmp_path: Path) -> None:
     assert backend is not None
     res = await backend.execute(f'python3 -c "{_BIND_PROBE}"', cwd=tmp_path)
     assert res.returncode == 0, res.stderr
+
+
+# --- live backgrounding (manager + Bash + TaskOutput / KillTask) -------------
+#
+# The same flow test_bash_polish exercises against an unconfined local
+# subprocess, here under a real Seatbelt profile: a long Bash command outlives
+# its deadline → the manager sidelines it → poll incremental output via
+# TaskOutput → it completes / is killed (the process group dies via the shared
+# supervisor's killpg, same as the unconfined backend).
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_background_poll_and_complete(tmp_path: Path) -> None:
+    env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
+    ctx: RunContext[None] = RunContext(environment=env)
+    agent_ctx, mgr = make_stack()
+
+    note, task_id = await background(
+        mgr, ctx, agent_ctx, "echo early && sleep 2 && echo late", abg=0.3
+    )
+    assert "moved to the background" in note
+    assert task_id is not None
+
+    collected, out = await poll_until_done(mgr, task_id)
+    assert out.status == "completed"
+    assert out.result is not None
+    assert out.result.returncode == 0
+    assert "early" in collected
+    assert "late" in collected
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_background_kill_terminates(tmp_path: Path) -> None:
+    env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
+    ctx: RunContext[None] = RunContext(environment=env)
+    agent_ctx, mgr = make_stack()
+
+    marker = tmp_path / "ticks.txt"
+    _note, task_id = await background(
+        mgr,
+        ctx,
+        agent_ctx,
+        f"while true; do echo tick >> {marker}; sleep 0.1; done",
+        abg=0.3,
+        timeout=60,
+    )
+    assert task_id is not None
+
+    killed = await kill(mgr, task_id)
+    assert killed.status == "completed"
+
+    # process group killed under Seatbelt: the marker stops growing
+    size_a = await marker_size(env, str(marker))
+    await asyncio.sleep(0.6)
+    size_b = await marker_size(env, str(marker))
+    assert size_a == size_b
+
+    with pytest.raises(ValueError, match="Unknown background task id"):
+        await kill(mgr, task_id)

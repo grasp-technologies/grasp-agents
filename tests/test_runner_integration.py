@@ -382,6 +382,8 @@ class _FailingAddTool(BaseTool[_AddInput, int, None]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
     ) -> int:
         self.call_count += 1
         if self.call_count == self.fail_on_call:

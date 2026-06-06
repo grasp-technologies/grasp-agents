@@ -2,7 +2,7 @@ import asyncio
 import copy as copy_mod
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -24,6 +24,7 @@ from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 from .events import Event, ToolErrorEvent, ToolErrorInfo
 
 if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.durability.checkpoints import CheckpointKind
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ class BaseTool(
         name: str | None = None,
         description: str | None = None,
         timeout: float | None = None,
-        background: bool = False,
+        auto_background_at: float | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -87,7 +88,14 @@ class BaseTool(
             raise ValueError(f"{type(self).__name__} must have a non-empty name")
 
         self.timeout = timeout
-        self.background = background
+        # When (and whether) the agent loop moves this tool call to the
+        # background. ``None`` (default): never — the call runs to completion in
+        # the foreground. ``0``: immediately — the call launches in the
+        # background and the loop is notified on completion (a resumable tool
+        # becomes a durable, answer-blocking task; otherwise ephemeral). ``N``
+        # (> 0): in the foreground until it has run ``N`` seconds, then moved to
+        # the background if still running.
+        self.auto_background_at = auto_background_at
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
         self._llm_in_type: type[BaseModel] | None = None
@@ -138,11 +146,14 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> _OutT_co:
-        # Resumable subagent wrappers (``AgentTool`` / ``ProcessorTool``)
-        # extend this with a ``session_subpath`` kwarg — forwarded by
-        # ``_run_with_timeout`` only when non-``None`` so plain tools
-        # remain compatible with the short signature.
+        # ``path`` is the per-call tool-call lineage (consumed by resumable
+        # ``AgentTool`` / ``ProcessorTool``); ``agent_ctx`` is the calling
+        # loop's agent-scope state (file-edit ledger, shell session,
+        # background tasks, parent transcript / sibling tools). Both are
+        # passed to every tool call; a tool ignores whichever it doesn't use.
         pass
 
     async def _run_stream(
@@ -152,9 +163,9 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        # Resumable subagent wrappers extend this with a ``session_subpath``
-        # kwarg — see :meth:`_run` for the forwarding rule.
         from .events import ToolOutputEvent  # noqa: PLC0415  (circular import)
 
         out = await self._run(
@@ -162,6 +173,8 @@ class BaseTool(
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
+            path=path,
+            agent_ctx=agent_ctx,
         )
         yield ToolOutputEvent(data=out, source=self.name, exec_id=exec_id)
 
@@ -216,21 +229,17 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        path: Sequence[str] | None = None,
+        path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> _OutT_co | ToolErrorInfo:
-        # ``path`` is forwarded only to *resumable* tools (whose
-        # ``_run`` is known to accept the kwarg). Plain tools keep the
-        # short signature and never see it.
-        extra: dict[str, Any] = (
-            {"path": path} if self.resumable and path is not None else {}
-        )
         try:
             coro = self._run(
                 inp,
                 ctx=ctx,
                 exec_id=exec_id,
                 progress_callback=progress_callback,
-                **extra,
+                path=path,
+                agent_ctx=agent_ctx,
             )
             if self.timeout is not None:
                 result = await asyncio.wait_for(coro, timeout=self.timeout)
@@ -247,18 +256,16 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        path: Sequence[str] | None = None,
+        path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        # See ``_run_with_timeout`` for the forwarding rule.
-        extra: dict[str, Any] = (
-            {"path": path} if self.resumable and path is not None else {}
-        )
         stream = self._run_stream(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
-            **extra,
+            path=path,
+            agent_ctx=agent_ctx,
         )
         async for event in self._stream_with_timeout(stream, exec_id=exec_id):
             yield event
@@ -272,6 +279,7 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        agent_ctx: "AgentContext | None" = None,
         **kwargs: Any,
     ) -> _OutT_co | ToolErrorInfo:
         inp = TypeAdapter(self.in_type).validate_python(kwargs)
@@ -280,6 +288,7 @@ class BaseTool(
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
+            agent_ctx=agent_ctx,
         )
 
     @traced(name="tool", span_kind=SpanKind.TOOL)
@@ -291,6 +300,7 @@ class BaseTool(
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> _OutT_co | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
@@ -298,6 +308,7 @@ class BaseTool(
             exec_id=exec_id,
             progress_callback=progress_callback,
             path=path,
+            agent_ctx=agent_ctx,
         )
 
     @traced(name="tool", span_kind=SpanKind.TOOL)
@@ -309,6 +320,7 @@ class BaseTool(
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
         async for event in self._run_stream_with_timeout(
             inp,
@@ -316,6 +328,7 @@ class BaseTool(
             exec_id=exec_id,
             progress_callback=progress_callback,
             path=path,
+            agent_ctx=agent_ctx,
         ):
             yield event
 
@@ -343,9 +356,10 @@ class BaseTool(
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
         """Resume from a session checkpoint. Override in resumable tools."""
-        del ctx, exec_id, path
+        del ctx, exec_id, path, agent_ctx
         raise NotImplementedError(f"{type(self).__name__} does not support resume")
         yield  # type: ignore[unreachable]  # makes this an async generator
 

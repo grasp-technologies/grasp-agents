@@ -34,6 +34,7 @@ from ..types.tool import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from ..run_context import RunContext
+    from .agent_context import AgentContext
 
 # Parameters with these names are passed through from the executor,
 # not included in the tool's input schema.
@@ -81,13 +82,13 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         has_ctx: bool,
         has_exec_id: bool,
         timeout: float | None = None,
-        background: bool = False,
+        auto_background_at: float | None = None,
     ) -> None:
         super().__init__(
             name=name,
             description=description,
             timeout=timeout,
-            background=background,
+            auto_background_at=auto_background_at,
         )
         self._fn = fn
         self._resolved_in_type = input_model
@@ -110,8 +111,10 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> Any:
-        del progress_callback
+        del progress_callback, path, agent_ctx
         kwargs = inp.model_dump()
         if self._has_ctx:
             kwargs["ctx"] = ctx
@@ -133,7 +136,7 @@ def function_tool(
     name: str | None = None,
     description: str | None = None,
     timeout: float | None = None,
-    background: bool = False,
+    auto_background_at: float | None = None,
 ) -> Any: ...
 
 
@@ -144,7 +147,7 @@ def function_tool(
     name: str | None = None,
     description: str | None = None,
     timeout: float | None = None,
-    background: bool = False,
+    auto_background_at: float | None = None,
 ) -> Any:
     """
     Create a BaseTool from a function.
@@ -175,7 +178,7 @@ def function_tool(
             has_ctx=_has_special_param(sig, "ctx"),
             has_exec_id=_has_special_param(sig, "exec_id"),
             timeout=timeout,
-            background=background,
+            auto_background_at=auto_background_at,
         )
 
     if fn is not None:

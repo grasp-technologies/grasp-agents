@@ -198,6 +198,8 @@ class _EchoTool(BaseTool[_EchoInput, str, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
     ) -> str:
         del ctx, exec_id, progress_callback
         return f"echo: {inp.text}"

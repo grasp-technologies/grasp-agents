@@ -30,6 +30,7 @@ from typing import Any, cast
 import pytest
 from e2b import AsyncSandbox, CommandExitException, TimeoutException
 
+from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     E2BEnvironment,
     ExecBackend,
@@ -43,6 +44,8 @@ from grasp_agents.sandbox import (
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 from grasp_agents.tools.file_edit.backend import FileBackend
 from grasp_agents.tools.file_edit.paths import PathAccessError
+
+from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
 
 pytestmark = pytest.mark.asyncio
 
@@ -168,6 +171,9 @@ class _FakeHandle:
         if self._raise is not None:
             raise self._raise
         return None
+
+    async def kill(self) -> Any:
+        return True
 
 
 class _FakeCommands:
@@ -1034,3 +1040,72 @@ async def test_e2b_live_persistent_session() -> None:
             assert session.closed
         finally:
             await session.close()
+
+
+# --- live backgrounding (manager + Bash + TaskOutput / KillTask) -------------
+#
+# The same backgrounding flow test_bash_polish exercises against a local
+# subprocess, here against a real remote E2B container: a long Bash command
+# outlives its deadline → the BackgroundTaskManager sidelines it → the model
+# polls incremental output through TaskOutput → it completes / is killed.
+
+
+@pytest.mark.integration
+@_live
+async def test_e2b_live_background_poll_and_complete() -> None:
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        ctx: RunContext[None] = RunContext(environment=env)
+        agent_ctx, mgr = make_stack()
+
+        note, task_id = await background(
+            mgr,
+            ctx,
+            agent_ctx,
+            "echo early && sleep 3 && echo late",
+            abg=0.5,
+            timeout=60,
+        )
+        assert "moved to the background" in note  # outlived the deadline
+        assert task_id is not None
+
+        collected, out = await poll_until_done(mgr, task_id, tries=80, delay=0.5)
+        assert out.status == "completed"
+        assert out.result is not None  # the terminal BashResult
+        assert out.result.returncode == 0
+        # output produced before *and* after backgrounding is surfaced by polling
+        assert "early" in collected
+        assert "late" in collected
+        assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
+@_live
+async def test_e2b_live_background_kill_terminates_remote_command() -> None:
+    # KillTask cancels the manager task → the E2B backend kills the remote
+    # command (handle.kill) → the marker file stops growing in the sandbox.
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        ctx: RunContext[None] = RunContext(environment=env)
+        agent_ctx, mgr = make_stack()
+
+        marker = f"{_WS}/ticks.txt"
+        _note, task_id = await background(
+            mgr,
+            ctx,
+            agent_ctx,
+            f"while true; do echo tick >> {marker}; sleep 0.2; done",
+            abg=0.5,
+            timeout=30,
+        )
+        assert task_id is not None
+
+        killed = await kill(mgr, task_id)
+        assert killed.status == "completed"
+
+        # the remote process is actually gone: the marker stops growing
+        size_a = await marker_size(env, marker)
+        await asyncio.sleep(2.0)
+        size_b = await marker_size(env, marker)
+        assert size_a == size_b
+
+        with pytest.raises(ValueError, match="Unknown background task id"):
+            await kill(mgr, task_id)

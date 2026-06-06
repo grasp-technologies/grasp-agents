@@ -8,6 +8,7 @@ from pydantic import AnyUrl, BaseModel
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.run_context import RunContext
 
 try:
@@ -56,8 +57,10 @@ class MCPListResourcesTool(BaseTool[ListResourcesInput, str, None]):
         ctx: RunContext[None] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> str:
-        del ctx, exec_id, progress_callback
+        del ctx, exec_id, progress_callback, path, agent_ctx
         params = PaginatedRequestParams(cursor=inp.cursor) if inp.cursor else None
         resources_result = await self._session.list_resources(params=params)
         templates_result = await self._session.list_resource_templates()
@@ -118,8 +121,10 @@ class MCPReadResourceTool(BaseTool[ReadResourceInput, str, None]):
         ctx: RunContext[None] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> str:
-        del ctx, exec_id, progress_callback
+        del ctx, exec_id, progress_callback, path, agent_ctx
         result = await self._session.read_resource(inp.uri)
 
         parts: list[str] = []

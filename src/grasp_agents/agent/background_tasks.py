@@ -1,11 +1,10 @@
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from logging import getLogger
-from typing import Any, Generic, Protocol, runtime_checkable
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, Generic, Literal
 
 from pydantic import BaseModel
 
@@ -24,8 +23,8 @@ from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     Event,
     ToolErrorEvent,
-    ToolErrorInfo,
     ToolOutputEvent,
+    ToolStreamEvent,
     UserMessageEvent,
 )
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
@@ -33,24 +32,27 @@ from grasp_agents.types.tool import BaseTool
 
 from .llm_agent_transcript import LLMAgentTranscript
 
+if TYPE_CHECKING:
+    from .agent_context import AgentContext
+
 logger = getLogger(__name__)
 
 
-@runtime_checkable
-class BackgroundMonitor(Protocol):
+class TaskOutputResult(BaseModel):
     """
-    A *pollable* background unit handed to :meth:`BackgroundTaskManager.track`.
+    What ``TaskOutput`` / ``KillTask`` return for a backgrounded task.
 
-    The manager uses only :meth:`summary` (for the turn-boundary completion
-    note); the tool that created the monitor reads / stops it through its own
-    concrete type. This is the single seam between the general task manager and
-    a tool-specific background unit (e.g. a shell command's output buffer) — the
-    manager stays kind-agnostic.
+    Generic over any tool: ``output`` is the text produced since the last poll
+    (assembled from the task's stream events), and ``result`` is the tool's own
+    terminal output (e.g. a ``BashResult``) once it has finished — ``None``
+    while it is still running or if it was killed before producing one.
     """
 
-    def summary(self) -> str:
-        """A short, one-line completion summary for the notification."""
-        ...
+    task_id: str
+    tool_name: str
+    status: Literal["running", "completed", "failed"]
+    output: str = ""
+    result: Any = None
 
 
 def _task_notification(
@@ -80,64 +82,58 @@ def _task_notification(
 @dataclass
 class PendingTask:
     """
-    A background unit of work tracked by the manager — kind-agnostic.
+    A backgrounded unit of work — kind-agnostic.
 
-    A subagent-as-tool runs *durably* (``task_key`` set, ``blocks_final_answer``
-    True, result delivered inline in the completion note). A backgrounded shell
-    command is the same shape but *ephemeral* (no ``task_key`` — an OS process
-    can't be resumed), *non-blocking*, and *pollable*: it carries an opaque
-    ``monitor`` the owning tool uses to read / stop it, and its output is read
-    back through that tool rather than inlined. The manager treats every task
-    through these general fields and never inspects ``monitor``.
+    The manager drives ``tool.run_stream`` in ``task`` and appends every event
+    to ``events`` (the buffer). Two cursors read that one buffer: ``bubble``
+    re-emits new events to the parent stream at the turn boundary (used for
+    answer-blocking sub-agent tasks, so their nested progress is visible), and
+    ``poll`` is advanced by ``TaskOutput`` for the model's incremental reads.
+    ``task_key`` is set only for a *resumable* tool (its ``TaskRecord`` is
+    persisted so a restart can re-spawn it); a backgrounded shell command is not
+    resumable, so it has none.
     """
 
     task_id: str
     tool_name: str
     exec_id: str
-    task: asyncio.Task[Any]
+    task: asyncio.Task[None]
+    events: list[Event[Any]] = field(default_factory=list[Event[Any]])
     # Its completion gates the final answer (its result is part of the answer).
     blocks_final_answer: bool = True
     tool_call_id: str | None = None
-    # Lifecycle store key for this task's TaskRecord; ``None`` when ephemeral
-    # (no store / no checkpoint kind), in which case status updates are no-ops.
     task_key: str | None = None
-    # Buffered events to bubble at the turn boundary (subagent tasks); ``None``
-    # for tasks that deliver their output another way (e.g. a polled command).
-    events: asyncio.Queue[Event[Any] | None] | None = None
-    # Handle the owning tool uses to read / stop a *pollable* task; the manager
-    # only calls ``monitor.summary()``. Its presence marks the task pollable:
-    # the result is not inlined in the completion note, and the task is kept
-    # after announcement so the owning tool can still read it.
-    monitor: BackgroundMonitor | None = None
-    announced: bool = False
+    bubble_cursor: int = 0  # events already re-emitted to the parent stream
+    poll_cursor: int = 0  # events already read out via TaskOutput
+    announced: bool = False  # completion note already emitted
 
 
-async def _stream_to_result(
+async def _consume(
     stream: AsyncIterator[Event[Any]],
-    queue: asyncio.Queue[Event[Any] | None],
+    events: list[Event[Any]],
     *,
     store: CheckpointStore | None = None,
     task_key: str | None = None,
-) -> Any:
+) -> None:
     """
-    Run a tool's run_stream, forwarding events to ``queue``. Return result.
+    Drive a tool's ``run_stream``, buffering every event into ``events``.
 
-    On a successful result, persist a ``COMPLETED`` TaskRecord carrying the
-    result *before* signalling completion. This closes the window between a
+    On a successful finish, persist a ``COMPLETED`` ``TaskRecord`` carrying the
+    result *before* the done-callback fires. This closes the window between a
     task finishing and :meth:`BackgroundTaskManager.drain` delivering it: a
     crash in that window leaves a ``COMPLETED`` record that resume re-injects
-    (see :meth:`handle_pending`), instead of a ``PENDING`` record that forces
-    a re-run or loses the result.
+    (see :meth:`resume_durable`), instead of a ``PENDING`` record that would
+    force a re-run or lose the result.
     """
     result: Any = None
     failed = False
     async for event in stream:
+        events.append(event)
         if isinstance(event, ToolOutputEvent):
             result = event.data
         elif isinstance(event, ToolErrorEvent):
             result = event.data  # ToolErrorInfo
             failed = True
-        await queue.put(event)
 
     if store is not None and task_key is not None and not failed:
         existing = await store.load(task_key)
@@ -152,18 +148,38 @@ async def _stream_to_result(
             )
             await store.save(task_key, record.model_dump_json().encode())
 
-    await queue.put(None)  # sentinel: stream finished
-    return result
+
+def _result_of(events: list[Event[Any]]) -> tuple[Any, bool]:
+    """The task's terminal result and whether it failed (last writer wins)."""
+    result: Any = None
+    failed = False
+    for event in events:
+        if isinstance(event, ToolErrorEvent):
+            result = event.data
+            failed = True
+        elif isinstance(event, ToolOutputEvent):
+            result = event.data
+    return result, failed
+
+
+def _stream_text(events: list[Event[Any]]) -> str:
+    """Concatenated incremental output text across ``events`` (rendered via str)."""
+    return "".join(str(e.data) for e in events if isinstance(e, ToolStreamEvent))
 
 
 class BackgroundTaskManager(Generic[CtxT]):
     """
-    Tracks background work of any kind: durable, answer-blocking, resumable
-    tasks created with :meth:`spawn_durable` (e.g. a subagent-as-tool), and
-    ephemeral, non-blocking ones registered with :meth:`track` (e.g. a
-    backgrounded shell command). One drain / idle-wait / cancel path serves
-    both; only the durable methods (``spawn_durable`` / ``resume_durable`` /
-    ``prune_delivered``) touch the checkpoint store.
+    Tracks background work of any kind, generic over the tool that produces it.
+
+    One mechanism: run a tool's ``run_stream`` as a task and buffer the events
+    it yields, keyed by ``task_id``. :meth:`spawn` launches an answer-blocking
+    task now (e.g. a sub-agent, whose result is delivered inline); whereas
+    :meth:`run_with_deadline` runs a call in the foreground and *sidelines* it as
+    a non-blocking, pollable task only if it outlives its ``auto_background_at``
+    (e.g. a long shell command). ``TaskOutput`` / ``KillTask`` read / stop a
+    sidelined task by id (:meth:`read_output` / :meth:`kill_task`). One
+    drain / idle-wait / cancel path serves every task; only resumable tools get
+    a persisted ``TaskRecord``.
     """
 
     def __init__(
@@ -182,8 +198,8 @@ class BackgroundTaskManager(Generic[CtxT]):
         self._tasks: dict[str, PendingTask] = {}
         self._bg_counter = 0
         self._max_background = max_background
-        # Completed task ids, pushed by each task's done-callback (Hermes-style
-        # single completion seam): :meth:`drain` pops them to deliver notes, and
+        # Completed task ids, pushed by each task's done-callback (single
+        # completion seam): :meth:`drain` pops them to deliver notes, and
         # :meth:`wait_idle` blocks on the next one — one queue, every task kind.
         self._completions: asyncio.Queue[str] = asyncio.Queue()
 
@@ -214,47 +230,202 @@ class BackgroundTaskManager(Generic[CtxT]):
         task_id = await self._completions.get()
         self._completions.put_nowait(task_id)
 
-    # --- generic tracking of externally-started background work ---
+    # --- Launch ---
 
-    def track(
+    async def spawn(
         self,
-        task: asyncio.Task[Any],
+        call: FunctionToolCallItem,
+        tool: BaseTool[BaseModel, Any, CtxT],
+        inp: BaseModel,
         *,
-        label: str,
+        ctx: RunContext[CtxT],
         exec_id: str,
-        blocks_final_answer: bool = False,
-        monitor: BackgroundMonitor | None = None,
-        tool_call_id: str | None = None,
-        id_prefix: str = "bg",
-    ) -> str:
+        blocks_final_answer: bool,
+        agent_ctx: "AgentContext | None" = None,
+    ) -> tuple[str, BackgroundTaskLaunchedEvent]:
         """
-        Register an already-running background task and return its id.
+        Launch a background task from a tool call now; return ``(note, event)`` —
+        a launch note (the immediate tool result, built here so both backgrounding
+        paths craft their note in the manager) + the launched event to bubble.
 
-        Unlike :meth:`spawn`, ``track`` neither starts the work nor persists a
-        ``TaskRecord``: the caller owns the lifecycle (the task dies with the
-        host — nothing to resume), and the manager only tracks it for the idle
-        wait, the turn-boundary completion note, and cancel-on-exit. ``monitor``
-        is the handle the owning tool reads / stops; see :class:`PendingTask`.
+        ``blocks_final_answer`` is the caller's choice (independent of
+        persistence): a sub-agent spawn passes ``True`` (its result is the
+        answer, delivered inline at the turn boundary). A resumable tool also
+        gets a persisted ``TaskRecord`` so :meth:`resume_durable` can re-spawn
+        it after a restart; a non-resumable one does not (nothing to resume).
+
+        ``agent_ctx`` is the parent loop's agent-scope state, forwarded to the
+        backgrounded ``run_stream`` so a sub-agent-as-tool still resolves its
+        parent's transcript / sibling tools off the call.
         """
+        task_id = self._next_id()
+        store = ctx.checkpoint_store
+
+        child_path = make_tool_call_path(self._path, call.call_id)
+        task_key: str | None = None
+        if tool.resumable and store is not None and child_path is not None:
+            task_key = make_store_key(ctx.session_key, CheckpointKind.TASK, child_path)
+            record = TaskRecord(
+                session_key=ctx.session_key,
+                task_id=task_id,
+                tool_call_id=call.call_id,
+                tool_name=call.name,
+                tool_call_arguments=call.arguments,
+                status=TaskStatus.PENDING,
+            )
+            await store.save(task_key, record.model_dump_json().encode())
+
+        events: list[Event[Any]] = []
+        stream = tool.run_stream(
+            inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
+        )
+        async_task = asyncio.create_task(
+            _consume(stream, events, store=store, task_key=task_key)
+        )
+        self._register(
+            PendingTask(
+                task_id=task_id,
+                tool_name=call.name,
+                exec_id=exec_id,
+                tool_call_id=call.call_id,
+                task=async_task,
+                events=events,
+                blocks_final_answer=blocks_final_answer,
+                task_key=task_key,
+            )
+        )
+
+        note = (
+            f"Task '{call.name}' launched in the background (id: {task_id}); "
+            "its result will be delivered to you when it finishes."
+        )
+        event = BackgroundTaskLaunchedEvent(
+            source=self._agent_name,
+            exec_id=exec_id,
+            data=BackgroundTaskInfo(
+                task_id=task_id,
+                tool_name=call.name,
+                tool_call_id=call.call_id,
+            ),
+        )
+        return note, event
+
+    async def run_with_deadline(
+        self,
+        call: FunctionToolCallItem,
+        tool: BaseTool[BaseModel, Any, CtxT],
+        inp: BaseModel,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+        agent_ctx: "AgentContext | None" = None,
+    ) -> tuple[Any, BackgroundTaskLaunchedEvent | None]:
+        """
+        Run a call in the foreground, moving it to the background if it outlives
+        ``tool.auto_background_at``.
+
+        Returns ``(output, launched)``: if the call finishes within the deadline,
+        ``output`` is the tool's result and ``launched`` is ``None``; otherwise
+        the still-running task is sidelined as a non-blocking, *pollable* task,
+        ``output`` is a launch note (the model reads its output with
+        ``TaskOutput`` / stops it with ``KillTask``), and ``launched`` is the
+        :class:`BackgroundTaskLaunchedEvent` for the caller to bubble — the same
+        event :meth:`spawn` emits, so a deadline-backgrounded task is just as
+        visible to observers. The manager owns the whole race — the tool knows
+        nothing about backgrounding.
+        """
+        abg = tool.auto_background_at
+        assert abg is not None
+
+        events: list[Event[Any]] = []
+        stream = tool.run_stream(
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            path=make_tool_call_path(self._path, call.call_id),
+            agent_ctx=agent_ctx,
+        )
+        task = asyncio.create_task(_consume(stream, events))
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=abg)
+        except TimeoutError:
+            try:
+                task_id = self._sideline(
+                    task,
+                    events,
+                    tool_name=tool.name,
+                    exec_id=exec_id,
+                    tool_call_id=call.call_id,
+                )
+            except RuntimeError as exc:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                return f"Tool '{tool.name}' could not be backgrounded: {exc}", None
+            note = (
+                f"Tool '{tool.name}' is still running after {abg:g}s and was "
+                f"moved to the background (id: {task_id}); poll it with "
+                f"TaskOutput(task_id={task_id!r}), stop it with KillTask, or "
+                "just wait — you are notified when it finishes."
+            )
+            launched = BackgroundTaskLaunchedEvent(
+                source=self._agent_name,
+                exec_id=exec_id,
+                data=BackgroundTaskInfo(
+                    task_id=task_id,
+                    tool_name=tool.name,
+                    tool_call_id=call.call_id,
+                ),
+            )
+            return note, launched
+        except asyncio.CancelledError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise
+
+        result, _ = _result_of(events)
+        return result, None
+
+    def _next_id(self) -> str:
+        self._bg_counter += 1
+        return f"bg_{self._bg_counter}"
+
+    def _sideline(
+        self,
+        task: asyncio.Task[None],
+        events: list[Event[Any]],
+        *,
+        tool_name: str,
+        exec_id: str,
+        tool_call_id: str | None,
+    ) -> str:
+        """Register a still-running deadline task as non-blocking + pollable."""
         if len(self._tasks) >= self._max_background:
             raise RuntimeError(
                 f"Too many background tasks ({self._max_background}); kill or "
                 "drain existing ones first."
             )
-        self._bg_counter += 1
-        task_id = f"{id_prefix}_{self._bg_counter}"
+        task_id = self._next_id()
         self._register(
             PendingTask(
                 task_id=task_id,
-                tool_name=label,
+                tool_name=tool_name,
                 exec_id=exec_id,
-                task=task,
-                blocks_final_answer=blocks_final_answer,
                 tool_call_id=tool_call_id,
-                monitor=monitor,
+                task=task,
+                events=events,
+                blocks_final_answer=False,
             )
         )
         return task_id
+
+    def _register(self, pt: PendingTask) -> None:
+        """Track a task and push its id onto the completion queue when it ends."""
+        self._tasks[pt.task_id] = pt
+        pt.task.add_done_callback(
+            lambda _t, tid=pt.task_id: self._completions.put_nowait(tid)
+        )
 
     def get(self, task_id: str) -> PendingTask:
         pt = self._tasks.get(task_id)
@@ -268,146 +439,107 @@ class BackgroundTaskManager(Generic[CtxT]):
     def remove(self, task_id: str) -> None:
         self._tasks.pop(task_id, None)
 
-    async def cancel(self, task_id: str) -> PendingTask:
-        """Cancel one task's future; the owning tool reads any final output."""
+    # --- Poll / stop (TaskOutput / KillTask) ---
+
+    def read_output(self, task_id: str) -> TaskOutputResult:
+        """Output since the last read; the terminal result once finished."""
+        pt = self.get(task_id)
+        new = pt.events[pt.poll_cursor :]
+        pt.poll_cursor = len(pt.events)
+        output = _stream_text(new)
+
+        if pt.task.done():
+            result, failed = _result_of(pt.events)
+            status: Literal["running", "completed", "failed"] = (
+                "failed" if failed else "completed"
+            )
+            self._tasks.pop(task_id, None)  # finished + read → drop
+        else:
+            result, status = None, "running"
+
+        return TaskOutputResult(
+            task_id=task_id,
+            tool_name=pt.tool_name,
+            status=status,
+            output=output,
+            result=result,
+        )
+
+    async def kill_task(self, task_id: str) -> TaskOutputResult:
+        """Cancel a task (its stream closes → process group killed) and read it."""
         pt = self.get(task_id)
         if not pt.task.done():
             pt.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pt.task
-        return pt
 
-    def _register(self, pt: PendingTask) -> None:
-        """Track a task and push its id onto the completion queue when it ends."""
-        self._tasks[pt.task_id] = pt
-        pt.task.add_done_callback(
-            lambda _t, tid=pt.task_id: self._completions.put_nowait(tid)
+        new = pt.events[pt.poll_cursor :]
+        pt.poll_cursor = len(pt.events)
+        result, failed = _result_of(pt.events)
+        self._tasks.pop(task_id, None)
+        return TaskOutputResult(
+            task_id=task_id,
+            tool_name=pt.tool_name,
+            status="failed" if failed else "completed",
+            output=_stream_text(new),
+            result=result,
         )
 
-    async def spawn_durable(
-        self,
-        call: FunctionToolCallItem,
-        tool: BaseTool[BaseModel, Any, CtxT],
-        inp: BaseModel,
-        *,
-        ctx: RunContext[CtxT],
-        exec_id: str,
-    ) -> tuple[str, BackgroundTaskLaunchedEvent]:
-        """
-        Start a durable, answer-blocking background task from a tool call:
-        run ``tool.run_stream`` in a task, persist a ``TaskRecord`` (so it can
-        be resumed by :meth:`resume_durable`), and deliver its result inline in
-        the completion note. For an ephemeral, already-running task use
-        :meth:`track`.
-        """
-        task_id = str(uuid4())[:8]
-        store = ctx.checkpoint_store
-
-        child_path = make_tool_call_path(self._path, call.call_id)
-        task_key: str | None = None
-        if store is not None and child_path is not None:
-            task_key = make_store_key(ctx.session_key, CheckpointKind.TASK, child_path)
-            record = TaskRecord(
-                session_key=ctx.session_key,
-                task_id=task_id,
-                tool_call_id=call.call_id,
-                tool_name=call.name,
-                tool_call_arguments=call.arguments,
-                status=TaskStatus.PENDING,
-            )
-            await store.save(task_key, record.model_dump_json().encode())
-
-        queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
-        stream = tool.run_stream(
-            inp,
-            ctx=ctx,
-            exec_id=exec_id,
-            path=child_path,
-        )
-        async_task = asyncio.create_task(
-            _stream_to_result(stream, queue, store=store, task_key=task_key)
-        )
-
-        self._register(
-            PendingTask(
-                task_id=task_id,
-                tool_name=call.name,
-                exec_id=exec_id,
-                tool_call_id=call.call_id,
-                task=async_task,
-                task_key=task_key,
-                events=queue,
-            )
-        )
-
-        event = BackgroundTaskLaunchedEvent(
-            source=self._agent_name,
-            exec_id=exec_id,
-            data=BackgroundTaskInfo(
-                task_id=task_id,
-                tool_name=call.name,
-                tool_call_id=call.call_id,
-            ),
-        )
-        return task_id, event
+    # --- Turn-boundary drain ---
 
     async def drain(
         self, *, exec_id: str, ctx: RunContext[CtxT]
     ) -> AsyncIterator[Event[Any]]:
         """
-        Bubble buffered events, then deliver a completion notification for each
-        finished task (its id pushed onto the completion queue by a done
-        callback).
+        Re-emit buffered events for answer-blocking tasks (sub-agent progress),
+        then deliver a completion notification for each finished task.
 
-        A *pollable* task (one with a ``monitor``) is announced once and kept —
-        its output is read back through its own tool; any other task has its
-        result inlined in the note and is dropped.
+        A blocking task's result is inlined in its note and the task is dropped;
+        a non-blocking (pollable) task's note points the model at ``TaskOutput``
+        and the task is kept (announced once) so its output can still be read.
         """
-        # Bubble buffered events (event-bubbling tasks only — e.g. subagents).
-        for pt in self._tasks.values():
-            if pt.events is None:
+        # Bubble new events for blocking tasks only — a pollable task's output
+        # is delivered through ``TaskOutput``, not the parent stream.
+        for pt in list(self._tasks.values()):
+            if not pt.blocks_final_answer:
                 continue
-            while not pt.events.empty():
-                event = pt.events.get_nowait()
-                if event is not None:
-                    yield event
+            while pt.bubble_cursor < len(pt.events):
+                event = pt.events[pt.bubble_cursor]
+                pt.bubble_cursor += 1
+                yield event
 
         while not self._completions.empty():
             task_id = self._completions.get_nowait()
             pt = self._tasks.get(task_id)
             if pt is None or pt.announced:
                 continue
-            pollable = pt.monitor is not None
 
-            result: Any = None
-            failed = False
-            if not pollable:
-                try:
-                    result = pt.task.result()
-                    failed = isinstance(result, ToolErrorInfo)
-                except Exception as exc:
-                    result = exc
-                    failed = True
+            result, failed = _result_of(pt.events)
+            status = "failed" if failed else "completed"
+            if pt.blocks_final_answer:
+                note_result = None if failed else str(result)
+                note_error = str(result) if failed else None
+            else:
+                # Pollable: don't inline — point the model at TaskOutput.
+                note_result = (
+                    f"call TaskOutput(task_id={pt.task_id!r}) to read its output"
+                )
+                note_error = None
 
             notification = InputMessageItem.from_text(
                 _task_notification(
                     task_id=pt.task_id,
                     tool_name=pt.tool_name,
-                    status="failed" if failed else "completed",
-                    result=(
-                        pt.monitor.summary()
-                        if pt.monitor is not None
-                        else (None if failed else str(result))
-                    ),
-                    error=str(result) if failed else None,
+                    status=status,
+                    result=note_result,
+                    error=note_error,
                 ),
                 role="user",
             )
             self._transcript.update([notification])
 
-            # Durable record → DELIVERED (subagent tasks only; an ephemeral task
-            # has no ``task_key``). Records are kept for post-hoc observability;
-            # reclaim with ``prune_delivered(older_than)``.
+            # Durable record → DELIVERED (resumable tasks only). Records are kept
+            # for post-hoc observability; reclaim with ``prune_delivered``.
             if ctx.checkpoint_store is not None and pt.task_key is not None:
                 existing = await ctx.checkpoint_store.load(pt.task_key)
                 if existing:
@@ -440,12 +572,10 @@ class BackgroundTaskManager(Generic[CtxT]):
                 data=notification,
             )
 
-            # Pollable tasks stay (read later via their own tool), announced
-            # once; any other task is delivered and dropped.
-            if pollable:
-                pt.announced = True
+            if pt.blocks_final_answer:
+                self._tasks.pop(task_id, None)  # delivered + dropped
             else:
-                self._tasks.pop(task_id, None)
+                pt.announced = True  # kept; read later via TaskOutput / KillTask
 
     # --- Cancel ---
 
@@ -457,7 +587,6 @@ class BackgroundTaskManager(Generic[CtxT]):
             for pt in self._tasks.values():
                 if pt.task_key is None:
                     continue
-
                 existing = await store.load(pt.task_key)
                 if existing:
                     record = TaskRecord.model_validate_json(existing)
@@ -488,6 +617,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> None:
         """On resume, re-spawn or notify about interrupted durable tasks."""
         store = ctx.checkpoint_store if ctx else None
@@ -518,7 +648,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
             if record.status == TaskStatus.PENDING:
                 if self._try_respawn_child(
-                    record, task_key=key, ctx=ctx, exec_id=exec_id
+                    record, task_key=key, ctx=ctx, exec_id=exec_id, agent_ctx=agent_ctx
                 ):
                     continue
 
@@ -581,8 +711,8 @@ class BackgroundTaskManager(Generic[CtxT]):
         Returns the number pruned. Short-circuits with ``0`` when no store
         is attached.
 
-        Unlike :meth:`handle_pending` (agent-scoped — it re-spawns tasks
-        and injects into a specific agent's transcript), this is a static,
+        Unlike :meth:`resume_durable` (agent-scoped — it re-spawns tasks and
+        injects into a specific agent's transcript), this is a static,
         session-wide GC: deleting a terminal ``DELIVERED`` record is safe
         regardless of which agent owns it, so one sweep cleans the session.
         """
@@ -610,6 +740,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         task_key: str,
         ctx: RunContext[CtxT] | None,
         exec_id: str | None,
+        agent_ctx: "AgentContext | None" = None,
     ) -> bool:
         """Re-spawn a child task from its session checkpoint."""
         if not ctx or not exec_id or not ctx.checkpoint_store:
@@ -621,16 +752,12 @@ class BackgroundTaskManager(Generic[CtxT]):
 
         child_path = make_tool_call_path(self._path, record.tool_call_id)
 
-        queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
+        events: list[Event[Any]] = []
         stream = tool.resume_stream(
-            ctx=ctx,
-            exec_id=exec_id,
-            path=child_path,
+            ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
         )
         async_task = asyncio.create_task(
-            _stream_to_result(
-                stream, queue, store=ctx.checkpoint_store, task_key=task_key
-            )
+            _consume(stream, events, store=ctx.checkpoint_store, task_key=task_key)
         )
 
         self._register(
@@ -640,8 +767,9 @@ class BackgroundTaskManager(Generic[CtxT]):
                 exec_id=exec_id,
                 tool_call_id=record.tool_call_id,
                 task=async_task,
+                events=events,
+                blocks_final_answer=True,
                 task_key=task_key,
-                events=queue,
             )
         )
 

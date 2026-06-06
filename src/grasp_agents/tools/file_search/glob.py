@@ -26,10 +26,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from ..file_edit.agent_state import get_current_file_edit_state
 from ..file_edit.paths import PathAccessError
 
 if TYPE_CHECKING:
+    from ...agent.agent_context import AgentContext
     from ...run_context import RunContext
     from ..file_edit.backend import FileStat
 
@@ -122,8 +122,10 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> GlobResult:
-        del exec_id, progress_callback
+        del exec_id, progress_callback, path
 
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
@@ -142,7 +144,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
                 "Glob requires a path or a backend with at least one allowed_root."
             )
 
-        state = get_current_file_edit_state()
+        state = agent_ctx.file_edit_state if agent_ctx is not None else None
         overrides = (
             set(state.dotfile_overrides)
             if state is not None and state.dotfile_overrides

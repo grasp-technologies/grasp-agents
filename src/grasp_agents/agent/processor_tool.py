@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel
@@ -8,6 +8,7 @@ from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from ..types.tool import BaseTool, ToolProgressCallback
+from .agent_context import AgentContext
 
 _InT = TypeVar("_InT", bound=BaseModel)
 _OutT = TypeVar("_OutT")
@@ -27,13 +28,13 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         processor: Processor[_InT, _OutT, CtxT],
         name: str,
         description: str,
-        background: bool = False,
+        auto_background_at: float | None = None,
         reset_transcript_on_run: bool = True,
     ) -> None:
         super().__init__(
             name=name,
             description=description,
-            background=background,
+            auto_background_at=auto_background_at,
         )
         self._processor = processor
         self._reset_transcript_on_run = reset_transcript_on_run
@@ -71,7 +72,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     def _resolve_processor(
         self,
         *,
-        path: Sequence[str] | None = None,
+        path: list[str] | None = None,
     ) -> Processor[_InT, _OutT, CtxT]:
         """Return a fresh copy adopted under this tool, with ``path`` set."""
         proc = self._processor.copy()
@@ -97,9 +98,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # bound at adoption
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        path: Sequence[str] | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> _OutT:
-        del progress_callback
+        del progress_callback, agent_ctx
         proc = self._resolve_processor(path=path)
         result = await proc.run(in_args=inp, exec_id=exec_id)
 
@@ -112,9 +114,10 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # bound at adoption
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
-        path: Sequence[str] | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        del progress_callback
+        del progress_callback, agent_ctx
         proc = self._resolve_processor(path=path)
         async for event in self._yield_proc_events(
             proc, in_args=inp, exec_id=exec_id, step=0
@@ -126,7 +129,8 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # bound at adoption
         exec_id: str | None = None,
-        path: Sequence[str] | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,  # noqa: ARG002  # proc builds its own
     ) -> AsyncIterator[Event[Any]]:
         proc = self._resolve_processor(path=path)
         async for event in self._yield_proc_events(

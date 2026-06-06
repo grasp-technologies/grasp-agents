@@ -138,6 +138,8 @@ class EchoTool(BaseTool[EchoInput, str, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
     ) -> str:
         return inp.text
 

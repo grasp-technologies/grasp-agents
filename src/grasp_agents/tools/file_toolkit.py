@@ -7,8 +7,8 @@ These belong together: an agent doing file-shaped work — memory authoring
 especially — both *searches* the tree (Glob/Grep) and *reads/edits* files,
 and ``Read`` is shared by both flows. All tools are stateless wrappers —
 they consume :attr:`RunContext.file_backend` at run time and the active
-:class:`FileEditSessionState` via the :mod:`.file_edit.agent_state`
-ContextVar. The toolkit just bundles their per-tool configuration.
+:class:`FileEditSessionState` from the agent loop's :class:`AgentContext`.
+The toolkit just bundles their per-tool configuration.
 
 Usage::
 

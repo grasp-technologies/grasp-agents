@@ -8,16 +8,13 @@ from typing import TYPE_CHECKING, Any, Final, Generic, Protocol
 
 from pydantic import BaseModel, TypeAdapter
 
+from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import traced
-from grasp_agents.tools.bash import bind_bash_manager
-from grasp_agents.tools.bash_session import BashSessionHolder, bind_session_holder
-from grasp_agents.tools.file_edit.agent_state import (
-    reset_current_file_edit_state,
-    set_current_file_edit_state,
-)
+from grasp_agents.tools.bash_common import ShellState
+from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
 from grasp_agents.types.errors import AgentFinalAnswerError, LLMToolCallValidationError
 from grasp_agents.types.events import (
@@ -137,18 +134,12 @@ class AgentLoop(Generic[CtxT]):
     stream_tools: Final[bool]
 
     # Mutable state
-    transcript: LLMAgentTranscript
-    tools: dict[str, BaseTool[BaseModel, Any, CtxT]]
+    # Agent-scope state (transcript, tools, bg_tasks, file_edit_state,
+    # session_holder, shell_state) lives on the single ``_agent_ctx`` and is
+    # exposed via read-only properties below — one source, no duplicate attrs.
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
-    bg_tasks: BackgroundTaskManager[CtxT]
     path: list[str] | None
-    # Per-agent file-edit bookkeeping (read records + dotfile overrides).
-    # Activated for the duration of ``execute_stream`` via a ContextVar so
-    # sub-agents (ProcessorTool, parallel replicas) each get their own
-    # slot — preventing a parent's record_write from letting a child's
-    # EditTool skip its own Read.
-    file_edit_state: FileEditSessionState
 
     # Hook callback slots — set by LLMAgent, None = no-op
     final_answer_extractor: FinalAnswerExtractor | None
@@ -189,7 +180,6 @@ class AgentLoop(Generic[CtxT]):
 
         self.final_answer = None
         self.turn = 0
-        self.transcript = transcript
 
         self.agent_name = agent_name
         self.llm = llm
@@ -210,7 +200,7 @@ class AgentLoop(Generic[CtxT]):
         tools_list = (tools or [])[:]
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
-        self.tools = {t.name: t for t in tools_list}
+        tools_dict = {t.name: t for t in tools_list}
 
         # Tool call_ids whose results were already synthesized at the LLM
         # validation layer (bad arguments → ``LLMToolCallValidationError``
@@ -230,30 +220,36 @@ class AgentLoop(Generic[CtxT]):
         self.checkpoint_callback = None
         self.path = path
 
-        self.file_edit_state = FileEditSessionState()
-
-        self.bg_tasks = BackgroundTaskManager[CtxT](
+        file_edit_state = FileEditSessionState()
+        # One manager per loop: it runs both background subagent tools and
+        # auto-backgrounded Bash commands.
+        bg_tasks = BackgroundTaskManager[CtxT](
             agent_name=agent_name,
             transcript=transcript,
-            tools=self.tools,
+            tools=tools_dict,
             path=path,
         )
-
-        # Auto-backgrounded Bash commands are tracked as general, ephemeral,
-        # non-answer-blocking tasks in ``bg_tasks`` (above) — the same manager
-        # that runs background subagent tools.
-        #
         # Persistent (stateful) Bash shell — one holder per loop. Opened lazily
         # on first use, closed at run end.
-        self.bash_session_holder = BashSessionHolder()
+        bash_session_holder = BashSessionHolder()
+        # Fresh-``Bash`` working directory, round-tripped across calls so ``cd``
+        # sticks between turns (one per loop; sub-agents / replicas get their own).
+        shell_state = ShellState()
 
-        # Wire the loop-owned manager + session holder onto this loop's bash
-        # tools. The agent owns its tools (deep-copied in ``LLMAgent.__init__``),
-        # so this is conflict-free; ``agent.copy()`` deep-copies the tools
-        # alongside the manager / holder in one memo, so a replica's tools point
-        # at the replica's own manager / holder.
-        bind_bash_manager(self.tools.values(), self.bg_tasks)
-        bind_session_holder(self.tools.values(), self.bash_session_holder)
+        # The single agent-scope state handed to each tool call. Tools read what
+        # they need from here (file-edit ledger, shell session, background tasks,
+        # parent transcript / sibling tools) and store nothing, so a single tool
+        # instance is safe to share across agents; ``agent.copy()`` deep-copies
+        # the loop and this context together, so a replica's tools resolve the
+        # replica's own state. Exposed via the read-only properties below.
+        self._agent_ctx = AgentContext(
+            transcript=transcript,
+            tools=tools_dict,
+            file_edit_state=file_edit_state,
+            bg_tasks=bg_tasks,
+            session_holder=bash_session_holder,
+            shell_state=shell_state,
+        )
 
     @property
     def llm_output_schema(self) -> Any | None:
@@ -266,6 +262,36 @@ class AgentLoop(Generic[CtxT]):
     @property
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
+
+    @property
+    def agent_ctx(self) -> AgentContext:
+        return self._agent_ctx
+
+    # Agent-scope state — read-only views onto the single ``_agent_ctx``.
+
+    @property
+    def transcript(self) -> LLMAgentTranscript:
+        return self._agent_ctx.transcript
+
+    @property
+    def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
+        return self._agent_ctx.tools
+
+    @property
+    def bg_tasks(self) -> BackgroundTaskManager[CtxT]:
+        return self._agent_ctx.bg_tasks
+
+    @property
+    def file_edit_state(self) -> FileEditSessionState:
+        return self._agent_ctx.file_edit_state
+
+    @property
+    def bash_session_holder(self) -> BashSessionHolder:
+        return self._agent_ctx.session_holder
+
+    @property
+    def shell_state(self) -> ShellState:
+        return self._agent_ctx.shell_state
 
     async def checkpoint(
         self,
@@ -590,10 +616,18 @@ class AgentLoop(Generic[CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         # Tool call events are now emitted from query_llm via OutputItemDone promotion
 
-        # Resolve inputs, partition into background vs immediate
-
+        # Resolve inputs and partition the calls:
+        #  • auto_background_at == 0 → launched now as an answer-blocking
+        #    background task whose result is delivered inline (e.g. a subagent);
+        #  • auto_background_at > 0 → run in the foreground, but moved to the
+        #    background as a non-blocking, pollable task if it outlives the
+        #    deadline (manager's ``run_with_deadline`` — e.g. a long shell command);
+        #  • else (None) → a plain foreground call (the immediate batch).
         outputs: list[Any] = [None] * len(calls)
         immediate: list[
+            tuple[int, FunctionToolCallItem, BaseTool[BaseModel, Any, CtxT], BaseModel]
+        ] = []
+        deadline: list[
             tuple[int, FunctionToolCallItem, BaseTool[BaseModel, Any, CtxT], BaseModel]
         ] = []
         # Per-call sentinel: True means a synthesized tool_result is
@@ -612,67 +646,107 @@ class AgentLoop(Generic[CtxT]):
                 continue
             tool = self.tools[call.name]
             inp = await self._convert_tool_input(call, exec_id=exec_id)
-            if tool.background:
-                task_id, event = await self.bg_tasks.spawn_durable(
+            abg = tool.auto_background_at
+            if abg == 0:
+                note, event = await self.bg_tasks.spawn(
                     call,
                     tool,
                     inp,
                     ctx=self._ctx,
                     exec_id=exec_id,
+                    blocks_final_answer=True,
+                    agent_ctx=self._agent_ctx,
                 )
                 yield event
-                outputs[i] = f"Task launched in background (id: {task_id})"
+                outputs[i] = note
+            elif abg is not None:
+                deadline.append((i, call, tool, inp))
             else:
                 immediate.append((i, call, tool, inp))
 
-        if immediate and self.stream_tools:
-            streams = [
-                tool.run_stream(
-                    inp=inp,
-                    ctx=self._ctx,
-                    exec_id=exec_id,
-                    path=make_tool_call_path(self.path, call.call_id),
+        # Launch deadline-eligible calls now so they race their own
+        # ``auto_background_at`` concurrently with the immediate batch. The
+        # manager owns the race: it returns the result if the call finishes in
+        # time, else sidelines it as a non-blocking pollable task + a note.
+        deadline_tasks: dict[int, asyncio.Task[Any]] = {
+            i: asyncio.create_task(
+                self.bg_tasks.run_with_deadline(
+                    call, tool, inp, ctx=self._ctx, exec_id=exec_id,
+                    agent_ctx=self._agent_ctx,
                 )
-                for _, call, tool, inp in immediate
-            ]
-            merged = stream_concurrent(streams)
-            async for stream_idx, event in merged:
-                if isinstance(event, ToolOutputEvent):
-                    outputs[immediate[stream_idx][0]] = event.data
-                yield event
+            )
+            for i, call, tool, inp in deadline
+        }
 
-            for err in merged.errors:
-                i = immediate[err.index][0]
-                tool_name = immediate[err.index][2].name
-                outputs[i] = f"Tool '{tool_name}' failed: {err.exception}"
-                logger.warning(
-                    "Tool '%s' (call index %d) failed: %r",
-                    tool_name,
-                    i,
-                    err.exception,
-                )
-
-        elif immediate:
-            results = await asyncio.gather(
-                *[
-                    tool.run(
-                        inp,
+        try:
+            if immediate and self.stream_tools:
+                streams = [
+                    tool.run_stream(
+                        inp=inp,
                         ctx=self._ctx,
                         exec_id=exec_id,
                         path=make_tool_call_path(self.path, call.call_id),
+                        agent_ctx=self._agent_ctx,
                     )
                     for _, call, tool, inp in immediate
-                ],
-                return_exceptions=True,
-            )
-            for (i, _call, t, _inp), result in zip(immediate, results, strict=True):
-                if isinstance(result, BaseException):
-                    outputs[i] = f"Tool '{t.name}' failed: {result}"
+                ]
+                merged = stream_concurrent(streams)
+                async for stream_idx, event in merged:
+                    if isinstance(event, ToolOutputEvent):
+                        outputs[immediate[stream_idx][0]] = event.data
+                    yield event
+
+                for err in merged.errors:
+                    i = immediate[err.index][0]
+                    tool_name = immediate[err.index][2].name
+                    outputs[i] = f"Tool '{tool_name}' failed: {err.exception}"
                     logger.warning(
-                        "Tool '%s' (call index %d) failed: %r", t.name, i, result
+                        "Tool '%s' (call index %d) failed: %r",
+                        tool_name,
+                        i,
+                        err.exception,
                     )
-                else:
-                    outputs[i] = result
+
+            elif immediate:
+                results = await asyncio.gather(
+                    *[
+                        tool.run(
+                            inp,
+                            ctx=self._ctx,
+                            exec_id=exec_id,
+                            path=make_tool_call_path(self.path, call.call_id),
+                            agent_ctx=self._agent_ctx,
+                        )
+                        for _, call, tool, inp in immediate
+                    ],
+                    return_exceptions=True,
+                )
+                for (i, _call, t, _inp), result in zip(
+                    immediate, results, strict=True
+                ):
+                    if isinstance(result, BaseException):
+                        outputs[i] = f"Tool '{t.name}' failed: {result}"
+                        logger.warning(
+                            "Tool '%s' (call index %d) failed: %r", t.name, i, result
+                        )
+                    else:
+                        outputs[i] = result
+
+            # Collect deadline results — each already raced its own deadline
+            # concurrently with the immediate batch (finished foreground, or
+            # backgrounded into ``bg_tasks`` and returned a launch note + a
+            # ``BackgroundTaskLaunchedEvent`` to bubble, as a spawned task does).
+            for i, deadline_task in deadline_tasks.items():
+                outputs[i], launched = await deadline_task
+                if launched is not None:
+                    yield launched
+        finally:
+            # On cancellation (turn abort), don't leak a deadline call still
+            # racing in the foreground (an already-backgrounded one is done here
+            # and lives on under ``bg_tasks``).
+            for deadline_task in deadline_tasks.values():
+                if not deadline_task.done():
+                    deadline_task.cancel()
 
         tool_messages: list[FunctionToolOutputItem] = []
 
@@ -1041,14 +1115,6 @@ class AgentLoop(Generic[CtxT]):
         had_tool_calls = False
         self.final_answer = None
 
-        # Activate this agent's :class:`FileEditSessionState` for the
-        # entire run. File-edit tools, file-search tools, and
-        # :class:`MemoryProvider` consult the ContextVar set here so
-        # sub-agents (ProcessorTool, parallel replicas) get their own
-        # read-before-write slot. Asyncio tasks spawned downstream copy
-        # the current context, so the value propagates into
-        # ``stream_concurrent`` / ``asyncio.gather`` children.
-        state_token = set_current_file_edit_state(self.file_edit_state)
         try:
             # Checkpoint after input memorization (new step only)
             if self.turn == 0:
@@ -1126,7 +1192,6 @@ class AgentLoop(Generic[CtxT]):
         finally:
             await self.bg_tasks.cancel_all(ctx=self._ctx)
             await self.bash_session_holder.close()
-            reset_current_file_edit_state(state_token)
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):
@@ -1144,8 +1209,9 @@ class AgentLoop(Generic[CtxT]):
                 exec_id: str | None = None,
                 progress_callback: Any = None,
                 path: Sequence[str] | None = None,
+                agent_ctx: AgentContext | None = None,
             ) -> None:
-                del inp, ctx, exec_id, progress_callback, path
+                del inp, ctx, exec_id, progress_callback, path, agent_ctx
 
         return FinalAnswerTool()
 

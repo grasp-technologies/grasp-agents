@@ -69,15 +69,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _holds_loop_state(tool: BaseTool[Any, Any, Any]) -> bool:
-    """
-    True for tools the agent loop injects per-loop state onto (the bash
-    background-task manager / shell-session holder), identified by their
-    loop-binding setters. See the interim copy in :meth:`LLMAgent.__init__`.
-    """
-    return hasattr(tool, "bind_manager") or hasattr(tool, "bind_holder")
-
-
 class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
     _span_kind = SpanKind.AGENT
     _checkpoint_kind = CheckpointKind.AGENT
@@ -180,15 +171,13 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # below to gate the default llm_output_schema and to scope the
         # memory / skills tool auto-attach.
         agentic_mode = tools is not None
-        # INTERIM (pending the stateless-tools refactor — see project memory):
-        # copy the tools that hold per-loop state the loop binds onto them (the
-        # bash background-task manager / session holder) so the agent owns its
-        # own instances; a single instance shared across agents would otherwise
-        # collide. The proper fix is stateless tools (per-agent state via the
-        # call context, as Hermes / OpenAI / CC do), which removes this copy.
-        # ``AgentTool`` / ``ProcessorTool`` have the same latent issue (they
-        # store parent refs on the instance) — also covered by that refactor.
-        tools = [t.copy() if _holds_loop_state(t) else t for t in (tools or [])]
+        # Tools are stateless: per-agent state (file-edit ledger, shell session,
+        # background tasks, parent transcript / sibling tools) flows through the
+        # ``AgentContext`` passed on each call, never stored on the instance. A
+        # single tool instance is therefore safe to share across agents. Copy
+        # the list (not the tools) only so appends below don't mutate the
+        # caller's list.
+        tools = list(tools or [])
 
         if agentic_mode:
             existing_names = {t.name for t in tools}
@@ -220,14 +209,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._transcript = transcript or LLMAgentTranscript()
         self.reset_transcript_on_run = reset_transcript_on_run
         self._fs_snapshot_mode = fs_snapshot
-
-        # Wire parent context for AgentTool instances (after transcript init)
-        from .agent_tool import AgentTool  # noqa: PLC0415
-
-        for tool in tools:
-            if isinstance(tool, AgentTool):
-                tool.set_parent_transcript(self._transcript)
-                tool.set_parent_tools(tools)
 
         # Prompt builder
 
@@ -539,7 +520,9 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             checkpoint.turn,
         )
 
-        await self._loop.bg_tasks.resume_durable(ctx=self._ctx, exec_id=exec_id)
+        await self._loop.bg_tasks.resume_durable(
+            ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
+        )
 
         # Rebuild business state from external sources (DB, etc.) after
         # conversation restoration is complete. Opt-in; fresh init uses
@@ -624,7 +607,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # (the contract mirrors ``transcript.reset``), so a custom builder
         # can preserve the markers too.
         sys_prompt_parts = await self._prompt_builder.build_system_prompt_parts(
-            ctx=self._ctx, exec_id=exec_id
+            ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
         fresh_init = self.reset_transcript_on_run or self.transcript.is_empty
 
@@ -654,6 +637,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 ctx=self._ctx,
                 exec_id=exec_id,
                 messages=list(self.transcript.messages),
+                agent_ctx=self._loop.agent_ctx,
             )
             self.transcript.update([input_message])
             messages_to_expose.append(input_message)

@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from grasp_agents.tools.file_edit.agent_state import get_current_file_edit_state
 from grasp_agents.types.selector import Selector
 
 from .types import DEFAULT_STALE_AFTER
@@ -145,7 +144,9 @@ class MemoryProvider:
         """
         self._backend = backend
 
-    async def load(self) -> MemorySnapshot:
+    async def load(
+        self, *, session_state: FileEditSessionState | None = None
+    ) -> MemorySnapshot:
         """
         Return a frozen memdir snapshot. Cached after the first call.
 
@@ -153,6 +154,11 @@ class MemoryProvider:
         :meth:`bind_backend`). The :class:`RunContext` validator binds
         the backend automatically when the memory provider is wired onto
         a context.
+
+        ``session_state`` (the active agent's :class:`FileEditSessionState`,
+        from its :class:`AgentContext`) records the index read on a fresh
+        load, so the agent may ``Edit`` ``MEMORY.md`` without a redundant
+        ``Read``.
         """
         if self._cached is not None:
             return self._cached
@@ -165,7 +171,9 @@ class MemoryProvider:
             )
         async with self._lock:
             if self._cached is None:
-                self._cached = await self._load_via_backend(self._backend)
+                self._cached = await self._load_via_backend(
+                    self._backend, session_state=session_state
+                )
             return self._cached
 
     async def refresh(self) -> None:
@@ -173,7 +181,9 @@ class MemoryProvider:
         async with self._lock:
             self._cached = None
 
-    async def fetch_body(self, name: str) -> str:
+    async def fetch_body(
+        self, name: str, *, session_state: FileEditSessionState | None = None
+    ) -> str:
         """
         Return the full body of memory ``name``.
 
@@ -208,9 +218,8 @@ class MemoryProvider:
                 f"Topic memory {name!r} could not be read: {exc}"
             ) from exc
 
-        active_state = get_current_file_edit_state()
-        if active_state is not None:
-            active_state.record_read(entry.path, mtime)
+        if session_state is not None:
+            session_state.record_read(entry.path, mtime)
 
         try:
             _, body = parse_memory_md(text, path=entry.path)
@@ -268,7 +277,9 @@ class MemoryProvider:
 
     # ---- Internals -----------------------------------------------------------
 
-    async def _load_via_backend(self, backend: FileBackend) -> MemorySnapshot:
+    async def _load_via_backend(
+        self, backend: FileBackend, *, session_state: FileEditSessionState | None = None
+    ) -> MemorySnapshot:
         """
         Walk ``self._root`` via ``backend`` and return a frozen snapshot.
 
@@ -291,7 +302,7 @@ class MemoryProvider:
             MemoryFormatError,
         )
 
-        active_state = get_current_file_edit_state()
+        active_state = session_state
 
         root = self._root
         index_text: str | None = None
@@ -443,7 +454,10 @@ class InMemoryMemoryProvider(MemoryProvider):
             stale_after=stale_after,
         )
 
-    async def load(self) -> MemorySnapshot:
+    async def load(
+        self, *, session_state: FileEditSessionState | None = None
+    ) -> MemorySnapshot:
+        del session_state  # in-memory snapshot: no file read to record
         return self._snapshot
 
 

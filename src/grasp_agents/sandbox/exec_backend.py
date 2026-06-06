@@ -11,6 +11,7 @@ spawn/timeout/kill lifecycle so per-backend code stays thin.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
@@ -67,8 +68,7 @@ class ExecResult:
         }
 
 
-@runtime_checkable
-class ExecBackend(Protocol):
+class ExecBackend(ABC):
     """
     Command-execution surface, co-located with a ``FileBackend``.
 
@@ -79,11 +79,14 @@ class ExecBackend(Protocol):
     """
 
     @property
+    @abstractmethod
     def name(self) -> str: ...
 
     @property
+    @abstractmethod
     def policy(self) -> SandboxPolicy: ...
 
+    @abstractmethod
     async def execute(
         self,
         command: str,
@@ -102,6 +105,7 @@ class ExecBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     def stream(
         self,
         command: str,

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools.file_edit import (
     DeleteInput,
@@ -22,13 +23,10 @@ from grasp_agents.tools.file_edit import (
     NullRedactor,
     ReadInput,
     ReadTool,
-    reset_current_file_edit_state,
-    set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
 pytestmark = pytest.mark.asyncio
@@ -44,19 +42,7 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def state() -> Iterator[FileEditSessionState]:
-    """Per-test file-edit state, activated via the ContextVar."""
-    s = FileEditSessionState()
-    token = set_current_file_edit_state(s)
-    try:
-        yield s
-    finally:
-        reset_current_file_edit_state(token)
-
-
-@pytest.fixture
-def ctx(tmp_path: Path, state: FileEditSessionState) -> RunContext[Any]:
-    del state
+def ctx(tmp_path: Path) -> RunContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
 
@@ -73,6 +59,7 @@ def delete_tool() -> DeleteTool:
 
 async def test_delete_succeeds_after_read(
     ctx: RunContext[Any],
+    agent_ctx: AgentContext,
     read_tool: ReadTool,
     delete_tool: DeleteTool,
     tmp_path: Path,
@@ -80,8 +67,10 @@ async def test_delete_succeeds_after_read(
     f = tmp_path / "victim.txt"
     f.write_text("bye")
 
-    await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
-    result = await delete_tool.run(DeleteInput(path=str(f)), ctx=ctx)
+    await read_tool.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
+    result = await delete_tool.run(
+        DeleteInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx
+    )
 
     assert isinstance(result, DeleteResult)
     assert result.deleted
@@ -89,12 +78,17 @@ async def test_delete_succeeds_after_read(
 
 
 async def test_delete_refuses_without_prior_read(
-    ctx: RunContext[Any], delete_tool: DeleteTool, tmp_path: Path
+    ctx: RunContext[Any],
+    agent_ctx: AgentContext,
+    delete_tool: DeleteTool,
+    tmp_path: Path,
 ) -> None:
     f = tmp_path / "victim.txt"
     f.write_text("bye")
 
-    result = await delete_tool.run(DeleteInput(path=str(f)), ctx=ctx)
+    result = await delete_tool.run(
+        DeleteInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx
+    )
     msg = _error_message(result)
     assert "Read" in msg
     assert f.exists(), "File must remain when read-before-delete fails"
@@ -102,6 +96,7 @@ async def test_delete_refuses_without_prior_read(
 
 async def test_delete_refuses_on_mtime_drift(
     ctx: RunContext[Any],
+    agent_ctx: AgentContext,
     read_tool: ReadTool,
     delete_tool: DeleteTool,
     tmp_path: Path,
@@ -109,38 +104,42 @@ async def test_delete_refuses_on_mtime_drift(
     f = tmp_path / "drifty.txt"
     f.write_text("v1")
 
-    await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
+    await read_tool.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
     # Bump mtime past the recorded value — simulates an external edit.
     st = f.stat()
     os.utime(f, (st.st_atime, st.st_mtime + 5))
 
-    result = await delete_tool.run(DeleteInput(path=str(f)), ctx=ctx)
+    result = await delete_tool.run(
+        DeleteInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx
+    )
     msg = _error_message(result)
     assert "modified" in msg.lower() or "re-read" in msg.lower()
     assert f.exists()
 
 
 async def test_delete_refuses_directory(
-    ctx: RunContext[Any], delete_tool: DeleteTool, tmp_path: Path
+    ctx: RunContext[Any],
+    agent_ctx: AgentContext,
+    delete_tool: DeleteTool,
+    tmp_path: Path,
 ) -> None:
     d = tmp_path / "subdir"
     d.mkdir()
     # The fact that Delete refuses dirs is independent of read-before-delete;
     # if we hit the dir check, we expect a clear message.
-    result = await delete_tool.run(DeleteInput(path=str(d)), ctx=ctx)
+    result = await delete_tool.run(
+        DeleteInput(path=str(d)), ctx=ctx, agent_ctx=agent_ctx
+    )
     msg = _error_message(result)
     # Either of "directories" or the read-before-delete path are acceptable
     # — both block the dangerous operation.
-    assert (
-        "directories" in msg.lower()
-        or "directory" in msg.lower()
-        or "Read" in msg
-    )
+    assert "directories" in msg.lower() or "directory" in msg.lower() or "Read" in msg
     assert d.is_dir()
 
 
 async def test_delete_clears_read_state(
     ctx: RunContext[Any],
+    agent_ctx: AgentContext,
     read_tool: ReadTool,
     delete_tool: DeleteTool,
     state: FileEditSessionState,
@@ -149,8 +148,8 @@ async def test_delete_clears_read_state(
     f = tmp_path / "ephemeral.txt"
     f.write_text("temp")
 
-    await read_tool.run(ReadInput(path=str(f)), ctx=ctx)
-    await delete_tool.run(DeleteInput(path=str(f)), ctx=ctx)
+    await read_tool.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
+    await delete_tool.run(DeleteInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
 
     # After deletion, the read record is cleared so a future Write to
     # the same path treats it as a fresh create.
@@ -158,11 +157,16 @@ async def test_delete_clears_read_state(
 
 
 async def test_delete_outside_root_refused(
-    ctx: RunContext[Any], delete_tool: DeleteTool, tmp_path: Path
+    ctx: RunContext[Any],
+    agent_ctx: AgentContext,
+    delete_tool: DeleteTool,
+    tmp_path: Path,
 ) -> None:
     # Escape attempt — must hit the allowed-roots check, not the
     # read-before-delete check.
     del tmp_path
-    result = await delete_tool.run(DeleteInput(path="/etc/hosts"), ctx=ctx)
+    result = await delete_tool.run(
+        DeleteInput(path="/etc/hosts"), ctx=ctx, agent_ctx=agent_ctx
+    )
     msg = _error_message(result)
     assert "outside" in msg.lower() or "sensitive" in msg.lower()

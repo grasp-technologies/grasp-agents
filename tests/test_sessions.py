@@ -187,6 +187,8 @@ class EchoTool(BaseTool[EchoInput, str, Any]):
         ctx: Any = None,
         exec_id: str | None = None,
         progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
     ) -> str:
         return f"echo: {inp.text}"
 
@@ -1189,11 +1191,25 @@ class TestTaskRecord:
 
 
 class SlowTool(BaseTool[EchoInput, str, Any]):
-    """Background tool that simulates a slow operation."""
+    """
+    Background tool that simulates a slow operation.
 
-    def __init__(self, delay: float = 0.05, name: str = "slow") -> None:
-        super().__init__(name=name, description="Slow tool", background=True)
+    ``resumable`` is opt-in: only a resumable tool gets a persisted
+    ``TaskRecord`` (a non-resumable background unit — e.g. a shell command —
+    cannot be resumed, so persisting a record would lie). Tests that exercise
+    the record lifecycle construct it with ``resumable=True``.
+    """
+
+    def __init__(
+        self, delay: float = 0.05, name: str = "slow", *, resumable: bool = False
+    ) -> None:
+        super().__init__(name=name, description="Slow tool", auto_background_at=0)
         self._delay = delay
+        self._resumable = resumable
+
+    @property
+    def resumable(self) -> bool:
+        return self._resumable
 
     async def _run(
         self,
@@ -1207,6 +1223,19 @@ class SlowTool(BaseTool[EchoInput, str, Any]):
         assert inp is not None
         await asyncio.sleep(self._delay)
         return f"slow: {inp.text}"
+
+    async def resume_stream(
+        self,
+        *,
+        ctx: Any = None,
+        exec_id: str | None = None,
+        path: Any = None,
+        agent_ctx: Any = None,
+    ) -> AsyncIterator[Event[Any]]:
+        from grasp_agents.types.events import ToolOutputEvent
+
+        del ctx, path, agent_ctx
+        yield ToolOutputEvent(data="slow: resumed", source=self.name, exec_id=exec_id)
 
 
 # ================================================================== #
@@ -1225,7 +1254,7 @@ class TestTaskRecordPersistence:
                 _text_response("waiting"),
                 _text_response("done"),
             ],
-            tools=[SlowTool(delay=0.05)],
+            tools=[SlowTool(delay=0.05, resumable=True)],
             session_key="s1",
             store=store,
         )
@@ -1253,7 +1282,7 @@ class TestTaskRecordPersistence:
                 _text_response("waiting"),
                 _text_response("got it"),
             ],
-            tools=[SlowTool(delay=0.05)],
+            tools=[SlowTool(delay=0.05, resumable=True)],
             session_key="s1",
             store=store,
         )
@@ -1273,7 +1302,7 @@ class TestTaskRecordPersistence:
     async def test_bg_task_cancellation_marks_failed(self):
         """Background task cancelled on max_turns is marked FAILED."""
         store = InMemoryCheckpointStore()
-        very_slow = SlowTool(delay=10.0, name="very_slow")
+        very_slow = SlowTool(delay=10.0, name="very_slow", resumable=True)
 
         llm = MockLLM(
             responses_queue=[
@@ -1687,7 +1716,7 @@ def _make_child_tool(
     tool = child.as_tool(
         tool_name=tool_name,
         tool_description="Child agent tool",
-        background=True,
+        auto_background_at=0,
     )
     return child, tool
 

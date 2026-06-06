@@ -1,11 +1,14 @@
 """
 Shared pieces for the shell tools: the LLM-facing :class:`BashInput` /
-:class:`BashResult` schemas, the timeout / heartbeat defaults, and
-:func:`run_foreground` — drain a foreground exec stream into a
-:class:`BashResult` while emitting heartbeat progress.
+:class:`BashResult` schemas, the timeout / heartbeat defaults, the
+:class:`ExecStreamEvent` incremental-output event, and :func:`stream_command` —
+drain an exec stream into per-chunk events plus a terminal result.
 
 Used by both :mod:`grasp_agents.tools.bash` (fresh process per command) and
-:mod:`grasp_agents.tools.bash_session` (one persistent shell session).
+:mod:`grasp_agents.tools.bash_session` (one persistent shell session). Neither
+tool implements backgrounding: a long command is sidelined by the agent loop's
+:class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager`, which simply
+keeps consuming the same stream and buffers the events it yields.
 """
 
 from __future__ import annotations
@@ -16,13 +19,16 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from ..sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
+from ..types.events import Event, ToolOutputEvent, ToolStreamEvent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from ..types.tool import ToolProgressCallback
 
@@ -40,6 +46,61 @@ LEADING_SLEEP = re.compile(r"^\s*sleep\s+\d")
 
 def preview(command: str, maxlen: int = _PREVIEW_MAXLEN) -> str:
     return command if len(command) <= maxlen else command[: maxlen - 3] + "..."
+
+
+@dataclass(frozen=True)
+class ExecStreamChunk:
+    """One stdout/stderr fragment from a running command; ``str()`` is its text."""
+
+    channel: Literal["stdout", "stderr"]
+    text: str
+
+    def __str__(self) -> str:
+        return self.text
+
+
+class ExecStreamEvent(ToolStreamEvent, frozen=True):
+    """
+    The shell tools' incremental-output event: a
+    :class:`~grasp_agents.types.events.ToolStreamEvent` whose ``data`` is an
+    :class:`ExecStreamChunk` (text + the stdout/stderr ``channel`` it arrived on).
+
+    Generic consumers render it via ``str(data)`` (the chunk's text); a
+    structure-aware consumer (e.g. a console that styles stderr)
+    ``isinstance``-checks this subclass and reads ``data.channel`` / ``data.text``.
+    """
+
+    type: Literal["tool.exec_stream"] = "tool.exec_stream"  # pyright: ignore[reportIncompatibleVariableOverride]
+    data: ExecStreamChunk
+
+
+@dataclass
+class ShellState:
+    """
+    Per-agent state the fresh :class:`~grasp_agents.tools.bash.Bash` tool
+    round-trips across calls.
+
+    Each ``Bash`` command runs in a *fresh* process, so shell state would
+    normally reset every call. To make ``cd`` stick (the common expectation —
+    ``Bash`` is the primary shell tool), the working directory is captured after
+    each command (``pwd -P`` to a scratch state-file) and replayed as the next
+    command's ``cwd``. ``token`` namespaces the state-file per agent loop;
+    ``seq`` makes it unique per call (so concurrent calls in one turn don't
+    clobber each other's file — the resulting ``cwd`` is last-writer-wins, which
+    is all that's well-defined for two concurrent ``cd`` commands anyway).
+
+    Lives on the :class:`~grasp_agents.agent.agent_context.AgentContext`; richer
+    continuity (env mutations, shell variables) belongs to ``BashSession``.
+    """
+
+    cwd: str | None = None
+    token: str = field(default_factory=lambda: uuid4().hex[:8])
+    seq: int = 0
+
+    def next_state_file(self, root: Path) -> Path:
+        """Allocate this call's unique scratch path for the cwd round-trip."""
+        self.seq += 1
+        return root / f".grasp-cwd-{self.token}-{self.seq}"
 
 
 class BashInput(BaseModel):
@@ -72,25 +133,20 @@ class BashInput(BaseModel):
 
 class BashResult(BaseModel):
     """
-    Output schema for the shell tools (``Bash`` / ``Shell`` / ``BashOutput`` /
-    ``KillBash``).
+    Output schema for the shell tools (``Bash`` / ``BashSession``).
 
     ``stdout`` and ``stderr`` are kept separate and labeled so the model can
     tell them apart. This is the LLM-facing transport schema, not the backend's
-    :class:`ExecResult`: it must also represent the *running* state of a
-    backgrounded command (``returncode is None``, ``reason="running"``), so it
-    is a flat model rather than a subclass of the frozen, always-finished
-    ``ExecResult``. The ``status`` / ``bash_id`` fields are set only by the
-    backgrounding ``Bash`` tool; the persistent ``Shell`` leaves them at their
-    foreground defaults.
+    :class:`ExecResult`: it is a flat model (not a subclass of the frozen
+    ``ExecResult``) so it can also stand in for a command that was cancelled
+    mid-drain. Always a *terminal* result — a backgrounded command's live,
+    incremental output flows through ``TaskOutput`` instead.
     """
 
     stdout: str
     stderr: str
     returncode: int | None
-    reason: TerminationReason | Literal["running"]
-    status: Literal["completed", "backgrounded"] = "completed"
-    bash_id: str | None = None
+    reason: TerminationReason
     timed_out: bool = False
     truncated: bool = False
     runtime_ms: float = 0.0
@@ -125,6 +181,79 @@ def foreground_result(
     )
 
 
+async def stream_command(
+    stream: AsyncIterator[ExecChunk | ExecResult],
+    *,
+    command: str,
+    progress_callback: ToolProgressCallback | None = None,
+    progress_at: float = DEFAULT_PROGRESS_AT,
+    heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
+    effective_timeout: float = DEFAULT_BASH_TIMEOUT,
+    source: str = "Bash",
+    exec_id: str | None = None,
+) -> AsyncIterator[Event[object]]:
+    """
+    Drain an exec ``stream``, yielding an :class:`ExecStreamEvent` per output
+    chunk and a terminal :class:`ToolOutputEvent` carrying the assembled
+    :class:`BashResult`. A heartbeat fires through ``progress_callback`` at
+    ``progress_at`` then every ``heartbeat_every`` seconds while the command
+    is quiet — independent of the chunk loop, so it never cancels a pipe read.
+
+    On cancellation (turn abort / ``KillTask``) the backend stream is closed,
+    which makes the supervisor kill the process group; the ``CancelledError``
+    then propagates (and the terminal event is *not* emitted).
+    """
+    started = time.monotonic()
+    out: list[str] = []
+    err: list[str] = []
+    result: ExecResult | None = None
+
+    async def _heartbeat() -> None:
+        if progress_callback is None:
+            return
+        delay = progress_at
+        while True:
+            await asyncio.sleep(delay)
+            elapsed = time.monotonic() - started
+            await progress_callback(
+                elapsed,
+                effective_timeout,
+                f"`{preview(command)}` running for {elapsed:.0f}s",
+            )
+            delay = heartbeat_every
+
+    beat = asyncio.create_task(_heartbeat())
+    try:
+        async for item in stream:
+            if isinstance(item, ExecResult):
+                result = item
+            else:
+                (out if item.stream == "stdout" else err).append(item.data)
+                yield ExecStreamEvent(
+                    data=ExecStreamChunk(channel=item.stream, text=item.data),
+                    source=source,
+                    exec_id=exec_id,
+                )
+    finally:
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+        # If we were cancelled while suspended at our own ``yield`` (not inside
+        # a pipe read), the backend stream is still open — close it so the
+        # supervisor kills the process group.
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(Exception):
+                await aclose()
+
+    runtime_ms = (time.monotonic() - started) * 1000.0
+    yield ToolOutputEvent(
+        data=foreground_result(out, err, result, runtime_ms),
+        source=source,
+        exec_id=exec_id,
+    )
+
+
 async def run_foreground(
     stream: AsyncIterator[ExecChunk | ExecResult],
     *,
@@ -135,167 +264,24 @@ async def run_foreground(
     effective_timeout: float,
 ) -> BashResult:
     """
-    Drain a foreground exec ``stream`` to completion, accumulating stdout /
-    stderr and emitting a heartbeat at ``progress_at`` then every
-    ``heartbeat_every`` seconds while it runs.
-
-    On cancellation (turn abort / outer timeout) the consuming task is
-    cancelled, which closes the stream so the backend (or session) kills the
-    running command; the ``CancelledError`` then propagates.
+    Drain a foreground exec ``stream`` to completion, returning the assembled
+    :class:`BashResult`. A thin wrapper over :func:`stream_command` for callers
+    that want only the terminal result (e.g. the non-streaming ``BashSession``);
+    the per-chunk stream events are discarded.
     """
-    started = time.monotonic()
-    out: list[str] = []
-    err: list[str] = []
-    result: ExecResult | None = None
-
-    async def _consume() -> None:
-        nonlocal result
-        async for item in stream:
-            if isinstance(item, ExecResult):
-                result = item
-            elif item.stream == "stdout":
-                out.append(item.data)
-            else:
-                err.append(item.data)
-
-    task = asyncio.create_task(_consume())
-    next_beat = progress_at
-    try:
-        while not task.done():
-            elapsed = time.monotonic() - started
-            wait = max(0.0, next_beat - elapsed)
-            # wait_for cancels its target on timeout; shield keeps the consume
-            # task (and the running command) alive — we only peek for
-            # completion here, then heartbeat.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(asyncio.shield(task), timeout=wait)
-            elapsed = time.monotonic() - started
-            if not task.done() and elapsed >= next_beat:
-                next_beat = elapsed + heartbeat_every
-                if progress_callback is not None:
-                    await progress_callback(
-                        elapsed,
-                        effective_timeout,
-                        f"`{preview(command)}` running for {elapsed:.0f}s",
-                    )
-        await task  # surface any exception from the consumer
-    except asyncio.CancelledError:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        raise
-
-    runtime_ms = (time.monotonic() - started) * 1000.0
-    return foreground_result(out, err, result, runtime_ms)
-
-
-@dataclass
-class BackgroundCommand:
-    """
-    A live (or finished) backgrounded command and its buffered output.
-
-    Created by :class:`~grasp_agents.tools.bash.Bash` when a command outlives the
-    auto-background deadline, then owned by the
-    :class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager`: its drain
-    task keeps consuming the backend stream (cancelling it makes the supervisor
-    kill the process group), and ``BashOutput`` / ``KillBash`` read / stop it by
-    ``bash_id``.
-    """
-
-    bash_id: str
-    command: str
-    started_at: float
-    chunks: list[ExecChunk] = field(default_factory=list[ExecChunk])
-    result: ExecResult | None = None
-    cursor: int = 0  # chunks already delivered through BashOutput
-    drain: asyncio.Task[None] | None = None
-    announced: bool = False  # completion note already emitted
-
-    def start(self, stream: AsyncIterator[ExecChunk | ExecResult]) -> None:
-        """Begin draining the backend stream into this command's buffer."""
-        self.drain = asyncio.create_task(self._drain(stream))
-
-    async def _drain(self, stream: AsyncIterator[ExecChunk | ExecResult]) -> None:
-        async for item in stream:
-            if isinstance(item, ExecResult):
-                self.result = item
-            else:
-                self.chunks.append(item)
-
-    async def kill(self) -> None:
-        """
-        Stop draining: cancelling the task closes the backend stream, which
-        makes the supervisor kill the process group (SIGTERM, then SIGKILL
-        after the grace period).
-        """
-        if self.drain is not None and not self.drain.done():
-            self.drain.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.drain
-
-    @property
-    def running(self) -> bool:
-        return self.drain is not None and not self.drain.done()
-
-    @property
-    def runtime_ms(self) -> float:
-        return (time.monotonic() - self.started_at) * 1000.0
-
-    def _render(self, since: int) -> tuple[str, str, int]:
-        """Split stdout / stderr from ``chunks[since:]``; return the new cursor."""
-        out: list[str] = []
-        err: list[str] = []
-        for chunk in self.chunks[since:]:
-            (out if chunk.stream == "stdout" else err).append(chunk.data)
-        return "".join(out), "".join(err), len(self.chunks)
-
-    def running_result(self) -> BashResult:
-        """Output since the last read for a still-running command; advances cursor."""
-        stdout, stderr, self.cursor = self._render(self.cursor)
-        return BashResult(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=None,
-            reason="running",
-            status="backgrounded",
-            bash_id=self.bash_id or None,
-            runtime_ms=self.runtime_ms,
-        )
-
-    def final_result(self) -> BashResult:
-        """Final result, output from the cursor to the end of the buffer."""
-        stdout, stderr, self.cursor = self._render(self.cursor)
-        result = self.result
-        if result is None:
-            # Stream ended without a terminal result (killed mid-drain).
-            return BashResult(
-                stdout=stdout,
-                stderr=stderr,
-                returncode=-1,
-                reason=TerminationReason.MANUAL_CANCEL,
-                runtime_ms=self.runtime_ms,
-            )
-        return BashResult(
-            stdout=stdout,
-            stderr=stderr + result.stderr,  # spawn errors arrive on the terminal
-            returncode=result.returncode,
-            reason=result.reason,
-            timed_out=result.timed_out,
-            truncated=result.truncated,
-            runtime_ms=result.runtime_ms,
-            backend=result.backend,
-        )
-
-    def summary(self) -> str:
-        """
-        One-line completion summary for the background task manager's
-        turn-boundary note (satisfies the manager's ``BackgroundMonitor``).
-        """
-        rc = self.result.returncode if self.result is not None else None
-        return (
-            f"finished (returncode={rc}); call BashOutput with "
-            f"bash_id={self.bash_id!r} to read its output"
-        )
+    result: BashResult | None = None
+    async for event in stream_command(
+        stream,
+        command=command,
+        progress_callback=progress_callback,
+        progress_at=progress_at,
+        heartbeat_every=heartbeat_every,
+        effective_timeout=effective_timeout,
+    ):
+        if isinstance(event, ToolOutputEvent):
+            result = event.data
+    assert result is not None
+    return result
 
 
 __all__ = [
@@ -304,10 +290,13 @@ __all__ = [
     "DEFAULT_PROGRESS_AT",
     "LEADING_SLEEP",
     "MAX_BASH_TIMEOUT",
-    "BackgroundCommand",
     "BashInput",
     "BashResult",
+    "ExecStreamChunk",
+    "ExecStreamEvent",
+    "ShellState",
     "foreground_result",
     "preview",
     "run_foreground",
+    "stream_command",
 ]

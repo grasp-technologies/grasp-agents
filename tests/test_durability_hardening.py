@@ -382,7 +382,7 @@ class TestEndToEndGC:
                     _text_response("done"),
                 ]
             ),
-            tools=[SlowTool(delay=0.01)],
+            tools=[SlowTool(delay=0.01, resumable=True)],
             stream_llm=True,
         )
         ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="e2e")

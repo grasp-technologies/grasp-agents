@@ -21,11 +21,6 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .agent_state import (
-        get_current_file_edit_state,
-        reset_current_file_edit_state,
-        set_current_file_edit_state,
-    )
     from .atomic_write import atomic_write_bytes, atomic_write_text
     from .backend import FileBackend, FileEntry, FileStat
     from .delete import DeleteInput, DeleteResult, DeleteTool
@@ -58,9 +53,6 @@ if TYPE_CHECKING:
 # is the single source of truth for ``__all__`` + the ``__getattr__``
 # lookup; keep them in sync.
 _LAZY: dict[str, str] = {
-    "get_current_file_edit_state": "agent_state",
-    "reset_current_file_edit_state": "agent_state",
-    "set_current_file_edit_state": "agent_state",
     "atomic_write_bytes": "atomic_write",
     "atomic_write_text": "atomic_write",
     "FileBackend": "backend",
@@ -142,12 +134,9 @@ __all__ = [
     "check_sensitive_path",
     "fuzzy_find",
     "fuzzy_find_and_replace",
-    "get_current_file_edit_state",
     "has_binary_extension",
     "is_blocked_device",
     "preserve_quote_style",
-    "reset_current_file_edit_state",
     "resolve_safe",
     "sensitive_path_rules",
-    "set_current_file_edit_state",
 ]

@@ -9,12 +9,16 @@ spawns `srt` is `skipif`-guarded for a host that has it installed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
+from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     NetworkPolicy,
     SandboxPolicy,
@@ -24,9 +28,35 @@ from grasp_agents.sandbox import (
     srt_argv,
 )
 
+from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
+
 pytestmark = pytest.mark.asyncio
 
 _HAS_SRT = shutil.which("srt") is not None
+
+
+def _srt_can_run() -> bool:
+    """
+    True only where `srt` can actually apply confinement and run a command —
+    i.e. an unconfined host, not a nested sandbox (where its Seatbelt/bwrap
+    layer can't apply). Gates the live-exec tests, mirroring seatbelt's probe.
+    """
+    srt = shutil.which("srt")
+    if srt is None:
+        return False
+    with tempfile.TemporaryDirectory() as d:
+        settings = build_srt_settings(SandboxPolicy(allowed_roots=(Path(d),)))
+        settings_file = Path(d) / "s.json"
+        settings_file.write_text(json.dumps(settings))
+        argv = list(srt_argv(srt, str(settings_file), "true"))
+        try:
+            proc = subprocess.run(argv, capture_output=True, timeout=30, check=False)
+        except Exception:
+            return False
+        return proc.returncode == 0
+
+
+_SRT_CAN_RUN = _srt_can_run()
 
 
 # --- settings mapping --------------------------------------------------------
@@ -140,3 +170,60 @@ async def test_factory_srt_backend(tmp_path: Path) -> None:
     assert env.exec_backend is not None
     assert env.exec_backend.name == "srt"
     assert isinstance(env.exec_backend, SrtExecBackend)
+
+
+# --- live backgrounding (manager + Bash + TaskOutput / KillTask) -------------
+#
+# Same flow as the seatbelt / e2b variants, here under Anthropic's srt CLI: a
+# long Bash command outlives its deadline → the manager sidelines it → poll
+# incremental output via TaskOutput → it completes / is killed (the srt child
+# is a local process group the shared supervisor kills via killpg).
+
+
+@pytest.mark.skipif(not _SRT_CAN_RUN, reason="srt cannot apply/run here")
+async def test_srt_background_poll_and_complete(tmp_path: Path) -> None:
+    env = local_environment(allowed_roots=[tmp_path], confinement="srt")
+    ctx: RunContext[None] = RunContext(environment=env)
+    agent_ctx, mgr = make_stack()
+
+    note, task_id = await background(
+        mgr, ctx, agent_ctx, "echo early && sleep 2 && echo late", abg=0.3
+    )
+    assert "moved to the background" in note
+    assert task_id is not None
+
+    collected, out = await poll_until_done(mgr, task_id)
+    assert out.status == "completed"
+    assert out.result is not None
+    assert out.result.returncode == 0
+    assert "early" in collected
+    assert "late" in collected
+
+
+@pytest.mark.skipif(not _SRT_CAN_RUN, reason="srt cannot apply/run here")
+async def test_srt_background_kill_terminates(tmp_path: Path) -> None:
+    env = local_environment(allowed_roots=[tmp_path], confinement="srt")
+    ctx: RunContext[None] = RunContext(environment=env)
+    agent_ctx, mgr = make_stack()
+
+    marker = tmp_path / "ticks.txt"
+    _note, task_id = await background(
+        mgr,
+        ctx,
+        agent_ctx,
+        f"while true; do echo tick >> {marker}; sleep 0.1; done",
+        abg=0.3,
+        timeout=60,
+    )
+    assert task_id is not None
+
+    killed = await kill(mgr, task_id)
+    assert killed.status == "completed"
+
+    size_a = await marker_size(env, str(marker))
+    await asyncio.sleep(0.6)
+    size_b = await marker_size(env, str(marker))
+    assert size_a == size_b
+
+    with pytest.raises(ValueError, match="Unknown background task id"):
+        await kill(mgr, task_id)

@@ -70,6 +70,25 @@ class ToolOutputEvent(Event[Any], frozen=True):
     type: Literal["tool.output"] = "tool.output"
 
 
+class ToolStreamEvent(Event[Any], frozen=True):
+    """
+    Incremental output from a still-running tool, yielded *before* its terminal
+    :class:`ToolOutputEvent`.
+
+    ``data`` is any object: generic consumers (the
+    :class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` buffer,
+    the ``TaskOutput`` tool, consoles) render it with ``str(data)``, so a tool
+    can carry a plain ``str`` or a structured object whose ``__str__`` produces
+    the LLM-facing text. A tool with structure to expose subclasses this and
+    narrows ``data`` (e.g. the shell tools' ``ExecStreamEvent`` carries an
+    ``ExecStreamChunk`` with a stdout/stderr ``channel``); structure-aware
+    consumers ``isinstance``-check the subclass, everyone else still sees a
+    plain ``ToolStreamEvent``.
+    """
+
+    type: Literal["tool.stream"] = "tool.stream"
+
+
 class ToolErrorInfo(BaseModel):
     tool_name: str
     error: str

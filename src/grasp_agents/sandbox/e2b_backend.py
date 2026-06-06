@@ -511,14 +511,26 @@ class E2BExecBackend(ExecBackend, SessionCapable):
                 queue.put_nowait(None)
 
         waiter = asyncio.create_task(_drain())
+        completed = False
         try:
             while True:
                 item = await queue.get()
                 if item is None:
+                    completed = True
                     break
                 yield item
         finally:
-            await waiter
+            # Early exit (the consumer cancelled / closed us — e.g. KillTask):
+            # kill the remote command so it doesn't keep running in the sandbox,
+            # then cancel the drain (its ``handle.wait()`` would otherwise block
+            # forever on a long-running command). On normal completion the drain
+            # already finished, so just reap it.
+            if not completed and not waiter.done():
+                with contextlib.suppress(Exception):
+                    await handle.kill()
+                waiter.cancel()
+            with contextlib.suppress(BaseException):
+                await waiter
 
         yield self._terminal(
             handle,

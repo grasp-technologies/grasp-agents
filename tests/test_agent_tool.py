@@ -20,15 +20,20 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel
 
+from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.agent_tool import (
     AgentTool,
     AgentToolInput,
 )
+from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.bash_common import ShellState
+from grasp_agents.tools.bash_session import BashSessionHolder
+from grasp_agents.tools.file_edit import FileEditSessionState
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
@@ -154,6 +159,31 @@ def _make_child_llm(*texts: str) -> MockLLM:
     return MockLLM(responses_queue=[_text_response(t) for t in texts])
 
 
+def _agent_ctx(
+    *,
+    transcript: LLMAgentTranscript | None = None,
+    tools: list[BaseTool[Any, Any, Any]] | None = None,
+) -> AgentContext:
+    """
+    A minimal *parent* AgentContext for AgentTool calls.
+
+    AgentTool reads the parent's transcript and sibling tools from the
+    ``AgentContext`` the loop hands each call; everything else is filler.
+    """
+    transcript = transcript or LLMAgentTranscript()
+    tool_map = {t.name: t for t in (tools or [])}
+    return AgentContext(
+        transcript=transcript,
+        tools=tool_map,
+        file_edit_state=FileEditSessionState(),
+        bg_tasks=BackgroundTaskManager(
+            agent_name="parent", transcript=transcript, tools=tool_map
+        ),
+        session_holder=BashSessionHolder(),
+        shell_state=ShellState(),
+    )
+
+
 # ------------------------------------------------------------------ #
 #  Tests                                                               #
 # ------------------------------------------------------------------ #
@@ -260,10 +290,8 @@ class TestToolInheritance:
             llm=_make_child_llm("done"),
             inherit_tools=True,
         )
-        # Simulate parent wiring
-        tool.set_parent_tools([search, other_agent_tool])  # type: ignore[list-item]
-
-        resolved = tool._resolve_tools()
+        # Parent's sibling tools are passed in (from the call's AgentContext).
+        resolved = tool._resolve_tools([search, other_agent_tool])  # type: ignore[list-item]
         assert resolved is not None
         names = [t.name for t in resolved]
         assert "search" in names
@@ -281,9 +309,8 @@ class TestToolInheritance:
             llm=_make_child_llm("done"),
             inherit_tools=False,
         )
-        tool.set_parent_tools([search])  # type: ignore[list-item]
 
-        resolved = tool._resolve_tools()
+        resolved = tool._resolve_tools([search])  # type: ignore[list-item]
         assert resolved is None  # No own tools, inheritance disabled
 
     @pytest.mark.anyio
@@ -303,16 +330,15 @@ class TestToolInheritance:
             tools=[own_search],  # type: ignore[list-item]
             inherit_tools=True,
         )
-        tool.set_parent_tools([parent_search])  # type: ignore[list-item]
 
-        resolved = tool._resolve_tools()
+        resolved = tool._resolve_tools([parent_search])  # type: ignore[list-item]
         assert resolved is not None
         # Only one "search" — own version wins
         assert len(resolved) == 1
 
     @pytest.mark.anyio
     async def test_parent_wiring_in_llm_agent(self) -> None:
-        """LLMAgent.__init__ wires parent tools into AgentTool."""
+        """The parent loop's AgentContext exposes sibling tools to AgentTool."""
 
         @function_tool
         async def helper(x: int) -> int:
@@ -325,14 +351,16 @@ class TestToolInheritance:
             inherit_tools=True,
         )
 
-        # Creating an LLMAgent with both tools should wire them
-        _parent = LLMAgent[str, str, None](
+        parent = LLMAgent[str, str, None](
             name="parent",
             llm=_make_child_llm("parent done"),
             tools=[helper, agent_tool],  # type: ignore[list-item]
         )
 
-        resolved = agent_tool._resolve_tools()
+        # AgentTool resolves inherited tools from the parent's AgentContext.
+        resolved = agent_tool._resolve_tools(
+            list(parent._loop.agent_ctx.tools.values())
+        )
         assert resolved is not None
         names = [t.name for t in resolved]
         assert "helper" in names
@@ -382,7 +410,7 @@ class TestAgentToolWithParentAgent:
             name="bg_research",
             description="Background research",
             llm=child_llm,
-            background=True,
+            auto_background_at=0,
         )
 
         # Parent: call bg tool → "waiting" (suppressed) → "final" after drain
@@ -514,15 +542,19 @@ class TestAgentToolPromptBuilders:
             sys_prompt_builder=build_sys,
         )
 
-        # Wire parent memory manually (normally done by LLMAgent.__init__)
+        # The parent transcript reaches the builder via the call's AgentContext.
         parent_mem = LLMAgentTranscript()
         from grasp_agents.types.items import InputMessageItem
 
         parent_mem.update([InputMessageItem.from_text("user said hi", role="user")])
-        agent_tool.set_parent_transcript(parent_mem)
 
         ctx: RunContext[None] = RunContext()
-        await agent_tool._run(AgentToolInput(prompt="go"), ctx=ctx, exec_id="x")
+        await agent_tool._run(
+            AgentToolInput(prompt="go"),
+            ctx=ctx,
+            exec_id="x",
+            agent_ctx=_agent_ctx(transcript=parent_mem),
+        )
         assert len(received_memory) == 1
         assert received_memory[0] is parent_mem
         assert len(received_memory[0].messages) == 1
@@ -593,7 +625,7 @@ class TestAgentToolPromptBuilders:
 
     @pytest.mark.anyio
     async def test_parent_agent_wires_memory(self) -> None:
-        """LLMAgent.__init__ automatically wires parent memory to AgentTool."""
+        """The parent loop's AgentContext carries its transcript for AgentTool."""
         child_llm = _make_child_llm("ok")
         agent_tool = AgentTool[None](name="sub", description="d", llm=child_llm)
 
@@ -602,7 +634,7 @@ class TestAgentToolPromptBuilders:
             name="parent", llm=parent_llm, tools=[agent_tool]
         )
 
-        assert agent_tool._parent_transcript is parent._transcript
+        assert parent._loop.agent_ctx.transcript is parent._transcript
 
 
 class TestToolCopy:

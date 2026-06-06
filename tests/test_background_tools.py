@@ -11,7 +11,7 @@ Verifies that:
 - Background task failures are reported as error notifications
 - Cancellation on max_turns and finally block
 - BackgroundTaskLaunchedEvent and BackgroundTaskCompletedEvent lifecycle
-- @function_tool(background=True) works
+- @function_tool(auto_background_at=0) works
 """
 
 import asyncio
@@ -186,7 +186,7 @@ class SlowTool(BaseTool[EchoInput, Any, Any]):
     """Background tool that simulates a slow operation."""
 
     def __init__(self, delay: float = 0.05, name: str = "slow") -> None:
-        super().__init__(name=name, description="Slow tool", background=True)
+        super().__init__(name=name, description="Slow tool", auto_background_at=0)
         self._delay = delay
 
     async def _run(
@@ -207,7 +207,7 @@ class FailingBgTool(BaseTool[EchoInput, Any, Any]):
         super().__init__(
             name="failing_bg",
             description="Fails",
-            background=True,
+            auto_background_at=0,
         )
 
     async def _run(
@@ -310,11 +310,11 @@ class TestBackgroundToolLaunch:
 
     @pytest.mark.asyncio
     async def test_background_tool_flag_on_base_tool(self):
-        """BaseTool.background defaults to False, SlowTool sets True."""
+        """BaseTool.auto_background_at defaults to None; SlowTool sets 0."""
         echo = EchoTool()
         slow = SlowTool()
-        assert echo.background is False
-        assert slow.background is True
+        assert echo.auto_background_at is None
+        assert slow.auto_background_at == 0
 
 
 class TestMixedImmediateAndBackground:
@@ -593,17 +593,17 @@ class TestCancellationOnMaxTurns:
 
 
 class TestFunctionToolBackground:
-    """@function_tool(background=True) creates a background tool."""
+    """@function_tool(auto_background_at=0) creates a background tool."""
 
     @pytest.mark.asyncio
     async def test_function_tool_background_flag(self):
-        @function_tool(background=True)
+        @function_tool(auto_background_at=0)
         async def slow_research(query: str) -> str:
             """Do slow research."""
             await asyncio.sleep(0.05)
             return f"results for: {query}"
 
-        assert slow_research.background is True
+        assert slow_research.auto_background_at == 0
         assert slow_research.name == "slow_research"
 
     @pytest.mark.asyncio
@@ -613,7 +613,7 @@ class TestFunctionToolBackground:
             """Fast lookup."""
             return f"found: {query}"
 
-        assert fast_lookup.background is False
+        assert fast_lookup.auto_background_at is None
 
 
 class TestNoBackgroundToolsNoop:

@@ -33,8 +33,9 @@ Time is wall-clock seconds since epoch (float) for parity with
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -85,8 +86,7 @@ class GrepRawResult:
     num_files_matched: int = 0
 
 
-@runtime_checkable
-class FileBackend(Protocol):
+class FileBackend(ABC):
     """
     File I/O + search contract for the file tools.
 
@@ -99,15 +99,17 @@ class FileBackend(Protocol):
        error.
 
     Read-before-write enforcement lives on the *agent*: tools consult
-    the active :class:`FileEditSessionState` via :mod:`.agent_state` and
-    record reads/writes there directly. Backends are pure I/O.
+    the active :class:`FileEditSessionState` via the call's ``AgentContext``
+    and record reads/writes there directly. Backends are pure I/O.
     """
 
     name: str  # a class attr or a property both satisfy this
 
     @property
+    @abstractmethod
     def allowed_roots(self) -> list[Path]: ...
 
+    @abstractmethod
     def add_allowed_root(self, root: Path) -> None:
         """
         Widen the backend's address space to include ``root``.
@@ -120,6 +122,7 @@ class FileBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     async def validate_path(
         self,
         path: Path,
@@ -149,12 +152,16 @@ class FileBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     async def stat(self, path: Path) -> FileStat: ...
 
+    @abstractmethod
     async def exists(self, path: Path) -> bool: ...
 
+    @abstractmethod
     async def parent_exists(self, path: Path) -> bool: ...
 
+    @abstractmethod
     async def read_text(self, path: Path) -> tuple[str, float]:
         """
         Return ``(content, mtime)``. ``errors='replace'`` for utf-8.
@@ -165,10 +172,12 @@ class FileBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
         """Return ``(data, mtime)``. Used by :class:`EditTool`."""
         ...
 
+    @abstractmethod
     async def write_bytes(
         self,
         path: Path,
@@ -186,10 +195,12 @@ class FileBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     async def delete(self, path: Path) -> None:
         """Remove ``path``. Callers clear their read record separately."""
         ...
 
+    @abstractmethod
     async def mkdir(self, path: Path) -> None:
         """
         Create directory ``path`` and any missing parents. Idempotent — no
@@ -199,10 +210,12 @@ class FileBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     async def list_dir(
         self, path: Path, *, recursive: bool = False
     ) -> list[FileEntry]: ...
 
+    @abstractmethod
     async def find_files(
         self,
         root: Path,
@@ -218,6 +231,7 @@ class FileBackend(Protocol):
         """
         ...
 
+    @abstractmethod
     async def grep(
         self,
         root: Path,

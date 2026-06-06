@@ -537,7 +537,7 @@ class Processor(
         tool_name: str,
         tool_description: str,
         reset_transcript_on_run: bool = True,
-        background: bool = False,
+        auto_background_at: float | None = None,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
         from ..agent.processor_tool import (  # noqa: PLC0415
             ProcessorTool as _ProcessorTool,
@@ -553,6 +553,6 @@ class Processor(
             processor=self,  # InT bound validated above
             name=tool_name,
             description=tool_description,
-            background=background,
+            auto_background_at=auto_background_at,
             reset_transcript_on_run=reset_transcript_on_run,
         )

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.run_context import RunContext
     from grasp_agents.types.items import InputItem, InputMessageItem
 
@@ -118,13 +119,15 @@ def make_memory_section(
         *,
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
+        agent_ctx: AgentContext | None = None,
         **_: Any,
     ) -> str | None:
         del exec_id
         if ctx is None or ctx.memory is None:
             return None
 
-        snapshot = await ctx.memory.load()
+        session_state = agent_ctx.file_edit_state if agent_ctx is not None else None
+        snapshot = await ctx.memory.load(session_state=session_state)
         index_text = await ctx.memory.render_index()
         index_block = render_memory_index(
             index_text,
@@ -186,6 +189,7 @@ async def _compute_relevant_memories(
     ctx: RunContext[Any] | None = None,
     exec_id: str | None = None,
     messages: Sequence[InputItem] | None = None,
+    agent_ctx: AgentContext | None = None,
 ) -> str | None:
     """
     Surface relevance-selected topic memories into the user message.
@@ -207,10 +211,11 @@ async def _compute_relevant_memories(
     if not selected:
         return None
 
+    session_state = agent_ctx.file_edit_state if agent_ctx is not None else None
     lines: list[str] = ["## Relevant memories", ""]
     for entry in selected:
         try:
-            body = await ctx.memory.fetch_body(entry.name)
+            body = await ctx.memory.fetch_body(entry.name, session_state=session_state)
         except Exception:
             continue
         lines.extend([_format_entry_heading(entry), entry.description, ""])

@@ -1,10 +1,10 @@
 """
-Integration tests for state-on-agent file-edit routing.
+Integration tests for per-agent file-edit routing.
 
 Read-before-write bookkeeping lives on the active agent's
-:class:`FileEditSessionState`, surfaced to the tools via the
-:mod:`agent_state` ContextVar. Tools share state when they share the
-same activation; switching the activation (mirroring a parent → child
+:class:`FileEditSessionState`, surfaced to the tools through the
+:class:`AgentContext` passed on each call. Tools share state when they share
+the same ``AgentContext``; a different ``AgentContext`` (a parent → child
 agent transition) isolates state.
 """
 
@@ -14,8 +14,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from grasp_agents.agent.agent_context import AgentContext
+from grasp_agents.agent.background_tasks import BackgroundTaskManager
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools import FileToolkit
+from grasp_agents.tools.bash_common import ShellState
+from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
     LocalFileBackend,
@@ -23,8 +28,6 @@ from grasp_agents.tools.file_edit import (
     ReadInput,
     WriteInput,
     WriteResult,
-    reset_current_file_edit_state,
-    set_current_file_edit_state,
 )
 from grasp_agents.types.events import ToolErrorInfo
 
@@ -41,11 +44,23 @@ def _error_message(result: Any) -> str:
     return result.error
 
 
+def _agent_ctx(state: FileEditSessionState) -> AgentContext:
+    """An ``AgentContext`` wrapping ``state`` — the field the file tools read."""
+    transcript = LLMAgentTranscript()
+    return AgentContext(
+        transcript=transcript,
+        tools={},
+        file_edit_state=state,
+        bg_tasks=BackgroundTaskManager(
+            agent_name="test", transcript=transcript, tools={}
+        ),
+        session_holder=BashSessionHolder(),
+        shell_state=ShellState(),
+    )
+
+
 async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
-    """
-    Read + Write under the same activated state compose: the Read
-    record satisfies the Write's read-before-write check.
-    """
+    """Read + Write under the same ``AgentContext`` compose."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
@@ -54,12 +69,11 @@ async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
     f.write_text("original")
 
     state = FileEditSessionState()
-    token = set_current_file_edit_state(state)
-    try:
-        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
-        result = await tk.write.run(WriteInput(path=str(f), content="updated"), ctx=ctx)
-    finally:
-        reset_current_file_edit_state(token)
+    agent_ctx = _agent_ctx(state)
+    await tk.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
+    result = await tk.write.run(
+        WriteInput(path=str(f), content="updated"), ctx=ctx, agent_ctx=agent_ctx
+    )
 
     assert isinstance(result, WriteResult)
     assert f.read_text() == "updated"
@@ -67,11 +81,7 @@ async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
 
 
 async def test_separate_activations_are_isolated(tmp_path: Path) -> None:
-    """
-    Different activations (parent vs. child agent) don't see each
-    other's reads — a Read under activation A does not satisfy a Write
-    under activation B even when both share the backend.
-    """
+    """A Read under one ``AgentContext`` does not satisfy a Write under another."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
@@ -79,37 +89,25 @@ async def test_separate_activations_are_isolated(tmp_path: Path) -> None:
     f = tmp_path / "a.txt"
     f.write_text("x")
 
-    state_parent = FileEditSessionState()
-    state_child = FileEditSessionState()
+    parent = _agent_ctx(FileEditSessionState())
+    child = _agent_ctx(FileEditSessionState())
 
-    # Parent activation: Read + Write succeed.
-    token = set_current_file_edit_state(state_parent)
-    try:
-        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
-        result_parent = await tk.write.run(
-            WriteInput(path=str(f), content="parent-wrote"), ctx=ctx
-        )
-    finally:
-        reset_current_file_edit_state(token)
+    # Parent context: Read + Write succeed.
+    await tk.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=parent)
+    result_parent = await tk.write.run(
+        WriteInput(path=str(f), content="parent-wrote"), ctx=ctx, agent_ctx=parent
+    )
     assert isinstance(result_parent, WriteResult)
 
-    # Child activation: same backend, but no prior Read in its state.
-    token = set_current_file_edit_state(state_child)
-    try:
-        result_child = await tk.write.run(
-            WriteInput(path=str(f), content="child-wrote"), ctx=ctx
-        )
-    finally:
-        reset_current_file_edit_state(token)
+    # Child context: same backend, but no prior Read in its state.
+    result_child = await tk.write.run(
+        WriteInput(path=str(f), content="child-wrote"), ctx=ctx, agent_ctx=child
+    )
     assert "Must Read" in _error_message(result_child)
 
 
 async def test_shared_state_mimics_one_agent_two_toolkits(tmp_path: Path) -> None:
-    """
-    Two *different* toolkit instances drawing the same activated state
-    can compose Read → Write — the shape a single agent gets when its
-    tools come from multiple sources but share its :class:`FileEditSessionState`.
-    """
+    """Two toolkit instances sharing one ``AgentContext`` compose Read → Write."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
     tk_a = FileToolkit(redactor=NullRedactor())
@@ -118,24 +116,18 @@ async def test_shared_state_mimics_one_agent_two_toolkits(tmp_path: Path) -> Non
     f = tmp_path / "shared.txt"
     f.write_text("from the file")
 
-    token = set_current_file_edit_state(FileEditSessionState())
-    try:
-        await tk_a.read.run(ReadInput(path=str(f)), ctx=ctx)
-        result = await tk_b.write.run(
-            WriteInput(path=str(f), content="child-wrote"), ctx=ctx
-        )
-    finally:
-        reset_current_file_edit_state(token)
+    agent_ctx = _agent_ctx(FileEditSessionState())
+    await tk_a.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
+    result = await tk_b.write.run(
+        WriteInput(path=str(f), content="child-wrote"), ctx=ctx, agent_ctx=agent_ctx
+    )
 
     assert isinstance(result, WriteResult)
     assert f.read_text() == "child-wrote"
 
 
 async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
-    """
-    Allocating a fresh :class:`FileEditSessionState` is the equivalent
-    of "starting a new agent" — earlier reads don't carry over.
-    """
+    """A fresh ``AgentContext`` is a new agent — earlier reads don't carry over."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
@@ -144,28 +136,20 @@ async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
     f.write_text("x")
 
     state_a = FileEditSessionState()
-    token = set_current_file_edit_state(state_a)
-    try:
-        await tk.read.run(ReadInput(path=str(f)), ctx=ctx)
-    finally:
-        reset_current_file_edit_state(token)
+    await tk.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=_agent_ctx(state_a))
     assert state_a.read_file_state
 
     # New agent → new state → no prior reads.
-    state_b = FileEditSessionState()
-    token = set_current_file_edit_state(state_b)
-    try:
-        result = await tk.write.run(WriteInput(path=str(f), content="y"), ctx=ctx)
-    finally:
-        reset_current_file_edit_state(token)
+    result = await tk.write.run(
+        WriteInput(path=str(f), content="y"),
+        ctx=ctx,
+        agent_ctx=_agent_ctx(FileEditSessionState()),
+    )
     assert "Must Read" in _error_message(result)
 
 
 async def test_standalone_tool_use_without_state(tmp_path: Path) -> None:
-    """
-    With no active state (no agent in scope), tools still work but
-    skip read-before-write enforcement — the power-user escape hatch.
-    """
+    """With no ``AgentContext``, tools still work but skip read-before-write."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
@@ -173,7 +157,7 @@ async def test_standalone_tool_use_without_state(tmp_path: Path) -> None:
     f = tmp_path / "a.txt"
     f.write_text("orig")
 
-    # No ContextVar activation — Write proceeds without prior Read.
+    # No agent_ctx — Write proceeds without prior Read.
     result = await tk.write.run(WriteInput(path=str(f), content="updated"), ctx=ctx)
     assert isinstance(result, WriteResult)
     assert f.read_text() == "updated"

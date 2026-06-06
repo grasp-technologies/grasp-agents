@@ -57,8 +57,8 @@ class RunContext(BaseModel, Generic[CtxT]):
     # session — consumed by the file-edit + file-search tools and by
     # :class:`MemoryProvider`. The backend owns its own
     # ``allowed_roots``; read-before-write bookkeeping lives on the
-    # active :class:`AgentLoop` and is reached through the
-    # :mod:`tools.file_edit.agent_state` ContextVar.
+    # active :class:`AgentLoop` and is passed to each tool call on its
+    # :class:`AgentContext` (``file_edit_state``).
     file_backend: FileBackend | None = Field(default=None, exclude=True)
 
     # Optional :class:`ExecutionEnvironment` owning two co-located surfaces
@@ -97,9 +97,7 @@ class RunContext(BaseModel, Generic[CtxT]):
         """
         return self.environment.exec_backend if self.environment is not None else None
 
-    def __deepcopy__(
-        self, memo: dict[int, Any] | None = None
-    ) -> "RunContext[CtxT]":
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> "RunContext[CtxT]":
         """
         :class:`RunContext` is the session-scoped DI container — every
         processor in a run shares one instance. Returning ``self`` ensures

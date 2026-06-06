@@ -1,53 +1,38 @@
 """
-``Bash`` — run a shell command via ``ctx.exec_backend`` — plus the
-``BashOutput`` / ``KillBash`` companions for auto-backgrounded commands.
+``Bash`` — run a shell command via ``ctx.exec_backend``.
 
-Opt-in and stateless between calls: the tools consume the
-:class:`ExecBackend` wired onto :attr:`RunContext.exec_backend` (set it via
-:func:`local_environment` or by constructing a backend directly). Without an
-exec backend the tools refuse to run — an agent gets no shell access by
-default.
+Opt-in and stateless between calls: the tool consumes the :class:`ExecBackend`
+wired onto :attr:`RunContext.exec_backend` (set it via :func:`local_environment`
+or by constructing a backend directly). Without an exec backend the tool refuses
+to run — an agent gets no shell access by default.
 
 Non-interactive contract: no TTY, and each call is a fresh ``/bin/sh -c`` — no
-shell state (``cd``, environment, started processes) carries over. This is the
+shell state (``cd``, environment, started processes) carries over (the working
+directory is the one exception: it is round-tripped across calls so ``cd``
+sticks — see :class:`~grasp_agents.tools.bash_common.ShellState`). This is the
 :class:`ExecBackend` contract, uniform across every backend (local subprocess,
-Seatbelt/bwrap, Docker, remote); pass ``cd ... &&`` or ``cwd`` for a different
-directory. For a persistent shell instead, use
+Seatbelt/bwrap, Docker, remote); pass ``cd ... &&`` or ``cwd`` for a one-off
+directory. For a fully persistent shell (env + variables too), use
 :class:`~grasp_agents.tools.bash_session.BashSession`.
 
-Long-running commands:
-
-* **Heartbeat** — while a command runs, ``Bash`` reports progress through the
-  tool progress callback (first beat at ``progress_at``, then every
-  ``heartbeat_every`` seconds).
-* **Auto-background** — when ``auto_background_at`` is set and a command
-  outlives it, ``Bash`` returns early with ``status="backgrounded"`` and a
-  ``bash_id``; the command keeps running. Poll it with ``BashOutput``, stop it
-  with ``KillBash``; a completion note is injected when it finishes. Build the
-  trio with :func:`bash_tools`.
-
-A backgrounded command is tracked as a general, *ephemeral*, non-answer-blocking
-task in the agent loop's
-:class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` (the same
-manager that runs background subagent tools), carrying the live
-:class:`~grasp_agents.tools.bash_common.BackgroundCommand` as its monitor. It is
-deliberately **not durable** (no ``TaskRecord``): an OS process does not survive
-the host, so a persisted record would lie on resume. The manager is bound per
-:class:`AgentLoop` through a ContextVar, so sub-agents and parallel replicas
-keep their own background commands; passing an explicit ``manager`` overrides
-the ContextVar (standalone use outside an agent loop).
+``Bash`` owns no backgrounding. It simply streams the backend's output
+(:class:`~grasp_agents.tools.bash_common.ExecStreamEvent` per chunk, then a
+terminal :class:`BashResult`); when a command outlives ``auto_background_at`` the
+agent loop's
+:class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` keeps
+consuming that same stream in the background and the model polls it with the
+generic ``TaskOutput`` / ``KillTask`` tools. Build the trio with
+:func:`bash_tools`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-import time
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
-
+from ..types.events import ToolOutputEvent
 from ..types.tool import BaseTool, ToolProgressCallback
 from .bash_common import (
     DEFAULT_BASH_TIMEOUT,
@@ -55,55 +40,34 @@ from .bash_common import (
     DEFAULT_PROGRESS_AT,
     LEADING_SLEEP,
     MAX_BASH_TIMEOUT,
-    BackgroundCommand,
     BashInput,
     BashResult,
-    preview,
+    ShellState,
+    stream_command,
 )
+from .task_tools import KillTask, TaskOutput
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator
 
+    from ..agent.agent_context import AgentContext
     from ..agent.background_tasks import BackgroundTaskManager
     from ..run_context import RunContext
+    from ..sandbox.exec_backend import ExecChunk, ExecResult
+    from ..types.events import Event
 
 DEFAULT_AUTO_BACKGROUND_AT = 120.0
 
 
-# ---------------------------------------------------------------------------
-# Tools
-# ---------------------------------------------------------------------------
-
-
-class _ManagerBound:
-    """
-    Mixin for bash tools that the agent loop wires its background task manager
-    onto. The manager is otherwise resolved from the tool's own ``_manager``
-    (set explicitly at construction, or :meth:`bind_manager`-ed by the loop).
-    """
-
-    _manager: BackgroundTaskManager[Any] | None
-
-    @property
-    def manager(self) -> BackgroundTaskManager[Any] | None:
-        """The bound background task manager, if any."""
-        return self._manager
-
-    def bind_manager(self, manager: BackgroundTaskManager[Any]) -> None:
-        """Wire ``manager`` unless one was already set explicitly."""
-        if self._manager is None:
-            self._manager = manager
-
-
-class Bash(_ManagerBound, BaseTool[BashInput, BashResult, Any]):
+class Bash(BaseTool[BashInput, BashResult, Any]):
     """
     Execute a shell command in the agent's environment via ``ctx.exec_backend``.
 
     Stateless wrapper around the bound :class:`ExecBackend`; the isolation that
     applies (none / seatbelt / bwrap / docker / e2b / ...) is whatever the
     wired backend provides and is reported back in :attr:`BashResult.backend`.
-    Each call is a fresh process — shell state (``cd`` / env / variables) does
-    not persist across calls; use
+    Each call is a fresh process — shell state (env / variables) does not persist
+    across calls (``cd`` is round-tripped so it sticks); use
     :class:`~grasp_agents.tools.bash_session.BashSession` for a persistent
     session.
 
@@ -112,18 +76,15 @@ class Bash(_ManagerBound, BaseTool[BashInput, BashResult, Any]):
         max_timeout: Hard clamp on the per-call ``timeout``.
         progress_at: Seconds before the first heartbeat progress report.
         heartbeat_every: Interval between subsequent heartbeats.
-        auto_background_at: When set, commands outliving this many seconds
-            return early as ``status="backgrounded"`` with a ``bash_id``
-            (prefer :func:`bash_tools`, which also wires the ``BashOutput`` /
-            ``KillBash`` companions). ``None`` (default) never backgrounds.
-            Backgrounding needs a background task manager in scope (the running
-            loop's or an explicit one); without one the command runs in the
-            foreground to completion or timeout.
+        auto_background_at: When set, the agent loop moves the command to the
+            background once it has run this many seconds (``0`` backgrounds
+            immediately; ``None`` (default) never does). A backgrounded command
+            keeps running; the loop is notified on completion, and meanwhile it
+            can be polled with ``TaskOutput`` / stopped with ``KillTask`` (prefer
+            :func:`bash_tools`, which wires the companions). Outside an agent
+            loop the command always runs to completion in the foreground.
         block_leading_sleep: Reject commands whose first statement is a bare
             ``sleep`` — they block the loop and produce nothing.
-        manager: Explicit background task manager, overriding the per-agent-loop
-            one. Default ``None``: backgrounded commands go to the running
-            loop's manager. Pass the same manager to all three tools or to none.
         timeout: Standard per-tool timeout (outer asyncio ceiling).
 
     """
@@ -149,35 +110,38 @@ class Bash(_ManagerBound, BaseTool[BashInput, BashResult, Any]):
         heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
         auto_background_at: float | None = None,
         block_leading_sleep: bool = True,
-        manager: BackgroundTaskManager[Any] | None = None,
         timeout: float | None = None,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(timeout=timeout, auto_background_at=auto_background_at)
         self._default_timeout = default_timeout
         self._max_timeout = max_timeout
         self._progress_at = progress_at
         self._heartbeat_every = heartbeat_every
-        self._auto_background_at = auto_background_at
         self._block_leading_sleep = block_leading_sleep
-        self._manager = manager
         if auto_background_at is not None:
             self.description += (
                 f" Commands running longer than {auto_background_at:g}s are "
-                "moved to the background: you get a `bash_id` back, and a "
+                "moved to the background: you get a `task_id` back, and a "
                 "notification is injected when the command finishes — there "
-                "is no need to poll for completion. Use BashOutput to "
+                "is no need to poll for completion. Use TaskOutput to "
                 "inspect output in the meantime (e.g. to decide whether to "
-                "KillBash), and KillBash to stop it."
+                "KillTask), and KillTask to stop it."
             )
 
-    async def _run(
+    def _prepare(
         self,
         inp: BashInput,
-        *,
-        ctx: RunContext[Any] | None = None,
-        exec_id: str | None = None,
-        progress_callback: ToolProgressCallback | None = None,
-    ) -> BashResult:
+        ctx: RunContext[Any] | None,
+        shell_state: ShellState | None,
+    ) -> tuple[AsyncIterator[ExecChunk | ExecResult], float, Path | None]:
+        """
+        Validate the call and open the backend exec stream.
+
+        With a ``shell_state`` (running under an agent loop), the command starts
+        in the round-tripped working directory and is wrapped to record its
+        final directory to a scratch state-file, returned here so the caller can
+        read it back into ``shell_state`` (so ``cd`` sticks across calls).
+        """
         if ctx is None or ctx.exec_backend is None:
             raise ValueError(
                 "Bash requires ctx.exec_backend. Wire an ExecBackend on "
@@ -190,196 +154,105 @@ class Bash(_ManagerBound, BaseTool[BashInput, BashResult, Any]):
                 "produces no output. Run the actual command (with a timeout) "
                 "and poll its result instead."
             )
-
         requested = inp.timeout if inp.timeout is not None else self._default_timeout
         effective_timeout = min(requested, self._max_timeout)
-        cwd = Path(inp.cwd) if inp.cwd is not None else None
 
-        # Drain in a task and heartbeat while waiting. At the auto-background
-        # deadline, hand the still-running command to the background task
-        # manager (wired by the agent loop, or passed explicitly) and return
-        # early.
-        stream = ctx.exec_backend.stream(
-            inp.command, cwd=cwd, timeout=effective_timeout
-        )
-        manager = self._manager
-        # Background only with a deadline AND a manager to track it in.
-        deadline = self._auto_background_at if manager is not None else None
+        # cwd: an explicit per-call override wins; otherwise resume the shell's
+        # round-tripped working directory.
+        if inp.cwd is not None:
+            cwd = Path(inp.cwd)
+        elif shell_state is not None and shell_state.cwd is not None:
+            cwd = Path(shell_state.cwd)
+        else:
+            cwd = None
 
-        command = BackgroundCommand(
-            bash_id="", command=inp.command, started_at=time.monotonic()
-        )
-        command.start(stream)
-        drain = command.drain
-        assert drain is not None
+        command = inp.command
+        state_file: Path | None = None
+        roots = ctx.exec_backend.policy.allowed_roots
+        if shell_state is not None and roots:
+            state_file = shell_state.next_state_file(roots[0])
+            # Record the final working directory without disturbing the command's
+            # own stdout/stderr or its exit code.
+            command = (
+                f"{inp.command}\n"
+                "__grasp_rc=$?\n"
+                f"command pwd -P > {shlex.quote(str(state_file))} 2>/dev/null || true\n"
+                "exit $__grasp_rc\n"
+            )
 
-        next_beat = self._progress_at
+        stream = ctx.exec_backend.stream(command, cwd=cwd, timeout=effective_timeout)
+        return stream, effective_timeout, state_file
+
+    async def _run(
+        self,
+        inp: BashInput,
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
+    ) -> BashResult:
+        result: BashResult | None = None
+        async for event in self._run_stream(
+            inp,
+            ctx=ctx,
+            exec_id=exec_id,
+            progress_callback=progress_callback,
+            path=path,
+            agent_ctx=agent_ctx,
+        ):
+            if isinstance(event, ToolOutputEvent):
+                result = event.data
+        assert result is not None
+        return result
+
+    async def _run_stream(
+        self,
+        inp: BashInput,
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        del path
+        shell_state = agent_ctx.shell_state if agent_ctx is not None else None
+        stream, effective_timeout, state_file = self._prepare(inp, ctx, shell_state)
+        async for event in stream_command(
+            stream,
+            command=inp.command,
+            progress_callback=progress_callback,
+            progress_at=self._progress_at,
+            heartbeat_every=self._heartbeat_every,
+            effective_timeout=effective_timeout,
+            source=self.name,
+            exec_id=exec_id,
+        ):
+            yield event
+        # Round-trip the working directory so ``cd`` sticks for the next call
+        # (best-effort; a command cancelled before the trailer leaves it as-is).
+        if state_file is not None and shell_state is not None and ctx is not None:
+            await self._persist_cwd(ctx, shell_state, state_file)
+
+    @staticmethod
+    async def _persist_cwd(
+        ctx: RunContext[Any], shell_state: ShellState, state_file: Path
+    ) -> None:
+        """Read the command's recorded final directory into ``shell_state``."""
+        backend = ctx.file_backend
+        if backend is None:
+            return
         try:
-            while not drain.done():
-                elapsed = time.monotonic() - command.started_at
-                if deadline is not None and elapsed >= deadline:
-                    assert manager is not None  # implied by deadline is not None
-                    try:
-                        bash_id = manager.track(
-                            drain,
-                            label="Bash",
-                            exec_id=exec_id or "",
-                            blocks_final_answer=False,
-                            monitor=command,
-                            id_prefix="bash",
-                        )
-                    except RuntimeError:
-                        await command.kill()  # cap full: don't leak the process
-                        raise
-                    command.bash_id = bash_id
-                    return command.running_result()
-
-                wait = max(0.0, next_beat - elapsed)
-                if deadline is not None:
-                    wait = min(wait, deadline - elapsed)
-                # wait_for cancels its target on timeout; shield keeps the drain
-                # task (and the running command) alive — we only peek for
-                # completion here, then heartbeat. wait_for never returns before
-                # the timeout, so the next beat boundary is always crossed.
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(drain), timeout=wait)
-
-                elapsed = time.monotonic() - command.started_at
-                if not drain.done() and elapsed >= next_beat:
-                    next_beat = elapsed + self._heartbeat_every
-                    if progress_callback is not None:
-                        await progress_callback(
-                            elapsed,
-                            effective_timeout,
-                            f"Bash: `{preview(inp.command)}` running for "
-                            f"{elapsed:.0f}s",
-                        )
-
-        except asyncio.CancelledError:
-            # The tool was aborted (turn cancel / outer timeout) while the
-            # command was still foreground. Cancelling the drain closes the
-            # backend stream, so the supervisor kills the process group and we
-            # don't leak a live process. Backgrounded commands have already
-            # returned and keep running under the manager.
-            await command.kill()
-            raise
-
-        return command.final_result()
-
-
-class BashIdInput(BaseModel):
-    """Input schema for ``BashOutput`` / ``KillBash``."""
-
-    bash_id: str = Field(description="The id returned by a backgrounded Bash call.")
-
-
-def _resolve_manager(
-    manager: BackgroundTaskManager[Any] | None, tool_name: str
-) -> BackgroundTaskManager[Any]:
-    if manager is None:
-        raise ValueError(
-            f"{tool_name} found no background task manager: run under an "
-            "agent loop (which wires one onto its bash tools), or construct "
-            "the tool with an explicit manager."
-        )
-    return manager
-
-
-def _bash_command(
-    manager: BackgroundTaskManager[Any], bash_id: str
-) -> BackgroundCommand:
-    """The :class:`BackgroundCommand` behind ``bash_id``, or a clear error."""
-    monitor = manager.get(bash_id).monitor
-    if isinstance(monitor, BackgroundCommand):
-        return monitor
-    raise ValueError(f"{bash_id!r} is not a backgrounded Bash command.")
-
-
-class BashOutput(_ManagerBound, BaseTool[BashIdInput, BashResult, Any]):
-    """
-    Poll a backgrounded ``Bash`` command for new output.
-
-    Returns output produced since the previous poll. While the command is
-    still running, ``status="backgrounded"`` and ``returncode`` is ``None``;
-    once it finishes, the final result fields are filled in and the command
-    is removed from the manager.
-    """
-
-    name = "BashOutput"
-    description = (
-        "Get new output from a backgrounded Bash command: stdout / stderr "
-        "produced since the last check, plus the exit code once the command "
-        "has finished. You are notified automatically when a background "
-        "command finishes, so do not call this in a loop just to wait for "
-        "completion — use it to inspect progress (e.g. to decide whether to "
-        "KillBash) or to read the output after a completion notice."
-    )
-
-    def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
-        super().__init__()
-        self._manager = manager
-
-    async def _run(
-        self,
-        inp: BashIdInput,
-        *,
-        ctx: RunContext[Any] | None = None,
-        exec_id: str | None = None,
-        progress_callback: ToolProgressCallback | None = None,
-    ) -> BashResult:
-        del ctx, exec_id, progress_callback
-        manager = _resolve_manager(self._manager, self.name)
-        command = _bash_command(manager, inp.bash_id)
-        if not command.running:
-            manager.remove(inp.bash_id)
-            return command.final_result()
-        return command.running_result()
-
-
-class KillBash(_ManagerBound, BaseTool[BashIdInput, BashResult, Any]):
-    """Terminate a backgrounded ``Bash`` command (process group)."""
-
-    name = "KillBash"
-    description = (
-        "Kill a backgrounded Bash command by its bash_id. Returns any output "
-        "produced since the last poll."
-    )
-
-    def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
-        super().__init__()
-        self._manager = manager
-
-    async def _run(
-        self,
-        inp: BashIdInput,
-        *,
-        ctx: RunContext[Any] | None = None,
-        exec_id: str | None = None,
-        progress_callback: ToolProgressCallback | None = None,
-    ) -> BashResult:
-        del ctx, exec_id, progress_callback
-        manager = _resolve_manager(self._manager, self.name)
-        command = _bash_command(manager, inp.bash_id)
-        await manager.cancel(inp.bash_id)
-        manager.remove(inp.bash_id)
-        return command.final_result()
-
-
-def bind_bash_manager(
-    tools: Iterable[BaseTool[Any, Any, Any]],
-    manager: BackgroundTaskManager[Any],
-) -> None:
-    """
-    Wire ``manager`` into the bash tools in ``tools`` that don't already have
-    one. The agent loop calls this at setup so its ``Bash`` / ``BashOutput`` /
-    ``KillBash`` tools share the loop's manager; an explicitly-constructed
-    ``manager`` (standalone use) is left untouched. Because the agent owns its
-    tools (deep-copied in ``LLMAgent.__init__``) and ``agent.copy()`` copies the
-    tools and the manager together, a replica's tools point at its own manager.
-    """
-    for tool in tools:
-        if isinstance(tool, _ManagerBound):
-            tool.bind_manager(manager)
+            text, _ = await backend.read_text(state_file)
+        except Exception:  # best-effort; a missing file just keeps the old cwd
+            return
+        new_cwd = text.strip()
+        if new_cwd:
+            shell_state.cwd = new_cwd
+        with contextlib.suppress(Exception):
+            await backend.delete(state_file)
 
 
 def bash_tools(
@@ -394,15 +267,16 @@ def bash_tools(
     timeout: float | None = None,
 ) -> list[BaseTool[Any, Any, Any]]:
     """
-    Build the ``[Bash, BashOutput, KillBash]`` trio with auto-backgrounding
+    Build the ``[Bash, TaskOutput, KillTask]`` trio with auto-backgrounding
     enabled.
 
-    Each command is a fresh process, and long ones move to the agent loop's
-    background task manager. The trio resolves the running agent loop's manager
-    at call time, so every agent (including sub-agents and parallel replicas)
-    keeps its own background commands. Pass an explicit ``manager`` only for
-    standalone use outside a loop. For a stateful shell instead (``cd`` / env
-    persist across calls), use the
+    Each command is a fresh process. The agent loop moves a long one to its
+    background task manager at ``auto_background_at``; the generic ``TaskOutput``
+    / ``KillTask`` companions resolve that same manager from the call's
+    :class:`AgentContext`, so every agent (including sub-agents and parallel
+    replicas) keeps its own background work. Pass an explicit ``manager`` only to
+    poll / kill from the companions outside a loop. For a stateful shell instead
+    (``cd`` / env persist across calls), use the
     :class:`~grasp_agents.tools.bash_session.BashSession` tool.
     """
     return [
@@ -413,9 +287,8 @@ def bash_tools(
             heartbeat_every=heartbeat_every,
             auto_background_at=auto_background_at,
             block_leading_sleep=block_leading_sleep,
-            manager=manager,
             timeout=timeout,
         ),
-        BashOutput(manager),
-        KillBash(manager),
+        TaskOutput(manager),
+        KillTask(manager),
     ]

@@ -38,8 +38,7 @@ from .bash_common import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
+    from ..agent.agent_context import AgentContext
     from ..run_context import RunContext
     from ..sandbox.exec_backend import ExecSession
 
@@ -91,10 +90,11 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         heartbeat_every: Interval between subsequent heartbeats.
         block_leading_sleep: Reject commands whose first statement is a bare
             ``sleep`` — they block the loop and produce nothing.
-        holder: Explicit session holder, overriding the per-agent-loop one. The
-            agent loop wires its own; pass one only for standalone use. Without
-            a holder each call opens a throwaway session (no persistence).
         timeout: Standard per-tool timeout (outer asyncio ceiling).
+
+    Under an agent loop the persistent session comes from the loop's
+    :class:`AgentContext`; used standalone (no ``AgentContext``) each call
+    opens a throwaway session, so state does not persist across calls.
 
     """
 
@@ -119,7 +119,6 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         progress_at: float = DEFAULT_PROGRESS_AT,
         heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
         block_leading_sleep: bool = True,
-        holder: BashSessionHolder | None = None,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -128,12 +127,6 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         self._progress_at = progress_at
         self._heartbeat_every = heartbeat_every
         self._block_leading_sleep = block_leading_sleep
-        self._holder = holder
-
-    def bind_holder(self, holder: BashSessionHolder) -> None:
-        """Wire ``holder`` unless one was already set explicitly."""
-        if self._holder is None:
-            self._holder = holder
 
     async def _run(
         self,
@@ -142,8 +135,10 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> BashResult:
-        del exec_id
+        del exec_id, path
 
         backend = ctx.exec_backend if ctx is not None else None
         if backend is None:
@@ -174,9 +169,9 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
             # left untouched.
             command = f"( cd -- {shlex.quote(inp.cwd)} && {inp.command} )"
 
-        # Use the agent loop's per-loop session when a holder is wired; otherwise
-        # open a throwaway session for this call (state does not persist).
-        holder = self._holder
+        # Use the agent loop's per-loop session when running under a loop;
+        # otherwise open a throwaway session for this call (no persistence).
+        holder = agent_ctx.session_holder if agent_ctx is not None else None
         own_session = holder is None
         session = (
             await session_backend.open_session()
@@ -198,22 +193,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
                     await session.close()
 
 
-def bind_session_holder(
-    tools: Iterable[BaseTool[Any, Any, Any]],
-    holder: BashSessionHolder,
-) -> None:
-    """
-    Wire ``holder`` into the ``BashSession`` tools in ``tools`` that don't
-    already have one. The agent loop calls this at setup; an explicitly-
-    constructed ``holder`` (standalone use) is left untouched.
-    """
-    for tool in tools:
-        if isinstance(tool, BashSession):
-            tool.bind_holder(holder)
-
-
 __all__ = [
     "BashSession",
     "BashSessionHolder",
-    "bind_session_holder",
 ]

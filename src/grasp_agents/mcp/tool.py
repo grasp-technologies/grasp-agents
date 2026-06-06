@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import ToolOutputPart
@@ -85,8 +86,10 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         meta: dict[str, Any] | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> McpToolResult:
-        del ctx, exec_id
+        del ctx, exec_id, path, agent_ctx
         timeout_delta = (
             timedelta(seconds=self.timeout) if self.timeout is not None else None
         )
