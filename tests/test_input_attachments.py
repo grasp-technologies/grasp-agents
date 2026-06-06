@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -20,6 +21,7 @@ from grasp_agents.memory import (
     relevant_memories_attachment,
 )
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.file_edit.session_state import FileEditSessionState
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import InputMessageItem
 
@@ -237,6 +239,43 @@ class TestMemoryRelevanceAttachment:
         assert "ALPHA BODY" in result
         # beta wasn't selected.
         assert "BETA BODY" not in result
+
+    @pytest.mark.anyio
+    async def test_seen_memories_are_filtered_out(self, tmp_path: Path) -> None:
+        """A memory already in the session read-set is not re-injected."""
+        from grasp_agents.memory.injection import (
+            _compute_relevant_memories,
+        )
+
+        entries = [
+            _entry("alpha", "Alpha desc", "ALPHA BODY", tmp_path / "alpha.md"),
+            _entry("beta", "Beta desc", "BETA BODY", tmp_path / "beta.md"),
+        ]
+        provider = InMemoryMemoryProvider(entries=entries)
+        provider.set_selector(
+            lambda *, entries, **_: entries  # type: ignore[arg-type,return-value]
+        )
+
+        # alpha was already read this session — its path is in the read-set,
+        # so it must be dropped before selection; beta still surfaces.
+        state = FileEditSessionState()
+        state.record_read(tmp_path / "alpha.md", 0.0)
+        agent_ctx = SimpleNamespace(file_edit_state=state)
+
+        class _Ctx:
+            memory = provider
+
+        rendered = await _compute_relevant_memories(
+            user_message=InputMessageItem.from_text("q", role="user"),  # type: ignore[arg-type]
+            ctx=_Ctx(),  # type: ignore[arg-type]
+            exec_id=None,
+            messages=[InputMessageItem.from_text("q", role="user")],
+            agent_ctx=agent_ctx,  # type: ignore[arg-type]
+        )
+
+        assert rendered is not None
+        assert "BETA BODY" in rendered
+        assert "ALPHA BODY" not in rendered
 
     @pytest.mark.anyio
     async def test_selector_returning_empty_returns_none(self, tmp_path: Path) -> None:

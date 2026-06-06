@@ -199,19 +199,27 @@ async def _compute_relevant_memories(
     ``[type] name (updated TS)`` heading plus the entry's description and
     body. The result is wrapped in ``<system-reminder>`` by the default
     :class:`InputAttachment.wrap_in_system_reminder`.
+
+    Memories whose file is already in this session's read-set (surfaced on
+    an earlier turn — :meth:`MemoryProvider.fetch_body` records the read —
+    or ``Read`` directly by the agent) are filtered out before selection, so
+    the same body is not re-injected every turn.
     """
     del user_message
     if ctx is None or ctx.memory is None or ctx.memory.selector is None:
         return None
 
     snapshot = await ctx.memory.load()
+    session_state = agent_ctx.file_edit_state if agent_ctx is not None else None
+    seen_paths = (
+        set(session_state.read_file_state) if session_state is not None else None
+    )
     selected = await ctx.memory.select_relevant(
-        snapshot, ctx=ctx, exec_id=exec_id, messages=messages
+        snapshot, ctx=ctx, exec_id=exec_id, messages=messages, seen_paths=seen_paths
     )
     if not selected:
         return None
 
-    session_state = agent_ctx.file_edit_state if agent_ctx is not None else None
     lines: list[str] = ["## Relevant memories", ""]
     for entry in selected:
         try:

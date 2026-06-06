@@ -26,7 +26,7 @@ from grasp_agents.types.selector import Selector
 from .types import DEFAULT_STALE_AFTER
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
     from datetime import timedelta
 
     from grasp_agents.run_context import RunContext
@@ -254,18 +254,32 @@ class MemoryProvider:
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
+        seen_paths: Collection[Path] | None = None,
     ) -> tuple[MemoryEntry, ...]:
         """
-        Run the selector (if any) and return the resulting entries.
+        Run the selector (if any) over the snapshot entries and return the
+        result.
+
+        ``seen_paths`` drops any entry whose file is in the set *before* the
+        selector runs (filter-before-select): the caller passes the paths the
+        agent has already read this session, so a memory surfaced — or
+        ``Read`` — earlier is neither re-scored nor re-injected. Entries
+        without a path (lazy/remote) are never dropped.
 
         ``ctx`` is passed through to the user-provided selector (which is
         a :class:`Selector` keyed off the active session). The provider
         itself does not consume it.
         """
+        entries = snapshot.entries
+        if seen_paths:
+            seen = set(seen_paths)
+            entries = tuple(
+                e for e in entries if e.path is None or e.path not in seen
+            )
         if self._selector is None:
-            return snapshot.entries
+            return entries
         result = self._selector(
-            entries=snapshot.entries,
+            entries=entries,
             ctx=ctx,
             exec_id=exec_id,
             messages=messages,

@@ -244,6 +244,48 @@ async def test_selector_input_shape() -> None:
     assert "alpha.md" in inputs[1].text
 
 
+# ---- select_relevant seen-path filter ----------------------------------------
+
+
+def _path_entry(name: str, path: Any) -> MemoryEntry:
+    return MemoryEntry(
+        frontmatter=MemoryFrontmatter(name=name, description=f"desc {name}"),
+        body=f"body {name}",
+        path=path,
+    )
+
+
+async def test_select_relevant_filters_seen_paths(tmp_path: Any) -> None:
+    """Entries already read this session are dropped before selection."""
+    a = _path_entry("a", tmp_path / "a.md")
+    b = _path_entry("b", tmp_path / "b.md")
+    lazy = _path_entry("c", None)  # remote/lazy entry: no path to dedup on
+    provider = InMemoryMemoryProvider(entries=[a, b, lazy])
+    provider.set_selector(
+        lambda *, entries, **_: entries  # type: ignore[arg-type,return-value]
+    )
+    snapshot = await provider.load()
+
+    picked = await provider.select_relevant(snapshot, seen_paths={tmp_path / "a.md"})
+
+    # "a" is filtered (seen); "b" survives; the path-less entry is never dropped.
+    assert {e.name for e in picked} == {"b", "c"}
+
+
+async def test_select_relevant_no_seen_paths_keeps_all() -> None:
+    """Empty/None seen-set is a no-op — the filter never over-suppresses."""
+    a = _path_entry("a", None)
+    b = _path_entry("b", None)
+    provider = InMemoryMemoryProvider(entries=[a, b])
+    provider.set_selector(
+        lambda *, entries, **_: entries  # type: ignore[arg-type,return-value]
+    )
+    snapshot = await provider.load()
+
+    assert len(await provider.select_relevant(snapshot)) == 2
+    assert len(await provider.select_relevant(snapshot, seen_paths=set())) == 2
+
+
 # ---- Integration with renderer ------------------------------------------------
 
 
