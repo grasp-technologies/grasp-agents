@@ -40,7 +40,7 @@ from grasp_agents.sandbox import (
     local_environment,
     seatbelt_argv,
 )
-from grasp_agents.sandbox import seatbelt as seatbelt_mod
+from grasp_agents.sandbox.local import seatbelt as seatbelt_mod
 
 from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
 

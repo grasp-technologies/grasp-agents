@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from .paths import PathAccessError
+from ..file_backend.paths import PathAccessError
 
 if TYPE_CHECKING:
     from ...agent.agent_context import AgentContext

@@ -35,6 +35,7 @@ from .file_edit.notebook import (
     make_output,
     open_notebook_for_write,
     render_outputs_as_parts,
+    sanitize_output_data,
     write_notebook,
 )
 
@@ -100,21 +101,31 @@ class RunCellInput(BaseModel):
     )
 
 
-def cell_output_to_nbformat(output: CellOutput) -> Any:
-    """Convert a :class:`CellOutput` to a schema-valid nbformat output node."""
+def cell_output_to_nbformat(output: CellOutput, *, sanitize: bool = True) -> Any:
+    """
+    Convert a :class:`CellOutput` to a schema-valid nbformat output node.
+
+    When ``sanitize`` (default), strips browser-executable payloads from rich
+    outputs (``application/javascript``; ``<script>`` / ``on*=`` / ``javascript:``
+    in ``text/html``) so the persisted ``.ipynb`` can't run agent-authored JS in
+    a reviewer's frontend — see :func:`sanitize_output_data`.
+    """
     if output.output_type == "stream":
         return make_output(
             "stream", name=output.name or "stdout", text=output.text or ""
         )
-    if output.output_type == "execute_result":
-        return make_output(
-            "execute_result",
-            data=dict(output.data or {}),
-            metadata={},
-            execution_count=output.execution_count,
-        )
-    if output.output_type == "display_data":
-        return make_output("display_data", data=dict(output.data or {}), metadata={})
+    if output.output_type in {"execute_result", "display_data"}:
+        data = dict(output.data or {})
+        if sanitize:
+            data, _ = sanitize_output_data(data)
+        if output.output_type == "execute_result":
+            return make_output(
+                "execute_result",
+                data=data,
+                metadata={},
+                execution_count=output.execution_count,
+            )
+        return make_output("display_data", data=data, metadata={})
     return make_output(
         "error",
         ename=output.ename or "",
@@ -149,12 +160,14 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         default_timeout: float = DEFAULT_CELL_TIMEOUT,
         max_result_chars: int = DEFAULT_OUTPUT_TEXT_CHARS,
         max_images: int = DEFAULT_MAX_IMAGES,
+        sanitize_outputs: bool = True,
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
         self._default_timeout = default_timeout
         self._max_result_chars = max_result_chars
         self._max_images = max_images
+        self._sanitize_outputs = sanitize_outputs
 
     async def _run(
         self,
@@ -235,7 +248,10 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
             raise RuntimeError("kernel produced no terminal result")
 
         cell["execution_count"] = result.execution_count
-        cell["outputs"] = [cell_output_to_nbformat(o) for o in outputs]
+        cell["outputs"] = [
+            cell_output_to_nbformat(o, sanitize=self._sanitize_outputs)
+            for o in outputs
+        ]
         await write_notebook(backend, resolved, nb, mode=mode, state=state)
 
         header = f"[execution_count={result.execution_count} status={result.status}]"

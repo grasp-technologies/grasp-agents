@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..agent.function_tool import function_tool
+from ..tools.function_tool import function_tool
 from .injection import LOAD_INSTRUCTION, render_available_skills_block
 from .loader import parse_skill_md
 from .types import SkillNotFoundError

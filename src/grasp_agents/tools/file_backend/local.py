@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .atomic_write import atomic_write_bytes
-from .backend import FileBackend, FileEntry, FileStat, GrepOutputMode, GrepRawResult
+from .base import FileBackend, FileEntry, FileStat, GrepOutputMode, GrepRawResult
 from .paths import (
     PathAccessError,
     check_access_path,

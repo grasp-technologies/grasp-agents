@@ -14,10 +14,10 @@ import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_edit import (
     DefaultSecretRedactor,
     FileEditSessionState,
-    LocalFileBackend,
     NullRedactor,
     ReadInput,
     ReadResult,

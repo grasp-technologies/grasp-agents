@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from grasp_agents.tools.file_edit.paths import (
+from grasp_agents.tools.file_backend.paths import (
     PathAccessError,
     check_sensitive_path,
     has_binary_extension,

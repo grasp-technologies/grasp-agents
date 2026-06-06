@@ -1,7 +1,7 @@
 """
 The marker protocol shared by persistent :class:`ExecSession` implementations
-(:class:`~grasp_agents.sandbox.local_session.LocalExecSession` over pipes,
-:class:`~grasp_agents.sandbox.e2b_backend.E2BExecSession` over E2B callbacks).
+(:class:`~grasp_agents.sandbox.local.session.LocalExecSession` over pipes,
+:class:`~grasp_agents.sandbox.e2b.session.E2BExecSession` over E2B callbacks).
 
 A persistent shell never exits between commands, so — unlike a one-shot
 ``sh -c`` — there is no EOF or per-command exit code. Each command is therefore

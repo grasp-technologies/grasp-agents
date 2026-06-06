@@ -4,7 +4,7 @@ Phase D: a co-located host filesystem + host subprocess pair sharing one
 :class:`SandboxPolicy`.
 
 The factory is the co-location guarantee: it unpacks a single policy into a
-:class:`~grasp_agents.tools.file_edit.local_backend.LocalFileBackend` and an
+:class:`~grasp_agents.tools.file_backend.local.LocalFileBackend` and an
 exec backend that address the *same* host filesystem, so a host cannot
 accidentally point the two surfaces at different locations. Wire the result onto
 :attr:`RunContext.environment`; the ``RunContext`` validator sources
@@ -29,16 +29,16 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
-from ..tools.file_edit.local_backend import LocalFileBackend
-from .environment import ExecutionEnvironment
-from .local_exec import LocalExecBackend
-from .policy import NetworkPolicy, SandboxPolicy
+from ...tools.file_backend.local import LocalFileBackend
+from ..environment import ExecutionEnvironment
+from ..policy import NetworkPolicy, SandboxPolicy
+from .exec import LocalExecBackend
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ..tools.file_edit.backend import FileBackend
-    from .exec_backend import ExecBackend
+    from ...tools.file_backend.base import FileBackend
+    from ..exec_backend import ExecBackend
     from .supervisor import ProcessSupervisor
 
 

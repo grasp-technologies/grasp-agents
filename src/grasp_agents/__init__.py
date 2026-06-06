@@ -1,7 +1,6 @@
 # pyright: reportUnusedImport=false
 
 
-from .agent.agent_tool import AgentTool, AgentToolInput, AgentToolPromptBuilder
 from .agent.approval_callback import (
     DEFAULT_DENY_MESSAGE,
     ApprovalCallback,
@@ -17,7 +16,6 @@ from .agent.approval_store import (
     PendingApproval,
     build_store_approval,
 )
-from .agent.function_tool import FunctionTool, function_tool
 from .agent.llm_agent import LLMAgent
 from .agent.llm_agent_transcript import LLMAgentTranscript
 from .agent.loop_state import (
@@ -107,6 +105,8 @@ from .skills import (
     render_skill_instructions,
     skills_system_prompt_section,
 )
+from .tools.agent_tool import AgentTool, AgentToolInput, AgentToolPromptBuilder
+from .tools.function_tool import FunctionTool, function_tool
 from .types.content import CacheControl, Content, InputImage, InputRenderable
 from .types.events import (
     BackgroundTaskCompletedEvent,

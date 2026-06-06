@@ -22,10 +22,10 @@ from nbformat import v4
 
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools import FileToolkit
+from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_edit import (
     EditInput,
     EditTool,
-    LocalFileBackend,
     NotebookEditInput,
     NotebookEditResult,
     NotebookEditTool,

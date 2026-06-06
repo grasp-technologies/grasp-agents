@@ -5,7 +5,7 @@ The backend wraps the unconfined :class:`LocalExecBackend` argv in
 ``sandbox-exec -p <profile> -D WS_i=<root> ... /bin/sh -c <command>``. The
 profile is generated from the shared :class:`SandboxPolicy` — the *same* policy
 the file tools enforce — so the credential/system deny set in
-:mod:`..tools.file_edit.paths` becomes the profile's mandatory denies (one
+:mod:`..tools.file_backend.paths` becomes the profile's mandatory denies (one
 source, two enforcement points). No Node / ``srt`` runtime dependency.
 
 **Boundary doc (the three questions every backend answers):**
@@ -37,15 +37,15 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..tools.file_edit.paths import sensitive_path_rules
-from .local_exec import LocalExecBackend
-from .policy import NetworkPolicy
+from ...tools.file_backend.paths import sensitive_path_rules
+from ..policy import NetworkPolicy
+from .exec import LocalExecBackend
 from .supervisor import ExecSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from .policy import SandboxPolicy
+    from ..policy import SandboxPolicy
     from .supervisor import ProcessSupervisor
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"

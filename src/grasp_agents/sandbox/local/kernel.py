@@ -34,7 +34,7 @@ import signal
 import time
 from typing import TYPE_CHECKING, Any
 
-from .kernel import CellOutput, CellResult
+from ..kernel import CellOutput, CellResult
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence

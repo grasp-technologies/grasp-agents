@@ -37,9 +37,11 @@ from pydantic import BaseModel, Field
 
 from ...types.content import InputImage, InputText
 from ...types.tool import BaseTool, ToolProgressCallback
-from .paths import PathAccessError
+from ..file_backend.paths import PathAccessError
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ...agent.agent_context import AgentContext
     from ...run_context import RunContext
 
@@ -420,6 +422,62 @@ def render_outputs_as_parts(
     return [InputText(text=text), *images]
 
 
+# MIME types whose payload the notebook frontend executes as browser JS.
+EXECUTABLE_OUTPUT_MIMES: tuple[str, ...] = (
+    "application/javascript",
+    "application/x-javascript",
+    "text/javascript",
+)
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+_SCRIPT_OPEN_RE = re.compile(r"</?script\b[^>]*>", re.IGNORECASE)
+_ON_HANDLER_RE = re.compile(
+    r"""\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE
+)
+_JS_URI_RE = re.compile(
+    r"""(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*'|javascript:[^\s>]+)""",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_html(html: str) -> tuple[str, bool]:
+    cleaned = _SCRIPT_RE.sub("", html)
+    cleaned = _SCRIPT_OPEN_RE.sub("", cleaned)
+    cleaned = _ON_HANDLER_RE.sub("", cleaned)
+    cleaned = _JS_URI_RE.sub(r'\1="#"', cleaned)
+    return cleaned, cleaned != html
+
+
+def sanitize_output_data(data: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    """
+    Strip browser-executable payloads from a display MIME bundle, returning
+    ``(clean_data, modified)``.
+
+    A notebook output's JS runs in the *frontend that renders the .ipynb* — a
+    human reviewer's Jupyter/nbviewer session, outside any exec sandbox. So an
+    agent-authored output is a stored-XSS surface. This drops
+    ``application/javascript`` (+ variants) and removes ``<script>``, ``on*=``
+    handlers, and ``javascript:`` URIs from ``text/html`` before the output is
+    persisted. Defense-in-depth layered on Jupyter's trusted-notebook model —
+    *not* a full HTML sanitizer (it targets the executable vectors, not every
+    conceivable one).
+    """
+    clean = dict(data)
+    modified = False
+    for mime in EXECUTABLE_OUTPUT_MIMES:
+        if mime in clean:
+            del clean[mime]
+            modified = True
+    if "text/html" in clean:
+        sanitized, changed = _sanitize_html(_cell_source_like(clean["text/html"]))
+        if changed:
+            clean["text/html"] = sanitized
+            modified = True
+    if modified and not clean:
+        # The bundle was executable-only; leave a marker so it isn't blank.
+        clean["text/plain"] = "[executable output removed by sanitizer]"
+    return clean, modified
+
+
 async def read_notebook(
     backend: Any, resolved: Path, *, max_bytes: int = DEFAULT_MAX_NOTEBOOK_BYTES
 ) -> tuple[Any, float]:
@@ -743,6 +801,7 @@ __all__ = [
     "DEFAULT_MAX_NOTEBOOK_BYTES",
     "DEFAULT_OUTPUT_PREVIEW_CHARS",
     "DEFAULT_OUTPUT_TEXT_CHARS",
+    "EXECUTABLE_OUTPUT_MIMES",
     "VIEWABLE_IMAGE_MIMES",
     "NotebookCellView",
     "NotebookEditInput",
@@ -761,5 +820,6 @@ __all__ = [
     "read_notebook_as_text",
     "render_cell_views",
     "render_outputs_as_parts",
+    "sanitize_output_data",
     "write_notebook",
 ]

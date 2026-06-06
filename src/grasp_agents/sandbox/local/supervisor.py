@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .exec_backend import ExecChunk, ExecResult, TerminationReason
+from ..exec_backend import ExecChunk, ExecResult, TerminationReason
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping

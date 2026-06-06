@@ -26,9 +26,9 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .local_env import LocalEnvironment, local_environment
+from .local.environment import LocalEnvironment, local_environment
+from .local.supervisor import ProcessSupervisor, SupervisorLimits
 from .policy import NetworkPolicy
-from .supervisor import ProcessSupervisor, SupervisorLimits
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -27,10 +27,10 @@ from openai.types.responses.response_usage import (
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from grasp_agents.run_context import RunContext
-    from grasp_agents.tools.file_edit.backend import FileBackend
+    from grasp_agents.tools.file_backend.base import FileBackend
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.items import InputItem
 

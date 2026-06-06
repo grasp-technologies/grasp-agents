@@ -145,9 +145,12 @@ async def test_timeout_interrupts_command_but_keeps_session(tmp_path: Path) -> N
 
 
 async def test_uninterruptible_command_closes_session(tmp_path: Path) -> None:
-    from grasp_agents.sandbox.local_exec import LocalExecBackend
+    from grasp_agents.sandbox.local.exec import LocalExecBackend
+    from grasp_agents.sandbox.local.supervisor import (
+        ProcessSupervisor,
+        SupervisorLimits,
+    )
     from grasp_agents.sandbox.policy import SandboxPolicy
-    from grasp_agents.sandbox.supervisor import ProcessSupervisor, SupervisorLimits
 
     # A short grace so the close fallback fires quickly.
     backend = LocalExecBackend(

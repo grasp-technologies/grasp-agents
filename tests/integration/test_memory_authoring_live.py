@@ -27,7 +27,7 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
     OpenAILLM,
     OpenAILLMSettings,
 )
-from grasp_agents.tools.file_edit import LocalFileBackend
+from grasp_agents.tools.file_backend import LocalFileBackend
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 if TYPE_CHECKING:
-    from ..tools.file_edit.backend import FileBackend
+    from ..tools.file_backend.base import FileBackend
     from .exec_backend import ExecBackend
     from .policy import SandboxPolicy
 

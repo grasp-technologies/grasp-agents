@@ -38,12 +38,14 @@ from grasp_agents.sandbox import (
     NetworkPolicy,
     SandboxPolicy,
     SnapshotCapable,
-    e2b_backend,
     e2b_environment,
 )
+from grasp_agents.sandbox.e2b import _handle as e2b_handle
+from grasp_agents.sandbox.e2b import environment as e2b_env
+from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
-from grasp_agents.tools.file_edit.backend import FileBackend
-from grasp_agents.tools.file_edit.paths import PathAccessError
+from grasp_agents.tools.file_backend.base import FileBackend
+from grasp_agents.tools.file_backend.paths import PathAccessError
 
 from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
 
@@ -297,15 +299,15 @@ async def test_protocol_conformance() -> None:
 
 
 async def test_wrap_stdin() -> None:
-    assert e2b_backend._wrap_stdin("echo hi", None) == "echo hi"
-    assert e2b_backend._wrap_stdin("echo hi", b"") == "echo hi"
-    wrapped = e2b_backend._wrap_stdin("cat", b"hello")
+    assert e2b_handle.wrap_stdin("echo hi", None) == "echo hi"
+    assert e2b_handle.wrap_stdin("echo hi", b"") == "echo hi"
+    wrapped = e2b_handle.wrap_stdin("cat", b"hello")
     assert "base64 -d | (cat)" in wrapped
     assert base64.b64encode(b"hello").decode() in wrapped
 
 
 async def test_build_grep_cmd_content_mode() -> None:
-    cmd = e2b_backend._build_grep_cmd(
+    cmd = e2b_file_backend._build_grep_cmd(
         Path(_WS),
         "foo",
         glob=None,
@@ -324,14 +326,16 @@ async def test_build_grep_cmd_content_mode() -> None:
 
 
 async def test_parse_grep_modes() -> None:
-    files = e2b_backend._parse_grep("/w/a.py\n/w/b.py\n", "files_with_matches")
+    files = e2b_file_backend._parse_grep("/w/a.py\n/w/b.py\n", "files_with_matches")
     assert files.files == [Path("/w/a.py"), Path("/w/b.py")]
 
-    counts = e2b_backend._parse_grep("/w/a.py:3\n/w/b.py:1\n", "count")
+    counts = e2b_file_backend._parse_grep("/w/a.py:3\n/w/b.py:1\n", "count")
     assert counts.counts == [(Path("/w/a.py"), 3), (Path("/w/b.py"), 1)]
     assert counts.num_matches == 4
 
-    content = e2b_backend._parse_grep("/w/a.py:1:foo\n--\n/w/a.py:9:foo\n", "content")
+    content = e2b_file_backend._parse_grep(
+        "/w/a.py:1:foo\n--\n/w/a.py:9:foo\n", "content"
+    )
     assert content.lines == ["/w/a.py:1:foo", "/w/a.py:9:foo"]  # `--` dropped
 
 
@@ -593,7 +597,7 @@ async def test_restore_spawns_fresh_sandbox_from_snapshot(
             created.update(kwargs)
             return new_sb
 
-    monkeypatch.setattr(e2b_backend, "AsyncSandbox", _FakeAsyncSandbox)
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
 
     old = _FakeSandbox(sandbox_id="sbx_old")
     env = E2BEnvironment.from_sandbox(
@@ -621,7 +625,7 @@ async def test_resume_reconnects_to_sandbox(
             connected["id"] = sandbox_id
             return resumed
 
-    monkeypatch.setattr(e2b_backend, "AsyncSandbox", _FakeAsyncSandbox)
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
 
     env = E2BEnvironment.from_sandbox(
         cast("AsyncSandbox", _FakeSandbox(sandbox_id="sbx_orig")),
@@ -646,7 +650,7 @@ async def test_enter_creates_sandbox_with_mapped_params(
             created.update(kwargs)
             return fake_sb
 
-    monkeypatch.setattr(e2b_backend, "AsyncSandbox", _FakeAsyncSandbox)
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
 
     env = e2b_environment(
         allowed_roots=[_WS],

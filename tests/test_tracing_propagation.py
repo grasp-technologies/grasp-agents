@@ -19,12 +19,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.agent.agent_tool import AgentTool, AgentToolInput
-from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.processor_tool import ProcessorTool
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.agent_tool import AgentTool, AgentToolInput
+from grasp_agents.tools.function_tool import function_tool
+from grasp_agents.tools.processor_tool import ProcessorTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 if TYPE_CHECKING:

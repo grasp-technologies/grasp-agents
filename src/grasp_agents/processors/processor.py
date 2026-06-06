@@ -42,7 +42,7 @@ from ..utils.callbacks import is_method_overridden
 from ..utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
-    from ..agent.processor_tool import ProcessorTool
+    from ..tools.processor_tool import ProcessorTool
 
 logger = logging.getLogger(__name__)
 
@@ -539,7 +539,7 @@ class Processor(
         reset_transcript_on_run: bool = True,
         auto_background_at: float | None = None,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
-        from ..agent.processor_tool import (  # noqa: PLC0415
+        from ..tools.processor_tool import (  # noqa: PLC0415
             ProcessorTool as _ProcessorTool,
         )
 

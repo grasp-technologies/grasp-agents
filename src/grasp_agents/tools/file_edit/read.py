@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
-from .paths import PathAccessError, has_binary_extension
+from ..file_backend.paths import PathAccessError, has_binary_extension
 
 if TYPE_CHECKING:
     from ...agent.agent_context import AgentContext

@@ -43,7 +43,7 @@ dev = [
 anthropic = ["anthropic==0.84.0"]
 gemini = ["google-genai>=1.65.0"]
 all-providers = ["anthropic==0.84.0", "google-genai>=1.65.0"]
-e2b = ["e2b>=2.0,<3"]
+e2b = ["e2b>=2.0,<3", "e2b-code-interpreter>=2.7.0"]
 mcp = ["mcp>=1.8"]
 # Notebook editing (NotebookRead/NotebookEdit over a FileBackend) — kernel-free.
 notebook = ["nbformat>=5.10.4"]

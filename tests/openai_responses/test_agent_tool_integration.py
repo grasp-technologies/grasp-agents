@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.agent.agent_tool import AgentTool
-from grasp_agents.agent.function_tool import function_tool
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.tools.agent_tool import AgentTool
+from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,

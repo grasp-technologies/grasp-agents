@@ -19,7 +19,7 @@ from grasp_agents.memory import (
 )
 from grasp_agents.memory.default_path import GRASP_MEMORY_ENV
 from grasp_agents.run_context import RunContext
-from grasp_agents.tools.file_edit.local_backend import LocalFileBackend
+from grasp_agents.tools.file_backend.local import LocalFileBackend
 
 if TYPE_CHECKING:
     from pathlib import Path

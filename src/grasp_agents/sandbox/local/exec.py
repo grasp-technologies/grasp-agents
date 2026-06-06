@@ -34,18 +34,18 @@ import sys
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from ..tools.file_edit.paths import PathAccessError, resolve_safe
-from .exec_backend import ExecBackend, ExecChunk, ExecResult, SessionCapable
-from .kernel import KernelCapable
-from .local_kernel import LocalKernel
-from .local_session import LocalExecSession
+from ...tools.file_backend.paths import PathAccessError, resolve_safe
+from ..exec_backend import ExecBackend, ExecChunk, ExecResult, SessionCapable
+from ..kernel import KernelCapable
+from .kernel import LocalKernel
+from .session import LocalExecSession
 from .supervisor import ExecSpec, ProcessSupervisor
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from pathlib import Path
 
-    from .policy import SandboxPolicy
+    from ..policy import SandboxPolicy
     from .supervisor import SupervisorLimits
 
 

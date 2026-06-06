@@ -1,0 +1,201 @@
+"""
+E2B compatibility for the notebook tools.
+
+N1 (NotebookRead / NotebookEdit) is backend-agnostic — it routes through
+``ctx.file_backend`` — so it works over an E2B sandbox's filesystem unchanged.
+N2 (RunCell) needs a ``KernelCapable`` exec backend; the base ``e2b`` backend is
+shell + files only (no in-sandbox Jupyter kernel), so RunCell refuses with a
+clear error rather than silently failing — remote-kernel execution on E2B is a
+separate (deferred) backend.
+
+Live, gated on ``e2b`` + ``E2B_API_KEY`` and run unsandboxed:
+``uv run pytest -m integration tests/sandbox/test_notebook_e2b.py``.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import nbformat
+import pytest
+from nbformat import v4
+
+from grasp_agents.agent.agent_context import AgentContext
+from grasp_agents.agent.background_tasks import BackgroundTaskManager
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+from grasp_agents.run_context import RunContext
+from grasp_agents.sandbox import e2b_environment
+from grasp_agents.tools.bash_common import ShellState
+from grasp_agents.tools.bash_session import BashSessionHolder
+from grasp_agents.tools.file_edit import (
+    FileEditSessionState,
+    NotebookEditInput,
+    NotebookEditResult,
+    NotebookEditTool,
+    NotebookReadInput,
+    NotebookReadResult,
+    NotebookReadTool,
+)
+from grasp_agents.tools.notebook_exec import KernelHolder, RunCell, RunCellInput
+from grasp_agents.types.events import ToolErrorInfo
+
+if TYPE_CHECKING:
+    from grasp_agents.tools.file_backend.base import FileBackend
+
+pytestmark = pytest.mark.asyncio
+
+_WS = "/home/user/workspace"
+_HAS_E2B = importlib.util.find_spec("e2b") is not None
+_E2B_KEY = os.getenv("E2B_API_KEY")
+_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+_live = pytest.mark.skipif(
+    not (_HAS_E2B and _E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
+)
+
+
+def _agent_ctx() -> AgentContext:
+    transcript = LLMAgentTranscript()
+    return AgentContext(
+        transcript=transcript,
+        tools={},
+        file_edit_state=FileEditSessionState(),
+        bg_tasks=BackgroundTaskManager(
+            agent_name="test", transcript=transcript, tools={}
+        ),
+        session_holder=BashSessionHolder(),
+        kernel_holder=KernelHolder(),
+        shell_state=ShellState(),
+    )
+
+
+async def _write_notebook(fb: FileBackend, path: Path, source: str) -> None:
+    nb = v4.new_notebook()
+    nb.cells.append(v4.new_code_cell(source))
+    await fb.write_bytes(path, nbformat.writes(nb).encode("utf-8"), mode=0o644)
+
+
+def _src(cell: Any) -> str:
+    s = cell.get("source", "")
+    return "".join(s) if isinstance(s, list) else s
+
+
+@pytest.mark.integration
+@_live
+async def test_notebook_read_edit_on_e2b() -> None:
+    """NotebookRead/NotebookEdit operate on a notebook in the E2B sandbox FS."""
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        ctx: RunContext[Any] = RunContext(environment=env)
+        agent_ctx = _agent_ctx()
+        path = Path(f"{_WS}/demo.ipynb")
+        await _write_notebook(env.file_backend, path, "x = 1")
+
+        read = await NotebookReadTool().run(
+            NotebookReadInput(path=str(path)), ctx=ctx, agent_ctx=agent_ctx
+        )
+        assert isinstance(read, NotebookReadResult)
+        assert read.total_cells == 1
+        cid = read.cells[0].id
+
+        edited = await NotebookEditTool().run(
+            NotebookEditInput(notebook_path=str(path), cell_id=cid, new_source="x = 2"),
+            ctx=ctx,
+            agent_ctx=agent_ctx,
+        )
+        assert isinstance(edited, NotebookEditResult)
+
+        text, _ = await env.file_backend.read_text(path)
+        after = json.loads(text)
+        assert _src(after["cells"][0]) == "x = 2"
+
+
+@pytest.mark.integration
+@_live
+async def test_run_cell_refuses_without_code_interpreter() -> None:
+    """On a non-code-interpreter E2B sandbox, RunCell refuses clearly."""
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        ctx: RunContext[Any] = RunContext(environment=env)
+        agent_ctx = _agent_ctx()
+        path = Path(f"{_WS}/demo.ipynb")
+        await _write_notebook(env.file_backend, path, "x = 1")
+
+        read = await NotebookReadTool().run(
+            NotebookReadInput(path=str(path)), ctx=ctx, agent_ctx=agent_ctx
+        )
+        assert isinstance(read, NotebookReadResult)
+
+        result = await RunCell().run(
+            RunCellInput(notebook_path=str(path), cell_id=read.cells[0].id),
+            ctx=ctx,
+            agent_ctx=agent_ctx,
+        )
+        assert isinstance(result, ToolErrorInfo)
+        assert "code-interpreter" in result.error
+
+
+@pytest.mark.integration
+@_live
+async def test_run_cell_on_e2b_code_interpreter() -> None:
+    """RunCell executes against an E2B code-interpreter kernel (state + plot)."""
+    from grasp_agents.types.content import InputImage, InputText
+
+    async with e2b_environment(allowed_roots=[_WS], code_interpreter=True) as env:
+        ctx: RunContext[Any] = RunContext(environment=env)
+        agent_ctx = _agent_ctx()
+        path = Path(f"{_WS}/demo.ipynb")
+
+        nb = v4.new_notebook()
+        nb.cells.append(v4.new_code_cell("y = 21"))
+        nb.cells.append(v4.new_code_cell("print('hi'); y * 2"))
+        nb.cells.append(
+            v4.new_code_cell(
+                "import base64\n"
+                "from IPython.display import Image, display\n"
+                f"display(Image(data=base64.b64decode('{_PNG_B64}'), format='png'))"
+            )
+        )
+        await env.file_backend.write_bytes(
+            path, nbformat.writes(nb).encode("utf-8"), mode=0o644
+        )
+
+        read = await NotebookReadTool().run(
+            NotebookReadInput(path=str(path)), ctx=ctx, agent_ctx=agent_ctx
+        )
+        assert isinstance(read, NotebookReadResult)
+        ids = [c.id for c in read.cells]
+
+        try:
+            # cell 0 sets state; cell 1 uses it -> persistence across RunCell calls
+            await RunCell().run(
+                RunCellInput(notebook_path=str(path), cell_id=ids[0]),
+                ctx=ctx,
+                agent_ctx=agent_ctx,
+            )
+            parts = await RunCell().run(
+                RunCellInput(notebook_path=str(path), cell_id=ids[1]),
+                ctx=ctx,
+                agent_ctx=agent_ctx,
+            )
+            assert not isinstance(parts, ToolErrorInfo), parts
+            text = "".join(p.text for p in parts if isinstance(p, InputText))
+            assert "hi" in text
+            assert "42" in text
+
+            # a plot cell -> an image part + image persisted in the notebook
+            plot = await RunCell().run(
+                RunCellInput(notebook_path=str(path), cell_id=ids[2]),
+                ctx=ctx,
+                agent_ctx=agent_ctx,
+            )
+            assert not isinstance(plot, ToolErrorInfo), plot
+            assert any(isinstance(p, InputImage) for p in plot)
+            after = json.loads((await env.file_backend.read_text(path))[0])
+            outs = after["cells"][2]["outputs"]
+            assert any("image/png" in o.get("data", {}) for o in outs)
+        finally:
+            await agent_ctx.kernel_holder.close()

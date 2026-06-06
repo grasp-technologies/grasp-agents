@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from grasp_agents.run_context import RunContext
-from grasp_agents.tools.file_edit import LocalFileBackend
+from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_search import GlobInput, GlobResult, GlobTool
 from grasp_agents.types.events import ToolErrorInfo
 

@@ -3,12 +3,12 @@ from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel
 
+from ..agent.agent_context import AgentContext
 from ..durability.checkpoints import CheckpointKind
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext
 from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from ..types.tool import BaseTool, ToolProgressCallback
-from .agent_context import AgentContext
 
 _InT = TypeVar("_InT", bound=BaseModel)
 _OutT = TypeVar("_OutT")
@@ -85,7 +85,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         if self._reset_transcript_on_run:
             # Only LLM agents carry a transcript — other processors have no
             # working-state slot to reset.
-            from .llm_agent import LLMAgent  # noqa: PLC0415
+            from ..agent.llm_agent import LLMAgent  # noqa: PLC0415
 
             if isinstance(proc, LLMAgent):
                 proc.transcript.reset()

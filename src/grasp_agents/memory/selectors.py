@@ -25,7 +25,7 @@ Usage::
         MemoryProvider,
         make_llm_relevance_selector,
     )
-    from grasp_agents.tools.file_edit import LocalFileBackend
+    from grasp_agents.tools.file_backend import LocalFileBackend
 
     selector_llm = OpenAILLM(model="gpt-4o-mini")
     memory = MemoryProvider(root="/path/to/memdir")

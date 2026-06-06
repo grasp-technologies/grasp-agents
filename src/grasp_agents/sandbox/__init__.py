@@ -30,21 +30,18 @@ if TYPE_CHECKING:
         NetworkConfig,
         load_environment_config,
     )
-    from .e2b_backend import (
-        E2BEnvironment,
-        E2BExecBackend,
-        E2BFileBackend,
-        e2b_environment,
-    )
-    from .local_env import LocalEnvironment, local_environment
-    from .local_exec import LocalExecBackend
-    from .seatbelt import (
+    from .e2b.environment import E2BEnvironment, e2b_environment
+    from .e2b.exec import E2BExecBackend
+    from .e2b.file_backend import E2BFileBackend
+    from .local.environment import LocalEnvironment, local_environment
+    from .local.exec import LocalExecBackend
+    from .local.seatbelt import (
         SeatbeltExecBackend,
         build_seatbelt_profile,
         seatbelt_argv,
     )
-    from .srt import SrtExecBackend, build_srt_settings, srt_argv
-    from .supervisor import ExecSpec, ProcessSupervisor, SupervisorLimits
+    from .local.srt import SrtExecBackend, build_srt_settings, srt_argv
+    from .local.supervisor import ExecSpec, ProcessSupervisor, SupervisorLimits
 
 
 _LAZY: dict[str, str] = {
@@ -53,22 +50,22 @@ _LAZY: dict[str, str] = {
     "FilesystemConfig": "config",
     "NetworkConfig": "config",
     "load_environment_config": "config",
-    "E2BEnvironment": "e2b_backend",
-    "E2BExecBackend": "e2b_backend",
-    "E2BFileBackend": "e2b_backend",
-    "e2b_environment": "e2b_backend",
-    "ExecSpec": "supervisor",
-    "ProcessSupervisor": "supervisor",
-    "SupervisorLimits": "supervisor",
-    "LocalExecBackend": "local_exec",
-    "LocalEnvironment": "local_env",
-    "local_environment": "local_env",
-    "SeatbeltExecBackend": "seatbelt",
-    "build_seatbelt_profile": "seatbelt",
-    "seatbelt_argv": "seatbelt",
-    "SrtExecBackend": "srt",
-    "build_srt_settings": "srt",
-    "srt_argv": "srt",
+    "E2BEnvironment": "e2b.environment",
+    "E2BExecBackend": "e2b.exec",
+    "E2BFileBackend": "e2b.file_backend",
+    "e2b_environment": "e2b.environment",
+    "ExecSpec": "local.supervisor",
+    "ProcessSupervisor": "local.supervisor",
+    "SupervisorLimits": "local.supervisor",
+    "LocalExecBackend": "local.exec",
+    "LocalEnvironment": "local.environment",
+    "local_environment": "local.environment",
+    "SeatbeltExecBackend": "local.seatbelt",
+    "build_seatbelt_profile": "local.seatbelt",
+    "seatbelt_argv": "local.seatbelt",
+    "SrtExecBackend": "local.srt",
+    "build_srt_settings": "local.srt",
+    "srt_argv": "local.srt",
 }
 
 

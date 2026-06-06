@@ -11,7 +11,7 @@ from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 from grasp_agents.utils.io import get_prompt
 
-from .llm_agent_transcript import LLMAgentTranscript
+from ..agent.llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable
@@ -19,9 +19,9 @@ if TYPE_CHECKING:
 
     from grasp_agents.llm.llm import LLM
 
-    from .agent_context import AgentContext
-    from .llm_agent import LLMAgent
-    from .prompt_builder import SystemPromptSection
+    from ..agent.agent_context import AgentContext
+    from ..agent.llm_agent import LLMAgent
+    from ..agent.prompt_builder import SystemPromptSection
 
 
 @runtime_checkable
@@ -196,7 +196,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         message history.
         """
         del exec_id
-        from .llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
+        from ..agent.llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
 
         parent_transcript = agent_ctx.transcript if agent_ctx is not None else None
         parent_tools = (

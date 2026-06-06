@@ -36,8 +36,8 @@ import signal
 import time
 from typing import TYPE_CHECKING, Literal
 
-from .exec_backend import ExecChunk, ExecResult, ExecSession, TerminationReason
-from .session_protocol import frame_command, parse_exit_code
+from ..exec_backend import ExecChunk, ExecResult, ExecSession, TerminationReason
+from ..session_protocol import frame_command, parse_exit_code
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping

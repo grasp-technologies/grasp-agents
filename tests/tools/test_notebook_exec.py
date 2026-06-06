@@ -23,14 +23,18 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.sandbox.kernel import CellOutput
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
+from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
-    LocalFileBackend,
     NotebookReadInput,
     NotebookReadResult,
     NotebookReadTool,
 )
-from grasp_agents.tools.file_edit.notebook import make_output, render_outputs_as_parts
+from grasp_agents.tools.file_edit.notebook import (
+    make_output,
+    render_outputs_as_parts,
+    sanitize_output_data,
+)
 from grasp_agents.tools.notebook_exec import (
     KernelHolder,
     RunCell,
@@ -135,6 +139,49 @@ def test_render_outputs_multiformat_images() -> None:
     parts = render_outputs_as_parts(outputs)
     mimes = {p.mime_type for p in parts if isinstance(p, InputImage)}
     assert mimes == {"image/jpeg", "image/gif"}
+
+
+def test_sanitize_drops_javascript_mime() -> None:
+    data, modified = sanitize_output_data({"application/javascript": "alert(1)"})
+    assert modified
+    assert "application/javascript" not in data
+    assert data["text/plain"] == "[executable output removed by sanitizer]"
+
+
+def test_sanitize_strips_html_script_and_handlers() -> None:
+    html = (
+        '<div onclick="steal()">hi</div>'
+        "<script>evil()</script>"
+        '<a href="javascript:bad()">x</a>'
+    )
+    data, modified = sanitize_output_data({"text/html": html})
+    assert modified
+    out = data["text/html"]
+    assert "<script>" not in out
+    assert "evil()" not in out
+    assert "onclick" not in out
+    assert "javascript:" not in out
+    assert "hi" in out  # benign content preserved
+
+
+def test_sanitize_leaves_benign_html_untouched() -> None:
+    data, modified = sanitize_output_data(
+        {"text/html": "<b>bold</b>", "text/plain": "bold"}
+    )
+    assert not modified
+    assert data["text/html"] == "<b>bold</b>"
+
+
+def test_cell_output_to_nbformat_sanitizes_by_default() -> None:
+    output = CellOutput(
+        output_type="display_data",
+        data={"application/javascript": "x()", "text/plain": "r"},
+    )
+    sanitized = cell_output_to_nbformat(output)
+    assert "application/javascript" not in sanitized["data"]
+    # Opt-out keeps the raw payload.
+    raw = cell_output_to_nbformat(output, sanitize=False)
+    assert "application/javascript" in raw["data"]
 
 
 def test_cell_output_to_nbformat_shapes() -> None:
@@ -336,5 +383,33 @@ async def test_run_cell_error_written_back(tmp_path: Path) -> None:
         nb = json.loads(p.read_text())
         outs = nb["cells"][0]["outputs"]
         assert any(o["output_type"] == "error" for o in outs)
+    finally:
+        await agent_ctx.kernel_holder.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_run_cell_sanitizes_executable_output(tmp_path: Path) -> None:
+    """A cell emitting JS/script HTML is sanitized before write-back."""
+    env = local_environment(allowed_roots=[tmp_path])
+    ctx: RunContext[Any] = RunContext(environment=env)
+    agent_ctx = _agent_ctx()
+    p = tmp_path / "nb.ipynb"
+    _write_code_nb(
+        p,
+        "from IPython.display import HTML, display\n"
+        'display(HTML(\'<div onclick="x()">hi</div><script>evil()</script>\'))',
+    )
+    try:
+        cid = await _first_cell_id(ctx, agent_ctx, p)
+        await _run_cell(ctx, agent_ctx, p, cid)
+        nb = json.loads(p.read_text())
+        outs = nb["cells"][0]["outputs"]
+        htmls = [o.get("data", {}).get("text/html", "") for o in outs]
+        joined = "".join("".join(h) if isinstance(h, list) else h for h in htmls)
+        assert "<script>" not in joined
+        assert "evil()" not in joined
+        assert "onclick" not in joined
+        assert "hi" in joined  # benign content survived
     finally:
         await agent_ctx.kernel_holder.close()

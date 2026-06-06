@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.run_context import RunContext
-from grasp_agents.tools.file_edit import LocalFileBackend
+from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_search import (
     GrepInput,
     GrepResult,

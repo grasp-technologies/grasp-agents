@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.agent.agent_tool import AgentTool
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import (
     AgentCheckpoint,
@@ -30,6 +29,7 @@ from grasp_agents.durability.checkpoints import ParallelCheckpoint
 from grasp_agents.packet import Packet
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.agent_tool import AgentTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import (

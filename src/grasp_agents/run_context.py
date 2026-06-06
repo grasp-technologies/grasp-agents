@@ -18,7 +18,7 @@ from .printer import Printer  # noqa: E402
 from .sandbox.environment import ExecutionEnvironment  # noqa: E402
 from .sandbox.exec_backend import ExecBackend  # noqa: E402
 from .skills.registry import SkillRegistry  # noqa: E402
-from .tools.file_edit.backend import FileBackend  # noqa: E402
+from .tools.file_backend.base import FileBackend  # noqa: E402
 from .types.io import ProcName  # noqa: E402
 from .types.response import Response  # noqa: E402
 from .usage_tracker import UsageTracker  # noqa: E402

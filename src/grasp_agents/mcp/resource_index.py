@@ -1,7 +1,7 @@
 """
 Cached :class:`MCPResourceIndex` — one ``resources/list`` per session.
 
-:class:`grasp_agents.tools.file_edit.mcp_backend.MCPFileBackend` walks
+:class:`grasp_agents.tools.file_backend.mcp.MCPFileBackend` walks
 an MCP server's resources to back the file-edit tools, and the same
 listings drive memdir discovery for :class:`MemoryProvider`. The index
 keeps a cached :meth:`resources/list` so both surfaces avoid duplicate

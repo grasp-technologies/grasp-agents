@@ -35,8 +35,8 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from ...mcp.resource_index import AnyUrl, MCPResourceIndex
-from .backend import FileBackend, FileEntry, FileStat, GrepRawResult
-from .local_backend import glob_filter_entries
+from .base import FileBackend, FileEntry, FileStat, GrepRawResult
+from .local import glob_filter_entries
 from .paths import PathAccessError
 
 try:

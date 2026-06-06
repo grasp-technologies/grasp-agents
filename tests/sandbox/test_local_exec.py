@@ -27,10 +27,10 @@ from grasp_agents.sandbox import (
     TerminationReason,
     local_environment,
 )
-from grasp_agents.sandbox.local_exec import LocalExecBackend
-from grasp_agents.sandbox.supervisor import ExecSpec
+from grasp_agents.sandbox.local.exec import LocalExecBackend
+from grasp_agents.sandbox.local.supervisor import ExecSpec
 from grasp_agents.tools.bash import Bash, BashInput, BashResult
-from grasp_agents.tools.file_edit import LocalFileBackend, PathAccessError
+from grasp_agents.tools.file_backend import LocalFileBackend, PathAccessError
 from grasp_agents.types.events import ToolErrorInfo
 
 pytestmark = pytest.mark.asyncio

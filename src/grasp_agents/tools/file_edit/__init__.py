@@ -1,15 +1,12 @@
 """
-File-edit tool package.
+File-edit tool package: ``Read`` / ``Write`` / ``Edit`` / ``Delete`` +
+``NotebookRead`` / ``NotebookEdit``, plus their per-session bookkeeping
+(:class:`FileEditSessionState`), fuzzy-match chain, and secret redaction.
 
-Provides the ``Read`` / ``Write`` / ``Edit`` / ``Delete`` primitives.
-Read-before-write bookkeeping lives on the *agent* (each
-:class:`AgentLoop` owns its own :class:`FileEditSessionState`); the
-:class:`FileBackend` itself is pure I/O. Default backend is
-:class:`LocalFileBackend` (host filesystem); :class:`MCPFileBackend`
-routes the same calls to an MCP server speaking the file-tool protocol.
-
-To bundle these with the search tools (``Glob`` / ``Grep``), use
-:class:`grasp_agents.tools.FileToolkit`.
+These operate over a :class:`~grasp_agents.tools.file_backend.FileBackend`
+(the I/O substrate, now in the sibling :mod:`..file_backend` package) wired onto
+:attr:`RunContext.file_backend`. To bundle them with the search tools (``Glob``
+/ ``Grep``), use :class:`grasp_agents.tools.FileToolkit`.
 
 Imports are lazy (PEP 562) to avoid pulling :mod:`types.tool` into
 :class:`RunContext` construction.
@@ -21,8 +18,6 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .atomic_write import atomic_write_bytes, atomic_write_text
-    from .backend import FileBackend, FileEntry, FileStat
     from .delete import DeleteInput, DeleteResult, DeleteTool
     from .edit import EditInput, EditResult, EditTool
     from .fuzzy_match import (
@@ -32,8 +27,6 @@ if TYPE_CHECKING:
         fuzzy_find_and_replace,
         preserve_quote_style,
     )
-    from .local_backend import LocalFileBackend
-    from .mcp_backend import MCPFileBackend
     from .notebook import (
         NotebookCellView,
         NotebookEditInput,
@@ -43,31 +36,15 @@ if TYPE_CHECKING:
         NotebookReadResult,
         NotebookReadTool,
     )
-    from .paths import (
-        PathAccessError,
-        SensitivePathRules,
-        check_sensitive_path,
-        has_binary_extension,
-        is_blocked_device,
-        resolve_safe,
-        sensitive_path_rules,
-    )
     from .read import ReadInput, ReadResult, ReadTool
     from .redact import DefaultSecretRedactor, NullRedactor, SecretRedactor
     from .session_state import FileEditSessionState, ReadRecord
     from .write import WriteInput, WriteResult, WriteTool
 
 
-# Map each public attribute to the submodule that defines it. The list
-# is the single source of truth for ``__all__`` + the ``__getattr__``
-# lookup; keep them in sync.
+# Map each public attribute to the submodule that defines it. Single source of
+# truth for ``__all__`` + the ``__getattr__`` lookup; keep them in sync.
 _LAZY: dict[str, str] = {
-    "atomic_write_bytes": "atomic_write",
-    "atomic_write_text": "atomic_write",
-    "FileBackend": "backend",
-    "FileEntry": "backend",
-    "FileStat": "backend",
-    "LocalFileBackend": "local_backend",
     "DeleteInput": "delete",
     "DeleteResult": "delete",
     "DeleteTool": "delete",
@@ -79,7 +56,6 @@ _LAZY: dict[str, str] = {
     "fuzzy_find": "fuzzy_match",
     "fuzzy_find_and_replace": "fuzzy_match",
     "preserve_quote_style": "fuzzy_match",
-    "MCPFileBackend": "mcp_backend",
     "NotebookCellView": "notebook",
     "NotebookEditInput": "notebook",
     "NotebookEditResult": "notebook",
@@ -87,13 +63,6 @@ _LAZY: dict[str, str] = {
     "NotebookReadInput": "notebook",
     "NotebookReadResult": "notebook",
     "NotebookReadTool": "notebook",
-    "PathAccessError": "paths",
-    "SensitivePathRules": "paths",
-    "check_sensitive_path": "paths",
-    "has_binary_extension": "paths",
-    "is_blocked_device": "paths",
-    "resolve_safe": "paths",
-    "sensitive_path_rules": "paths",
     "ReadInput": "read",
     "ReadResult": "read",
     "ReadTool": "read",
@@ -127,12 +96,7 @@ __all__ = [
     "EditInput",
     "EditResult",
     "EditTool",
-    "FileBackend",
     "FileEditSessionState",
-    "FileEntry",
-    "FileStat",
-    "LocalFileBackend",
-    "MCPFileBackend",
     "NotebookCellView",
     "NotebookEditInput",
     "NotebookEditResult",
@@ -141,25 +105,16 @@ __all__ = [
     "NotebookReadResult",
     "NotebookReadTool",
     "NullRedactor",
-    "PathAccessError",
     "ReadInput",
     "ReadRecord",
     "ReadResult",
     "ReadTool",
     "SecretRedactor",
-    "SensitivePathRules",
     "WriteInput",
     "WriteResult",
     "WriteTool",
     "apply_replacements",
-    "atomic_write_bytes",
-    "atomic_write_text",
-    "check_sensitive_path",
     "fuzzy_find",
     "fuzzy_find_and_replace",
-    "has_binary_extension",
-    "is_blocked_device",
     "preserve_quote_style",
-    "resolve_safe",
-    "sensitive_path_rules",
 ]

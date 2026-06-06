@@ -715,6 +715,20 @@ wheels = [
 ]
 
 [[package]]
+name = "e2b-code-interpreter"
+version = "2.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "e2b" },
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d7/8a/24cc33a44fe1b5266362e947ade46a5be9721bf9fe2e8becfea021c34863/e2b_code_interpreter-2.7.0.tar.gz", hash = "sha256:8c591cc12ad2542e44228de51596e24032c5368d2d01c445182adf78037d31e2", size = 11048, upload-time = "2026-05-22T20:07:19.081Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6e/1b/53d20a6b71bae02e498c5df31d2cba12b0838f47f0dfd2b5ea6fb5a466dd/e2b_code_interpreter-2.7.0-py3-none-any.whl", hash = "sha256:b6b9ac43371b36c4bafa28890e41acd0f2c0148931cbef07f42a6a3e52a03b60", size = 14468, upload-time = "2026-05-22T20:07:17.415Z" },
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -996,6 +1010,7 @@ anthropic = [
 ]
 e2b = [
     { name = "e2b" },
+    { name = "e2b-code-interpreter" },
 ]
 gemini = [
     { name = "google-genai" },
@@ -1046,6 +1061,7 @@ requires-dist = [
     { name = "arize-phoenix-otel", marker = "extra == 'phoenix'", specifier = ">=0.13.1" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.0,<3" },
+    { name = "e2b-code-interpreter", marker = "extra == 'e2b'", specifier = ">=2.7.0" },
     { name = "google-genai", marker = "extra == 'all-providers'", specifier = ">=1.65.0" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.65.0" },
     { name = "httpx", specifier = ">=0.27.0,<1" },

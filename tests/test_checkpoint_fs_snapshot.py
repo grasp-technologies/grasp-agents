@@ -33,7 +33,7 @@ from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from grasp_agents.sandbox.policy import SandboxPolicy
-from grasp_agents.tools.file_edit import LocalFileBackend
+from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import FunctionToolCallItem, OutputMessageItem
 from grasp_agents.types.llm_events import (

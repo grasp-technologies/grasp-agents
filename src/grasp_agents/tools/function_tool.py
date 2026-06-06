@@ -33,8 +33,8 @@ from pydantic import BaseModel, create_model
 from ..types.tool import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
+    from ..agent.agent_context import AgentContext
     from ..run_context import RunContext
-    from .agent_context import AgentContext
 
 # Parameters with these names are passed through from the executor,
 # not included in the tool's input schema.

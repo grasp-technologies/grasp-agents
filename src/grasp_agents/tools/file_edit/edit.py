@@ -34,8 +34,8 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ...types.tool import BaseTool, ToolProgressCallback
+from ..file_backend.paths import PathAccessError, has_binary_extension
 from .fuzzy_match import apply_replacements, fuzzy_find, preserve_quote_style
-from .paths import PathAccessError, has_binary_extension
 
 if TYPE_CHECKING:
     from ...agent.agent_context import AgentContext
