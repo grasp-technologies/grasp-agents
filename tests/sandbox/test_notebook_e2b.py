@@ -51,9 +51,7 @@ pytestmark = pytest.mark.asyncio
 _WS = "/home/user/workspace"
 _HAS_E2B = importlib.util.find_spec("e2b") is not None
 _E2B_KEY = os.getenv("E2B_API_KEY")
-_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-)
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 _live = pytest.mark.skipif(
     not (_HAS_E2B and _E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
 )
@@ -70,6 +68,7 @@ def _agent_ctx() -> AgentContext:
         ),
         session_holder=BashSessionHolder(),
         kernel_holder=KernelHolder(),
+        code_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 
@@ -199,3 +198,49 @@ async def test_run_cell_on_e2b_code_interpreter() -> None:
             assert any("image/png" in o.get("data", {}) for o in outs)
         finally:
             await agent_ctx.kernel_holder.close()
+
+
+@pytest.mark.integration
+@_live
+async def test_run_python_on_e2b_code_interpreter() -> None:
+    """RunPython executes against an E2B code-interpreter kernel (state + plot)."""
+    from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput
+    from grasp_agents.types.content import InputImage, InputText
+
+    async with e2b_environment(allowed_roots=[_WS], code_interpreter=True) as env:
+        ctx: RunContext[Any] = RunContext(environment=env)
+        agent_ctx = _agent_ctx()
+        try:
+            # State persists across RunPython calls (its own code kernel).
+            await RunPython().run(
+                RunPythonInput(code="y = 21"), ctx=ctx, agent_ctx=agent_ctx
+            )
+            parts = await RunPython().run(
+                RunPythonInput(code="print('hi'); y * 2"),
+                ctx=ctx,
+                agent_ctx=agent_ctx,
+            )
+            assert not isinstance(parts, ToolErrorInfo), parts
+            text = "".join(p.text for p in parts if isinstance(p, InputText))
+            assert "hi" in text
+            assert "42" in text
+
+            # A displayed plot comes back as an image part.
+            plot = await RunPython().run(
+                RunPythonInput(
+                    code=(
+                        "import base64\n"
+                        "from IPython.display import Image, display\n"
+                        f"display(Image(data=base64.b64decode('{_PNG_B64}'), "
+                        "format='png'))"
+                    )
+                ),
+                ctx=ctx,
+                agent_ctx=agent_ctx,
+            )
+            assert not isinstance(plot, ToolErrorInfo), plot
+            assert any(isinstance(p, InputImage) for p in plot)
+        finally:
+            await agent_ctx.kernel_holder.close()
+            if agent_ctx.code_kernel_holder is not None:
+                await agent_ctx.code_kernel_holder.close()

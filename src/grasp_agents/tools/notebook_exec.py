@@ -27,15 +27,17 @@ from pydantic import BaseModel, Field
 from ..sandbox.kernel import CellOutput, CellResult, KernelCapable
 from ..types.content import InputImage, InputText
 from ..types.tool import BaseTool, ToolProgressCallback
-from .file_edit.notebook import (
+from .cell_output import (
     DEFAULT_MAX_IMAGES,
     DEFAULT_OUTPUT_TEXT_CHARS,
+    render_outputs_as_parts,
+    sanitize_output_data,
+)
+from .file_edit.notebook import (
     cell_source,
     find_cell_index,
     make_output,
     open_notebook_for_write,
-    render_outputs_as_parts,
-    sanitize_output_data,
     write_notebook,
 )
 
@@ -249,8 +251,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
 
         cell["execution_count"] = result.execution_count
         cell["outputs"] = [
-            cell_output_to_nbformat(o, sanitize=self._sanitize_outputs)
-            for o in outputs
+            cell_output_to_nbformat(o, sanitize=self._sanitize_outputs) for o in outputs
         ]
         await write_notebook(backend, resolved, nb, mode=mode, state=state)
 

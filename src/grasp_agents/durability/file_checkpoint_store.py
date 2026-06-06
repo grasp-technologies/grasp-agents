@@ -18,7 +18,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..tools.file_edit.atomic_write import atomic_write_bytes
+from ..tools.file_backend.atomic_write import atomic_write_bytes
 from .checkpoint_store import CheckpointStore
 
 if TYPE_CHECKING:

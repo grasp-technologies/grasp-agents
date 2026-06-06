@@ -7,6 +7,7 @@ Built-in tool packages for grasp-agents.
 - :class:`Bash` — run a shell command (fresh process) via ``ctx.exec_backend``.
 - :class:`BashSession` — run a command in a persistent shell session.
 - :class:`RunCell` — execute a notebook code cell in a live kernel.
+- :class:`RunPython` — run ad-hoc Python in a live kernel (code-interpreter).
 - :class:`TaskOutput` / :class:`KillTask` — poll / stop any backgrounded tool
   call by its ``task_id``.
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         bash_tools,
     )
     from .bash_session import BashSession
+    from .code_interpreter import RunPython, RunPythonInput
     from .file_toolkit import FileToolkit
     from .notebook_exec import RunCell, RunCellInput
     from .task_tools import KillTask, TaskOutput
@@ -39,6 +41,8 @@ _LAZY: dict[str, str] = {
     "BashResult": "bash",
     "bash_tools": "bash",
     "BashSession": "bash_session",
+    "RunPython": "code_interpreter",
+    "RunPythonInput": "code_interpreter",
     "FileToolkit": "file_toolkit",
     "RunCell": "notebook_exec",
     "RunCellInput": "notebook_exec",
@@ -66,6 +70,8 @@ __all__ = [
     "KillTask",
     "RunCell",
     "RunCellInput",
+    "RunPython",
+    "RunPythonInput",
     "TaskOutput",
     "bash_tools",
 ]

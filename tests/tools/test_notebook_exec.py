@@ -23,6 +23,10 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.sandbox.kernel import CellOutput
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
+from grasp_agents.tools.cell_output import (
+    render_outputs_as_parts,
+    sanitize_output_data,
+)
 from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
@@ -30,11 +34,7 @@ from grasp_agents.tools.file_edit import (
     NotebookReadResult,
     NotebookReadTool,
 )
-from grasp_agents.tools.file_edit.notebook import (
-    make_output,
-    render_outputs_as_parts,
-    sanitize_output_data,
-)
+from grasp_agents.tools.file_edit.notebook import make_output
 from grasp_agents.tools.notebook_exec import (
     KernelHolder,
     RunCell,
@@ -47,9 +47,7 @@ from grasp_agents.types.events import ToolErrorInfo
 if TYPE_CHECKING:
     from pathlib import Path
 
-_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-)
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
 
 
 def _error_message(result: Any) -> str:
@@ -199,9 +197,7 @@ def test_cell_output_to_nbformat_shapes() -> None:
     assert "transient" not in img  # not part of the nbformat schema
 
     err = cell_output_to_nbformat(
-        CellOutput(
-            output_type="error", ename="E", evalue="v", traceback=("a", "b")
-        )
+        CellOutput(output_type="error", ename="E", evalue="v", traceback=("a", "b"))
     )
     assert err["output_type"] == "error"
     assert err["ename"] == "E"
@@ -398,7 +394,7 @@ async def test_run_cell_sanitizes_executable_output(tmp_path: Path) -> None:
     _write_code_nb(
         p,
         "from IPython.display import HTML, display\n"
-        'display(HTML(\'<div onclick="x()">hi</div><script>evil()</script>\'))',
+        "display(HTML('<div onclick=\"x()\">hi</div><script>evil()</script>'))",
     )
     try:
         cid = await _first_cell_id(ctx, agent_ctx, p)
