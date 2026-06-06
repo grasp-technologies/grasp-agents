@@ -194,18 +194,17 @@ async def test_kernel_under_seatbelt(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("srt") is None, reason="srt not installed")
-@pytest.mark.xfail(
-    reason=(
-        "srt currently kills the kernel during startup regardless of ZMQ "
-        "transport (TCP loopback bind is blocked; IPC also fails) — its sandbox "
-        "model is incompatible with the kernel process. Use confinement='seatbelt' "
-        "(network=ALL) for confined notebook execution. Tracked as a known gap."
-    ),
-    strict=False,
-    raises=Exception,
-)
-async def test_kernel_under_srt(tmp_path: Path) -> None:
-    # srt with an allowlist network policy; loopback for ZMQ must be permitted.
+async def test_kernel_under_srt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # srt confines the kernel: allowLocalBinding (set in build_srt_settings) lets
+    # it bind its loopback ZMQ ports while external egress stays allowlist-gated.
+    # srt forces TMPDIR for the sandboxed process to $CLAUDE_CODE_TMPDIR ||
+    # /tmp/claude (auto-allowing /tmp/claude). This suite runs inside Claude Code,
+    # which sets CLAUDE_CODE_TMPDIR to a path outside the sandbox; drop it so srt
+    # falls back to its own writable temp. (Not needed in a normal shell.)
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    monkeypatch.delenv("CLAUDE_TMPDIR", raising=False)
     env = local_environment(
         allowed_roots=[tmp_path],
         confinement="srt",

@@ -17,8 +17,8 @@ generated Seatbelt profile confining writes + spawned processes (see
 :class:`~grasp_agents.sandbox.seatbelt.SeatbeltExecBackend`); ``"auto"`` selects
 Seatbelt on macOS; ``"bwrap"`` (Linux) is not built yet. ``readonly_roots`` are
 write-denied on the file-tool plane under every confinement; on the exec plane
-only Seatbelt OS-denies them (under ``"none"`` shell commands can still write
-there, and ``network`` is recorded-not-enforced).
+Seatbelt and srt OS-deny them (they're excluded from the writable root set),
+while ``"none"`` leaves them writable and ``network`` is recorded-not-enforced.
 """
 
 from __future__ import annotations
@@ -109,8 +109,8 @@ def local_environment(
             default working directory for commands.
         readonly_roots: Additional readable locations. The file tools deny
             writes to them under every confinement; on the exec plane they
-            are OS-write-denied under Seatbelt (not in the writable root
-            set) but unprotected under ``"none"``.
+            are OS-write-denied under Seatbelt and srt (not in the writable
+            root set) but unprotected under ``"none"``.
         deny_read: Carve unreadable regions out of the readable space.
         allow_read: Re-allow reads within ``deny_read`` regions (allow wins).
         deny_write: Carve write-protected regions out of ``allowed_roots``

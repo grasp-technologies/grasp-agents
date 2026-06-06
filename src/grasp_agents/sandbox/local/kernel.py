@@ -14,12 +14,13 @@ Transport is TCP loopback. The kernel's ZMQ channels need loopback, so the
 confinement profile must permit it. Verified matrix (macOS):
 
 * ``confinement="none"`` — works (the local-first default).
-* ``confinement="seatbelt"`` with ``network=ALL`` — works (confined execution;
-  ``network=ALL`` is what lets the kernel bind its loopback sockets).
-* ``confinement="srt"`` — **not supported**: srt kills the kernel during
-  startup regardless of transport (loopback TCP bind is blocked, and IPC also
-  fails — srt's sandbox model is incompatible with the kernel process). Use
-  Seatbelt for confined notebook execution until this is resolved.
+* ``confinement="srt"`` — works (the recommended confined env): the policy's
+  egress allowlist + write confinement apply, and ``build_srt_settings`` sets
+  ``allowLocalBinding`` so the kernel can bind its loopback ZMQ ports (loopback
+  only — external egress stays allowlist-gated). srt manages its own writable
+  temp dir for the sandboxed process, so no extra ``allowWrite`` entry is needed.
+* ``confinement="seatbelt"`` with ``network=ALL`` — works (``network=ALL`` lets
+  the kernel bind its loopback sockets; no egress allowlist, so prefer srt).
 
 Output is bounded (stream text + image count) so a runaway cell cannot blow up
 the context.

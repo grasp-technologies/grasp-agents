@@ -64,7 +64,11 @@ _SRT_CAN_RUN = _srt_can_run()
 
 async def test_settings_network_none(tmp_path: Path) -> None:
     settings = build_srt_settings(SandboxPolicy(allowed_roots=(tmp_path,)))
-    assert settings["network"] == {"allowedDomains": [], "deniedDomains": []}
+    assert settings["network"] == {
+        "allowedDomains": [],
+        "deniedDomains": [],
+        "allowLocalBinding": True,
+    }
 
 
 async def test_settings_allowlist_domains(tmp_path: Path) -> None:
@@ -78,6 +82,7 @@ async def test_settings_allowlist_domains(tmp_path: Path) -> None:
     assert settings["network"] == {
         "allowedDomains": ["example.com", "*.github.com"],
         "deniedDomains": [],
+        "allowLocalBinding": True,
     }
 
 
@@ -120,6 +125,7 @@ async def test_settings_carveouts_and_denied_domains(tmp_path: Path) -> None:
     assert settings["network"] == {
         "allowedDomains": ["api.example.com"],
         "deniedDomains": ["evil.example.com"],
+        "allowLocalBinding": True,
     }
 
 
