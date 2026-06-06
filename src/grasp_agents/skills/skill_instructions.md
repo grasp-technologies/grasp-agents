@@ -2,7 +2,7 @@
 
 You have a library of *skills* — packaged instructions for specific
 workflows. Each one is summarised in the `<available_skills>` catalog
-below by `name`, `description`, and `location`. The bodies (the actual
+below by `name` and `description`. The bodies (the actual
 step-by-step procedures) are kept out of your context until you ask for
 them.
 

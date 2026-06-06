@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
 
@@ -14,7 +14,11 @@ if TYPE_CHECKING:
 
 SKILLS_SECTION_NAME = "skills"
 
-SKILL_INSTRUCTIONS = (Path(__file__).parent / "skill_instructions.md").read_text()
+SKILL_INSTRUCTIONS = (
+    files(__package__ or __name__)
+    .joinpath("skill_instructions.md")
+    .read_text(encoding="utf-8")
+)
 
 LOAD_INSTRUCTION = (
     "To load the full body of a skill, call the `load_skill` tool with its `name`."
@@ -42,11 +46,11 @@ def render_available_skills_block(
     """
     Render the ``<available_skills>`` XML catalog.
 
-    Per-skill emitted elements: ``<name>``, ``<description>``,
-    ``<location>``, plus ``<compatibility>`` and ``<allowed-tools>`` when
-    set on the frontmatter (informational — ``allowed-tools`` is *not*
-    enforced here; see :class:`BeforeToolHook` for the authoritative
-    permission gate). ``<license>`` is emitted only when
+    Per-skill emitted elements: ``<name>`` and ``<description>``, plus
+    ``<compatibility>`` and ``<allowed-tools>`` when set on the
+    frontmatter (informational — ``allowed-tools`` is *not* enforced
+    here; see :class:`BeforeToolHook` for the authoritative permission
+    gate). ``<license>`` is emitted only when
     ``include_license=True`` — the system-prompt section keeps it off to
     stay lean; ``list_skills`` (the tool) turns it on.
 
@@ -67,7 +71,6 @@ def render_available_skills_block(
             "  <skill>",
             f"    <name>{_xml_escape(skill.name)}</name>",
             f"    <description>{_xml_escape(skill.description)}</description>",
-            f"    <location>{_xml_escape(str(skill.path))}</location>",
         ]
         if skill.frontmatter.compatibility:
             skill_lines.append(

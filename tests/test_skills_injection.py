@@ -88,7 +88,9 @@ class TestRenderAvailableSkillsBlock:
         assert "<available_skills>" in block
         assert "<name>alpha</name>" in block
         assert "<description>Does alpha things.</description>" in block
-        assert "<location>/skills/alpha/SKILL.md</location>" in block
+        # <location> intentionally omitted: skills load by name, and the
+        # rendered host path leaked an absolute deploy path of no use.
+        assert "<location>" not in block
         assert "</available_skills>" in block
 
     def test_disabled_skills_filtered(self) -> None:

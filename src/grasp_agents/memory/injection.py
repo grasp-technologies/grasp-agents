@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
+from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 
 from grasp_agents.agent.prompt_builder import InputAttachment, SystemPromptSection
@@ -21,7 +21,11 @@ if TYPE_CHECKING:
 MEMORY_SECTION_NAME = "memory"
 RELEVANT_MEMORIES_ATTACHMENT_NAME = "relevant_memories"
 
-MEMORY_INSTRUCTIONS = (Path(__file__).parent / "memory_instructions.md").read_text()
+MEMORY_INSTRUCTIONS = (
+    files(__package__ or __name__)
+    .joinpath("memory_instructions.md")
+    .read_text(encoding="utf-8")
+)
 
 MEMORY_SELECTOR_INSTRUCTIONS = """\
 
