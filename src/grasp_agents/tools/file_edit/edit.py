@@ -129,6 +129,13 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
                 "RunContext before running the agent."
             )
 
+        if Path(inp.path).suffix == ".ipynb":
+            raise ValueError(
+                "Refusing to Edit a Jupyter notebook (.ipynb) as raw text — it "
+                "would corrupt the cell JSON. Use NotebookEdit (cell-addressed) "
+                "to modify notebook cells."
+            )
+
         if inp.old_string == inp.new_string:
             raise ValueError("old_string and new_string are identical; no-op refused.")
 

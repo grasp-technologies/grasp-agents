@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
+import sys
 import tempfile
 import weakref
 from pathlib import Path
@@ -156,6 +158,12 @@ class SrtExecBackend(LocalExecBackend):
     def _session_argv(self) -> tuple[str, ...]:
         # `-c /bin/sh` runs a persistent shell (reading stdin) under srt.
         return srt_argv(self._srt, self._settings_path, "/bin/sh")
+
+    def _kernel_launch_argv(self, connection_file: str) -> tuple[str, ...]:
+        inner = shlex.join(
+            (sys.executable, "-m", "ipykernel_launcher", "-f", connection_file)
+        )
+        return srt_argv(self._srt, self._settings_path, inner)
 
 
 __all__ = ["SrtExecBackend", "build_srt_settings", "srt_argv"]

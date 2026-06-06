@@ -34,6 +34,15 @@ if TYPE_CHECKING:
     )
     from .local_backend import LocalFileBackend
     from .mcp_backend import MCPFileBackend
+    from .notebook import (
+        NotebookCellView,
+        NotebookEditInput,
+        NotebookEditResult,
+        NotebookEditTool,
+        NotebookReadInput,
+        NotebookReadResult,
+        NotebookReadTool,
+    )
     from .paths import (
         PathAccessError,
         SensitivePathRules,
@@ -71,6 +80,13 @@ _LAZY: dict[str, str] = {
     "fuzzy_find_and_replace": "fuzzy_match",
     "preserve_quote_style": "fuzzy_match",
     "MCPFileBackend": "mcp_backend",
+    "NotebookCellView": "notebook",
+    "NotebookEditInput": "notebook",
+    "NotebookEditResult": "notebook",
+    "NotebookEditTool": "notebook",
+    "NotebookReadInput": "notebook",
+    "NotebookReadResult": "notebook",
+    "NotebookReadTool": "notebook",
     "PathAccessError": "paths",
     "SensitivePathRules": "paths",
     "check_sensitive_path": "paths",
@@ -117,6 +133,13 @@ __all__ = [
     "FileStat",
     "LocalFileBackend",
     "MCPFileBackend",
+    "NotebookCellView",
+    "NotebookEditInput",
+    "NotebookEditResult",
+    "NotebookEditTool",
+    "NotebookReadInput",
+    "NotebookReadResult",
+    "NotebookReadTool",
     "NullRedactor",
     "PathAccessError",
     "ReadInput",

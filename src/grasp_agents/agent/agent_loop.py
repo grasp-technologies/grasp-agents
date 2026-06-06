@@ -16,6 +16,7 @@ from grasp_agents.telemetry import traced
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
+from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.errors import AgentFinalAnswerError, LLMToolCallValidationError
 from grasp_agents.types.events import (
     Event,
@@ -232,6 +233,9 @@ class AgentLoop(Generic[CtxT]):
         # Persistent (stateful) Bash shell — one holder per loop. Opened lazily
         # on first use, closed at run end.
         bash_session_holder = BashSessionHolder()
+        # Persistent Jupyter kernel for ``RunCell`` — one per loop, opened lazily,
+        # closed at run end (sub-agents / replicas get their own via deep-copy).
+        kernel_holder = KernelHolder()
         # Fresh-``Bash`` working directory, round-tripped across calls so ``cd``
         # sticks between turns (one per loop; sub-agents / replicas get their own).
         shell_state = ShellState()
@@ -248,6 +252,7 @@ class AgentLoop(Generic[CtxT]):
             file_edit_state=file_edit_state,
             bg_tasks=bg_tasks,
             session_holder=bash_session_holder,
+            kernel_holder=kernel_holder,
             shell_state=shell_state,
         )
 
@@ -288,6 +293,10 @@ class AgentLoop(Generic[CtxT]):
     @property
     def bash_session_holder(self) -> BashSessionHolder:
         return self._agent_ctx.session_holder
+
+    @property
+    def kernel_holder(self) -> KernelHolder:
+        return self._agent_ctx.kernel_holder
 
     @property
     def shell_state(self) -> ShellState:
@@ -1192,6 +1201,7 @@ class AgentLoop(Generic[CtxT]):
         finally:
             await self.bg_tasks.cancel_all(ctx=self._ctx)
             await self.bash_session_holder.close()
+            await self.kernel_holder.close()
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):

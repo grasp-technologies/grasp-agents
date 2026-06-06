@@ -1003,6 +1003,14 @@ gemini = [
 mcp = [
     { name = "mcp" },
 ]
+notebook = [
+    { name = "nbformat" },
+]
+notebook-exec = [
+    { name = "ipykernel" },
+    { name = "jupyter-client" },
+    { name = "nbformat" },
+]
 phoenix = [
     { name = "arize-phoenix-otel" },
     { name = "openinference-instrumentation-litellm" },
@@ -1016,6 +1024,7 @@ dev = [
     { name = "ipython" },
     { name = "ipywidgets" },
     { name = "jupyter" },
+    { name = "jupyter-client" },
     { name = "mcp" },
     { name = "nbclient" },
     { name = "nbformat" },
@@ -1040,8 +1049,12 @@ requires-dist = [
     { name = "google-genai", marker = "extra == 'all-providers'", specifier = ">=1.65.0" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.65.0" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
+    { name = "ipykernel", marker = "extra == 'notebook-exec'", specifier = ">=6.19.1,<7" },
+    { name = "jupyter-client", marker = "extra == 'notebook-exec'", specifier = ">=8.7.0" },
     { name = "litellm", specifier = "==1.82.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.8" },
+    { name = "nbformat", marker = "extra == 'notebook'", specifier = ">=5.10.4" },
+    { name = "nbformat", marker = "extra == 'notebook-exec'", specifier = ">=5.10.4" },
     { name = "numpy", specifier = "<2" },
     { name = "openai", specifier = "==2.23.0" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'phoenix'", specifier = ">=0.1.25" },
@@ -1054,7 +1067,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.3.0,<9" },
     { name = "tqdm", specifier = ">=4.66.2,<5" },
 ]
-provides-extras = ["anthropic", "gemini", "all-providers", "e2b", "mcp", "phoenix"]
+provides-extras = ["anthropic", "gemini", "all-providers", "e2b", "mcp", "notebook", "notebook-exec", "phoenix"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1062,6 +1075,7 @@ dev = [
     { name = "ipython", specifier = ">=8.3.0,<9" },
     { name = "ipywidgets", specifier = ">=8.0.4,<9" },
     { name = "jupyter", specifier = ">=1.1.1" },
+    { name = "jupyter-client", specifier = ">=8.7.0" },
     { name = "mcp", specifier = ">=1.8" },
     { name = "nbclient", specifier = ">=0.10.4" },
     { name = "nbformat", specifier = ">=5.10.4" },

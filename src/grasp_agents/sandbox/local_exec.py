@@ -30,11 +30,14 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..tools.file_edit.paths import PathAccessError, resolve_safe
 from .exec_backend import ExecBackend, ExecChunk, ExecResult, SessionCapable
+from .kernel import KernelCapable
+from .local_kernel import LocalKernel
 from .local_session import LocalExecSession
 from .supervisor import ExecSpec, ProcessSupervisor
 
@@ -46,7 +49,7 @@ if TYPE_CHECKING:
     from .supervisor import SupervisorLimits
 
 
-class LocalExecBackend(ExecBackend, SessionCapable):
+class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
     """
     Host-subprocess :class:`~grasp_agents.sandbox.exec_backend.ExecBackend`.
 
@@ -188,6 +191,30 @@ class LocalExecBackend(ExecBackend, SessionCapable):
             env=self._merged_env(env),
             backend=self._name,
             limits=self._supervisor.limits,
+        )
+
+    # --- kernels (KernelCapable) -------------------------------------------
+
+    def _kernel_launch_argv(self, connection_file: str) -> tuple[str, ...]:
+        """
+        Argv that launches a Jupyter kernel; confined backends wrap it (the
+        same override point as :meth:`_session_argv` for shells).
+        """
+        return (sys.executable, "-m", "ipykernel_launcher", "-f", connection_file)
+
+    async def open_kernel(
+        self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
+    ) -> LocalKernel:
+        """
+        Open a live Jupyter kernel co-located with this backend's filesystem.
+        Same confinement as one-shot ``stream`` — the wrapper is applied to the
+        kernel process via :meth:`_kernel_launch_argv`.
+        """
+        return LocalKernel(
+            launch_argv=self._kernel_launch_argv,
+            cwd=self._resolve_cwd(cwd),
+            env=self._merged_env(env),
+            backend=self._name,
         )
 
 

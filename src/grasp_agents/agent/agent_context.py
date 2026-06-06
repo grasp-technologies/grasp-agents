@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..tools.bash_common import ShellState
     from ..tools.bash_session import BashSessionHolder
     from ..tools.file_edit.session_state import FileEditSessionState
+    from ..tools.notebook_exec import KernelHolder
     from ..types.tool import BaseTool
     from .background_tasks import BackgroundTaskManager
     from .llm_agent_transcript import LLMAgentTranscript
@@ -37,5 +38,7 @@ class AgentContext:
     file_edit_state: FileEditSessionState
     bg_tasks: BackgroundTaskManager[Any]
     session_holder: BashSessionHolder
+    # Persistent Jupyter kernel for ``RunCell`` (one per loop, like the shell).
+    kernel_holder: KernelHolder
     # Fresh-``Bash`` cwd carried across calls (``cd`` sticks between turns).
     shell_state: ShellState

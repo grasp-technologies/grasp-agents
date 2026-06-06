@@ -18,6 +18,7 @@ from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import FileEditSessionState
+from grasp_agents.tools.notebook_exec import KernelHolder
 
 
 @pytest.fixture
@@ -38,5 +39,6 @@ def agent_ctx(state: FileEditSessionState) -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
+        kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )

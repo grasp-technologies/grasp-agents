@@ -20,6 +20,7 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.bash_common import BashInput, ShellState
 from grasp_agents.tools.bash_session import BashSession, BashSessionHolder
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
+from grasp_agents.tools.notebook_exec import KernelHolder
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,6 +44,7 @@ def _agent_ctx(holder: BashSessionHolder) -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=holder,
+        kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 

@@ -23,6 +23,7 @@ from grasp_agents.tools.bash import Bash
 from grasp_agents.tools.bash_common import BashInput, ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
+from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput, TaskOutput
 from grasp_agents.types.items import FunctionToolCallItem
 
@@ -43,6 +44,7 @@ def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
         file_edit_state=FileEditSessionState(),
         bg_tasks=mgr,
         session_holder=BashSessionHolder(),
+        kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
     return agent_ctx, mgr

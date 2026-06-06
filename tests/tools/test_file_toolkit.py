@@ -35,6 +35,7 @@ from grasp_agents.tools.file_edit import (
     WriteTool,
 )
 from grasp_agents.tools.file_search import GlobTool, GrepTool
+from grasp_agents.tools.notebook_exec import KernelHolder
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -115,6 +116,7 @@ async def test_read_then_write_composes(tmp_path: Path) -> None:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
+        kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
     await tk.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)

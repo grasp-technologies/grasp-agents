@@ -209,6 +209,29 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
+        # A notebook is JSON; show its cell-structured view (never raw JSON)
+        # so the model can target cells by id in a subsequent NotebookEdit.
+        if resolved.suffix == ".ipynb":
+            from .notebook import read_notebook_as_text  # noqa: PLC0415
+
+            rendered, mtime = await read_notebook_as_text(backend, resolved)
+            if state is not None:
+                state.record_read(resolved, mtime)
+            rendered = self._redactor(rendered)
+            nb_truncated = len(rendered) > self._max_read_chars
+            if nb_truncated:
+                rendered = (
+                    rendered[: self._max_read_chars]
+                    + f"\n\n[Notebook view truncated at {self._max_read_chars} "
+                    "chars. Use NotebookRead with a cell_id to inspect one cell.]"
+                )
+            return ReadResult(
+                path=str(resolved),
+                content=rendered,
+                total_lines=rendered.count("\n") + 1,
+                truncated=nb_truncated,
+            )
+
         # Hard size gate: a file too large to open at all. Pagination can't
         # rescue it — ``read_text`` reads the whole file into memory first.
         file_size = (await backend.stat(resolved)).size

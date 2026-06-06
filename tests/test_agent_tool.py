@@ -34,6 +34,7 @@ from grasp_agents.run_context import RunContext
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import FileEditSessionState
+from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
@@ -180,6 +181,7 @@ def _agent_ctx(
             agent_name="parent", transcript=transcript, tools=tool_map
         ),
         session_holder=BashSessionHolder(),
+        kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 

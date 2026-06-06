@@ -36,6 +36,7 @@ dev = [
     "nbformat>=5.10.4",
     "jupyter>=1.1.1",
     "nbclient>=0.10.4",
+    "jupyter-client>=8.7.0",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,14 @@ gemini = ["google-genai>=1.65.0"]
 all-providers = ["anthropic==0.84.0", "google-genai>=1.65.0"]
 e2b = ["e2b>=2.0,<3"]
 mcp = ["mcp>=1.8"]
+# Notebook editing (NotebookRead/NotebookEdit over a FileBackend) — kernel-free.
+notebook = ["nbformat>=5.10.4"]
+# Notebook execution (RunCell against a local jupyter_client kernel) — superset.
+notebook-exec = [
+    "nbformat>=5.10.4",
+    "jupyter-client>=8.7.0",
+    "ipykernel>=6.19.1,<7",
+]
 phoenix = [
     "arize-phoenix-otel>=0.13.1",
     "openinference-instrumentation-openllmetry>=0.1.2",

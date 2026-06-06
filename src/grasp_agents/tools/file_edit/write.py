@@ -109,6 +109,13 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
                 "RunContext before running the agent."
             )
 
+        if Path(inp.path).suffix == ".ipynb":
+            raise ValueError(
+                "Refusing to Write a Jupyter notebook (.ipynb) as raw text — it "
+                "would clobber the cell JSON. Use NotebookEdit (cell-addressed) "
+                "to create or modify notebook cells."
+            )
+
         backend = ctx.file_backend
         state = agent_ctx.file_edit_state if agent_ctx is not None else None
         overrides = (

@@ -33,6 +33,7 @@ source, two enforcement points). No Node / ``srt`` runtime dependency.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -223,6 +224,11 @@ class SeatbeltExecBackend(LocalExecBackend):
     def _session_argv(self) -> tuple[str, ...]:
         profile, defines = build_seatbelt_profile(self._policy)
         return seatbelt_argv(profile, defines, ("/bin/sh",))
+
+    def _kernel_launch_argv(self, connection_file: str) -> tuple[str, ...]:
+        profile, defines = build_seatbelt_profile(self._policy)
+        inner = (sys.executable, "-m", "ipykernel_launcher", "-f", connection_file)
+        return seatbelt_argv(profile, defines, inner)
 
 
 __all__ = ["SeatbeltExecBackend", "build_seatbelt_profile", "seatbelt_argv"]

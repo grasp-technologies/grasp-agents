@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from .file_edit.delete import DeleteTool
 from .file_edit.edit import EditTool
+from .file_edit.notebook import NotebookEditTool, NotebookReadTool
 from .file_edit.read import (
     DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_READ_CHARS,
@@ -53,6 +54,7 @@ class FileToolkit:
         new_file_mode: int = DEFAULT_NEW_FILE_MODE,
         glob_head_limit: int = DEFAULT_GLOB_HEAD_LIMIT,
         glob_include_hidden: bool = False,
+        include_notebook: bool = False,
         tool_timeout: float | None = None,
     ) -> None:
         """
@@ -70,6 +72,12 @@ class FileToolkit:
                 Default 250.
             glob_include_hidden: Let ``Glob`` traverse hidden directories.
                 Common build/cache dirs are always skipped regardless.
+            include_notebook: Add ``NotebookRead`` + ``NotebookEdit`` to
+                :meth:`tools` (and ``NotebookRead`` to :meth:`read_only_tools`)
+                for cell-structured ``.ipynb`` editing. Off by default — most
+                agents don't touch notebooks, and the generic ``Read`` already
+                renders a notebook's cells (so a non-notebook agent still sees
+                them). Requires the ``nbformat`` package.
             tool_timeout: Per-tool async timeout in seconds. ``None``
                 disables the timeout.
 
@@ -93,6 +101,9 @@ class FileToolkit:
             timeout=tool_timeout,
         )
         self._grep_tool = GrepTool(timeout=tool_timeout)
+        self._notebook_read_tool = NotebookReadTool(timeout=tool_timeout)
+        self._notebook_edit_tool = NotebookEditTool(timeout=tool_timeout)
+        self._include_notebook = include_notebook
 
     # ---- Tool accessors ----------------------------------------------------
 
@@ -120,9 +131,22 @@ class FileToolkit:
     def grep(self) -> GrepTool:
         return self._grep_tool
 
+    @property
+    def notebook_read(self) -> NotebookReadTool:
+        return self._notebook_read_tool
+
+    @property
+    def notebook_edit(self) -> NotebookEditTool:
+        return self._notebook_edit_tool
+
     def tools(self) -> list[BaseTool[Any, Any, Any]]:
-        """All six file tools, ready to attach to an agent."""
-        return [
+        """
+        The file tools, ready to attach to an agent.
+
+        ``Read`` / ``Write`` / ``Edit`` / ``Delete`` / ``Glob`` / ``Grep``,
+        plus ``NotebookRead`` + ``NotebookEdit`` when ``include_notebook``.
+        """
+        base: list[BaseTool[Any, Any, Any]] = [
             self._read_tool,
             self._write_tool,
             self._edit_tool,
@@ -130,7 +154,17 @@ class FileToolkit:
             self._glob_tool,
             self._grep_tool,
         ]
+        if self._include_notebook:
+            base += [self._notebook_read_tool, self._notebook_edit_tool]
+        return base
 
     def read_only_tools(self) -> list[BaseTool[Any, Any, Any]]:
-        """The non-mutating subset: ``Read`` + ``Glob`` + ``Grep``."""
-        return [self._read_tool, self._glob_tool, self._grep_tool]
+        """Non-mutating subset: Read, Glob, Grep (and NotebookRead if enabled)."""
+        base: list[BaseTool[Any, Any, Any]] = [
+            self._read_tool,
+            self._glob_tool,
+            self._grep_tool,
+        ]
+        if self._include_notebook:
+            base.append(self._notebook_read_tool)
+        return base

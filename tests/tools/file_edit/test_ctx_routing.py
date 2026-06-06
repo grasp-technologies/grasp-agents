@@ -29,6 +29,7 @@ from grasp_agents.tools.file_edit import (
     WriteInput,
     WriteResult,
 )
+from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
@@ -55,6 +56,7 @@ def _agent_ctx(state: FileEditSessionState) -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
+        kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 
