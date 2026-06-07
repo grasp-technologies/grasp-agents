@@ -83,12 +83,16 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         has_exec_id: bool,
         timeout: float | None = None,
         auto_background_at: float | None = None,
+        blocks_final_answer: bool = True,
+        max_inline_result_chars: int | None = None,
     ) -> None:
         super().__init__(
             name=name,
             description=description,
             timeout=timeout,
             auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
         )
         self._fn = fn
         self._resolved_in_type = input_model
@@ -137,6 +141,8 @@ def function_tool(
     description: str | None = None,
     timeout: float | None = None,
     auto_background_at: float | None = None,
+    blocks_final_answer: bool = True,
+    max_inline_result_chars: int | None = None,
 ) -> Any: ...
 
 
@@ -148,6 +154,8 @@ def function_tool(
     description: str | None = None,
     timeout: float | None = None,
     auto_background_at: float | None = None,
+    blocks_final_answer: bool = True,
+    max_inline_result_chars: int | None = None,
 ) -> Any:
     """
     Create a BaseTool from a function.
@@ -179,6 +187,8 @@ def function_tool(
             has_exec_id=_has_special_param(sig, "exec_id"),
             timeout=timeout,
             auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
         )
 
     if fn is not None:

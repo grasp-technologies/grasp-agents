@@ -66,8 +66,13 @@ class _StubLLM(LLM):
         yield  # makes this an async generator
 
 
-def _loop(ctx: RunContext[None]) -> AgentLoop[None]:
-    """A minimal AgentLoop whose ``bg_tasks`` the companions read."""
+def _loop(ctx: RunContext[None], *, path: list[str] | None = None) -> AgentLoop[None]:
+    """
+    A minimal AgentLoop whose ``bg_tasks`` the companions read.
+
+    ``path`` is the loop's tool-call lineage; a non-``None`` value (e.g. ``[]``)
+    is required for backgrounded tasks to get a persisted ``TaskRecord``.
+    """
     transcript = LLMAgentTranscript()
     transcript.reset(instructions="sys")
     return AgentLoop[None](
@@ -78,6 +83,7 @@ def _loop(ctx: RunContext[None]) -> AgentLoop[None]:
         tools=[],
         max_turns=10,
         stream_llm=False,
+        path=path,
     )
 
 
@@ -380,7 +386,7 @@ async def test_caps_background_tasks(tmp_path: Path) -> None:
 # --- completion notes ----------------------------------------------------------
 
 
-async def test_completion_note_announced_once(tmp_path: Path) -> None:
+async def test_completion_note_inlines_small_result_once(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     mgr = loop.bg_tasks
@@ -398,18 +404,51 @@ async def test_completion_note_announced_once(tmp_path: Path) -> None:
     assert len(notes) == 1
     assert task_id in notes[0]
     assert "completed" in notes[0]
-    # A non-blocking task's note points the model at TaskOutput (it doesn't
-    # inline the output).
-    assert "TaskOutput" in notes[0]
-    # Exactly once.
+    # A small result is inlined directly in the note — no TaskOutput round-trip,
+    # same delivery a spawned (answer-blocking) task gets.
+    assert "done" in notes[0]
+    assert "TaskOutput" not in notes[0]
+    # Announced exactly once, and a fully-delivered task is dropped (nothing left
+    # to poll — the result already reached the model).
     assert await _drain_notes(mgr, ctx) == []
-    # The final result is still pollable (the note pointed at TaskOutput rather
-    # than consuming the buffer, so the output is still there to read).
+    assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
+    """
+    Cap-and-defer: a backgrounded command whose result exceeds the tool's
+    ``max_inline_result_chars`` gets an *excerpted* completion note pointing at
+    ``TaskOutput``, and the finished task is *retained* so the full result is
+    still readable — instead of dumping a huge log into the transcript.
+    """
+    ctx = _ctx(tmp_path)
+    loop = _loop(ctx)
+    mgr = loop.bg_tasks
+    _note, task_id = await _bg(
+        loop,
+        Bash(auto_background_at=0.1, max_inline_result_chars=200),
+        "head -c 5000 /dev/zero | tr '\\0' 'A'; echo END; sleep 0.3",
+    )
+    assert task_id is not None
+
+    await mgr.wait_idle()
+    notes = await _drain_notes(mgr, ctx)
+    assert len(notes) == 1
+    note = notes[0]
+    assert "completed" in note
+    # Excerpted note: a truncation marker that points the model at TaskOutput.
+    assert "chars omitted" in note
+    assert "TaskOutput" in note
+    # The finished task is kept (not dropped) so the full result can be pulled.
+    assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+
+    # TaskOutput returns the full, untruncated result, then drops the task.
     out = await TaskOutput(mgr)._run(TaskIdInput(task_id=task_id))
     assert out.status == "completed"
     assert out.result is not None
-    assert out.result.returncode == 0
-    assert "done" in out.output
+    assert out.result.stdout.count("A") == 5000
+    assert "END" in out.result.stdout
+    assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_idle_wait_avoids_polling(tmp_path: Path) -> None:
@@ -538,9 +577,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
     # Exactly one completion note for the command, injected at the idle-wait
     # turn rather than by polling.
     notes = [
-        e
-        for e in events
-        if isinstance(e, UserMessageEvent) and task_id in str(e.data)
+        e for e in events if isinstance(e, UserMessageEvent) and task_id in str(e.data)
     ]
     assert len(notes) == 1
     assert "completed" in str(notes[0].data)
@@ -664,6 +701,93 @@ async def test_loop_dispatch_deadline_bash_yields_launched(tmp_path: Path) -> No
 async def test_companions_require_a_manager_in_scope() -> None:
     with pytest.raises(ValueError, match="background task manager"):
         await TaskOutput()._run(TaskIdInput(task_id="bg_1"))
+
+
+# --- durable task records for backgrounded commands ---------------------------
+
+
+def _ctx_with_store(
+    tmp_path: Path, store: Any, session_key: str = "s1"
+) -> RunContext[None]:
+    env = local_environment(allowed_roots=[tmp_path])
+    return RunContext(environment=env, checkpoint_store=store, session_key=session_key)
+
+
+async def test_backgrounded_bash_persists_pending_record(tmp_path: Path) -> None:
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+    from grasp_agents.durability.store_keys import task_prefix
+    from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+
+    store = InMemoryCheckpointStore()
+    ctx = _ctx_with_store(tmp_path, store)
+    loop = _loop(ctx, path=[])
+    _note, task_id = await _bg(loop, Bash(auto_background_at=0.1), "echo hi && sleep 5")
+    assert task_id is not None
+
+    # A backgrounded (non-resumable) shell command now leaves a PENDING record,
+    # so a restart can tell the agent it was in flight.
+    keys = await store.list_keys(task_prefix(ctx.session_key))
+    recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
+    assert recs
+    assert all(r.status == TaskStatus.PENDING and r.tool_name == "Bash" for r in recs)
+
+    await loop.bg_tasks.cancel_all(ctx=ctx)
+
+
+async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
+    from grasp_agents.agent.background_tasks import BackgroundTaskManager
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+    from grasp_agents.durability.store_keys import task_prefix
+    from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+
+    store = InMemoryCheckpointStore()
+    ctx = _ctx_with_store(tmp_path, store)
+    loop = _loop(ctx, path=[])
+    _note, task_id = await _bg(loop, Bash(auto_background_at=0.1), "echo hi && sleep 5")
+    assert task_id is not None
+
+    await loop.bg_tasks.kill_task(task_id, ctx=ctx)
+
+    keys = await store.list_keys(task_prefix(ctx.session_key))
+    recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
+    assert recs
+    assert all(r.status == TaskStatus.CANCELLED for r in recs)
+
+    # A later resume must NOT report a deliberately-killed task as interrupted.
+    transcript = LLMAgentTranscript()
+    transcript.reset(instructions="sys")
+    mgr2 = BackgroundTaskManager(
+        agent_name="t", transcript=transcript, tools={}, path=[]
+    )
+    await mgr2.resume_durable(ctx=ctx, exec_id="t")
+    assert not any("interrupted" in str(m) for m in transcript.messages)
+
+
+async def test_read_when_done_marks_record_delivered(tmp_path: Path) -> None:
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+    from grasp_agents.durability.store_keys import task_prefix
+    from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+
+    store = InMemoryCheckpointStore()
+    ctx = _ctx_with_store(tmp_path, store)
+    loop = _loop(ctx, path=[])
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo hi && sleep 0.4"
+    )
+    assert task_id is not None
+
+    await loop.bg_tasks.wait_idle()
+    out = await TaskOutput(loop.bg_tasks)._run(
+        TaskIdInput(task_id=task_id), ctx=ctx, agent_ctx=loop.agent_ctx
+    )
+    assert out.status == "completed"
+
+    # Reading the finished task's result marks its record delivered (so a resume
+    # won't re-inject a result the agent already saw).
+    keys = await store.list_keys(task_prefix(ctx.session_key))
+    recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
+    assert recs
+    assert all(r.status == TaskStatus.DELIVERED for r in recs)
 
 
 # The persistent-session tool lives in test_bash_session.py.

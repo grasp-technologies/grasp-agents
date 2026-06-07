@@ -70,6 +70,8 @@ class BaseTool(
         description: str | None = None,
         timeout: float | None = None,
         auto_background_at: float | None = None,
+        blocks_final_answer: bool = True,
+        max_inline_result_chars: int | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -92,10 +94,27 @@ class BaseTool(
         # background. ``None`` (default): never — the call runs to completion in
         # the foreground. ``0``: immediately — the call launches in the
         # background and the loop is notified on completion (a resumable tool
-        # becomes a durable, answer-blocking task; otherwise ephemeral). ``N``
-        # (> 0): in the foreground until it has run ``N`` seconds, then moved to
-        # the background if still running.
+        # also gets a durable ``TaskRecord``; otherwise ephemeral). ``N`` (> 0):
+        # in the foreground until it has run ``N`` seconds, then moved to the
+        # background if still running. Orthogonal to ``blocks_final_answer`` —
+        # this is *when* it backgrounds, that is *whether the loop waits*.
         self.auto_background_at = auto_background_at
+        # Whether a backgrounded call of this tool gates the agent's final
+        # answer. ``True`` (default): the loop will not emit a final answer until
+        # such a call has finished and its result has been delivered — the result
+        # is part of the answer (e.g. a worker sub-agent). ``False``: the call
+        # never holds the run back; the agent is still notified on completion but
+        # may finish first (e.g. a long shell command). Irrelevant when
+        # ``auto_background_at is None`` (the call runs to completion inline).
+        self.blocks_final_answer = blocks_final_answer
+        # Cap on how many characters of a backgrounded call's result are inlined
+        # into its completion notification. ``None`` (default): inline the whole
+        # result. When set and the result is larger, the notification carries a
+        # head+tail excerpt plus a pointer to read the full result with
+        # ``TaskOutput``, and the finished task is retained for that read instead
+        # of being dropped. Cap tools with large mechanical output (shell logs);
+        # leave ``None`` where the result *is* the answer (a sub-agent).
+        self.max_inline_result_chars = max_inline_result_chars
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
         self._llm_in_type: type[BaseModel] | None = None

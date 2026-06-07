@@ -47,25 +47,26 @@ def _resolve_manager(
 
 class TaskOutput(BaseTool[TaskIdInput, TaskOutputResult, Any]):
     """
-    Poll a backgrounded tool call for new output by its ``task_id``.
+    Read a backgrounded tool call's output by its ``task_id``.
 
-    Returns the output produced since the previous poll, plus the final result
-    once the task has finished (after which the task is dropped). You are
-    notified automatically when a background task finishes, so do not call this
-    in a loop just to wait for completion — use it to inspect progress (e.g. to
-    decide whether to ``KillTask``) or to read the output after a completion
-    notice.
+    You are notified automatically — with the result — when a background task
+    finishes, so this is **not** for waiting on completion. Its two real uses:
+    (1) inspect a *still-running* task's output so far (e.g. to judge whether it
+    is misbehaving and should be ``KillTask``-ed); (2) read the *full* result of
+    a finished task whose completion notification said its output was truncated.
+    Returns the output since your last read, plus the terminal result once
+    finished (after which the task is dropped).
     """
 
     name = "TaskOutput"
     description = (
-        "Get new output from a backgrounded tool call (e.g. a long shell "
-        "command) by its task_id: anything produced since your last check, "
-        "plus the final result once it has finished. You are notified "
-        "automatically when a background task finishes, so do not call this in "
-        "a loop just to wait for completion — use it to inspect progress (e.g. "
-        "to decide whether to KillTask) or to read output after a completion "
-        "notice."
+        "Read a backgrounded tool call's output by its task_id. You are "
+        "notified automatically (with the result) when a task finishes, so do "
+        "NOT call this to wait for completion. Use it to (1) inspect a "
+        "still-running task's output so far — e.g. to decide whether to "
+        "KillTask — or (2) read the full result of a finished task whose "
+        "completion notification said the output was truncated. Returns output "
+        "since your last check, plus the terminal result once finished."
     )
 
     def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
@@ -82,18 +83,29 @@ class TaskOutput(BaseTool[TaskIdInput, TaskOutputResult, Any]):
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
     ) -> TaskOutputResult:
-        del ctx, exec_id, progress_callback, path
-        return _resolve_manager(self._manager, agent_ctx).read_output(inp.task_id)
+        del exec_id, progress_callback, path
+        manager = _resolve_manager(self._manager, agent_ctx)
+        return await manager.read_output(inp.task_id, ctx=ctx)
 
 
 class KillTask(BaseTool[TaskIdInput, TaskOutputResult, Any]):
-    """Stop a backgrounded tool call by its ``task_id`` (e.g. a runaway shell)."""
+    """
+    Stop a backgrounded tool call by its ``task_id``.
+
+    For tasks you can see should not continue — output (via ``TaskOutput``)
+    shows it is misbehaving, or your plan changed and you no longer need it.
+    Not a timeout: the framework already bounds runtime (per-tool ``timeout``);
+    kill on what the task is *doing*, not on how long it has taken. Returns any
+    output produced since the last check.
+    """
 
     name = "KillTask"
     description = (
-        "Stop a backgrounded tool call by its task_id (e.g. terminate a "
-        "runaway shell command). Returns any output produced since the last "
-        "check."
+        "Stop a backgrounded tool call by its task_id — when its output shows "
+        "it is misbehaving (e.g. a runaway command) or you no longer need it. "
+        "This is not a timeout (the framework bounds runtime itself); decide "
+        "from what the task is doing, not from elapsed time. Returns any output "
+        "produced since the last check."
     )
 
     def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
@@ -110,5 +122,6 @@ class KillTask(BaseTool[TaskIdInput, TaskOutputResult, Any]):
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
     ) -> TaskOutputResult:
-        del ctx, exec_id, progress_callback, path
-        return await _resolve_manager(self._manager, agent_ctx).kill_task(inp.task_id)
+        del exec_id, progress_callback, path
+        manager = _resolve_manager(self._manager, agent_ctx)
+        return await manager.kill_task(inp.task_id, ctx=ctx)

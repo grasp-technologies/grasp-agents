@@ -611,12 +611,14 @@ class AgentLoop(Generic[CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         # Tool call events are now emitted from query_llm via OutputItemDone promotion
 
-        # Resolve inputs and partition the calls:
-        #  • auto_background_at == 0 → launched now as an answer-blocking
-        #    background task whose result is delivered inline (e.g. a subagent);
+        # Resolve inputs and partition the calls by *when* they background
+        # (whether they then gate the final answer is the tool's
+        # ``blocks_final_answer``, applied uniformly inside the manager):
+        #  • auto_background_at == 0 → launched in the background now (e.g. a
+        #    sub-agent), via the manager's ``spawn``;
         #  • auto_background_at > 0 → run in the foreground, but moved to the
-        #    background as a non-blocking, pollable task if it outlives the
-        #    deadline (manager's ``run_with_deadline`` — e.g. a long shell command);
+        #    background as a pollable task if it outlives the deadline (manager's
+        #    ``run_with_deadline`` — e.g. a long shell command);
         #  • else (None) → a plain foreground call (the immediate batch).
         outputs: list[Any] = [None] * len(calls)
         immediate: list[
@@ -643,13 +645,14 @@ class AgentLoop(Generic[CtxT]):
             inp = await self._convert_tool_input(call, exec_id=exec_id)
             abg = tool.auto_background_at
             if abg == 0:
+                # Launch now; whether it gates the final answer is the tool's
+                # own ``blocks_final_answer`` (read inside ``spawn``).
                 note, event = await self.bg_tasks.spawn(
                     call,
                     tool,
                     inp,
                     ctx=self._ctx,
                     exec_id=exec_id,
-                    blocks_final_answer=True,
                     agent_ctx=self._agent_ctx,
                 )
                 yield event

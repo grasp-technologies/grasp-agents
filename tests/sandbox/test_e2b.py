@@ -47,7 +47,14 @@ from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, Termination
 from grasp_agents.tools.file_backend.base import FileBackend
 from grasp_agents.tools.file_backend.paths import PathAccessError
 
-from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
+from ._bg_harness import (
+    background,
+    drain_notes,
+    kill,
+    make_stack,
+    marker_size,
+    poll_until_done,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -1113,3 +1120,63 @@ async def test_e2b_live_background_kill_terminates_remote_command() -> None:
 
         with pytest.raises(ValueError, match="Unknown background task id"):
             await kill(mgr, task_id)
+
+
+@pytest.mark.integration
+@_live
+async def test_e2b_live_background_small_result_inlined() -> None:
+    # A finished background command's output is delivered inline in its
+    # completion note (no TaskOutput round-trip) and the task is dropped.
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        ctx: RunContext[None] = RunContext(environment=env)
+        agent_ctx, mgr = make_stack()
+
+        _note, task_id = await background(
+            mgr, ctx, agent_ctx, "echo hello && sleep 3", abg=0.5, timeout=60
+        )
+        assert task_id is not None
+
+        await mgr.wait_idle()
+        notes = await drain_notes(mgr, ctx)
+        assert len(notes) == 1
+        assert "completed" in notes[0]
+        assert "hello" in notes[0]  # inlined directly
+        assert "TaskOutput" not in notes[0]  # no deferral round-trip
+        assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
+@_live
+async def test_e2b_live_background_large_result_excerpted() -> None:
+    # Cap-and-defer end-to-end on a real sandbox: a large backgrounded result is
+    # excerpted in the completion note (pointing at TaskOutput) and the task is
+    # retained so the full output can still be pulled.
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        ctx: RunContext[None] = RunContext(environment=env)
+        agent_ctx, mgr = make_stack()
+
+        _note, task_id = await background(
+            mgr,
+            ctx,
+            agent_ctx,
+            "head -c 5000 /dev/zero | tr '\\0' 'A'; echo END; sleep 3",
+            abg=0.5,
+            timeout=60,
+            max_inline_result_chars=200,
+        )
+        assert task_id is not None
+
+        await mgr.wait_idle()
+        notes = await drain_notes(mgr, ctx)
+        assert len(notes) == 1
+        assert "completed" in notes[0]
+        assert "chars omitted" in notes[0]  # excerpted
+        assert "TaskOutput" in notes[0]  # points at the full read
+        assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+
+        # The full, untruncated result is still readable via TaskOutput.
+        _collected, out = await poll_until_done(mgr, task_id, tries=4, delay=0.1)
+        assert out.status == "completed"
+        assert out.result is not None
+        assert out.result.stdout.count("A") == 5000
+        assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]

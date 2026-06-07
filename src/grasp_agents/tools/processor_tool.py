@@ -29,12 +29,16 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         name: str,
         description: str,
         auto_background_at: float | None = None,
+        blocks_final_answer: bool = True,
+        max_inline_result_chars: int | None = None,
         reset_transcript_on_run: bool = True,
     ) -> None:
         super().__init__(
             name=name,
             description=description,
             auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
         )
         self._processor = processor
         self._reset_transcript_on_run = reset_transcript_on_run

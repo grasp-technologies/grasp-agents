@@ -85,6 +85,8 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         sys_prompt_builder: AgentToolPromptBuilder | None = None,
         in_prompt_builder: AgentToolPromptBuilder | None = None,
         auto_background_at: float | None = None,
+        blocks_final_answer: bool = True,
+        max_inline_result_chars: int | None = None,
         timeout: float | None = None,
         inherit_tools: bool = False,
         sys_prompt_path: str | Path | None = None,
@@ -101,6 +103,8 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             name=name,
             description=description,
             auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
             timeout=timeout,
         )
         self._llm = llm
@@ -199,9 +203,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         from ..agent.llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
 
         parent_transcript = agent_ctx.transcript if agent_ctx is not None else None
-        parent_tools = (
-            list(agent_ctx.tools.values()) if agent_ctx is not None else []
-        )
+        parent_tools = list(agent_ctx.tools.values()) if agent_ctx is not None else []
 
         if inp is not None:
             sys_prompt, in_prompt = await self._build_prompts(

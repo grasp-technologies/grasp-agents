@@ -220,6 +220,52 @@ class FailingBgTool(BaseTool[EchoInput, Any, Any]):
         raise RuntimeError("bg tool exploded")
 
 
+class FireAndForgetTool(BaseTool[EchoInput, Any, Any]):
+    """Background tool whose result does NOT gate the final answer."""
+
+    def __init__(self, delay: float = 0.05) -> None:
+        super().__init__(
+            name="fire_and_forget",
+            description="Non-blocking background tool",
+            auto_background_at=0,
+            blocks_final_answer=False,
+        )
+        self._delay = delay
+
+    async def _run(
+        self,
+        inp: EchoInput,
+        *,
+        ctx: Any = None,
+        **kwargs: Any,
+    ) -> str:
+        await asyncio.sleep(self._delay)
+        return f"fnf: {inp.text}"
+
+
+class BigOutputTool(BaseTool[EchoInput, Any, Any]):
+    """Background tool returning a large result, with a small inline cap."""
+
+    def __init__(self, *, size: int = 1000, cap: int = 100) -> None:
+        super().__init__(
+            name="big",
+            description="Big-output background tool",
+            auto_background_at=0,
+            max_inline_result_chars=cap,
+        )
+        self._size = size
+
+    async def _run(
+        self,
+        inp: EchoInput,
+        *,
+        ctx: Any = None,
+        **kwargs: Any,
+    ) -> str:
+        del inp
+        return "X" * self._size
+
+
 # --- Helpers ---
 
 
@@ -652,3 +698,163 @@ class TestNoBackgroundToolsNoop:
 
         # Normal 2-call flow
         assert llm.call_count == 2
+
+
+class TestBlocksFinalAnswerAttribute:
+    """``blocks_final_answer`` is a tool attribute, not implied by backgrounding."""
+
+    @pytest.mark.asyncio
+    async def test_default_true_and_overrides(self):
+        from grasp_agents.tools.bash import Bash
+
+        # Default on BaseTool is True (you wait for what you asked for)...
+        assert EchoTool().blocks_final_answer is True
+        assert SlowTool().blocks_final_answer is True
+        # ...Bash opts out (notify-and-continue)...
+        assert Bash().blocks_final_answer is False
+        # ...and any tool can opt out explicitly.
+        assert FireAndForgetTool().blocks_final_answer is False
+
+    @pytest.mark.asyncio
+    async def test_function_tool_forwards_flag(self):
+        @function_tool(auto_background_at=0, blocks_final_answer=False)
+        async def bgfn(query: str) -> str:
+            """A fire-and-forget function tool."""
+            return query
+
+        assert bgfn.auto_background_at == 0
+        assert bgfn.blocks_final_answer is False
+
+
+class TestFireAndForgetSpawn:
+    """A spawned task with ``blocks_final_answer=False`` never gates the answer."""
+
+    @pytest.mark.asyncio
+    async def test_non_blocking_spawn_does_not_suppress_final_answer(self):
+        # Slow enough to still be running when the final answer is emitted, so a
+        # *blocking* task would suppress it — a non-blocking one must not.
+        responses = [
+            _tool_call_response("fire_and_forget", '{"text":"x"}', "tc1"),
+            _text_response("final"),
+        ]
+        executor, _, llm = _make_executor(
+            responses,
+            tools=[FireAndForgetTool(delay=10.0)],
+        )
+        executor.final_answer_extractor = (
+            lambda *, exec_id, response=None, **kw: response.output_text
+            if response and not response.tool_call_items
+            else None
+        )
+
+        await _collect_events(executor, RunContext[None]())
+
+        # Only 2 LLM calls (tool call + final answer): no suppression turn,
+        # because the non-blocking task never registers as pending.
+        assert llm.call_count == 2
+
+
+class TestCapAndDeferDelivery:
+    """A large result is excerpted in the note + retained for a TaskOutput read."""
+
+    @pytest.mark.asyncio
+    async def test_large_result_excerpted_kept_and_pollable(self):
+        from grasp_agents.tools.task_tools import TaskIdInput, TaskOutput
+
+        tool = BigOutputTool(size=1000, cap=100)
+        executor, _, _ = _make_executor([], tools=[tool])
+        mgr = executor.bg_tasks
+        ctx = executor.ctx
+
+        call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
+        _note, event = await mgr.spawn(
+            call,
+            tool,
+            EchoInput(text="x"),
+            ctx=ctx,
+            exec_id="t",
+            agent_ctx=executor.agent_ctx,
+        )
+        task_id = event.data.task_id
+
+        await mgr.wait_idle()
+        notes = [
+            str(e.data)
+            async for e in mgr.drain(exec_id="t", ctx=ctx)
+            if isinstance(e, UserMessageEvent)
+        ]
+        assert len(notes) == 1
+        # Excerpted, with a pointer to TaskOutput for the rest.
+        assert "chars omitted" in notes[0]
+        assert "TaskOutput" in notes[0]
+        # Even though BigOutputTool blocks the final answer by default, once its
+        # note is delivered it no longer gates it (announced), yet it is kept so
+        # the full result is still readable.
+        assert not mgr.has_pending
+        assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+
+        out = await TaskOutput(mgr)._run(TaskIdInput(task_id=task_id))
+        assert out.status == "completed"
+        assert out.result == "X" * 1000  # full, untruncated
+        # Reading a finished task drops it.
+        assert task_id not in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+
+
+class TestDurableTaskRecords:
+    """Every backgrounded task gets a TaskRecord; resume surfaces interrupted ones."""
+
+    @pytest.mark.asyncio
+    async def test_nonresumable_spawn_persists_record_and_resume_interrupts(self):
+        from grasp_agents.agent.background_tasks import BackgroundTaskManager
+        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+        from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+        from grasp_agents.durability.store_keys import task_prefix
+        from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+
+        store = InMemoryCheckpointStore()
+        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+
+        # A non-None path is required for a backgrounded call to be keyed +
+        # persisted (``make_tool_call_path(None, ...)`` is ``None``).
+        transcript = LLMAgentTranscript()
+        transcript.reset(instructions="sys")
+        mgr = BackgroundTaskManager[None](
+            agent_name="t", transcript=transcript, tools={}, path=[]
+        )
+
+        # A non-resumable, long-running spawned task.
+        tool = SlowTool(delay=10.0)
+        call = FunctionToolCallItem(call_id="c1", name="slow", arguments='{"text":"x"}')
+        await mgr.spawn(call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t")
+
+        # It got a PENDING record even though the tool is not resumable.
+        keys = await store.list_keys(task_prefix("s1"))
+        recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
+        assert recs
+        assert all(r.status == TaskStatus.PENDING for r in recs)
+
+        # Simulate a crash: drop the in-flight task without finalizing the record.
+        for pt in list(mgr._tasks.values()):  # pyright: ignore[reportPrivateUsage]
+            pt.task.cancel()
+
+        # A fresh manager on the same session = a restart.
+        t2 = LLMAgentTranscript()
+        t2.reset(instructions="sys")
+        mgr2 = BackgroundTaskManager[None](
+            agent_name="t", transcript=t2, tools={}, path=[]
+        )
+        await mgr2.resume_durable(ctx=ctx, exec_id="t")
+
+        joined = "\n".join(str(m) for m in t2.messages)
+        assert "Session resumed from a checkpoint" in joined  # the framing line
+        assert "interrupted" in joined
+        assert "slow" in joined
+
+        # The record is now terminal, so a second resume surfaces nothing.
+        t3 = LLMAgentTranscript()
+        t3.reset(instructions="sys")
+        mgr3 = BackgroundTaskManager[None](
+            agent_name="t", transcript=t3, tools={}, path=[]
+        )
+        await mgr3.resume_durable(ctx=ctx, exec_id="t")
+        assert not any("interrupted" in str(m) for m in t3.messages)

@@ -42,7 +42,14 @@ from grasp_agents.sandbox import (
 )
 from grasp_agents.sandbox.local import seatbelt as seatbelt_mod
 
-from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
+from ._bg_harness import (
+    background,
+    drain_notes,
+    kill,
+    make_stack,
+    marker_size,
+    poll_until_done,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -99,9 +106,7 @@ async def test_writable_root_is_a_param_not_interpolated(tmp_path: Path) -> None
     # it goes through a -D param, defeating SBPL injection.
     tricky = tmp_path / 'we ird"dir'
     tricky.mkdir()
-    profile, defines = build_seatbelt_profile(
-        SandboxPolicy(allowed_roots=(tricky,))
-    )
+    profile, defines = build_seatbelt_profile(SandboxPolicy(allowed_roots=(tricky,)))
     assert '(subpath (param "WS_0"))' in profile
     assert str(tricky) not in profile
     assert defines["WS_0"] == str(tricky.resolve())
@@ -382,3 +387,58 @@ async def test_seatbelt_background_kill_terminates(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unknown background task id"):
         await kill(mgr, task_id)
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_background_small_result_inlined(tmp_path: Path) -> None:
+    # Under confinement too, a finished command's output is delivered inline in
+    # its completion note and the task is dropped.
+    env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
+    ctx: RunContext[None] = RunContext(environment=env)
+    agent_ctx, mgr = make_stack()
+
+    _note, task_id = await background(
+        mgr, ctx, agent_ctx, "echo hello && sleep 1.5", abg=0.3
+    )
+    assert task_id is not None
+
+    await mgr.wait_idle()
+    notes = await drain_notes(mgr, ctx)
+    assert len(notes) == 1
+    assert "completed" in notes[0]
+    assert "hello" in notes[0]
+    assert "TaskOutput" not in notes[0]
+    assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> None:
+    # Cap-and-defer under Seatbelt: a large result is excerpted in the note and
+    # the task retained for a full TaskOutput read.
+    env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
+    ctx: RunContext[None] = RunContext(environment=env)
+    agent_ctx, mgr = make_stack()
+
+    _note, task_id = await background(
+        mgr,
+        ctx,
+        agent_ctx,
+        "head -c 5000 /dev/zero | tr '\\0' 'A'; echo END; sleep 1.5",
+        abg=0.3,
+        max_inline_result_chars=200,
+    )
+    assert task_id is not None
+
+    await mgr.wait_idle()
+    notes = await drain_notes(mgr, ctx)
+    assert len(notes) == 1
+    assert "completed" in notes[0]
+    assert "chars omitted" in notes[0]
+    assert "TaskOutput" in notes[0]
+    assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+
+    _collected, out = await poll_until_done(mgr, task_id, tries=4, delay=0.1)
+    assert out.status == "completed"
+    assert out.result is not None
+    assert out.result.stdout.count("A") == 5000
+    assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]

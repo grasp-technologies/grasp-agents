@@ -58,13 +58,23 @@ async def background(
     *,
     abg: float = 0.3,
     timeout: float = 60,
+    max_inline_result_chars: int | None = None,
 ) -> tuple[Any, str | None]:
     """
     Background ``command`` via the manager's deadline path (a fresh single-use
     ``Bash``). Returns ``(note, task_id)``: ``task_id`` is the sidelined task's
     id once it outlives ``abg`` (else ``None`` — it finished in the foreground).
+
+    ``max_inline_result_chars`` overrides the ``Bash`` default (``None`` keeps
+    it), so a test can force the cap-and-defer path with a small result.
     """
-    bash = Bash(auto_background_at=abg)
+    bash = (
+        Bash(auto_background_at=abg)
+        if max_inline_result_chars is None
+        else Bash(
+            auto_background_at=abg, max_inline_result_chars=max_inline_result_chars
+        )
+    )
     call = FunctionToolCallItem(call_id="c1", name=bash.name, arguments="{}")
     note, _launched = await mgr.run_with_deadline(
         call,
@@ -100,6 +110,19 @@ async def poll_until_done(
 async def kill(mgr: BackgroundTaskManager[Any], task_id: str) -> TaskOutputResult:
     """Stop a backgrounded task via ``KillTask``."""
     return await KillTask(mgr)._run(TaskIdInput(task_id=task_id))
+
+
+async def drain_notes(
+    mgr: BackgroundTaskManager[Any], ctx: RunContext[Any]
+) -> list[str]:
+    """The completion notes (user messages) a single drain pass injects."""
+    from grasp_agents.types.events import UserMessageEvent
+
+    return [
+        str(e.data)
+        async for e in mgr.drain(exec_id="t", ctx=ctx)
+        if isinstance(e, UserMessageEvent)
+    ]
 
 
 async def marker_size(env: ExecutionEnvironment, marker: str) -> int:

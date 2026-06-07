@@ -57,6 +57,10 @@ if TYPE_CHECKING:
     from ..types.events import Event
 
 DEFAULT_AUTO_BACKGROUND_AT = 120.0
+# A backgrounded command's completion note inlines its result up to this many
+# chars; a larger log is excerpted in the note and the full output is read back
+# with ``TaskOutput`` (cap-and-defer), keeping the transcript from bloating.
+DEFAULT_MAX_INLINE_RESULT_CHARS = 8000
 
 
 class Bash(BaseTool[BashInput, BashResult, Any]):
@@ -83,6 +87,10 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
             can be polled with ``TaskOutput`` / stopped with ``KillTask`` (prefer
             :func:`bash_tools`, which wires the companions). Outside an agent
             loop the command always runs to completion in the foreground.
+        max_inline_result_chars: How much of a backgrounded command's output is
+            inlined into its completion notification. A larger result is
+            excerpted there and read in full with ``TaskOutput``. ``None``
+            inlines the whole result.
         block_leading_sleep: Reject commands whose first statement is a bare
             ``sleep`` — they block the loop and produce nothing.
         timeout: Standard per-tool timeout (outer asyncio ceiling).
@@ -109,10 +117,19 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         progress_at: float = DEFAULT_PROGRESS_AT,
         heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
         auto_background_at: float | None = None,
+        max_inline_result_chars: int | None = DEFAULT_MAX_INLINE_RESULT_CHARS,
         block_leading_sleep: bool = True,
         timeout: float | None = None,
     ) -> None:
-        super().__init__(timeout=timeout, auto_background_at=auto_background_at)
+        super().__init__(
+            timeout=timeout,
+            auto_background_at=auto_background_at,
+            # A backgrounded shell command is notify-and-continue: the loop is
+            # told when it finishes but is never blocked from giving a final
+            # answer waiting on it (unlike a worker sub-agent).
+            blocks_final_answer=False,
+            max_inline_result_chars=max_inline_result_chars,
+        )
         self._default_timeout = default_timeout
         self._max_timeout = max_timeout
         self._progress_at = progress_at
@@ -122,10 +139,12 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
             self.description += (
                 f" Commands running longer than {auto_background_at:g}s are "
                 "moved to the background: you get a `task_id` back, and a "
-                "notification is injected when the command finishes — there "
-                "is no need to poll for completion. Use TaskOutput to "
-                "inspect output in the meantime (e.g. to decide whether to "
-                "KillTask), and KillTask to stop it."
+                "notification with the command's output is injected when it "
+                "finishes — there is no need to poll for completion. Use "
+                "TaskOutput to inspect output while it is still running (e.g. to "
+                "decide whether to KillTask) or to read the full output when the "
+                "completion notification says it was truncated; use KillTask to "
+                "stop a command you can see is misbehaving or no longer need."
             )
 
     def _prepare(
@@ -262,6 +281,7 @@ def bash_tools(
     progress_at: float = DEFAULT_PROGRESS_AT,
     heartbeat_every: float = DEFAULT_HEARTBEAT_EVERY,
     auto_background_at: float = DEFAULT_AUTO_BACKGROUND_AT,
+    max_inline_result_chars: int | None = DEFAULT_MAX_INLINE_RESULT_CHARS,
     block_leading_sleep: bool = True,
     manager: BackgroundTaskManager[Any] | None = None,
     timeout: float | None = None,
@@ -286,6 +306,7 @@ def bash_tools(
             progress_at=progress_at,
             heartbeat_every=heartbeat_every,
             auto_background_at=auto_background_at,
+            max_inline_result_chars=max_inline_result_chars,
             block_leading_sleep=block_leading_sleep,
             timeout=timeout,
         ),

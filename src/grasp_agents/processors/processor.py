@@ -538,6 +538,8 @@ class Processor(
         tool_description: str,
         reset_transcript_on_run: bool = True,
         auto_background_at: float | None = None,
+        blocks_final_answer: bool = True,
+        max_inline_result_chars: int | None = None,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
         from ..tools.processor_tool import (  # noqa: PLC0415
             ProcessorTool as _ProcessorTool,
@@ -554,5 +556,7 @@ class Processor(
             name=tool_name,
             description=tool_description,
             auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
             reset_transcript_on_run=reset_transcript_on_run,
         )
