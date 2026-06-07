@@ -33,7 +33,6 @@ source, two enforcement points). No Node / ``srt`` runtime dependency.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -201,12 +200,14 @@ class SeatbeltExecBackend(LocalExecBackend):
         policy: SandboxPolicy,
         supervisor: ProcessSupervisor | None = None,
         inherit_host_env: bool = True,
+        python: str | Path | None = None,
     ) -> None:
         super().__init__(
             policy=policy,
             supervisor=supervisor,
             name="seatbelt",
             inherit_host_env=inherit_host_env,
+            python=python,
         )
 
     def _build_spec(
@@ -227,7 +228,7 @@ class SeatbeltExecBackend(LocalExecBackend):
 
     def _kernel_launch_argv(self, connection_file: str) -> tuple[str, ...]:
         profile, defines = build_seatbelt_profile(self._policy)
-        inner = (sys.executable, "-m", "ipykernel_launcher", "-f", connection_file)
+        inner = (self._python, "-m", "ipykernel_launcher", "-f", connection_file)
         return seatbelt_argv(profile, defines, inner)
 
 

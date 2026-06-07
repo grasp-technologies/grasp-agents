@@ -23,7 +23,9 @@ while ``"none"`` leaves them writable and ``network`` is recorded-not-enforced.
 
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess  # noqa: S404 - trusted interpreter + literal script, no shell
 import sys
 import warnings
 from pathlib import Path
@@ -32,7 +34,7 @@ from typing import TYPE_CHECKING, Literal, Self
 from ...tools.file_backend.local import LocalFileBackend
 from ..environment import ExecutionEnvironment
 from ..policy import NetworkPolicy, SandboxPolicy
-from .exec import LocalExecBackend
+from .exec import LocalExecBackend, resolve_python
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -99,6 +101,8 @@ def local_environment(
     env: Mapping[str, str] | None = None,
     env_scrub: Sequence[str] = (),
     inherit_host_env: bool = True,
+    python: str | Path | None = None,
+    packages: Sequence[str] = (),
     supervisor: ProcessSupervisor | None = None,
 ) -> LocalEnvironment:
     """
@@ -135,6 +139,18 @@ def local_environment(
             inherited host environment so secrets do not leak into commands.
         inherit_host_env: Subprocesses inherit ``os.environ`` as their base so
             ``PATH`` resolves. Set False for a minimal environment.
+        python: Interpreter the code-interpreter kernel launches with (and whose
+            bin dir leads ``PATH``), defaulting to ``sys.executable``. Point it
+            at a venv/conda interpreter (e.g. ``"<venv>/bin/python"``, which must
+            have ``ipykernel``) to run experiments in that environment. Under a
+            confined backend the interpreter stays readable, but writes (e.g.
+            ``pip install``) only land if its tree is within ``allowed_roots``.
+        packages: Distribution names required in the ``python`` environment
+            (e.g. ``["torch", "datasets"]``; version specifiers / extras are
+            allowed and ignored for the check). They are **verified** present at
+            setup — not installed: a missing one raises with the ``pip install``
+            command to run. Install them into the env yourself (uv / pip /
+            conda); this env is yours, so the framework won't mutate it.
         supervisor: Shared :class:`ProcessSupervisor` for the exec backend.
 
     Returns:
@@ -173,7 +189,10 @@ def local_environment(
         policy=policy,
         supervisor=supervisor,
         inherit_host_env=inherit_host_env,
+        python=python,
     )
+    if packages:
+        _verify_packages(resolve_python(python), packages)
     return LocalEnvironment(
         policy=policy, file_backend=file_backend, exec_backend=exec_backend
     )
@@ -202,6 +221,7 @@ def _build_exec_backend(
     policy: SandboxPolicy,
     supervisor: ProcessSupervisor | None,
     inherit_host_env: bool,
+    python: str | Path | None,
 ) -> ExecBackend:
     resolved = _resolve_confinement(confinement)
     if resolved == "none":
@@ -210,6 +230,7 @@ def _build_exec_backend(
             supervisor=supervisor,
             name="local",
             inherit_host_env=inherit_host_env,
+            python=python,
         )
     if resolved == "seatbelt":
         if sys.platform != "darwin":
@@ -226,6 +247,7 @@ def _build_exec_backend(
             policy=policy,
             supervisor=supervisor,
             inherit_host_env=inherit_host_env,
+            python=python,
         )
     if resolved == "srt":
         if shutil.which("srt") is None:
@@ -241,6 +263,7 @@ def _build_exec_backend(
             policy=policy,
             supervisor=supervisor,
             inherit_host_env=inherit_host_env,
+            python=python,
         )
     if resolved == "bwrap":
         raise NotImplementedError(
@@ -248,6 +271,51 @@ def _build_exec_backend(
             "Seatbelt. Use 'none', or run on macOS with 'seatbelt'."
         )
     raise ValueError(f"unknown confinement: {confinement!r}")
+
+
+def _dist_name(spec: str) -> str:
+    """Distribution name from a requirement spec (strip version / extras / marker)."""
+    return re.split(r"[<>=!~;\[ ]", spec.strip(), maxsplit=1)[0].strip()
+
+
+def _verify_packages(python: str, packages: Sequence[str]) -> None:
+    """
+    Verify each distribution in ``packages`` is installed in the ``python``
+    environment; raise with an install hint if any are missing. Does not install
+    (this environment is the caller's to manage).
+    """
+    names = [_dist_name(p) for p in packages if p.strip()]
+    if not names:
+        return
+    check = (
+        "import importlib.metadata as m, sys\n"
+        "missing = []\n"
+        "for n in sys.argv[1:]:\n"
+        "    try:\n"
+        "        m.distribution(n)\n"
+        "    except Exception:\n"
+        "        missing.append(n)\n"
+        "print('\\n'.join(missing))\n"
+    )
+    try:
+        proc = subprocess.run(
+            [python, "-c", check, *names],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(
+            f"could not verify packages with interpreter {python!r}: {exc}"
+        ) from exc
+    missing = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if missing:
+        raise ValueError(
+            f"the configured Python environment ({python}) is missing required "
+            f"packages: {', '.join(missing)}. Install them into that environment, "
+            f"e.g. `{python} -m pip install {' '.join(missing)}`."
+        )
 
 
 __all__ = ["LocalEnvironment", "local_environment"]

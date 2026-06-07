@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import shutil
 import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...tools.file_backend.paths import PathAccessError, resolve_safe
@@ -43,10 +45,35 @@ from .supervisor import ExecSpec, ProcessSupervisor
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
-    from pathlib import Path
 
     from ..policy import SandboxPolicy
     from .supervisor import SupervisorLimits
+
+
+def resolve_python(python: str | Path | None) -> str:
+    """
+    Resolve a configured interpreter to a launchable path (default
+    ``sys.executable``).
+
+    Accepts an interpreter path (e.g. ``"<venv>/bin/python"``) or a bare command
+    name resolved on ``PATH``. Raises ``ValueError`` if neither resolves.
+    """
+    if python is None:
+        return sys.executable
+    candidate = Path(python).expanduser()
+    if candidate.is_file():
+        # Keep the given path; do NOT resolve symlinks — a venv's bin/python is
+        # a symlink to the base interpreter, and resolving it would launch the
+        # base env (no venv site-packages → no ipykernel).
+        return str(candidate)
+    found = shutil.which(str(python))
+    if found is not None:
+        return found
+    raise ValueError(
+        f"configured python interpreter {python!r} was not found "
+        "(expected an existing interpreter path like '<venv>/bin/python', "
+        "or a command available on PATH)."
+    )
 
 
 class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
@@ -65,6 +92,10 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
             subprocess inherits ``os.environ`` as its base — necessary for
             ``PATH`` to resolve. Confined backends override to a scrubbed,
             minimal env.
+        python: Interpreter the Jupyter kernel launches with (and whose bin dir
+            leads ``PATH`` for shells), defaulting to ``sys.executable``. Point
+            it at a venv/conda interpreter (e.g. ``"<venv>/bin/python"``) to run
+            the code interpreter in that environment; it must have ``ipykernel``.
 
     """
 
@@ -75,11 +106,18 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
         supervisor: ProcessSupervisor | None = None,
         name: str = "local",
         inherit_host_env: bool = True,
+        python: str | Path | None = None,
     ) -> None:
         self._policy = policy
         self._supervisor = supervisor or ProcessSupervisor()
         self._name = name
         self._inherit_host_env = inherit_host_env
+        self._python = resolve_python(python)
+        # When a non-default interpreter is configured, lead PATH with its bin
+        # dir so a shell's `python` / `pip` resolve to the same env as the kernel.
+        self._python_path_prepend = (
+            str(Path(self._python).parent) if python is not None else None
+        )
 
     @property
     def name(self) -> str:
@@ -163,6 +201,15 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
         merged.update(self._policy.env)
         if env:
             merged.update(env)
+        # A configured interpreter's bin dir leads PATH so a shell's `python` /
+        # `pip` match the kernel's interpreter.
+        if self._python_path_prepend:
+            existing = merged.get("PATH", "")
+            merged["PATH"] = (
+                f"{self._python_path_prepend}{os.pathsep}{existing}"
+                if existing
+                else self._python_path_prepend
+            )
         return merged
 
     def _limits_for(self, timeout: float | None) -> SupervisorLimits:
@@ -200,16 +247,25 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
         Argv that launches a Jupyter kernel; confined backends wrap it (the
         same override point as :meth:`_session_argv` for shells).
         """
-        return (sys.executable, "-m", "ipykernel_launcher", "-f", connection_file)
+        return (self._python, "-m", "ipykernel_launcher", "-f", connection_file)
 
     async def open_kernel(
-        self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
+        self,
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        context_id: str | None = None,
     ) -> LocalKernel:
         """
         Open a live Jupyter kernel co-located with this backend's filesystem.
         Same confinement as one-shot ``stream`` — the wrapper is applied to the
         kernel process via :meth:`_kernel_launch_argv`.
+
+        ``context_id`` is accepted for protocol parity but ignored: a local
+        kernel cannot persist state across a restart, so there is nothing to
+        re-attach to on resume.
         """
+        del context_id
         return LocalKernel(
             launch_argv=self._kernel_launch_argv,
             cwd=self._resolve_cwd(cwd),

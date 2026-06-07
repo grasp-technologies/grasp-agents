@@ -91,6 +91,12 @@ class LocalKernel:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def context_id(self) -> str | None:
+        # A local kernel is a child process; its state cannot outlive it, so
+        # there is no durable context to persist or re-attach to.
+        return None
+
     # --- lifecycle ---------------------------------------------------------
 
     async def _ensure_started(self) -> None:

@@ -63,8 +63,8 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v2: read-before-write ledger + fs_snapshot_ref on AgentCheckpoint.
-        assert CURRENT_SCHEMA_VERSION == 2
+        # v3: code_context_id (RunPython kernel re-attach) on AgentCheckpoint.
+        assert CURRENT_SCHEMA_VERSION == 3
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
@@ -75,6 +75,7 @@ class TestSchemaVersion:
         assert snap.read_file_state == {}
         assert snap.dotfile_overrides == []
         assert snap.fs_snapshot_ref is None
+        assert snap.code_context_id is None
 
 
 # ---------------------------------------------------------------------------

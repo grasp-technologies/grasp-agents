@@ -10,7 +10,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 2
+CURRENT_SCHEMA_VERSION: int = 3
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -26,6 +26,13 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "(read_file_state + dotfile_overrides) and fs_snapshot_ref. "
         "v1 records load fine (fields default); v1 code must not resume "
         "v2 sessions — it would silently skip the filesystem restore."
+    ),
+    3: (
+        "AgentCheckpoint gained code_context_id (the RunPython kernel's code "
+        "context, captured with fs_snapshot_ref so resume re-attaches the live "
+        "kernel). v2 records load fine (field defaults None); v2 code resuming "
+        "a v3 session would silently skip the re-attach (resume with a fresh "
+        "kernel — variables lost)."
     ),
 }
 """
@@ -123,6 +130,14 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # The bytes live with whoever owns the snapshot store — the
     # checkpoint records only the ref. ``None`` = no snapshot taken.
     fs_snapshot_ref: str | None = None
+
+    # The RunPython kernel's code-context id, captured together with
+    # ``fs_snapshot_ref`` (only meaningful as a pair: the id re-attaches
+    # to a context inside the *restored* sandbox). On a backend that
+    # preserves running processes in its snapshot (E2B), resume re-binds
+    # the kernel to this context so in-memory Python state survives.
+    # ``None`` = no RunPython kernel / a backend that can't persist it.
+    code_context_id: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

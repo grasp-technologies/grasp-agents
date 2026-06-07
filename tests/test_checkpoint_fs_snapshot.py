@@ -269,12 +269,20 @@ async def test_v1_checkpoint_loads_with_empty_ledger() -> None:
         session_key="s1",
         processor_name="fs_agent",
         messages=[],
-    ).model_dump(exclude={"read_file_state", "dotfile_overrides", "fs_snapshot_ref"})
+    ).model_dump(
+        exclude={
+            "read_file_state",
+            "dotfile_overrides",
+            "fs_snapshot_ref",
+            "code_context_id",
+        }
+    )
     payload["schema_version"] = 1
     checkpoint = AgentCheckpoint.model_validate(payload)
     assert checkpoint.read_file_state == {}
     assert checkpoint.dotfile_overrides == []
     assert checkpoint.fs_snapshot_ref is None
+    assert checkpoint.code_context_id is None
 
 
 # ---------- fs_snapshot policy ----------
@@ -377,3 +385,58 @@ async def test_resume_with_ref_but_incapable_environment_raises(
     resumed, _ = _make_agent([], store=store, environment=_PlainEnv(tmp_path))
     with pytest.raises(RuntimeError, match="not SnapshotCapable"):
         await resumed.load_checkpoint()
+
+
+# ---------- Resume re-attaches the RunPython kernel ----------
+
+
+async def test_code_context_id_round_trips_through_checkpoint(tmp_path: Path) -> None:
+    """
+    The RunPython kernel's context id is captured with the FS snapshot and
+    re-seeds the resumed loop's holder. (The actual kernel re-attach is an E2B
+    integration test; here we verify the persist + restore wiring offline.)
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("done")], store=store, environment=env, fs_snapshot="final"
+    )
+    # Stand in for "a RunPython kernel was opened" (no real kernel offline).
+    holder = agent._loop.agent_ctx.code_kernel_holder
+    assert holder is not None
+    holder.rebind("ctx-abc")
+
+    await agent.run("hello")
+
+    assert (await _stored_checkpoint(store)).code_context_id == "ctx-abc"
+
+    # Fresh process: resume re-seeds the new loop's holder with the same id, so
+    # the next RunPython re-attaches instead of opening a fresh context.
+    fresh_env = _FakeSnapshotEnv(tmp_path)
+    resumed, _ = _make_agent([], store=store, environment=fresh_env)
+    loaded = await resumed.load_checkpoint()
+    assert loaded is not None
+    resumed_holder = resumed._loop.agent_ctx.code_kernel_holder
+    assert resumed_holder is not None
+    assert resumed_holder.context_id == "ctx-abc"
+
+
+async def test_code_context_id_not_captured_without_fs_snapshot(
+    tmp_path: Path,
+) -> None:
+    """
+    No FS snapshot -> no context id: the two are a consistent pair (the id is
+    only valid inside a restored sandbox).
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("done")], store=store, environment=env, fs_snapshot="off"
+    )
+    holder = agent._loop.agent_ctx.code_kernel_holder
+    assert holder is not None
+    holder.rebind("ctx-abc")
+
+    await agent.run("hello")
+
+    assert (await _stored_checkpoint(store)).code_context_id is None

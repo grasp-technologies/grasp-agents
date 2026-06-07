@@ -34,7 +34,6 @@ import json
 import os
 import shlex
 import shutil
-import sys
 import tempfile
 import weakref
 from pathlib import Path
@@ -126,12 +125,14 @@ class SrtExecBackend(LocalExecBackend):
         supervisor: ProcessSupervisor | None = None,
         inherit_host_env: bool = True,
         srt_path: str | None = None,
+        python: str | Path | None = None,
     ) -> None:
         super().__init__(
             policy=policy,
             supervisor=supervisor,
             name="srt",
             inherit_host_env=inherit_host_env,
+            python=python,
         )
         resolved = srt_path or shutil.which("srt")
         if resolved is None:
@@ -167,7 +168,7 @@ class SrtExecBackend(LocalExecBackend):
 
     def _kernel_launch_argv(self, connection_file: str) -> tuple[str, ...]:
         inner = shlex.join(
-            (sys.executable, "-m", "ipykernel_launcher", "-f", connection_file)
+            (self._python, "-m", "ipykernel_launcher", "-f", connection_file)
         )
         return srt_argv(self._srt, self._settings_path, inner)
 

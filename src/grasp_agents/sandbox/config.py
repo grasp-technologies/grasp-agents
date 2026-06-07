@@ -65,6 +65,12 @@ class ExecConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     inherit_host_env: bool = True
+    # Interpreter the code-interpreter kernel launches with (default
+    # ``sys.executable``); e.g. ``"/path/to/venv/bin/python"``.
+    python: str | None = None
+    # Distribution names required in the env (e.g. ``["torch"]``); verified
+    # present at setup (not installed).
+    packages: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     env_scrub: list[str] = Field(default_factory=list)
     overall_timeout: float | None = 600.0
@@ -113,6 +119,8 @@ class EnvironmentConfig(BaseModel):
             env=ex.env,
             env_scrub=ex.env_scrub,
             inherit_host_env=ex.inherit_host_env,
+            python=ex.python,
+            packages=ex.packages,
             supervisor=supervisor,
         )
 

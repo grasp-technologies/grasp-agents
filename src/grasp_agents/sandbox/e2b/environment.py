@@ -226,7 +226,11 @@ def e2b_environment(
         deny_read: Remote paths carved out of the readable space (tool plane).
         allow_read: Remote paths re-allowed within ``deny_read`` (allow wins).
         deny_write: Remote paths write-protected on the tool plane (deny wins).
-        template: E2B sandbox template name/ID (default base template).
+        template: E2B sandbox template name/ID (default base template). This is
+            how the sandbox's Python environment is provisioned: build a custom
+            E2B template (a Docker image with your packages — e.g. torch — baked
+            in) and pass its name/ID here. The framework does not pip-install into
+            E2B sandboxes; bake requirements into the template.
         sandbox_timeout: Sandbox keep-alive in seconds (E2B default 300).
         network: ``NONE`` (no internet) or ``ALL`` (internet on). ``ALLOWLIST``
             / ``LOOPBACK`` raise ``NotImplementedError`` (per-domain egress needs

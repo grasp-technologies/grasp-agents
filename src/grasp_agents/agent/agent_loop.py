@@ -13,10 +13,6 @@ from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
 from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import traced
-from grasp_agents.tools.bash_common import ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
-from grasp_agents.tools.file_edit.session_state import FileEditSessionState
-from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.errors import AgentFinalAnswerError, LLMToolCallValidationError
 from grasp_agents.types.events import (
     Event,
@@ -71,6 +67,10 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
     from grasp_agents.llm.llm import LLM
+    from grasp_agents.tools.bash_common import ShellState
+    from grasp_agents.tools.bash_session import BashSessionHolder
+    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
+    from grasp_agents.tools.notebook_exec import KernelHolder
     from grasp_agents.types.hooks import (
         AfterLlmHook,
         AfterToolHook,
@@ -221,7 +221,6 @@ class AgentLoop(Generic[CtxT]):
         self.checkpoint_callback = None
         self.path = path
 
-        file_edit_state = FileEditSessionState()
         # One manager per loop: it runs both background subagent tools and
         # auto-backgrounded Bash commands.
         bg_tasks = BackgroundTaskManager[CtxT](
@@ -230,30 +229,17 @@ class AgentLoop(Generic[CtxT]):
             tools=tools_dict,
             path=path,
         )
-        # Persistent (stateful) Bash shell — one holder per loop. Opened lazily
-        # on first use, closed at run end.
-        bash_session_holder = BashSessionHolder()
-        # Persistent Jupyter kernel for ``RunCell`` — one per loop, opened lazily,
-        # closed at run end (sub-agents / replicas get their own via deep-copy).
-        kernel_holder = KernelHolder()
-        # Fresh-``Bash`` working directory, round-tripped across calls so ``cd``
-        # sticks between turns (one per loop; sub-agents / replicas get their own).
-        shell_state = ShellState()
-
-        # The single agent-scope state handed to each tool call. Tools read what
-        # they need from here (file-edit ledger, shell session, background tasks,
-        # parent transcript / sibling tools) and store nothing, so a single tool
-        # instance is safe to share across agents; ``agent.copy()`` deep-copies
-        # the loop and this context together, so a replica's tools resolve the
-        # replica's own state. Exposed via the read-only properties below.
-        self._agent_ctx = AgentContext(
+        # The single agent-scope state handed to each tool call. ``create`` fills
+        # the fresh per-loop state (file-edit ledger, Bash session, the RunCell +
+        # RunPython kernels, the shell cwd). Tools read what they need from here
+        # and store nothing, so a single tool instance is safe to share across
+        # agents; ``agent.copy()`` deep-copies the loop and this context together,
+        # so a replica's tools resolve the replica's own state. Exposed via the
+        # read-only properties below.
+        self._agent_ctx = AgentContext.create(
             transcript=transcript,
             tools=tools_dict,
-            file_edit_state=file_edit_state,
             bg_tasks=bg_tasks,
-            session_holder=bash_session_holder,
-            kernel_holder=kernel_holder,
-            shell_state=shell_state,
         )
 
     @property
@@ -680,7 +666,11 @@ class AgentLoop(Generic[CtxT]):
         deadline_tasks: dict[int, asyncio.Task[Any]] = {
             i: asyncio.create_task(
                 self.bg_tasks.run_with_deadline(
-                    call, tool, inp, ctx=self._ctx, exec_id=exec_id,
+                    call,
+                    tool,
+                    inp,
+                    ctx=self._ctx,
+                    exec_id=exec_id,
                     agent_ctx=self._agent_ctx,
                 )
             )
@@ -730,9 +720,7 @@ class AgentLoop(Generic[CtxT]):
                     ],
                     return_exceptions=True,
                 )
-                for (i, _call, t, _inp), result in zip(
-                    immediate, results, strict=True
-                ):
+                for (i, _call, t, _inp), result in zip(immediate, results, strict=True):
                     if isinstance(result, BaseException):
                         outputs[i] = f"Tool '{t.name}' failed: {result}"
                         logger.warning(
@@ -1202,6 +1190,9 @@ class AgentLoop(Generic[CtxT]):
             await self.bg_tasks.cancel_all(ctx=self._ctx)
             await self.bash_session_holder.close()
             await self.kernel_holder.close()
+            code_kernel_holder = self._agent_ctx.code_kernel_holder
+            if code_kernel_holder is not None:
+                await code_kernel_holder.close()
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):

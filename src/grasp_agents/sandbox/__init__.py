@@ -30,6 +30,11 @@ if TYPE_CHECKING:
         NetworkConfig,
         load_environment_config,
     )
+    from .e2b.config import (
+        E2BEnvironmentConfig,
+        E2BTemplateConfig,
+        load_e2b_config,
+    )
     from .e2b.environment import E2BEnvironment, e2b_environment
     from .e2b.exec import E2BExecBackend
     from .e2b.file_backend import E2BFileBackend
@@ -51,6 +56,9 @@ _LAZY: dict[str, str] = {
     "NetworkConfig": "config",
     "load_environment_config": "config",
     "E2BEnvironment": "e2b.environment",
+    "E2BEnvironmentConfig": "e2b.config",
+    "E2BTemplateConfig": "e2b.config",
+    "load_e2b_config": "e2b.config",
     "E2BExecBackend": "e2b.exec",
     "E2BFileBackend": "e2b.file_backend",
     "e2b_environment": "e2b.environment",
@@ -81,8 +89,10 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "E2BEnvironment",
+    "E2BEnvironmentConfig",
     "E2BExecBackend",
     "E2BFileBackend",
+    "E2BTemplateConfig",
     "EnvironmentConfig",
     "ExecBackend",
     "ExecChunk",
@@ -105,6 +115,7 @@ __all__ = [
     "build_seatbelt_profile",
     "build_srt_settings",
     "e2b_environment",
+    "load_e2b_config",
     "load_environment_config",
     "local_environment",
     "seatbelt_argv",

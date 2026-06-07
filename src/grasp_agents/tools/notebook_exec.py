@@ -57,10 +57,17 @@ class KernelHolder:
     the loop, deep-copied fresh so sub-agents / parallel replicas each get their
     own kernel. Reopened if a previous kernel was closed (e.g. a timeout that
     killed it).
+
+    Seed ``context_id`` to **re-attach** to an existing kernel on resume: read
+    :attr:`context_id` before pausing/snapshotting the sandbox, persist it in
+    your checkpoint, and pass it back here when rebuilding the loop. Backends
+    that cannot persist kernel state (local) ignore it; sub-agents/replicas get
+    fresh kernels (the seed is not deep-copied).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, context_id: str | None = None) -> None:
         self._kernel: KernelSession | None = None
+        self._context_id = context_id
         self._lock = asyncio.Lock()
 
     def __deepcopy__(self, memo: dict[int, Any]) -> KernelHolder:
@@ -71,8 +78,27 @@ class KernelHolder:
     async def get(self, backend: KernelCapable) -> KernelSession:
         async with self._lock:
             if self._kernel is None or self._kernel.closed:
-                self._kernel = await backend.open_kernel()
+                self._kernel = await backend.open_kernel(context_id=self._context_id)
             return self._kernel
+
+    @property
+    def context_id(self) -> str | None:
+        """
+        The live kernel's durable context id (persist it for resume), or the
+        seeded id if no kernel is open yet (``None`` for non-persistable kernels).
+        """
+        kernel = self._kernel
+        if kernel is not None and kernel.context_id is not None:
+            return kernel.context_id
+        return self._context_id
+
+    def rebind(self, context_id: str | None) -> None:
+        """
+        Seed the context id to re-attach to on the next (re)open — used by resume
+        to point a freshly-built loop's kernel at its persisted context. Takes
+        effect when the kernel is next opened; does not disturb an open kernel.
+        """
+        self._context_id = context_id
 
     async def close(self) -> None:
         kernel = self._kernel

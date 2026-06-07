@@ -283,13 +283,22 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         )
 
     async def open_kernel(
-        self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
+        self,
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        context_id: str | None = None,
     ) -> E2BKernel:
         """
         Open a Jupyter kernel on the sandbox (see :class:`E2BKernel`).
 
         Requires a **code-interpreter** sandbox (``e2b_environment(...,
         code_interpreter=True)``) — the base E2B template is shell + files only.
+
+        Pass ``context_id`` (a value previously read from
+        :attr:`E2BKernel.context_id`) to **re-attach** to an existing code
+        context instead of creating a fresh one — e.g. when resuming a session
+        whose sandbox was paused/snapshotted, so the kernel's variables persist.
         """
         sandbox = self._holder.require()
         if not hasattr(sandbox, "run_code"):
@@ -304,4 +313,5 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             env=self._merged_env(env),
             backend=self._name,
             default_timeout=self._default_timeout,
+            context_id=context_id,
         )

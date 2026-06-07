@@ -84,6 +84,16 @@ class KernelSession(Protocol):
         """True once the kernel has exited or been closed; reopen via the backend."""
         ...
 
+    @property
+    def context_id(self) -> str | None:
+        """
+        Durable id of this kernel's state, or ``None`` for kernels that cannot
+        outlive their host (local). On a backend that preserves kernel state
+        across pause/snapshot (E2B), persist this and pass it back to
+        :meth:`KernelCapable.open_kernel` to re-attach on resume.
+        """
+        ...
+
     def execute(
         self, code: str, *, timeout: float | None = None
     ) -> AsyncIterator[CellOutput | CellResult]:
@@ -121,8 +131,19 @@ class KernelCapable(Protocol):
     """
 
     async def open_kernel(
-        self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
-    ) -> KernelSession: ...
+        self,
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        context_id: str | None = None,
+    ) -> KernelSession:
+        """
+        Open a kernel. Pass ``context_id`` (a value previously read from
+        :attr:`KernelSession.context_id`) to **re-attach** to an existing kernel
+        on resume instead of creating a fresh one; backends that cannot persist
+        kernel state (local) ignore it.
+        """
+        ...
 
 
 __all__ = [

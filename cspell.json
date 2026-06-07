@@ -33,16 +33,23 @@
                 "dones",
                 "dtracehelper",
                 "e2b",
+                "ename",
+                "evalue",
                 "evts",
                 "fsize",
                 "getpgid",
+                "iopub",
+                "ipykernel",
                 "ipynb",
+                "jupyter",
+                "kernelspec",
                 "killpg",
                 "litellm",
                 "llms",
                 "logp",
                 "microvm",
                 "mult",
+                "nbformat",
                 "pbar",
                 "pgid",
                 "procs",
@@ -58,7 +65,8 @@
                 "toolu",
                 "subshell",
                 "templ",
-                "unsandboxed"
+                "unsandboxed",
+                "zmq"
         ],
         "patterns": [
                 {

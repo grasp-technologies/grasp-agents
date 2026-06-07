@@ -51,7 +51,7 @@ pytestmark = pytest.mark.asyncio
 _WS = "/home/user/workspace"
 _HAS_E2B = importlib.util.find_spec("e2b") is not None
 _E2B_KEY = os.getenv("E2B_API_KEY")
-_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
 _live = pytest.mark.skipif(
     not (_HAS_E2B and _E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
 )
@@ -82,6 +82,23 @@ async def _write_notebook(fb: FileBackend, path: Path, source: str) -> None:
 def _src(cell: Any) -> str:
     s = cell.get("source", "")
     return "".join(s) if isinstance(s, list) else s
+
+
+async def _kernel_stdout(kernel: Any, code: str) -> str:
+    """Run ``code`` in the kernel; return its concatenated text output."""
+    from grasp_agents.sandbox.kernel import CellResult
+
+    text = ""
+    async for item in kernel.execute(code):
+        if isinstance(item, CellResult):
+            continue
+        if item.output_type == "stream":
+            text += item.text or ""
+        elif item.output_type == "error":
+            text += (item.evalue or "") + " ".join(item.traceback)
+        elif item.data:
+            text += str(item.data.get("text/plain", ""))
+    return text
 
 
 @pytest.mark.integration
@@ -244,3 +261,52 @@ async def test_run_python_on_e2b_code_interpreter() -> None:
             await agent_ctx.kernel_holder.close()
             if agent_ctx.code_kernel_holder is not None:
                 await agent_ctx.code_kernel_holder.close()
+
+
+@pytest.mark.integration
+@_live
+async def test_kernel_context_rebind_preserves_state_on_e2b() -> None:
+    """
+    Re-attaching a new kernel to a persisted ``context_id`` keeps its in-memory
+    variables — the mechanism that lets a session resumed from a checkpoint keep
+    its kernel state instead of starting fresh. Kernel-level (no LLM needed).
+    """
+    from grasp_agents.sandbox.kernel import KernelCapable
+
+    async with e2b_environment(allowed_roots=[_WS], code_interpreter=True) as env:
+        backend = env.exec_backend
+        assert isinstance(backend, KernelCapable)
+
+        # Session 1: set state; capture the context id (what a checkpoint stores).
+        k1 = await backend.open_kernel()
+        async for _ in k1.execute("session_var = 1234"):
+            pass
+        cid = k1.context_id
+        assert cid is not None
+        await k1.close()  # close must NOT tear the context down
+
+        # Resume: a brand-new kernel re-bound to the id still sees the variable.
+        k2 = await backend.open_kernel(context_id=cid)
+        assert k2.context_id == cid
+        assert "1234" in await _kernel_stdout(k2, "print(session_var)")
+        await k2.close()
+
+        # The KernelHolder seed (what AgentContext.create threads on resume)
+        # routes the id through open_kernel — the same live context, so a mutation
+        # builds on the persisted value.
+        holder = KernelHolder(context_id=cid)
+        assert holder.context_id == cid
+        k3 = await holder.get(backend)
+        assert k3.context_id == cid
+        assert "1235" in await _kernel_stdout(k3, "print(session_var + 1)")
+        await holder.close()
+
+        # Control: a fresh kernel (no id) must NOT see it — proving the re-attach
+        # is what carried the state, not a shared sandbox-wide global.
+        k4 = await backend.open_kernel()
+        assert k4.context_id != cid
+        out = await _kernel_stdout(
+            k4, "print('present' if 'session_var' in globals() else 'absent')"
+        )
+        assert "absent" in out
+        await k4.close()

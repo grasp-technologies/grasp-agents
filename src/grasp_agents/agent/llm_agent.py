@@ -489,6 +489,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
                 )
             await environment.restore(checkpoint.fs_snapshot_ref)
 
+        # Re-attach the RunPython kernel to its persisted code context (captured
+        # with the FS snapshot) so the resumed session keeps its in-memory Python
+        # state. Seed-only: the kernel re-opens lazily on the next RunPython,
+        # bound to this context inside the restored sandbox.
+        if checkpoint.code_context_id is not None:
+            code_holder = self._loop.agent_ctx.code_kernel_holder
+            if code_holder is not None:
+                code_holder.rebind(checkpoint.code_context_id)
+
         # Restore the read-before-write ledger so the staleness guard
         # resumes where it left off; files changed while suspended still
         # trip it and require a re-Read.
@@ -571,9 +580,15 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # the save — a checkpoint silently missing its filesystem half
         # is worse than no checkpoint.
         fs_snapshot_ref: str | None = None
+        code_context_id: str | None = None
         if self._fs_snapshot_due(location):
             environment = cast("SnapshotCapable", self._ctx.environment)
             fs_snapshot_ref = await environment.snapshot()
+            # Capture the RunPython kernel's context with the FS snapshot so the
+            # pair stays consistent: resume re-attaches to this context inside the
+            # restored sandbox (E2B keeps the kernel running in the snapshot).
+            code_holder = self._loop.agent_ctx.code_kernel_holder
+            code_context_id = code_holder.context_id if code_holder else None
 
         read_file_state, dotfile_overrides = self._loop.file_edit_state.export_state()
         checkpoint = AgentCheckpoint(
@@ -591,6 +606,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             read_file_state=read_file_state,
             dotfile_overrides=dotfile_overrides,
             fs_snapshot_ref=fs_snapshot_ref,
+            code_context_id=code_context_id,
         )
         await self._serialize_checkpoint(self._ctx, checkpoint)
 
