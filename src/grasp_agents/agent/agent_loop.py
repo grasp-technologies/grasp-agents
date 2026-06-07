@@ -1134,6 +1134,11 @@ class AgentLoop(Generic[CtxT]):
                 if self.turn > 0 and not had_tool_calls:
                     await self.bg_tasks.wait_idle()
 
+                # Mirror live background output to its .grasp/tasks log before
+                # draining, so a completing task's note can point at a current
+                # file and a crash leaves a recoverable trace.
+                await self.bg_tasks.flush_progress(ctx=self._ctx)
+
                 async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
                     yield event
 

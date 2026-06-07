@@ -1180,3 +1180,39 @@ async def test_e2b_live_background_large_result_excerpted() -> None:
         assert out.result is not None
         assert out.result.stdout.count("A") == 5000
         assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
+@_live
+async def test_e2b_live_background_writes_greppable_log() -> None:
+    # A backgrounded command's streamed output is mirrored to an agent-readable
+    # .grasp/tasks log inside the *remote* sandbox FS (real path translation),
+    # indexed on the TaskRecord.
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+    from grasp_agents.durability.store_keys import task_prefix
+    from grasp_agents.durability.task_record import TaskRecord
+
+    async with e2b_environment(allowed_roots=[_WS]) as env:
+        store = InMemoryCheckpointStore()
+        ctx: RunContext[None] = RunContext(
+            environment=env, checkpoint_store=store, session_key="s1"
+        )
+        agent_ctx, mgr = make_stack()
+
+        _note, task_id = await background(
+            mgr, ctx, agent_ctx, "echo HELLO && sleep 5", abg=0.5, timeout=60
+        )
+        assert task_id is not None
+
+        await asyncio.sleep(1.0)  # let HELLO stream from the sandbox
+        await mgr.flush_progress(ctx)
+
+        keys = await store.list_keys(task_prefix("s1"))
+        rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")
+        assert rec.output_path is not None
+        assert ".grasp/tasks" in rec.output_path
+        # The log lives in the remote sandbox FS and holds the streamed output.
+        content, _ = await env.file_backend.read_text(Path(rec.output_path))
+        assert "HELLO" in content
+
+        await kill(mgr, task_id)

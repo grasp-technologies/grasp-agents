@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -31,11 +32,24 @@ from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 from grasp_agents.types.tool import BaseTool
 
 from .llm_agent_transcript import LLMAgentTranscript
+from .task_progress import open_task_log, write_task_log
 
 if TYPE_CHECKING:
     from .agent_context import AgentContext
 
 logger = getLogger(__name__)
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Compact human duration: ``45s`` / ``4m12s`` / ``1h05m``."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
 
 
 class TaskOutputResult(BaseModel):
@@ -53,6 +67,7 @@ class TaskOutputResult(BaseModel):
     status: Literal["running", "completed", "failed"]
     output: str = ""
     result: Any = None
+    elapsed_s: float | None = None  # wall time since the task was backgrounded
 
 
 def _task_notification(
@@ -62,6 +77,8 @@ def _task_notification(
     status: str,
     result: str | None = None,
     error: str | None = None,
+    log_path: str | None = None,
+    elapsed_s: float | None = None,
 ) -> str:
     """Build an XML-tagged task notification for LLM consumption."""
     parts = [
@@ -70,10 +87,14 @@ def _task_notification(
         f"<tool_name>{tool_name}</tool_name>",
         f"<status>{status}</status>",
     ]
+    if elapsed_s is not None:
+        parts.append(f"<ran_for>{_fmt_duration(elapsed_s)}</ran_for>")
     if result is not None:
         parts.append(f"<result>\n{result}\n</result>")
     if error is not None:
         parts.append(f"<error>\n{error}\n</error>")
+    if log_path is not None:
+        parts.append(f"<output_file>{log_path}</output_file>")
     parts.append("</task_notification>")
 
     return "\n".join(parts)
@@ -111,6 +132,9 @@ class PendingTask:
     bubble_cursor: int = 0  # events already re-emitted to the parent stream
     poll_cursor: int = 0  # events already read out via TaskOutput
     announced: bool = False  # completion note already emitted
+    started_at: float = field(default_factory=time.monotonic)  # for live elapsed
+    flush_count: int = 0  # event count at the last progress flush
+    log_path: str | None = None  # resolved .grasp/tasks log file, once written
 
 
 async def _consume(
@@ -504,6 +528,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             tool_name=call.name,
             tool_call_arguments=call.arguments,
             status=TaskStatus.PENDING,
+            started_at=datetime.now(UTC),
         )
         await store.save(task_key, record.model_dump_json().encode())
 
@@ -524,6 +549,40 @@ class BackgroundTaskManager(Generic[CtxT]):
         record = TaskRecord.model_validate_json(existing)
         record = record.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
         await store.save(task_key, record.model_dump_json().encode())
+
+    async def flush_progress(self, ctx: RunContext[CtxT]) -> None:
+        """
+        Mirror each live backgrounded task's streamed output to its
+        agent-readable ``.grasp/tasks/<call_id>.log`` so a crash leaves a
+        recoverable, Grep-able trace; the file path is indexed on the task's
+        ``TaskRecord`` once. Driven by the loop's turn boundary. A no-op without
+        both a checkpoint store (for the record) and a file backend (for the
+        file), or for tasks with no new streamed output (e.g. a sub-agent, whose
+        events are structural, not stream text). Best-effort — never breaks the
+        run.
+        """
+        store = ctx.checkpoint_store
+        backend = ctx.file_backend
+        if store is None or backend is None:
+            return
+        for pt in list(self._tasks.values()):
+            if pt.task_key is None or len(pt.events) == pt.flush_count:
+                continue
+            pt.flush_count = len(pt.events)
+            full = _stream_text(pt.events)
+            if not full:
+                continue  # nothing streamed (e.g. a sub-agent's structural events)
+
+            if pt.log_path is None:
+                pt.log_path = await open_task_log(
+                    backend, name=pt.tool_call_id or pt.task_id
+                )
+                if pt.log_path is not None:  # index the file on the record once
+                    await self._mark_record(
+                        pt.task_key, ctx=ctx, output_path=pt.log_path
+                    )
+            if pt.log_path is not None:
+                await write_task_log(backend, pt.log_path, full)
 
     def get(self, task_id: str) -> PendingTask:
         pt = self._tasks.get(task_id)
@@ -566,6 +625,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             status=status,
             output=output,
             result=result,
+            elapsed_s=time.monotonic() - pt.started_at,
         )
 
     async def kill_task(
@@ -649,6 +709,8 @@ class BackgroundTaskManager(Generic[CtxT]):
                     status=status,
                     result=note_result,
                     error=note_error,
+                    log_path=pt.log_path,
+                    elapsed_s=time.monotonic() - pt.started_at,
                 ),
                 role="user",
             )
@@ -776,12 +838,19 @@ class BackgroundTaskManager(Generic[CtxT]):
                 ):
                     continue
 
+                elapsed = (
+                    (record.updated_at - record.started_at).total_seconds()
+                    if record.started_at is not None
+                    else None
+                )
                 notification = InputMessageItem.from_text(
                     _task_notification(
                         task_id=record.task_id,
                         tool_name=record.tool_name,
                         status="interrupted",
                         error="Session restarted before completion",
+                        log_path=record.output_path,
+                        elapsed_s=elapsed,
                     ),
                     role="user",
                 )
@@ -800,6 +869,7 @@ class BackgroundTaskManager(Generic[CtxT]):
                         tool_name=record.tool_name,
                         status="completed",
                         result=record.result,
+                        log_path=record.output_path,
                     ),
                     role="user",
                 )

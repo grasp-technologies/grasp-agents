@@ -790,4 +790,92 @@ async def test_read_when_done_marks_record_delivered(tmp_path: Path) -> None:
     assert all(r.status == TaskStatus.DELIVERED for r in recs)
 
 
+# --- greppable progress log + elapsed time (Phase 2) --------------------------
+
+
+async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
+    from pathlib import Path as _Path
+
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+    from grasp_agents.durability.store_keys import task_prefix
+    from grasp_agents.durability.task_record import TaskRecord
+
+    store = InMemoryCheckpointStore()
+    ctx = _ctx_with_store(tmp_path, store)
+    loop = _loop(ctx, path=[])
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo HELLO && sleep 5"
+    )
+    assert task_id is not None
+
+    await asyncio.sleep(0.2)  # let the command emit "HELLO" before flushing
+    await loop.bg_tasks.flush_progress(ctx=ctx)
+
+    keys = await store.list_keys(task_prefix(ctx.session_key))
+    rec = TaskRecord.model_validate_json(await store.load(keys[0]))
+    # The record indexes an agent-readable .grasp/tasks log holding the output.
+    assert rec.output_path is not None
+    assert ".grasp/tasks" in rec.output_path
+    log = _Path(rec.output_path)
+    assert log.exists()
+    assert "HELLO" in log.read_text()
+
+    await loop.bg_tasks.cancel_all(ctx=ctx)
+
+
+async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
+    import contextlib as _contextlib
+
+    from grasp_agents.agent.background_tasks import BackgroundTaskManager
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+
+    store = InMemoryCheckpointStore()
+    ctx = _ctx_with_store(tmp_path, store)
+    loop = _loop(ctx, path=[])
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo HELLO && sleep 5"
+    )
+    assert task_id is not None
+
+    await asyncio.sleep(0.2)
+    await loop.bg_tasks.flush_progress(ctx=ctx)  # writes log + records output_path
+
+    # Simulate a crash: drop the in-flight task without finalizing the record.
+    for pt in list(loop.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]
+        pt.task.cancel()
+        with _contextlib.suppress(asyncio.CancelledError):
+            await pt.task
+
+    transcript = LLMAgentTranscript()
+    transcript.reset(instructions="sys")
+    mgr2 = BackgroundTaskManager(
+        agent_name="t", transcript=transcript, tools={}, path=[]
+    )
+    await mgr2.resume_durable(ctx=ctx, exec_id="t")
+
+    joined = "\n".join(str(m) for m in transcript.messages)
+    assert "Session resumed" in joined  # framing
+    assert "interrupted" in joined
+    assert "output_file" in joined  # points the agent at the log
+    assert ".grasp/tasks" in joined
+    assert "ran_for" in joined  # elapsed
+
+
+async def test_taskoutput_reports_elapsed(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    loop = _loop(ctx)
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo hi && sleep 0.5"
+    )
+    assert task_id is not None
+
+    out = await TaskOutput(loop.bg_tasks)._run(
+        TaskIdInput(task_id=task_id), agent_ctx=loop.agent_ctx
+    )
+    assert out.elapsed_s is not None
+    assert out.elapsed_s >= 0
+
+    await loop.bg_tasks.cancel_all(ctx=ctx)
+
+
 # The persistent-session tool lives in test_bash_session.py.

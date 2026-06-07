@@ -33,10 +33,15 @@ if TYPE_CHECKING:
 
 
 def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
-    """A minimal AgentContext + BackgroundTaskManager (no full AgentLoop)."""
+    """
+    A minimal AgentContext + BackgroundTaskManager (no full AgentLoop).
+
+    ``path=[]`` so a store-backed ctx persists task records + progress logs
+    (``make_tool_call_path(None, ...)`` would otherwise yield ``None``).
+    """
     transcript = LLMAgentTranscript()
     mgr: BackgroundTaskManager[Any] = BackgroundTaskManager(
-        agent_name="t", transcript=transcript, tools={}
+        agent_name="t", transcript=transcript, tools={}, path=[]
     )
     agent_ctx = AgentContext(
         transcript=transcript,

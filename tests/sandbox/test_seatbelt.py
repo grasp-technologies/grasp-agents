@@ -441,4 +441,36 @@ async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> Non
     assert out.status == "completed"
     assert out.result is not None
     assert out.result.stdout.count("A") == 5000
+
+
+@pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
+async def test_seatbelt_background_writes_greppable_log(tmp_path: Path) -> None:
+    # The greppable .grasp/tasks log is written under confinement too.
+    from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+    from grasp_agents.durability.store_keys import task_prefix
+    from grasp_agents.durability.task_record import TaskRecord
+
+    env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
+    store = InMemoryCheckpointStore()
+    ctx: RunContext[None] = RunContext(
+        environment=env, checkpoint_store=store, session_key="s1"
+    )
+    agent_ctx, mgr = make_stack()
+
+    _note, task_id = await background(
+        mgr, ctx, agent_ctx, "echo HELLO && sleep 5", abg=0.3
+    )
+    assert task_id is not None
+
+    await asyncio.sleep(0.3)
+    await mgr.flush_progress(ctx)
+
+    keys = await store.list_keys(task_prefix("s1"))
+    rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")
+    assert rec.output_path is not None
+    assert ".grasp/tasks" in rec.output_path
+    content, _ = await env.file_backend.read_text(Path(rec.output_path))
+    assert "HELLO" in content
+
+    await kill(mgr, task_id)
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]

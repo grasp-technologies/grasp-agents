@@ -63,8 +63,8 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v3: code_context_id (RunPython kernel re-attach) on AgentCheckpoint.
-        assert CURRENT_SCHEMA_VERSION == 3
+        # v4: TaskRecord.output_path + started_at (backgrounded-task progress log).
+        assert CURRENT_SCHEMA_VERSION == 4
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:

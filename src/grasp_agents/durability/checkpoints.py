@@ -10,7 +10,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 3
+CURRENT_SCHEMA_VERSION: int = 4
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -33,6 +33,12 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "kernel). v2 records load fine (field defaults None); v2 code resuming "
         "a v3 session would silently skip the re-attach (resume with a fresh "
         "kernel — variables lost)."
+    ),
+    4: (
+        "TaskRecord gained output_path (the agent-readable .grasp/tasks log file "
+        "holding a backgrounded task's full output) and started_at (so a restart "
+        "can point the agent at the partial output + report how long it ran). v3 "
+        "records load fine (fields default None)."
     ),
 }
 """
