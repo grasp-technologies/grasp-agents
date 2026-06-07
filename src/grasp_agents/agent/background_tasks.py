@@ -147,12 +147,13 @@ async def _consume(
     """
     Drive a tool's ``run_stream``, buffering every event into ``events``.
 
-    On a successful finish, persist a ``COMPLETED`` ``TaskRecord`` carrying the
-    result *before* the done-callback fires. This closes the window between a
-    task finishing and :meth:`BackgroundTaskManager.drain` delivering it: a
-    crash in that window leaves a ``COMPLETED`` record that resume re-injects
-    (see :meth:`resume_durable`), instead of a ``PENDING`` record that would
-    force a re-run or lose the result.
+    On finish, persist the outcome to the ``TaskRecord`` *before* the
+    done-callback fires — ``COMPLETED`` (carrying the result) or ``FAILED``
+    (carrying the error). This closes the window between a task finishing and
+    :meth:`BackgroundTaskManager.drain` delivering it: a crash in that window
+    leaves a terminal record that resume re-injects (see
+    :meth:`resume_durable`), instead of a ``PENDING`` record that would force a
+    re-run or lose the outcome.
     """
     result: Any = None
     failed = False
@@ -164,16 +165,16 @@ async def _consume(
             result = event.data  # ToolErrorInfo
             failed = True
 
-    if store is not None and task_key is not None and not failed:
+    if store is not None and task_key is not None:
         existing = await store.load(task_key)
         if existing:
             record = TaskRecord.model_validate_json(existing)
+            if failed:
+                outcome = {"status": TaskStatus.FAILED, "error": str(result)}
+            else:
+                outcome = {"status": TaskStatus.COMPLETED, "result": str(result)}
             record = record.model_copy(
-                update={
-                    "status": TaskStatus.COMPLETED,
-                    "result": str(result),
-                    "updated_at": datetime.now(UTC),
-                }
+                update={**outcome, "updated_at": datetime.now(UTC)}
             )
             await store.save(task_key, record.model_dump_json().encode())
 
@@ -824,12 +825,10 @@ class BackgroundTaskManager(Generic[CtxT]):
             if record is None:
                 continue
 
-            # Terminal states — already handled
-            if record.status in {
-                TaskStatus.FAILED,
-                TaskStatus.CANCELLED,
-                TaskStatus.DELIVERED,
-            }:
+            # Terminal + already surfaced — nothing to do. (FAILED is NOT here:
+            # a FAILED record is an errored task that the crash kept ``drain``
+            # from delivering, so it still needs re-injecting below.)
+            if record.status in {TaskStatus.CANCELLED, TaskStatus.DELIVERED}:
                 continue
 
             if record.status == TaskStatus.PENDING:
@@ -854,21 +853,26 @@ class BackgroundTaskManager(Generic[CtxT]):
                     ),
                     role="user",
                 )
+                # The interrupted notice was delivered → terminal (DELIVERED),
+                # not FAILED (which now means an errored task, re-injected below).
                 record = record.model_copy(
                     update={
-                        "status": TaskStatus.FAILED,
+                        "status": TaskStatus.DELIVERED,
                         "error": "Interrupted: session restarted",
                         "updated_at": datetime.now(UTC),
                     }
                 )
-            elif record.status == TaskStatus.COMPLETED:
-                # Completed between drain and checkpoint — re-inject.
+            elif record.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+                # Finished (ok or errored) but the crash kept ``drain`` from
+                # delivering it — re-inject the outcome, then mark it delivered.
+                is_fail = record.status == TaskStatus.FAILED
                 notification = InputMessageItem.from_text(
                     _task_notification(
                         task_id=record.task_id,
                         tool_name=record.tool_name,
-                        status="completed",
-                        result=record.result,
+                        status="failed" if is_fail else "completed",
+                        result=None if is_fail else record.result,
+                        error=record.error if is_fail else None,
                         log_path=record.output_path,
                     ),
                     role="user",

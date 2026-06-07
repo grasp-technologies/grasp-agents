@@ -1,10 +1,14 @@
 """
-Environment-info ``SystemPromptSection`` factory.
+Environment-info injectors.
 
-Renders a small set of standard runtime facts the agent commonly benefits
-from knowing — current date, platform, working directory, model name. Every
-field is opt-in via the ``include`` set; all defaults are off-by-default-free
-so the section produces a useful block out of the box.
+Two ways to give the agent ambient runtime facts:
+
+* :func:`make_env_info_section` — a cache-stable ``SystemPromptSection`` of
+  process-level facts (date, platform, cwd, model). Belongs in the system
+  prompt; a per-turn ``datetime`` field would only fragment the cache.
+* :func:`make_current_time_attachment` — a live wall-clock stamp as an
+  ``InputAttachment`` on the *input* message, so it never invalidates the
+  cached prompt prefix. This is how you make an agent time-aware.
 """
 
 from __future__ import annotations
@@ -15,13 +19,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from .agent.prompt_builder import SystemPromptSection
+from .agent.prompt_builder import InputAttachment, SystemPromptSection
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
+    from .agent.agent_context import AgentContext
     from .run_context import RunContext
     from .types.content import CacheControl
+    from .types.items import InputItem, InputMessageItem
 
 
 ENV_INFO_SECTION_NAME = "env_info"
@@ -109,3 +115,39 @@ def make_env_info_section(
         compute=compute,
         cache_control=cache_control,
     )
+
+
+CURRENT_TIME_ATTACHMENT_NAME = "current_time"
+
+
+def make_current_time_attachment(
+    *,
+    name: str = CURRENT_TIME_ATTACHMENT_NAME,
+    timespec: str = "seconds",
+) -> InputAttachment:
+    """
+    Build an :class:`InputAttachment` that stamps the current local wall-clock
+    time onto each input message.
+
+    Unlike the ``datetime`` field of :func:`make_env_info_section`, this rides
+    on the *input* (the new user message), not the system prompt — so a live,
+    per-turn timestamp never invalidates the cached prompt prefix. It gives a
+    time-aware agent a clock for reasoning about deadlines / staleness / "now"
+    (the framework owns durations elsewhere — e.g. a backgrounded task's
+    ``ran_for``). Stamped once per agent run and frozen in the transcript, so a
+    resume replays the original time rather than "now".
+    """
+
+    def compute(
+        *,
+        user_message: InputMessageItem,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        messages: Sequence[InputItem] | None = None,
+        agent_ctx: AgentContext | None = None,
+    ) -> str:
+        del user_message, ctx, exec_id, messages, agent_ctx
+        now = datetime.now().astimezone().isoformat(timespec=timespec)
+        return f"Current time: {now}"
+
+    return InputAttachment(name=name, compute=compute)

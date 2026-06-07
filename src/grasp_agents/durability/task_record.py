@@ -18,8 +18,10 @@ class TaskRecord(PersistedRecord):
     """
     Lifecycle of a single background tool invocation.
 
-    Tracks PENDING → COMPLETED → DELIVERED (or FAILED / CANCELLED) at
-    ``"<session_key>/task/<parent_path>/tc_<call_id>"``.
+    Tracks PENDING → (COMPLETED | FAILED) → DELIVERED, or CANCELLED (killed), at
+    ``"<session_key>/task/<parent_path>/tc_<call_id>"``. COMPLETED / FAILED is
+    the finished-but-not-yet-delivered outcome a crash can leave behind (resume
+    re-injects it); DELIVERED means the outcome reached the agent.
     """
 
     task_id: str

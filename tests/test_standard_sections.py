@@ -9,8 +9,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents import CacheControl, make_env_info_section
+from grasp_agents import (
+    CacheControl,
+    make_current_time_attachment,
+    make_env_info_section,
+)
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.types.items import InputMessageItem
 
 from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
     MockLLM,
@@ -131,6 +136,60 @@ class TestEnvInfoAgentWiring:
         assert "env_info" not in self._names(agent)
 
 
+# ---------- current_time attachment ----------
+
+
+class TestCurrentTimeAttachment:
+    def test_default_name_and_live_stamp(self) -> None:
+        att = make_current_time_attachment()
+        assert att.name == "current_time"
+        assert att.wrap_in_system_reminder is True
+        msg = InputMessageItem.from_text("hi", role="user")
+        out = att.compute(
+            user_message=msg, ctx=None, exec_id=None, messages=None, agent_ctx=None
+        )
+        assert isinstance(out, str)
+        assert out.startswith("Current time: ")
+        # A live ISO wall-clock stamp (date + time), e.g. 2026-06-07T14:32:01+...
+        assert "T" in out
+        assert str(datetime.now(tz=UTC).year) in out
+
+    def test_custom_name(self) -> None:
+        assert make_current_time_attachment(name="clock").name == "clock"
+
+
+class TestTimeAwareAgentWiring:
+    """The LLMAgent ``time_aware`` kwarg: bool toggle OR a configured attachment."""
+
+    @staticmethod
+    def _att_names(agent: LLMAgent[str, str, None]) -> set[str]:
+        return {
+            a.name
+            for a in agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
+        }
+
+    def test_true_attaches_current_time(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="a", llm=MockLLM(responses_queue=[]), time_aware=True
+        )
+        assert "current_time" in self._att_names(agent)
+
+    def test_false_attaches_nothing(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="a", llm=MockLLM(responses_queue=[]), time_aware=False
+        )
+        assert "current_time" not in self._att_names(agent)
+
+    def test_custom_attachment_used_verbatim(self) -> None:
+        custom = make_current_time_attachment(name="clock")
+        agent = LLMAgent[str, str, None](
+            name="a", llm=MockLLM(responses_queue=[]), time_aware=custom
+        )
+        attachments = agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
+        assert custom in attachments
+        assert "current_time" not in {a.name for a in attachments}
+
+
 # ---------- mcp_instructions ----------
 
 
@@ -173,9 +232,7 @@ class TestMcpInstructionsSection:
 
     @pytest.mark.anyio
     async def test_single_client_renders(self, mcp_section_factory: Any) -> None:
-        section = mcp_section_factory(
-            [_StubClient("alpha", "Connect with --auth")]
-        )
+        section = mcp_section_factory([_StubClient("alpha", "Connect with --auth")])
         text = await _await_compute(section)
         assert text is not None
         assert "## MCP server instructions" in text

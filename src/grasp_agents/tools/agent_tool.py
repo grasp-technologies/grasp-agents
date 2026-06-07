@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     from ..agent.agent_context import AgentContext
     from ..agent.llm_agent import LLMAgent
-    from ..agent.prompt_builder import SystemPromptSection
+    from ..agent.prompt_builder import InputAttachment, SystemPromptSection
 
 
 @runtime_checkable
@@ -98,6 +98,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         stream_tools: bool = False,
         enable_memory: bool = False,
         enable_skills: bool = False,
+        time_aware: bool | InputAttachment = False,
     ) -> None:
         super().__init__(
             name=name,
@@ -123,6 +124,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         self._env_info = env_info
         self._enable_memory = enable_memory
         self._enable_skills = enable_skills
+        self._time_aware = time_aware
 
         self.stream_llm = stream_llm
         self.stream_tools = stream_tools
@@ -224,6 +226,7 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             env_info=self._env_info,
             enable_memory=self._enable_memory,
             enable_skills=self._enable_skills,
+            time_aware=self._time_aware,
             stream_llm=self.stream_llm,
             stream_tools=self.stream_tools,
         )

@@ -858,3 +858,36 @@ class TestDurableTaskRecords:
         )
         await mgr3.resume_durable(ctx=ctx, exec_id="t")
         assert not any("interrupted" in str(m) for m in t3.messages)
+
+    @pytest.mark.asyncio
+    async def test_failed_spawn_persists_failed_record(self):
+        from grasp_agents.agent.background_tasks import BackgroundTaskManager
+        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+        from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+        from grasp_agents.durability.store_keys import task_prefix
+        from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+
+        store = InMemoryCheckpointStore()
+        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+        transcript = LLMAgentTranscript()
+        transcript.reset(instructions="sys")
+        mgr = BackgroundTaskManager[None](
+            agent_name="t", transcript=transcript, tools={}, path=[]
+        )
+
+        call = FunctionToolCallItem(
+            call_id="c1", name="failing_bg", arguments='{"text":"x"}'
+        )
+        _note, event = await mgr.spawn(
+            call, FailingBgTool(), EchoInput(text="x"), ctx=ctx, exec_id="t"
+        )
+        # Wait for the task to finish so _consume persists the outcome.
+        await mgr.get(event.data.task_id).task
+
+        # A genuine runtime failure is recorded as FAILED with its error (so a
+        # crash before drain leaves a terminal record, not a re-runnable PENDING).
+        keys = await store.list_keys(task_prefix("s1"))
+        rec = TaskRecord.model_validate_json(await store.load(keys[0]))
+        assert rec.status == TaskStatus.FAILED
+        assert rec.error is not None
+        assert "exploded" in rec.error

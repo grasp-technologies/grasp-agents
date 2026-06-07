@@ -47,7 +47,9 @@ from .durability import (
     TaskStatus,
 )
 from .env_section import (
+    CURRENT_TIME_ATTACHMENT_NAME,
     ENV_INFO_SECTION_NAME,
+    make_current_time_attachment,
     make_env_info_section,
 )
 from .llm.fallback_llm import FallbackLLM
@@ -173,6 +175,7 @@ except ImportError:
     pass
 
 __all__ = [
+    "CURRENT_TIME_ATTACHMENT_NAME",
     "DEFAULT_DENY_MESSAGE",
     "ENV_INFO_SECTION_NAME",
     "LLM",
@@ -298,6 +301,7 @@ __all__ = [
     "load_memory_entry",
     "load_skill",
     "load_skill_md",
+    "make_current_time_attachment",
     "make_env_info_section",
     "make_mcp_instructions_section",
     "make_memory_section",

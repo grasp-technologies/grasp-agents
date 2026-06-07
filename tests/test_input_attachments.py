@@ -85,6 +85,21 @@ class TestApplyInputAttachments:
         assert attached.text.endswith("</system-reminder>")
 
     @pytest.mark.anyio
+    async def test_current_time_attachment_stamps_input(self) -> None:
+        from grasp_agents import make_current_time_attachment
+
+        b = _builder()
+        b.add_input_attachment(make_current_time_attachment())
+        msg = InputMessageItem.from_text("hello")
+        out = await b.apply_input_attachments(
+            msg, ctx=RunContext(state=_State()), exec_id="e"
+        )
+        attached = out.content_parts[1]
+        assert isinstance(attached, InputText)
+        assert "<system-reminder>" in attached.text
+        assert "Current time:" in attached.text
+
+    @pytest.mark.anyio
     async def test_text_return_unwrapped_when_disabled(self) -> None:
         b = _builder()
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, cast, 
 
 if TYPE_CHECKING:
     from ..tools.file_edit.session_state import FileEditSessionState
-    from .prompt_builder import SystemPromptSection
+    from .prompt_builder import InputAttachment, SystemPromptSection
 
 from pydantic import BaseModel
 
@@ -18,7 +18,7 @@ from ..durability.context_serialization import (
     serialize_context,
 )
 from ..durability.resume import prepare_messages_for_resume
-from ..env_section import make_env_info_section
+from ..env_section import make_current_time_attachment, make_env_info_section
 from ..llm.llm import LLM
 from ..memory.injection import make_memory_section, relevant_memories_attachment
 from ..processors.processor import Processor
@@ -151,6 +151,12 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # - in agentic mode, the ``load_skill`` tool appended
         # Default is False — same rationale as ``enable_memory``.
         enable_skills: bool = False,
+        # Time-awareness toggle (opt-in). When True, each input message gets a
+        # ``current_time`` ``InputAttachment`` — a live wall-clock stamp on the
+        # *input* (not the cached system prompt, so no per-turn cache churn),
+        # giving the agent a clock for deadlines / staleness / "now". Pass an
+        # ``InputAttachment`` to customize. Default False.
+        time_aware: "bool | InputAttachment" = False,
         # Tracing
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
@@ -249,6 +255,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             )
         if enable_skills:
             self._prompt_builder.add_system_prompt_section(make_skills_section())
+        if time_aware:
+            self._prompt_builder.add_input_attachment(
+                make_current_time_attachment() if time_aware is True else time_aware
+            )
         # Local import to dodge the ``mcp`` package's optional-dependency
         # import guard at module load.
         from ..mcp.section import make_mcp_instructions_section  # noqa: PLC0415

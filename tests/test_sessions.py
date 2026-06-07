@@ -1411,13 +1411,14 @@ class TestPendingTaskResume:
         ]
         assert len(interruption_msgs) >= 1
 
-        # TaskRecord should now be FAILED
+        # TaskRecord should now be DELIVERED (the interrupted notice reached the
+        # agent — FAILED is reserved for an errored task that wasn't delivered).
         data = await store.load(
             _agent_task_key(record.session_key, "test_agent", record.tool_call_id)
         )
         assert data is not None
         updated = TaskRecord.model_validate_json(data)
-        assert updated.status == TaskStatus.FAILED
+        assert updated.status == TaskStatus.DELIVERED
 
     @pytest.mark.anyio
     async def test_resume_ignores_other_agents_tasks(self):
@@ -1462,10 +1463,10 @@ class TestPendingTaskResume:
         )
         await agent.run("continue", step=0)
 
-        # Our task was handled → FAILED.
+        # Our task was handled → DELIVERED (interrupted notice injected).
         mine_data = await store.load(_agent_task_key("s1", "test_agent", "fc_1"))
         assert mine_data is not None
-        assert TaskRecord.model_validate_json(mine_data).status == TaskStatus.FAILED
+        assert TaskRecord.model_validate_json(mine_data).status == TaskStatus.DELIVERED
         # The sibling's task is untouched (still PENDING).
         other_data = await store.load(other_key)
         assert other_data is not None
@@ -1587,8 +1588,8 @@ class TestPendingTaskResume:
         assert len(completed_msgs) == 1
 
     @pytest.mark.anyio
-    async def test_failed_record_skipped(self):
-        """FAILED records are skipped on resume (already handled)."""
+    async def test_failed_record_reinjected(self):
+        """A FAILED record (errored before drain delivered it) is re-injected."""
         store = InMemoryCheckpointStore()
 
         snapshot = AgentCheckpoint(
@@ -1609,7 +1610,7 @@ class TestPendingTaskResume:
             tool_call_id="fc_1",
             tool_name="slow",
             status=TaskStatus.FAILED,
-            error="Already failed",
+            error="boom",
         )
         await store.save(
             _agent_task_key(record.session_key, "test_agent", record.tool_call_id),
@@ -1623,10 +1624,16 @@ class TestPendingTaskResume:
         )
         await agent.run("continue", step=0)
 
-        # No interruption notification injected for already-failed records
+        # The failure (which the crash kept from reaching the agent) is surfaced.
         memory_texts = [str(m) for m in agent.transcript.messages]
-        fail_msgs = [t for t in memory_texts if "fail1" in t]
-        assert len(fail_msgs) == 0
+        fail_msgs = [t for t in memory_texts if "fail1" in t and "failed" in t]
+        assert len(fail_msgs) >= 1
+        assert any("boom" in t for t in memory_texts)
+
+        # And the record is now DELIVERED (terminal).
+        data = await store.load(_agent_task_key("s1", "test_agent", "fc_1"))
+        assert data is not None
+        assert TaskRecord.model_validate_json(data).status == TaskStatus.DELIVERED
 
     @pytest.mark.anyio
     async def test_multiple_pending_tasks_all_handled(self):
@@ -1668,9 +1675,7 @@ class TestPendingTaskResume:
                 tool_name=name,
             )
             await store.save(
-                _agent_task_key(
-                    record.session_key, "test_agent", record.tool_call_id
-                ),
+                _agent_task_key(record.session_key, "test_agent", record.tool_call_id),
                 record.model_dump_json().encode(),
             )
 
@@ -1688,12 +1693,12 @@ class TestPendingTaskResume:
         assert len(t1_msgs) >= 1
         assert len(t2_msgs) >= 1
 
-        # Both records should be FAILED
+        # Both records should be DELIVERED (interrupted notices injected).
         for cid in ["fc_1", "fc_2"]:
             data = await store.load(_agent_task_key("s1", "test_agent", cid))
             assert data is not None
             rec = TaskRecord.model_validate_json(data)
-            assert rec.status == TaskStatus.FAILED
+            assert rec.status == TaskStatus.DELIVERED
 
 
 # ================================================================== #
