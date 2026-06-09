@@ -1,5 +1,6 @@
 # pyright: reportUnusedImport=false
 
+from .checkpoint_mixin import CheckpointPersistMixin
 from .checkpoint_store import CheckpointStore, InMemoryCheckpointStore
 from .checkpoints import (
     CURRENT_SCHEMA_VERSION,
@@ -13,7 +14,6 @@ from .checkpoints import (
 )
 from .context_serialization import ContextKind, rehydrate_context, serialize_context
 from .file_checkpoint_store import FileCheckpointStore
-from .persist import CheckpointPersistMixin
 from .resume import InterruptionType, ResumeState, prepare_messages_for_resume
 from .store_keys import (
     TOOL_CALL_PREFIX,

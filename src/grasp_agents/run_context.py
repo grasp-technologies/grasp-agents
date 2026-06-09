@@ -38,6 +38,7 @@ class RunContext(BaseModel, Generic[CtxT]):
     responses: defaultdict[ProcName, list[Response]] = Field(
         default_factory=lambda: defaultdict(list)
     )
+    max_responses_per_agent: int | None = Field(default=None, exclude=True)
     usage_tracker: UsageTracker = Field(default_factory=UsageTracker, exclude=True)
     printer: Printer | None = Field(default=None, exclude=True)
     checkpoint_store: CheckpointStore | None = Field(default=None, exclude=True)
@@ -106,6 +107,19 @@ class RunContext(BaseModel, Generic[CtxT]):
         checkpoints / usage tracking / file_backend bindings.
         """
         return self
+
+    def record_response(self, agent_name: ProcName, response: Response) -> None:
+        """
+        Append ``response`` to :attr:`responses`, trimming the agent's bucket to
+        the most recent :attr:`max_responses_per_agent` entries when that cap is
+        set. Keeps a long-lived shared ctx from accumulating responses without
+        bound.
+        """
+        bucket = self.responses[agent_name]
+        bucket.append(response)
+        cap = self.max_responses_per_agent
+        if cap is not None and len(bucket) > cap:
+            del bucket[: len(bucket) - cap]
 
     @model_validator(mode="after")
     def _reconcile_environment(self) -> "RunContext[CtxT]":

@@ -61,14 +61,15 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
 
     def on_adopted(self, parent: Any) -> None:
         """
-        When the host :class:`LLMAgent` is attached under a parent (or
-        constructed with a ctx), forward adoption onto the wrapped
-        template so its ctx + path align with the host's session.
+        Adopt the host's tracing settings and forward adoption onto the wrapped
+        template so its path + default session align with the host.
 
-        ``.copy()`` at dispatch then shares the bound ctx with each
-        per-call copy via :meth:`RunContext.__deepcopy__`; the per-call
-        path is set separately by :meth:`_resolve_processor` because it
-        embeds the tool call id.
+        The template is a prototype, never run directly. Each dispatch clones
+        it (:meth:`_resolve_processor`) and **rebinds the clone to that call's
+        ``ctx``** — so a single ``ProcessorTool`` shared across several agents
+        (manager/worker graphs, LRU-cached agents) is safe: although the
+        template's own ctx is last-writer-wins, no call ever uses it, and the
+        clone always carries the caller's session.
         """
         super().on_adopted(parent)  # inherit the tool's own tracing settings
         self._processor.on_adopted(parent)
@@ -76,16 +77,21 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     def _resolve_processor(
         self,
         *,
+        ctx: RunContext[CtxT] | None = None,
         path: list[str] | None = None,
     ) -> Processor[_InT, _OutT, CtxT]:
-        """Return a fresh copy adopted under this tool, with ``path`` set."""
+        """
+        Return a fresh copy bound to this call's ``ctx`` and ``path``.
+
+        Binding ``ctx`` per call (not at adoption) is what makes a shared
+        ``ProcessorTool`` safe across agents/sessions: the clone resolves to
+        the *caller's* session, never a stale one.
+        """
         proc = self._processor.copy()
-        # Symmetric with AgentTool: adopt the tool's tracing settings and stamp
-        # the per-call path. ctx is already shared through the copy
-        # (RunContext.__deepcopy__) and the tool carries no ctx/path of its own,
-        # so in practice this only re-applies tracing (idempotent on a copy of
-        # the already-adopted template) and sets the path (a no-op if ``None``).
-        proc.on_adopted(parent=self, path=path)
+        # parent=self carries the tool's (host-inherited) tracing settings;
+        # ctx + path are stamped explicitly for this call. on_adopted treats an
+        # explicit ctx as authoritative, overriding whatever the template held.
+        proc.on_adopted(parent=self, ctx=ctx, path=path)
         if self._reset_transcript_on_run:
             # Only LLM agents carry a transcript — other processors have no
             # working-state slot to reset.
@@ -99,14 +105,14 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         self,
         inp: _InT,
         *,
-        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # bound at adoption
+        ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
     ) -> _OutT:
         del progress_callback, agent_ctx
-        proc = self._resolve_processor(path=path)
+        proc = self._resolve_processor(ctx=ctx, path=path)
         result = await proc.run(in_args=inp, exec_id=exec_id)
 
         return result.payloads[0]
@@ -115,14 +121,14 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         self,
         inp: _InT,
         *,
-        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # bound at adoption
+        ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del progress_callback, agent_ctx
-        proc = self._resolve_processor(path=path)
+        proc = self._resolve_processor(ctx=ctx, path=path)
         async for event in self._yield_proc_events(
             proc, in_args=inp, exec_id=exec_id, step=0
         ):
@@ -131,12 +137,13 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     async def resume_stream(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # bound at adoption
+        ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         path: list[str] | None = None,
-        agent_ctx: AgentContext | None = None,  # noqa: ARG002  # proc builds its own
+        agent_ctx: AgentContext | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        proc = self._resolve_processor(path=path)
+        del agent_ctx  # proc builds its own
+        proc = self._resolve_processor(ctx=ctx, path=path)
         async for event in self._yield_proc_events(
             proc, in_args=None, exec_id=exec_id, step=0
         ):

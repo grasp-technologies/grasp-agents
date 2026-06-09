@@ -1247,7 +1247,7 @@ class AgentLoop(Generic[CtxT]):
         return FinalAnswerTool()
 
     def _process_response(self, response: Response) -> None:
-        self._ctx.responses[self.agent_name].append(response)
+        self._ctx.record_response(self.agent_name, response)
         self._ctx.usage_tracker.update(
             agent_name=self.agent_name,
             responses=[response],

@@ -26,6 +26,7 @@ from grasp_agents.run_context import RunContext
 from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
     MockLLM,
     _text_response,
+    load_agent_checkpoint,
 )
 
 
@@ -63,8 +64,9 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v4: TaskRecord.output_path + started_at (backgrounded-task progress log).
-        assert CURRENT_SCHEMA_VERSION == 4
+        # v5: AgentCheckpoint.messages moved to an append-only log; the head
+        # drops messages and gains message_count (the log watermark).
+        assert CURRENT_SCHEMA_VERSION == 5
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
@@ -265,12 +267,7 @@ class TestPrePersistInput:
                 **extra_llm_settings: Any,
             ) -> Any:
                 del input, tools, output_schema, tool_choice, extra_llm_settings
-                data = await store.load("s-pp/agent/test_agent")
-                snap = (
-                    AgentCheckpoint.model_validate_json(data)
-                    if data is not None
-                    else None
-                )
+                snap = await load_agent_checkpoint(store, "s-pp/agent/test_agent")
                 observed_on_llm_call.append(snap)
                 # Pop a response the test-local way.
                 assert self.responses_queue

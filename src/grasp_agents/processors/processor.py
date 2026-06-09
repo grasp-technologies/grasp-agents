@@ -25,8 +25,8 @@ from grasp_agents.types.errors import (
     ProcRunError,
 )
 
+from ..durability.checkpoint_mixin import CheckpointPersistMixin
 from ..durability.checkpoints import CheckpointKind
-from ..durability.persist import CheckpointPersistMixin
 from ..packet import Packet
 from ..run_context import CtxT, RunContext
 from ..types.events import (

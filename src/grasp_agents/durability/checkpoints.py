@@ -10,7 +10,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 4
+CURRENT_SCHEMA_VERSION: int = 5
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -39,6 +39,12 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "holding a backgrounded task's full output) and started_at (so a restart "
         "can point the agent at the partial output + report how long it ran). v3 "
         "records load fine (fields default None)."
+    ),
+    5: (
+        "AgentCheckpoint.messages moved to an append-only message log: the head "
+        "blob no longer embeds messages and gains message_count (the log's commit "
+        "watermark). Pre-v5 single-blob agent checkpoints are NOT loadable — their "
+        "transcript lived inside the head and there is no log to read."
     ),
 }
 """
@@ -101,9 +107,22 @@ class ProcessorCheckpoint(PersistedRecord):
 
 
 class AgentCheckpoint(ProcessorCheckpoint):
-    """Lightweight checkpoint for an agent session. No business state."""
+    """Lightweight checkpoint for an agent session."""
 
-    messages: list[InputItem]
+    # The transcript is persisted out-of-band as an append-only message log
+    # (one ``InputItem`` per JSONL line), keyed alongside this head blob. It is
+    # never written into the head: the head is overwritten every turn, so
+    # embedding the growing transcript here would re-serialize it each time.
+    # In memory this carries the full transcript; ``model_dump_json`` for the
+    # head excludes it.
+    messages: list[InputItem] = Field(default_factory=list[InputItem])
+
+    # Commit watermark: how many leading log records this head acknowledges.
+    # The log is appended before the head is saved, so a crash between the two
+    # can leave uncommitted trailing records; on resume only the first
+    # ``message_count`` are trusted (the rest are dropped).
+    message_count: int = 0
+
     usage: ResponseUsage | None = None
     step: int | None = None  # caller's delivery step (None = chat / untracked)
     turn: int = 0  # current agent turn within the step (resets to 0 on each new step)

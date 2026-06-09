@@ -19,10 +19,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..tools.file_backend.atomic_write import atomic_write_bytes
-from .checkpoint_store import CheckpointStore
+from .checkpoint_store import (
+    CheckpointStore,
+    decode_message_log,
+    encode_messages,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from os import PathLike
+
+    from ..types.items import InputItem
 
 
 _INVALID_SEGMENTS: frozenset[str] = frozenset({"", ".", ".."})
@@ -57,13 +64,44 @@ class FileCheckpointStore(CheckpointStore):
         return await asyncio.to_thread(_read_if_exists, path)
 
     async def delete(self, key: str) -> None:
-        path = self._key_to_path(key)
         lock = await self._get_lock(key)
         async with lock:
-            await asyncio.to_thread(_unlink_if_exists, path)
+            await asyncio.to_thread(_unlink_if_exists, self._key_to_path(key))
+            await asyncio.to_thread(
+                _unlink_if_exists, self._key_to_path(key, suffix=".jsonl")
+            )
 
     async def list_keys(self, prefix: str) -> list[str]:
         return await asyncio.to_thread(_list_keys, self._root, prefix)
+
+    # --- Append-only message log ---
+    #
+    # The transcript lives in a sibling ``.jsonl`` at the head key's path.
+    # Appends go straight to the file's end (no temp+rename), so a torn final
+    # record is possible — ``decode_message_log`` discards it. ``list_keys``
+    # globs ``*.json`` only, so logs never surface as checkpoint keys.
+
+    async def append_messages(self, key: str, messages: Sequence[InputItem]) -> None:
+        if not messages:
+            return
+        path = self._key_to_path(key, suffix=".jsonl")
+        blob = encode_messages(messages)
+        lock = await self._get_lock(key)
+        async with lock:
+            await asyncio.to_thread(_append_bytes, path, blob)
+
+    async def read_messages(self, key: str) -> list[InputItem]:
+        path = self._key_to_path(key, suffix=".jsonl")
+        return await asyncio.to_thread(_read_message_log, path)
+
+    async def rewrite_messages(self, key: str, messages: Sequence[InputItem]) -> None:
+        path = self._key_to_path(key, suffix=".jsonl")
+        lock = await self._get_lock(key)
+        async with lock:
+            if not messages:
+                await asyncio.to_thread(_unlink_if_exists, path)
+            else:
+                await asyncio.to_thread(_atomic_write, path, encode_messages(messages))
 
     # --- Internals ---
 
@@ -75,12 +113,14 @@ class FileCheckpointStore(CheckpointStore):
                 self._locks[key] = lock
         return lock
 
-    def _key_to_path(self, key: str) -> Path:
+    def _key_to_path(self, key: str, *, suffix: str = ".json") -> Path:
         """
         Map a checkpoint key to its on-disk file path.
 
-        Rejects malformed / escape-prone keys up front; then verifies the
-        resolved path stays under ``self._root`` as defense in depth.
+        ``suffix`` selects the file the key maps to — ``.json`` for the
+        checkpoint head, ``.jsonl`` for its sibling message log. Rejects
+        malformed / escape-prone keys up front; then verifies the resolved
+        path stays under ``self._root`` as defense in depth.
         """
         if not key:
             raise ValueError("Checkpoint key must be non-empty")
@@ -92,7 +132,7 @@ class FileCheckpointStore(CheckpointStore):
             if seg in _INVALID_SEGMENTS:
                 raise ValueError(f"Invalid segment {seg!r} in key {key!r}")
 
-        file_seg = segments[-1] + ".json"
+        file_seg = segments[-1] + suffix
         if len(segments) == 1:
             target = self._root / file_seg
         else:
@@ -133,6 +173,22 @@ def _read_if_exists(path: Path) -> bytes | None:
         return path.read_bytes()
     except FileNotFoundError:
         return None
+
+
+def _append_bytes(path: Path, blob: bytes) -> None:
+    """Blocking append to the message log — run via :func:`asyncio.to_thread`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as f:
+        f.write(blob)
+
+
+def _read_message_log(path: Path) -> list[InputItem]:
+    """Blocking read+parse of the message log — run via :func:`asyncio.to_thread`."""
+    try:
+        blob = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    return decode_message_log(blob)
 
 
 def _unlink_if_exists(path: Path) -> None:

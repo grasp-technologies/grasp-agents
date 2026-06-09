@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import (
     AgentCheckpoint,
+    CheckpointStore,
     InMemoryCheckpointStore,
     InterruptionType,
     TaskRecord,
@@ -474,10 +475,9 @@ class TestAgentSessionPersistence:
         result = await agent.run("hi")
         assert result.payloads[0] == "hello"
 
-        # Snapshot should be persisted
-        data = await store.load("s1/agent/test_agent")
-        assert data is not None
-        snap = AgentCheckpoint.model_validate_json(data)
+        # Snapshot should be persisted (head + message-log reconstructed)
+        snap = await load_agent_checkpoint(store, "s1/agent/test_agent")
+        assert snap is not None
         assert snap.session_key == "s1"
         assert snap.processor_name == "test_agent"
         assert len(snap.messages) > 0
@@ -496,9 +496,8 @@ class TestAgentSessionPersistence:
         await agent1.run("hi")
 
         # Get saved message count
-        data = await store.load("s1/agent/test_agent")
-        assert data is not None
-        snap = AgentCheckpoint.model_validate_json(data)
+        snap = await load_agent_checkpoint(store, "s1/agent/test_agent")
+        assert snap is not None
         saved_msg_count = len(snap.messages)
         assert saved_msg_count > 0
 
@@ -512,9 +511,8 @@ class TestAgentSessionPersistence:
         await agent2.run("follow up")
 
         # Snapshot should have more messages now
-        data2 = await store.load("s1/agent/test_agent")
-        assert data2 is not None
-        snap2 = AgentCheckpoint.model_validate_json(data2)
+        snap2 = await load_agent_checkpoint(store, "s1/agent/test_agent")
+        assert snap2 is not None
         assert len(snap2.messages) > saved_msg_count
 
     @pytest.mark.anyio
@@ -569,10 +567,10 @@ class TestAgentSessionPersistence:
         )
         await agent2.run("follow up")
 
-        # Checkpoint should only have messages from the second run
-        data = await store.load("s1/agent/test_agent")
-        assert data is not None
-        snap = AgentCheckpoint.model_validate_json(data)
+        # Checkpoint should only have messages from the second run: the
+        # from-scratch transcript must replace the log, not append onto it.
+        snap = await load_agent_checkpoint(store, "s1/agent/test_agent")
+        assert snap is not None
         user_msgs = [
             m
             for m in snap.messages
@@ -658,6 +656,27 @@ def _count_user_messages(agent: LLMAgent[Any, Any, Any]) -> int:
     )
 
 
+async def save_agent_checkpoint(
+    store: CheckpointStore, key: str, checkpoint: AgentCheckpoint
+) -> None:
+    """Plant a complete agent checkpoint (message-log + head) for tests."""
+    checkpoint.message_count = len(checkpoint.messages)
+    await store.rewrite_messages(key, checkpoint.messages)
+    head = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
+    await store.save(key, head)
+
+
+async def load_agent_checkpoint(
+    store: CheckpointStore, key: str
+) -> AgentCheckpoint | None:
+    """Read a complete agent checkpoint (head + committed message-log) for tests."""
+    head = await store.load_json(key, AgentCheckpoint, subject=f"checkpoint at {key}")
+    if head is None:
+        return None
+    head.messages = (await store.read_messages(key))[: head.message_count]
+    return head
+
+
 def _interrupted_checkpoint(
     messages: list[Any], session_key: str = "s1", step: int | None = 0
 ) -> AgentCheckpoint:
@@ -695,16 +714,15 @@ class TestResumeInputDetection:
     async def test_standalone_resume_no_inputs(self):
         """Standalone resume (no inputs, interrupted) skips memorization."""
         store = InMemoryCheckpointStore()
-        await store.save(
+        await save_agent_checkpoint(
+            store,
             "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
                     InputMessageItem.from_text("hello", role="user"),
                 ]
-            )
-            .model_dump_json()
-            .encode(),
+            ),
         )
 
         agent, ctx = _make_agent(
@@ -720,16 +738,15 @@ class TestResumeInputDetection:
     async def test_workflow_rerun_with_in_args(self):
         """Workflow re-delivers in_args after crash — must not duplicate input."""
         store = InMemoryCheckpointStore()
-        await store.save(
+        await save_agent_checkpoint(
+            store,
             "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
                     InputMessageItem.from_text("hello", role="user"),
                 ]
-            )
-            .model_dump_json()
-            .encode(),
+            ),
         )
 
         agent, ctx = _make_agent(
@@ -743,16 +760,15 @@ class TestResumeInputDetection:
     async def test_runner_redelivery_with_chat_inputs(self):
         """Runner re-delivers chat_inputs after crash — must not duplicate input."""
         store = InMemoryCheckpointStore()
-        await store.save(
+        await save_agent_checkpoint(
+            store,
             "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
                     InputMessageItem.from_text("start", role="user"),
                 ]
-            )
-            .model_dump_json()
-            .encode(),
+            ),
         )
 
         agent, ctx = _make_agent(
@@ -766,7 +782,8 @@ class TestResumeInputDetection:
     async def test_chat_continuation_adds_new_input(self):
         """Clean completion + new chat_inputs = continuation, must memorize."""
         store = InMemoryCheckpointStore()
-        await store.save(
+        await save_agent_checkpoint(
+            store,
             "s1/agent/test_agent",
             _completed_checkpoint(
                 [
@@ -777,9 +794,7 @@ class TestResumeInputDetection:
                         status="completed",
                     ),
                 ]
-            )
-            .model_dump_json()
-            .encode(),
+            ),
         )
 
         agent, ctx = _make_agent(
@@ -822,16 +837,15 @@ class TestResumeInputDetection:
         store = InMemoryCheckpointStore()
 
         # First agent: run and crash (simulate via pre-seeded interrupted checkpoint)
-        await store.save(
+        await save_agent_checkpoint(
+            store,
             "s1/agent/test_agent",
             _interrupted_checkpoint(
                 [
                     InputMessageItem.from_text("sys", role="system"),
                     InputMessageItem.from_text("hello", role="user"),
                 ]
-            )
-            .model_dump_json()
-            .encode(),
+            ),
         )
 
         # Resume: no duplication
@@ -960,9 +974,8 @@ class TestResumeIntegration:
                 pass
 
         # Agent checkpoint saved (clean completion)
-        agent_data = await store.load("wf1/agent/wf/agent")
-        assert agent_data is not None
-        agent_cp = AgentCheckpoint.model_validate_json(agent_data)
+        agent_cp = await load_agent_checkpoint(store, "wf1/agent/wf/agent")
+        assert agent_cp is not None
         user_msgs = [
             m
             for m in agent_cp.messages
@@ -990,9 +1003,8 @@ class TestResumeIntegration:
         assert a2.call_count == 0  # step 0 skipped
 
         # Agent checkpoint: still 1 user message (no duplication)
-        agent_data2 = await store.load("wf1/agent/wf/agent")
-        assert agent_data2 is not None
-        agent_cp2 = AgentCheckpoint.model_validate_json(agent_data2)
+        agent_cp2 = await load_agent_checkpoint(store, "wf1/agent/wf/agent")
+        assert agent_cp2 is not None
         user_msgs2 = [
             m
             for m in agent_cp2.messages
@@ -1109,7 +1121,7 @@ class TestResumeIntegration:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("rs2/agent/agent", agent_cp.model_dump_json().encode())
+        await save_agent_checkpoint(store, "rs2/agent/agent", agent_cp)
 
         # Resume runner
         a2 = _CountingAppendProcessor("A", recipients=["agent"])
@@ -1138,9 +1150,8 @@ class TestResumeIntegration:
         assert payloads == ["agent_done"]
 
         # Verify: agent checkpoint has exactly 1 user message
-        agent_data = await store.load("rs2/agent/agent")
-        assert agent_data is not None
-        cp = AgentCheckpoint.model_validate_json(agent_data)
+        cp = await load_agent_checkpoint(store, "rs2/agent/agent")
+        assert cp is not None
         user_msgs = [
             m
             for m in cp.messages
@@ -1382,7 +1393,7 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+        await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
         # 2. Save a PENDING task record (simulates crash before completion)
         record = TaskRecord(
@@ -1442,7 +1453,7 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+        await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
         # This agent's own PENDING task.
         own = TaskRecord(
@@ -1495,7 +1506,7 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+        await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
         # Task completed between checkpoint and crash
         record = TaskRecord(
@@ -1559,7 +1570,7 @@ class TestPendingTaskResume:
             checkpoint_number=2,
             step=0,
         )
-        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+        await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
         # Record is DELIVERED — drain already injected + checkpointed
         record = TaskRecord(
@@ -1602,7 +1613,7 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+        await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
         record = TaskRecord(
             task_id="fail1",
@@ -1665,7 +1676,7 @@ class TestPendingTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save("s1/agent/test_agent", snapshot.model_dump_json().encode())
+        await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
         for tid, name, cid in [("t1", "slow_a", "fc_1"), ("t2", "slow_b", "fc_2")]:
             record = TaskRecord(
@@ -1793,8 +1804,8 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save(
-            "parent_s1/agent/test_agent", parent_snapshot.model_dump_json().encode()
+        await save_agent_checkpoint(
+            store, "parent_s1/agent/test_agent", parent_snapshot
         )
 
         # 2. PENDING task record — child_session_key intentionally unset
@@ -1825,9 +1836,8 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save(
-            "parent_s1/agent/test_agent/tc_fc_1",
-            child_snapshot.model_dump_json().encode(),
+        await save_agent_checkpoint(
+            store, "parent_s1/agent/test_agent/tc_fc_1", child_snapshot
         )
 
         # 4. Resume: child needs to complete, parent needs to finish
@@ -1889,8 +1899,8 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save(
-            "parent_s1/agent/test_agent", parent_snapshot.model_dump_json().encode()
+        await save_agent_checkpoint(
+            store, "parent_s1/agent/test_agent", parent_snapshot
         )
 
         # PENDING record WITHOUT child_session_key (plain bg tool)
@@ -1953,8 +1963,8 @@ class TestChildTaskResume:
             checkpoint_number=1,
             step=0,
         )
-        await store.save(
-            "parent_s1/agent/test_agent", parent_snapshot.model_dump_json().encode()
+        await save_agent_checkpoint(
+            store, "parent_s1/agent/test_agent", parent_snapshot
         )
 
         # Two PENDING children, each with its own task record + checkpoint
@@ -1984,9 +1994,8 @@ class TestChildTaskResume:
                 checkpoint_number=1,
                 step=0,
             )
-            await store.save(
-                f"parent_s1/agent/test_agent/tc_{cid}",
-                snap.model_dump_json().encode(),
+            await save_agent_checkpoint(
+                store, f"parent_s1/agent/test_agent/tc_{cid}", snap
             )
 
         # Both children will complete with different results

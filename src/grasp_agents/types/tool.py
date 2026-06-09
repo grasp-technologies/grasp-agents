@@ -55,6 +55,22 @@ class BaseTool(
     ABC,
     Generic[_InT, _OutT_co, CtxT],
 ):
+    """
+    Base class for all tools.
+
+    **Tools are stateless and shareable.** A single tool instance may be
+    attached to several agents at once (manager/worker graphs, LRU-cached
+    agents) and invoked concurrently. A tool must therefore never store
+    run-scoped or session-scoped state — a :class:`RunContext`, a bound child
+    processor, a live shell/kernel — on ``self``. Everything a call needs is
+    passed to :meth:`_run` / :meth:`_run_stream`: the run-scoped ``ctx`` and
+    the calling loop's agent-scoped ``agent_ctx`` (transcript, sibling tools,
+    file-edit ledger, background tasks, sessions). Resolve per-call state from
+    those arguments, never from ``self``. Wrapper tools (:class:`AgentTool`,
+    :class:`ProcessorTool`) clone their template and bind the clone to the
+    *call's* ``ctx`` — not an adoption-time one — for the same reason.
+    """
+
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
         0: "_in_type",
         1: "_out_type",

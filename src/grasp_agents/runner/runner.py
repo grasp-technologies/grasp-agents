@@ -7,8 +7,8 @@ from uuid import uuid4
 
 from grasp_agents.telemetry import SpanKind, traced
 
+from ..durability.checkpoint_mixin import CheckpointPersistMixin
 from ..durability.checkpoints import CheckpointKind, RunnerCheckpoint
-from ..durability.persist import CheckpointPersistMixin
 from ..packet import Packet
 from ..processors.processor import Processor
 from ..run_context import CtxT, RunContext, shared_child_ctx

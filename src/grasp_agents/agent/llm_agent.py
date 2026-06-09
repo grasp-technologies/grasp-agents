@@ -474,12 +474,17 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         if not self.transcript.is_empty:
             return None  # Already has messages — don't reload
 
-        checkpoint = await self._deserialize_checkpoint(self._ctx, AgentCheckpoint)
+        checkpoint = await self._deserialize_agent_checkpoint(self._ctx)
         if checkpoint is None:
             return None
 
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.transcript.messages = resume_state.messages
+        if resume_state.removed_count:
+            # Resume stripped an incomplete trailing turn from the committed
+            # log; rewrite the log to the cleaned transcript on the next
+            # checkpoint rather than appending onto the stale records.
+            self._log_dirty = True
         self._loop.turn = checkpoint.turn
         self.prompt_cache_key = checkpoint.prompt_cache_key
 
@@ -618,7 +623,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             fs_snapshot_ref=fs_snapshot_ref,
             code_context_id=code_context_id,
         )
-        await self._serialize_checkpoint(self._ctx, checkpoint)
+        await self._serialize_agent_checkpoint(self._ctx, checkpoint)
 
     async def _prepare_transcript(
         self,
@@ -636,6 +641,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
         fresh_init = self.reset_transcript_on_run or self.transcript.is_empty
+        if fresh_init:
+            # A from-scratch transcript invalidates any persisted message-log;
+            # the next checkpoint rewrites it rather than appending a delta onto
+            # stale records (e.g. reset_transcript_on_run over a resumed session).
+            self._log_dirty = True
 
         if fresh_init and not self._has_build_transcript_impl:
             self.transcript.reset(sys_prompt_parts)

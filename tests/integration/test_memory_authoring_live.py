@@ -32,7 +32,7 @@ from grasp_agents.tools.file_backend import LocalFileBackend
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
 @pytest.fixture

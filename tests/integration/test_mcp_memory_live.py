@@ -34,7 +34,7 @@ MCPClient = mcp_module.MCPClient
 MCPServerStdio = mcp_module.MCPServerStdio
 from grasp_agents.tools.file_backend import MCPFileBackend
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
 @pytest.fixture
