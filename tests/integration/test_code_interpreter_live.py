@@ -34,8 +34,8 @@ pytestmark = pytest.mark.anyio
 
 _SYS_PROMPT = (
     "You are a Python data assistant with a RunPython tool backed by a live "
-    "Jupyter kernel. To make a chart, run `%matplotlib inline` once, then write "
-    "matplotlib code that draws it and call `plt.show()` so the figure is "
+    "Jupyter kernel. To make a chart, write matplotlib code that draws it and "
+    "call `plt.show()` so the figure is "
     "displayed back to you as an image. After you can see the figure, give a "
     "one-sentence description of it as your final answer."
 )

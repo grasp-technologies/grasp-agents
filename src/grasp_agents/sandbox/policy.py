@@ -74,6 +74,11 @@ class SandboxPolicy:
     - ``env`` is the base environment set for subprocesses; ``env_scrub`` is a
       list of ``fnmatch`` patterns (e.g. ``"*_API_KEY"``) removed from the
       *inherited* host environment so secrets do not leak into commands.
+
+    Kernel setup code (exec surface only):
+
+    - ``kernel_setup_code`` is a snippet (e.g. ``%matplotlib inline``) run in a
+      RunPython kernel at startup to configure the Python environment.
     """
 
     allowed_roots: tuple[Path, ...]
@@ -88,6 +93,7 @@ class SandboxPolicy:
     denied_domains: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict[str, str])
     env_scrub: tuple[str, ...] = ()
+    kernel_setup_code: str = ""
 
 
 __all__ = ["NetworkPolicy", "SandboxPolicy"]

@@ -183,7 +183,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
         pending_indices = [i for i in range(len(all_in_args)) if i not in completed_map]
         if pending_indices:
             replicas: dict[int, Processor[InT, OutT, CtxT]] = {}
-            replica_names: set[str] = set()
             for i in pending_indices:
                 rep = self._subproc.copy()
                 rep.name = f"{self._subproc.name}_{i}"
@@ -192,7 +191,6 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 # ``RunContext.__deepcopy__``, but kept for symmetry).
                 rep.on_adopted(self)
                 replicas[i] = rep
-                replica_names.add(rep.name)
 
             streams = [
                 replicas[i].run_stream(
@@ -209,7 +207,9 @@ class ParallelProcessor(Processor[InT, OutT, CtxT]):
                 real_idx = pending_indices[stream_idx]
                 if (
                     isinstance(event, ProcPacketOutEvent)
-                    and event.source in replica_names
+                    # match this stream's own replica, not just any replica name,
+                    # so a nested same-named packet can't be miscaptured
+                    and event.source == replicas[real_idx].name
                 ):
                     out_packets_map[real_idx] = event.data
                     completed_map[real_idx] = event.data

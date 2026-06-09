@@ -43,7 +43,7 @@ class TestEnvInfoSection:
         assert section.cache_control is None
         text = _run_compute(section)
         assert text is not None
-        assert "## Environment" in text
+        assert "<environment>" in text
         assert "Date:" in text
         assert "Platform:" in text
         assert "OS:" in text

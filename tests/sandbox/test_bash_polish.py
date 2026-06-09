@@ -823,6 +823,30 @@ async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
     await loop.bg_tasks.cancel_all(ctx=ctx)
 
 
+async def test_backgrounded_bash_writes_log_without_store(tmp_path: Path) -> None:
+    """
+    The Grep-able ``.grasp/tasks`` log is a file-backend artifact: a file backend
+    alone writes it — no checkpoint store required (the store only adds the
+    durable record + resume pointer). This is the data-copilot demo's setup: a
+    sandbox environment (→ file backend), a sub-agent lineage, and no store.
+    """
+    ctx = _ctx(tmp_path)  # environment → file backend, but NO checkpoint store
+    loop = _loop(ctx, path=["data_engineer"])  # sub-agent lineage, as in the demo
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo HELLO && sleep 5"
+    )
+    assert task_id is not None
+
+    await asyncio.sleep(0.2)
+    await loop.bg_tasks.flush_progress(ctx=ctx)
+
+    logs = list((tmp_path / ".grasp" / "tasks").glob("*.log"))
+    assert logs, "no log written with a file backend but no checkpoint store"
+    assert any("HELLO" in p.read_text() for p in logs)
+
+    await loop.bg_tasks.cancel_all(ctx=ctx)
+
+
 async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     import contextlib as _contextlib
 

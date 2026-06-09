@@ -103,6 +103,7 @@ def local_environment(
     inherit_host_env: bool = True,
     python: str | Path | None = None,
     packages: Sequence[str] = (),
+    kernel_setup_code: str = "",
     supervisor: ProcessSupervisor | None = None,
 ) -> LocalEnvironment:
     """
@@ -151,6 +152,10 @@ def local_environment(
             setup — not installed: a missing one raises with the ``pip install``
             command to run. Install them into the env yourself (uv / pip /
             conda); this env is yours, so the framework won't mutate it.
+        kernel_setup_code: Code run once at code-interpreter (``RunPython``)
+            kernel startup, in its own execution — empty by default (the
+            framework imposes nothing). Pass e.g. ``"%matplotlib inline"`` to
+            opt into the inline plotting backend.
         supervisor: Shared :class:`ProcessSupervisor` for the exec backend.
 
     Returns:
@@ -174,6 +179,7 @@ def local_environment(
         denied_domains=tuple(denied_domains),
         env=env or {},
         env_scrub=tuple(env_scrub),
+        kernel_setup_code=kernel_setup_code,
     )
 
     file_backend = LocalFileBackend(

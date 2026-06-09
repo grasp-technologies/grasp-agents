@@ -271,6 +271,7 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
+            setup_code=self._policy.kernel_setup_code,
         )
 
 

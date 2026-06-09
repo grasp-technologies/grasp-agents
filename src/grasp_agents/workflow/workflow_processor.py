@@ -44,6 +44,21 @@ class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
                 "End subprocessor must be in the subprocessors list"
             )
 
+        # Each subprocessor's output is captured by ``source == subproc.name``,
+        # so names must be unique — and none may equal the workflow's own name,
+        # which it emits its output under (that would alias the two).
+        subproc_names = [s.name for s in subprocs]
+        dup_subprocs = sorted({n for n in subproc_names if subproc_names.count(n) > 1})
+        if dup_subprocs:
+            raise WorkflowConstructionError(
+                f"Duplicate subprocessor names: {dup_subprocs}; names must be unique."
+            )
+        if name in subproc_names:
+            raise WorkflowConstructionError(
+                f"Subprocessor name '{name}' collides with the workflow's own name; "
+                "names must be unique."
+            )
+
         # Need to set _subprocs before __init__ because it
         # executes _propagate_to_children which calls subproc.on_adopted
         self._subprocs = subprocs

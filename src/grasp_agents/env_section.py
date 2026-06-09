@@ -64,6 +64,20 @@ def _render_default_field(
     return None
 
 
+def _effective_cwd(ctx: RunContext[Any] | None) -> str:
+    """
+    Sandbox working directory (first allowed root) when a sandbox is on the
+    context, else the host process cwd — keeps the env section consistent with
+    the directory the agent actually operates in.
+    """
+    env = getattr(ctx, "environment", None)
+    policy = getattr(env, "policy", None)
+    roots = getattr(policy, "allowed_roots", None)
+    if roots:
+        return str(roots[0])
+    return str(Path.cwd())
+
+
 def make_env_info_section(
     *,
     include: Iterable[EnvField] = DEFAULT_FIELDS,
@@ -96,10 +110,15 @@ def make_env_info_section(
         exec_id: str | None = None,
         **_: Any,
     ) -> str | None:
-        del ctx, exec_id
+        del exec_id
+        cwd = _effective_cwd(ctx)
         rows: list[str] = []
         for field in selected:
-            entry = _render_default_field(field, model_name)
+            entry = (
+                ("CWD", cwd)
+                if field == "cwd"
+                else _render_default_field(field, model_name)
+            )
             if entry is None:
                 continue
             label, value = entry
@@ -108,7 +127,7 @@ def make_env_info_section(
             rows.append(f"- {label}: {value}")
         if not rows:
             return None
-        return "## Environment\n\n" + "\n".join(rows)
+        return "<environment>\n" + "\n".join(rows) + "\n</environment>"
 
     return SystemPromptSection(
         name=section_name,

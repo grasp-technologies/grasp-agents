@@ -54,6 +54,28 @@ class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
                         f"Valid destinations: {', '.join(sorted(valid_destinations))}"
                     )
 
+        proc_names = [proc.name for proc in procs]
+        dup_procs = sorted({n for n in proc_names if proc_names.count(n) > 1})
+        if dup_procs:
+            raise RunnerError(
+                f"Duplicate processor names: {dup_procs}; must be unique."
+            )
+        if name is not None and name in proc_names:
+            raise RunnerError(
+                f"Processor name '{name}' collides with the runner's own name; "
+                "names must be unique."
+            )
+        for proc in procs:
+            proc_tools = getattr(proc, "tools", None)
+            if not isinstance(proc_tools, dict):
+                continue
+            clash = sorted(n for n in proc_names if n in proc_tools)
+            if clash:
+                raise RunnerError(
+                    f"Processor '{proc.name}' has tool name(s) {clash} colliding with "
+                    "processor names; tool and processor names must be unique."
+                )
+
         self._name = name or str(uuid4())[:6]
 
         self._entry_proc = entry_proc

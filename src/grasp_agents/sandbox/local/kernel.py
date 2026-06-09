@@ -41,6 +41,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence
     from pathlib import Path
 
+    from jupyter_client.asynchronous.client import AsyncKernelClient
+
 DEFAULT_KERNEL_STARTUP_TIMEOUT = 60.0
 DEFAULT_KILL_GRACE = 5.0
 # Bound the captured output of a single cell. Full outputs still land in the
@@ -53,6 +55,25 @@ class KernelStartError(RuntimeError):
     """The kernel process failed to launch or never became ready."""
 
 
+async def _recv_iopub(
+    client: AsyncKernelClient, msg_id: str, deadline: float | None
+) -> dict[str, Any] | None:
+    """
+    Next iopub message for ``msg_id``, or ``None`` once ``deadline`` passes.
+
+    ``deadline`` is an absolute ``time.monotonic()`` value (``None`` waits
+    indefinitely). Messages from other requests are skipped without resetting it.
+    """
+    while True:
+        wait = max(0.0, deadline - time.monotonic()) if deadline is not None else None
+        try:
+            msg = await asyncio.wait_for(client.get_iopub_msg(), wait)
+        except TimeoutError:
+            return None
+        if msg.get("parent_header", {}).get("msg_id") == msg_id:
+            return msg
+
+
 class LocalKernel:
     """A local ``jupyter_client`` kernel. See the module docstring for the contract."""
 
@@ -63,6 +84,7 @@ class LocalKernel:
         cwd: Path,
         env: Mapping[str, str],
         backend: str = "local",
+        setup_code: str = "",
         startup_timeout: float = DEFAULT_KERNEL_STARTUP_TIMEOUT,
         kill_grace: float = DEFAULT_KILL_GRACE,
         max_stream_chars: int = DEFAULT_MAX_STREAM_CHARS,
@@ -72,13 +94,14 @@ class LocalKernel:
         self._cwd = cwd
         self._env = dict(env)
         self._backend = backend
+        self._setup_code = setup_code
         self._startup_timeout = startup_timeout
         self._kill_grace = kill_grace
         self._max_stream_chars = max_stream_chars
         self._max_images = max_images
 
         self._proc: asyncio.subprocess.Process | None = None
-        self._client: Any = None
+        self._client: AsyncKernelClient | None = None
         self._connection_file: str | None = None
         self._lock = asyncio.Lock()
         self._closed = False
@@ -145,6 +168,34 @@ class LocalKernel:
                 "under a confined backend, loopback networking must be permitted."
             ) from exc
         self._client = client
+        # Run caller-supplied setup once, in its own execution (empty by
+        # default — the framework imposes nothing). A separate execution matters
+        # for e.g. `%matplotlib inline`: running it in the same cell as a plot
+        # doesn't reliably capture that cell's figure (intermittent blank plots).
+        if self._setup_code:
+            with contextlib.suppress(Exception):
+                await self._run_setup(client, self._setup_code)
+
+    @staticmethod
+    async def _run_setup(client: AsyncKernelClient, code: str) -> None:
+        """Run setup code silently at startup, discarding output (best-effort)."""
+        msg_id = client.execute(
+            code,
+            silent=True,
+            store_history=False,
+            allow_stdin=False,
+            stop_on_error=False,
+        )
+        deadline = time.monotonic() + 10.0
+        while True:
+            msg = await _recv_iopub(client, msg_id, deadline)
+            if msg is None:
+                return
+            if (
+                msg.get("msg_type") == "status"
+                and msg.get("content", {}).get("execution_state") == "idle"
+            ):
+                return
 
     async def execute(
         self, code: str, *, timeout: float | None = None
@@ -174,14 +225,8 @@ class LocalKernel:
             deadline = start + timeout if timeout is not None else None
 
             while True:
-                wait = (
-                    max(0.0, deadline - time.monotonic())
-                    if deadline is not None
-                    else None
-                )
-                try:
-                    msg = await asyncio.wait_for(client.get_iopub_msg(), wait)
-                except TimeoutError:
+                msg = await _recv_iopub(client, msg_id, deadline)
+                if msg is None:  # deadline elapsed with no further output
                     if interrupted:
                         await self._terminate()
                         self._cleanup_connection_file()
@@ -198,8 +243,6 @@ class LocalKernel:
                     deadline = time.monotonic() + self._kill_grace
                     continue
 
-                if msg.get("parent_header", {}).get("msg_id") != msg_id:
-                    continue
                 msg_type = msg.get("msg_type")
                 content = msg.get("content", {})
 
@@ -261,7 +304,7 @@ class LocalKernel:
 
     @staticmethod
     async def _collect_shell_status(
-        client: Any, msg_id: str
+        client: AsyncKernelClient, msg_id: str
     ) -> tuple[Any, int | None]:
         """Drain the matching ``execute_reply`` for the final status + count."""
         deadline = time.monotonic() + 5.0

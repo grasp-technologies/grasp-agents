@@ -22,6 +22,7 @@ from grasp_agents.types.events import (
     ReasoningItemEvent,
     StopReason,
     ToolCallItemEvent,
+    ToolErrorEvent,
     ToolErrorInfo,
     ToolOutputEvent,
     ToolOutputItemEvent,
@@ -201,6 +202,22 @@ class AgentLoop(Generic[CtxT]):
         tools_list = (tools or [])[:]
         if tools and final_answer_as_tool_call:
             tools_list = tools + [self._final_answer_tool]
+        # Tools are dispatched and their events routed by name, so names must be
+        # unique and must not shadow the agent's own name — otherwise the dict
+        # below silently drops a duplicate, and a name shared with the agent (or
+        # a sub-agent, which is itself a tool here) conflates their event
+        # streams.
+        tool_names = [t.name for t in tools_list]
+        duplicates = sorted({n for n in tool_names if tool_names.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Agent '{agent_name}' has duplicate tool names: {duplicates}"
+            )
+        if agent_name in tool_names:
+            raise ValueError(
+                f"Agent '{agent_name}' has a tool named '{agent_name}', colliding with "
+                "the agent's own name; tool and processor names must be unique."
+            )
         tools_dict = {t.name: t for t in tools_list}
 
         # Tool call_ids whose results were already synthesized at the LLM
@@ -694,7 +711,12 @@ class AgentLoop(Generic[CtxT]):
                 ]
                 merged = stream_concurrent(streams)
                 async for stream_idx, event in merged:
-                    if isinstance(event, ToolOutputEvent):
+                    # Capture the tool's terminal event — its result
+                    # (ToolOutputEvent) or failure (ToolErrorEvent). A sub-agent /
+                    # sub-processor tool's nested tool events bubble through here
+                    # too (so consoles can show them), but its OWN terminal is
+                    # always emitted last.
+                    if isinstance(event, (ToolOutputEvent, ToolErrorEvent)):
                         outputs[immediate[stream_idx][0]] = event.data
                     yield event
 
