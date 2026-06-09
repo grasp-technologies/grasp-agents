@@ -13,8 +13,8 @@ pytest.importorskip("textual")
 
 from textual.widgets import ContentSwitcher
 
-from grasp_agents.tui.app import GraspAgentsApp, _pane_id
-from grasp_agents.tui.demo import build_demo_events
+from grasp_agents.ui.app import GraspAgentsApp, _pane_id
+from grasp_agents.ui.demo import build_demo_events
 
 
 async def _drain(app: GraspAgentsApp) -> None:

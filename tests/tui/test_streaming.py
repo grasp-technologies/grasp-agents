@@ -14,7 +14,6 @@ import pytest
 
 pytest.importorskip("textual")
 
-from grasp_agents.tui.app import GraspAgentsApp, _SelectableStatic
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     LLMStreamEvent,
@@ -26,6 +25,7 @@ from grasp_agents.types.events import (
 )
 from grasp_agents.types.items import FunctionToolOutputItem, OutputMessageItem
 from grasp_agents.types.llm_events import OutputMessageTextPartTextDelta
+from grasp_agents.ui.app import GraspAgentsApp, _SelectableStatic
 
 
 def _llm_delta(text: str, n: int) -> LLMStreamEvent:

@@ -26,8 +26,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from .types.content import InputImage, InputText
-from .types.events import (
+from ..types.content import InputImage, InputText
+from ..types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     Event,
@@ -46,7 +46,7 @@ from .types.events import (
 )
 
 if TYPE_CHECKING:
-    from .types.items import InputMessageItem
+    from ..types.items import InputMessageItem
 
 PALETTE: dict[str, str] = {
     "border_tool_call": "#BEE4F7",
@@ -106,7 +106,7 @@ def render_event(
             p.text for p in (event.data.summary_parts or []) if getattr(p, "text", "")
         ]
         body = "\n".join(parts) or "thinking…"
-        return _panel(
+        return panel(
             "thinking",
             Text(escape(body), style=PALETTE["thinking"]),
             PALETTE["border_thinking"],
@@ -115,7 +115,7 @@ def render_event(
     if isinstance(event, ToolCallItemEvent):
         agent = event.source or "agent"
         tool = event.data.name or "tool"
-        return _panel(
+        return panel(
             f"{escape(agent)} → {escape(tool)}",
             _build_args_renderable(event.data.arguments),
             PALETTE["border_tool_call"],
@@ -129,7 +129,7 @@ def render_event(
         text_out: Any = item.output if isinstance(item.output, str) else item.text
         images = item.images
         if not images or not inline_images:
-            return _panel(
+            return panel(
                 title,
                 _build_result_renderable(
                     text_out, PALETTE["tool_result"], inline_images=inline_images
@@ -143,26 +143,26 @@ def render_event(
             if blocks:
                 blocks.append(Text(""))
             blocks.append(render_input_image(img))
-        return _panel(title, Group(*blocks), PALETTE["border_tool_result"])
+        return panel(title, Group(*blocks), PALETTE["border_tool_result"])
 
     if isinstance(event, ToolErrorEvent):
         info = event.data
         msg = f"✗ {info.error}" + (" (timed out)" if info.timed_out else "")
-        return _panel(
+        return panel(
             info.tool_name,
             Text(msg, style=PALETTE["tool_result"]),
             PALETTE["error"],
         )
 
     if isinstance(event, (UserMessageEvent, SystemMessageEvent)):
-        text = _extract_input_text(event.data)
+        text = extract_input_text(event.data)
         if isinstance(event, SystemMessageEvent):
             label = f"System → {event.source or 'agent'}"
             border = PALETTE["border_system"]
         else:
             label = f"{event.source or 'User'} → {event.destination or 'agent'}"
             border = PALETTE["border_input"]
-        return _panel(label, Text(escape(_truncate_lines(text, _MAX_LINES))), border)
+        return panel(label, Text(escape(truncate_lines(text, _MAX_LINES))), border)
 
     if isinstance(event, GenerationEndEvent):
         return _usage_line(event)
@@ -198,8 +198,8 @@ def render_turn_rule(agent: str, turn: int) -> RenderableType:
 
 def render_tool_stream(agent: str, tool: str, text: str) -> RenderableType:
     """Panel for in-progress (streaming) tool output, before the final result."""
-    body = _truncate_lines(_truncate(text, _TRUNC), _MAX_LINES)
-    return _panel(
+    body = truncate_lines(truncate(text, _TRUNC), _MAX_LINES)
+    return panel(
         f"{escape(agent)} ← {escape(tool)}",
         Text(body or "…", style=PALETTE["tool_result"]),
         PALETTE["border_tool_result"],
@@ -363,7 +363,7 @@ else:
 # ── builders (ported from EventConsole; console.py keeps its own copy) ──
 
 
-def _panel(title: str, body: RenderableType, border: str) -> Panel:
+def panel(title: str, body: RenderableType, border: str) -> Panel:
     return Panel(
         body,
         title=f"[bold {border}]{title}[/]",
@@ -586,12 +586,12 @@ def _build_result_renderable(
             return Group(table, Text(""), render_image(img_path))
         return _kv_table(data, text_color)
     content = _unescape_json_string(str(output))
-    content = _truncate(content, _TRUNC)
+    content = truncate(content, _TRUNC)
     if _looks_like_markdown(content):
         # agent tools often return markdown reports — render them formatted
         return _Markdown(content, code_theme=_code_theme, inline_code_theme=_code_theme)
     lines = [ln for ln in content.split("\n") if ln.strip()]
-    return Text(_truncate_lines("\n".join(lines), _MAX_LINES), style=text_color)
+    return Text(truncate_lines("\n".join(lines), _MAX_LINES), style=text_color)
 
 
 def _kv_table(data: dict[str, Any], text_color: str) -> Table:
@@ -633,7 +633,7 @@ def _format_value(v: Any) -> str:
     return compact
 
 
-def _extract_input_text(msg: InputMessageItem) -> str:
+def extract_input_text(msg: InputMessageItem) -> str:
     parts: list[str] = []
     for part in msg.content_parts:
         if isinstance(part, InputText):
@@ -643,11 +643,11 @@ def _extract_input_text(msg: InputMessageItem) -> str:
     return "\n\n".join(parts)
 
 
-def _truncate(text: str, limit: int) -> str:
+def truncate(text: str, limit: int) -> str:
     return text[:limit] + "…" if len(text) > limit else text
 
 
-def _truncate_lines(text: str, max_lines: int) -> str:
+def truncate_lines(text: str, max_lines: int) -> str:
     if max_lines <= 0:
         return text
     lines = text.split("\n")

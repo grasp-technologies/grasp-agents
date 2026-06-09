@@ -9,9 +9,9 @@ import pytest
 pytest.importorskip("textual")
 pytest.importorskip("PIL")
 
-from grasp_agents.tui.app import GraspAgentsApp, _ImageZoomScreen, _ZoomableImage
 from grasp_agents.types.events import ToolOutputItemEvent
 from grasp_agents.types.items import FunctionToolOutputItem
+from grasp_agents.ui.app import GraspAgentsApp, _ImageZoomScreen, _ZoomableImage
 
 
 async def _one_image_event(png_path: str):

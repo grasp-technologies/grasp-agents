@@ -25,7 +25,6 @@ from pydantic import BaseModel
 from rich.table import Table
 
 from grasp_agents import AgentTool, LLMAgent, RunContext
-from grasp_agents._event_render import _build_result_renderable, _unwrap_json
 from grasp_agents.llm.llm import LLM
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import ToolOutputItemEvent
@@ -43,6 +42,7 @@ from grasp_agents.types.llm_events import (
 )
 from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.types.tool import BaseTool
+from grasp_agents.ui._event_render import _build_result_renderable, _unwrap_json
 
 pytestmark = pytest.mark.asyncio
 

@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from grasp_agents.tui.examples.data_copilot import build_copilot
 from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     ProcPacketOutEvent,
@@ -20,6 +19,7 @@ from grasp_agents.types.events import (
     ToolOutputItemEvent,
     UserMessageEvent,
 )
+from grasp_agents.ui.examples.data_copilot import build_copilot
 
 pytestmark = pytest.mark.integration
 
@@ -146,7 +146,7 @@ async def test_interactive_data_copilot_end_to_end(tmp_path: Path) -> None:
     """The full interactive path the user runs: drive the analyst via the TUI."""
     from textual.widgets import Static
 
-    from grasp_agents.tui.app import GraspAgentsApp, _PromptArea
+    from grasp_agents.ui.app import GraspAgentsApp, _PromptArea
 
     analyst, _ctx = build_copilot(tmp_path, confinement="srt")
     app = GraspAgentsApp(on_submit=analyst.run_stream, main_agent=analyst.name)

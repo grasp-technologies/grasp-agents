@@ -10,7 +10,6 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
-from grasp_agents._event_render import _truncate_lines, render_event, render_image
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
 from grasp_agents.types.events import (
     GenerationEndEvent,
@@ -37,6 +36,7 @@ from grasp_agents.types.response import (
     Response,
     ResponseUsage,
 )
+from grasp_agents.ui._event_render import render_event, render_image, truncate_lines
 
 
 def test_turn_start_is_rule() -> None:
@@ -229,7 +229,7 @@ def test_chafa_symbol_art_when_available(tmp_path) -> None:
 
 
 def test_truncate_lines() -> None:
-    out = _truncate_lines("a\nb\nc\nd", 2)
+    out = truncate_lines("a\nb\nc\nd", 2)
     assert "a" in out
     assert "more lines" in out
 

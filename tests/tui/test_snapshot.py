@@ -17,8 +17,8 @@ pytest.importorskip("pytest_textual_snapshot")
 
 from textual.pilot import Pilot
 
-from grasp_agents.tui.app import GraspAgentsApp
-from grasp_agents.tui.demo import build_demo_events
+from grasp_agents.ui.app import GraspAgentsApp
+from grasp_agents.ui.demo import build_demo_events
 
 
 async def _run_before(pilot: Pilot[None]) -> None:

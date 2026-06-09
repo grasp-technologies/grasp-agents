@@ -38,7 +38,6 @@ from .agent.tool_decision import (
     RejectToolContent,
     ToolCallDecision,
 )
-from .console import EventConsole, stream_events
 from .durability import (
     AgentCheckpoint,
     CheckpointStore,
@@ -157,6 +156,7 @@ from .types.recovery import (
 )
 from .types.response import Response
 from .types.tool import BaseTool, ToolProgressCallback
+from .ui.console import EventConsole, stream_events
 from .utils.schema import exclude_fields
 
 try:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .._event_render import image_path_of, render_event
+from ._event_render import image_path_of, render_event
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

@@ -11,11 +11,11 @@ pytest.importorskip("textual")
 
 from rich.console import Console
 
-from grasp_agents._event_render import image_path_of
-from grasp_agents.tui.demo import build_demo_events, demo_event_list
-from grasp_agents.tui.notebook import render_events_inline, screenshot
 from grasp_agents.types.events import ToolOutputItemEvent
 from grasp_agents.types.items import FunctionToolOutputItem
+from grasp_agents.ui._event_render import image_path_of
+from grasp_agents.ui.demo import build_demo_events, demo_event_list
+from grasp_agents.ui.notebook import render_events_inline, screenshot
 
 
 @pytest.mark.asyncio

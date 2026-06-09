@@ -6,7 +6,6 @@ import pytest
 
 pytest.importorskip("textual")
 
-from grasp_agents.tui.app import GraspAgentsApp, _PromptArea
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     OutputMessageItemEvent,
@@ -16,6 +15,7 @@ from grasp_agents.types.events import (
     TurnStartEvent,
 )
 from grasp_agents.types.items import OutputMessageItem
+from grasp_agents.ui.app import GraspAgentsApp, _PromptArea
 
 
 async def _fake_agent(text: str):

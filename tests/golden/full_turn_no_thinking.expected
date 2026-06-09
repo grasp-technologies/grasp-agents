@@ -1,38 +1,63 @@
 ───────────────────────────── coordinator · turn 1 ─────────────────────────────
 
 Let me research that for you.
-╭─ coordinator → web_search ───────────────────────────────────────────────────╮
-│ query        history of the internet                                         │
-│ max_results  5                                                               │
-╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ coordinator → web_search ──────────────╮
+│                                         │
+│  query         history of the internet  │
+│  ─────────────────────────────────────  │
+│  max_results   5                        │
+│                                         │
+╰─────────────────────────────────────────╯
 
-    claude-sonnet-4-5 · 1,200 in · 800 cached · 350 out · 200 thinking · $0.0043
+    claude-sonnet-4-5 · 1,500 in · 900 cached · 220 out · 120 thinking · $0.0043
 
 ╭─ agent ← coordinator ────────────────────────────────────────────────────────╮
-│ 1. ARPANET (1969): First network to use packet switching                     │
-│ 2. TCP/IP (1983): Standard protocol adopted                                  │
-│ 3. World Wide Web (1991): Tim Berners-Lee at CERN                            │
+│                                                                              │
+│                                                                              │
+│   1 ARPANET (1969): first packet-switching network                           │
+│   2 TCP/IP (1983): standard protocol adopted                                 │
+│   3 World Wide Web (1991): Tim Berners-Lee at CERN                           │
+│                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 ───────────────────────────── coordinator · turn 2 ─────────────────────────────
 
-╭─ coordinator → write_document ───────────────────────────────────────────────╮
-│ title    Internet History                                                    │
-│ content  The Internet traces its origins to ARPANET...                       │
-│ format   markdown                                                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ coordinator → write_document ────────────────────────────╮
+│                                                           │
+│  title     Internet History                               │
+│  ───────────────────────────────────────────────────────  │
+│  content   The Internet traces its origins to ARPANET...  │
+│  ───────────────────────────────────────────────────────  │
+│  format    markdown                                       │
+│                                                           │
+╰───────────────────────────────────────────────────────────╯
 
-      claude-sonnet-4-5 · 2,100 in · 1,500 cached · 180 out · $0.0067  Σ $0.0110
+ claude-sonnet-4-5 · 1,500 in · 900 cached · 220 out · 120 thinking · $0.0067  Σ
+                                                                         $0.0110
 
-╭─ agent ← coordinator ────────────────────────────────────────────────────────╮
-│ Document saved: internet_history.md                                          │
-╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ agent ← coordinator ─────────────────╮
+│                                       │
+│  Document saved: internet_history.md  │
+│                                       │
+╰───────────────────────────────────────╯
+✓ index_sources completed (id: bg_1)
 
-╭─ coordinator → publish ──────────────────────────────────────────────────────╮
-│ target  blog                                                                 │
-╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ coordinator → publish ─╮
+│                         │
+│  target   blog          │
+│                         │
+╰─────────────────────────╯
 
-╭─ publish ────────────────────────────────────────────────────────────────────╮
-│ ✗ Authentication failed: invalid API key                                     │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ claude-sonnet-4-5 · 1,500 in · 900 cached · 220 out · 120 thinking · $0.0032  Σ
+                                                                         $0.0142
+
+
+╭─ publish ──────────────────────────────────╮
+│                                            │
+│  ✗ Authentication failed: invalid API key  │
+│                                            │
+╰────────────────────────────────────────────╯
+───────────────────────────── coordinator · turn 3 ─────────────────────────────
+
+Error: Connection reset by peer
 stopped: max_turns

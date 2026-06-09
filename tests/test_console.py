@@ -7,14 +7,6 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from grasp_agents.console import (
-    EventConsole,
-    _extract_input_text,
-    _truncate,
-    _truncate_lines,
-    _unescape_json_string,
-    stream_events,
-)
 from grasp_agents.types.content import InputImage, InputText, OutputMessageText
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -55,6 +47,13 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
 )
 from grasp_agents.types.response import Response, ResponseUsage
+from grasp_agents.ui._event_render import (
+    _unescape_json_string,
+    extract_input_text,
+    truncate,
+    truncate_lines,
+)
+from grasp_agents.ui.console import EventConsole, stream_events
 
 
 def _make_console() -> tuple[EventConsole, StringIO]:
@@ -95,7 +94,7 @@ async def _collect(ec: EventConsole, events: list[Event[Any]]) -> list[Event[Any
 class TestHelpers:
     def test_extract_input_text(self):
         msg = InputMessageItem.from_text("Hello world", role="user")
-        assert _extract_input_text(msg) == "Hello world"
+        assert extract_input_text(msg) == "Hello world"
 
     def test_extract_input_text_with_image(self):
         msg = InputMessageItem(
@@ -105,7 +104,7 @@ class TestHelpers:
             ],
             role="user",
         )
-        text = _extract_input_text(msg)
+        text = extract_input_text(msg)
         assert "Look at this" in text
         assert "https://example.com/pic.jpg" in text
 
@@ -114,13 +113,13 @@ class TestHelpers:
             content_parts=[InputImage.from_base64("abc123")],
             role="user",
         )
-        assert "[image]" in _extract_input_text(msg)
+        assert "[image]" in extract_input_text(msg)
 
     def test_truncate_short(self):
-        assert _truncate("short", 100) == "short"
+        assert truncate("short", 100) == "short"
 
     def test_truncate_long(self):
-        result = _truncate("a" * 200, 50)
+        result = truncate("a" * 200, 50)
         assert len(result) == 51  # 50 + "…"
         assert result.endswith("…")
 
@@ -134,13 +133,13 @@ class TestHelpers:
         assert '"a": 1' in result
 
     def test_truncate_lines_short(self):
-        assert _truncate_lines("a\nb\nc", 5) == "a\nb\nc"
+        assert truncate_lines("a\nb\nc", 5) == "a\nb\nc"
 
     def test_truncate_lines_exact(self):
-        assert _truncate_lines("a\nb\nc", 3) == "a\nb\nc"
+        assert truncate_lines("a\nb\nc", 3) == "a\nb\nc"
 
     def test_truncate_lines_over(self):
-        result = _truncate_lines("a\nb\nc\nd\ne", 3)
+        result = truncate_lines("a\nb\nc\nd\ne", 3)
         assert result == "a\nb\nc\n… 2 more lines"
 
 

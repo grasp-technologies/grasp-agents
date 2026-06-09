@@ -19,7 +19,7 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.events import MouseMove
 
-from grasp_agents.tui.app import GRASP_DARK, _SelectableStatic
+from grasp_agents.ui.app import GRASP_DARK, _SelectableStatic
 
 _PANEL_TEXT = "ALPHA BETA GAMMA DELTA"
 

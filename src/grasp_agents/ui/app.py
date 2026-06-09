@@ -12,7 +12,7 @@ Two modes:
 
 Run the demo::
 
-    python -m grasp_agents.tui.demo
+    python -m grasp_agents.ui.demo --tui
 """
 
 from __future__ import annotations
@@ -47,16 +47,6 @@ from textual.widgets import (
 )
 from textual.worker import Worker
 
-from .._event_render import (
-    event_images,
-    image_to_pil,
-    render_event,
-    render_image,
-    render_input_image,
-    render_tool_stream,
-    render_turn_rule,
-    set_markup_theme,
-)
 from ..types.content import InputImage
 from ..types.events import (
     BackgroundTaskCompletedEvent,
@@ -78,6 +68,16 @@ from ..types.events import (
     UserMessageEvent,
 )
 from ..types.llm_events import OutputMessageTextPartTextDelta
+from ._event_render import (
+    event_images,
+    image_to_pil,
+    render_event,
+    render_image,
+    render_input_image,
+    render_tool_stream,
+    render_turn_rule,
+    set_markup_theme,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
