@@ -176,7 +176,7 @@ def render_event(
         return panel(label, _message_body(text), border)
 
     if isinstance(event, GenerationEndEvent):
-        return _usage_line(event)
+        return usage_line(event)
 
     if isinstance(event, BackgroundTaskLaunchedEvent):
         i = event.data
@@ -443,7 +443,12 @@ def panel(title: str, body: RenderableType, border: str) -> Panel:
     )
 
 
-def _usage_line(event: GenerationEndEvent) -> RenderableType | None:
+def usage_line(
+    event: GenerationEndEvent,
+    *,
+    total_cost: float = 0.0,
+    generation_count: int = 0,
+) -> RenderableType | None:
     usage = event.data.usage_with_cost
     if not usage:
         return None
@@ -459,6 +464,10 @@ def _usage_line(event: GenerationEndEvent) -> RenderableType | None:
         parts.append(f"${usage.cost:.4f}")
     model = event.data.model or ""
     line = f"{model} · {' · '.join(parts)}" if parts else model
+    # Running session total, shown once more than one generation has cost — the
+    # caller threads it through (the renderer itself is stateless).
+    if generation_count > 1 and total_cost > 0:
+        line += f"  Σ ${total_cost:.4f}"
     return Text(line, style=f"italic {PALETTE['usage']}")
 
 

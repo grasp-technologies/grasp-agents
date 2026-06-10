@@ -85,6 +85,7 @@ from ._event_render import (
     render_tool_stream,
     render_turn_rule,
     set_markup_theme,
+    usage_line,
 )
 
 if TYPE_CHECKING:
@@ -473,6 +474,10 @@ class GraspAgentsApp(App[None]):
         self._ga_parent: dict[str, str] = {}
         self._ga_follow = False
         self._ga_worker: Worker[None] | None = None
+        # Session-wide cost roll-up across all agents, mirrored from the console:
+        # each generation shows its own cost, plus a running Σ total once >1.
+        self._ga_total_cost = 0.0
+        self._ga_gen_count = 0
         # live-streaming widgets per owner (LLM tokens / reasoning / tool output),
         # finalised by the matching item event; empty when the agent isn't streaming
         self._ga_stream_msg: dict[str, _SelectableStatic] = {}
@@ -797,6 +802,19 @@ class GraspAgentsApp(App[None]):
         if at_bottom:
             pane.scroll_end(animate=False)
 
+    def _usage_text(self, event: GenerationEndEvent) -> RenderableType | None:
+        """Per-request usage line + a running session Σ total, like the console."""
+        usage = event.data.usage_with_cost
+        if usage:
+            self._ga_gen_count += 1
+            if usage.cost:
+                self._ga_total_cost += usage.cost
+        return usage_line(
+            event,
+            total_cost=self._ga_total_cost,
+            generation_count=self._ga_gen_count,
+        )
+
     async def _feed_item(
         self, event: Event[Any], owner: str, pane: VerticalScroll, at_bottom: bool
     ) -> None:
@@ -811,6 +829,8 @@ class GraspAgentsApp(App[None]):
             # each step, so two consecutive turns can both read turn=0
             self._ga_turns[owner] = self._ga_turns.get(owner, 0) + 1
             text = render_turn_rule(owner, self._ga_turns[owner])
+        elif isinstance(event, GenerationEndEvent):
+            text = self._usage_text(event)
         else:
             text = render_event(event, inline_images=False)
         images = event_images(event)
