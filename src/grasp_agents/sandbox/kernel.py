@@ -23,6 +23,7 @@ model.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -68,8 +69,7 @@ class CellResult:
     timed_out: bool = False
 
 
-@runtime_checkable
-class KernelSession(Protocol):
+class KernelSession(ABC):
     """
     A live language kernel opened from a :class:`KernelCapable` backend.
 
@@ -80,11 +80,13 @@ class KernelSession(Protocol):
     """
 
     @property
+    @abstractmethod
     def closed(self) -> bool:
         """True once the kernel has exited or been closed; reopen via the backend."""
         ...
 
     @property
+    @abstractmethod
     def context_id(self) -> str | None:
         """
         Durable id of this kernel's state, or ``None`` for kernels that cannot
@@ -94,6 +96,7 @@ class KernelSession(Protocol):
         """
         ...
 
+    @abstractmethod
     def execute(
         self, code: str, *, timeout: float | None = None
     ) -> AsyncIterator[CellOutput | CellResult]:
@@ -105,14 +108,17 @@ class KernelSession(Protocol):
         """
         ...
 
+    @abstractmethod
     async def interrupt(self) -> None:
         """Interrupt the currently-running cell (kernel stays alive)."""
         ...
 
+    @abstractmethod
     async def restart(self) -> None:
         """Restart the kernel, clearing all in-memory state."""
         ...
 
+    @abstractmethod
     async def close(self) -> None:
         """Terminate the kernel and release it."""
         ...

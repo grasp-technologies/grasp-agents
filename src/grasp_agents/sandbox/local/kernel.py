@@ -35,7 +35,7 @@ import signal
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..kernel import CellOutput, CellResult
+from ..kernel import CellOutput, CellResult, KernelSession
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -74,7 +74,7 @@ async def _recv_iopub(
             return msg
 
 
-class LocalKernel:
+class LocalKernel(KernelSession):
     """A local ``jupyter_client`` kernel. See the module docstring for the contract."""
 
     def __init__(

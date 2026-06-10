@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from e2b import TimeoutException
 
-from ..kernel import CellOutput, CellResult
+from ..kernel import CellOutput, CellResult, KernelSession
 from ._handle import DEFAULT_EXEC_TIMEOUT
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ def _execution_to_cell_outputs(execution: Execution) -> list[CellOutput]:
     return outs
 
 
-class E2BKernel:
+class E2BKernel(KernelSession):
     """
     A Jupyter kernel on an E2B code-interpreter sandbox (a ``KernelSession``).
 

@@ -6,6 +6,7 @@ plus the optional :class:`SnapshotCapable` durability capability.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 if TYPE_CHECKING:
@@ -33,8 +34,7 @@ class SnapshotCapable(Protocol):
     async def restore(self, ref: str) -> None: ...
 
 
-@runtime_checkable
-class ExecutionEnvironment(Protocol):
+class ExecutionEnvironment(ABC):
     """
     One boundary owning two co-located surfaces plus a shared policy.
 
@@ -47,16 +47,21 @@ class ExecutionEnvironment(Protocol):
     """
 
     @property
+    @abstractmethod
     def policy(self) -> SandboxPolicy: ...
 
     @property
+    @abstractmethod
     def file_backend(self) -> FileBackend: ...
 
     @property
+    @abstractmethod
     def exec_backend(self) -> ExecBackend | None: ...
 
+    @abstractmethod
     async def __aenter__(self) -> Self: ...
 
+    @abstractmethod
     async def __aexit__(self, *exc: object) -> None: ...
 
 

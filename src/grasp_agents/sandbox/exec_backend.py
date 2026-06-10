@@ -122,8 +122,7 @@ class ExecBackend(ABC):
         ...
 
 
-@runtime_checkable
-class ExecSession(Protocol):
+class ExecSession(ABC):
     """
     A persistent, stateful shell opened from a :class:`SessionCapable` backend.
 
@@ -135,13 +134,16 @@ class ExecSession(Protocol):
     """
 
     @property
+    @abstractmethod
     def backend(self) -> str: ...
 
     @property
+    @abstractmethod
     def closed(self) -> bool:
         """True once the shell has exited or been closed; reopen via the backend."""
         ...
 
+    @abstractmethod
     def run(
         self, command: str, *, timeout: float | None = None
     ) -> AsyncIterator[ExecChunk | ExecResult]:
@@ -153,6 +155,7 @@ class ExecSession(Protocol):
         """
         ...
 
+    @abstractmethod
     async def close(self) -> None:
         """Terminate the shell and release it."""
         ...
