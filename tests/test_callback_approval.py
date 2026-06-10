@@ -300,9 +300,9 @@ class TestDenyPath:
         """
         ``deny_message`` template is formatted with ``name`` + ``arguments``.
 
-        ``FunctionToolOutputItem.from_tool_result`` JSON-encodes the
-        string, so ``.text`` will contain escaped quotes; we just check
-        that both template placeholders got substituted.
+        The formatted message is a string result, so it reaches the model as
+        text verbatim (``from_tool_result`` no longer JSON-re-encodes a string,
+        which would have escaped the embedded ``arguments`` quotes).
         """
         _invocations.clear()
         responses = [
@@ -326,9 +326,8 @@ class TestDenyPath:
         text = outs[0].text
         # {name} substituted
         assert "Blocked echo with args" in text
-        # {arguments} substituted (content visible through JSON escaping)
-        assert "text" in text
-        assert '\\"x\\"' in text
+        # {arguments} substituted verbatim (no JSON re-escaping of the string)
+        assert '{"text":"x"}' in text
 
 
 class TestToolNameFilter:

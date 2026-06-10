@@ -274,7 +274,7 @@ async def test_v1_checkpoint_loads_with_empty_ledger() -> None:
             "read_file_state",
             "dotfile_overrides",
             "fs_snapshot_ref",
-            "code_context_id",
+            "exec_context_id",
         }
     )
     payload["schema_version"] = 1
@@ -282,7 +282,7 @@ async def test_v1_checkpoint_loads_with_empty_ledger() -> None:
     assert checkpoint.read_file_state == {}
     assert checkpoint.dotfile_overrides == []
     assert checkpoint.fs_snapshot_ref is None
-    assert checkpoint.code_context_id is None
+    assert checkpoint.exec_context_id is None
 
 
 # ---------- fs_snapshot policy ----------
@@ -390,7 +390,7 @@ async def test_resume_with_ref_but_incapable_environment_raises(
 # ---------- Resume re-attaches the RunPython kernel ----------
 
 
-async def test_code_context_id_round_trips_through_checkpoint(tmp_path: Path) -> None:
+async def test_exec_context_id_round_trips_through_checkpoint(tmp_path: Path) -> None:
     """
     The RunPython kernel's context id is captured with the FS snapshot and
     re-seeds the resumed loop's holder. (The actual kernel re-attach is an E2B
@@ -408,7 +408,7 @@ async def test_code_context_id_round_trips_through_checkpoint(tmp_path: Path) ->
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).code_context_id == "ctx-abc"
+    assert (await _stored_checkpoint(store)).exec_context_id == "ctx-abc"
 
     # Fresh process: resume re-seeds the new loop's holder with the same id, so
     # the next RunPython re-attaches instead of opening a fresh context.
@@ -421,7 +421,7 @@ async def test_code_context_id_round_trips_through_checkpoint(tmp_path: Path) ->
     assert resumed_holder.context_id == "ctx-abc"
 
 
-async def test_code_context_id_not_captured_without_fs_snapshot(
+async def test_exec_context_id_not_captured_without_fs_snapshot(
     tmp_path: Path,
 ) -> None:
     """
@@ -439,4 +439,4 @@ async def test_code_context_id_not_captured_without_fs_snapshot(
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).code_context_id is None
+    assert (await _stored_checkpoint(store)).exec_context_id is None
