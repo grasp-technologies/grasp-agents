@@ -218,9 +218,32 @@ def render_turn_rule(agent: str, turn: int) -> RenderableType:
     return Rule(f"[bold]{escape(agent)}[/] · turn {turn}", style=PALETTE["separator"])
 
 
-def render_tool_stream(agent: str, tool: str, text: str) -> RenderableType:
-    """Panel for in-progress (streaming) tool output, before the final result."""
-    body = truncate_lines(truncate(text, _TRUNC), _MAX_LINES)
+def render_tool_stream(
+    agent: str,
+    tool: str,
+    text: str,
+    *,
+    background: bool = False,
+    log_name: str | None = None,
+) -> RenderableType:
+    """
+    Panel for in-progress (streaming) tool output, before the final result.
+
+    ``background=True`` marks a backgrounded task's live output: it is progress
+    mirrored to the task's log, NOT a result in the agent's context (the agent
+    receives only a summary when the task finishes). It is styled distinctly —
+    muted, headed by the log file (``tool · <log_name>``) rather than an
+    ``agent ← tool`` result arrow — so it is not mistaken for a tool result the
+    agent actually saw. ``log_name`` is that log's basename, when one is written.
+    """
+    # Strip the trailing newline (tool output usually ends in one) so the box
+    # hugs its content at the bottom instead of showing a blank line above the
+    # panel's own padding — matching the finalised result panel.
+    body = truncate_lines(truncate(text.rstrip("\n"), _TRUNC), _MAX_LINES)
+    if background:
+        muted = PALETTE["muted"]
+        title = f"{escape(tool)} · {escape(log_name)}" if log_name else escape(tool)
+        return panel(title, Text(body or "…", style=muted), muted)
     return panel(
         f"{escape(agent)} ← {escape(tool)}",
         Text(body or "…", style=PALETTE["tool_result"]),

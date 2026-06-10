@@ -8,8 +8,7 @@ Built-in tool packages for grasp-agents.
 - :class:`BashSession` — run a command in a persistent shell session.
 - :class:`RunCell` — execute a notebook code cell in a live kernel.
 - :class:`RunPython` — run ad-hoc Python in a live kernel (code-interpreter).
-- :class:`TaskOutput` / :class:`KillTask` — poll / stop any backgrounded tool
-  call by its ``task_id``.
+- :class:`KillTask` — stop any backgrounded tool call by its ``task_id``.
 
 These are imported lazily (PEP 562) so importing :mod:`grasp_agents.tools`
 doesn't pull in the file tools (and their ripgrep-availability checks) or the
@@ -32,7 +31,7 @@ if TYPE_CHECKING:
     from .code_interpreter import RunPython, RunPythonInput
     from .file_toolkit import FileToolkit
     from .notebook_exec import RunCell, RunCellInput
-    from .task_tools import KillTask, TaskOutput
+    from .task_tools import KillTask
 
 
 _LAZY: dict[str, str] = {
@@ -47,7 +46,6 @@ _LAZY: dict[str, str] = {
     "RunCell": "notebook_exec",
     "RunCellInput": "notebook_exec",
     "KillTask": "task_tools",
-    "TaskOutput": "task_tools",
 }
 
 
@@ -72,6 +70,5 @@ __all__ = [
     "RunCellInput",
     "RunPython",
     "RunPythonInput",
-    "TaskOutput",
     "bash_tools",
 ]

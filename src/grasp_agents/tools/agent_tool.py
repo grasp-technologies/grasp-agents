@@ -95,7 +95,6 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         max_retries: int = 0,
         env_info: bool | SystemPromptSection = True,
         stream_llm: bool = False,
-        stream_tools: bool = False,
         enable_memory: bool = False,
         enable_skills: bool = False,
         time_aware: bool | InputAttachment = False,
@@ -127,7 +126,6 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
         self._time_aware = time_aware
 
         self.stream_llm = stream_llm
-        self.stream_tools = stream_tools
 
         self._in_type = AgentToolInput
         self._out_type = str
@@ -228,7 +226,6 @@ class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
             enable_skills=self._enable_skills,
             time_aware=self._time_aware,
             stream_llm=self.stream_llm,
-            stream_tools=self.stream_tools,
         )
         # Adopt the tool's tracing settings (excludes + enabled, themselves
         # inherited from the host) and stamp the per-call path lineage.

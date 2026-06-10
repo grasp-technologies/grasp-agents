@@ -195,6 +195,21 @@ class FileBackend(ABC):
         """
         ...
 
+    async def append_bytes(self, path: Path, data: bytes, *, mode: int) -> float:
+        """
+        Append ``data`` to ``path`` (creating it if absent); return the mtime.
+
+        Concrete default — read-concat-overwrite via :meth:`write_bytes`, so it
+        works on any backend at the cost of rewriting the whole file. Backends
+        that can append in place (e.g. a local filesystem) override this with a
+        true O(len(data)) append; the incremental background-task progress log
+        relies on that to avoid O(n²) rewrites over a long run.
+        """
+        existing = b""
+        if await self.exists(path):
+            existing, _ = await self.read_bytes(path)
+        return await self.write_bytes(path, existing + data, mode=mode, overwrite=True)
+
     @abstractmethod
     async def delete(self, path: Path) -> None:
         """Remove ``path``. Callers clear their read record separately."""

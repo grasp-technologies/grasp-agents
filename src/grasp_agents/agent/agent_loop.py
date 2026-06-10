@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from copy import deepcopy
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, Final, Generic, Protocol
@@ -133,7 +134,6 @@ class AgentLoop(Generic[CtxT]):
     final_answer_as_tool_call: Final[bool]
     tracing_exclude_input_fields: Final[set[str] | None]
     stream_llm: Final[bool]
-    stream_tools: Final[bool]
 
     # Mutable state
     # Agent-scope state (transcript, tools, bg_tasks, file_edit_state,
@@ -168,11 +168,11 @@ class AgentLoop(Generic[CtxT]):
         ctx: RunContext[CtxT],
         llm_output_schema: Any | None = None,
         max_turns: int,
+        run_timeout: float | None = None,
         force_react_mode: bool = False,
         final_answer_type: type[BaseModel] = BaseModel,
         final_answer_as_tool_call: bool = False,
         stream_llm: bool = True,
-        stream_tools: bool = False,
         path: list[str] | None = None,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -186,9 +186,13 @@ class AgentLoop(Generic[CtxT]):
         self.agent_name = agent_name
         self.llm = llm
         self.max_turns = max_turns
+        # Wall-clock budget for one ``execute_stream`` run, checked at turn
+        # boundaries (JUDGE). ``None`` = unbounded. ``_deadline`` is the
+        # monotonic stamp set per run.
+        self.run_timeout = run_timeout
+        self._deadline: float | None = None
 
         self.stream_llm = stream_llm
-        self.stream_tools = stream_tools
 
         self.force_react_mode = force_react_mode
         self.final_answer_type = final_answer_type
@@ -257,6 +261,7 @@ class AgentLoop(Generic[CtxT]):
             transcript=transcript,
             tools=tools_dict,
             bg_tasks=bg_tasks,
+            agent_name=agent_name,
         )
 
     @property
@@ -628,20 +633,17 @@ class AgentLoop(Generic[CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         # Tool call events are now emitted from query_llm via OutputItemDone promotion
 
-        # Resolve inputs and partition the calls by *when* they background
-        # (whether they then gate the final answer is the tool's
-        # ``blocks_final_answer``, applied uniformly inside the manager):
-        #  • auto_background_at == 0 → launched in the background now (e.g. a
-        #    sub-agent), via the manager's ``spawn``;
-        #  • auto_background_at > 0 → run in the foreground, but moved to the
-        #    background as a pollable task if it outlives the deadline (manager's
-        #    ``run_with_deadline`` — e.g. a long shell command);
-        #  • else (None) → a plain foreground call (the immediate batch).
+        # Resolve inputs and partition the calls by whether they background at
+        # all (``auto_background_at is not None``). The manager owns *when* a
+        # backgroundable call hands off (immediately for ``0``, after a deadline
+        # race for a positive value) and whether it then gates the final answer
+        # (the tool's ``blocks_final_answer``); the loop just routes it there.
+        # Everything else is a plain foreground call (the immediate batch).
         outputs: list[Any] = [None] * len(calls)
         immediate: list[
             tuple[int, FunctionToolCallItem, BaseTool[BaseModel, Any, CtxT], BaseModel]
         ] = []
-        deadline: list[
+        backgroundable: list[
             tuple[int, FunctionToolCallItem, BaseTool[BaseModel, Any, CtxT], BaseModel]
         ] = []
         # Per-call sentinel: True means a synthesized tool_result is
@@ -660,32 +662,18 @@ class AgentLoop(Generic[CtxT]):
                 continue
             tool = self.tools[call.name]
             inp = await self._convert_tool_input(call, exec_id=exec_id)
-            abg = tool.auto_background_at
-            if abg == 0:
-                # Launch now; whether it gates the final answer is the tool's
-                # own ``blocks_final_answer`` (read inside ``spawn``).
-                note, event = await self.bg_tasks.spawn(
-                    call,
-                    tool,
-                    inp,
-                    ctx=self._ctx,
-                    exec_id=exec_id,
-                    agent_ctx=self._agent_ctx,
-                )
-                yield event
-                outputs[i] = note
-            elif abg is not None:
-                deadline.append((i, call, tool, inp))
+            if tool.auto_background_at is not None:
+                backgroundable.append((i, call, tool, inp))
             else:
                 immediate.append((i, call, tool, inp))
 
-        # Launch deadline-eligible calls now so they race their own
+        # Launch backgroundable calls now so each races its own
         # ``auto_background_at`` concurrently with the immediate batch. The
-        # manager owns the race: it returns the result if the call finishes in
-        # time, else sidelines it as a non-blocking pollable task + a note.
-        deadline_tasks: dict[int, asyncio.Task[Any]] = {
+        # manager returns the result if the call finished in the foreground,
+        # else a launch note + a ``BackgroundTaskLaunchedEvent`` to bubble.
+        bg_tasks_async: dict[int, asyncio.Task[Any]] = {
             i: asyncio.create_task(
-                self.bg_tasks.run_with_deadline(
+                self.bg_tasks.run_backgroundable(
                     call,
                     tool,
                     inp,
@@ -694,11 +682,17 @@ class AgentLoop(Generic[CtxT]):
                     agent_ctx=self._agent_ctx,
                 )
             )
-            for i, call, tool, inp in deadline
+            for i, call, tool, inp in backgroundable
         }
 
         try:
-            if immediate and self.stream_tools:
+            if immediate:
+                # Foreground tools always run through ``run_stream`` so a
+                # streaming tool's incremental events — and a sub-agent /
+                # processor tool's nested events — bubble live. A non-streaming
+                # tool's default ``run_stream`` just yields its single terminal
+                # event, so nothing is lost; ``run`` stays the direct path for
+                # tests / debugging.
                 streams = [
                     tool.run_stream(
                         inp=inp,
@@ -731,44 +725,21 @@ class AgentLoop(Generic[CtxT]):
                         err.exception,
                     )
 
-            elif immediate:
-                results = await asyncio.gather(
-                    *[
-                        tool.run(
-                            inp,
-                            ctx=self._ctx,
-                            exec_id=exec_id,
-                            path=make_tool_call_path(self.path, call.call_id),
-                            agent_ctx=self._agent_ctx,
-                        )
-                        for _, call, tool, inp in immediate
-                    ],
-                    return_exceptions=True,
-                )
-                for (i, _call, t, _inp), result in zip(immediate, results, strict=True):
-                    if isinstance(result, BaseException):
-                        outputs[i] = f"Tool '{t.name}' failed: {result}"
-                        logger.warning(
-                            "Tool '%s' (call index %d) failed: %r", t.name, i, result
-                        )
-                    else:
-                        outputs[i] = result
-
-            # Collect deadline results — each already raced its own deadline
-            # concurrently with the immediate batch (finished foreground, or
-            # backgrounded into ``bg_tasks`` and returned a launch note + a
-            # ``BackgroundTaskLaunchedEvent`` to bubble, as a spawned task does).
-            for i, deadline_task in deadline_tasks.items():
-                outputs[i], launched = await deadline_task
+            # Collect backgroundable results — each already raced its own
+            # deadline concurrently with the immediate batch (finished in the
+            # foreground, or backgrounded into ``bg_tasks`` and returned a launch
+            # note + a ``BackgroundTaskLaunchedEvent`` to bubble).
+            for i, bg_task in bg_tasks_async.items():
+                outputs[i], launched = await bg_task
                 if launched is not None:
                     yield launched
         finally:
-            # On cancellation (turn abort), don't leak a deadline call still
-            # racing in the foreground (an already-backgrounded one is done here
-            # and lives on under ``bg_tasks``).
-            for deadline_task in deadline_tasks.values():
-                if not deadline_task.done():
-                    deadline_task.cancel()
+            # On cancellation (turn abort), don't leak a call still racing in the
+            # foreground (an already-backgrounded one is done here and lives on
+            # under ``bg_tasks``).
+            for bg_task in bg_tasks_async.values():
+                if not bg_task.done():
+                    bg_task.cancel()
 
         tool_messages: list[FunctionToolOutputItem] = []
 
@@ -880,6 +851,8 @@ class AgentLoop(Generic[CtxT]):
             turn=self.turn,
             max_turns=self.max_turns,
             bg_tasks_pending=self.bg_tasks.has_pending,
+            deadline_exceeded=self._deadline is not None
+            and time.monotonic() >= self._deadline,
         )
 
     def _close_dangling_tool_calls(
@@ -938,13 +911,16 @@ class AgentLoop(Generic[CtxT]):
         response: Response,
         *,
         exec_id: str,
+        stop_reason: StopReason,
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         """
-        ``NextStepForceFinalAnswer``: turn budget exhausted.
+        ``NextStepForceFinalAnswer``: budget exhausted (turn count or the run's
+        wall-clock deadline).
 
-        Cancels background tasks, closes dangling tool calls, force-generates
-        a final answer, and ends the loop with ``stop_reason=MAX_TURNS``.
+        Cancels background tasks, closes dangling tool calls, force-generates a
+        final answer, and ends the loop with the given ``stop_reason``
+        (``MAX_TURNS`` or ``TIMEOUT``).
         """
         await self.bg_tasks.cancel_all(ctx=self._ctx)
         self._close_dangling_tool_calls(response)
@@ -967,14 +943,20 @@ class AgentLoop(Generic[CtxT]):
             data=TurnEndInfo(
                 turn=self.turn,
                 had_tool_calls=False,
-                stop_reason=StopReason.MAX_TURNS,
+                stop_reason=stop_reason,
             ),
         )
 
-        logger.info(
-            "Max turns reached: %s. Exiting the tool call loop.",
-            self.max_turns,
-        )
+        if stop_reason is StopReason.TIMEOUT:
+            logger.info(
+                "Run timeout reached: %ss. Forcing a final answer.",
+                self.run_timeout,
+            )
+        else:
+            logger.info(
+                "Max turns reached: %s. Exiting the tool call loop.",
+                self.max_turns,
+            )
 
     async def _handle_run_tools(
         self,
@@ -1136,6 +1118,11 @@ class AgentLoop(Generic[CtxT]):
     ) -> AsyncIterator[Event[Any]]:
         had_tool_calls = False
         self.final_answer = None
+        self._deadline = (
+            time.monotonic() + self.run_timeout
+            if self.run_timeout is not None
+            else None
+        )
 
         try:
             # Checkpoint after input memorization (new step only)
@@ -1156,11 +1143,11 @@ class AgentLoop(Generic[CtxT]):
                 if self.turn > 0 and not had_tool_calls:
                     await self.bg_tasks.wait_idle()
 
-                # Mirror live background output to its .grasp/tasks log before
-                # draining, so a completing task's note can point at a current
-                # file and a crash leaves a recoverable trace.
-                await self.bg_tasks.flush_progress(ctx=self._ctx)
-
+                # Drain backgrounded tasks at the turn boundary: bubble their new
+                # events as live progress, mirror stream output to the .grasp
+                # logs (so a crash leaves a recoverable trace and a completing
+                # task's note points at a current file), and deliver completion
+                # notes.
                 async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
                     yield event
 
@@ -1200,6 +1187,7 @@ class AgentLoop(Generic[CtxT]):
                     async for event in self._handle_force_final_answer(
                         response,
                         exec_id=exec_id,
+                        stop_reason=step.stop_reason,
                         extra_llm_settings=deepcopy(extra_llm_settings or {}),
                     ):
                         yield event

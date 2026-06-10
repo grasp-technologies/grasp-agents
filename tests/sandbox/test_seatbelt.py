@@ -22,6 +22,7 @@ Three tiers:
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,7 @@ from grasp_agents.sandbox.local import seatbelt as seatbelt_mod
 from ._bg_harness import (
     background,
     drain_notes,
+    flush,
     kill,
     make_stack,
     marker_size,
@@ -330,12 +332,12 @@ async def test_seatbelt_network_all_allows_live(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
 
-# --- live backgrounding (manager + Bash + TaskOutput / KillTask) -------------
+# --- live backgrounding (manager + Bash + KillTask) --------------------------
 #
 # The same flow test_bash_polish exercises against an unconfined local
 # subprocess, here under a real Seatbelt profile: a long Bash command outlives
-# its deadline → the manager sidelines it → poll incremental output via
-# TaskOutput → it completes / is killed (the process group dies via the shared
+# its deadline → the manager sidelines it → it completes (output read off its
+# buffered events) / is killed (the process group dies via the shared
 # supervisor's killpg, same as the unconfined backend).
 
 
@@ -407,14 +409,14 @@ async def test_seatbelt_background_small_result_inlined(tmp_path: Path) -> None:
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "hello" in notes[0]
-    assert "TaskOutput" not in notes[0]
+    assert "omitted" not in notes[0]  # small result inlined whole, not excerpted
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
 async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> None:
-    # Cap-and-defer under Seatbelt: a large result is excerpted in the note and
-    # the task retained for a full TaskOutput read.
+    # Cap-and-defer under Seatbelt: a large result is excerpted in the note,
+    # which points at the task's .grasp log holding the full output.
     env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
     ctx: RunContext[None] = RunContext(environment=env)
     agent_ctx, mgr = make_stack()
@@ -434,13 +436,14 @@ async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> Non
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "chars omitted" in notes[0]
-    assert "TaskOutput" in notes[0]
-    assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+    assert "<output_file>" in notes[0]
+    assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
-    _collected, out = await poll_until_done(mgr, task_id, tries=4, delay=0.1)
-    assert out.status == "completed"
-    assert out.result is not None
-    assert out.result.stdout.count("A") == 5000
+    # The full, untruncated output is in the .grasp log the note points at.
+    match = re.search(r"<output_file>(.+?)</output_file>", notes[0], re.DOTALL)
+    assert match is not None
+    log_text, _ = await env.file_backend.read_text(Path(match.group(1).strip()))
+    assert log_text.count("A") == 5000
 
 
 @pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
@@ -463,7 +466,7 @@ async def test_seatbelt_background_writes_greppable_log(tmp_path: Path) -> None:
     assert task_id is not None
 
     await asyncio.sleep(0.3)
-    await mgr.flush_progress(ctx)
+    await flush(mgr, ctx)
 
     keys = await store.list_keys(task_prefix("s1"))
     rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")

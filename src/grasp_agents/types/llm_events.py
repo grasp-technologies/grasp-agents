@@ -359,10 +359,16 @@ class LlmError(ResponseErrorEvent):
 
 class ResponseRetrying(BaseModel):
     """
-    A response attempt failed validation; a retry will follow.
+    A response attempt failed (validation or a transient API error); a retry
+    will follow.
 
-    Signals to stream consumers that the preceding events belong to a failed
-    attempt and should be discarded (e.g. clear partial output in the UI).
+    Discard contract for stream consumers: any partial content already streamed
+    for the *current* response — the deltas since the last ``ResponseCreated``
+    — belongs to the failed attempt and must be dropped (e.g. clear the
+    in-progress message in the UI). A fresh attempt's events follow. The
+    framework's own transcript honors this (it discards pending items); the
+    bundled console prints a discard notice and the TUI removes the partial
+    widget.
     """
 
     type: Literal["response.retrying"] = "response.retrying"

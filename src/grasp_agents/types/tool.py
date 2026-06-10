@@ -21,7 +21,7 @@ from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
-from .events import Event, ToolErrorEvent, ToolErrorInfo
+from .events import Event, ToolErrorEvent, ToolErrorInfo, ToolStreamEvent
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -88,6 +88,7 @@ class BaseTool(
         auto_background_at: float | None = None,
         blocks_final_answer: bool = True,
         max_inline_result_chars: int | None = None,
+        has_progress_log: bool = False,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -126,11 +127,19 @@ class BaseTool(
         # Cap on how many characters of a backgrounded call's result are inlined
         # into its completion notification. ``None`` (default): inline the whole
         # result. When set and the result is larger, the notification carries a
-        # head+tail excerpt plus a pointer to read the full result with
-        # ``TaskOutput``, and the finished task is retained for that read instead
-        # of being dropped. Cap tools with large mechanical output (shell logs);
-        # leave ``None`` where the result *is* the answer (a sub-agent).
+        # head+tail excerpt plus a pointer to the task's on-disk ``.grasp`` log,
+        # which holds the full output for ``Read`` / ``Grep``. Cap tools with
+        # large mechanical output (shell logs); leave ``None`` where the result
+        # *is* the answer (a sub-agent).
         self.max_inline_result_chars = max_inline_result_chars
+        # Whether a backgrounded call of this tool mirrors its *incremental*
+        # output to an agent-readable ``.grasp`` progress log (it emits
+        # ``ToolStreamEvent``s). ``True`` (e.g. a shell command): the launch
+        # notification and the launched event point the agent at that log to
+        # ``Read`` / ``Grep`` mid-flight. ``False`` (default — e.g. a sub-agent,
+        # whose events are structural): no log, so neither cites one. Independent
+        # of ``auto_background_at``, which is only *when* the call backgrounds.
+        self.has_progress_log = has_progress_log
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
         self._llm_in_type: type[BaseModel] | None = None
@@ -357,6 +366,10 @@ class BaseTool(
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
+        # Owning agent for this call; stamped onto the tool's own stream events
+        # below so a UI routes their (possibly backgrounded / bubbled) output to
+        # the right agent's pane instead of guessing from the most recent one.
+        dest = agent_ctx.agent_name if agent_ctx else None
         async for event in self._run_stream_with_timeout(
             inp,
             ctx=ctx,
@@ -365,7 +378,17 @@ class BaseTool(
             path=path,
             agent_ctx=agent_ctx,
         ):
-            yield event
+            # Only when unset, so a sub-agent's nested tool events keep the inner
+            # agent they were already stamped with (this wrapper runs at every
+            # level, parent and child).
+            if (
+                dest
+                and isinstance(event, ToolStreamEvent)
+                and event.destination is None
+            ):
+                yield event.model_copy(update={"destination": dest})
+            else:
+                yield event
 
     # --- Session persistence (overridden by resumable tools) ---
 

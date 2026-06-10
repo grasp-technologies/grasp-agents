@@ -76,17 +76,23 @@ class ToolStreamEvent(Event[Any], frozen=True):
     :class:`ToolOutputEvent`.
 
     ``data`` is any object: generic consumers (the
-    :class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` buffer,
-    the ``TaskOutput`` tool, consoles) render it with ``str(data)``, so a tool
+    :class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` buffer
+    and progress log, consoles) render it with ``str(data)``, so a tool
     can carry a plain ``str`` or a structured object whose ``__str__`` produces
     the LLM-facing text. A tool with structure to expose subclasses this and
     narrows ``data`` (e.g. the shell tools' ``ExecStreamEvent`` carries an
     ``ExecStreamChunk`` with a stdout/stderr ``channel``); structure-aware
     consumers ``isinstance``-check the subclass, everyone else still sees a
     plain ``ToolStreamEvent``.
+
+    ``destination`` is the owning agent, stamped by :meth:`BaseTool.run_stream`
+    from the call's :class:`AgentContext` so a UI routes a tool's live output
+    (foreground or backgrounded-and-bubbled) to that agent's pane instead of
+    guessing from whichever agent generated most recently.
     """
 
     type: Literal["tool.stream"] = "tool.stream"
+    destination: str | None = None
 
 
 class ToolErrorInfo(BaseModel):
@@ -106,6 +112,10 @@ class BackgroundTaskInfo(BaseModel):
     task_id: str
     tool_name: str
     tool_call_id: str
+    # basename of the task's streamed-output log, when one is written (a file
+    # backend is attached); the task's live output is mirrored there rather than
+    # placed in the agent's context. ``None`` when no log is written.
+    output_name: str | None = None
 
 
 class BackgroundTaskLaunchedEvent(Event[BackgroundTaskInfo], frozen=True):

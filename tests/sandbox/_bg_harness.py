@@ -1,9 +1,9 @@
 """
 Shared helpers for exercising the backgrounding stack — the
-``BackgroundTaskManager`` + ``Bash`` + generic ``TaskOutput`` / ``KillTask`` —
-against a live ``ExecBackend``. Used by the seatbelt / srt / e2b sandbox tests
-so each backend gets the same end-to-end coverage (background a command, poll
-incremental output, kill it) without duplicating the wiring.
+``BackgroundTaskManager`` + ``Bash`` + ``KillTask`` — against a live
+``ExecBackend``. Used by the seatbelt / srt / e2b sandbox tests so each backend
+gets the same end-to-end coverage (background a command, observe its streamed
+output, kill it) without duplicating the wiring.
 
 A minimal :class:`AgentContext` + :class:`BackgroundTaskManager` stands in for a
 full ``AgentLoop`` (the manager owns the deadline race; the bash tool reads its
@@ -17,14 +17,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager, TaskOutputResult
+from grasp_agents.agent.background_tasks import BackgroundTaskManager, KillTaskResult
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.tools.bash import Bash
 from grasp_agents.tools.bash_common import BashInput, ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
 from grasp_agents.tools.notebook_exec import KernelHolder
-from grasp_agents.tools.task_tools import KillTask, TaskIdInput, TaskOutput
+from grasp_agents.tools.task_tools import KillTask, TaskIdInput
+from grasp_agents.types.events import ToolErrorEvent, ToolOutputEvent, ToolStreamEvent
 from grasp_agents.types.items import FunctionToolCallItem
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ async def background(
         )
     )
     call = FunctionToolCallItem(call_id="c1", name=bash.name, arguments="{}")
-    note, _launched = await mgr.run_with_deadline(
+    note, _launched = await mgr.run_backgroundable(
         call,
         bash,
         BashInput(command=command, timeout=timeout),
@@ -99,32 +100,66 @@ async def poll_until_done(
     *,
     tries: int = 80,
     delay: float = 0.25,
-) -> tuple[str, TaskOutputResult]:
-    """Poll ``TaskOutput`` until the task finishes; return (output, final)."""
-    poll = TaskOutput(mgr)
-    collected = ""
+) -> tuple[str, KillTaskResult]:
+    """
+    Wait until the backgrounded task finishes; return (streamed_output, final).
+
+    With the polling tool gone, a finished task's output is read straight off
+    its buffered events (the same source ``drain`` and the ``.grasp`` log use).
+    Leaves the task in place so a later ``drain`` still delivers its note.
+    """
     for _ in range(tries):
-        out = await poll._run(TaskIdInput(task_id=task_id))
-        collected += out.output
-        if out.status in {"completed", "failed"}:
-            return collected, out
+        pt = mgr.get(task_id)
+        if pt.task.done():
+            text = "".join(
+                str(e.data) for e in pt.events if isinstance(e, ToolStreamEvent)
+            )
+            result: Any = None
+            failed = False
+            for e in pt.events:
+                if isinstance(e, ToolErrorEvent):
+                    result, failed = e.data, True
+                elif isinstance(e, ToolOutputEvent):
+                    result = e.data
+            return text, KillTaskResult(
+                task_id=task_id,
+                tool_name=pt.tool_name,
+                status="failed" if failed else "completed",
+                output=text,
+                result=result,
+            )
         await asyncio.sleep(delay)
     raise AssertionError("backgrounded command never completed")
 
 
-async def kill(mgr: BackgroundTaskManager[Any], task_id: str) -> TaskOutputResult:
+async def kill(mgr: BackgroundTaskManager[Any], task_id: str) -> KillTaskResult:
     """Stop a backgrounded task via ``KillTask``."""
     return await KillTask(mgr)._run(TaskIdInput(task_id=task_id))
+
+
+async def flush(mgr: BackgroundTaskManager[Any], ctx: RunContext[Any]) -> None:
+    """
+    Drive one ``drain`` pass for its log-mirroring side effect, discarding the
+    bubbled events. ``drain`` now owns flushing (there is no standalone
+    ``flush_progress``); used by tests that just want a running task's output
+    written to its ``.grasp`` log.
+    """
+    async for _ in mgr.drain(exec_id="t", ctx=ctx):
+        pass
 
 
 async def drain_notes(
     mgr: BackgroundTaskManager[Any], ctx: RunContext[Any]
 ) -> list[str]:
-    """The completion notes (user messages) a single drain pass injects."""
+    """
+    The completion notes a single turn-boundary ``drain`` injects. ``drain``
+    also mirrors progress to the ``.grasp`` logs, so a truncated note points at
+    the task's log.
+    """
     from grasp_agents.types.events import UserMessageEvent
 
     return [
-        str(e.data)
+        e.data.text  # the rendered note text, as the model sees it (not a repr)
         async for e in mgr.drain(exec_id="t", ctx=ctx)
         if isinstance(e, UserMessageEvent)
     ]

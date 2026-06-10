@@ -32,9 +32,12 @@ class NextStepStop:
 @dataclass(frozen=True, slots=True)
 class NextStepForceFinalAnswer:
     """
-    Terminal: turn budget exhausted. Caller force-generates a final
-    answer and ends the loop with ``stop_reason=MAX_TURNS``.
+    Terminal: budget exhausted (turn count or wall-clock deadline). Caller
+    force-generates a final answer and ends the loop with ``stop_reason`` —
+    ``MAX_TURNS`` by default, ``TIMEOUT`` when a run deadline was hit.
     """
+
+    stop_reason: StopReason = StopReason.MAX_TURNS
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,19 +68,25 @@ def decide_next_step(
     turn: int,
     max_turns: int,
     bg_tasks_pending: bool,
+    deadline_exceeded: bool = False,
 ) -> NextStep:
     """
     Classify the next :class:`AgentLoop` step. Pure function — no I/O,
     no side effects.
 
-    Precedence: stop on final answer unless background tasks still
-    block it; force-generate when the turn budget is exhausted; run
-    tools if the response has any; otherwise continue.
+    Precedence: stop on final answer (unless background tasks still block it,
+    and the run deadline has not passed); force-generate when the wall-clock
+    deadline is exceeded (``TIMEOUT``) or the turn budget is exhausted
+    (``MAX_TURNS``); run tools if the response has any; otherwise continue.
     """
-    wait_for_bg = bg_tasks_pending and turn < max_turns
+    # A blown deadline overrides waiting on background work — stop now.
+    wait_for_bg = bg_tasks_pending and turn < max_turns and not deadline_exceeded
 
     if final_answer is not None and not wait_for_bg:
         return NextStepStop(final_answer=final_answer)
+
+    if deadline_exceeded:
+        return NextStepForceFinalAnswer(stop_reason=StopReason.TIMEOUT)
 
     if turn >= max_turns:
         return NextStepForceFinalAnswer()

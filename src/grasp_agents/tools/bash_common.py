@@ -140,7 +140,8 @@ class BashResult(BaseModel):
     :class:`ExecResult`: it is a flat model (not a subclass of the frozen
     ``ExecResult``) so it can also stand in for a command that was cancelled
     mid-drain. Always a *terminal* result — a backgrounded command's live,
-    incremental output flows through ``TaskOutput`` instead.
+    incremental output is streamed as ``ExecStreamEvent``s (bubbled to the
+    parent stream and mirrored to its ``.grasp`` log) instead.
     """
 
     stdout: str

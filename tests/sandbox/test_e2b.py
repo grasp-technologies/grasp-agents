@@ -23,6 +23,7 @@ import contextlib
 import datetime as dt
 import importlib.util
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -50,6 +51,7 @@ from grasp_agents.tools.file_backend.paths import PathAccessError
 from ._bg_harness import (
     background,
     drain_notes,
+    flush,
     kill,
     make_stack,
     marker_size,
@@ -1053,12 +1055,12 @@ async def test_e2b_live_persistent_session() -> None:
             await session.close()
 
 
-# --- live backgrounding (manager + Bash + TaskOutput / KillTask) -------------
+# --- live backgrounding (manager + Bash + KillTask) --------------------------
 #
 # The same backgrounding flow test_bash_polish exercises against a local
 # subprocess, here against a real remote E2B container: a long Bash command
-# outlives its deadline → the BackgroundTaskManager sidelines it → the model
-# polls incremental output through TaskOutput → it completes / is killed.
+# outlives its deadline → the BackgroundTaskManager sidelines it → it completes
+# (output read off its buffered events) / is killed.
 
 
 @pytest.mark.integration
@@ -1083,10 +1085,12 @@ async def test_e2b_live_background_poll_and_complete() -> None:
         assert out.status == "completed"
         assert out.result is not None  # the terminal BashResult
         assert out.result.returncode == 0
-        # output produced before *and* after backgrounding is surfaced by polling
+        # output produced before *and* after backgrounding is read off the buffer
         assert "early" in collected
         assert "late" in collected
-        assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+        # poll_until_done only waits/reads; the task is dropped by drain, not by
+        # the read, so it is still tracked here (delivered + dropped on drain).
+        assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.integration
@@ -1126,7 +1130,7 @@ async def test_e2b_live_background_kill_terminates_remote_command() -> None:
 @_live
 async def test_e2b_live_background_small_result_inlined() -> None:
     # A finished background command's output is delivered inline in its
-    # completion note (no TaskOutput round-trip) and the task is dropped.
+    # completion note and the task is dropped.
     async with e2b_environment(allowed_roots=[_WS]) as env:
         ctx: RunContext[None] = RunContext(environment=env)
         agent_ctx, mgr = make_stack()
@@ -1141,7 +1145,7 @@ async def test_e2b_live_background_small_result_inlined() -> None:
         assert len(notes) == 1
         assert "completed" in notes[0]
         assert "hello" in notes[0]  # inlined directly
-        assert "TaskOutput" not in notes[0]  # no deferral round-trip
+        assert "omitted" not in notes[0]  # small result inlined whole
         assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
@@ -1149,8 +1153,8 @@ async def test_e2b_live_background_small_result_inlined() -> None:
 @_live
 async def test_e2b_live_background_large_result_excerpted() -> None:
     # Cap-and-defer end-to-end on a real sandbox: a large backgrounded result is
-    # excerpted in the completion note (pointing at TaskOutput) and the task is
-    # retained so the full output can still be pulled.
+    # excerpted in the completion note, which points at the task's .grasp log
+    # (in the remote FS) holding the full output.
     async with e2b_environment(allowed_roots=[_WS]) as env:
         ctx: RunContext[None] = RunContext(environment=env)
         agent_ctx, mgr = make_stack()
@@ -1171,15 +1175,14 @@ async def test_e2b_live_background_large_result_excerpted() -> None:
         assert len(notes) == 1
         assert "completed" in notes[0]
         assert "chars omitted" in notes[0]  # excerpted
-        assert "TaskOutput" in notes[0]  # points at the full read
-        assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
-
-        # The full, untruncated result is still readable via TaskOutput.
-        _collected, out = await poll_until_done(mgr, task_id, tries=4, delay=0.1)
-        assert out.status == "completed"
-        assert out.result is not None
-        assert out.result.stdout.count("A") == 5000
+        assert "<output_file>" in notes[0]  # points at the .grasp log
         assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+        # The full, untruncated output is in the .grasp log (in the remote FS).
+        match = re.search(r"<output_file>(.+?)</output_file>", notes[0], re.DOTALL)
+        assert match is not None
+        log_text, _ = await env.file_backend.read_text(Path(match.group(1).strip()))
+        assert log_text.count("A") == 5000
 
 
 @pytest.mark.integration
@@ -1205,7 +1208,7 @@ async def test_e2b_live_background_writes_greppable_log() -> None:
         assert task_id is not None
 
         await asyncio.sleep(1.0)  # let HELLO stream from the sandbox
-        await mgr.flush_progress(ctx)
+        await flush(mgr, ctx)
 
         keys = await store.list_keys(task_prefix("s1"))
         rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")

@@ -178,12 +178,12 @@ async def test_factory_srt_backend(tmp_path: Path) -> None:
     assert isinstance(env.exec_backend, SrtExecBackend)
 
 
-# --- live backgrounding (manager + Bash + TaskOutput / KillTask) -------------
+# --- live backgrounding (manager + Bash + KillTask) --------------------------
 #
 # Same flow as the seatbelt / e2b variants, here under Anthropic's srt CLI: a
-# long Bash command outlives its deadline → the manager sidelines it → poll
-# incremental output via TaskOutput → it completes / is killed (the srt child
-# is a local process group the shared supervisor kills via killpg).
+# long Bash command outlives its deadline → the manager sidelines it → it
+# completes (output read off its buffered events) / is killed (the srt child is
+# a local process group the shared supervisor kills via killpg).
 
 
 @pytest.mark.skipif(not _SRT_CAN_RUN, reason="srt cannot apply/run here")

@@ -123,6 +123,59 @@ class TestNextStepForceFinalAnswer:
         assert isinstance(step, NextStepForceFinalAnswer)
 
 
+# ---------- Deadline (wall-clock) → TIMEOUT ----------
+
+
+class TestDeadline:
+    def test_deadline_exceeded_forces_final_with_timeout(self) -> None:
+        step = decide_next_step(
+            final_answer=None,
+            tool_calls=[_call()],
+            turn=2,
+            max_turns=10,
+            bg_tasks_pending=False,
+            deadline_exceeded=True,
+        )
+        assert isinstance(step, NextStepForceFinalAnswer)
+        assert step.stop_reason is StopReason.TIMEOUT
+
+    def test_max_turns_force_keeps_max_turns_reason(self) -> None:
+        step = decide_next_step(
+            final_answer=None,
+            tool_calls=[_call()],
+            turn=10,
+            max_turns=10,
+            bg_tasks_pending=False,
+        )
+        assert isinstance(step, NextStepForceFinalAnswer)
+        assert step.stop_reason is StopReason.MAX_TURNS
+
+    def test_real_final_answer_wins_over_expired_deadline(self) -> None:
+        # We got an answer in time-ish; an expired deadline must not discard it.
+        step = decide_next_step(
+            final_answer="done",
+            tool_calls=[],
+            turn=2,
+            max_turns=10,
+            bg_tasks_pending=False,
+            deadline_exceeded=True,
+        )
+        assert isinstance(step, NextStepStop)
+
+    def test_deadline_overrides_background_wait(self) -> None:
+        # Final answer present, bg tasks pending (would normally wait) — but a
+        # blown deadline stops now instead of waiting on background work.
+        step = decide_next_step(
+            final_answer="done",
+            tool_calls=[],
+            turn=2,
+            max_turns=10,
+            bg_tasks_pending=True,
+            deadline_exceeded=True,
+        )
+        assert isinstance(step, NextStepStop)
+
+
 # ---------- Non-terminal: NextStepRunTools ----------
 
 

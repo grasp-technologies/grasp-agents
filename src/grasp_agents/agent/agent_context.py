@@ -43,6 +43,10 @@ class AgentContext:
     kernel_holder: KernelHolder
     # Fresh-``Bash`` cwd carried across calls (``cd`` sticks between turns).
     shell_state: ShellState
+    # The owning agent's name. ``BaseTool.run_stream`` stamps it as the
+    # ``destination`` on a tool's stream events, so a UI routes their (possibly
+    # backgrounded / bubbled) output to the right agent's pane.
+    agent_name: str = ""
     # Separate persistent kernel for ``RunPython`` — its own Python session, not
     # shared with the notebook kernel. ``None`` (the default) → each call opens a
     # throwaway kernel; ``AgentLoop`` wires a persistent one per loop.
@@ -55,6 +59,7 @@ class AgentContext:
         transcript: LLMAgentTranscript,
         tools: dict[str, BaseTool[Any, Any, Any]],
         bg_tasks: BackgroundTaskManager[Any],
+        agent_name: str = "",
         file_edit_state: FileEditSessionState | None = None,
         code_context_id: str | None = None,
     ) -> AgentContext:
@@ -85,6 +90,7 @@ class AgentContext:
             tools=tools,
             file_edit_state=file_edit_state or _FileEditSessionState(),
             bg_tasks=bg_tasks,
+            agent_name=agent_name,
             session_holder=BashSessionHolder(),
             kernel_holder=KernelHolder(),
             code_kernel_holder=KernelHolder(context_id=code_context_id),

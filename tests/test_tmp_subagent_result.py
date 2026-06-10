@@ -66,9 +66,7 @@ def _text(text: str) -> Response:
 def _call(name: str, args: str, call_id: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
-            FunctionToolCallItem(call_id=call_id, name=name, arguments=args)
-        ],
+        output_items=[FunctionToolCallItem(call_id=call_id, name=name, arguments=args)],
         usage_with_cost=_usage(),
     )
 
@@ -158,7 +156,6 @@ async def _run_parent(child_responses: list[Response]) -> FunctionToolOutputItem
         sys_prompt="you are a worker",
         max_turns=1,  # turn 0 runs a tool, turn 1 trips the force step
         stream_llm=True,
-        stream_tools=True,
     )
     ctx = RunContext[None](state=None)
     parent = LLMAgent[str, str, None](
@@ -174,7 +171,6 @@ async def _run_parent(child_responses: list[Response]) -> FunctionToolOutputItem
         sys_prompt="you are the analyst",
         max_turns=5,
         stream_llm=True,
-        stream_tools=True,
     )
 
     captured: list[FunctionToolOutputItem] = []
@@ -282,7 +278,6 @@ async def test_inner_tool_sharing_agent_name_does_not_leak() -> None:
         sys_prompt="w",
         max_turns=1,
         stream_llm=True,
-        stream_tools=True,
     )
     ctx = RunContext[None](state=None)
     parent = LLMAgent[str, str, None](
@@ -298,7 +293,6 @@ async def test_inner_tool_sharing_agent_name_does_not_leak() -> None:
         sys_prompt="a",
         max_turns=5,
         stream_llm=True,
-        stream_tools=True,
     )
 
     captured: list[FunctionToolOutputItem] = []

@@ -20,8 +20,9 @@ directory. For a fully persistent shell (env + variables too), use
 terminal :class:`BashResult`); when a command outlives ``auto_background_at`` the
 agent loop's
 :class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` keeps
-consuming that same stream in the background and the model polls it with the
-generic ``TaskOutput`` / ``KillTask`` tools. Build the trio with
+consuming that same stream in the background, mirroring its output to a
+``.grasp`` log and notifying the model with the result on completion (stop it
+early with the generic ``KillTask`` tool). Build the pair with
 :func:`bash_tools`.
 """
 
@@ -45,7 +46,7 @@ from .bash_common import (
     ShellState,
     stream_command,
 )
-from .task_tools import KillTask, TaskOutput
+from .task_tools import KillTask
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -58,8 +59,8 @@ if TYPE_CHECKING:
 
 DEFAULT_AUTO_BACKGROUND_AT = 120.0
 # A backgrounded command's completion note inlines its result up to this many
-# chars; a larger log is excerpted in the note and the full output is read back
-# with ``TaskOutput`` (cap-and-defer), keeping the transcript from bloating.
+# chars; a larger result is excerpted in the note, which points at the task's
+# ``.grasp`` log holding the full output, keeping the transcript from bloating.
 DEFAULT_MAX_INLINE_RESULT_CHARS = 8000
 
 
@@ -83,14 +84,14 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         auto_background_at: When set, the agent loop moves the command to the
             background once it has run this many seconds (``0`` backgrounds
             immediately; ``None`` (default) never does). A backgrounded command
-            keeps running; the loop is notified on completion, and meanwhile it
-            can be polled with ``TaskOutput`` / stopped with ``KillTask`` (prefer
-            :func:`bash_tools`, which wires the companions). Outside an agent
-            loop the command always runs to completion in the foreground.
+            keeps running; the loop is notified with its result on completion,
+            and can stop it early with ``KillTask`` (prefer :func:`bash_tools`,
+            which wires the companion). Outside an agent loop the command always
+            runs to completion in the foreground.
         max_inline_result_chars: How much of a backgrounded command's output is
             inlined into its completion notification. A larger result is
-            excerpted there and read in full with ``TaskOutput``. ``None``
-            inlines the whole result.
+            excerpted there, with the note pointing at the task's ``.grasp`` log
+            for the full output. ``None`` inlines the whole result.
         block_leading_sleep: Reject commands whose first statement is a bare
             ``sleep`` — they block the loop and produce nothing.
         timeout: Standard per-tool timeout (outer asyncio ceiling).
@@ -129,6 +130,9 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
             # answer waiting on it (unlike a worker sub-agent).
             blocks_final_answer=False,
             max_inline_result_chars=max_inline_result_chars,
+            # Streams incremental output (ExecStreamEvent) → mirrored to a
+            # ``.grasp`` log the agent can Read / Grep while it runs.
+            has_progress_log=True,
         )
         self._default_timeout = default_timeout
         self._max_timeout = max_timeout
@@ -140,11 +144,10 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
                 f" Commands running longer than {auto_background_at:g}s are "
                 "moved to the background: you get a `task_id` back, and a "
                 "notification with the command's output is injected when it "
-                "finishes — there is no need to poll for completion. Use "
-                "TaskOutput to inspect output while it is still running (e.g. to "
-                "decide whether to KillTask) or to read the full output when the "
-                "completion notification says it was truncated; use KillTask to "
-                "stop a command you can see is misbehaving or no longer need."
+                "finishes — there is no need to poll for completion. The "
+                "notification points at an output log file you can Read / Grep "
+                "if the output was truncated; use KillTask with the task_id to "
+                "stop a command you no longer need."
             )
 
     def _prepare(
@@ -287,16 +290,16 @@ def bash_tools(
     timeout: float | None = None,
 ) -> list[BaseTool[Any, Any, Any]]:
     """
-    Build the ``[Bash, TaskOutput, KillTask]`` trio with auto-backgrounding
-    enabled.
+    Build the ``[Bash, KillTask]`` pair with auto-backgrounding enabled.
 
     Each command is a fresh process. The agent loop moves a long one to its
-    background task manager at ``auto_background_at``; the generic ``TaskOutput``
-    / ``KillTask`` companions resolve that same manager from the call's
-    :class:`AgentContext`, so every agent (including sub-agents and parallel
-    replicas) keeps its own background work. Pass an explicit ``manager`` only to
-    poll / kill from the companions outside a loop. For a stateful shell instead
-    (``cd`` / env persist across calls), use the
+    background task manager at ``auto_background_at``, notifying the model with
+    the result on completion (its streamed output is mirrored to a ``.grasp``
+    log for ``Read`` / ``Grep``); the generic ``KillTask`` companion resolves
+    that same manager from the call's :class:`AgentContext`, so every agent
+    (including sub-agents and parallel replicas) keeps its own background work.
+    Pass an explicit ``manager`` only to kill from the companion outside a loop.
+    For a stateful shell instead (``cd`` / env persist across calls), use the
     :class:`~grasp_agents.tools.bash_session.BashSession` tool.
     """
     return [
@@ -310,6 +313,5 @@ def bash_tools(
             block_leading_sleep=block_leading_sleep,
             timeout=timeout,
         ),
-        TaskOutput(manager),
         KillTask(manager),
     ]

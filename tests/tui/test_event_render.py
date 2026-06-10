@@ -36,7 +36,12 @@ from grasp_agents.types.response import (
     Response,
     ResponseUsage,
 )
-from grasp_agents.ui._event_render import render_event, render_image, truncate_lines
+from grasp_agents.ui._event_render import (
+    render_event,
+    render_image,
+    render_tool_stream,
+    truncate_lines,
+)
 
 
 def test_turn_start_is_rule() -> None:
@@ -232,6 +237,21 @@ def test_truncate_lines() -> None:
     out = truncate_lines("a\nb\nc\nd", 2)
     assert "a" in out
     assert "more lines" in out
+
+
+def test_tool_stream_strips_trailing_newline() -> None:
+    # tool output usually ends in a newline; the streaming box must not turn it
+    # into a blank line above the panel's own bottom padding, so a trailing
+    # newline yields the same body as without one.
+    for background in (True, False):
+        with_nl = render_tool_stream("a", "Bash", "x\ny\n", background=background)
+        without_nl = render_tool_stream("a", "Bash", "x\ny", background=background)
+        assert isinstance(with_nl, Panel)
+        assert isinstance(without_nl, Panel)
+        body = with_nl.renderable
+        assert isinstance(body, Text)
+        assert body.plain == "x\ny"
+        assert without_nl.renderable.plain == "x\ny"  # type: ignore[union-attr]
 
 
 def test_tool_output_inputimage_parts_render() -> None:

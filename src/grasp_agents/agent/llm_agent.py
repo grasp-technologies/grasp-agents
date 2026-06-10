@@ -102,6 +102,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         llm_output_schema: Any | None = None,
         # Agent loop settings
         max_turns: int = 100,
+        # Wall-clock budget for one run; on expiry the loop force-generates a
+        # final answer and stops with ``StopReason.TIMEOUT`` (checked at turn
+        # boundaries). ``None`` = unbounded.
+        run_timeout: float | None = None,
         force_react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
         # Per-run message history (the LLM agent's transcript). Cross-session
@@ -114,7 +118,6 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         recipients: Sequence[ProcName] | None = None,
         # Streaming
         stream_llm: bool = False,
-        stream_tools: bool = False,
         # Session persistence
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
@@ -307,11 +310,11 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             ctx=self._ctx,
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
+            run_timeout=run_timeout,
             force_react_mode=force_react_mode,
             final_answer_type=final_answer_type,
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm=stream_llm,
-            stream_tools=stream_tools,
             path=path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )

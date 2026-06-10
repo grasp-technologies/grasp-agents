@@ -32,12 +32,23 @@ from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 from grasp_agents.types.tool import BaseTool
 
 from .llm_agent_transcript import LLMAgentTranscript
-from .task_progress import open_task_log, write_task_log
+from .task_progress import (
+    append_task_log,
+    open_task_log,
+    task_log_name,
+    write_result_file,
+)
 
 if TYPE_CHECKING:
+    from ..tools.file_backend.base import FileBackend
     from .agent_context import AgentContext
 
 logger = getLogger(__name__)
+
+# Safety ceiling on a single background task's progress log. Bounds disk for a
+# runaway command (e.g. ``yes``); once hit, a one-time marker is appended and
+# further output is dropped from the file (the live event stream is unaffected).
+MAX_TASK_LOG_BYTES = 64 * 1024 * 1024
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -52,22 +63,23 @@ def _fmt_duration(seconds: float) -> str:
     return f"{h}h{m:02d}m"
 
 
-class TaskOutputResult(BaseModel):
+class KillTaskResult(BaseModel):
     """
-    What ``TaskOutput`` / ``KillTask`` return for a backgrounded task.
+    What ``KillTask`` returns for a stopped background task.
 
-    Generic over any tool: ``output`` is the text produced since the last poll
-    (assembled from the task's stream events), and ``result`` is the tool's own
-    terminal output (e.g. a ``BashResult``) once it has finished — ``None``
-    while it is still running or if it was killed before producing one.
+    ``status`` is ``cancelled`` when the task was still running and ``KillTask``
+    stopped it (the common case), or ``completed`` / ``failed`` when it had
+    already reached that terminal state before the kill arrived. ``output`` is
+    an excerpt of the text the task produced (the full output is in its
+    ``.grasp`` log); ``result`` is the tool's own terminal output (e.g. a
+    ``BashResult``) when it had finished, else ``None``.
     """
 
     task_id: str
     tool_name: str
-    status: Literal["running", "completed", "failed"]
+    status: Literal["cancelled", "completed", "failed"]
     output: str = ""
     result: Any = None
-    elapsed_s: float | None = None  # wall time since the task was backgrounded
 
 
 def _task_notification(
@@ -94,7 +106,7 @@ def _task_notification(
     if error is not None:
         parts.append(f"<error>\n{error}\n</error>")
     if log_path is not None:
-        parts.append(f"<output_file>{log_path}</output_file>")
+        parts.append(f"<output_file>\n{log_path}\n</output_file>")
     parts.append("</task_notification>")
 
     return "\n".join(parts)
@@ -106,13 +118,12 @@ class PendingTask:
     A backgrounded unit of work — kind-agnostic.
 
     The manager drives ``tool.run_stream`` in ``task`` and appends every event
-    to ``events`` (the buffer). Two cursors read that one buffer: ``bubble``
-    re-emits new events to the parent stream at the turn boundary (used for
-    answer-blocking sub-agent tasks, so their nested progress is visible), and
-    ``poll`` is advanced by ``TaskOutput`` for the model's incremental reads.
-    ``task_key`` is set only for a *resumable* tool (its ``TaskRecord`` is
-    persisted so a restart can re-spawn it); a backgrounded shell command is not
-    resumable, so it has none.
+    to ``events`` (the buffer). ``cursor`` tracks how far :meth:`drain` has
+    consumed that buffer at the turn boundary — in one pass it re-emits each new
+    event to the parent stream (live progress) and mirrors stream text to the
+    on-disk progress log. ``task_key`` is set only for a *resumable* tool (its
+    ``TaskRecord`` is persisted so a restart can re-spawn it); a backgrounded
+    shell command is not resumable, so it has none.
     """
 
     task_id: str
@@ -122,19 +133,18 @@ class PendingTask:
     events: list[Event[Any]] = field(default_factory=list[Event[Any]])
     # Whether this task's result gates the final answer (it is part of the
     # answer). Read from ``tool.blocks_final_answer`` at launch — independent of
-    # how the task was backgrounded (spawn vs deadline).
+    # how the task was backgrounded (immediate vs deadline).
     blocks_final_answer: bool = True
     # Cap on inlined result chars in the completion note (``tool``'s setting); a
-    # larger result is excerpted + the task kept for a ``TaskOutput`` read.
+    # larger result is excerpted, with the note pointing at the on-disk log.
     max_inline_result_chars: int | None = None
     tool_call_id: str | None = None
     task_key: str | None = None
-    bubble_cursor: int = 0  # events already re-emitted to the parent stream
-    poll_cursor: int = 0  # events already read out via TaskOutput
+    cursor: int = 0  # events consumed by drain (bubbled to parent + flushed to log)
     announced: bool = False  # completion note already emitted
     started_at: float = field(default_factory=time.monotonic)  # for live elapsed
-    flush_count: int = 0  # event count at the last progress flush
     log_path: str | None = None  # resolved .grasp/tasks log file, once written
+    log_bytes: int = 0  # bytes appended to the log so far (for the size cap)
 
 
 async def _consume(
@@ -162,7 +172,7 @@ async def _consume(
         if isinstance(event, ToolOutputEvent):
             result = event.data
         elif isinstance(event, ToolErrorEvent):
-            result = event.data  # ToolErrorInfo
+            result = event.data
             failed = True
 
     if store is not None and task_key is not None:
@@ -198,26 +208,24 @@ def _stream_text(events: list[Event[Any]]) -> str:
 
 
 def _excerpt_for_inline(
-    text: str, cap: int | None, *, task_id: str
+    text: str, cap: int | None, *, output_file: str | None = None
 ) -> tuple[str, bool]:
     """
     Fit a result into a completion note: ``(text, truncated)``.
 
     Returns ``text`` unchanged when no cap applies or it already fits. Otherwise
-    keeps a head + tail of ``cap`` chars total with a middle marker pointing the
-    model at ``TaskOutput`` for the full result — the basis of cap-and-defer:
-    the note stays small, the finished task is retained so the full result can
-    still be pulled.
+    keeps a head + tail of ``cap`` chars total with a middle marker; when an
+    ``output_file`` is known (the task's ``.grasp`` progress log), the marker
+    points there so the model can ``Read`` / ``Grep`` the full output on demand
+    rather than bloating the transcript with it.
     """
     if cap is None or len(text) <= cap:
         return text, False
     head = cap // 2
     tail = cap - head
     omitted = len(text) - cap
-    marker = (
-        f"\n... [{omitted} chars omitted — call TaskOutput(task_id={task_id!r}) "
-        "for the full result] ...\n"
-    )
+    pointer = f" — full output in {output_file}" if output_file else ""
+    marker = f"\n... [{omitted} chars omitted{pointer}] ...\n"
     return text[:head] + marker + text[-tail:], True
 
 
@@ -226,18 +234,21 @@ class BackgroundTaskManager(Generic[CtxT]):
     Tracks background work of any kind, generic over the tool that produces it.
 
     One mechanism: run a tool's ``run_stream`` as a task and buffer the events
-    it yields, keyed by ``task_id``. :meth:`spawn` launches a task now (e.g. a
-    sub-agent); :meth:`run_with_deadline` runs a call in the foreground and
-    *sidelines* it as a pollable task only if it outlives its
-    ``auto_background_at`` (e.g. a long shell command). Either path is just *how*
-    a task is backgrounded; whether it gates the final answer and how much of
-    its result is inlined on completion are the tool's own
-    ``blocks_final_answer`` / ``max_inline_result_chars``, read the same way in
-    both. ``TaskOutput`` / ``KillTask`` read / stop a task by id
-    (:meth:`read_output` / :meth:`kill_task`). One drain / idle-wait / cancel
-    path serves every task; every backgrounded task gets a persisted
-    ``TaskRecord`` so a restart can surface it — resumable ones re-spawned on
-    resume, others reported to the agent as interrupted.
+    it yields, keyed by ``task_id``. :meth:`run_backgroundable` owns both
+    backgrounding modes — ``auto_background_at == 0`` launches a task now (e.g. a
+    sub-agent), a positive value runs the call in the foreground and *sidelines*
+    it as a background task only if it outlives the deadline (e.g. a long shell
+    command). When a task backgrounds is the only difference; whether it gates
+    the final answer and how much of its result is inlined on completion are the
+    tool's own ``blocks_final_answer`` / ``max_inline_result_chars``, read the
+    same way for both. Every task's events are bubbled to the parent stream as
+    live progress;
+    its streamed output is also mirrored to an agent-readable ``.grasp`` log
+    (``Read`` / ``Grep`` it to inspect a running task), and :meth:`kill_task`
+    stops one by id. One drain / idle-wait / cancel path serves every task;
+    every backgrounded task gets a persisted ``TaskRecord`` so a restart can
+    surface it — resumable ones re-spawned on resume, others reported to the
+    agent as interrupted.
     """
 
     def __init__(
@@ -248,6 +259,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         tools: dict[str, BaseTool[BaseModel, Any, CtxT]] | None,
         path: list[str] | None = None,
         max_background: int = 16,
+        max_task_log_bytes: int = MAX_TASK_LOG_BYTES,
     ) -> None:
         self._agent_name = agent_name
         self._transcript = transcript
@@ -256,6 +268,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         self._tasks: dict[str, PendingTask] = {}
         self._bg_counter = 0
         self._max_background = max_background
+        self._max_task_log_bytes = max_task_log_bytes
         # Completed task ids, pushed by each task's done-callback (single
         # completion seam): :meth:`drain` pops them to deliver notes, and
         # :meth:`wait_idle` blocks on the next one — one queue, every task kind.
@@ -270,8 +283,7 @@ class BackgroundTaskManager(Generic[CtxT]):
         answer, so it gates even a final answer. Non-blocking tasks (e.g. a
         backgrounded shell command) are excluded — they must never hold the run
         hostage. A task stops blocking once its completion note is delivered
-        (``announced``), even if it is retained for a later ``TaskOutput`` read
-        (a large, excerpted result).
+        (``announced``).
         """
         return any(
             pt.blocks_final_answer and not pt.announced for pt in self._tasks.values()
@@ -294,78 +306,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
     # --- Launch ---
 
-    async def spawn(
-        self,
-        call: FunctionToolCallItem,
-        tool: BaseTool[BaseModel, Any, CtxT],
-        inp: BaseModel,
-        *,
-        ctx: RunContext[CtxT],
-        exec_id: str,
-        agent_ctx: "AgentContext | None" = None,
-    ) -> tuple[str, BackgroundTaskLaunchedEvent]:
-        """
-        Launch a background task from a tool call now; return ``(note, event)`` —
-        a launch note (the immediate tool result, built here so both backgrounding
-        paths craft their note in the manager) + the launched event to bubble.
-
-        Whether the task gates the final answer is the tool's own
-        ``blocks_final_answer`` (independent of persistence): a worker sub-agent
-        leaves it ``True`` (its result is the answer, delivered inline at the
-        turn boundary); a fire-and-forget tool sets it ``False``. Every
-        backgrounded task gets a persisted PENDING ``TaskRecord`` so
-        :meth:`resume_durable` can surface it after a restart — re-spawning it if
-        the tool is resumable, else reporting it as interrupted.
-
-        ``agent_ctx`` is the parent loop's agent-scope state, forwarded to the
-        backgrounded ``run_stream`` so a sub-agent-as-tool still resolves its
-        parent's transcript / sibling tools off the call.
-        """
-        task_id = self._next_id()
-        store = ctx.checkpoint_store
-        child_path = make_tool_call_path(self._path, call.call_id)
-
-        task_key = self._task_store_key(ctx, call.call_id)
-        if task_key is not None:
-            await self._write_pending_record(task_key, call, task_id, ctx=ctx)
-
-        events: list[Event[Any]] = []
-        stream = tool.run_stream(
-            inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
-        )
-        async_task = asyncio.create_task(
-            _consume(stream, events, store=store, task_key=task_key)
-        )
-        self._register(
-            PendingTask(
-                task_id=task_id,
-                tool_name=call.name,
-                exec_id=exec_id,
-                tool_call_id=call.call_id,
-                task=async_task,
-                events=events,
-                blocks_final_answer=tool.blocks_final_answer,
-                max_inline_result_chars=tool.max_inline_result_chars,
-                task_key=task_key,
-            )
-        )
-
-        note = (
-            f"Task '{call.name}' launched in the background (id: {task_id}); "
-            "its result will be delivered to you when it finishes."
-        )
-        event = BackgroundTaskLaunchedEvent(
-            source=self._agent_name,
-            exec_id=exec_id,
-            data=BackgroundTaskInfo(
-                task_id=task_id,
-                tool_name=call.name,
-                tool_call_id=call.call_id,
-            ),
-        )
-        return note, event
-
-    async def run_with_deadline(
+    async def run_backgroundable(
         self,
         call: FunctionToolCallItem,
         tool: BaseTool[BaseModel, Any, CtxT],
@@ -376,70 +317,121 @@ class BackgroundTaskManager(Generic[CtxT]):
         agent_ctx: "AgentContext | None" = None,
     ) -> tuple[Any, BackgroundTaskLaunchedEvent | None]:
         """
-        Run a call in the foreground, moving it to the background if it outlives
-        ``tool.auto_background_at``.
+        Run a tool call, backgrounding it per ``tool.auto_background_at`` (assumed
+        set — the loop only routes a backgroundable tool here).
 
-        Returns ``(output, launched)``: if the call finishes within the deadline,
-        ``output`` is the tool's result and ``launched`` is ``None``; otherwise
-        the still-running task is sidelined as a non-blocking, *pollable* task,
-        ``output`` is a launch note (the model reads its output with
-        ``TaskOutput`` / stops it with ``KillTask``), and ``launched`` is the
-        :class:`BackgroundTaskLaunchedEvent` for the caller to bubble — the same
-        event :meth:`spawn` emits, so a deadline-backgrounded task is just as
-        visible to observers. The manager owns the whole race — the tool knows
-        nothing about backgrounding.
+        The two modes differ only in *when* the hand-off happens:
+        ``auto_background_at == 0`` backgrounds immediately (e.g. a worker
+        sub-agent); a positive value runs the call in the foreground and
+        sidelines it only if it outlives the deadline (e.g. a long shell
+        command). Everything after the decision — the pending ``TaskRecord``, the
+        ``.grasp`` log, the launch note, the launched event — is shared; whether
+        a backgrounded call gates the final answer and how much of its result is
+        inlined are the tool's own ``blocks_final_answer`` /
+        ``max_inline_result_chars``, read the same way for both.
+
+        Returns ``(output, launched)``: a call that finishes in the foreground
+        yields its result and ``None``; a backgrounded one yields a launch note
+        (its result is delivered on completion, or it is stopped early with
+        ``KillTask``) and the :class:`BackgroundTaskLaunchedEvent` for the caller
+        to bubble. The manager owns the whole decision — the tool knows nothing
+        about backgrounding.
+
+        ``agent_ctx`` is the parent loop's agent-scope state, forwarded to the
+        backgrounded ``run_stream`` so a sub-agent-as-tool still resolves its
+        parent's transcript / sibling tools off the call.
         """
         abg = tool.auto_background_at
         assert abg is not None
 
         task_key = self._task_store_key(ctx, call.call_id)
+        child_path = make_tool_call_path(self._path, call.call_id)
         events: list[Event[Any]] = []
+
+        if abg == 0:
+            try:
+                self._check_capacity()
+            except RuntimeError as exc:
+                return f"Tool '{tool.name}' could not be backgrounded: {exc}", None
+            task_id = self._next_id()
+            log_path = await self._resolve_log(call.call_id, tool, ctx=ctx)
+            # Persist the PENDING record *before* starting the task so a
+            # near-instant finish still updates an existing record, and wire
+            # outcome persistence into ``_consume`` (resumable tools rely on it
+            # for a result that lands between drains).
+            if task_key is not None:
+                await self._write_pending_record(
+                    task_key, call, task_id, ctx=ctx, output_path=log_path
+                )
+            stream = tool.run_stream(
+                inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
+            )
+            started_at = time.monotonic()
+            task = asyncio.create_task(
+                _consume(stream, events, store=ctx.checkpoint_store, task_key=task_key)
+            )
+            self._register(
+                task_id=task_id,
+                task=task,
+                events=events,
+                tool=tool,
+                exec_id=exec_id,
+                tool_call_id=call.call_id,
+                task_key=task_key,
+                started_at=started_at,
+                log_path=log_path,
+            )
+            note = self._launch_note(
+                tool, task_id, backgrounded_after=None, log_path=log_path
+            )
+            return note, self._make_launched_event(
+                task_id, tool.name, call.call_id, log_path=log_path, exec_id=exec_id
+            )
+
+        # abg > 0: run in the foreground, racing the deadline. ``started_at`` is
+        # stamped at launch (not at sideline), so a backgrounded task's reported
+        # runtime includes its foreground portion.
         stream = tool.run_stream(
-            inp,
-            ctx=ctx,
-            exec_id=exec_id,
-            path=make_tool_call_path(self._path, call.call_id),
-            agent_ctx=agent_ctx,
+            inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
         )
+        started_at = time.monotonic()
         task = asyncio.create_task(_consume(stream, events))
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=abg)
         except TimeoutError:
             try:
-                task_id = self._sideline(
-                    task,
-                    events,
-                    tool=tool,
-                    exec_id=exec_id,
-                    tool_call_id=call.call_id,
-                    task_key=task_key,
-                )
+                self._check_capacity()
             except RuntimeError as exc:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
                 return f"Tool '{tool.name}' could not be backgrounded: {exc}", None
-            # Only now that it's backgrounded does it need a durable record: a
-            # restart will report it as interrupted (it is non-resumable, so it
-            # is not re-spawned — the agent reads its partial output / re-runs).
-            if task_key is not None:
-                await self._write_pending_record(task_key, call, task_id, ctx=ctx)
-            note = (
-                f"Tool '{tool.name}' is still running after {abg:g}s and was "
-                f"moved to the background (id: {task_id}); poll it with "
-                f"TaskOutput(task_id={task_id!r}), stop it with KillTask, or "
-                "just wait — you are notified when it finishes."
-            )
-            launched = BackgroundTaskLaunchedEvent(
-                source=self._agent_name,
+            task_id = self._next_id()
+            # Resolve the log once, up front, so the single pending-record write
+            # already carries ``output_path`` and the note can cite the file the
+            # loop will have flushed output to by the model's next turn.
+            log_path = await self._resolve_log(call.call_id, tool, ctx=ctx)
+            self._register(
+                task_id=task_id,
+                task=task,
+                events=events,
+                tool=tool,
                 exec_id=exec_id,
-                data=BackgroundTaskInfo(
-                    task_id=task_id,
-                    tool_name=tool.name,
-                    tool_call_id=call.call_id,
-                ),
+                tool_call_id=call.call_id,
+                task_key=task_key,
+                started_at=started_at,
+                log_path=log_path,
             )
-            return note, launched
+            if task_key is not None:
+                await self._write_pending_record(
+                    task_key, call, task_id, ctx=ctx, output_path=log_path
+                )
+            note = self._launch_note(
+                tool, task_id, backgrounded_after=abg, log_path=log_path
+            )
+            return note, self._make_launched_event(
+                task_id, tool.name, call.call_id, log_path=log_path, exec_id=exec_id
+            )
         except asyncio.CancelledError:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -449,56 +441,140 @@ class BackgroundTaskManager(Generic[CtxT]):
         result, _ = _result_of(events)
         return result, None
 
+    def _launch_note(
+        self,
+        tool: BaseTool[BaseModel, Any, CtxT],
+        task_id: str,
+        *,
+        backgrounded_after: float | None,
+        log_path: str | None,
+    ) -> str:
+        """
+        Build the launch note returned as the immediate tool result.
+
+        ``backgrounded_after`` is the deadline a positive-``auto_background_at``
+        call outlived (``None`` for an immediate background); it shapes only the
+        opening clause. The rest — result-on-completion, the optional log pointer
+        (present iff the tool has a ``.grasp`` log), and the ``KillTask`` hint —
+        is identical, so the note encodes only *how* the call backgrounded, never
+        the task's kind.
+        """
+        if backgrounded_after is None:
+            opening = f"Task '{tool.name}' launched in the background (id: {task_id})."
+        else:
+            opening = (
+                f"Tool '{tool.name}' is still running after {backgrounded_after:g}s "
+                f"and was moved to the background (id: {task_id})."
+            )
+        parts = [opening, "Its result will be delivered to you when it finishes."]
+        if log_path is not None:
+            parts.append(
+                f"Its output is streaming to {log_path} — Read or Grep that file "
+                "to check on it."
+            )
+        parts.append("Stop it with KillTask if you no longer need it.")
+        return "\n".join(parts)
+
     def _next_id(self) -> str:
         self._bg_counter += 1
         return f"bg_{self._bg_counter}"
 
-    def _sideline(
-        self,
-        task: asyncio.Task[None],
-        events: list[Event[Any]],
-        *,
-        tool: BaseTool[BaseModel, Any, CtxT],
-        exec_id: str,
-        tool_call_id: str | None,
-        task_key: str | None = None,
-    ) -> str:
+    def _check_capacity(self) -> None:
         """
-        Register a still-running deadline task as a pollable background task.
+        Raise if the background-task ceiling is reached.
 
-        Whether it gates the final answer and how much of its result is inlined
-        come from the tool (``blocks_final_answer`` / ``max_inline_result_chars``)
-        — the same source the immediate :meth:`spawn` path reads, so a deadline
-        task is treated no differently from a spawned one once backgrounded.
-        ``task_key`` links the (separately written) ``TaskRecord`` so drain /
-        kill mark it terminal.
+        Applies to both backgrounding modes; the caller turns the failure into a
+        launch note rather than letting it abort the turn.
         """
         if len(self._tasks) >= self._max_background:
             raise RuntimeError(
                 f"Too many background tasks ({self._max_background}); kill or "
                 "drain existing ones first."
             )
-        task_id = self._next_id()
-        self._register(
-            PendingTask(
-                task_id=task_id,
-                tool_name=tool.name,
-                exec_id=exec_id,
-                tool_call_id=tool_call_id,
-                task=task,
-                events=events,
-                blocks_final_answer=tool.blocks_final_answer,
-                max_inline_result_chars=tool.max_inline_result_chars,
-                task_key=task_key,
-            )
-        )
-        return task_id
 
-    def _register(self, pt: PendingTask) -> None:
-        """Track a task and push its id onto the completion queue when it ends."""
-        self._tasks[pt.task_id] = pt
-        pt.task.add_done_callback(
-            lambda _t, tid=pt.task_id: self._completions.put_nowait(tid)
+    def _register(
+        self,
+        *,
+        task_id: str,
+        task: asyncio.Task[None],
+        events: list[Event[Any]],
+        tool: BaseTool[BaseModel, Any, CtxT],
+        exec_id: str,
+        tool_call_id: str | None,
+        task_key: str | None,
+        started_at: float,
+        log_path: str | None = None,
+    ) -> None:
+        """
+        Track a backgrounded task and enqueue its id when it ends.
+
+        Builds the ``PendingTask`` from the tool — ``blocks_final_answer`` /
+        ``max_inline_result_chars`` come from it, so both backgrounding modes and
+        a resume re-spawn are tracked identically — and wires the done-callback
+        that feeds the single completion queue. ``started_at`` is the task's
+        launch stamp (for live elapsed); ``log_path`` its resolved ``.grasp`` log
+        (``None`` for a tool without one).
+        """
+        pt = PendingTask(
+            task_id=task_id,
+            tool_name=tool.name,
+            exec_id=exec_id,
+            tool_call_id=tool_call_id,
+            task=task,
+            events=events,
+            blocks_final_answer=tool.blocks_final_answer,
+            max_inline_result_chars=tool.max_inline_result_chars,
+            task_key=task_key,
+            started_at=started_at,
+            log_path=log_path,
+        )
+        self._tasks[task_id] = pt
+        task.add_done_callback(lambda _, tid=task_id: self._completions.put_nowait(tid))
+
+    async def _resolve_log(
+        self,
+        name: str,
+        tool: BaseTool[BaseModel, Any, CtxT],
+        *,
+        ctx: RunContext[CtxT],
+    ) -> str | None:
+        """
+        Resolve a backgrounded task's ``.grasp`` log path, or ``None``.
+
+        Gated on ``tool.has_progress_log``: only a tool that mirrors incremental
+        output to a log gets one resolved (eagerly, at background time, so the
+        pending record and launch note can cite it). A tool whose events are
+        structural — a sub-agent — has no log, independent of *how* it
+        backgrounded.
+        """
+        if not tool.has_progress_log or ctx.file_backend is None:
+            return None
+        return await open_task_log(ctx.file_backend, name=name)
+
+    def _make_launched_event(
+        self,
+        task_id: str,
+        tool_name: str,
+        call_id: str,
+        *,
+        log_path: str | None,
+        exec_id: str,
+    ) -> BackgroundTaskLaunchedEvent:
+        """
+        Build the launched event both backgrounding modes bubble.
+
+        ``output_name`` is surfaced only for a task that has a ``.grasp`` log
+        (``log_path`` set); a sub-agent without one advertises ``None``.
+        """
+        return BackgroundTaskLaunchedEvent(
+            source=self._agent_name,
+            exec_id=exec_id,
+            data=BackgroundTaskInfo(
+                task_id=task_id,
+                tool_name=tool_name,
+                tool_call_id=call_id,
+                output_name=task_log_name(call_id) if log_path else None,
+            ),
         )
 
     # --- TaskRecord persistence ---
@@ -517,8 +593,15 @@ class BackgroundTaskManager(Generic[CtxT]):
         task_id: str,
         *,
         ctx: RunContext[CtxT],
+        output_path: str | None = None,
     ) -> None:
-        """Persist a PENDING ``TaskRecord`` so a restart can surface this task."""
+        """
+        Persist a PENDING ``TaskRecord`` so a restart can surface this task.
+
+        ``output_path`` is the task's ``.grasp`` log — resolved up front for a
+        tool with ``has_progress_log`` so the record carries it in a single
+        write; ``None`` for a tool with no log.
+        """
         store = ctx.checkpoint_store
         if store is None:
             return
@@ -530,6 +613,7 @@ class BackgroundTaskManager(Generic[CtxT]):
             tool_call_arguments=call.arguments,
             status=TaskStatus.PENDING,
             started_at=datetime.now(UTC),
+            output_path=output_path,
         )
         await store.save(task_key, record.model_dump_json().encode())
 
@@ -551,39 +635,28 @@ class BackgroundTaskManager(Generic[CtxT]):
         record = record.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
         await store.save(task_key, record.model_dump_json().encode())
 
-    async def flush_progress(self, ctx: RunContext[CtxT]) -> None:
+    async def _append_log(
+        self, pt: PendingTask, text: str, backend: "FileBackend"
+    ) -> None:
         """
-        Mirror each live backgrounded task's streamed output to its
-        agent-readable ``.grasp/tasks/<call_id>.log`` so a crash leaves a
-        recoverable, Grep-able trace; the file path is indexed on the task's
-        ``TaskRecord`` once. Driven by the loop's turn boundary. A no-op without
-        both a checkpoint store (for the record) and a file backend (for the
-        file), or for tasks with no new streamed output (e.g. a sub-agent, whose
-        events are structural, not stream text). Best-effort — never breaks the
-        run.
+        Mirror new stream ``text`` to the task's ``.grasp/tasks/<call_id>.log``
+        so a crash leaves a recoverable, Grep-able trace and a running task can
+        be inspected with ``Read`` / ``Grep``. Called from :meth:`drain` with the
+        delta bubbled this turn, so only new output is appended (O(new output),
+        not a rewrite). No-op for a task with no log (``has_progress_log`` false →
+        no resolved ``log_path``) or once ``max_task_log_bytes`` is hit (a final
+        marker is appended, then output is dropped). Best-effort — never raises.
         """
-        store = ctx.checkpoint_store
-        backend = ctx.file_backend
-        if store is None or backend is None:
+        if not text or pt.log_path is None or pt.log_bytes >= self._max_task_log_bytes:
             return
-        for pt in list(self._tasks.values()):
-            if pt.task_key is None or len(pt.events) == pt.flush_count:
-                continue
-            pt.flush_count = len(pt.events)
-            full = _stream_text(pt.events)
-            if not full:
-                continue  # nothing streamed (e.g. a sub-agent's structural events)
-
-            if pt.log_path is None:
-                pt.log_path = await open_task_log(
-                    backend, name=pt.tool_call_id or pt.task_id
-                )
-                if pt.log_path is not None:  # index the file on the record once
-                    await self._mark_record(
-                        pt.task_key, ctx=ctx, output_path=pt.log_path
-                    )
-            if pt.log_path is not None:
-                await write_task_log(backend, pt.log_path, full)
+        chunk = text.encode()
+        remaining = self._max_task_log_bytes - pt.log_bytes
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining] + b"\n... [log truncated] ...\n"
+            pt.log_bytes = self._max_task_log_bytes  # saturate → stop appending
+        else:
+            pt.log_bytes += len(chunk)
+        await append_task_log(backend, pt.log_path, chunk)
 
     def get(self, task_id: str) -> PendingTask:
         pt = self._tasks.get(task_id)
@@ -597,51 +670,37 @@ class BackgroundTaskManager(Generic[CtxT]):
     def remove(self, task_id: str) -> None:
         self._tasks.pop(task_id, None)
 
-    # --- Poll / stop (TaskOutput / KillTask) ---
-
-    async def read_output(
-        self, task_id: str, *, ctx: RunContext[CtxT] | None = None
-    ) -> TaskOutputResult:
-        """Output since the last read; the terminal result once finished."""
-        pt = self.get(task_id)
-        new = pt.events[pt.poll_cursor :]
-        pt.poll_cursor = len(pt.events)
-        output = _stream_text(new)
-
-        if pt.task.done():
-            result, failed = _result_of(pt.events)
-            status: Literal["running", "completed", "failed"] = (
-                "failed" if failed else "completed"
-            )
-            # Finished + read here → the result reached the agent via this call,
-            # so mark the record delivered (no resume re-injection) and drop it.
-            await self._mark_record(pt.task_key, ctx=ctx, status=TaskStatus.DELIVERED)
-            self._tasks.pop(task_id, None)
-        else:
-            result, status = None, "running"
-
-        return TaskOutputResult(
-            task_id=task_id,
-            tool_name=pt.tool_name,
-            status=status,
-            output=output,
-            result=result,
-            elapsed_s=time.monotonic() - pt.started_at,
-        )
+    # --- Stop (KillTask) ---
 
     async def kill_task(
         self, task_id: str, *, ctx: RunContext[CtxT] | None = None
-    ) -> TaskOutputResult:
+    ) -> KillTaskResult:
         """Cancel a task (its stream closes → process group killed) and read it."""
         pt = self.get(task_id)
-        if not pt.task.done():
+        # Capture whether it had already finished *before* we cancel: a task
+        # still tracked here that is already done finished on its own, so the
+        # outcome is genuine; otherwise we are the ones stopping it.
+        already_done = pt.task.done()
+        if not already_done:
             pt.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pt.task
 
-        new = pt.events[pt.poll_cursor :]
-        pt.poll_cursor = len(pt.events)
         result, failed = _result_of(pt.events)
+        # A head+tail excerpt of what it produced, so the model sees why it was
+        # killed without bloating the transcript; the full output is in the log.
+        output, _ = _excerpt_for_inline(
+            _stream_text(pt.events),
+            pt.max_inline_result_chars or 8000,
+            output_file=pt.log_path,
+        )
+        status: Literal["cancelled", "completed", "failed"]
+        if failed:
+            status = "failed"
+        elif already_done:
+            status = "completed"
+        else:
+            status = "cancelled"
         # Deliberately stopped → record is terminal, so a later resume does not
         # report the killed task as interrupted.
         await self._mark_record(
@@ -651,11 +710,11 @@ class BackgroundTaskManager(Generic[CtxT]):
             error="Stopped by KillTask",
         )
         self._tasks.pop(task_id, None)
-        return TaskOutputResult(
+        return KillTaskResult(
             task_id=task_id,
             tool_name=pt.tool_name,
-            status="failed" if failed else "completed",
-            output=_stream_text(new),
+            status=status,
+            output=output,
             result=result,
         )
 
@@ -665,27 +724,40 @@ class BackgroundTaskManager(Generic[CtxT]):
         self, *, exec_id: str, ctx: RunContext[CtxT]
     ) -> AsyncIterator[Event[Any]]:
         """
-        Re-emit buffered events for answer-blocking tasks (sub-agent progress),
-        then deliver one completion notification per finished task.
+        The turn-boundary pass over every tracked task: in one sweep re-emit
+        each task's new buffered events as live progress *and* mirror their
+        stream text to the ``.grasp`` log, then deliver one completion
+        notification per finished task.
 
-        Delivery is uniform regardless of how the task was backgrounded (spawn
-        vs deadline): the note inlines the task's result (or error) and the task
-        is dropped. A result larger than the tool's ``max_inline_result_chars``
-        is excerpted in the note with a pointer to ``TaskOutput`` and the
-        finished task is *kept* so the full result can still be pulled
-        (cap-and-defer). Either way the task is ``announced`` once, so it stops
-        gating the final answer.
+        Bubbling and log-mirroring share a single ``cursor`` — the log is
+        written from the very events being bubbled — so there is no separate
+        flush step. The mirroring stays here (consumer-side, batched one append
+        per task per turn) rather than in the producing task, so it is cheap
+        even on a remote backend where a per-event write would be a round-trip.
+
+        Delivery is uniform regardless of how the task was backgrounded
+        (immediate vs deadline): the note inlines the task's result (or error)
+        and the task is dropped. A result larger than the tool's
+        ``max_inline_result_chars`` is excerpted in the note with a pointer to
+        its ``.grasp`` log, which holds the full streamed output for ``Read`` /
+        ``Grep``. Either way the task is ``announced`` once, so it stops gating
+        the final answer.
         """
-        # Bubble new events for answer-blocking tasks — their progress is shown
-        # live in the parent stream. A non-blocking task's output is pulled on
-        # demand via ``TaskOutput``, so it is not bubbled.
+        # Bubble each task's new events to the parent stream (pure
+        # observability — live progress for a backgrounded shell command just as
+        # for a sub-agent; ``blocks_final_answer`` governs only the JUDGE gate)
+        # and mirror this pass's stream text to its ``.grasp`` log in one append.
+        backend = ctx.file_backend
         for pt in list(self._tasks.values()):
-            if not pt.blocks_final_answer:
-                continue
-            while pt.bubble_cursor < len(pt.events):
-                event = pt.events[pt.bubble_cursor]
-                pt.bubble_cursor += 1
+            start = pt.cursor
+            while pt.cursor < len(pt.events):
+                event = pt.events[pt.cursor]
+                pt.cursor += 1
                 yield event
+            if backend is not None and pt.cursor > start:
+                await self._append_log(
+                    pt, _stream_text(pt.events[start : pt.cursor]), backend
+                )
 
         while not self._completions.empty():
             task_id = self._completions.get_nowait()
@@ -695,10 +767,17 @@ class BackgroundTaskManager(Generic[CtxT]):
 
             result, failed = _result_of(pt.events)
             status = "failed" if failed else "completed"
-            # Inline the result (or error); excerpt + defer to TaskOutput when it
-            # exceeds the tool's cap.
-            body, truncated = _excerpt_for_inline(
-                str(result), pt.max_inline_result_chars, task_id=pt.task_id
+            full = str(result)
+            cap = pt.max_inline_result_chars
+
+            result_file: str | None = None
+            if cap is not None and len(full) > cap and ctx.file_backend is not None:
+                result_file = await write_result_file(
+                    ctx.file_backend, name=pt.tool_call_id or pt.task_id, text=full
+                )
+
+            body, _ = _excerpt_for_inline(
+                full, cap, output_file=result_file or pt.log_path
             )
             note_result = None if failed else body
             note_error = body if failed else None
@@ -752,9 +831,30 @@ class BackgroundTaskManager(Generic[CtxT]):
             )
 
             pt.announced = True  # delivered → no longer gates the final answer
-            if not truncated:
-                self._tasks.pop(task_id, None)  # full result delivered → drop
-            # else: retain so the full result is still readable via TaskOutput.
+            # The full output lives in the .grasp log; nothing is retained for a
+            # poll, so always drop the finished task.
+            self._tasks.pop(task_id, None)
+
+        # Front-trim each surviving task's buffer: leading events consumed by
+        # BOTH the bubble (parent stream) and flush (.grasp log) cursors are
+        # durable elsewhere, so drop them to bound memory for a long, chatty
+        # backgrounded command. Stops before any terminal result event so
+        # ``_result_of`` / ``kill_task`` still find it.
+        for pt in self._tasks.values():
+            self._trim_consumed(pt)
+
+    @staticmethod
+    def _trim_consumed(pt: PendingTask) -> None:
+        """Drop drained (bubbled + flushed) leading events; keep results."""
+        keep_from = pt.cursor
+        for i in range(keep_from):
+            if isinstance(pt.events[i], ToolErrorEvent | ToolOutputEvent):
+                keep_from = i  # never drop a terminal result event
+                break
+        if keep_from <= 0:
+            return
+        del pt.events[:keep_from]
+        pt.cursor -= keep_from
 
     # --- Cancel ---
 
@@ -896,8 +996,9 @@ class BackgroundTaskManager(Generic[CtxT]):
             framing = InputMessageItem.from_text(
                 "Session resumed from a checkpoint — in-memory state was "
                 "reconstructed. The background tasks below were in flight when "
-                "the session stopped; for any reported as interrupted, inspect "
-                "its output (TaskOutput) and decide whether to redo the work.",
+                "the session stopped; for any reported as interrupted, decide "
+                "whether to redo the work (any output it produced is noted with "
+                "it).",
                 role="user",
             )
             self._transcript.update([framing, *notifications])
@@ -972,17 +1073,15 @@ class BackgroundTaskManager(Generic[CtxT]):
         )
 
         self._register(
-            PendingTask(
-                task_id=record.task_id,
-                tool_name=record.tool_name,
-                exec_id=exec_id,
-                tool_call_id=record.tool_call_id,
-                task=async_task,
-                events=events,
-                blocks_final_answer=tool.blocks_final_answer,
-                max_inline_result_chars=tool.max_inline_result_chars,
-                task_key=task_key,
-            )
+            task_id=record.task_id,
+            task=async_task,
+            events=events,
+            tool=tool,
+            exec_id=exec_id,
+            tool_call_id=record.tool_call_id,
+            task_key=task_key,
+            started_at=time.monotonic(),
+            log_path=record.output_path,
         )
 
         logger.info(

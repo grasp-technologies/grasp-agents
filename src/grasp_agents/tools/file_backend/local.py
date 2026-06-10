@@ -222,6 +222,21 @@ class LocalFileBackend(FileBackend):
 
         return await asyncio.to_thread(_write)
 
+    async def append_bytes(self, path: Path, data: bytes, *, mode: int) -> float:
+        def _append() -> float:
+            # ``path`` is already validated + resolved by the caller (same
+            # contract as ``write_bytes``). O_APPEND makes each write land at
+            # EOF atomically w.r.t. other writers — fine for our single writer
+            # per task, and O(len(data)) instead of rewriting the file.
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            return path.resolve(strict=True).stat().st_mtime
+
+        return await asyncio.to_thread(_append)
+
     async def delete(self, path: Path) -> None:
         await asyncio.to_thread(path.unlink)
 

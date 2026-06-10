@@ -1,8 +1,8 @@
 """
 Tests for the ``Bash`` long-running-command polish: heartbeat progress,
 blocked leading ``sleep``, auto-background via the manager's
-``run_with_deadline`` with the generic ``TaskOutput`` / ``KillTask``
-companions, and cancellation semantics.
+``run_backgroundable`` with the ``KillTask`` companion, and cancellation
+semantics.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.bash import Bash, BashInput, bash_tools
-from grasp_agents.tools.task_tools import KillTask, TaskIdInput, TaskOutput
+from grasp_agents.tools.task_tools import KillTask, TaskIdInput
 from grasp_agents.types.events import BackgroundTaskLaunchedEvent, UserMessageEvent
 from grasp_agents.types.items import FunctionToolCallItem
 
@@ -100,7 +100,7 @@ async def _bg(
     """
     call = FunctionToolCallItem(call_id="c1", name=tool.name, arguments="{}")
     before = set(loop.bg_tasks._tasks)  # pyright: ignore[reportPrivateUsage]
-    result, _launched = await loop.bg_tasks.run_with_deadline(
+    result, _launched = await loop.bg_tasks.run_backgroundable(
         call,
         tool,
         BashInput(command=command, timeout=timeout),
@@ -117,12 +117,25 @@ def _ctx(tmp_path: Path) -> RunContext[None]:
     return RunContext(environment=env)
 
 
+async def _flush(manager: BackgroundTaskManager[None], ctx: RunContext[None]) -> None:
+    """
+    Drive one ``drain`` pass for its log-mirroring side effect, discarding the
+    bubbled events — ``drain`` owns flushing (there is no ``flush_progress``).
+    """
+    async for _ in manager.drain(exec_id="t", ctx=ctx):
+        pass
+
+
 async def _drain_notes(
     manager: BackgroundTaskManager[None], ctx: RunContext[None]
 ) -> list[str]:
-    """The completion notes a single drain pass injects."""
+    """
+    The completion notes a single turn-boundary ``drain`` injects. ``drain``
+    also mirrors progress to the ``.grasp`` logs, so a truncated note can point
+    at the log.
+    """
     return [
-        str(e.data)
+        e.data.text  # the rendered note text, as the model sees it (not a repr)
         async for e in manager.drain(exec_id="t", ctx=ctx)
         if isinstance(e, UserMessageEvent)
     ]
@@ -257,7 +270,7 @@ async def test_explicit_cwd_overrides_shell_state(tmp_path: Path) -> None:
     assert loop.shell_state.cwd.endswith("/x")
     # An explicit per-call cwd wins over the round-tripped one for that call...
     call = FunctionToolCallItem(call_id="c1", name=bash.name, arguments="{}")
-    out, _launched = await loop.bg_tasks.run_with_deadline(
+    out, _launched = await loop.bg_tasks.run_backgroundable(
         call,
         bash,
         BashInput(command="pwd", cwd=str(tmp_path / "y")),
@@ -286,7 +299,6 @@ async def test_fast_command_completes_in_foreground(tmp_path: Path) -> None:
 async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    poll = TaskOutput(loop.bg_tasks)
 
     result, task_id = await _bg(
         loop, Bash(auto_background_at=0.3), "echo early && sleep 0.8 && echo late"
@@ -294,23 +306,14 @@ async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
     assert task_id is not None
     assert "moved to the background" in result  # launch note, not a BashResult
 
-    # Poll until done — incremental output is read back through TaskOutput.
-    collected = ""
-    for _ in range(40):
-        out = await poll._run(TaskIdInput(task_id=task_id))
-        collected += out.output
-        if out.status == "completed":
-            assert out.result is not None  # the terminal BashResult
-            assert out.result.returncode == 0
-            break
-        await asyncio.sleep(0.1)
-    else:
-        pytest.fail("backgrounded command never completed")
-
-    # Output produced before *and* after backgrounding is surfaced by polling.
-    assert "early" in collected
-    assert "late" in collected
-    # Finished tasks are removed once their final result is delivered.
+    # Block until it finishes (the loop's idle wait), then drain its completion
+    # note — the result is delivered there; there is no polling.
+    await loop.bg_tasks.wait_idle()
+    notes = await _drain_notes(loop.bg_tasks, ctx)
+    assert len(notes) == 1
+    assert "completed" in notes[0]
+    assert "early" in notes[0]  # output produced before backgrounding
+    assert "late" in notes[0]  # and after
     assert loop.bg_tasks._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
@@ -329,9 +332,9 @@ async def test_kill_task_terminates_background_command(tmp_path: Path) -> None:
     assert task_id is not None
 
     killed = await killer._run(TaskIdInput(task_id=task_id))
-    # Killed mid-run: it's done, with whatever output streamed before the kill
-    # (no terminal BashResult, since cancellation pre-empts the final event).
-    assert killed.status == "completed"
+    # Killed mid-run → reported as cancelled, with whatever output streamed
+    # before the kill (no terminal BashResult — cancellation pre-empts it).
+    assert killed.status == "cancelled"
 
     # The process group is actually dead: the marker stops growing.
     await asyncio.sleep(0.3)
@@ -404,12 +407,12 @@ async def test_completion_note_inlines_small_result_once(tmp_path: Path) -> None
     assert len(notes) == 1
     assert task_id in notes[0]
     assert "completed" in notes[0]
-    # A small result is inlined directly in the note — no TaskOutput round-trip,
-    # same delivery a spawned (answer-blocking) task gets.
+    # A small result is inlined directly in the note (not excerpted), same
+    # delivery a spawned (answer-blocking) task gets.
     assert "done" in notes[0]
-    assert "TaskOutput" not in notes[0]
-    # Announced exactly once, and a fully-delivered task is dropped (nothing left
-    # to poll — the result already reached the model).
+    assert "omitted" not in notes[0]
+    # Announced exactly once, and a fully-delivered task is dropped (the result
+    # already reached the model; the full output remains in the log).
     assert await _drain_notes(mgr, ctx) == []
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
@@ -418,9 +421,12 @@ async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
     """
     Cap-and-defer: a backgrounded command whose result exceeds the tool's
     ``max_inline_result_chars`` gets an *excerpted* completion note pointing at
-    ``TaskOutput``, and the finished task is *retained* so the full result is
-    still readable — instead of dumping a huge log into the transcript.
+    the task's ``.grasp`` log, which holds the full output — instead of dumping a
+    huge log into the transcript. The finished task is dropped.
     """
+    import re as _re
+    from pathlib import Path as _Path
+
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     mgr = loop.bg_tasks
@@ -436,22 +442,102 @@ async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
     assert len(notes) == 1
     note = notes[0]
     assert "completed" in note
-    # Excerpted note: a truncation marker that points the model at TaskOutput.
-    assert "chars omitted" in note
-    assert "TaskOutput" in note
-    # The finished task is kept (not dropped) so the full result can be pulled.
-    assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
-
-    # TaskOutput returns the full, untruncated result, then drops the task.
-    out = await TaskOutput(mgr)._run(TaskIdInput(task_id=task_id))
-    assert out.status == "completed"
-    assert out.result is not None
-    assert out.result.stdout.count("A") == 5000
-    assert "END" in out.result.stdout
+    assert "chars omitted" in note  # excerpted
+    # The finished task is dropped — the full output lives on disk, not memory.
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
+    # Two on-disk artifacts (structured + log). The excerpt marker points at the
+    # .result sidecar (the full structured BashResult)...
+    result_match = _re.search(r"full output in (.+?)\]", note)
+    assert result_match is not None
+    result_path = _Path(result_match.group(1).strip())
+    assert result_path.suffix == ".result"
+    assert result_path.read_text().count("A") >= 5000
 
-async def test_idle_wait_avoids_polling(tmp_path: Path) -> None:
+    # ...and <output_file> is the streamed .log, which also holds the full output.
+    log_match = _re.search(r"<output_file>(.+?)</output_file>", note, _re.DOTALL)
+    assert log_match is not None
+    log_text = _Path(log_match.group(1).strip()).read_text()
+    assert log_text.count("A") == 5000
+    assert "END" in log_text
+
+
+async def test_progress_log_appends_deltas(tmp_path: Path) -> None:
+    """
+    ``drain`` appends only the *new* output each time — not a full rewrite
+    (would be O(n²)) and not a re-append of already-written text (would
+    duplicate). Two drains over a staged command leave each line exactly once.
+    """
+    from pathlib import Path as _Path
+
+    ctx = _ctx(tmp_path)
+    loop = _loop(ctx)
+    mgr = loop.bg_tasks
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo AAAA; sleep 0.6; echo BBBB; sleep 0.4"
+    )
+    assert task_id is not None
+
+    await asyncio.sleep(0.3)  # AAAA emitted, BBBB not yet
+    await _flush(mgr, ctx)
+    log = _Path(mgr.get(task_id).log_path or "")
+    first = log.read_text()
+    assert "AAAA" in first
+    assert "BBBB" not in first
+
+    await asyncio.sleep(0.6)  # BBBB now emitted
+    await _flush(mgr, ctx)
+    second = log.read_text()
+    assert "BBBB" in second
+    assert second.count("AAAA") == 1  # delta-appended, not rewritten or duplicated
+
+    await mgr.cancel_all(ctx=ctx)
+
+
+async def test_nonblocking_task_bubbles_stream_events(tmp_path: Path) -> None:
+    """
+    A backgrounded (non-blocking) command's stream events bubble to the parent
+    stream — live progress is decoupled from ``blocks_final_answer`` (which now
+    governs only the JUDGE gate).
+    """
+    from grasp_agents.types.events import ToolStreamEvent
+
+    ctx = _ctx(tmp_path)
+    loop = _loop(ctx)
+    mgr = loop.bg_tasks
+    _note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo streamed && sleep 0.4"
+    )
+    assert task_id is not None
+    assert mgr.get(task_id).blocks_final_answer is False  # non-blocking
+
+    await mgr.wait_idle()
+    events = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
+    streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
+    assert streamed  # bubbled despite blocks_final_answer=False
+    assert any("streamed" in str(e.data) for e in streamed)
+
+
+async def test_deadline_note_points_at_log(tmp_path: Path) -> None:
+    """
+    The launch note for a deadline-backgrounded command cites its ``.grasp`` log
+    (resolved eagerly) so the model can ``Read`` / ``Grep`` it while the command
+    runs — the inspect-a-running-task path now that ``TaskOutput`` is gone.
+    """
+    ctx = _ctx(tmp_path)
+    loop = _loop(ctx)
+    note, task_id = await _bg(
+        loop, Bash(auto_background_at=0.1), "echo hi && sleep 0.6"
+    )
+    assert task_id is not None
+
+    log_path = loop.bg_tasks.get(task_id).log_path
+    assert log_path is not None  # resolved eagerly at sideline, before any flush
+    assert ".grasp/tasks" in log_path
+    assert log_path in note  # the note hands the model the exact path
+    assert "Read or Grep" in note
+
+    await loop.bg_tasks.cancel_all(ctx=ctx)
     """
     The loop's idle wait: a running command is waited on (no poll loop), and
     once it finishes drain yields exactly one completion note, announced once.
@@ -608,24 +694,24 @@ async def test_llm_agent_auto_wires_bash_notes() -> None:
 # --- factory -------------------------------------------------------------------
 
 
-async def test_bash_tools_factory_builds_trio(tmp_path: Path) -> None:
+async def test_bash_tools_factory_builds_pair(tmp_path: Path) -> None:
     tools = bash_tools(auto_background_at=0.1)
-    assert [t.name for t in tools] == ["Bash", "TaskOutput", "KillTask"]
-    bash, _poll, kill = tools
+    assert [t.name for t in tools] == ["Bash", "KillTask"]
+    bash, kill = tools
     assert isinstance(bash, Bash)
     assert isinstance(kill, KillTask)
     assert bash.auto_background_at == 0.1
     assert "background" in bash.description
 
-    # The manager moves a long command to the background; the companions
-    # (resolving that same manager from the AgentContext) find it.
+    # The manager moves a long command to the background; KillTask (resolving
+    # that same manager from the AgentContext) finds it.
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     _result, task_id = await _bg(loop, bash, "echo x && sleep 0.4")
     assert task_id is not None
     assert task_id in loop.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
     killed = await kill._run(TaskIdInput(task_id=task_id), agent_ctx=loop.agent_ctx)
-    assert killed.status == "completed"
+    assert killed.status == "cancelled"
 
 
 async def test_deadline_backgrounding_emits_launched_event(tmp_path: Path) -> None:
@@ -637,7 +723,7 @@ async def test_deadline_backgrounding_emits_launched_event(tmp_path: Path) -> No
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     call = FunctionToolCallItem(call_id="c1", name="Bash", arguments="{}")
-    note, launched = await loop.bg_tasks.run_with_deadline(
+    note, launched = await loop.bg_tasks.run_backgroundable(
         call,
         Bash(auto_background_at=0.1),
         BashInput(command="echo hi && sleep 0.4", timeout=10),
@@ -657,7 +743,7 @@ async def test_foreground_finish_emits_no_launched_event(tmp_path: Path) -> None
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     call = FunctionToolCallItem(call_id="c1", name="Bash", arguments="{}")
-    result, launched = await loop.bg_tasks.run_with_deadline(
+    result, launched = await loop.bg_tasks.run_backgroundable(
         call,
         Bash(auto_background_at=5.0),
         BashInput(command="echo fg"),
@@ -700,7 +786,7 @@ async def test_loop_dispatch_deadline_bash_yields_launched(tmp_path: Path) -> No
 
 async def test_companions_require_a_manager_in_scope() -> None:
     with pytest.raises(ValueError, match="background task manager"):
-        await TaskOutput()._run(TaskIdInput(task_id="bg_1"))
+        await KillTask()._run(TaskIdInput(task_id="bg_1"))
 
 
 # --- durable task records for backgrounded commands ---------------------------
@@ -763,7 +849,7 @@ async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
     assert not any("interrupted" in str(m) for m in transcript.messages)
 
 
-async def test_read_when_done_marks_record_delivered(tmp_path: Path) -> None:
+async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
     from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
     from grasp_agents.durability.store_keys import task_prefix
     from grasp_agents.durability.task_record import TaskRecord, TaskStatus
@@ -777,12 +863,11 @@ async def test_read_when_done_marks_record_delivered(tmp_path: Path) -> None:
     assert task_id is not None
 
     await loop.bg_tasks.wait_idle()
-    out = await TaskOutput(loop.bg_tasks)._run(
-        TaskIdInput(task_id=task_id), ctx=ctx, agent_ctx=loop.agent_ctx
-    )
-    assert out.status == "completed"
+    notes = await _drain_notes(loop.bg_tasks, ctx)
+    assert len(notes) == 1
+    assert "completed" in notes[0]
 
-    # Reading the finished task's result marks its record delivered (so a resume
+    # Draining delivers the result and marks the record delivered (so a resume
     # won't re-inject a result the agent already saw).
     keys = await store.list_keys(task_prefix(ctx.session_key))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
@@ -809,7 +894,7 @@ async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
     assert task_id is not None
 
     await asyncio.sleep(0.2)  # let the command emit "HELLO" before flushing
-    await loop.bg_tasks.flush_progress(ctx=ctx)
+    await _flush(loop.bg_tasks, ctx)
 
     keys = await store.list_keys(task_prefix(ctx.session_key))
     rec = TaskRecord.model_validate_json(await store.load(keys[0]))
@@ -838,7 +923,7 @@ async def test_backgrounded_bash_writes_log_without_store(tmp_path: Path) -> Non
     assert task_id is not None
 
     await asyncio.sleep(0.2)
-    await loop.bg_tasks.flush_progress(ctx=ctx)
+    await _flush(loop.bg_tasks, ctx)
 
     logs = list((tmp_path / ".grasp" / "tasks").glob("*.log"))
     assert logs, "no log written with a file backend but no checkpoint store"
@@ -862,7 +947,9 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     assert task_id is not None
 
     await asyncio.sleep(0.2)
-    await loop.bg_tasks.flush_progress(ctx=ctx)  # writes log + records output_path
+    await _flush(
+        loop.bg_tasks, ctx
+    )  # mirrors the .grasp log (output_path set at launch)
 
     # Simulate a crash: drop the in-flight task without finalizing the record.
     for pt in list(loop.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]
@@ -885,7 +972,7 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     assert "ran_for" in joined  # elapsed
 
 
-async def test_taskoutput_reports_elapsed(tmp_path: Path) -> None:
+async def test_completion_note_reports_elapsed(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     _note, task_id = await _bg(
@@ -893,13 +980,10 @@ async def test_taskoutput_reports_elapsed(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    out = await TaskOutput(loop.bg_tasks)._run(
-        TaskIdInput(task_id=task_id), agent_ctx=loop.agent_ctx
-    )
-    assert out.elapsed_s is not None
-    assert out.elapsed_s >= 0
-
-    await loop.bg_tasks.cancel_all(ctx=ctx)
+    await loop.bg_tasks.wait_idle()
+    notes = await _drain_notes(loop.bg_tasks, ctx)
+    assert len(notes) == 1
+    assert "ran_for" in notes[0]  # elapsed is surfaced in the completion note
 
 
 # The persistent-session tool lives in test_bash_session.py.

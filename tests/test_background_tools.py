@@ -274,13 +274,14 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
+    ctx: RunContext[None] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
     memory.reset(instructions="sys")
     memory.update([InputMessageItem.from_text("go", role="user")])
 
-    ctx = RunContext[None](state=None)
+    ctx = ctx if ctx is not None else RunContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
@@ -755,19 +756,17 @@ class TestFireAndForgetSpawn:
 
 
 class TestCapAndDeferDelivery:
-    """A large result is excerpted in the note + retained for a TaskOutput read."""
+    """A large result is excerpted in the completion note, then the task dropped."""
 
     @pytest.mark.asyncio
-    async def test_large_result_excerpted_kept_and_pollable(self):
-        from grasp_agents.tools.task_tools import TaskIdInput, TaskOutput
-
+    async def test_large_result_excerpted_then_dropped(self):
         tool = BigOutputTool(size=1000, cap=100)
         executor, _, _ = _make_executor([], tools=[tool])
         mgr = executor.bg_tasks
         ctx = executor.ctx
 
         call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
-        _note, event = await mgr.spawn(
+        _note, event = await mgr.run_backgroundable(
             call,
             tool,
             EchoInput(text="x"),
@@ -784,19 +783,60 @@ class TestCapAndDeferDelivery:
             if isinstance(e, UserMessageEvent)
         ]
         assert len(notes) == 1
-        # Excerpted, with a pointer to TaskOutput for the rest.
+        # Excerpted — the full output belongs in the .grasp log, not the
+        # transcript (this tool streams nothing, so there is no pointer here).
         assert "chars omitted" in notes[0]
-        assert "TaskOutput" in notes[0]
-        # Even though BigOutputTool blocks the final answer by default, once its
-        # note is delivered it no longer gates it (announced), yet it is kept so
-        # the full result is still readable.
+        # Once its note is delivered the task no longer gates the answer and is
+        # dropped — nothing is retained in memory for a poll.
         assert not mgr.has_pending
-        assert task_id in mgr._tasks  # pyright: ignore[reportPrivateUsage]
+        assert task_id not in mgr._tasks  # pyright: ignore[reportPrivateUsage]
 
-        out = await TaskOutput(mgr)._run(TaskIdInput(task_id=task_id))
-        assert out.status == "completed"
-        assert out.result == "X" * 1000  # full, untruncated
-        # Reading a finished task drops it.
+    @pytest.mark.asyncio
+    async def test_truncated_result_written_to_sidecar_file(self, tmp_path):
+        """
+        A non-streaming tool's over-cap result has no streamed ``.log`` to point
+        at, so drain persists the full result to a ``.result`` sidecar and the
+        excerpt marker points there — recoverable with ``Read`` / ``Grep``.
+        """
+        import re
+        from pathlib import Path
+
+        from grasp_agents.sandbox import local_environment
+
+        env = local_environment(allowed_roots=[tmp_path])
+        ctx = RunContext[None](environment=env)
+        tool = BigOutputTool(size=1000, cap=100)
+        executor, _, _ = _make_executor([], tools=[tool], ctx=ctx)
+        mgr = executor.bg_tasks
+
+        call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
+        _note, event = await mgr.run_backgroundable(
+            call,
+            tool,
+            EchoInput(text="x"),
+            ctx=ctx,
+            exec_id="t",
+            agent_ctx=executor.agent_ctx,
+        )
+        task_id = event.data.task_id
+
+        await mgr.wait_idle()
+        notes = [
+            str(e.data)
+            async for e in mgr.drain(exec_id="t", ctx=ctx)
+            if isinstance(e, UserMessageEvent)
+        ]
+        assert len(notes) == 1
+        assert "chars omitted" in notes[0]
+
+        # The marker points at a .result sidecar holding the full result, even
+        # though no .log was streamed.
+        match = re.search(r"full output in (.+?)\]", notes[0])
+        assert match is not None
+        result_path = Path(match.group(1).strip())
+        assert result_path.suffix == ".result"
+        assert result_path.read_text().count("X") == 1000
+        assert not list((tmp_path / ".grasp" / "tasks").glob("*.log"))
         assert task_id not in mgr._tasks  # pyright: ignore[reportPrivateUsage]
 
 
@@ -825,7 +865,9 @@ class TestDurableTaskRecords:
         # A non-resumable, long-running spawned task.
         tool = SlowTool(delay=10.0)
         call = FunctionToolCallItem(call_id="c1", name="slow", arguments='{"text":"x"}')
-        await mgr.spawn(call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t")
+        await mgr.run_backgroundable(
+            call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
+        )
 
         # It got a PENDING record even though the tool is not resumable.
         keys = await store.list_keys(task_prefix("s1"))
@@ -878,7 +920,7 @@ class TestDurableTaskRecords:
         call = FunctionToolCallItem(
             call_id="c1", name="failing_bg", arguments='{"text":"x"}'
         )
-        _note, event = await mgr.spawn(
+        _note, event = await mgr.run_backgroundable(
             call, FailingBgTool(), EchoInput(text="x"), ctx=ctx, exec_id="t"
         )
         # Wait for the task to finish so _consume persists the outcome.
@@ -891,3 +933,146 @@ class TestDurableTaskRecords:
         assert rec.status == TaskStatus.FAILED
         assert rec.error is not None
         assert "exploded" in rec.error
+
+
+class _StreamingTool(BaseTool[EchoInput, Any, Any]):
+    """Yields a ``ToolStreamEvent`` (optionally already stamped) then a result."""
+
+    def __init__(self, *, preset_dest: str | None = None) -> None:
+        super().__init__(name="streamer", description="Streams output")
+        self._preset_dest = preset_dest
+
+    async def _run(self, inp, *, ctx=None, **kwargs):
+        del inp, ctx, kwargs
+        return "done"
+
+    async def _run_stream(self, inp, *, exec_id=None, **kwargs):
+        del inp, kwargs
+        from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
+
+        yield ToolStreamEvent(
+            data="chunk",
+            source="streamer",
+            exec_id=exec_id,
+            destination=self._preset_dest,
+        )
+        yield ToolOutputEvent(data="done", source="streamer", exec_id=exec_id)
+
+
+class TestToolStreamDestinationStamping:
+    """``BaseTool.run_stream`` stamps the owning agent so the UI can route."""
+
+    @pytest.mark.asyncio
+    async def test_run_stream_stamps_owning_agent(self):
+        from grasp_agents.types.events import ToolStreamEvent
+
+        tool = _StreamingTool()
+        executor, _, _ = _make_executor([], tools=[tool])  # AgentLoop name "test"
+        events = [
+            e
+            async for e in tool.run_stream(
+                EchoInput(text="x"), agent_ctx=executor.agent_ctx
+            )
+        ]
+        streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
+        assert streamed
+        assert all(e.destination == "test" for e in streamed)
+
+    @pytest.mark.asyncio
+    async def test_run_stream_preserves_inner_destination(self):
+        # A nested sub-agent's already-stamped event must NOT be re-stamped by an
+        # outer wrapper running with a different agent_ctx.
+        from grasp_agents.types.events import ToolStreamEvent
+
+        tool = _StreamingTool(preset_dest="inner_agent")
+        executor, _, _ = _make_executor([], tools=[tool])
+        events = [
+            e
+            async for e in tool.run_stream(
+                EchoInput(text="x"), agent_ctx=executor.agent_ctx
+            )
+        ]
+        streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
+        assert streamed
+        assert all(e.destination == "inner_agent" for e in streamed)
+
+
+class TestFrontTrim:
+    """
+    Drain front-trims a surviving task's buffer: events consumed by both the
+    bubble and flush cursors are dropped, bounding memory for a chatty command,
+    while a terminal result event is preserved for ``_result_of``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_drain_trims_running_task_buffer(self):
+        from grasp_agents.agent.background_tasks import PendingTask
+        from grasp_agents.types.events import ToolStreamEvent
+
+        executor, _, _ = _make_executor([])
+        mgr = executor.bg_tasks
+        ctx = executor.ctx
+
+        async def _never() -> None:
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(_never())
+        pt = PendingTask(
+            task_id="bg_1",
+            tool_name="x",
+            exec_id="t",
+            task=task,
+            blocks_final_answer=False,
+        )
+        for i in range(10):
+            pt.events.append(ToolStreamEvent(data=f"s{i}", source="x"))
+        mgr._tasks["bg_1"] = pt  # pyright: ignore[reportPrivateUsage]
+
+        # drain bubbles + flushes the 10 events (cursor → 10) in one pass then
+        # trims the consumed prefix → buffer emptied, cursor reset.
+        _ = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
+        assert pt.events == []
+        assert pt.cursor == 0
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_trim_stops_before_a_terminal_result(self):
+        from grasp_agents.agent.background_tasks import (
+            BackgroundTaskManager,
+            PendingTask,
+        )
+        from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
+
+        async def _noop() -> None: ...
+
+        task = asyncio.create_task(_noop())
+        await task
+
+        pt = PendingTask(task_id="bg_1", tool_name="x", exec_id="t", task=task)
+        pt.events.append(ToolStreamEvent(data="s0", source="x"))
+        pt.events.append(ToolOutputEvent(data="RESULT", source="x"))  # terminal
+        pt.events.append(ToolStreamEvent(data="s2", source="x"))
+        pt.cursor = 3
+
+        BackgroundTaskManager._trim_consumed(pt)  # pyright: ignore[reportPrivateUsage]
+
+        # Trim stops before the terminal result at index 1 → only ``s0`` dropped,
+        # so a later ``_result_of`` still finds the result.
+        assert len(pt.events) == 2
+        assert isinstance(pt.events[0], ToolOutputEvent)
+        assert pt.cursor == 2
+
+    @pytest.mark.asyncio
+    async def test_run_stream_without_agent_ctx_leaves_unset(self):
+        from grasp_agents.types.events import ToolStreamEvent
+
+        tool = _StreamingTool()
+        events = [e async for e in tool.run_stream(EchoInput(text="x"))]
+        streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
+        assert streamed
+        assert all(e.destination is None for e in streamed)

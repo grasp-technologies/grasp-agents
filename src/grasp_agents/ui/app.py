@@ -463,6 +463,15 @@ class GraspAgentsApp(App[None]):
         self._ga_stream_msg_text: dict[str, str] = {}
         self._ga_stream_tool: dict[str, _SelectableStatic] = {}
         self._ga_stream_tool_text: dict[str, str] = {}
+        # name of the tool currently owning each pane's live tool-output widget,
+        # so a different tool's stream starts its own widget instead of writing
+        # into the previous one (which a backgrounded tool can leave un-finalised)
+        self._ga_stream_tool_name: dict[str, str] = {}
+        # tools whose work is currently running in the background (between their
+        # launch and completion), mapped to their log basename (None if no log is
+        # written). Their streamed output is live progress mirrored to that log,
+        # not a result the agent sees — rendered distinctly, headed by the log.
+        self._ga_bg_tools: dict[str, str | None] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -646,19 +655,52 @@ class GraspAgentsApp(App[None]):
     async def _stream_tool(
         self, owner: str, pane: VerticalScroll, tool: str, delta: str, at_bottom: bool
     ) -> None:
+        # A stream from a different tool than the one currently held means the
+        # previous tool's output is finished (e.g. a backgrounded tool whose
+        # drained output never got a finalising item event) — seal it so this
+        # tool's output starts in its own widget rather than overwriting the old
+        # one in place, above the new tool's call.
+        if (
+            owner in self._ga_stream_tool
+            and self._ga_stream_tool_name.get(owner) != tool
+        ):
+            self._seal_stream_tool(owner)
         text = self._ga_stream_tool_text.get(owner, "") + delta
         self._ga_stream_tool_text[owner] = text
-        rend = Align.right(render_tool_stream(owner, tool, text))
+        rend = Align.right(
+            render_tool_stream(
+                owner,
+                tool,
+                text,
+                background=tool in self._ga_bg_tools,
+                log_name=self._ga_bg_tools.get(tool),
+            )
+        )
         widget = self._ga_stream_tool.get(owner)
         if widget is None:
             widget = _SelectableStatic(rend, classes="ga-msg")
             self._ga_stream_tool[owner] = widget
+            self._ga_stream_tool_name[owner] = tool
             self._ga_last_kind[owner] = "box"
             await pane.mount(widget)
         else:
             widget.update(rend)
         if at_bottom:
             pane.scroll_end(animate=False)
+
+    def _seal_stream_tool(self, owner: str) -> None:
+        """
+        Stop tracking *owner*'s live tool-output widget, leaving it mounted as-is.
+
+        Called when a streaming episode ends without a finalising
+        ``ToolOutputItemEvent`` — e.g. a backgrounded tool whose drained output
+        terminates with a background-completion notice. The next tool's stream
+        then gets a fresh widget in its correct position instead of overwriting
+        this one in place.
+        """
+        self._ga_stream_tool.pop(owner, None)
+        self._ga_stream_tool_text.pop(owner, None)
+        self._ga_stream_tool_name.pop(owner, None)
 
     def _finalize_message(
         self, owner: str, event: Event[Any], pane: VerticalScroll, at_bottom: bool
@@ -676,6 +718,7 @@ class GraspAgentsApp(App[None]):
     ) -> None:
         widget = self._ga_stream_tool.pop(owner)
         self._ga_stream_tool_text.pop(owner, None)
+        self._ga_stream_tool_name.pop(owner, None)
         final = render_event(event, inline_images=False)
         if final is not None:
             widget.update(Align.right(final))
@@ -687,6 +730,12 @@ class GraspAgentsApp(App[None]):
     async def _feed_item(
         self, event: Event[Any], owner: str, pane: VerticalScroll, at_bottom: bool
     ) -> None:
+        if isinstance(event, ToolCallItemEvent):
+            # A new tool call ends any prior live tool-output stream for this
+            # owner (a backgrounded tool's drained stream never gets a finalising
+            # item event); seal it so this call and the next tool's output land
+            # below it, not folded into the leaked widget above.
+            self._seal_stream_tool(owner)
         if isinstance(event, TurnStartEvent):
             # monotonic per-agent turn count — the loop's own turn resets to 0
             # each step, so two consecutive turns can both read turn=0
@@ -765,6 +814,8 @@ class GraspAgentsApp(App[None]):
             child, parent = event.data.name, event.source
         elif isinstance(event, BackgroundTaskLaunchedEvent):
             child, parent = event.data.tool_name, event.source
+            # its subsequent streamed output is background progress, not a result
+            self._ga_bg_tools[event.data.tool_name] = event.data.output_name
         if child and parent and child != parent:
             self._ga_parent.setdefault(child, parent)
 
@@ -821,6 +872,7 @@ class GraspAgentsApp(App[None]):
             if str(getattr(reason, "value", reason)) == "final_answer":
                 self._set_status(owner, "done")
         elif isinstance(event, BackgroundTaskCompletedEvent):
+            self._ga_bg_tools.pop(event.data.tool_name, None)
             child = event.data.tool_name
             if child in self._ga_panes:
                 self._set_status(child, "done")
