@@ -10,7 +10,9 @@ no separate ``attach_*`` step is needed.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import Field
 
 from ..tools.function_tool import function_tool
 from .injection import LOAD_INSTRUCTION, render_available_skills_block
@@ -37,7 +39,11 @@ LIST_SKILLS_DESCRIPTION = (
 
 @function_tool(name="load_skill", description=LOAD_SKILL_DESCRIPTION)
 async def load_skill(  # noqa: RUF029
-    name: str, *, ctx: RunContext[Any] | None = None
+    name: Annotated[
+        str, Field(description="Exact skill name from the <available_skills> catalog.")
+    ],
+    *,
+    ctx: RunContext[Any] | None = None,
 ) -> str:
     if ctx is None or ctx.skills is None:
         raise SkillNotFoundError("No skills are configured for this run.")
@@ -60,7 +66,15 @@ async def load_skill(  # noqa: RUF029
 
 @function_tool(name="list_skills", description=LIST_SKILLS_DESCRIPTION)
 async def list_skills(  # noqa: RUF029
-    refresh: bool = False, *, ctx: RunContext[Any] | None = None
+    refresh: Annotated[
+        bool,
+        Field(
+            description="Re-walk the skill source directories first to pick up "
+            "skills authored after the session started."
+        ),
+    ] = False,
+    *,
+    ctx: RunContext[Any] | None = None,
 ) -> str:
     if ctx is None or ctx.skills is None:
         return "No skills are configured for this run."

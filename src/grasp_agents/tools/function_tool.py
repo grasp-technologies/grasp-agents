@@ -61,7 +61,13 @@ def _build_input_model(
             field_definitions[param_name] = (annotation, ...)
 
     model_name = f"{fn.__name__}_input"
-    return create_model(model_name, **field_definitions)  # type: ignore[call-overload]
+    # Resolve string annotations (the module uses ``from __future__ import
+    # annotations``) against the decorated function's own module, so a
+    # parameter typed ``Annotated[T, Field(description=...)]`` carries its
+    # description into the input schema.
+    return create_model(  # type: ignore[call-overload]
+        model_name, __module__=fn.__module__, **field_definitions
+    )
 
 
 def _has_special_param(sig: inspect.Signature, name: str) -> bool:

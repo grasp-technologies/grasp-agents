@@ -100,15 +100,20 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
 
     name = "BashSession"
     description = (
-        "Run a shell command in a persistent shell session and return its "
-        "stdout, stderr, and exit code. Unlike Bash, state carries across "
-        "calls: `cd`, exported environment variables, and shell variables set "
-        "in one call are still in effect in the next. Use this when a sequence "
-        "of commands needs to share working directory or environment. Commands "
-        "run non-interactively (no prompts, no TTY) and one at a time. Prefer "
-        "the dedicated file tools (Read / Write / Edit / Delete / Glob / Grep) "
-        "over shell equivalents. To run a command in a different directory just "
-        "for this call without changing the session's directory, set `cwd`."
+        "Run a shell command in a persistent shell session and return the "
+        "result. Unlike Bash, state carries across calls: `cd`, exported "
+        "environment variables, and shell variables set in one call are still "
+        "in effect in the next.\n"
+        "\n"
+        "* Returns `stdout`, `stderr`, and `returncode` (this command's own "
+        "exit code, 0 = success), plus `reason`, `timed_out`, and `truncated`.\n"
+        "* Use it when a sequence of commands must share a working directory "
+        "or environment.\n"
+        "* Runs non-interactively (no prompts, no TTY), one command at a time. "
+        "Prefer the dedicated file tools (Read / Write / Edit / Delete / Glob "
+        "/ Grep) over shell equivalents.\n"
+        "* Set `cwd` to run in a different directory for this call only, "
+        "without changing the session's directory."
     )
 
     def __init__(

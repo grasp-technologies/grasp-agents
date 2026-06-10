@@ -63,11 +63,13 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
 
     name = "Delete"
     description = (
-        "Delete a single file. You must have Read the file earlier in "
-        "this session and it must not have changed on disk since — "
-        "otherwise the delete is refused. Refuses to delete "
-        "directories. Atomic: a crash leaves either the file present or "
-        "the file removed, never a partial state."
+        "Delete a single file.\n"
+        "\n"
+        "* Requires a prior `Read` this session, unchanged on disk since, or "
+        "the delete is refused. Refuses to delete directories.\n"
+        "* Atomic: a crash leaves the file either present or removed, never in "
+        "a partial state.\n"
+        "* Returns `deleted` (true on success)."
     )
 
     def __init__(

@@ -90,18 +90,21 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
 
     name = "Edit"
     description = (
-        "Replace an exact text block inside an existing file. `old_string` "
-        "must be non-empty — `Edit` is find-and-replace, not append. Treat "
-        "`old_string` as a unique anchor: a line or block from the existing "
-        "file at the place you want to edit. The replacement occurs where that "
-        "anchor matches. To insert before/after the anchor, include the anchor "
-        "and the new text in `new_string`. To append to a file, use the file's "
-        "current final text as the anchor and include it followed by the "
-        "appended text in `new_string`. You must have Read the file earlier in "
-        "this session and it must not have changed on disk since. Fuzzy matching "
-        "is attempted when the exact `old_string` is not found. Ambiguous matches "
-        "are refused unless `replace_all` is True. To replace a file's whole "
-        "content or to create a new file, use the `Write` tool instead."
+        "Replace an exact text block inside an existing file — find-and-"
+        "replace, not append.\n"
+        "\n"
+        "* Treat `old_string` as a unique, non-empty anchor: a line or block "
+        "from the file where you want the edit. The replacement happens where "
+        "it matches.\n"
+        "* To insert before/after, include the anchor plus the new text in "
+        "`new_string`; to append, use the file's current final text as the "
+        "anchor, followed by the new text.\n"
+        "* Requires a prior `Read` this session, unchanged on disk since. "
+        "Fuzzy matching is tried when the exact `old_string` is not found; "
+        "ambiguous matches are refused unless `replace_all` is True.\n"
+        "* To replace a whole file or create a new one, use `Write` instead.\n"
+        "* Returns `edits_applied` (number of replacements) and `strategy` "
+        "(`exact`, or the fuzzy strategy that matched)."
     )
 
     def __init__(

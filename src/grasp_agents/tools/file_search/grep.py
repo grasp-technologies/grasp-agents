@@ -411,14 +411,18 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
 
     name = "Grep"
     description = (
-        "Search file contents with a regex, backed by ripgrep. Three "
-        "output modes: ``files_with_matches`` (default — list matching "
+        "Search file contents with a regex, backed by ripgrep.\n"
+        "\n"
+        "* Three output modes: ``files_with_matches`` (default — matching "
         "files), ``content`` (matching lines with optional context), "
-        "``count`` (per-file match counts). Filter files with ``glob`` "
-        "(``*.py``) or ``type`` (``py``, ``js``, ``rust``). Use "
-        "``case_insensitive``, ``context`` / ``before_context`` / "
-        "``after_context``, and ``multiline`` as needed. Large result "
-        "sets are capped by ``head_limit`` (default 250)."
+        "``count`` (per-file match counts).\n"
+        "* Filter files with ``glob`` (``*.py``) or ``type`` (``py``, ``js``, "
+        "``rust``). Use ``case_insensitive``, ``context`` / ``before_context`` "
+        "/ ``after_context``, and ``multiline`` as needed.\n"
+        "* Large result sets are capped by ``head_limit`` (default 250) — page "
+        "with ``offset``.\n"
+        "* Returns the formatted ``output`` for the chosen mode, "
+        "``num_matches``, ``num_files_matched``, and ``truncated``."
     )
 
     def __init__(

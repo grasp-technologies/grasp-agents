@@ -97,11 +97,16 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
     name = "Glob"
     description = (
         "Find files by glob pattern, sorted by modification time (newest "
-        "first). Supports ``*``, ``?``, ``[abc]``, and ``**`` for "
-        "recursive match. Examples: ``*.py`` (top-level Python), "
-        "``**/*.tsx`` (all TSX files), ``src/**/test_*.py``. Hidden files "
-        "and common build/cache dirs are skipped. Results are capped at "
-        "the tool's ``head_limit`` — narrow the pattern if truncated."
+        "first).\n"
+        "\n"
+        "* Supports ``*``, ``?``, ``[abc]``, and ``**`` (recursive). "
+        "Examples: ``*.py`` (top-level Python), ``**/*.tsx`` (all TSX), "
+        "``src/**/test_*.py``.\n"
+        "* Hidden files and common build/cache dirs are skipped. Results are "
+        "capped at the tool's ``head_limit`` — narrow the pattern if "
+        "truncated.\n"
+        "* Returns the matching paths (newest first), ``num_files``, and "
+        "``truncated``."
     )
 
     def __init__(

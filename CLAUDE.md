@@ -37,16 +37,22 @@ Keys come from `.env` (gitignored), loaded by `tests/conftest.py` via
 `load_dotenv()` — `E2B_API_KEY`, `OPENAI_API_KEY`, etc.
 
 **Always invoke tooling via `uv run` — never `.venv/bin/…` directly.**
-`uv run pytest …`, `uv run ruff …`, and `uv run pyright …` are exempted from the
-command sandbox (`excludedCommands` in `.claude/settings.local.json`), so their
-network calls + Jupyter-kernel sockets work and `uv` doesn't crash on the
-sandbox's network/proxy probe. A *sandboxed* invocation — `.venv/bin/pytest`, or
-any command not on that exempt list — fails spuriously: SOCKS-proxy /
-`Operation not permitted` errors that are sandbox artifacts, **not** real
-failures (and `uv run <non-exempt>` panics outright on the proxy probe). Run
-integration tests **foreground** via `uv run pytest -m integration`; do **not**
-pipe through `tee`/`tail` or background with output redirection — the output
-buffers and you lose progress.
+
+- **Tests**: `uv run pytest …` (incl. `-m integration`). This form is exempt
+  from the command sandbox (`excludedCommands` in `.claude/settings.local.json`),
+  so it runs unsandboxed and its network + Jupyter sockets work. Run integration
+  tests **foreground**; do **not** pipe through `tee`/`tail` or background with
+  output redirection — the output buffers and you lose progress.
+- **Lint / type-check**: `uv run --no-sync ruff …` / `uv run --no-sync pyright …`.
+  The `--no-sync` is **required**: a bare `uv run ruff` panics under the sandbox
+  — `uv`'s sync step builds an HTTP client that probes macOS system-proxy via a
+  `configd` mach service the seatbelt blocks (`SCDynamicStore` → NULL → panic);
+  `--offline` / clearing proxy env don't help, but `--no-sync` skips the sync and
+  runs the tool in the already-synced venv.
+
+A sandboxed *test* invocation (`.venv/bin/pytest`, or any non-exempt form) fails
+spuriously — SOCKS-proxy / `Operation not permitted` errors that are sandbox
+artifacts, **not** real failures.
 
 Pre-commit hooks: cspell (spell check), large file check, uv sync, uv pip compile.
 

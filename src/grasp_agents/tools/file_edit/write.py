@@ -71,15 +71,18 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
 
     name = "Write"
     description = (
-        "Create a new file or replace an existing file's entire content. "
-        "Prefer `Edit` for any targeted change to an existing file "
-        "(adding a line, updating a field, fixing a typo) — `Write` "
-        "REPLACES the file, so anything not in your `content` is lost. "
-        "For existing files you must have `Read` them earlier in this "
-        "session and the file must not have changed on disk since — "
-        "otherwise the write is refused. Parent directory must exist. "
-        "Writes are atomic: a crash leaves either the old content or "
-        "the new content, never partial bytes."
+        "Create a new file or replace an existing file's entire content.\n"
+        "\n"
+        "* Prefer `Edit` for any targeted change (add a line, update a field, "
+        "fix a typo): `Write` REPLACES the file, so anything not in `content` "
+        "is lost.\n"
+        "* For an existing file you must have `Read` it earlier this session "
+        "and it must not have changed on disk since, or the write is refused. "
+        "The parent directory must exist.\n"
+        "* Atomic: a crash leaves either the old or the new content, never "
+        "partial bytes.\n"
+        "* Returns `bytes_written` and `created` (true for a new file, false "
+        "when an existing one was overwritten)."
     )
 
     def __init__(

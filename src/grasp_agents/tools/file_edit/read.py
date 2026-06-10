@@ -146,12 +146,16 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
 
     name = "Read"
     description = (
-        "Read a text file with pagination and line numbers. Use this "
-        "instead of `cat` / `head` / `tail`. Output is in `cat -n` format "
-        "(line number + tab + content). Supports `offset` (1-indexed start "
-        "line) and `limit` (max lines). Large reads are rejected — use "
-        "`offset` and `limit` to narrow the range. Binary files are "
-        "refused; use dedicated tools for images / PDFs."
+        "Read a text file with pagination and line numbers, in `cat -n` "
+        "format (line number + tab + content). Use it instead of `cat` / "
+        "`head` / `tail`.\n"
+        "\n"
+        "* Page through large files with `offset` (1-indexed start line) and "
+        "`limit` (max lines); oversized reads are rejected, so narrow the "
+        "range.\n"
+        "* Binary files are refused — use the dedicated image / PDF tools.\n"
+        "* Returns the numbered text, `total_lines`, and `truncated` (true "
+        "when more lines exist than were returned — page with `offset`)."
     )
 
     def __init__(

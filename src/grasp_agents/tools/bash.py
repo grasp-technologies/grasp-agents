@@ -100,14 +100,18 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
 
     name = "Bash"
     description = (
-        "Run a shell command in the agent's environment and return its "
-        "stdout, stderr, and exit code. Use this for running programs, build "
-        "and test commands, and git operations. Prefer the dedicated file "
-        "tools (Read / Write / Edit / Delete / Glob / Grep) over shell equivalents "
-        "(cat / sed / find / grep) — they are safer and give better output. "
-        "Commands run non-interactively (no prompts, no TTY) and share no "
-        "state between calls; pass `cd ... &&` if you need a different "
-        "directory in one call, or set `cwd`."
+        "Run a shell command in the agent's environment and return the result. "
+        "Use it for running programs, build/test commands, and git operations.\n"
+        "\n"
+        "* Returns `stdout`, `stderr`, and `returncode` — the exit code of "
+        "*this* command (0 = success), not of anything the command inspects — "
+        "plus `reason` (exit / timeout / cancel), `timed_out`, and `truncated` "
+        "(true when the shown output was clipped).\n"
+        "* Prefer the dedicated file tools (Read / Write / Edit / Delete / "
+        "Glob / Grep) over shell equivalents (cat / sed / find / grep): safer, "
+        "with better output.\n"
+        "* Runs non-interactively (no prompts, no TTY); calls share no state — "
+        "pass `cd ... &&` or set `cwd` for a one-off directory."
     )
 
     def __init__(
@@ -141,7 +145,8 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         self._block_leading_sleep = block_leading_sleep
         if auto_background_at is not None:
             self.description += (
-                f" Commands running longer than {auto_background_at:g}s are "
+                "\n"
+                f"* Commands running longer than {auto_background_at:g}s are "
                 "moved to the background: you get a `task_id` back, and a "
                 "notification with the command's output is injected when it "
                 "finishes — there is no need to poll for completion. The "

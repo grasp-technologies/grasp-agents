@@ -466,11 +466,17 @@ class BackgroundTaskManager(Generic[CtxT]):
                 f"Tool '{tool.name}' is still running after {backgrounded_after:g}s "
                 f"and was moved to the background (id: {task_id})."
             )
-        parts = [opening, "Its result will be delivered to you when it finishes."]
+        parts = [
+            opening,
+            "Its result and final status will be delivered to you when it "
+            "finishes — until then, assume it is still running.",
+        ]
         if log_path is not None:
             parts.append(
                 f"Its output is streaming to {log_path} — Read or Grep that file "
-                "to check on it."
+                "to check progress so far (it is partial until the task "
+                "finishes, and a read's own exit code reflects the read, not "
+                "the task)."
             )
         parts.append("Stop it with KillTask if you no longer need it.")
         return "\n".join(parts)

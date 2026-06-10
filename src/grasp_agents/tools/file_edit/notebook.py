@@ -560,14 +560,19 @@ class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
 
     name = "NotebookEdit"
     description = (
-        "Edit a Jupyter notebook (.ipynb) one cell at a time, addressed by the "
-        "stable cell `id` from NotebookRead. `edit_mode`: `replace` (default) "
-        "overwrites the target cell's source — for a code cell this also clears "
-        "its execution count and stored outputs; `insert` adds a new cell after "
-        "`cell_id` (or at the start if `cell_id` is omitted) and requires "
-        "`cell_type`; `delete` removes the target cell. You must have read the "
-        "notebook earlier this session and it must not have changed on disk "
-        "since. Unrelated cells and notebook metadata are preserved."
+        "Edit a Jupyter notebook (.ipynb) one cell at a time, addressed by "
+        "the stable cell `id` from NotebookRead.\n"
+        "\n"
+        "* `edit_mode`:\n"
+        "  - `replace` (default): overwrite the target cell's source — for a "
+        "code cell this also clears its execution count and stored outputs;\n"
+        "  - `insert`: add a new cell after `cell_id` (or at the start if "
+        "`cell_id` is omitted); requires `cell_type`;\n"
+        "  - `delete`: remove the target cell.\n"
+        "* Requires a prior read of the notebook this session, unchanged on "
+        "disk since. Unrelated cells and notebook metadata are preserved.\n"
+        "* Returns the applied `edit_mode`, the affected `cell_id` / "
+        "`cell_type`, and `total_cells` after the edit."
     )
 
     def __init__(self, *, timeout: float | None = None) -> None:
