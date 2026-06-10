@@ -469,10 +469,14 @@ def _convert_usage(usage: GenerateContentResponseUsageMetadata | None) -> Respon
         return ResponseUsage()
 
     input_tokens = usage.prompt_token_count or 0
-    output_tokens = usage.candidates_token_count or 0
+    thinking = usage.thoughts_token_count or 0
+    # Gemini reports thoughts separately from candidates; fold them into
+    # output_tokens so the field follows the OpenAI/Anthropic convention
+    # (reasoning ⊆ output). Keeps cost (billed on output_tokens) and the usage
+    # display consistent across providers; reasoning_tokens stays the subset.
+    output_tokens = (usage.candidates_token_count or 0) + thinking
     total_tokens = usage.total_token_count or 0
     cached = usage.cached_content_token_count or 0
-    thinking = usage.thoughts_token_count or 0
 
     return ResponseUsage(
         input_tokens=input_tokens,

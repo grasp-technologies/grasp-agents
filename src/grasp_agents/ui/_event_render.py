@@ -460,6 +460,9 @@ def usage_line(
             parts.append(f"{cached:,} cached")
     if usage.output_tokens:
         parts.append(f"{usage.output_tokens:,} out")
+        reasoning = usage.output_tokens_details.reasoning_tokens
+        if reasoning:
+            parts.append(f"{reasoning:,} thinking")
     if usage.cost:
         parts.append(f"${usage.cost:.4f}")
     model = event.data.model or ""
@@ -467,7 +470,7 @@ def usage_line(
     # Running session total, shown once more than one generation has cost — the
     # caller threads it through (the renderer itself is stateless).
     if generation_count > 1 and total_cost > 0:
-        line += f"  Σ ${total_cost:.4f}"
+        line += f" · Σ ${total_cost:.4f}"
     return Text(line, style=f"italic {PALETTE['usage']}")
 
 

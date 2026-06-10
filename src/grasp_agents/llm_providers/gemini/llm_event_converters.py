@@ -83,16 +83,17 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
 
         um = chunk.usage_metadata
         if um is not None:
+            # thoughts folded into output_tokens (reasoning ⊆ output) to match
+            # the OpenAI/Anthropic convention — see the non-streaming converter.
+            thinking = um.thoughts_token_count or 0
             self._usage = ResponseUsage(
                 input_tokens=um.prompt_token_count or 0,
-                output_tokens=um.candidates_token_count or 0,
+                output_tokens=(um.candidates_token_count or 0) + thinking,
                 total_tokens=um.total_token_count or 0,
                 input_tokens_details=InputTokensDetails(
                     cached_tokens=um.cached_content_token_count or 0
                 ),
-                output_tokens_details=OutputTokensDetails(
-                    reasoning_tokens=um.thoughts_token_count or 0
-                ),
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=thinking),
             )
 
         if not candidate or not candidate.content or not candidate.content.parts:

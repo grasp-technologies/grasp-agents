@@ -83,6 +83,7 @@ def _make_response(
     finish_reason: FinishReason = FinishReason.STOP,
     prompt_tokens: int = 100,
     output_tokens: int = 50,
+    thinking_tokens: int = 0,
     response_id: str = "resp_test123",
     grounding_metadata: GroundingMetadata | None = None,
     citation_metadata: CitationMetadata | None = None,
@@ -104,7 +105,8 @@ def _make_response(
         usage_metadata=GenerateContentResponseUsageMetadata(
             prompt_token_count=prompt_tokens,
             candidates_token_count=output_tokens,
-            total_token_count=prompt_tokens + output_tokens,
+            thoughts_token_count=thinking_tokens or None,
+            total_token_count=prompt_tokens + output_tokens + thinking_tokens,
         ),
     )
 
@@ -475,6 +477,24 @@ class TestResponseConverters:
         assert result.usage_with_cost.input_tokens == 10
         assert result.usage_with_cost.output_tokens == 5
         assert result.usage_with_cost.total_tokens == 15
+
+    def test_thinking_tokens_folded_into_output(self):
+        """Gemini reports thoughts apart from candidates; output_tokens folds
+        them in (reasoning ⊆ output), matching OpenAI/Anthropic."""
+        resp = _make_response(
+            [Part(text="Hello")],
+            prompt_tokens=10,
+            output_tokens=5,
+            thinking_tokens=20,
+        )
+        result = provider_output_to_response(resp)
+
+        assert result.usage_with_cost is not None
+        usage = result.usage_with_cost
+        assert usage.output_tokens == 25  # 5 visible + 20 thinking
+        assert usage.output_tokens_details.reasoning_tokens == 20
+        assert usage.total_tokens == 35  # 10 in + 5 out + 20 thinking
+        assert usage.input_tokens == 10
 
     def test_max_tokens(self):
         """MAX_TOKENS finish reason → incomplete status."""
