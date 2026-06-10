@@ -24,7 +24,7 @@ import os
 import signal
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from ..exec_backend import ExecChunk, ExecResult, TerminationReason
 
@@ -85,6 +85,23 @@ class SupervisorLimits:
     cpu_timeout: float | None = None
     max_memory_mb: int | None = None
     max_file_size_mb: int | None = None
+
+
+class ResourceLimits(TypedDict, total=False):
+    """
+    Convenient per-command resource ceilings for :func:`local_environment`, so
+    callers needn't construct a :class:`ProcessSupervisor`. Applied via POSIX
+    ``setrlimit`` to the spawned process tree under every *local* confinement
+    (``none`` / ``seatbelt`` / ``srt`` — all spawn local subprocesses, so the
+    same ceilings apply). Remote backends (E2B) don't use ``setrlimit``: they
+    allocate resources per-VM at template-build time
+    (``E2BTemplateConfig.cpu_count`` / ``memory_mb``). All keys optional; an
+    absent key (or ``None``) means "no limit".
+    """
+
+    cpu_timeout: float | None
+    max_memory_mb: int | None
+    max_file_size_mb: int | None
 
 
 class ProcessSupervisor:

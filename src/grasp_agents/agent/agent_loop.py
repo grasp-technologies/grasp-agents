@@ -46,7 +46,12 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
     ResponseRetrying,
 )
-from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
+from grasp_agents.types.tool import (
+    BaseTool,
+    NamedToolChoice,
+    ToolChoice,
+    batch_has_concurrency_conflict,
+)
 from grasp_agents.utils.streaming import stream_concurrent
 
 from .background_tasks import BackgroundTaskManager
@@ -169,6 +174,7 @@ class AgentLoop(Generic[CtxT]):
         llm_output_schema: Any | None = None,
         max_turns: int,
         run_timeout: float | None = None,
+        max_background: int = 16,
         force_react_mode: bool = False,
         final_answer_type: type[BaseModel] = BaseModel,
         final_answer_as_tool_call: bool = False,
@@ -249,6 +255,7 @@ class AgentLoop(Generic[CtxT]):
             transcript=transcript,
             tools=tools_dict,
             path=path,
+            max_background=max_background,
         )
         # The single agent-scope state handed to each tool call. ``create`` fills
         # the fresh per-loop state (file-edit ledger, Bash session, the RunCell +
@@ -703,13 +710,22 @@ class AgentLoop(Generic[CtxT]):
                     )
                     for _, call, tool, inp in immediate
                 ]
-                merged = stream_concurrent(streams)
+                # Serialize the batch (each stream drained fully before the
+                # next) when two calls need exclusive access to overlapping keys
+                # so their writes can't interleave; otherwise run concurrently.
+                # Per-stream failure isolation comes from ``merged.errors`` in
+                # both modes.
+                conflict = batch_has_concurrency_conflict(
+                    [(tool, inp) for _, _, tool, inp in immediate]
+                )
+                merged = stream_concurrent(
+                    streams, max_concurrency=1 if conflict else None
+                )
                 async for stream_idx, event in merged:
                     # Capture the tool's terminal event — its result
-                    # (ToolOutputEvent) or failure (ToolErrorEvent). A sub-agent /
-                    # sub-processor tool's nested tool events bubble through here
-                    # too (so consoles can show them), but its OWN terminal is
-                    # always emitted last.
+                    # (ToolOutputEvent) or failure (ToolErrorEvent). Nested
+                    # sub-agent tool events bubble through too; the tool's OWN
+                    # terminal is always emitted last.
                     if isinstance(event, (ToolOutputEvent, ToolErrorEvent)):
                         outputs[immediate[stream_idx][0]] = event.data
                     yield event

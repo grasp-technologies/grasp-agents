@@ -70,7 +70,6 @@ Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.
 - Async throughout — all agent/tool `run()` methods are `async`
 - Commit messages: short imperative descriptions (e.g., "update LiteLLM", "version bump", "fix copilot comments")
 
-
 ## Comments and docstrings guidance**
 
 * Comments and docstrings are **for framework users, not implementers.** Default to none; add one only when the *why* is non-obvious or there's a contract a caller must honor.

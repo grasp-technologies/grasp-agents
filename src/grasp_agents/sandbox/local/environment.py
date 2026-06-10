@@ -35,13 +35,38 @@ from ...tools.file_backend.local import LocalFileBackend
 from ..environment import ExecutionEnvironment
 from ..policy import NetworkPolicy, SandboxPolicy
 from .exec import LocalExecBackend, resolve_python
+from .supervisor import ProcessSupervisor, ResourceLimits, SupervisorLimits
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from ...tools.file_backend.base import FileBackend
     from ..exec_backend import ExecBackend
-    from .supervisor import ProcessSupervisor
+
+
+# Inherited host env vars matching these ``fnmatch`` (case-sensitive) patterns
+# are scrubbed from a command's environment by default, so an unconfined
+# subprocess (``confinement="none"``) the model runs cannot read the host's
+# credentials — API keys, tokens, cloud secrets. Security-first and deliberately
+# broad; pass ``env_scrub=()`` to disable or an explicit list to override.
+# Explicitly-provided ``env`` (and ``policy.env``) is never scrubbed.
+DEFAULT_ENV_SCRUB: tuple[str, ...] = (
+    "*_API_KEY",
+    "*_APIKEY",
+    "*_ACCESS_KEY",
+    "*_ACCESS_KEY_ID",
+    "*_SECRET",
+    "*_SECRET_KEY",
+    "*SECRET*",
+    "*_TOKEN",
+    "*TOKEN",
+    "*_PASSWORD",
+    "*PASSWORD*",
+    "*_PRIVATE_KEY",
+    "*_CREDENTIALS",
+    "*_CREDS",
+    "*_KEY",
+)
 
 
 class LocalEnvironment(ExecutionEnvironment):
@@ -99,11 +124,12 @@ def local_environment(
     denied_domains: Sequence[str] = (),
     include_dotfile_denylist: bool = True,
     env: Mapping[str, str] | None = None,
-    env_scrub: Sequence[str] = (),
+    env_scrub: Sequence[str] = DEFAULT_ENV_SCRUB,
     inherit_host_env: bool = True,
     python: str | Path | None = None,
     packages: Sequence[str] = (),
     kernel_setup_code: str = "",
+    limits: ResourceLimits | None = None,
     supervisor: ProcessSupervisor | None = None,
 ) -> LocalEnvironment:
     """
@@ -138,6 +164,10 @@ def local_environment(
             environment for subprocesses.
         env_scrub: ``fnmatch`` patterns (e.g. ``"*_API_KEY"``) removed from the
             inherited host environment so secrets do not leak into commands.
+            Defaults to :data:`DEFAULT_ENV_SCRUB`, a credential denylist —
+            critical under ``confinement="none"``, where the subprocess is
+            otherwise the model's window onto every host secret. Pass ``()`` to
+            disable. Explicitly-provided ``env`` is never scrubbed.
         inherit_host_env: Subprocesses inherit ``os.environ`` as their base so
             ``PATH`` resolves. Set False for a minimal environment.
         python: Interpreter the code-interpreter kernel launches with (and whose
@@ -156,6 +186,11 @@ def local_environment(
             kernel startup, in its own execution — empty by default (the
             framework imposes nothing). Pass e.g. ``"%matplotlib inline"`` to
             opt into the inline plotting backend.
+        limits: Convenient per-command resource ceilings (CPU-seconds, memory,
+            file size) applied via ``setrlimit`` — a shortcut for a
+            :class:`ProcessSupervisor` built with these :class:`SupervisorLimits`.
+            Mutually exclusive with ``supervisor``. See :class:`ResourceLimits`.
+            (Local family only; E2B allocates resources per-VM at template build.)
         supervisor: Shared :class:`ProcessSupervisor` for the exec backend.
 
     Returns:
@@ -190,6 +225,13 @@ def local_environment(
         allow_read=list(ar),
         deny_write=list(dw),
     )
+    if limits is not None:
+        if supervisor is not None:
+            raise ValueError(
+                "Pass either `limits` (convenient per-command ceilings) or a "
+                "fully configured `supervisor`, not both."
+            )
+        supervisor = ProcessSupervisor(SupervisorLimits(**limits))
     exec_backend = _build_exec_backend(
         confinement,
         policy=policy,
