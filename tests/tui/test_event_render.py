@@ -254,6 +254,22 @@ def test_tool_stream_strips_trailing_newline() -> None:
         assert without_nl.renderable.plain == "x\ny"  # type: ignore[union-attr]
 
 
+def test_tool_output_preserves_blank_lines() -> None:
+    ev = ToolOutputItemEvent(
+        data=FunctionToolOutputItem.from_tool_result(
+            call_id="1", output="line 1\n\n\nline 2\n"
+        ),
+        source="Bash",
+        destination="agent",
+    )
+    panel = render_event(ev)
+    assert isinstance(panel, Panel)
+    body = panel.renderable
+    assert isinstance(body, Text)
+    # internal blank lines are kept (only the trailing newline is dropped)
+    assert body.plain == "line 1\n\n\nline 2"
+
+
 def test_background_tool_stream_uses_lighter_palette() -> None:
     from grasp_agents.ui._event_render import PALETTE, render_tool_stream
 

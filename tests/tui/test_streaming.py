@@ -449,18 +449,22 @@ async def _noop_submit(_text: str):
 
 
 @pytest.mark.asyncio
-async def test_paste_grows_prompt_height() -> None:
+async def test_paste_grows_prompt_height_once() -> None:
     from textual import events
 
     app = GraspAgentsApp(on_submit=_noop_submit)
     async with app.run_test() as pilot:
         prompt = app.query_one("#prompt", _PromptArea)
-        # deliver the paste once, as the driver does (posting the bubbling Paste
-        # to the widget loops via the app's paste-forwarding)
-        await prompt._on_paste(events.Paste("alpha\nbeta\ngamma"))
+        # production delivery: the driver posts Paste to the app, which forwards
+        # it to the focused widget exactly once
+        app.post_message(events.Paste("alpha\nbeta\ngamma"))
         await pilot.pause()
+        await pilot.pause()
+        # inserted once (not doubled — overriding _on_paste re-ran TextArea's own
+        # handler via the MRO) and the box grew to fit the paste
+        assert prompt.text == "alpha\nbeta\ngamma"
         assert prompt.document.line_count == 3
-        assert int(prompt.styles.height.value) == 3  # box grew to fit the paste
+        assert int(prompt.styles.height.value) == 3
 
 
 @pytest.mark.asyncio

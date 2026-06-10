@@ -737,8 +737,9 @@ def _build_result_renderable(
     if _looks_like_xml(content):
         # tagged payloads (e.g. background <task_notification>…) as highlighted XML
         return _code_block(content, "xml")
-    lines = [ln for ln in content.split("\n") if ln.strip()]
-    return Text(truncate_lines("\n".join(lines), _MAX_LINES), style=text_color)
+    # keep blank lines (output structure is meaningful); only drop the trailing
+    # newline so the box hugs its content above the panel's own padding
+    return Text(truncate_lines(content.rstrip("\n"), _MAX_LINES), style=text_color)
 
 
 def _kv_table(data: dict[str, Any], text_color: str) -> Table:

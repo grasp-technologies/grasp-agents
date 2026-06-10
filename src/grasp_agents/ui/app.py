@@ -272,10 +272,11 @@ class _PromptArea(TextArea):
     def on_mount(self) -> None:
         self.sync_height()
 
-    async def _on_paste(self, event: events.Paste) -> None:
-        # TextArea inserts the pasted text here, but doesn't resize; grow the box
-        # to fit the (possibly multi-line) paste
-        await super()._on_paste(event)
+    @on(TextArea.Changed)
+    def _resize_on_change(self) -> None:
+        # every edit (type, newline, paste, delete) posts Changed; resize here so
+        # all of them grow/shrink the box — overriding _on_paste/_on_key to resize
+        # would double-run TextArea's own handler (it's re-dispatched via the MRO)
         self.sync_height()
 
     async def _on_key(self, event: events.Key) -> None:
@@ -283,7 +284,6 @@ class _PromptArea(TextArea):
             event.prevent_default()
             event.stop()
             self.insert("\n")
-            self.sync_height()
             return
         if event.key == "enter":
             event.prevent_default()
@@ -291,7 +291,6 @@ class _PromptArea(TextArea):
             self.post_message(self.Submitted(self.text))
             return
         await super()._on_key(event)
-        self.sync_height()
 
     def sync_height(self) -> None:
         # sits at the bottom of the screen, so growing its height expands upward
