@@ -1114,7 +1114,7 @@ async def test_e2b_live_background_kill_terminates_remote_command() -> None:
         assert task_id is not None
 
         killed = await kill(mgr, task_id)
-        assert killed.status == "completed"
+        assert killed.status == "cancelled"  # killed mid-run, not finished
 
         # the remote process is actually gone: the marker stops growing
         size_a = await marker_size(env, marker)

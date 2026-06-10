@@ -30,7 +30,7 @@ from rich.style import Style
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
-from textual.binding import BindingType
+from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -69,6 +69,8 @@ from ..types.events import (
 )
 from ..types.llm_events import (
     OutputMessageTextPartTextDelta,
+    ReasoningContentPartTextDelta,
+    ReasoningSummaryPartTextDelta,
     ResponseFallback,
     ResponseRetrying,
 )
@@ -79,6 +81,7 @@ from ._event_render import (
     render_image,
     render_input_image,
     render_retry_notice,
+    render_thinking_stream,
     render_tool_stream,
     render_turn_rule,
     set_markup_theme,
@@ -253,12 +256,26 @@ class _PromptArea(TextArea):
     # apart — so Ctrl+J is the portable newline there.
     _NEWLINE_KEYS = frozenset({"shift+enter", "shift+\r", "shift+\n", "ctrl+j"})
 
+    # macOS-style word editing (TextArea already binds ctrl+←/→ and ctrl+w); the
+    # alt variants only reach us on terminals that emit them distinctly.
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("alt+left", "cursor_word_left", "Word left", show=False),
+        Binding("alt+right", "cursor_word_right", "Word right", show=False),
+        Binding("alt+backspace", "delete_word_left", "Delete word", show=False),
+    ]
+
     class Submitted(Message):
         def __init__(self, value: str) -> None:
             self.value = value
             super().__init__()
 
     def on_mount(self) -> None:
+        self.sync_height()
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        # TextArea inserts the pasted text here, but doesn't resize; grow the box
+        # to fit the (possibly multi-line) paste
+        await super()._on_paste(event)
         self.sync_height()
 
     async def _on_key(self, event: events.Key) -> None:
@@ -457,10 +474,12 @@ class GraspAgentsApp(App[None]):
         self._ga_parent: dict[str, str] = {}
         self._ga_follow = False
         self._ga_worker: Worker[None] | None = None
-        # live-streaming widgets per owner (LLM tokens / tool output), finalised
-        # by the matching item event; empty when the agent isn't streaming
+        # live-streaming widgets per owner (LLM tokens / reasoning / tool output),
+        # finalised by the matching item event; empty when the agent isn't streaming
         self._ga_stream_msg: dict[str, _SelectableStatic] = {}
         self._ga_stream_msg_text: dict[str, str] = {}
+        self._ga_stream_think: dict[str, _SelectableStatic] = {}
+        self._ga_stream_think_text: dict[str, str] = {}
         self._ga_stream_tool: dict[str, _SelectableStatic] = {}
         self._ga_stream_tool_text: dict[str, str] = {}
         # name of the tool currently owning each pane's live tool-output widget,
@@ -600,8 +619,16 @@ class GraspAgentsApp(App[None]):
             data = event.data
             if isinstance(data, OutputMessageTextPartTextDelta) and data.delta:
                 await self._stream_message(owner, pane, data.delta, at_bottom)
+            elif (
+                isinstance(
+                    data,
+                    (ReasoningContentPartTextDelta, ReasoningSummaryPartTextDelta),
+                )
+                and data.delta
+            ):
+                await self._stream_thinking(owner, pane, data.delta, at_bottom)
             elif isinstance(data, (ResponseRetrying, ResponseFallback)):
-                # Failed attempt / model fallback — drop the partial widget and
+                # Failed attempt / model fallback — drop the partial widgets and
                 # surface a notice so the cleared text isn't silently lost; the
                 # retry streams a fresh widget below it.
                 await self._discard_streamed_message(owner)
@@ -615,6 +642,9 @@ class GraspAgentsApp(App[None]):
             await self._stream_tool(
                 owner, pane, event.source or "tool", str(event.data), at_bottom
             )
+            return True
+        if isinstance(event, ReasoningItemEvent) and owner in self._ga_stream_think:
+            self._finalize_thinking(owner, event, pane, at_bottom)
             return True
         if isinstance(event, OutputMessageItemEvent) and owner in self._ga_stream_msg:
             self._finalize_message(owner, event, pane, at_bottom)
@@ -641,16 +671,37 @@ class GraspAgentsApp(App[None]):
         if at_bottom:
             pane.scroll_end(animate=False)
 
+    async def _stream_thinking(
+        self, owner: str, pane: VerticalScroll, delta: str, at_bottom: bool
+    ) -> None:
+        text = self._ga_stream_think_text.get(owner, "") + delta
+        self._ga_stream_think_text[owner] = text
+        rend = render_thinking_stream(text)
+        widget = self._ga_stream_think.get(owner)
+        if widget is None:
+            widget = _SelectableStatic(rend, classes="ga-msg")
+            self._ga_stream_think[owner] = widget
+            self._ga_last_kind[owner] = "box"
+            await pane.mount(widget)
+        else:
+            widget.update(rend)
+        if at_bottom:
+            pane.scroll_end(animate=False)
+
     async def _discard_streamed_message(self, owner: str) -> None:
         """
-        Drop *owner*'s in-progress streamed message on ``ResponseRetrying``:
-        its partial content belongs to a failed attempt. The retry streams a
-        fresh widget.
+        Drop *owner*'s in-progress streamed message + reasoning on
+        ``ResponseRetrying``: their partial content belongs to a failed attempt.
+        The retry streams fresh widgets.
         """
         self._ga_stream_msg_text.pop(owner, None)
         widget = self._ga_stream_msg.pop(owner, None)
         if widget is not None:
             await widget.remove()
+        self._ga_stream_think_text.pop(owner, None)
+        think = self._ga_stream_think.pop(owner, None)
+        if think is not None:
+            await think.remove()
 
     async def _stream_tool(
         self, owner: str, pane: VerticalScroll, tool: str, delta: str, at_bottom: bool
@@ -709,6 +760,26 @@ class GraspAgentsApp(App[None]):
         self._ga_stream_msg_text.pop(owner, None)
         final = render_event(event, inline_images=False)
         if final is not None:  # swap streamed plain text for the rendered markdown
+            widget.update(final)
+        if at_bottom:
+            pane.scroll_end(animate=False)
+
+    def _finalize_thinking(
+        self,
+        owner: str,
+        event: ReasoningItemEvent,
+        pane: VerticalScroll,
+        at_bottom: bool,
+    ) -> None:
+        widget = self._ga_stream_think.pop(owner)
+        self._ga_stream_think_text.pop(owner, None)
+        final = render_event(event, inline_images=False)
+        # swap to the canonical panel unless the finalised item carries no summary
+        # text (the "thinking…" placeholder), which would clobber streamed tokens
+        has_text = any(
+            getattr(p, "text", "") for p in (event.data.summary_parts or [])
+        )
+        if final is not None and has_text:
             widget.update(final)
         if at_bottom:
             pane.scroll_end(animate=False)

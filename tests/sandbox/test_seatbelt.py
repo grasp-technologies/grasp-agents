@@ -379,7 +379,7 @@ async def test_seatbelt_background_kill_terminates(tmp_path: Path) -> None:
     assert task_id is not None
 
     killed = await kill(mgr, task_id)
-    assert killed.status == "completed"
+    assert killed.status == "cancelled"  # killed mid-run, not finished
 
     # process group killed under Seatbelt: the marker stops growing
     size_a = await marker_size(env, str(marker))

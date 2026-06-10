@@ -34,10 +34,19 @@ uv run pytest tests/sandbox/test_e2b.py -m integration   # one file
 ```
 
 Keys come from `.env` (gitignored), loaded by `tests/conftest.py` via
-`load_dotenv()` — `E2B_API_KEY`, `OPENAI_API_KEY`, etc. **Test commands are
-allowed to bypass the command sandbox** (`.claude/settings.local.json`), so
-these live calls work even though the default sandbox blocks the network — i.e.
-you can and should run integration tests directly to verify network/provider code.
+`load_dotenv()` — `E2B_API_KEY`, `OPENAI_API_KEY`, etc.
+
+**Always invoke tooling via `uv run` — never `.venv/bin/…` directly.**
+`uv run pytest …`, `uv run ruff …`, and `uv run pyright …` are exempted from the
+command sandbox (`excludedCommands` in `.claude/settings.local.json`), so their
+network calls + Jupyter-kernel sockets work and `uv` doesn't crash on the
+sandbox's network/proxy probe. A *sandboxed* invocation — `.venv/bin/pytest`, or
+any command not on that exempt list — fails spuriously: SOCKS-proxy /
+`Operation not permitted` errors that are sandbox artifacts, **not** real
+failures (and `uv run <non-exempt>` panics outright on the proxy probe). Run
+integration tests **foreground** via `uv run pytest -m integration`; do **not**
+pipe through `tee`/`tail` or background with output redirection — the output
+buffers and you lose progress.
 
 Pre-commit hooks: cspell (spell check), large file check, uv sync, uv pip compile.
 

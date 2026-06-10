@@ -224,7 +224,7 @@ async def test_srt_background_kill_terminates(tmp_path: Path) -> None:
     assert task_id is not None
 
     killed = await kill(mgr, task_id)
-    assert killed.status == "completed"
+    assert killed.status == "cancelled"  # killed mid-run, not finished
 
     size_a = await marker_size(env, str(marker))
     await asyncio.sleep(0.6)

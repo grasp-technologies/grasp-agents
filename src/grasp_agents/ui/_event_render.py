@@ -15,15 +15,21 @@ import pathlib
 import re
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from rich.box import HORIZONTALS, ROUNDED
+from rich.box import HEAVY, HORIZONTALS, ROUNDED
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
-from rich.markdown import CodeBlock, Markdown, MarkdownElement
+from rich.markdown import (
+    CodeBlock,
+    Heading,
+    Markdown,
+    MarkdownContext,
+    MarkdownElement,
+)
 from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.text import Text
+from rich.text import Text, TextType
 from rich.theme import Theme
 
 from ..types.content import InputImage, InputText
@@ -66,6 +72,10 @@ PALETTE: dict[str, str] = {
     "warn": "#BFB53B",
     "usage": "#9AA0AD",
     "arg_key": "#D0D0D8",
+    # background-task progress: lighter than `muted` so the live log stays
+    # legible, with a softer (lighter) border than the result panels
+    "bg_tool": "#8E8888",
+    "border_bg_tool": "#7A7474",
 }
 
 _TRUNC = 4000
@@ -163,7 +173,7 @@ def render_event(
         else:
             label = f"{event.source or 'User'} → {event.destination or 'agent'}"
             border = PALETTE["border_input"]
-        return panel(label, Text(escape(truncate_lines(text, _MAX_LINES))), border)
+        return panel(label, _message_body(text), border)
 
     if isinstance(event, GenerationEndEvent):
         return _usage_line(event)
@@ -241,13 +251,26 @@ def render_tool_stream(
     # panel's own padding — matching the finalised result panel.
     body = truncate_lines(truncate(text.rstrip("\n"), _TRUNC), _MAX_LINES)
     if background:
-        muted = PALETTE["muted"]
         title = f"{escape(tool)} · {escape(log_name)}" if log_name else escape(tool)
-        return panel(title, Text(body or "…", style=muted), muted)
+        return panel(
+            title,
+            Text(body or "…", style=PALETTE["bg_tool"]),
+            PALETTE["border_bg_tool"],
+        )
     return panel(
         f"{escape(agent)} ← {escape(tool)}",
         Text(body or "…", style=PALETTE["tool_result"]),
         PALETTE["border_tool_result"],
+    )
+
+
+def render_thinking_stream(text: str) -> RenderableType:
+    """Panel for in-progress (streaming) reasoning, matching the finalised one."""
+    body = truncate_lines(truncate(text, _TRUNC), _MAX_LINES)
+    return panel(
+        "thinking",
+        Text(escape(body) or "…", style=PALETTE["thinking"]),
+        PALETTE["border_thinking"],
     )
 
 
@@ -512,6 +535,63 @@ class _CodeBlock(CodeBlock):
         )
 
 
+class _Heading(Heading):
+    """Headings left-aligned (Rich centers them by default)."""
+
+    def __rich_console__(  # noqa: PLW3201
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        # rich.markdown.Heading verbatim, except left-aligned: it hardcodes
+        # justify="center" with no hook to override just the alignment, so the
+        # method is reproduced (h1 box and the blank line above h2 are Rich's).
+        self.text.justify = "left"
+        if self.tag == "h1":
+            yield Panel(self.text, box=HEAVY, style="markdown.h1.border")
+        else:
+            if self.tag == "h2":
+                yield Text("")
+            yield self.text
+
+
+class _HtmlBlock(MarkdownElement):
+    """Render raw HTML/XML blocks as highlighted XML (Rich drops them)."""
+
+    def __init__(self) -> None:
+        self._text = ""
+
+    def on_text(
+        self,
+        context: MarkdownContext,  # noqa: ARG002 — MarkdownElement.on_text signature
+        text: TextType,
+    ) -> None:
+        self._text += text if isinstance(text, str) else text.plain
+
+    def __rich_console__(  # noqa: PLW3201
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        code = self._text.strip("\n")
+        if not code.strip():
+            return
+        yield Syntax(
+            code,
+            "xml",
+            theme=_code_theme,
+            background_color=_code_bg,
+            word_wrap=True,
+            padding=(1, 0),
+        )
+
+
+class _HtmlInline(MarkdownElement):
+    """Keep inline HTML/XML tags as literal text (Rich strips them)."""
+
+    new_line: ClassVar[bool] = False
+
+    def on_text(self, context: MarkdownContext, text: TextType) -> None:
+        # re-inject the raw tag into the surrounding paragraph buffer
+        context.on_text(text if isinstance(text, str) else text.plain, "text")
+
+
 class _Markdown(Markdown):
     """Markdown with transparent code fences + app-theme element styling."""
 
@@ -519,6 +599,9 @@ class _Markdown(Markdown):
         **Markdown.elements,
         "code_block": _CodeBlock,
         "fence": _CodeBlock,
+        "heading_open": _Heading,
+        "html_block": _HtmlBlock,
+        "html_inline": _HtmlInline,
     }
 
     def __rich_console__(  # noqa: PLW3201
@@ -601,6 +684,8 @@ def _unwrap_json(value: Any) -> Any:
 _MD_HEADING = re.compile(r"(?m)^#{1,6} \S")
 _MD_BULLET = re.compile(r"(?m)^\s*[-*] \S")
 _MD_NUMBERED = re.compile(r"(?m)^\s*\d+\. \S")
+# whole payload wrapped in a single root element (e.g. <task_notification>…</…>)
+_XML_BLOCK = re.compile(r"(?s)\A\s*<([A-Za-z][\w.:-]*)(?:\s[^<>]*)?>.*</\1\s*>\s*\Z")
 
 
 def _looks_like_markdown(text: str) -> bool:
@@ -613,6 +698,20 @@ def _looks_like_markdown(text: str) -> bool:
         or len(_MD_BULLET.findall(text)) >= 2
         or len(_MD_NUMBERED.findall(text)) >= 2
     )
+
+
+def _looks_like_xml(text: str) -> bool:
+    # only when the whole payload is one root element, so ordinary logs/stdout
+    # that merely contain a "<" stay plain text
+    return bool(_XML_BLOCK.match(text))
+
+
+def _message_body(text: str) -> RenderableType:
+    # XML payloads (e.g. injected <task_notification>) render highlighted; typed
+    # prose stays plain so normal user input isn't reinterpreted as markup
+    if _looks_like_xml(text):
+        return _code_block(truncate(text, _TRUNC), "xml")
+    return Text(escape(truncate_lines(text, _MAX_LINES)))
 
 
 def _build_result_renderable(
@@ -635,6 +734,9 @@ def _build_result_renderable(
     if _looks_like_markdown(content):
         # agent tools often return markdown reports — render them formatted
         return _Markdown(content, code_theme=_code_theme, inline_code_theme=_code_theme)
+    if _looks_like_xml(content):
+        # tagged payloads (e.g. background <task_notification>…) as highlighted XML
+        return _code_block(content, "xml")
     lines = [ln for ln in content.split("\n") if ln.strip()]
     return Text(truncate_lines("\n".join(lines), _MAX_LINES), style=text_color)
 

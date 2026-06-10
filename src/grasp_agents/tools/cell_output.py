@@ -98,10 +98,10 @@ def render_outputs_as_parts(
                 if mime == "text/plain" or mime in VIEWABLE_IMAGE_MIMES:
                     continue
                 segments.append(f"[{mime}]")
-    body = "\n".join(s for s in segments if s).strip()
+    body = "\n\n".join(s for s in segments if s).strip()
     if len(body) > max_text_chars:
         body = body[:max_text_chars] + "\n[output truncated]"
-    text = (f"{header}\n" if header else "") + (body or "(no text output)")
+    text = (f"{header}\n\n" if header else "") + (body or "(no text output)")
     return [InputText(text=text), *images]
 
 

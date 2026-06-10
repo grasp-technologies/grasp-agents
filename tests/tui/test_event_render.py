@@ -254,6 +254,112 @@ def test_tool_stream_strips_trailing_newline() -> None:
         assert without_nl.renderable.plain == "x\ny"  # type: ignore[union-attr]
 
 
+def test_background_tool_stream_uses_lighter_palette() -> None:
+    from grasp_agents.ui._event_render import PALETTE, render_tool_stream
+
+    panel = render_tool_stream("agent", "Bash", "batch 1\n", background=True)
+    assert isinstance(panel, Panel)
+    # background progress is styled distinctly from a real tool result
+    assert panel.border_style == PALETTE["border_bg_tool"]
+    assert panel.border_style != PALETTE["border_tool_result"]
+
+
+def _render_markdown_text(md_text: str, width: int = 40) -> str:
+    from rich.console import Console
+
+    from grasp_agents.ui._event_render import _Markdown
+
+    console = Console(width=width, record=True)
+    console.print(_Markdown(md_text))
+    return console.export_text()
+
+
+def test_markdown_headings_are_left_aligned() -> None:
+    # Rich centers headings by default; the TUI overrides them to the left.
+    out = _render_markdown_text("## A Subheading")
+    line = next(ln for ln in out.splitlines() if "A Subheading" in ln)
+    assert line.lstrip() == line  # no leading padding => left-aligned, not centered
+
+
+def test_markdown_renders_xml_block() -> None:
+    # Rich drops raw HTML/XML blocks entirely; the TUI renders them as XML.
+    md = "Before\n\n<answer>\n  <step>do</step>\n</answer>\n\nAfter"
+    out = _render_markdown_text(md, width=60)
+    assert "<answer>" in out
+    assert "<step>do</step>" in out
+
+
+def test_markdown_keeps_inline_xml_tags() -> None:
+    # inline tags would otherwise be stripped, leaving only the inner text
+    out = _render_markdown_text("the <result>42</result> value", width=60)
+    assert "<result>42</result>" in out
+
+
+def test_tool_output_xml_payload_is_highlighted() -> None:
+    from rich.syntax import Syntax
+
+    notif = (
+        "<task_notification>\n<task_id>bg_6</task_id>\n"
+        "<status>completed</status>\n</task_notification>"
+    )
+    ev = ToolOutputItemEvent(
+        data=FunctionToolOutputItem.from_tool_result(call_id="1", output=notif),
+        source="Bash",
+        destination="data_engineer",
+    )
+    panel = render_event(ev)
+    assert isinstance(panel, Panel)
+    assert isinstance(panel.renderable, Syntax)
+
+
+def test_tool_output_plain_log_stays_text() -> None:
+    # a "<" mid-line must not flip plain stdout into an XML block
+    ev = ToolOutputItemEvent(
+        data=FunctionToolOutputItem.from_tool_result(
+            call_id="1", output="started <worker> ok\ndone\n"
+        ),
+        source="Bash",
+        destination="agent",
+    )
+    panel = render_event(ev)
+    assert isinstance(panel, Panel)
+    assert isinstance(panel.renderable, Text)
+
+
+def test_user_message_xml_payload_is_highlighted() -> None:
+    from rich.syntax import Syntax
+
+    from grasp_agents.types.events import UserMessageEvent
+    from grasp_agents.types.items import InputMessageItem
+
+    notif = (
+        "<task_notification>\n<task_id>bg_1</task_id>\n"
+        "<status>completed</status>\n</task_notification>"
+    )
+    ev = UserMessageEvent(
+        data=InputMessageItem.from_text(notif, role="user"),
+        source="Bash",
+        destination="data_engineer",
+    )
+    panel = render_event(ev)
+    assert isinstance(panel, Panel)
+    assert isinstance(panel.renderable, Syntax)
+
+
+def test_user_message_prose_stays_text() -> None:
+    from grasp_agents.types.events import UserMessageEvent
+    from grasp_agents.types.items import InputMessageItem
+
+    ev = UserMessageEvent(
+        data=InputMessageItem.from_text("run the <script> now please", role="user"),
+        source="User",
+        destination="agent",
+    )
+    panel = render_event(ev)
+    assert isinstance(panel, Panel)
+    assert isinstance(panel.renderable, Text)
+
+
 def test_tool_output_inputimage_parts_render() -> None:
     import base64 as b64
     import io as _io
