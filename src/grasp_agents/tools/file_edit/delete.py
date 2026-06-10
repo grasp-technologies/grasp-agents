@@ -79,6 +79,9 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
     ) -> None:
         super().__init__(timeout=timeout)
 
+    def concurrency_conflict_keys(self, inp: DeleteInput) -> list[str] | None:
+        return [inp.path]
+
     async def _run(
         self,
         inp: DeleteInput,

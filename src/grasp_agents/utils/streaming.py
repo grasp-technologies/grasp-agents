@@ -33,9 +33,15 @@ class ConcurrentStream(Generic[_T]):
     per failed pump so callers can react (retry, inject error messages, etc.).
     """
 
-    def __init__(self, generators: list[AsyncIterator[_T]]) -> None:
+    def __init__(
+        self,
+        generators: list[AsyncIterator[_T]],
+        *,
+        max_concurrency: int | None = None,
+    ) -> None:
         self._generators = generators
         self._errors: list[PumpError] = []
+        self._max_concurrency = max_concurrency
 
     @property
     def errors(self) -> list[PumpError]:
@@ -53,12 +59,26 @@ class ConcurrentStream(Generic[_T]):
         queue: asyncio.Queue[_QueueItem[_T]] = asyncio.Queue()
         pumps_left = len(generators)
         errors = self._errors
+        # ``max_concurrency=1`` runs the generators serially — each fully drained
+        # before the next starts — so conflicting work can't interleave.
+        sem = (
+            asyncio.Semaphore(self._max_concurrency)
+            if self._max_concurrency is not None
+            else None
+        )
+
+        async def drain(gen: AsyncIterator[_T], idx: int) -> None:
+            async for item in gen:
+                await queue.put((idx, item))
 
         async def pump(gen: AsyncIterator[_T], idx: int) -> None:
             nonlocal pumps_left
             try:
-                async for item in gen:
-                    await queue.put((idx, item))
+                if sem is not None:
+                    async with sem:
+                        await drain(gen, idx)
+                else:
+                    await drain(gen, idx)
 
             except asyncio.CancelledError:
                 raise
@@ -88,9 +108,15 @@ class ConcurrentStream(Generic[_T]):
 
 def stream_concurrent(
     generators: list[AsyncIterator[_T]],
+    *,
+    max_concurrency: int | None = None,
 ) -> ConcurrentStream[_T]:
     """
     Create a :class:`ConcurrentStream` that merges *generators*.
+
+    ``max_concurrency`` caps how many run at once; ``1`` runs them serially
+    (each fully drained before the next), e.g. to keep conflicting operations
+    from interleaving. ``None`` (default) runs them all concurrently.
 
     Usage::
 
@@ -100,7 +126,7 @@ def stream_concurrent(
         for err in stream.errors:
             handle(err.index, err.exception)
     """
-    return ConcurrentStream(generators)
+    return ConcurrentStream(generators, max_concurrency=max_concurrency)
 
 
 _F = TypeVar("_F")

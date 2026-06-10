@@ -94,6 +94,9 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         super().__init__(timeout=timeout)
         self._new_file_mode = new_file_mode
 
+    def concurrency_conflict_keys(self, inp: WriteInput) -> list[str] | None:
+        return [inp.path]
+
     async def _run(
         self,
         inp: WriteInput,

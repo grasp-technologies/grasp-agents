@@ -114,6 +114,9 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
     ) -> None:
         super().__init__(timeout=timeout)
 
+    def concurrency_conflict_keys(self, inp: EditInput) -> list[str] | None:
+        return [inp.path]
+
     async def _run(
         self,
         inp: EditInput,

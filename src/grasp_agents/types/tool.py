@@ -2,7 +2,8 @@ import asyncio
 import copy as copy_mod
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from pathlib import PurePosixPath
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -390,6 +391,20 @@ class BaseTool(
             else:
                 yield event
 
+    def concurrency_conflict_keys(self, inp: _InT) -> list[str] | None:
+        """
+        Keys this call needs **exclusive** use of while it runs — filesystem
+        paths it writes, or any other hierarchical resource identifier it must
+        not share with a concurrent call. ``None`` (default) means no
+        exclusivity is needed and the call is freely parallelizable. The agent
+        loop runs a foreground batch **serially** when two calls declare
+        overlapping keys (the same key, or one nesting under another), so
+        conflicting operations cannot interleave. File writers return their
+        target path; read-only tools declare nothing.
+        """
+        del inp
+        return None
+
     # --- Session persistence (overridden by resumable tools) ---
 
     @property
@@ -447,3 +462,36 @@ class BaseTool(
         (via ``__deepcopy__``); everything else is deep-copied.
         """
         return copy_mod.deepcopy(self)
+
+
+def _keys_overlap(a: str, b: str) -> bool:
+    """
+    True if two exclusivity keys collide: the same key, or one nests under the
+    other (a prefix of POSIX-path parts — so ``/x`` conflicts with ``/x/a``;
+    flat keys conflict only when equal). Best-effort: keys are normalized but
+    not resolved against a backend root.
+    """
+    pa = PurePosixPath(a).parts
+    pb = PurePosixPath(b).parts
+    n = min(len(pa), len(pb))
+    return pa[:n] == pb[:n]
+
+
+def batch_has_concurrency_conflict(
+    calls: Sequence[tuple[BaseTool[Any, Any, Any], BaseModel]],
+) -> bool:
+    """
+    True if any two calls in a foreground batch declare overlapping exclusivity
+    keys (:meth:`BaseTool.concurrency_conflict_keys`) — the loop then runs the
+    batch serially instead of concurrently.
+    """
+    declared = [
+        list(keys)
+        for tool, inp in calls
+        if (keys := tool.concurrency_conflict_keys(inp))
+    ]
+    for i in range(len(declared)):
+        for j in range(i + 1, len(declared)):
+            if any(_keys_overlap(x, y) for x in declared[i] for y in declared[j]):
+                return True
+    return False
