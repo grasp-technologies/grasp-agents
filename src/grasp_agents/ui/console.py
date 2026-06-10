@@ -55,12 +55,15 @@ from ..types.llm_events import (
     OutputMessageTextPartTextDelta,
     ReasoningContentPartTextDelta,
     ReasoningSummaryPartTextDelta,
+    ResponseFallback,
+    ResponseRetrying,
 )
 from ._event_render import (
     PALETTE,
     extract_input_text,
     panel,
     render_event,
+    render_retry_notice,
     truncate,
     truncate_lines,
 )
@@ -273,6 +276,16 @@ class EventConsole:
 
         elif isinstance(se, FunctionCallArgumentsDelta):
             pass  # Display complete args from ToolCallItemEvent
+
+        elif isinstance(se, (ResponseRetrying, ResponseFallback)):
+            # Linear stream — emitted tokens can't be retracted, so close the
+            # open block and surface a notice that the partial output above
+            # belongs to a superseded attempt. The retry streams fresh below.
+            self._end_text()
+            self._end_thinking()
+            self._print(render_retry_notice(se))
+            self._streamed_message = False
+            self._streamed_reasoning = False
 
         elif isinstance(se, OutputItemDone):
             item = se.item

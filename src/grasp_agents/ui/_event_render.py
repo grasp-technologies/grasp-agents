@@ -44,6 +44,7 @@ from ..types.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from ..types.llm_events import ResponseFallback, ResponseRetrying
 
 if TYPE_CHECKING:
     from ..types.items import InputMessageItem
@@ -185,6 +186,27 @@ def render_event(
         return Text(f"Error: {event.data.error}", style=f"bold {PALETTE['error']}")
 
     return None
+
+
+def render_retry_notice(event: ResponseRetrying | ResponseFallback) -> RenderableType:
+    """
+    Inline notice that an in-progress response attempt failed and a retry /
+    model-fallback is starting. Its partial output is discarded, so this keeps
+    the cleared text from vanishing without explanation.
+    """
+    if isinstance(event, ResponseFallback):
+        head = (
+            f"⇄ falling back: {escape(event.failed_model)} "
+            f"→ {escape(event.fallback_model)}"
+        )
+        detail = event.error_type
+    else:
+        head = f"↻ retrying (attempt {event.attempt})"
+        detail = event.error
+    notice = Text(head, style=f"bold {PALETTE['warn']}")
+    if detail:
+        notice.append(f" — {truncate(detail, 200)}", style=PALETTE["muted"])
+    return notice
 
 
 def render_turn_rule(agent: str, turn: int) -> RenderableType:

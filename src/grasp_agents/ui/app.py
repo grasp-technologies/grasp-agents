@@ -67,13 +67,18 @@ from ..types.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from ..types.llm_events import OutputMessageTextPartTextDelta
+from ..types.llm_events import (
+    OutputMessageTextPartTextDelta,
+    ResponseFallback,
+    ResponseRetrying,
+)
 from ._event_render import (
     event_images,
     image_to_pil,
     render_event,
     render_image,
     render_input_image,
+    render_retry_notice,
     render_tool_stream,
     render_turn_rule,
     set_markup_theme,
@@ -586,6 +591,16 @@ class GraspAgentsApp(App[None]):
             data = event.data
             if isinstance(data, OutputMessageTextPartTextDelta) and data.delta:
                 await self._stream_message(owner, pane, data.delta, at_bottom)
+            elif isinstance(data, (ResponseRetrying, ResponseFallback)):
+                # Failed attempt / model fallback — drop the partial widget and
+                # surface a notice so the cleared text isn't silently lost; the
+                # retry streams a fresh widget below it.
+                await self._discard_streamed_message(owner)
+                await pane.mount(
+                    _SelectableStatic(render_retry_notice(data), classes="ga-notice")
+                )
+                if at_bottom:
+                    pane.scroll_end(animate=False)
             return True
         if isinstance(event, ToolStreamEvent):
             await self._stream_tool(
@@ -616,6 +631,17 @@ class GraspAgentsApp(App[None]):
             widget.update(Text(text))
         if at_bottom:
             pane.scroll_end(animate=False)
+
+    async def _discard_streamed_message(self, owner: str) -> None:
+        """
+        Drop *owner*'s in-progress streamed message on ``ResponseRetrying``:
+        its partial content belongs to a failed attempt. The retry streams a
+        fresh widget.
+        """
+        self._ga_stream_msg_text.pop(owner, None)
+        widget = self._ga_stream_msg.pop(owner, None)
+        if widget is not None:
+            await widget.remove()
 
     async def _stream_tool(
         self, owner: str, pane: VerticalScroll, tool: str, delta: str, at_bottom: bool
