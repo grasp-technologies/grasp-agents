@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -8,6 +9,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any, Generic, Literal
 
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from grasp_agents.durability.checkpoint_store import CheckpointStore
 from grasp_agents.durability.checkpoints import CheckpointKind
@@ -180,9 +182,15 @@ async def _consume(
         if existing:
             record = TaskRecord.model_validate_json(existing)
             if failed:
-                outcome = {"status": TaskStatus.FAILED, "error": str(result)}
+                outcome = {
+                    "status": TaskStatus.FAILED,
+                    "error": _serialize_result(result),
+                }
             else:
-                outcome = {"status": TaskStatus.COMPLETED, "result": str(result)}
+                outcome = {
+                    "status": TaskStatus.COMPLETED,
+                    "result": _serialize_result(result),
+                }
             record = record.model_copy(
                 update={**outcome, "updated_at": datetime.now(UTC)}
             )
@@ -205,6 +213,19 @@ def _result_of(events: list[Event[Any]]) -> tuple[Any, bool]:
 def _stream_text(events: list[Event[Any]]) -> str:
     """Concatenated incremental output text across ``events`` (rendered via str)."""
     return "".join(str(e.data) for e in events if isinstance(e, ToolStreamEvent))
+
+
+def _serialize_result(result: Any) -> str:
+    """
+    Serialize a task result the way the foreground transcript does
+    (``FunctionToolOutputItem.from_tool_result``): a string passes through
+    verbatim (no spurious quotes), anything else is JSON via ``to_jsonable_python``
+    so a pydantic result renders as data, not a Python ``repr`` (which would leak
+    ``<Enum.X: 'x'>``-style values into the model's completion note).
+    """
+    if isinstance(result, str):
+        return result
+    return json.dumps(to_jsonable_python(result), indent=2)
 
 
 def _excerpt_for_inline(
@@ -773,7 +794,7 @@ class BackgroundTaskManager(Generic[CtxT]):
 
             result, failed = _result_of(pt.events)
             status = "failed" if failed else "completed"
-            full = str(result)
+            full = _serialize_result(result)
             cap = pt.max_inline_result_chars
 
             result_file: str | None = None
@@ -811,8 +832,8 @@ class BackgroundTaskManager(Generic[CtxT]):
                     record = record.model_copy(
                         update={
                             "status": TaskStatus.DELIVERED,
-                            "result": None if failed else str(result),
-                            "error": str(result) if failed else None,
+                            "result": None if failed else _serialize_result(result),
+                            "error": _serialize_result(result) if failed else None,
                             "updated_at": datetime.now(UTC),
                         }
                     )
