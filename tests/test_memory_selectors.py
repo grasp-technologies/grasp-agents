@@ -15,7 +15,7 @@ from grasp_agents.memory import (
     format_manifest,
     make_llm_relevance_selector,
 )
-from grasp_agents.memory.selectors import _parse_selected_names
+from grasp_agents.types.content import InputImage
 from grasp_agents.types.items import InputMessageItem
 
 if TYPE_CHECKING:
@@ -107,23 +107,6 @@ class TestExtractLatestUserText:
 
     def test_handles_none(self) -> None:
         assert extract_latest_user_text(None) == ""
-
-
-class TestParseSelectedNames:
-    def test_parses_clean_json(self) -> None:
-        assert _parse_selected_names(
-            '{"selected_memories": ["a.md", "b.md"]}'
-        ) == ["a.md", "b.md"]
-
-    def test_strips_fenced_json(self) -> None:
-        text = "```json\n" + '{"selected_memories": ["a.md"]}' + "\n```"
-        assert _parse_selected_names(text) == ["a.md"]
-
-    def test_invalid_json_returns_empty(self) -> None:
-        assert _parse_selected_names("not json") == []
-
-    def test_missing_key_returns_empty(self) -> None:
-        assert _parse_selected_names('{"other": []}') == []
 
 
 # ---- Selector behavior tests -------------------------------------------------
@@ -242,6 +225,44 @@ async def test_selector_input_shape() -> None:
     assert "the actual query" in inputs[1].text
     assert "old conversation turn" not in inputs[1].text
     assert "alpha.md" in inputs[1].text
+
+
+async def test_selector_parses_fenced_json() -> None:
+    """Fenced / non-bare JSON from the model is still parsed (shared validator)."""
+    llm = _FakeLLM('```json\n{"selected_memories": ["alpha.md"]}\n```')
+    selector = make_llm_relevance_selector(llm)  # type: ignore[arg-type]
+    picked = await selector(
+        entries=(_entry("alpha"),),
+        messages=[InputMessageItem.from_text("a?", role="user")],
+    )
+    assert [e.name for e in picked] == ["alpha"]
+
+
+async def test_selector_unparseable_output_returns_empty() -> None:
+    """Unparseable model output falls back to surfacing nothing, not a crash."""
+    llm = _FakeLLM("not json at all")
+    selector = make_llm_relevance_selector(llm)  # type: ignore[arg-type]
+    picked = await selector(
+        entries=(_entry("alpha"),),
+        messages=[InputMessageItem.from_text("a?", role="user")],
+    )
+    assert picked == ()
+
+
+async def test_selector_forwards_image_only_query() -> None:
+    """An image-only turn anchors selection: the image is sent, not dropped."""
+    llm = _FakeLLM('{"selected_memories": ["alpha.md"]}')
+    selector = make_llm_relevance_selector(llm)  # type: ignore[arg-type]
+    image = InputImage(image_url="https://example.com/chart.png")
+    picked = await selector(
+        entries=(_entry("alpha"),),
+        messages=[InputMessageItem(content_parts=[image], role="user")],
+    )
+    assert [e.name for e in picked] == ["alpha"]
+    assert len(llm.calls) == 1
+    user_msg = llm.calls[0]["input"][1]
+    assert len(user_msg.images) == 1  # the image reached the selector LLM
+    assert "alpha.md" in user_msg.text  # manifest still present alongside it
 
 
 # ---- select_relevant seen-path filter ----------------------------------------

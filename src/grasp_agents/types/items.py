@@ -24,7 +24,7 @@ from openai.types.responses.response_reasoning_item import (
     Summary as ResponseReasoningSummary,
 )
 from pydantic import BaseModel, Field, model_validator
-from pydantic.json import pydantic_encoder
+from pydantic_core import to_jsonable_python
 
 from .content import (
     CacheControl,
@@ -278,7 +278,10 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
             if typed:
                 return cls(call_id=call_id, output_parts=typed)
 
-        serialized = json.dumps(output, default=pydantic_encoder, indent=indent)
+        if isinstance(output, str):
+            serialized = output
+        else:
+            serialized = json.dumps(to_jsonable_python(output), indent=indent)
 
         return cls(call_id=call_id, output_parts=serialized)
 

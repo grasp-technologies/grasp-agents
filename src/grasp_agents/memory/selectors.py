@@ -39,14 +39,16 @@ Usage::
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from ..types.content import InputPart, InputText
+from ..types.errors import JSONSchemaValidationError
 from ..types.items import InputMessageItem
+from ..utils.validation import validate_obj_from_json_or_py_string
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -69,7 +71,7 @@ SELECT_MEMORIES_SYSTEM_PROMPT = """\
 You are selecting memories that will be useful for an agent's current turn.
 
 You will receive:
-1. The user's most recent query.
+1. The user's most recent query (it may include attached images or files).
 2. A list of available memory files — each one tagged with its type
    ([user], [feedback], [project], [reference]), filename, last-updated
    timestamp, and a short description.
@@ -100,6 +102,18 @@ def format_manifest(entries: Iterable[MemoryEntry]) -> str:
         lines.append(f"- {type_tag} {e.name}.md{ts_part}: {e.description}")
 
     return "\n".join(lines)
+
+
+def extract_latest_user_message(
+    messages: Sequence[InputItem] | None,
+) -> InputMessageItem | None:
+    """Return the most recent ``user``-role message item, or ``None``."""
+    if not messages:
+        return None
+    for item in reversed(list(messages)):
+        if isinstance(item, InputMessageItem) and item.role == "user":
+            return item
+    return None
 
 
 def extract_latest_user_text(messages: Sequence[InputItem] | None) -> str:
@@ -162,21 +176,31 @@ def make_llm_relevance_selector(
         if not entries:
             return ()
 
-        query = extract_latest_user_text(messages)
-        if not query:
-            # No user query to anchor selection on — bail safely. Returning
-            # an empty tuple is safer than dumping every body into the
-            # context window.
+        latest = extract_latest_user_message(messages)
+        if latest is None:
+            return ()
+        query_text = latest.text.strip()
+        # Forward the query's images/files to the selector too, so an
+        # image-only turn still anchors selection instead of being dropped.
+        attachments: list[InputPart] = [*latest.images, *latest.files]
+        if not query_text and not attachments:
+            # Nothing to anchor selection on — surfacing nothing is safer than
+            # dumping every body into the context window.
             return ()
 
         manifest = format_manifest(entries)
-        user_text = f"Query: {query}\n\nAvailable memories:\n{manifest}"
+        lead = f"Query: {query_text}" if query_text else "Query (see attached content):"
+        query_parts: list[InputPart] = [
+            InputText(text=lead),
+            *attachments,
+            InputText(text=f"\n\nAvailable memories:\n{manifest}"),
+        ]
 
         try:
             response = await llm.generate_response(
                 input=[
                     InputMessageItem.from_text(rendered_system, role="system"),
-                    InputMessageItem.from_text(user_text, role="user"),
+                    InputMessageItem(content_parts=query_parts, role="user"),
                 ],
                 output_schema=_MemorySelectionResult,
                 max_output_tokens=max_tokens,
@@ -187,7 +211,16 @@ def make_llm_relevance_selector(
             logger.warning("relevance selector LLM call failed: %s", exc)
             return ()
 
-        names = _parse_selected_names(response.output_text)
+        try:
+            names = validate_obj_from_json_or_py_string(
+                response.output_text, schema=_MemorySelectionResult
+            ).selected_memories
+        except JSONSchemaValidationError:
+            logger.debug(
+                "relevance selector: could not parse output: %r",
+                response.output_text[:200],
+            )
+            names = []
         by_name = {e.name: e for e in entries}
         picked: list[MemoryEntry] = []
         for raw in names[:max_select]:
@@ -213,32 +246,3 @@ def _format_mtime(mtime_ms: int) -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
-
-
-def _parse_selected_names(raw_text: str) -> list[str]:
-    """
-    Best-effort parse of the LLM's JSON output.
-
-    Schema-bounded providers return valid JSON; legacy providers may
-    return JSON inside a code fence. Strip both, fall back to empty.
-    """
-    text = raw_text.strip()
-    if not text:
-        return []
-    # Strip a leading code fence if present.
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith(("json", "JSON")):
-            text = text[4:]
-        text = text.strip("`").strip()
-    try:
-        parsed: Any = json.loads(text)
-    except json.JSONDecodeError:
-        logger.debug("relevance selector: could not parse JSON: %r", text[:200])
-        return []
-    if not isinstance(parsed, dict):
-        return []
-    names = cast("dict[str, Any]", parsed).get("selected_memories")
-    if not isinstance(names, list):
-        return []
-    return [n for n in cast("list[object]", names) if isinstance(n, str)]
