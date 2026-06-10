@@ -61,7 +61,7 @@ class AgentContext:
         bg_tasks: BackgroundTaskManager[Any],
         agent_name: str = "",
         file_edit_state: FileEditSessionState | None = None,
-        code_context_id: str | None = None,
+        exec_context_id: str | None = None,
     ) -> AgentContext:
         """
         Build an ``AgentContext`` with fresh per-loop state.
@@ -73,10 +73,10 @@ class AgentContext:
         each holder. The tool-module imports are local to keep them off the
         agent core's import path.
 
-        Pass ``code_context_id`` when resuming a session to re-attach the
-        ``RunPython`` kernel to its persisted code context (E2B) instead of
-        starting fresh — read it from ``code_kernel_holder.context_id`` before
-        the sandbox was paused/snapshotted. See :class:`KernelHolder`.
+        Pass ``exec_context_id`` when resuming a session to re-attach the
+        ``RunPython`` kernel to its persisted code-execution context (E2B)
+        instead of starting fresh — read it from ``code_kernel_holder.context_id``
+        before the sandbox was paused/snapshotted. See :class:`KernelHolder`.
         """
         from ..tools.bash_common import ShellState  # noqa: PLC0415
         from ..tools.bash_session import BashSessionHolder  # noqa: PLC0415
@@ -93,6 +93,6 @@ class AgentContext:
             agent_name=agent_name,
             session_holder=BashSessionHolder(),
             kernel_holder=KernelHolder(),
-            code_kernel_holder=KernelHolder(context_id=code_context_id),
+            code_kernel_holder=KernelHolder(context_id=exec_context_id),
             shell_state=ShellState(),
         )

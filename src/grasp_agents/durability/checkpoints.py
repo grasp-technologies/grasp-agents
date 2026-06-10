@@ -10,7 +10,7 @@ from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 5
+CURRENT_SCHEMA_VERSION: int = 6
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -45,6 +45,13 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "blob no longer embeds messages and gains message_count (the log's commit "
         "watermark). Pre-v5 single-blob agent checkpoints are NOT loadable — their "
         "transcript lived inside the head and there is no log to read."
+    ),
+    6: (
+        "AgentCheckpoint.code_context_id renamed to exec_context_id: the persisted "
+        "value is a code-execution context that holds arbitrary in-memory sandbox "
+        "state (E2B), not a Python-kernel id specifically. v5 records load fine "
+        "(old field ignored, exec_context_id defaults None); v5 code resuming a v6 "
+        "session loses the re-attach and resumes with a fresh kernel."
     ),
 }
 """
@@ -156,13 +163,14 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # checkpoint records only the ref. ``None`` = no snapshot taken.
     fs_snapshot_ref: str | None = None
 
-    # The RunPython kernel's code-context id, captured together with
-    # ``fs_snapshot_ref`` (only meaningful as a pair: the id re-attaches
-    # to a context inside the *restored* sandbox). On a backend that
-    # preserves running processes in its snapshot (E2B), resume re-binds
-    # the kernel to this context so in-memory Python state survives.
-    # ``None`` = no RunPython kernel / a backend that can't persist it.
-    code_context_id: str | None = None
+    # A code-execution context id, captured together with ``fs_snapshot_ref``
+    # (only meaningful as a pair: the id re-attaches to a context inside the
+    # *restored* sandbox). The context holds arbitrary in-memory state — today
+    # the RunPython kernel's, but it is not Python-specific. On a backend that
+    # preserves running processes in its snapshot (E2B), resume re-binds to this
+    # context so in-memory state survives. ``None`` = no persistent context / a
+    # backend that can't persist it.
+    exec_context_id: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):
