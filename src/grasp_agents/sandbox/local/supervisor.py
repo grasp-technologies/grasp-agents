@@ -104,6 +104,38 @@ class ResourceLimits(TypedDict, total=False):
     max_file_size_mb: int | None
 
 
+def make_rlimit_preexec(limits: SupervisorLimits) -> Callable[[], None] | None:
+    """
+    Build a ``preexec_fn`` that applies the resource ``setrlimit`` ceilings in
+    the child before ``exec`` — shared by one-shot exec, persistent sessions,
+    and kernels so the same ceilings apply however a local process is spawned.
+    Returns ``None`` (no preexec) when no resource limit is set, so the module
+    never imports ``resource`` unless a limit is actually requested.
+    """
+    if (
+        limits.cpu_timeout is None
+        and limits.max_memory_mb is None
+        and limits.max_file_size_mb is None
+    ):
+        return None
+
+    import resource  # noqa: PLC0415  (POSIX-only; imported only when used)
+
+    rlimits: list[tuple[int, int]] = []
+    if limits.cpu_timeout is not None:
+        rlimits.append((resource.RLIMIT_CPU, math.ceil(limits.cpu_timeout)))
+    if limits.max_memory_mb is not None:
+        rlimits.append((resource.RLIMIT_AS, limits.max_memory_mb * 1024 * 1024))
+    if limits.max_file_size_mb is not None:
+        rlimits.append((resource.RLIMIT_FSIZE, limits.max_file_size_mb * 1024 * 1024))
+
+    def _apply() -> None:
+        for res_id, value in rlimits:
+            resource.setrlimit(res_id, (value, value))
+
+    return _apply
+
+
 class ProcessSupervisor:
     """
     Spawns, supervises, and reaps a single subprocess per :meth:`run`.
@@ -154,7 +186,7 @@ class ProcessSupervisor:
                 cwd=spec.cwd,
                 env=dict(spec.env),
                 start_new_session=True,
-                preexec_fn=self._make_preexec(eff),
+                preexec_fn=make_rlimit_preexec(eff),
             )
         except (OSError, ValueError) as exc:
             yield ExecResult(
@@ -234,40 +266,6 @@ class ProcessSupervisor:
     @staticmethod
     def _ms(start: float) -> float:
         return (time.monotonic() - start) * 1000.0
-
-    @staticmethod
-    def _make_preexec(limits: SupervisorLimits) -> Callable[[], None] | None:
-        """
-        Build a ``preexec_fn`` that applies the resource ``setrlimit`` ceilings
-        in the child before ``exec``. Returns ``None`` (no preexec) when no
-        resource limit is set, so the module never imports ``resource`` on
-        platforms that lack it unless a limit is actually requested.
-        """
-        if (
-            limits.cpu_timeout is None
-            and limits.max_memory_mb is None
-            and limits.max_file_size_mb is None
-        ):
-            return None
-
-        import resource  # noqa: PLC0415  (POSIX-only; imported only when used)
-
-        rlimits: list[tuple[int, int]] = []
-        if limits.cpu_timeout is not None:
-            secs = math.ceil(limits.cpu_timeout)
-            rlimits.append((resource.RLIMIT_CPU, secs))
-        if limits.max_memory_mb is not None:
-            rlimits.append((resource.RLIMIT_AS, limits.max_memory_mb * 1024 * 1024))
-        if limits.max_file_size_mb is not None:
-            rlimits.append(
-                (resource.RLIMIT_FSIZE, limits.max_file_size_mb * 1024 * 1024)
-            )
-
-        def _apply() -> None:
-            for res_id, value in rlimits:
-                resource.setrlimit(res_id, (value, value))
-
-        return _apply
 
     async def _pump(
         self,
@@ -370,4 +368,9 @@ class ProcessSupervisor:
         return proc.returncode if proc.returncode is not None else -1
 
 
-__all__ = ["ExecSpec", "ProcessSupervisor", "SupervisorLimits"]
+__all__ = [
+    "ExecSpec",
+    "ProcessSupervisor",
+    "SupervisorLimits",
+    "make_rlimit_preexec",
+]

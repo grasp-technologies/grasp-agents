@@ -29,6 +29,31 @@ class NetworkPolicy(StrEnum):
     ALL = "all"  # unrestricted
 
 
+# Inherited host env vars matching these ``fnmatch`` (case-sensitive) patterns
+# are scrubbed from a command's environment by default, so an unconfined
+# subprocess (``confinement="none"``) the model runs cannot read the host's
+# credentials — API keys, tokens, cloud secrets. Security-first and deliberately
+# broad; pass ``env_scrub=()`` to disable or an explicit list to override.
+# Explicitly-provided ``env`` (and ``policy.env``) is never scrubbed.
+DEFAULT_ENV_SCRUB: tuple[str, ...] = (
+    "*_API_KEY",
+    "*_APIKEY",
+    "*_ACCESS_KEY",
+    "*_ACCESS_KEY_ID",
+    "*_SECRET",
+    "*_SECRET_KEY",
+    "*SECRET*",
+    "*_TOKEN",
+    "*TOKEN",
+    "*_PASSWORD",
+    "*PASSWORD*",
+    "*_PRIVATE_KEY",
+    "*_CREDENTIALS",
+    "*_CREDS",
+    "*_KEY",
+)
+
+
 @dataclass(frozen=True)
 class SandboxPolicy:
     """
@@ -92,7 +117,7 @@ class SandboxPolicy:
     allowed_domains: tuple[str, ...] = ()
     denied_domains: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict[str, str])
-    env_scrub: tuple[str, ...] = ()
+    env_scrub: tuple[str, ...] = DEFAULT_ENV_SCRUB
     kernel_setup_code: str = ""
 
 

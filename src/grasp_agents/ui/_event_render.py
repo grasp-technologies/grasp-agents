@@ -110,7 +110,7 @@ def render_event(
         text = event.data.text
         if not text:
             return None
-        return _Markdown(text, code_theme=_code_theme, inline_code_theme=_code_theme)
+        return _Markdown(text, code_theme=_active_code_theme(), inline_code_theme=_active_code_theme())
 
     if isinstance(event, ReasoningItemEvent):
         parts = [
@@ -428,7 +428,7 @@ else:
         return None
 
 
-# ── builders (ported from EventConsole; console.py keeps its own copy) ──
+# ── builders (shared by EventConsole and the Textual app) ──
 
 
 def panel(title: str, body: RenderableType, border: str) -> Panel:
@@ -506,11 +506,22 @@ def _pygments_style_for(name: str) -> str:
     return "monokai"
 
 
-_code_theme: str = _pygments_style_for("catppuccin-macchiato")
+# Resolved lazily, not at import: asking Pygments for the catppuccin style
+# triggers its plugin entry point, which imports matplotlib. Importing this
+# module must stay light (the plain console uses it too), so defer to first use.
+_code_theme: str | None = None
 _md_styles: dict[str, str] = {}
 # code background: "default" composites to near-black in Textual, so the TUI
 # passes its theme background here to make code blocks blend into the pane
 _code_bg: str = "default"
+
+
+def _active_code_theme() -> str:
+    """The code-highlight theme, resolving the catppuccin default on first use."""
+    global _code_theme
+    if _code_theme is None:
+        _code_theme = _pygments_style_for("catppuccin-macchiato")
+    return _code_theme
 
 
 def set_markup_theme(
@@ -587,7 +598,7 @@ class _HtmlBlock(MarkdownElement):
         yield Syntax(
             code,
             "xml",
-            theme=_code_theme,
+            theme=_active_code_theme(),
             background_color=_code_bg,
             word_wrap=True,
             padding=(1, 0),
@@ -665,7 +676,7 @@ def _code_block(value: str, lexer: str) -> Syntax:
     return Syntax(
         value,
         lexer,
-        theme=_code_theme,
+        theme=_active_code_theme(),
         background_color=_code_bg,
         word_wrap=True,
     )
@@ -745,7 +756,7 @@ def _build_result_renderable(
     content = truncate(content, _TRUNC)
     if _looks_like_markdown(content):
         # agent tools often return markdown reports — render them formatted
-        return _Markdown(content, code_theme=_code_theme, inline_code_theme=_code_theme)
+        return _Markdown(content, code_theme=_active_code_theme(), inline_code_theme=_active_code_theme())
     if _looks_like_xml(content):
         # tagged payloads (e.g. background <task_notification>…) as highlighted XML
         return _code_block(content, "xml")

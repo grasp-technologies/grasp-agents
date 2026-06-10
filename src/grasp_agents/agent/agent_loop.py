@@ -1236,12 +1236,16 @@ class AgentLoop(Generic[CtxT]):
                 self.turn += 1
 
         finally:
-            await self.bg_tasks.cancel_all(ctx=self._ctx)
+            # Close the shell + kernels before cancel_all() so process cleanup
+            # always runs: cancel_all() may raise (store-save failures are
+            # intentionally un-caught), and a leaked shell/kernel must not be the
+            # price of that crash.
             await self.bash_session_holder.close()
             await self.kernel_holder.close()
             code_kernel_holder = self._agent_ctx.code_kernel_holder
             if code_kernel_holder is not None:
                 await code_kernel_holder.close()
+            await self.bg_tasks.cancel_all(ctx=self._ctx)
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):

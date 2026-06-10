@@ -36,6 +36,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ..kernel import CellOutput, CellResult, KernelSession
+from .supervisor import SupervisorLimits, make_rlimit_preexec
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -89,6 +90,7 @@ class LocalKernel(KernelSession):
         kill_grace: float = DEFAULT_KILL_GRACE,
         max_stream_chars: int = DEFAULT_MAX_STREAM_CHARS,
         max_images: int = DEFAULT_MAX_IMAGES,
+        limits: SupervisorLimits | None = None,
     ) -> None:
         self._launch_argv = launch_argv
         self._cwd = cwd
@@ -99,6 +101,7 @@ class LocalKernel(KernelSession):
         self._kill_grace = kill_grace
         self._max_stream_chars = max_stream_chars
         self._max_images = max_images
+        self._limits = limits or SupervisorLimits()
 
         self._proc: asyncio.subprocess.Process | None = None
         self._client: AsyncKernelClient | None = None
@@ -124,7 +127,17 @@ class LocalKernel(KernelSession):
 
     async def _ensure_started(self) -> None:
         if self._proc is not None and self._client is not None:
-            return
+            if self._proc.returncode is None:
+                return
+            # Kernel died unexpectedly (crash / OOM-kill / external signal).
+            # Reusing it would hang the next execute until the cell timeout, so
+            # tear the corpse down and start a fresh one below. The crash already
+            # lost the REPL state, so there is nothing to preserve.
+            with contextlib.suppress(Exception):
+                self._client.stop_channels()
+            await self._terminate()
+            self._cleanup_connection_file()
+            self._client = None
         from jupyter_client.asynchronous.client import (  # noqa: PLC0415
             AsyncKernelClient,
         )
@@ -142,6 +155,7 @@ class LocalKernel(KernelSession):
             cwd=self._cwd,
             env=self._env,
             start_new_session=True,
+            preexec_fn=make_rlimit_preexec(self._limits),
         )
 
         client = AsyncKernelClient(connection_file=connection_file)

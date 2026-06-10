@@ -21,12 +21,14 @@ Requires the ``tui`` + ``notebook-exec`` extras and a local sandbox backend
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from grasp_agents import AgentTool, LLMAgent, RunContext
-from grasp_agents.llm_providers.openai_responses import OpenAIResponsesLLM
+from grasp_agents.llm_providers.openai_responses import (
+    OpenAIResponsesLLM,
+    OpenAIResponsesLLMSettings,
+)
 from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.bash import Bash, bash_tools
 from grasp_agents.tools.code_interpreter import RunPython
@@ -92,7 +94,10 @@ def build_copilot(
     workdir.mkdir(parents=True, exist_ok=True)
     llm = OpenAIResponsesLLM(
         model_name=model,
-        llm_settings={"reasoning": {"effort": "medium", "summary": "detailed"}},
+        llm_settings=cast(
+            OpenAIResponsesLLMSettings,
+            {"reasoning": {"effort": "medium", "summary": "detailed"}},
+        ),
     )
     env = local_environment(
         allowed_roots=[workdir],

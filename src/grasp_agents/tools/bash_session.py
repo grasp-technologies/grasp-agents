@@ -10,11 +10,11 @@ Seatbelt / srt / E2B all qualify) and is **serial and foreground-only** — one
 command at a time, no auto-backgrounding (a session's foreground command is not
 cleanly detachable; background long-running work with ``Bash`` instead).
 
-Each :class:`AgentLoop` owns one :class:`BashSessionHolder` and wires it onto
-its ``BashSession`` tool at setup (the agent deep-copies its tools, so
-sub-agents and parallel replicas each get their own shell). Outside an agent
-loop (no holder wired) each call opens a throwaway session, so state does not
-persist across calls.
+Each :class:`AgentLoop` owns one :class:`BashSessionHolder` on its
+:class:`AgentContext`; the stateless ``BashSession`` tool resolves it from the
+call context (so sub-agents and parallel replicas each get their own shell).
+Outside an agent loop (no holder on the context) each call opens a throwaway
+session, so state does not persist across calls.
 """
 
 from __future__ import annotations

@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from ...tools.file_backend.local import LocalFileBackend
 from ..environment import ExecutionEnvironment
-from ..policy import NetworkPolicy, SandboxPolicy
+from ..policy import DEFAULT_ENV_SCRUB, NetworkPolicy, SandboxPolicy
 from .exec import LocalExecBackend, resolve_python
 from .supervisor import ProcessSupervisor, ResourceLimits, SupervisorLimits
 
@@ -42,31 +42,6 @@ if TYPE_CHECKING:
 
     from ...tools.file_backend.base import FileBackend
     from ..exec_backend import ExecBackend
-
-
-# Inherited host env vars matching these ``fnmatch`` (case-sensitive) patterns
-# are scrubbed from a command's environment by default, so an unconfined
-# subprocess (``confinement="none"``) the model runs cannot read the host's
-# credentials — API keys, tokens, cloud secrets. Security-first and deliberately
-# broad; pass ``env_scrub=()`` to disable or an explicit list to override.
-# Explicitly-provided ``env`` (and ``policy.env``) is never scrubbed.
-DEFAULT_ENV_SCRUB: tuple[str, ...] = (
-    "*_API_KEY",
-    "*_APIKEY",
-    "*_ACCESS_KEY",
-    "*_ACCESS_KEY_ID",
-    "*_SECRET",
-    "*_SECRET_KEY",
-    "*SECRET*",
-    "*_TOKEN",
-    "*TOKEN",
-    "*_PASSWORD",
-    "*PASSWORD*",
-    "*_PRIVATE_KEY",
-    "*_CREDENTIALS",
-    "*_CREDS",
-    "*_KEY",
-)
 
 
 class LocalEnvironment(ExecutionEnvironment):

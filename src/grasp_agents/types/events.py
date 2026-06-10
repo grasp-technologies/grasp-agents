@@ -133,7 +133,7 @@ class TurnInfo(BaseModel):
     turn: int
 
 
-class StopReason(Enum):
+class StopReason(str, Enum):
     FINAL_ANSWER = "final_answer"
     MAX_TURNS = "max_turns"
     ERROR = "error"

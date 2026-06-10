@@ -286,13 +286,17 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             make_mcp_instructions_section(lambda: self.mcp_clients)
         )
 
+        # Resolve MCP tools up front so the loop is built once with the full
+        # tool set and AgentLoop.__init__ validates native + MCP name-uniqueness
+        # together, in one place (no post-construction mutation).
+        mcp_tools: list[BaseTool[BaseModel, Any, CtxT]] = []
         for item in mcp_clients or []:
             if isinstance(item, _MCPClientSpec):
-                self.add_mcp_client(
-                    item.client, include=item.include, exclude=item.exclude
-                )
+                mcp_client, include, exclude = (item.client, item.include, item.exclude)
             else:
-                self.add_mcp_client(item)
+                mcp_client, include, exclude = item, None, None
+            mcp_tools.extend(self._filter_mcp_tools(mcp_client, include, exclude))
+            self.mcp_clients.append(mcp_client)
 
         # Agent loop
 
@@ -320,7 +324,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             agent_name=self.name,
             llm=llm,
-            tools=tools,
+            tools=[*tools, *mcp_tools],
             transcript=self.transcript,
             ctx=self._ctx,
             llm_output_schema=llm_output_schema,
@@ -359,6 +363,22 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # session set there hasn't reached them yet — cascade it now.
         self._propagate_to_children()
 
+    def _filter_mcp_tools(
+        self,
+        client: "MCPClient",
+        include: "Iterable[str] | None",
+        exclude: "Iterable[str] | None",
+    ) -> list[BaseTool[BaseModel, Any, CtxT]]:
+        """A connected client's tools, filtered by ``include`` ∧ not ``exclude``."""
+        include_set = set(include) if include is not None else None
+        exclude_set = set(exclude) if exclude is not None else None
+        return [
+            cast("BaseTool[BaseModel, Any, CtxT]", tool)
+            for tool in client.tools()
+            if (include_set is None or tool.name in include_set)
+            and (exclude_set is None or tool.name not in exclude_set)
+        ]
+
     def add_mcp_client(
         self,
         client: "MCPClient",
@@ -367,30 +387,31 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         exclude: "Iterable[str] | None" = None,
     ) -> None:
         """
-        Register an :class:`MCPClient`'s tools (filtered by ``include`` /
-        ``exclude``) and track the client so the auto-attached
-        ``mcp_instructions`` system-prompt section can read its
-        ``instructions`` at compute time.
+        Attach a connected :class:`MCPClient`'s tools (filtered by ``include`` /
+        ``exclude``) to the running loop and track the client so the
+        ``mcp_instructions`` system-prompt section can read its instructions.
 
-        ``include`` (when set) is an allowlist of tool names; only matching
-        tools are exposed. ``exclude`` (when set) is a denylist. Both set:
-        intersection (allow-listed ∧ not denied). ``include=set()`` blocks
-        every tool but still surfaces the server's instructions to the prompt.
+        ``include`` (when set) is an allowlist of tool names; ``exclude`` a
+        denylist; both set ⇒ intersection. ``include=set()`` blocks every tool
+        but still surfaces the server's instructions.
 
-        The client must be ``connect()``-ed first — tools are only
-        discoverable after the MCP handshake completes. Adding the same
-        client twice is a no-op for the client list (tool dict is
-        re-overwritten, which is harmless).
+        Prefer passing ``mcp_clients=`` at construction (validated together with
+        the native tools in one place). Use this for clients ``connect()``-ed
+        *after* the agent is built. Re-adding the same client is idempotent; a
+        tool whose name collides with an existing tool or the agent's own name
+        raises — names must be unique or the dispatch dict silently drops one.
         """
-        include_set = set(include) if include is not None else None
-        exclude_set = set(exclude) if exclude is not None else None
-        for tool in client.tools():
-            if include_set is not None and tool.name not in include_set:
-                continue
-            if exclude_set is not None and tool.name in exclude_set:
-                continue
-            self.tools[tool.name] = cast("BaseTool[BaseModel, Any, CtxT]", tool)
-        if client not in self.mcp_clients:
+        client_already_added = client in self.mcp_clients
+        for tool in self._filter_mcp_tools(client, include, exclude):
+            if tool.name == self.name or (
+                not client_already_added and tool.name in self.tools
+            ):
+                raise ValueError(
+                    f"MCP tool {tool.name!r} collides with an existing tool or "
+                    "the agent's own name; tool and processor names must be unique."
+                )
+            self.tools[tool.name] = tool
+        if not client_already_added:
             self.mcp_clients.append(client)
 
     @property

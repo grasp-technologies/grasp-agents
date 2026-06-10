@@ -16,6 +16,8 @@ import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.tools.bash import Bash
+from grasp_agents.tools.bash_session import BashSession
+from grasp_agents.tools.code_interpreter import RunPython
 from grasp_agents.tools.file_edit.delete import DeleteTool
 from grasp_agents.tools.file_edit.edit import EditTool
 from grasp_agents.tools.file_edit.notebook import NotebookEditTool, NotebookReadTool
@@ -23,6 +25,7 @@ from grasp_agents.tools.file_edit.read import ReadTool
 from grasp_agents.tools.file_edit.write import WriteTool
 from grasp_agents.tools.file_search.grep import GrepTool
 from grasp_agents.tools.function_tool import function_tool
+from grasp_agents.tools.notebook_exec import RunCell
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import FunctionToolCallItem
 from grasp_agents.types.tool import BaseTool
@@ -143,7 +146,7 @@ class TestUntrustedOutputFlag:
 
     @pytest.mark.parametrize(
         "tool_cls",
-        [ReadTool, GrepTool, NotebookReadTool, Bash],
+        [ReadTool, GrepTool, NotebookReadTool, Bash, BashSession, RunPython, RunCell],
     )
     def test_external_builtins_are_untrusted(
         self, tool_cls: type[BaseTool[Any, Any, Any]]
