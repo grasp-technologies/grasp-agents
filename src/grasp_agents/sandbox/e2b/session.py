@@ -105,6 +105,7 @@ class E2BExecSession(ExecSession):
         )
         self._lock = asyncio.Lock()
         self._closed = False
+        self._started_at: float | None = None
 
     @property
     def backend(self) -> str:
@@ -113,6 +114,18 @@ class E2BExecSession(ExecSession):
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def expired(self) -> bool:
+        """
+        True once the shell is within a minute of E2B's hard lifetime cap, so
+        the holder replaces it proactively rather than risk a command being
+        killed mid-run. The fresh shell loses cwd / env / shell variables — the
+        ``BashSession`` tool surfaces a reset notice when this happens.
+        """
+        if self._started_at is None or self._closed:
+            return False
+        return time.monotonic() - self._started_at >= _SESSION_SHELL_TIMEOUT - 60.0
 
     async def _ensure_started(self) -> None:
         if self._handle is not None:
@@ -136,6 +149,7 @@ class E2BExecSession(ExecSession):
             on_stderr=on_stderr,
         )
         self._pid = self._handle.pid
+        self._started_at = time.monotonic()
 
     async def run(
         self, command: str, *, timeout: float | None = None

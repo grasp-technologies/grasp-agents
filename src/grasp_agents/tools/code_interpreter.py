@@ -249,6 +249,11 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
         header = f"[execution_count={result.execution_count} status={result.status}]"
         if result.timed_out:
             header += " (timed out — code interrupted)"
+        if holder is not None and holder.take_reset():
+            header += (
+                " (kernel was restarted — variables and imports from earlier "
+                "calls were lost)"
+            )
         parts = render_outputs_as_parts(
             _outputs_to_render_dicts(outputs),
             header=header,

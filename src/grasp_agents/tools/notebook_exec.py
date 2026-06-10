@@ -69,6 +69,7 @@ class KernelHolder:
         self._kernel: KernelSession | None = None
         self._context_id = context_id
         self._lock = asyncio.Lock()
+        self._was_reset = False
 
     def __deepcopy__(self, memo: dict[int, Any]) -> KernelHolder:
         fresh = KernelHolder()
@@ -77,9 +78,23 @@ class KernelHolder:
 
     async def get(self, backend: KernelCapable) -> KernelSession:
         async with self._lock:
-            if self._kernel is None or self._kernel.closed:
-                self._kernel = await backend.open_kernel(context_id=self._context_id)
-            return self._kernel
+            current = self._kernel
+            if current is None:
+                current = await backend.open_kernel(context_id=self._context_id)
+            elif current.closed:
+                # Kernel died (e.g. a cell timeout killed it) — a fresh kernel
+                # loses the REPL namespace (variables / imports / definitions),
+                # so flag it for the tool to surface to the model.
+                current = await backend.open_kernel(context_id=self._context_id)
+                self._was_reset = True
+            self._kernel = current
+            return current
+
+    def take_reset(self) -> bool:
+        """Return and clear the 'kernel was restarted since last call' flag."""
+        was = self._was_reset
+        self._was_reset = False
+        return was
 
     @property
     def context_id(self) -> str | None:
@@ -284,6 +299,11 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         header = f"[execution_count={result.execution_count} status={result.status}]"
         if result.timed_out:
             header += " (timed out — cell interrupted)"
+        if holder is not None and holder.take_reset():
+            header += (
+                " (kernel was restarted — variables, imports, and definitions "
+                "from earlier cells were lost; re-run setup cells)"
+            )
         return render_outputs_as_parts(
             cell["outputs"],
             header=header,

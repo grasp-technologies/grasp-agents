@@ -51,12 +51,15 @@ class BashSessionHolder:
     agent owns its tools (deep-copied at construction), sub-agents and parallel
     replicas each get their own stateful shell. The session is opened on first
     use and reopened if a command closed it (e.g. one that ignored the interrupt
-    and forced a session-level kill).
+    and forced a session-level kill) or if it reached its lifetime cap (E2B's
+    per-session timeout). A reopen loses shell state, so it is flagged for the
+    ``BashSession`` tool to surface to the model (see :meth:`take_reset`).
     """
 
     def __init__(self) -> None:
         self._session: ExecSession | None = None
         self._lock = asyncio.Lock()
+        self._was_reset = False
 
     def __deepcopy__(self, memo: dict[int, Any]) -> BashSessionHolder:
         # A live shell isn't copyable, and a copied agent is a new context: it
@@ -68,9 +71,26 @@ class BashSessionHolder:
 
     async def get(self, backend: SessionCapable) -> ExecSession:
         async with self._lock:
-            if self._session is None or self._session.closed:
-                self._session = await backend.open_session()
-            return self._session
+            current = self._session
+            if current is None:
+                current = await backend.open_session()
+            elif current.closed or getattr(current, "expired", False):
+                # Prior shell died or hit its lifetime cap — a fresh shell loses
+                # cwd / env / shell variables, so flag it for BashSession to
+                # report. Close a still-open-but-expired one first.
+                if not current.closed:
+                    with contextlib.suppress(Exception):
+                        await current.close()
+                current = await backend.open_session()
+                self._was_reset = True
+            self._session = current
+            return current
+
+    def take_reset(self) -> bool:
+        """Return and clear the 'session was reset since last command' flag."""
+        was = self._was_reset
+        self._was_reset = False
+        return was
 
     async def close(self) -> None:
         session = self._session
@@ -184,7 +204,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
             else await holder.get(session_backend)
         )
         try:
-            return await run_foreground(
+            result = await run_foreground(
                 session.run(command, timeout=effective_timeout),
                 command=inp.command,
                 progress_callback=progress_callback,
@@ -192,6 +212,14 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
                 heartbeat_every=self._heartbeat_every,
                 effective_timeout=effective_timeout,
             )
+            if holder is not None and holder.take_reset():
+                notice = (
+                    "[shell session expired and was reset: working directory, "
+                    "exported environment, and shell variables set in earlier "
+                    "calls were lost]\n"
+                )
+                result = result.model_copy(update={"stderr": notice + result.stderr})
+            return result
         finally:
             if own_session and not session.closed:
                 with contextlib.suppress(Exception):

@@ -106,6 +106,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # final answer and stops with ``StopReason.TIMEOUT`` (checked at turn
         # boundaries). ``None`` = unbounded.
         run_timeout: float | None = None,
+        # Max concurrently-running background tasks (auto-backgrounded tool calls
+        # / sub-agents). Hitting the cap errors until some finish; raise it for
+        # agents that fan out many long-running background commands.
+        max_background: int = 16,
         force_react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
         # Per-run message history (the LLM agent's transcript). Cross-session
@@ -311,6 +315,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
             run_timeout=run_timeout,
+            max_background=max_background,
             force_react_mode=force_react_mode,
             final_answer_type=final_answer_type,
             final_answer_as_tool_call=final_answer_as_tool_call,
@@ -511,10 +516,10 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # with the FS snapshot) so the resumed session keeps its in-memory Python
         # state. Seed-only: the kernel re-opens lazily on the next RunPython,
         # bound to this context inside the restored sandbox.
-        if checkpoint.code_context_id is not None:
+        if checkpoint.exec_context_id is not None:
             code_holder = self._loop.agent_ctx.code_kernel_holder
             if code_holder is not None:
-                code_holder.rebind(checkpoint.code_context_id)
+                code_holder.rebind(checkpoint.exec_context_id)
 
         # Restore the read-before-write ledger so the staleness guard
         # resumes where it left off; files changed while suspended still
@@ -598,7 +603,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # the save — a checkpoint silently missing its filesystem half
         # is worse than no checkpoint.
         fs_snapshot_ref: str | None = None
-        code_context_id: str | None = None
+        exec_context_id: str | None = None
         if self._fs_snapshot_due(location):
             environment = cast("SnapshotCapable", self._ctx.environment)
             fs_snapshot_ref = await environment.snapshot()
@@ -606,7 +611,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             # pair stays consistent: resume re-attaches to this context inside the
             # restored sandbox (E2B keeps the kernel running in the snapshot).
             code_holder = self._loop.agent_ctx.code_kernel_holder
-            code_context_id = code_holder.context_id if code_holder else None
+            exec_context_id = code_holder.context_id if code_holder else None
 
         read_file_state, dotfile_overrides = self._loop.file_edit_state.export_state()
         checkpoint = AgentCheckpoint(
@@ -624,7 +629,7 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
             read_file_state=read_file_state,
             dotfile_overrides=dotfile_overrides,
             fs_snapshot_ref=fs_snapshot_ref,
-            code_context_id=code_context_id,
+            exec_context_id=exec_context_id,
         )
         await self._serialize_agent_checkpoint(self._ctx, checkpoint)
 
