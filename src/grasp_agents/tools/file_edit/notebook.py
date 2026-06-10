@@ -463,6 +463,7 @@ class NotebookReadTool(
         "notebook. Reading a notebook here (or with Read) is what lets you edit "
         "it afterward."
     )
+    untrusted_output = True
 
     def __init__(
         self,

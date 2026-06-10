@@ -91,6 +91,7 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         auto_background_at: float | None = None,
         blocks_final_answer: bool = True,
         max_inline_result_chars: int | None = None,
+        untrusted_output: bool = False,
     ) -> None:
         super().__init__(
             name=name,
@@ -99,6 +100,7 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
             auto_background_at=auto_background_at,
             blocks_final_answer=blocks_final_answer,
             max_inline_result_chars=max_inline_result_chars,
+            untrusted_output=untrusted_output,
         )
         self._fn = fn
         self._resolved_in_type = input_model
@@ -149,6 +151,7 @@ def function_tool(
     auto_background_at: float | None = None,
     blocks_final_answer: bool = True,
     max_inline_result_chars: int | None = None,
+    untrusted_output: bool = False,
 ) -> Any: ...
 
 
@@ -162,6 +165,7 @@ def function_tool(
     auto_background_at: float | None = None,
     blocks_final_answer: bool = True,
     max_inline_result_chars: int | None = None,
+    untrusted_output: bool = False,
 ) -> Any:
     """
     Create a BaseTool from a function.
@@ -195,6 +199,7 @@ def function_tool(
             auto_background_at=auto_background_at,
             blocks_final_answer=blocks_final_answer,
             max_inline_result_chars=max_inline_result_chars,
+            untrusted_output=untrusted_output,
         )
 
     if fn is not None:

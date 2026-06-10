@@ -135,6 +135,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         "* Set `cwd` to run in a different directory for this call only, "
         "without changing the session's directory."
     )
+    untrusted_output = True
 
     def __init__(
         self,

@@ -157,6 +157,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         "* Returns the numbered text, `total_lines`, and `truncated` (true "
         "when more lines exist than were returned — page with `offset`)."
     )
+    untrusted_output = True
 
     def __init__(
         self,

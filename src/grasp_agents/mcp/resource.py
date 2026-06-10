@@ -47,6 +47,7 @@ class MCPListResourcesTool(BaseTool[ListResourcesInput, str, None]):
                 "Returns resource names, URIs, descriptions, and MIME types. "
                 "Also lists resource templates (parameterized URI patterns)."
             ),
+            untrusted_output=True,
         )
         self._session = session
 
@@ -111,6 +112,7 @@ class MCPReadResourceTool(BaseTool[ReadResourceInput, str, None]):
                 f"Use {server_name}_list_resources first to discover available URIs "
                 "and resource templates."
             ),
+            untrusted_output=True,
         )
         self._session = session
 

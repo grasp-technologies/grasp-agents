@@ -113,6 +113,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         "* Runs non-interactively (no prompts, no TTY); calls share no state — "
         "pass `cd ... &&` or set `cwd` for a one-off directory."
     )
+    untrusted_output = True
 
     def __init__(
         self,

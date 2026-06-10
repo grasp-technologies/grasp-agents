@@ -181,6 +181,7 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
         "put long-running work (training loops, large downloads) in a "
         "background script via Bash and poll it — don't run it here."
     )
+    untrusted_output = True
 
     def __init__(
         self,

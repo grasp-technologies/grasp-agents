@@ -196,6 +196,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         "the notebook. Long-running training belongs in a background script (via "
         "Bash), not a cell, which blocks the kernel until it finishes."
     )
+    untrusted_output = True
 
     def __init__(
         self,

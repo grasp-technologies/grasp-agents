@@ -52,6 +52,7 @@ from ..types.io import InT, LLMPrompt, OutT, ProcName
 from ..types.items import FunctionToolCallItem, InputMessageItem
 from ..types.response import Response
 from ..types.tool import BaseTool
+from ..untrusted_content import make_untrusted_content_section
 from ..utils.callbacks import is_method_overridden
 from ..utils.io import get_prompt
 from ..utils.validation import validate_obj_from_json_or_py_string
@@ -251,6 +252,16 @@ class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
         # surface "what the agent can do", with MCP last so its
         # ``cache_control`` checkpoint caches the whole system-prompt
         # prefix.
+        # Untrusted-content boundary: when the agent has a tool whose output is
+        # untrusted (file / exec / external), add the section telling the model
+        # to treat ``<untrusted_content>``-tagged text as data, not instructions.
+        # MCP tools are always untrusted, so any MCP client implies it too (they
+        # are attached just below, after this cache-leading section). Override
+        # the wording by registering a section named ``untrusted_content``.
+        if mcp_clients or any(t.untrusted_output for t in tools):
+            self._prompt_builder.add_system_prompt_section(
+                make_untrusted_content_section()
+            )
         if enable_memory:
             self._prompt_builder.add_system_prompt_section(make_memory_section())
             self._prompt_builder.add_input_attachment(relevant_memories_attachment)

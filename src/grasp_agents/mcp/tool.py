@@ -57,6 +57,7 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
             name=tool_def.name,
             description=tool_def.description or "",
             timeout=timeout,
+            untrusted_output=True,
         )
         self._session = session
         self._tool_def = tool_def

@@ -52,6 +52,7 @@ from grasp_agents.types.tool import (
     ToolChoice,
     batch_has_concurrency_conflict,
 )
+from grasp_agents.untrusted_content import wrap_untrusted
 from grasp_agents.utils.streaming import stream_concurrent
 
 from .background_tasks import BackgroundTaskManager
@@ -392,14 +393,28 @@ class AgentLoop(Generic[CtxT]):
         exec_id: str,
     ) -> FunctionToolOutputItem:
         converter = self.tool_output_converters.get(call.name)
+        tool = self.tools.get(call.name)
+        untrusted = tool is not None and tool.untrusted_output
+
+        # Common path: default serialization of trusted output.
+        if converter is None and not untrusted:
+            return FunctionToolOutputItem.from_tool_result(
+                call_id=call.call_id, output=output
+            )
+
         if converter is not None:
             parts = await converter(output, exec_id=exec_id)
+        else:
+            parts = FunctionToolOutputItem.from_tool_result(
+                call_id=call.call_id, output=output
+            ).output_parts
 
-            return FunctionToolOutputItem(call_id=call.call_id, output_parts=parts)
+        # Fence external content so the model reads it as data, not instructions
+        # (paired with the ``untrusted_content`` system-prompt section).
+        if untrusted:
+            parts = wrap_untrusted(parts, source=call.name)
 
-        return FunctionToolOutputItem.from_tool_result(
-            call_id=call.call_id, output=output
-        )
+        return FunctionToolOutputItem(call_id=call.call_id, output_parts=parts)
 
     async def _convert_tool_input(
         self,

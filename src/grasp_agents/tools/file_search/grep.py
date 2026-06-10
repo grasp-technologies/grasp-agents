@@ -424,6 +424,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         "* Returns the formatted ``output`` for the chosen mode, "
         "``num_matches``, ``num_files_matched``, and ``truncated``."
     )
+    untrusted_output = True
 
     def __init__(
         self,

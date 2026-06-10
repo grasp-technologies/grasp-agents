@@ -479,8 +479,10 @@ class TestResponseConverters:
         assert result.usage_with_cost.total_tokens == 15
 
     def test_thinking_tokens_folded_into_output(self):
-        """Gemini reports thoughts apart from candidates; output_tokens folds
-        them in (reasoning ⊆ output), matching OpenAI/Anthropic."""
+        """
+        Gemini reports thoughts apart from candidates; output_tokens folds
+        them in (reasoning ⊆ output), matching OpenAI/Anthropic.
+        """
         resp = _make_response(
             [Part(text="Hello")],
             prompt_tokens=10,

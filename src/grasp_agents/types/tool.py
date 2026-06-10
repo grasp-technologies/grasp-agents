@@ -79,6 +79,14 @@ class BaseTool(
 
     name: str = ""
     description: str = ""
+    # When True, the tool's output is treated as untrusted external content:
+    # the agent loop wraps it in ``<untrusted_content>`` tags and the model is
+    # told (via the ``untrusted_content`` system-prompt section) to read tagged
+    # text as data, never as instructions. Set it on tools whose result carries
+    # content from outside the agent's own reasoning — file contents, web /
+    # search results, command output, a third-party or MCP server. Default
+    # False (the tool returns the agent's / app's own trusted output).
+    untrusted_output: bool = False
 
     def __init__(
         self,
@@ -90,6 +98,7 @@ class BaseTool(
         blocks_final_answer: bool = True,
         max_inline_result_chars: int | None = None,
         has_progress_log: bool = False,
+        untrusted_output: bool | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -141,6 +150,9 @@ class BaseTool(
         # whose events are structural): no log, so neither cites one. Independent
         # of ``auto_background_at``, which is only *when* the call backgrounds.
         self.has_progress_log = has_progress_log
+        # ``None`` keeps the class-level ``untrusted_output``; a bool overrides.
+        if untrusted_output is not None:
+            self.untrusted_output = untrusted_output
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
         self._llm_in_type: type[BaseModel] | None = None

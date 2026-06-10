@@ -66,6 +66,7 @@ class KillTask(BaseTool[TaskIdInput, KillTaskResult, Any]):
         "it is misbehaving (e.g. a runaway command) or you no longer need its result. "
         "Returns an excerpt of the recent output produced before it was stopped."
     )
+    untrusted_output = True
 
     def __init__(self, manager: BackgroundTaskManager[Any] | None = None) -> None:
         super().__init__()

@@ -157,6 +157,13 @@ from .types.recovery import (
 from .types.response import Response
 from .types.tool import BaseTool, ToolProgressCallback
 from .ui.console import EventConsole, stream_events
+from .untrusted_content import (
+    UNTRUSTED_CONTENT_INSTRUCTION,
+    UNTRUSTED_CONTENT_SECTION_NAME,
+    UNTRUSTED_CONTENT_TAG,
+    make_untrusted_content_section,
+    wrap_untrusted,
+)
 from .utils.schema import exclude_fields
 
 try:
@@ -183,6 +190,9 @@ __all__ = [
     "MEMORY_SECTION_NAME",
     "MEMORY_TYPES",
     "RELEVANT_MEMORIES_ATTACHMENT_NAME",
+    "UNTRUSTED_CONTENT_INSTRUCTION",
+    "UNTRUSTED_CONTENT_SECTION_NAME",
+    "UNTRUSTED_CONTENT_TAG",
     "AgentCheckpoint",
     "AgentTool",
     "AgentToolInput",
@@ -306,6 +316,7 @@ __all__ = [
     "make_mcp_instructions_section",
     "make_memory_section",
     "make_skills_section",
+    "make_untrusted_content_section",
     "memory_system_prompt_section",
     "parse_memory_md",
     "parse_named_args",
@@ -321,4 +332,5 @@ __all__ = [
     "scan_memdir",
     "skills_system_prompt_section",
     "stream_events",
+    "wrap_untrusted",
 ]
