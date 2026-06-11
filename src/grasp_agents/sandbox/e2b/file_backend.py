@@ -22,7 +22,14 @@ from ...tools.file_backend.base import (
 )
 from ...tools.file_backend.local import glob_filter_entries
 from ...tools.file_backend.paths import PathAccessError, check_access_path
-from ._handle import RECURSIVE_DEPTH, SandboxHandle, is_dir, mtime, wire
+from ._handle import (
+    RECURSIVE_DEPTH,
+    SandboxHandle,
+    is_dir,
+    mtime,
+    normalize_posix,
+    wire,
+)
 
 if TYPE_CHECKING:
     from ...tools.file_backend.base import GrepOutputMode
@@ -75,9 +82,11 @@ class E2BFileBackend(FileBackend):
         if not self._allowed_roots:
             raise PathAccessError("No allowed_roots configured for E2B file backend.")
 
-        candidate = PurePosixPath(path)
+        # Normalize before containment: a literal ".." would pass the prefix
+        # check here and escape the roots when the VM resolves it.
+        candidate = normalize_posix(path)
         for root in self._allowed_roots:
-            root_posix = PurePosixPath(root)
+            root_posix = normalize_posix(root)
             if candidate == root_posix or root_posix in candidate.parents:
                 resolved = type(path)(str(candidate))
                 break

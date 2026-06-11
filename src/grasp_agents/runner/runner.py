@@ -102,6 +102,7 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
         self._session_metadata: dict[str, Any] = session_metadata or {}
 
         self._pending_events: dict[str, ProcPacketOutEvent] = {}
+        self._final_event: RunPacketOutEvent | None = None
         self._checkpoint_number: int = 0
         self._checkpoint_lock = asyncio.Lock()
         self._active_steps: dict[str, int] = {}  # proc_name -> last delivery step
@@ -145,6 +146,7 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
             session_metadata=self._session_metadata,
             pending_events=list(events.values()),
             active_steps=dict(self._active_steps),
+            final_event=self._final_event,
         )
         await self._serialize_checkpoint(self._ctx, checkpoint)
 
@@ -177,23 +179,18 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
         self, out_packet: Packet[Any], *, exec_id: str | None
     ) -> tuple[list[ProcPacketOutEvent], RunPacketOutEvent | None]:
         """Build routed events without posting them. Returns (sub_events, final)."""
-        uniform = out_packet.uniform_routing
-        if uniform is not None and list(uniform) == [END_PROC_NAME]:
-            final_event = RunPacketOutEvent(
-                id=out_packet.id,
-                data=out_packet,
-                source=out_packet.sender,
-                destination=END_PROC_NAME,
-                exec_id=exec_id,
-            )
-            return [], final_event
-
         sub_events: list[ProcPacketOutEvent] = []
+        routed_to_end = False
         for sub_out_packet in out_packet.split_by_recipient() or []:
             if not sub_out_packet.routing or not sub_out_packet.routing[0]:
                 continue
 
             dst_name = sub_out_packet.routing[0][0]
+            if dst_name == END_PROC_NAME:
+                # END is the run's single final result — collected below, never
+                # posted to the bus (it has no handler queue).
+                routed_to_end = True
+                continue
             sub_out_event = ProcPacketOutEvent(
                 id=sub_out_packet.id,
                 data=sub_out_packet,
@@ -202,6 +199,23 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
                 exec_id=exec_id,
             )
             sub_events.append(sub_out_event)
+
+        if routed_to_end and sub_events:
+            raise RunnerError(
+                f"Processor '{out_packet.sender}' routed one packet both to END "
+                "and to other processors; END produces the run's single final "
+                "result, so a packet cannot mix it with further routing. Route "
+                "everything to END, or nothing."
+            )
+        if routed_to_end:
+            final_event = RunPacketOutEvent(
+                id=out_packet.id,
+                data=out_packet,
+                source=out_packet.sender,
+                destination=END_PROC_NAME,
+                exec_id=exec_id,
+            )
+            return [], final_event
         return sub_events, None
 
     async def _checkpoint_transition(
@@ -269,6 +283,18 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
                 sub_events, final_event = self._build_routed_events(
                     out_packet, exec_id=exec_id
                 )
+                if not sub_events and final_event is None:
+                    # Raised BEFORE the checkpoint transition so the consumed
+                    # input stays pending — a durable resume re-delivers it.
+                    raise RunnerError(
+                        f"Processor '{proc.name}' produced a packet with no "
+                        "routed recipients (empty or missing routing); the run "
+                        "cannot make progress. Select at least one recipient, "
+                        "or route to END to finish the run."
+                    )
+
+                if final_event is not None:
+                    self._final_event = final_event
 
                 # Save checkpoint BEFORE posting anything to bus
                 await self._checkpoint_transition(
@@ -302,17 +328,23 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
     async def run_stream(
         self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
+        # A fresh bus per run: the previous run's shutdown left the old bus
+        # stopped, and a stopped bus silently drops every event.
+        self._event_bus = EventBus()
+
         # Load checkpoint or create initial pending events
         checkpoint = await self._load_checkpoint()
 
         if checkpoint is not None:
             self._pending_events = {e.id: e for e in checkpoint.pending_events}
             self._active_steps = dict(checkpoint.active_steps)
+            self._final_event = checkpoint.final_event
 
         else:
             start_event = self._make_start_event(chat_inputs)
             self._pending_events = {start_event.id: start_event}
             self._active_steps = {self._entry_proc.name: 0}
+            self._final_event = None
             await self._save_checkpoint()
 
         initial_events = list(self._pending_events.values())
@@ -321,6 +353,15 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
             logger.info(
                 "Runner %s: no pending events, run already completed", self._name
             )
+            final_event = self._final_event
+            if final_event is None:
+                raise RunnerError(
+                    f"Runner '{self._name}' session is already completed, but "
+                    "no final result was persisted (checkpoint from an older "
+                    "version). Start a new session to run again."
+                )
+            self._event_bus.set_result(final_event.data)
+            yield final_event
             return
 
         async with self._event_bus:

@@ -555,10 +555,14 @@ class TestRunnerCorruptCheckpoint:
         assert result == ["s->A"]
 
     @pytest.mark.asyncio
-    async def test_empty_pending_events_returns_immediately(self) -> None:
-        """Checkpoint with zero pending events means run completed — no hang."""
+    async def test_empty_pending_events_raises_immediately(self) -> None:
+        """
+        Checkpoint with zero pending events means the run completed. Without a
+        persisted final result (an older checkpoint) that is a clear error —
+        not a hang, and not an AttributeError from ``run()``.
+        """
         store = InMemoryCheckpointStore()
-        # Save a valid checkpoint with empty pending_events
+        # Save a valid checkpoint with empty pending_events and no final_event
         cp = RunnerCheckpoint(
             session_key="sess-done",
             processor_name="r",
@@ -574,8 +578,124 @@ class TestRunnerCorruptCheckpoint:
         )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
 
-        # Should return immediately without hanging
-        events: list[Event[Any]] = []
-        async for event in runner.run_stream(chat_inputs="s"):
-            events.append(event)
-        assert events == []  # No events produced
+        with pytest.raises(RunnerError, match="already completed"):
+            async for _ in runner.run_stream(chat_inputs="s"):
+                pass
+
+
+# ---------- 2026-06 orchestration fixes ----------
+
+
+class EmptyRoutingProcessor(Processor[str, str, None]):
+    """Selects no recipients for any payload."""
+
+    def __init__(self, name: str, *, recipients: list[ProcName] | None = None) -> None:
+        super().__init__(name=name, recipients=recipients)
+
+    def select_recipients_impl(
+        self, output: str, *, exec_id: str
+    ) -> Sequence[ProcName]:
+        return []
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        for inp in _resolve_inputs(chat_inputs, in_args):
+            yield ProcPayloadOutEvent(data=inp, source=self.name, exec_id=exec_id)
+
+
+class MixedRoutingProcessor(Processor[str, str, None]):
+    """Yields two payloads, routing one to END and one to a real processor."""
+
+    def __init__(self, name: str, *, recipients: list[ProcName] | None = None) -> None:
+        super().__init__(name=name, recipients=recipients)
+
+    def select_recipients_impl(
+        self, output: str, *, exec_id: str
+    ) -> Sequence[ProcName]:
+        return [END_PROC_NAME] if output.endswith("x") else ["B"]
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        yield ProcPayloadOutEvent(data="px", source=self.name, exec_id=exec_id)
+        yield ProcPayloadOutEvent(data="py", source=self.name, exec_id=exec_id)
+
+
+class TestOrchestrationFixes:
+    @pytest.mark.asyncio
+    async def test_runner_is_reusable_across_runs(self) -> None:
+        """A second run() works — the bus must not stay stopped after a run."""
+        a = AppendProcessor("A", recipients=[END_PROC_NAME])
+        runner = Runner[str, None](entry_proc=a, procs=[a], name="r")
+
+        out1 = await runner.run(chat_inputs="one")
+        out2 = await runner.run(chat_inputs="two")
+
+        assert list(out1.payloads) == ["one->A"]
+        assert list(out2.payloads) == ["two->A"]
+
+    @pytest.mark.asyncio
+    async def test_resume_of_completed_run_returns_final_result(self) -> None:
+        """run() on a completed session returns the persisted final packet."""
+        store = InMemoryCheckpointStore()
+        a1 = AppendProcessor("A", recipients=[END_PROC_NAME])
+        ctx1: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="done-1"
+        )
+        runner1 = Runner[str, None](entry_proc=a1, procs=[a1], ctx=ctx1, name="r")
+        out1 = await runner1.run(chat_inputs="s")
+        assert list(out1.payloads) == ["s->A"]
+
+        a2 = CountingProcessor("A", recipients=[END_PROC_NAME])
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="done-1"
+        )
+        runner2 = Runner[str, None](entry_proc=a2, procs=[a2], ctx=ctx2, name="r")
+        out2 = await runner2.run()
+
+        assert list(out2.payloads) == ["s->A"]
+        assert a2.call_count == 0  # nothing re-ran
+
+    @pytest.mark.asyncio
+    async def test_empty_routing_raises_and_preserves_input(self) -> None:
+        """No recipients selected → clear error; the input stays pending."""
+        store = InMemoryCheckpointStore()
+        a = EmptyRoutingProcessor("A", recipients=["B"])
+        b = AppendProcessor("B", recipients=[END_PROC_NAME])
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="er-1"
+        )
+        runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
+
+        with pytest.raises(Exception) as excinfo:
+            await run_runner(runner, chat_inputs="s")
+        assert excinfo.group_contains(RunnerError, match="no routed recipients")
+
+        # The consumed input was NOT checkpointed away — resume re-delivers it.
+        raw = await store.load("er-1/runner")
+        assert raw is not None
+        cp = RunnerCheckpoint.model_validate_json(raw)
+        assert len(cp.pending_events) == 1
+        assert cp.pending_events[0].destination == "A"
+
+    @pytest.mark.asyncio
+    async def test_mixed_end_and_real_routing_raises_runner_error(self) -> None:
+        """One packet routed both to END and to a proc → RunnerError, not KeyError."""
+        a = MixedRoutingProcessor("A", recipients=[END_PROC_NAME, "B"])
+        b = AppendProcessor("B")
+        runner = Runner[str, None](entry_proc=a, procs=[a, b], name="r")
+
+        with pytest.raises(Exception) as excinfo:
+            await run_runner(runner, chat_inputs="s")
+        assert excinfo.group_contains(RunnerError, match="both to END")

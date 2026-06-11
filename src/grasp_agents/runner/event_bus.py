@@ -23,7 +23,10 @@ class EventBus:
         self._event_handlers: dict[str, EventHandler[Any]] = {}
         self._handler_tasks: dict[str, asyncio.Task[None]] = {}
 
-        self._final_result_fut: asyncio.Future[Any]
+        # Created lazily (inside a running loop) so the result can be set or
+        # awaited even when the bus is never entered — e.g. a resume of an
+        # already-completed run returns its persisted result without a run.
+        self._final_result_fut: asyncio.Future[Any] | None = None
 
         self._stopping = False
         self._stopped_evt = asyncio.Event()
@@ -65,14 +68,19 @@ class EventBus:
                 break
             yield event
 
+    def _fut(self) -> asyncio.Future[Any]:
+        if self._final_result_fut is None:
+            self._final_result_fut = asyncio.get_running_loop().create_future()
+        return self._final_result_fut
+
     async def final_result(self) -> Any:
-        return await self._final_result_fut
+        return await self._fut()
 
     async def __aenter__(self) -> "EventBus":
         self._task_group = asyncio.TaskGroup()
         await self._task_group.__aenter__()
 
-        self._final_result_fut = asyncio.get_running_loop().create_future()
+        self._fut()
 
         return self
 
@@ -93,14 +101,15 @@ class EventBus:
 
         # Fallback only: if finalize() already set the result/exception,
         # don't override it.
-        if not self._final_result_fut.done():
+        fut = self._fut()
+        if not fut.done():
             if exc is not None:
                 if isinstance(exc, asyncio.CancelledError):
-                    self._final_result_fut.cancel()
+                    fut.cancel()
                 else:
-                    self._final_result_fut.set_exception(exc)
+                    fut.set_exception(exc)
             else:
-                self._final_result_fut.cancel()
+                fut.cancel()
 
         return ret
 
@@ -114,7 +123,7 @@ class EventBus:
             if event is None:
                 break
 
-            if self._final_result_fut.done():
+            if self._final_result_fut is not None and self._final_result_fut.done():
                 break
 
             try:
@@ -136,13 +145,14 @@ class EventBus:
     def set_result(
         self, result: Any, err: Exception | asyncio.CancelledError | None = None
     ) -> None:
-        if not self._final_result_fut.done():
+        fut = self._fut()
+        if not fut.done():
             if err and isinstance(err, asyncio.CancelledError):
-                self._final_result_fut.cancel()
+                fut.cancel()
             elif err:
-                self._final_result_fut.set_exception(err)
+                fut.set_exception(err)
             else:
-                self._final_result_fut.set_result(result)
+                fut.set_result(result)
 
     async def finalize(self, result: Any, err: Exception | None = None) -> None:
         self.set_result(result, err)

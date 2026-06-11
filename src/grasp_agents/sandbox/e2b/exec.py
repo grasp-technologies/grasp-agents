@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import time
 from dataclasses import replace
-from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 from e2b import AsyncCommandHandle, CommandExitException
@@ -29,6 +28,7 @@ from ._handle import (
     MAX_OUTPUT_CHARS,
     SandboxHandle,
     is_timeout,
+    normalize_posix,
     wire,
     wrap_stdin,
 )
@@ -37,6 +37,7 @@ from .session import E2BExecSession
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
+    from pathlib import Path
 
     from ..policy import SandboxPolicy
 
@@ -257,9 +258,11 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             )
         if cwd is None:
             return wire(roots[0])
-        candidate = PurePosixPath(cwd)
+        # Normalize before containment: a literal ".." would pass the prefix
+        # check here and escape the roots when the VM resolves it.
+        candidate = normalize_posix(cwd)
         for root in roots:
-            root_posix = PurePosixPath(root)
+            root_posix = normalize_posix(root)
             if candidate == root_posix or root_posix in candidate.parents:
                 return str(candidate)
         raise PathAccessError(f"cwd {cwd} is outside the policy's allowed_roots")
