@@ -9,6 +9,7 @@ translate paths, detect command timeouts, and read entry metadata.
 from __future__ import annotations
 
 import base64
+import posixpath
 import shlex
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -71,9 +72,21 @@ def is_dir(entry: EntryInfo) -> bool:
     return str(getattr(entry.type, "value", entry.type)) == "dir"
 
 
+def normalize_posix(path: Path | str) -> PurePosixPath:
+    """
+    Lexically normalize a sandbox path (collapse ``.`` / ``..`` segments).
+
+    Containment checks compare path prefixes; a literal ``..`` segment would
+    pass them and escape ``allowed_roots`` when the VM resolves it. Lexical
+    only — remote symlinks cannot be resolved from the host; the VM remains
+    the hard boundary.
+    """
+    return PurePosixPath(posixpath.normpath(str(PurePosixPath(path))))
+
+
 def wire(path: Path) -> str:
     """Render a path as the absolute POSIX string the sandbox expects."""
-    return str(PurePosixPath(path))
+    return str(normalize_posix(path))
 
 
 def wrap_stdin(command: str, stdin: bytes | None) -> str:

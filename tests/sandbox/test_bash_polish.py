@@ -681,7 +681,7 @@ async def test_llm_agent_auto_wires_bash_notes() -> None:
     # loop's AgentContext.
     assert agent._loop.bg_tasks is not None
     # The loop also owns one persistent-session holder, exposed the same way.
-    assert agent._loop.bash_session_holder is not None
+    assert agent._loop.agent_ctx.session_holder is not None
     bash = tools[0]
     assert isinstance(bash, Bash)
     # Tools are stateless and shared — no per-agent copy: the passed instance
@@ -867,11 +867,18 @@ async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
     assert len(notes) == 1
     assert "completed" in notes[0]
 
-    # Draining delivers the result and marks the record delivered (so a resume
-    # won't re-inject a result the agent already saw).
+    # Draining delivers the result but defers the DELIVERED flip until a
+    # checkpoint has persisted the note — a crash before that must re-inject
+    # the outcome on resume.
     keys = await store.list_keys(task_prefix(ctx.session_key))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert recs
+    assert all(r.status == TaskStatus.COMPLETED for r in recs)
+
+    # flush_delivered (called after the agent checkpoint) flips the records,
+    # so a resume won't re-inject a result the agent already saw.
+    await loop.bg_tasks.flush_delivered(ctx=ctx)
+    recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert all(r.status == TaskStatus.DELIVERED for r in recs)
 
 

@@ -426,3 +426,31 @@ def test_preserve_quote_style_mixed_quotes_independent() -> None:
 def test_preserve_quote_style_empty_inputs() -> None:
     assert preserve_quote_style("", 'x = "y"') == 'x = "y"'
     assert not preserve_quote_style("\u201chi\u201d", "")
+
+
+# ---------------------------------------------------------------------------
+# 2026-06 regression: overlapping matches must not corrupt replace_all
+# ---------------------------------------------------------------------------
+
+
+def test_replace_all_overlapping_pattern_no_corruption() -> None:
+    # "\n\n" overlaps itself in "\n\n\n"; overlapping ranges applied
+    # right-to-left used to delete the overlap ("a\n\n\n\nb" -> "a\nb").
+    content = "a\n\n\n\nb"
+    new_content, count, _strategy, error = fuzzy_find_and_replace(
+        content, "\n\n", "\n", replace_all=True
+    )
+    assert error is None
+    assert count == 2  # non-overlapping occurrences, like str.replace
+    assert new_content == "a\n\nb"
+
+
+def test_unique_match_not_misreported_as_ambiguous() -> None:
+    # "aa" occurs once in "aaa" by non-overlapping counting; the overlap
+    # used to trigger a false "ambiguous match" refusal.
+    new_content, count, _strategy, error = fuzzy_find_and_replace(
+        "aaa", "aa", "bb", replace_all=False
+    )
+    assert error is None
+    assert count == 1
+    assert new_content == "bba"

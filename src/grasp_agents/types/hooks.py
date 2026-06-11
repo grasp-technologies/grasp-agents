@@ -155,16 +155,21 @@ class InputContentBuilder[InT](Protocol):
 
 class TranscriptBuilder[InT](Protocol):
     """
-    Seed the agent's transcript (conversation history) on fresh init.
+    Prepare the agent's transcript (conversation history) before each step.
+
+    Runs on EVERY step, not just the first: the hook owns transcript
+    preparation — seeding a fresh history (a custom system message, a primed
+    multi-turn transcript) and/or processing the accumulated one between
+    steps (pruning stale tool results, truncation, any context management).
+    Because it may rewrite history, the next checkpoint rewrites the
+    persisted message log.
 
     Receives the freshly-built system prompt as ``instructions`` — the same
     ``str | Sequence[InputText]`` that :meth:`LLMAgentTranscript.reset`
     accepts, so forwarding it (``agent.transcript.reset(instructions)``)
-    preserves each part's :class:`CacheControl`. The hook populates
-    ``agent.transcript`` (e.g. a custom system message or a primed
-    multi-turn history). Distinct from cross-session
-    :class:`RunContext.memory`. On resume-from-checkpoint this does NOT
-    fire — use :class:`StateBuilder` there instead.
+    preserves each part's :class:`CacheControl`. Distinct from cross-session
+    :class:`RunContext.memory`. On a resumed re-delivery of an interrupted
+    step this does NOT fire — use :class:`StateBuilder` there instead.
     """
 
     def __call__(

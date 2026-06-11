@@ -62,7 +62,11 @@ class SupervisorLimits:
     either timeout disables it.
 
     Resource limits (POSIX ``setrlimit``, applied to the spawned process tree;
-    ``None`` disables each):
+    ``None`` disables each). They apply to **one-shot commands only**: their
+    semantics are per-process-lifetime (``RLIMIT_CPU`` is cumulative, not
+    per-cell/per-command), so persistent shells and kernels are deliberately
+    spawned without them — bound those with per-command timeouts, or use a
+    hosted backend (E2B) for hard caps.
 
     - ``cpu_timeout`` — CPU-seconds ceiling (``RLIMIT_CPU``); catches busy loops
       that a wall-clock timeout would let burn a core. Rounded up to whole
@@ -93,10 +97,11 @@ class ResourceLimits(TypedDict, total=False):
     callers needn't construct a :class:`ProcessSupervisor`. Applied via POSIX
     ``setrlimit`` to the spawned process tree under every *local* confinement
     (``none`` / ``seatbelt`` / ``srt`` — all spawn local subprocesses, so the
-    same ceilings apply). Remote backends (E2B) don't use ``setrlimit``: they
-    allocate resources per-VM at template-build time
-    (``E2BTemplateConfig.cpu_count`` / ``memory_mb``). All keys optional; an
-    absent key (or ``None``) means "no limit".
+    same ceilings apply). One-shot commands only — persistent shells and
+    kernels are exempt (see :class:`SupervisorLimits`). Remote backends (E2B)
+    don't use ``setrlimit``: they allocate resources per-VM at
+    template-build time (``E2BTemplateConfig.cpu_count`` / ``memory_mb``).
+    All keys optional; an absent key (or ``None``) means "no limit".
     """
 
     cpu_timeout: float | None
@@ -107,10 +112,10 @@ class ResourceLimits(TypedDict, total=False):
 def make_rlimit_preexec(limits: SupervisorLimits) -> Callable[[], None] | None:
     """
     Build a ``preexec_fn`` that applies the resource ``setrlimit`` ceilings in
-    the child before ``exec`` — shared by one-shot exec, persistent sessions,
-    and kernels so the same ceilings apply however a local process is spawned.
-    Returns ``None`` (no preexec) when no resource limit is set, so the module
-    never imports ``resource`` unless a limit is actually requested.
+    the child before ``exec``. One-shot commands only (see
+    :class:`SupervisorLimits`). Returns ``None`` (no preexec) when no resource
+    limit is set, so the module never imports ``resource`` unless a limit is
+    actually requested.
     """
     if (
         limits.cpu_timeout is None

@@ -38,7 +38,6 @@ from typing import TYPE_CHECKING, Literal
 
 from ..exec_backend import ExecChunk, ExecResult, ExecSession, TerminationReason
 from ..session_protocol import frame_command, parse_exit_code
-from .supervisor import make_rlimit_preexec
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -89,7 +88,6 @@ class LocalExecSession(ExecSession):
             cwd=self._cwd,
             env=self._env,
             start_new_session=True,
-            preexec_fn=make_rlimit_preexec(self._limits),
         )
         # Catch SIGINT with a no-op handler so a per-command interrupt
         # (:meth:`_interrupt`) terminates the running command — which resets

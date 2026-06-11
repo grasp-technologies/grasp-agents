@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .local.environment import LocalEnvironment, local_environment
 from .local.supervisor import ProcessSupervisor, SupervisorLimits
-from .policy import NetworkPolicy
+from .policy import DEFAULT_ENV_SCRUB, NetworkPolicy
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,7 +72,9 @@ class ExecConfig(BaseModel):
     # present at setup (not installed).
     packages: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
-    env_scrub: list[str] = Field(default_factory=list)
+    # ``None`` (omitted in JSON) keeps the secret-scrub denylist
+    # (``DEFAULT_ENV_SCRUB``); an explicit ``[]`` disables scrubbing.
+    env_scrub: list[str] | None = None
     overall_timeout: float | None = 600.0
     idle_timeout: float | None = None
     cpu_timeout: float | None = None
@@ -117,7 +119,7 @@ class EnvironmentConfig(BaseModel):
             denied_domains=self.network.denied_domains,
             include_dotfile_denylist=fs.include_dotfile_denylist,
             env=ex.env,
-            env_scrub=ex.env_scrub,
+            env_scrub=ex.env_scrub if ex.env_scrub is not None else DEFAULT_ENV_SCRUB,
             inherit_host_env=ex.inherit_host_env,
             python=ex.python,
             packages=ex.packages,

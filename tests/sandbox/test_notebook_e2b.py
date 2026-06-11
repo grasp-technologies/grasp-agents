@@ -67,7 +67,7 @@ def _agent_ctx() -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         code_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
@@ -214,7 +214,7 @@ async def test_run_cell_on_e2b_code_interpreter() -> None:
             outs = after["cells"][2]["outputs"]
             assert any("image/png" in o.get("data", {}) for o in outs)
         finally:
-            await agent_ctx.kernel_holder.close()
+            await agent_ctx.nb_kernel_holder.close()
 
 
 @pytest.mark.integration
@@ -258,7 +258,7 @@ async def test_run_python_on_e2b_code_interpreter() -> None:
             assert not isinstance(plot, ToolErrorInfo), plot
             assert any(isinstance(p, InputImage) for p in plot)
         finally:
-            await agent_ctx.kernel_holder.close()
+            await agent_ctx.nb_kernel_holder.close()
             if agent_ctx.code_kernel_holder is not None:
                 await agent_ctx.code_kernel_holder.close()
 

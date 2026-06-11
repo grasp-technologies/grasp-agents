@@ -156,6 +156,26 @@ async def test_timeout_interrupts(tmp_path: Path) -> None:
         await kernel.close()
 
 
+async def test_crash_restart_flags_reset(tmp_path: Path) -> None:
+    # A kernel killed between cells is replaced in place on the next execute;
+    # the replacement must work AND report the reset (REPL state was lost).
+    kernel = await _open(tmp_path)
+    try:
+        await _collect(kernel, "x = 1")
+        proc = kernel._proc
+        assert proc is not None
+        proc.kill()
+        await proc.wait()
+
+        outputs, result = await _collect(kernel, "print('alive')")
+        assert result.status == "ok"
+        assert any(o.text and "alive" in o.text for o in outputs)
+        assert kernel.take_reset() is True
+        assert kernel.take_reset() is False  # cleared after taking
+    finally:
+        await kernel.close()
+
+
 # ---------------------------------------------------------------------------
 # Confinement — the kernel launches under the backend's sandbox wrapper. The
 # kernel's loopback ZMQ must be permitted by the profile, so these document

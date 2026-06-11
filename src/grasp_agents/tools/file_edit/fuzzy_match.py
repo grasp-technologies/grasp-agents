@@ -278,7 +278,7 @@ def _toggle_pair_quotes(s: str, straight: str, open_ch: str, close_ch: str) -> s
 
 
 def _strategy_exact(content: str, pattern: str) -> list[tuple[int, int]]:
-    """1. Exact substring match."""
+    """1. Exact substring match (non-overlapping, like ``str.replace``)."""
     matches: list[tuple[int, int]] = []
     start = 0
     while True:
@@ -286,7 +286,10 @@ def _strategy_exact(content: str, pattern: str) -> list[tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        # Skip past the whole match: overlapping ranges would corrupt the
+        # file under replace_all (right-to-left application deletes the
+        # overlap) and miscount unique occurrences ("aa" twice in "aaa").
+        start = pos + len(pattern)
     return matches
 
 

@@ -74,6 +74,22 @@ def _quote(path: str) -> str:
     return f'"{escaped}"'
 
 
+def _ci_regex(text: str) -> str:
+    """
+    Case-insensitive SBPL regex for a literal. APFS matches paths
+    case-insensitively but SBPL regexes do not (and lack inline flags), so
+    each letter becomes a two-case class — ``.ENV`` must hit the ``.env``
+    deny rule.
+    """
+    out: list[str] = []
+    for ch in text:
+        if ch.isalpha():
+            out.append(f"[{ch.lower()}{ch.upper()}]")
+        else:
+            out.append(re.escape(ch))
+    return "".join(out)
+
+
 def build_seatbelt_profile(policy: SandboxPolicy) -> tuple[str, dict[str, str]]:
     """
     Generate an SBPL profile + its ``-D`` defines from a :class:`SandboxPolicy`.
@@ -148,11 +164,12 @@ def build_seatbelt_profile(policy: SandboxPolicy) -> tuple[str, dict[str, str]]:
         cred_filters: list[str] = []
         if rules.credential_dir_names:
             alt = "|".join(
-                re.escape(n.removeprefix(".")) for n in rules.credential_dir_names
+                _ci_regex(n.removeprefix(".")) for n in rules.credential_dir_names
             )
             cred_filters.append(f'(regex #"/\\.({alt})(/|$)")')
         cred_filters += [
-            f'(regex #"/{re.escape(nm)}($|\\.)")' for nm in rules.credential_file_names
+            f'(regex #"/{_ci_regex(nm)}($|\\.)")'
+            for nm in rules.credential_file_names
         ]
         if cred_filters:
             lines.append(

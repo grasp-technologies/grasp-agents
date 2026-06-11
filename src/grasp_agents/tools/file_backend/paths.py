@@ -286,7 +286,10 @@ def check_sensitive_path(
             not the right level of authorization for ``/etc/sudoers``.
 
     """
-    s = str(resolved_path)
+    # Case-folded matching: case-insensitive filesystems (APFS, NTFS) open
+    # ``.ENV`` as ``.env``, and ``Path.resolve()`` does not case-canonicalize
+    # — exact comparison would let a re-cased path bypass the deny list.
+    s = str(resolved_path).casefold()
 
     # System baseline — not overridable per session.
     for prefix in _SYSTEM_SENSITIVE_PREFIXES:
@@ -302,7 +305,7 @@ def check_sensitive_path(
         return None
 
     # Dotfile additions — session-overridable.
-    name = resolved_path.name
+    name = resolved_path.name.casefold()
     for pattern in _DOTFILE_DENY_NAMES:
         if name == pattern or name.startswith(pattern + "."):
             return (
@@ -311,7 +314,7 @@ def check_sensitive_path(
             )
 
     for part in resolved_path.parts:
-        if part in _DOTFILE_DENY_DIRS:
+        if part.casefold() in _DOTFILE_DENY_DIRS:
             return (
                 f"Refusing to write inside credential-sensitive directory "
                 f"{part!r}: {resolved_path}."

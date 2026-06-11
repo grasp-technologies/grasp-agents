@@ -116,7 +116,7 @@ async def test_read_then_write_composes(tmp_path: Path) -> None:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
     await tk.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)

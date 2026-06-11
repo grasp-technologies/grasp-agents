@@ -181,7 +181,7 @@ def _agent_ctx(
             agent_name="parent", transcript=transcript, tools=tool_map
         ),
         session_holder=BashSessionHolder(),
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 

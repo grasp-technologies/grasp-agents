@@ -50,7 +50,7 @@ def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
         file_edit_state=FileEditSessionState(),
         bg_tasks=mgr,
         session_holder=BashSessionHolder(),
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
     return agent_ctx, mgr

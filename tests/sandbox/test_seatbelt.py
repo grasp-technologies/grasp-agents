@@ -142,9 +142,15 @@ async def test_network_loopback_unsupported(tmp_path: Path) -> None:
 
 async def test_credential_and_system_denies_present(tmp_path: Path) -> None:
     profile, _ = _profile(tmp_path)
-    # credential dirs (alternation) + dotfile names + system paths + docker sock
-    assert r"/\.(aws|docker|gnupg|kube|ssh)(/|$)" in profile
-    assert r"/\.env($|\.)" in profile
+    # credential dirs (alternation, case-insensitive via two-case classes —
+    # APFS matches paths case-insensitively) + dotfile names + system paths +
+    # docker sock
+    alt = "|".join(
+        "".join(f"[{c}{c.upper()}]" for c in name)
+        for name in ("aws", "docker", "gnupg", "kube", "ssh")
+    )
+    assert rf"/\.({alt})(/|$)" in profile
+    assert r"/\.[eE][nN][vV]($|\.)" in profile
     assert '(subpath "/etc")' in profile
     assert '(literal "/var/run/docker.sock")' in profile
 
@@ -152,8 +158,8 @@ async def test_credential_and_system_denies_present(tmp_path: Path) -> None:
 async def test_dotfile_denylist_toggle(tmp_path: Path) -> None:
     on, _ = _profile(tmp_path, include_dotfile_denylist=True)
     off, _ = _profile(tmp_path, include_dotfile_denylist=False)
-    assert "(aws|docker|gnupg|kube|ssh)" in on
-    assert "(aws|docker|gnupg|kube|ssh)" not in off
+    assert "[sS][sS][hH]" in on
+    assert "[sS][sS][hH]" not in off
     # system write-denies stay regardless of the dotfile toggle
     assert '(subpath "/etc")' in off
 

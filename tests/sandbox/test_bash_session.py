@@ -44,7 +44,7 @@ def _agent_ctx(holder: BashSessionHolder) -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=holder,
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 

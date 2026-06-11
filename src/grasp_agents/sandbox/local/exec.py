@@ -272,7 +272,6 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
             env=self._merged_env(env),
             backend=self._name,
             setup_code=self._policy.kernel_setup_code,
-            limits=self._supervisor.limits,
         )
 
 

@@ -108,6 +108,15 @@ class KernelSession(ABC):
         """
         ...
 
+    def take_reset(self) -> bool:
+        """
+        Return and clear the 'kernel restarted itself, in-memory state was
+        lost' flag. Implementations that transparently replace a crashed
+        kernel process set it so callers can tell the model that variables
+        and imports are gone; the default never reports a reset.
+        """
+        return False
+
     @abstractmethod
     async def interrupt(self) -> None:
         """Interrupt the currently-running cell (kernel stays alive)."""

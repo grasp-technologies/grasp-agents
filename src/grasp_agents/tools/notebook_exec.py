@@ -94,6 +94,11 @@ class KernelHolder:
         """Return and clear the 'kernel was restarted since last call' flag."""
         was = self._was_reset
         self._was_reset = False
+        kernel = self._kernel
+        if kernel is not None:
+            # A kernel that crashed between calls replaces its own process
+            # in place (the holder never sees it as closed) — pick up its flag.
+            was = kernel.take_reset() or was
         return was
 
     @property
@@ -182,7 +187,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
     Execute a notebook code cell in a live kernel and return its outputs.
 
     Stateless: the kernel comes from the call's :class:`AgentContext`
-    (``kernel_holder``); the notebook is read/written via
+    (``nb_kernel_holder``); the notebook is read/written via
     :attr:`RunContext.file_backend`.
     """
 
@@ -269,7 +274,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
 
         requested = inp.timeout if inp.timeout is not None else self._default_timeout
 
-        holder = agent_ctx.kernel_holder if agent_ctx is not None else None
+        holder = agent_ctx.nb_kernel_holder if agent_ctx is not None else None
         own_kernel = holder is None
         kernel = (
             await kernel_backend.open_kernel()

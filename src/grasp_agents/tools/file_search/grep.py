@@ -43,6 +43,7 @@ from ..file_backend.paths import PathAccessError
 if TYPE_CHECKING:
     from ...agent.agent_context import AgentContext
     from ...run_context import RunContext
+    from ..file_edit.redact import SecretRedactor
 
 DEFAULT_HEAD_LIMIT = 250
 
@@ -427,8 +428,15 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         self,
         *,
         timeout: float | None = None,
+        redactor: SecretRedactor | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
+        # Same redaction pass Read applies — content mode returns file
+        # contents, so it must not leak what Read would have redacted. Pass
+        # NullRedactor to opt out.
+        from ..file_edit.redact import DefaultSecretRedactor  # noqa: PLC0415
+
+        self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
 
     async def _run(
         self,
@@ -515,7 +523,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
 
         sliced, truncated = _slice(raw.lines, offset=offset, head_limit=inp.head_limit)
         return GrepResult(
-            output="\n".join(sliced),
+            output=self._redactor("\n".join(sliced)),
             output_mode=inp.output_mode,
             num_matches=raw.num_matches,
             num_files_matched=raw.num_files_matched,

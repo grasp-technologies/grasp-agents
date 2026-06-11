@@ -67,7 +67,7 @@ def _agent_ctx() -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 
@@ -313,7 +313,7 @@ async def test_run_cell_executes_and_writes_back(tmp_path: Path) -> None:
         assert cell["execution_count"] == 1
         assert cell["outputs"]
     finally:
-        await agent_ctx.kernel_holder.close()
+        await agent_ctx.nb_kernel_holder.close()
 
 
 @pytest.mark.integration
@@ -339,7 +339,7 @@ async def test_run_cell_image_part(tmp_path: Path) -> None:
         outs = nb["cells"][0]["outputs"]
         assert any("image/png" in o.get("data", {}) for o in outs)
     finally:
-        await agent_ctx.kernel_holder.close()
+        await agent_ctx.nb_kernel_holder.close()
 
 
 @pytest.mark.integration
@@ -347,7 +347,7 @@ async def test_run_cell_image_part(tmp_path: Path) -> None:
 async def test_run_cell_state_persists_across_calls(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
     ctx: RunContext[Any] = RunContext(environment=env)
-    agent_ctx = _agent_ctx()  # one kernel_holder → one persistent kernel
+    agent_ctx = _agent_ctx()  # one nb_kernel_holder → one persistent kernel
     p = tmp_path / "nb.ipynb"
     _write_code_nb(p, "value = 5", "value * 2")
     try:
@@ -360,7 +360,7 @@ async def test_run_cell_state_persists_across_calls(tmp_path: Path) -> None:
         text = "".join(part.text for part in parts if isinstance(part, InputText))
         assert "10" in text
     finally:
-        await agent_ctx.kernel_holder.close()
+        await agent_ctx.nb_kernel_holder.close()
 
 
 @pytest.mark.integration
@@ -380,7 +380,7 @@ async def test_run_cell_error_written_back(tmp_path: Path) -> None:
         outs = nb["cells"][0]["outputs"]
         assert any(o["output_type"] == "error" for o in outs)
     finally:
-        await agent_ctx.kernel_holder.close()
+        await agent_ctx.nb_kernel_holder.close()
 
 
 @pytest.mark.integration
@@ -408,4 +408,4 @@ async def test_run_cell_sanitizes_executable_output(tmp_path: Path) -> None:
         assert "onclick" not in joined
         assert "hi" in joined  # benign content survived
     finally:
-        await agent_ctx.kernel_holder.close()
+        await agent_ctx.nb_kernel_holder.close()
