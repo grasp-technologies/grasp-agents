@@ -1,14 +1,13 @@
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import Any, Generic, Self, TypeVar
+from typing import Any, Self
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .types.io import ProcName
 
-PacketRouting = Sequence[Sequence[ProcName]]
-_PayloadT_co = TypeVar("_PayloadT_co", covariant=True)
+type PacketRouting = Sequence[Sequence[ProcName]]
 
 
 def is_uniform_routing(routing: PacketRouting | None) -> Sequence[ProcName] | None:
@@ -24,9 +23,9 @@ def is_uniform_routing(routing: PacketRouting | None) -> Sequence[ProcName] | No
     return first_recipients
 
 
-class Packet(BaseModel, Generic[_PayloadT_co]):
+class Packet[PayloadT](BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
-    payloads: Sequence[_PayloadT_co]
+    payloads: Sequence[PayloadT]
     sender: ProcName
     routing: PacketRouting | None = None
 
@@ -55,11 +54,11 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
             )
         return self
 
-    def split_by_recipient(self) -> Sequence["Packet[_PayloadT_co]"] | None:
+    def split_by_recipient(self) -> Sequence["Packet[PayloadT]"] | None:
         if self.routing is None:
             return None
 
-        recipient_to_payloads: defaultdict[ProcName, list[_PayloadT_co]] = defaultdict(
+        recipient_to_payloads: defaultdict[ProcName, list[PayloadT]] = defaultdict(
             list
         )
         for payload, recipients in zip(self.payloads, self.routing, strict=True):
@@ -77,7 +76,7 @@ class Packet(BaseModel, Generic[_PayloadT_co]):
             for recipient, payloads in recipient_to_payloads.items()
         ]
 
-    def split_per_payload(self) -> Sequence["Packet[_PayloadT_co]"] | None:
+    def split_per_payload(self) -> Sequence["Packet[PayloadT]"] | None:
         if self.routing is None:
             return None
 

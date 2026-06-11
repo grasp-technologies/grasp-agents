@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,19 +17,17 @@ from .items import (
 from .llm_events import LlmEvent
 from .response import Response
 
-_T_co = TypeVar("_T_co", covariant=True)
 
-
-class Event(BaseModel, Generic[_T_co], frozen=True):
+class Event[T](BaseModel, frozen=True):
     type: str
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     created_at: float = Field(default_factory=lambda: datetime.now(UTC).timestamp())
     source: str | None = None
     exec_id: str | None = None
-    data: _T_co
+    data: T
 
 
-class RoutedEvent(Event[_T_co], frozen=True):
+class RoutedEvent[T](Event[T], frozen=True):
     """Event that carries a routing destination (used by Runner/EventBus)."""
 
     destination: str | None = None

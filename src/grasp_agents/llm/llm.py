@@ -8,11 +8,10 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, Self, final
+from typing import Any, Self, TypedDict, final
 from uuid import uuid4
 
 from pydantic import BaseModel
-from typing_extensions import TypedDict
 
 from ..types.errors import (
     JSONSchemaValidationError,

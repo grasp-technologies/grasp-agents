@@ -95,7 +95,7 @@ def build_copilot(
     llm = OpenAIResponsesLLM(
         model_name=model,
         llm_settings=cast(
-            OpenAIResponsesLLMSettings,
+            "OpenAIResponsesLLMSettings",
             {"reasoning": {"effort": "medium", "summary": "detailed"}},
         ),
     )

@@ -5,16 +5,16 @@ from typing import Any, cast
 
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
+from ..run_context import RunContext
 from ..types.errors import WorkflowConstructionError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..types.io import InT, OutT, ProcName
+from ..types.io import ProcName
 from .workflow_processor import WorkflowProcessor
 
 logger = logging.getLogger(__name__)
 
 
-class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
+class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
     def __init__(
         self,
         name: ProcName,

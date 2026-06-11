@@ -11,7 +11,7 @@ Annotations use ``from __future__ import annotations`` so the
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
@@ -19,10 +19,8 @@ if TYPE_CHECKING:
     from ..run_context import RunContext
     from .items import InputItem
 
-_T = TypeVar("_T")
 
-
-class Selector(Protocol[_T]):
+class Selector[T](Protocol):
     """
     Selection / relevance hook for catalog-style sections (skills, memory).
 
@@ -43,8 +41,8 @@ class Selector(Protocol[_T]):
     def __call__(
         self,
         *,
-        entries: Sequence[_T],
+        entries: Sequence[T],
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
-    ) -> Sequence[_T] | Awaitable[Sequence[_T]]: ...
+    ) -> Sequence[T] | Awaitable[Sequence[T]]: ...

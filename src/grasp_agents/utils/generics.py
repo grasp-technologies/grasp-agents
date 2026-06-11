@@ -10,25 +10,28 @@ class AutoInstanceAttributesMixin:
 
     Example:
     -------
-    from typing import Generic, TypeVar
-    from grasp_agents.generics_utils import AutoInstanceAttributesMixin
+    from typing import ClassVar
+    from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
-    T = TypeVar("T")
-    U = TypeVar("U")
-
-    class MyBase(AutoInstanceAttributesMixin, Generic[T, U]):
+    class MyBase[T, U](AutoInstanceAttributesMixin):
         _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
             0: "elem_type",
             1: "meta_type",
         }
 
-    class Packet(MyBase[int, str]):
+    class Concrete(MyBase[int, str]):
         ...
 
     Alias = MyBase[bytes, float]   # "late" specialization
 
-    print(Packet().elem_type)      # <class 'int'>
+    print(Concrete().elem_type)    # <class 'int'>
     print(Alias().meta_type)       # <class 'float'>
+
+    Resolution looks for parameterizations of the **nearest base that declares
+    ``_generic_arg_to_instance_attr_map`` in its own ``__dict__``**. An
+    intermediate subclass that is itself generic in a mapped position
+    (``class Mid[T](MyBase[T, str])``) must therefore redeclare the map —
+    otherwise types bound by *its* subclasses resolve to ``object``.
 
     """
 
@@ -153,7 +156,9 @@ class AutoInstanceAttributesMixin:
         resolved_attr_types = getattr(
             self.__class__, "_resolved_instance_attr_types", {}
         )
-        pyd_private = getattr(self, "__pydantic_private__", {})
+        # ``__pydantic_private__`` is ``None`` (not absent) on pydantic models
+        # that declare no private attributes.
+        pyd_private: dict[str, Any] = getattr(self, "__pydantic_private__", None) or {}
 
         for attr_name in attr_names:
             if attr_name in resolved_attr_types:

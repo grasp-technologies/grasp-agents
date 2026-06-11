@@ -1123,7 +1123,7 @@ requires-dist = [
     { name = "openinference-instrumentation-openai", marker = "extra == 'phoenix'", specifier = ">=0.1.32,<1" },
     { name = "openinference-instrumentation-openllmetry", marker = "extra == 'phoenix'", specifier = ">=0.1.2,<1" },
     { name = "opentelemetry-sdk", specifier = ">=1.37.0,<2" },
-    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "python-dotenv", specifier = ">=1.0,<2" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
     { name = "rich", specifier = ">=14.0,<15" },

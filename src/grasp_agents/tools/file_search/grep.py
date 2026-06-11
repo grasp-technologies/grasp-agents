@@ -32,7 +32,7 @@ import asyncio
 import json
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -386,12 +386,9 @@ async def local_backend_grep(
 # ---------------------------------------------------------------------------
 
 
-_T = TypeVar("_T")
-
-
-def _slice(
-    entries: list[_T], *, offset: int, head_limit: int | None
-) -> tuple[list[_T], bool]:
+def _slice[T](
+    entries: list[T], *, offset: int, head_limit: int | None
+) -> tuple[list[T], bool]:
     """Apply ``offset`` + ``head_limit``; return sliced list + trunc flag."""
     total = len(entries)
     start = min(offset, total)

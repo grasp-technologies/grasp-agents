@@ -7,17 +7,17 @@ from grasp_agents.utils.streaming import stream_concurrent
 
 from ..durability.checkpoints import CheckpointKind, ParallelCheckpoint
 from ..packet import Packet
-from ..run_context import CtxT, RunContext, shared_child_ctx
+from ..run_context import RunContext, shared_child_ctx
 from ..types.errors import ProcInputValidationError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..types.io import InT, OutT, ProcName
+from ..types.io import ProcName
 from ..utils.callbacks import is_method_overridden
 from .processor import Processor
 
 logger = logging.getLogger(__name__)
 
 
-class ParallelProcessor(Processor[InT, OutT, CtxT]):
+class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
     _checkpoint_kind = CheckpointKind.PARALLEL
 
     def __init__(

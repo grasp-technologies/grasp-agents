@@ -2,11 +2,10 @@ import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Required
+from typing import Any, Required, TypedDict
 
 import httpx
 from pydantic import BaseModel
-from typing_extensions import TypedDict
 
 from ..rate_limiting.rate_limiter import RateLimiter, limit_rate
 from ..types.items import InputItem

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from ..run_context import CtxT
 from .tool_decision import RejectToolContent, ToolCallDecision
 
 if TYPE_CHECKING:
@@ -42,7 +41,7 @@ if TYPE_CHECKING:
 DEFAULT_DENY_MESSAGE = "User denied tool call '{name}'."
 
 
-class ApprovalCallback(Protocol[CtxT]):
+class ApprovalCallback[CtxT](Protocol):
     """
     User-supplied approver: returns ``True`` to let the call run,
     ``False`` to deny and surface :class:`RejectToolContent` to the LLM.
@@ -61,7 +60,7 @@ class ApprovalCallback(Protocol[CtxT]):
     ) -> bool: ...
 
 
-def build_callback_approval(
+def build_callback_approval[CtxT](
     approve: ApprovalCallback[CtxT],
     *,
     tool_names: Container[str] | None = None,

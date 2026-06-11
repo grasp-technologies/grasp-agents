@@ -14,7 +14,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from functools import wraps
 from logging import getLogger
-from typing import Any, TypeVar, cast, overload
+from typing import Any, cast, overload
 
 from opentelemetry import trace
 from pydantic import BaseModel
@@ -60,10 +60,6 @@ _GRASP_TO_OI_KIND: dict[str, str] = {
 
 DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "completions"}
 _TRACER_NAME = "grasp_agents"
-
-T = TypeVar("T", bound=type)
-F = TypeVar("F", bound=Callable[..., Any])
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -235,7 +231,7 @@ def _camel_to_snake(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _entity_method(
+def _entity_method[F: Callable[..., Any]](
     name: str | None = None,
     version: int | None = None,
     span_kind: SpanKind = SpanKind.TASK,
@@ -403,7 +399,7 @@ def _entity_method(
     return decorate
 
 
-def _entity_class(
+def _entity_class[T: type](
     name: str | None,
     version: int | None,
     method_name: str,
@@ -430,7 +426,7 @@ def _entity_class(
 
 
 @overload
-def traced(
+def traced[F: Callable[..., Any]](
     name: str | None = ...,
     version: int | None = ...,
     span_kind: SpanKind = ...,
@@ -438,7 +434,7 @@ def traced(
 
 
 @overload
-def traced(
+def traced[T: type](
     name: str | None = ...,
     version: int | None = ...,
     span_kind: SpanKind = ...,
@@ -447,7 +443,7 @@ def traced(
 ) -> Callable[[T], T]: ...
 
 
-def traced(
+def traced[F: Callable[..., Any], T: type](
     name: str | None = None,
     version: int | None = None,
     span_kind: SpanKind = SpanKind.TASK,

@@ -1,20 +1,17 @@
 from collections.abc import AsyncIterator
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
 from ..agent.agent_context import AgentContext
 from ..durability.checkpoints import CheckpointKind
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
+from ..run_context import RunContext
 from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from ..types.tool import BaseTool, ToolProgressCallback
 
-_InT = TypeVar("_InT", bound=BaseModel)
-_OutT = TypeVar("_OutT")
 
-
-class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
+class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
     """A tool that wraps a processor (or agent) for use inside an agent loop."""
 
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
@@ -25,7 +22,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
     def __init__(
         self,
         *,
-        processor: Processor[_InT, _OutT, CtxT],
+        processor: Processor[InT, OutT, CtxT],
         name: str,
         description: str,
         auto_background_at: float | None = None,
@@ -48,7 +45,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         self._out_type = processor.out_type
 
     @property
-    def processor(self) -> Processor[_InT, _OutT, CtxT]:
+    def processor(self) -> Processor[InT, OutT, CtxT]:
         return self._processor
 
     @property
@@ -79,7 +76,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
         *,
         ctx: RunContext[CtxT] | None = None,
         path: list[str] | None = None,
-    ) -> Processor[_InT, _OutT, CtxT]:
+    ) -> Processor[InT, OutT, CtxT]:
         """
         Return a fresh copy bound to this call's ``ctx`` and ``path``.
 
@@ -103,14 +100,14 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
 
     async def _run(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
-    ) -> _OutT:
+    ) -> OutT:
         del progress_callback, agent_ctx
         proc = self._resolve_processor(ctx=ctx, path=path)
         result = await proc.run(in_args=inp, exec_id=exec_id)
@@ -119,7 +116,7 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
 
     async def _run_stream(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
@@ -151,9 +148,9 @@ class ProcessorTool(BaseTool[_InT, _OutT, CtxT]):
 
     async def _yield_proc_events(
         self,
-        proc: Processor[_InT, _OutT, CtxT],
+        proc: Processor[InT, OutT, CtxT],
         *,
-        in_args: _InT | None = None,
+        in_args: InT | None = None,
         exec_id: str | None = None,
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:

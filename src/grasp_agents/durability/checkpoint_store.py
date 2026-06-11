@@ -1,7 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TypeVar
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -9,8 +8,6 @@ from ..types.items import InputItem
 from .checkpoints import CheckpointSchemaError
 
 logger = logging.getLogger(__name__)
-
-_M = TypeVar("_M", bound=BaseModel)
 
 _INPUT_ITEM_ADAPTER: TypeAdapter[InputItem] = TypeAdapter(InputItem)
 
@@ -61,13 +58,13 @@ class CheckpointStore(ABC):
     @abstractmethod
     async def list_keys(self, prefix: str) -> list[str]: ...
 
-    async def load_json(
+    async def load_json[M: BaseModel](
         self,
         key: str,
-        model_type: type[_M],
+        model_type: type[M],
         *,
         subject: str | None = None,
-    ) -> _M | None:
+    ) -> M | None:
         """
         Load ``key`` and validate as ``model_type``.
 

@@ -24,7 +24,7 @@ DEFAULT_STALE_AFTER = timedelta(days=7)
 
 
 type MemoryType = Literal["user", "feedback", "project", "reference"]
-MEMORY_TYPES: tuple[MemoryType, ...] = get_args(MemoryType)
+MEMORY_TYPES: tuple[MemoryType, ...] = get_args(MemoryType.__value__)
 
 
 class MemoryError(Exception):  # noqa: A001

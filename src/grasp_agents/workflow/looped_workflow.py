@@ -5,18 +5,18 @@ from typing import Any, cast, final
 
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
+from ..run_context import RunContext
 from ..types.errors import WorkflowConstructionError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.hooks import WorkflowLoopTerminator
-from ..types.io import InT, OutT, ProcName
+from ..types.io import ProcName
 from ..utils.callbacks import is_method_overridden
 from .workflow_processor import WorkflowProcessor
 
 logger = getLogger(__name__)
 
 
-class LoopedWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
+class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
     def __init__(
         self,
         name: ProcName,

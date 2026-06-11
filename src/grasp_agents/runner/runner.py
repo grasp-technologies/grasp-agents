@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
-from typing import Any, ClassVar, Generic, Literal
+from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
 from grasp_agents.telemetry import SpanKind, traced
@@ -11,10 +11,9 @@ from ..durability.checkpoint_mixin import CheckpointPersistMixin
 from ..durability.checkpoints import CheckpointKind, RunnerCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext, shared_child_ctx
+from ..run_context import RunContext, shared_child_ctx
 from ..types.errors import RunnerError
 from ..types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
-from ..types.io import OutT
 from .event_bus import EventBus
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,7 @@ START_PROC_NAME: Literal["*START*"] = "*START*"
 END_PROC_NAME: Literal["*END*"] = "*END*"
 
 
-class Runner(CheckpointPersistMixin, Generic[OutT, CtxT]):
+class Runner[OutT, CtxT](CheckpointPersistMixin):
     _checkpoint_kind: ClassVar[CheckpointKind | None] = CheckpointKind.RUNNER
 
     def __init__(

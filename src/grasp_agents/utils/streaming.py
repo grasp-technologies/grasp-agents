@@ -4,14 +4,11 @@ import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from logging import getLogger
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from grasp_agents.types.events import Event
 
 logger = getLogger(__name__)
-
-
-_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,10 +19,10 @@ class PumpError:
     exception: BaseException
 
 
-_QueueItem = tuple[int, _T] | PumpError | None
+type _QueueItem[T] = tuple[int, T] | PumpError | None
 
 
-class ConcurrentStream(Generic[_T]):
+class ConcurrentStream[T]:
     """
     Merges multiple async iterators, yielding ``(index, item)`` in arrival order.
 
@@ -35,7 +32,7 @@ class ConcurrentStream(Generic[_T]):
 
     def __init__(
         self,
-        generators: list[AsyncIterator[_T]],
+        generators: list[AsyncIterator[T]],
         *,
         max_concurrency: int | None = None,
     ) -> None:
@@ -51,12 +48,12 @@ class ConcurrentStream(Generic[_T]):
     def failed_indices(self) -> list[int]:
         return [e.index for e in self._errors]
 
-    async def __aiter__(self) -> AsyncIterator[tuple[int, _T]]:
+    async def __aiter__(self) -> AsyncIterator[tuple[int, T]]:
         generators = self._generators
         if not generators:
             return
 
-        queue: asyncio.Queue[_QueueItem[_T]] = asyncio.Queue()
+        queue: asyncio.Queue[_QueueItem[T]] = asyncio.Queue()
         pumps_left = len(generators)
         errors = self._errors
         # ``max_concurrency=1`` runs the generators serially — each fully drained
@@ -67,11 +64,11 @@ class ConcurrentStream(Generic[_T]):
             else None
         )
 
-        async def drain(gen: AsyncIterator[_T], idx: int) -> None:
+        async def drain(gen: AsyncIterator[T], idx: int) -> None:
             async for item in gen:
                 await queue.put((idx, item))
 
-        async def pump(gen: AsyncIterator[_T], idx: int) -> None:
+        async def pump(gen: AsyncIterator[T], idx: int) -> None:
             nonlocal pumps_left
             try:
                 if sem is not None:
@@ -106,11 +103,11 @@ class ConcurrentStream(Generic[_T]):
                 yield msg
 
 
-def stream_concurrent(
-    generators: list[AsyncIterator[_T]],
+def stream_concurrent[T](
+    generators: list[AsyncIterator[T]],
     *,
     max_concurrency: int | None = None,
-) -> ConcurrentStream[_T]:
+) -> ConcurrentStream[T]:
     """
     Create a :class:`ConcurrentStream` that merges *generators*.
 
@@ -129,32 +126,29 @@ def stream_concurrent(
     return ConcurrentStream(generators, max_concurrency=max_concurrency)
 
 
-_F = TypeVar("_F")
-
-
 class MissingFinalEventError(RuntimeError):
     """The stream finished without the required final event type."""
 
 
-class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
+class EventStream[F](AsyncIterator[Event[Any]]):
     def __init__(
-        self, source: AsyncIterable[Event[Any]], final_type: type[_F] = object
+        self, source: AsyncIterable[Event[Any]], final_type: type[F] = object
     ) -> None:
         self._aiter: AsyncIterator[Event[Any]] = source.__aiter__()
-        self._final_type: type[_F] = final_type
-        self._final_event: Event[_F]
+        self._final_type: type[F] = final_type
+        self._final_event: Event[F]
         self._final_event_set: bool = False
         self._events: list[Event[Any]] = []
 
     @property
-    def final_type(self) -> type[_F]:
+    def final_type(self) -> type[F]:
         return self._final_type
 
     @property
     def events(self) -> list[Event[Any]]:
         return self._events
 
-    def __aiter__(self) -> EventStream[_F]:
+    def __aiter__(self) -> EventStream[F]:
         return self
 
     async def __anext__(self) -> Event[Any]:
@@ -170,7 +164,7 @@ class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
             self._events.append(event)
         return self._events
 
-    async def final_event(self) -> Event[_F]:
+    async def final_event(self) -> Event[F]:
         async for _ in self:
             pass
         if not self._final_event_set:
@@ -179,5 +173,5 @@ class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
             )
         return self._final_event
 
-    async def final_data(self) -> _F:
+    async def final_data(self) -> F:
         return (await self.final_event()).data

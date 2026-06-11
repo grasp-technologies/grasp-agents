@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_output_text import Annotation
@@ -71,8 +71,6 @@ if TYPE_CHECKING:
 
     from openai.types.responses import ResponseStatus
 
-_T = TypeVar("_T")
-
 
 @dataclass
 class ToolCallState:
@@ -86,7 +84,7 @@ class ToolCallState:
     provider_specific_fields: dict[str, Any] | None = None
 
 
-class BaseLlmStreamConverter(ABC, Generic[_T]):
+class BaseLlmStreamConverter[T](ABC):
     """
     Provider-agnostic base for streaming LLM response → LlmEvent converters.
 
@@ -169,7 +167,7 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
         return self._seq
 
     async def convert(
-        self, raw_event_stream: AsyncIterator[_T]
+        self, raw_event_stream: AsyncIterator[T]
     ) -> AsyncIterator[LlmEvent]:
         """Consume *raw_event_stream* and yield ``LlmEvent`` instances."""
         async for raw_event in raw_event_stream:
@@ -180,7 +178,7 @@ class BaseLlmStreamConverter(ABC, Generic[_T]):
             yield event
 
     @abstractmethod
-    def _process_event(self, raw_event: _T) -> Iterator[LlmEvent]:
+    def _process_event(self, raw_event: T) -> Iterator[LlmEvent]:
         pass
 
     # ==== Response lifecycle ====

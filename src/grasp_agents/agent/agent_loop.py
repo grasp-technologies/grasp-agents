@@ -5,14 +5,13 @@ import json
 import time
 from copy import deepcopy
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, Final, Generic, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
-from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.telemetry import traced
 from grasp_agents.types.errors import AgentFinalAnswerError, LLMToolCallValidationError
 from grasp_agents.types.events import (
@@ -75,6 +74,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
     from grasp_agents.llm.llm import LLM
+    from grasp_agents.run_context import RunContext
     from grasp_agents.tools.bash_common import ShellState
     from grasp_agents.tools.bash_session import BashSessionHolder
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
@@ -124,7 +124,7 @@ class ResponseCapture:
             yield event
 
 
-class AgentLoop(Generic[CtxT]):
+class AgentLoop[CtxT]:
     """
     The agentic execution loop: generate → check → tools → repeat.
 

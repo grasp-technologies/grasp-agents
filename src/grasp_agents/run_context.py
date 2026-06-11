@@ -1,30 +1,24 @@
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# CtxT must be defined before the skills import below, because
-# ``skills.registry`` (via injection → prompt_builder) imports CtxT from this
-# module. Keeping it at the top breaks the load-order circular dependency
-# without forcing every consumer through ``TYPE_CHECKING``.
-CtxT = TypeVar("CtxT")
-
-from .agent.approval_store import ApprovalStore  # noqa: E402
-from .durability.checkpoint_store import CheckpointStore  # noqa: E402
-from .memory.provider import MemoryProvider  # noqa: E402
-from .printer import Printer  # noqa: E402
-from .sandbox.environment import ExecutionEnvironment  # noqa: E402
-from .sandbox.exec_backend import ExecBackend  # noqa: E402
-from .skills.registry import SkillRegistry  # noqa: E402
-from .tools.file_backend.base import FileBackend  # noqa: E402
-from .types.io import ProcName  # noqa: E402
-from .types.response import Response  # noqa: E402
-from .usage_tracker import UsageTracker  # noqa: E402
+from .agent.approval_store import ApprovalStore
+from .durability.checkpoint_store import CheckpointStore
+from .memory.provider import MemoryProvider
+from .printer import Printer
+from .sandbox.environment import ExecutionEnvironment
+from .sandbox.exec_backend import ExecBackend
+from .skills.registry import SkillRegistry
+from .tools.file_backend.base import FileBackend
+from .types.io import ProcName
+from .types.response import Response
+from .usage_tracker import UsageTracker
 
 
-class RunContext(BaseModel, Generic[CtxT]):
+class RunContext[CtxT](BaseModel):
     state: CtxT = None  # type: ignore
 
     # When True, the agent persists ``state`` into its checkpoints (via

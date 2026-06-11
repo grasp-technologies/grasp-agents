@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from grasp_agents.durability.checkpoints import CheckpointKind
-from grasp_agents.run_context import CtxT, RunContext
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 from grasp_agents.utils.io import get_prompt
@@ -18,6 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from grasp_agents.llm.llm import LLM
+    from grasp_agents.run_context import RunContext
 
     from ..agent.agent_context import AgentContext
     from ..agent.llm_agent import LLMAgent
@@ -58,7 +58,7 @@ class AgentToolInput(BaseModel):
     prompt: str
 
 
-class AgentTool(BaseTool[AgentToolInput, str, CtxT]):
+class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
     """
     A tool that dynamically spawns a fresh LLMAgent per invocation.
 

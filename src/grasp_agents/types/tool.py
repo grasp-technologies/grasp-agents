@@ -8,17 +8,15 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Generic,
     Literal,
     Protocol,
     Self,
-    TypeVar,
     runtime_checkable,
 )
 
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.run_context import CtxT, RunContext
+from grasp_agents.run_context import RunContext
 from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
@@ -29,9 +27,6 @@ if TYPE_CHECKING:
     from grasp_agents.durability.checkpoints import CheckpointKind
 
 logger = logging.getLogger(__name__)
-
-_InT = TypeVar("_InT", bound=BaseModel)
-_OutT_co = TypeVar("_OutT_co", covariant=True)
 
 
 class NamedToolChoice(BaseModel):
@@ -51,11 +46,7 @@ class ToolProgressCallback(Protocol):
     ) -> None: ...
 
 
-class BaseTool(
-    AutoInstanceAttributesMixin,
-    ABC,
-    Generic[_InT, _OutT_co, CtxT],
-):
+class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
     """
     Base class for all tools.
 
@@ -102,8 +93,8 @@ class BaseTool(
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
-        self._in_type: type[_InT]
-        self._out_type: type[_OutT_co]
+        self._in_type: type[InT]
+        self._out_type: type[OutT]
 
         super().__init__()
 
@@ -177,11 +168,11 @@ class BaseTool(
             ) | set(parent_fields)
 
     @property
-    def in_type(self) -> type[_InT]:
+    def in_type(self) -> type[InT]:
         return self._in_type
 
     @property
-    def out_type(self) -> type[_OutT_co]:
+    def out_type(self) -> type[OutT]:
         return self._out_type
 
     @property
@@ -198,14 +189,14 @@ class BaseTool(
     @abstractmethod
     async def _run(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
-    ) -> _OutT_co:
+    ) -> OutT:
         # ``path`` is the per-call tool-call lineage (consumed by resumable
         # ``AgentTool`` / ``ProcessorTool``); ``agent_ctx`` is the calling
         # loop's agent-scope state (file-edit ledger, shell session,
@@ -215,7 +206,7 @@ class BaseTool(
 
     async def _run_stream(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
@@ -281,14 +272,14 @@ class BaseTool(
 
     async def _run_with_timeout(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
-    ) -> _OutT_co | ToolErrorInfo:
+    ) -> OutT | ToolErrorInfo:
         try:
             coro = self._run(
                 inp,
@@ -308,7 +299,7 @@ class BaseTool(
 
     async def _run_stream_with_timeout(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
@@ -338,7 +329,7 @@ class BaseTool(
         progress_callback: ToolProgressCallback | None = None,
         agent_ctx: "AgentContext | None" = None,
         **kwargs: Any,
-    ) -> _OutT_co | ToolErrorInfo:
+    ) -> OutT | ToolErrorInfo:
         inp = TypeAdapter(self.in_type).validate_python(kwargs)
         return await self._run_with_timeout(
             inp,
@@ -351,14 +342,14 @@ class BaseTool(
     @traced(name="tool", span_kind=SpanKind.TOOL)
     async def run(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
-    ) -> _OutT_co | ToolErrorInfo:
+    ) -> OutT | ToolErrorInfo:
         return await self._run_with_timeout(
             inp,
             ctx=ctx,
@@ -371,7 +362,7 @@ class BaseTool(
     @traced(name="tool", span_kind=SpanKind.TOOL)
     async def run_stream(
         self,
-        inp: _InT,
+        inp: InT,
         *,
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
@@ -403,7 +394,7 @@ class BaseTool(
             else:
                 yield event
 
-    def concurrency_conflict_keys(self, inp: _InT) -> list[str] | None:
+    def concurrency_conflict_keys(self, inp: InT) -> list[str] | None:
         """
         Keys this call needs **exclusive** use of while it runs — filesystem
         paths it writes, or any other hierarchical resource identifier it must

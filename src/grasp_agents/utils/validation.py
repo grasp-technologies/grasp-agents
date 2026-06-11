@@ -2,7 +2,7 @@ import ast
 import json
 import re
 from logging import getLogger
-from typing import Annotated, Any, TypeVar, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -66,10 +66,7 @@ def is_str_type(t: Any) -> bool:
     )
 
 
-T = TypeVar("T")
-
-
-def validate_obj_from_json_or_py_string(
+def validate_obj_from_json_or_py_string[T](
     s: str,
     schema: type[T],
     from_substring: bool = False,

@@ -6,16 +6,16 @@ from typing import Any, cast
 from ..durability.checkpoints import CheckpointKind, WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext, shared_child_ctx
+from ..run_context import RunContext, shared_child_ctx
 from ..telemetry import SpanKind
 from ..types.errors import WorkflowConstructionError
-from ..types.io import InT, OutT, ProcName
+from ..types.io import ProcName
 from ..utils.callbacks import is_method_overridden
 
 logger = logging.getLogger(__name__)
 
 
-class WorkflowProcessor(Processor[InT, OutT, CtxT], ABC):
+class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
     _span_kind = SpanKind.WORKFLOW
     _checkpoint_kind = CheckpointKind.WORKFLOW
 

@@ -7,9 +7,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Generic,
     Protocol,
-    TypeAlias,
     cast,
     final,
     runtime_checkable,
@@ -17,7 +15,6 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.run_context import CtxT
 from grasp_agents.types.content import (
     CacheControl,
     Content,
@@ -35,11 +32,11 @@ if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.run_context import RunContext
     from grasp_agents.types.hooks import InputContentBuilder, SystemPromptBuilder
+    from grasp_agents.types.io import LLMPrompt
     from grasp_agents.types.items import InputItem
-from grasp_agents.types.io import InT, LLMPrompt
 from grasp_agents.types.items import InputMessageItem
 
-PromptArgumentType: TypeAlias = str | bool | int
+type PromptArgumentType = str | bool | int
 
 
 @runtime_checkable
@@ -131,7 +128,7 @@ class InputAttachment:
     wrap_in_system_reminder: bool = True
 
 
-class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
+class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {0: "_in_type"}
 
     def __init__(
@@ -333,7 +330,7 @@ class PromptBuilder(AutoInstanceAttributesMixin, Generic[InT, CtxT]):
                     f"at the same time [agent_name={self._agent_name}]",
                 )
 
-            if isinstance(chat_inputs, LLMPrompt):
+            if isinstance(chat_inputs, str):
                 return InputMessageItem.from_text(chat_inputs, role="user")
 
             input_parts: list[InputPart] = [

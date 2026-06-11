@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from logging import getLogger
-from typing import TYPE_CHECKING, Any, Generic, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
@@ -19,7 +19,7 @@ from grasp_agents.durability.store_keys import (
     task_prefix,
 )
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
-from grasp_agents.run_context import CtxT, RunContext
+from grasp_agents.run_context import RunContext
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
@@ -250,7 +250,7 @@ def _excerpt_for_inline(
     return text[:head] + marker + text[-tail:], True
 
 
-class BackgroundTaskManager(Generic[CtxT]):
+class BackgroundTaskManager[CtxT]:
     """
     Tracks background work of any kind, generic over the tool that produces it.
 

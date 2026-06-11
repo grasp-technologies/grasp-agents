@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from .checkpoints import AgentCheckpoint, CheckpointKind, ProcessorCheckpoint
 from .store_keys import make_store_key
@@ -12,8 +12,6 @@ if TYPE_CHECKING:
     from ..run_context import RunContext
 
 logger = logging.getLogger(__name__)
-
-CpT = TypeVar("CpT", bound=ProcessorCheckpoint)
 
 
 class CheckpointPersistMixin:
@@ -42,7 +40,7 @@ class CheckpointPersistMixin:
             return None
         return make_store_key(ctx.session_key, self._checkpoint_kind, self._path)
 
-    async def _deserialize_checkpoint(
+    async def _deserialize_checkpoint[CpT: ProcessorCheckpoint](
         self,
         ctx: RunContext[Any],
         checkpoint_type: type[CpT],

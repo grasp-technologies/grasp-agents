@@ -1,8 +1,5 @@
 from collections.abc import Callable, Coroutine
-from typing import Any, Concatenate, ParamSpec, TypeVar
-
-R = TypeVar("R")
-P = ParamSpec("P")
+from typing import Any, Concatenate
 
 type AsyncCallable[**P, R] = Callable[P, Coroutine[Any, Any, R]]
 type AsyncFunction[**P, R] = Callable[P, Coroutine[Any, Any, R]]

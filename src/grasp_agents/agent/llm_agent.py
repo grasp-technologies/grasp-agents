@@ -2,7 +2,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, cast, final
 
 if TYPE_CHECKING:
     from ..tools.file_edit.session_state import FileEditSessionState
@@ -22,7 +22,7 @@ from ..env_section import make_current_time_attachment, make_env_info_section
 from ..llm.llm import LLM
 from ..memory.injection import make_memory_section, relevant_memories_attachment
 from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
+from ..run_context import RunContext
 from ..sandbox.environment import SnapshotCapable
 from ..skills.injection import make_skills_section
 from ..telemetry import SpanKind
@@ -48,7 +48,7 @@ from ..types.hooks import (
     ToolOutputConverter,
     TranscriptBuilder,
 )
-from ..types.io import InT, LLMPrompt, OutT, ProcName
+from ..types.io import LLMPrompt, ProcName
 from ..types.items import FunctionToolCallItem, InputMessageItem
 from ..types.response import Response
 from ..types.tool import BaseTool
@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class LLMAgent(Processor[InT, OutT, CtxT], Generic[InT, OutT, CtxT]):
+class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
     _span_kind = SpanKind.AGENT
     _checkpoint_kind = CheckpointKind.AGENT
 

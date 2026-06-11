@@ -28,14 +28,14 @@ Processor Hooks:
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
 from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.packet import Packet
-from grasp_agents.run_context import CtxT, RunContext
+from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import Content, InputText
 from grasp_agents.types.io import LLMPrompt, ProcName
 from grasp_agents.types.items import (
@@ -46,10 +46,6 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.response import Response
 from grasp_agents.types.selector import Selector
-
-_InT_contra = TypeVar("_InT_contra", contravariant=True)
-_OutT_co = TypeVar("_OutT_co", covariant=True)
-_OutT_contra = TypeVar("_OutT_contra", contravariant=True)
 
 __all__ = [
     "AfterLlmHook",
@@ -102,7 +98,7 @@ class FinalAnswerExtractor(Protocol):
     ) -> str | None: ...
 
 
-class BeforeToolHook(Protocol[CtxT]):
+class BeforeToolHook[CtxT](Protocol):
     # Keeps ``ctx``: built by standalone factories (e.g.
     # ``build_callback_approval`` / ``build_store_approval``) that have no
     # bound processor to read ``self.ctx`` from.
@@ -150,14 +146,14 @@ class SystemPromptBuilder(Protocol):
     def __call__(self, *, exec_id: str) -> str | Sequence[InputText] | None: ...
 
 
-class InputContentBuilder(Protocol[_InT_contra]):
-    def __call__(self, in_args: _InT_contra, *, exec_id: str) -> Content: ...
+class InputContentBuilder[InT](Protocol):
+    def __call__(self, in_args: InT, *, exec_id: str) -> Content: ...
 
 
 # --- Agent Hooks ---
 
 
-class TranscriptBuilder(Protocol[_InT_contra]):
+class TranscriptBuilder[InT](Protocol):
     """
     Seed the agent's transcript (conversation history) on fresh init.
 
@@ -175,7 +171,7 @@ class TranscriptBuilder(Protocol[_InT_contra]):
         self,
         *,
         instructions: LLMPrompt | Sequence[InputText] | None = None,
-        in_args: _InT_contra | None = None,
+        in_args: InT | None = None,
         exec_id: str,
     ) -> None: ...
 
@@ -199,29 +195,29 @@ class StateBuilder(Protocol):
     ) -> None: ...
 
 
-class OutputParser(Protocol[_InT_contra, _OutT_co]):
+class OutputParser[InT, OutT](Protocol):
     def __call__(
         self,
         final_answer: str,
         *,
-        in_args: _InT_contra | None = None,
+        in_args: InT | None = None,
         exec_id: str,
-    ) -> _OutT_co: ...
+    ) -> OutT: ...
 
 
 # --- Processor Hooks ---
 
 
-class RecipientSelector(Protocol[_OutT_contra]):
+class RecipientSelector[OutT](Protocol):
     def __call__(
-        self, output: _OutT_contra, *, exec_id: str
+        self, output: OutT, *, exec_id: str
     ) -> Sequence[ProcName]: ...
 
 
-class WorkflowLoopTerminator(Protocol[_OutT_contra]):
+class WorkflowLoopTerminator[OutT](Protocol):
     def __call__(
         self,
-        out_packet: Packet[_OutT_contra],
+        out_packet: Packet[OutT],
         **kwargs: Any,
     ) -> bool: ...
 

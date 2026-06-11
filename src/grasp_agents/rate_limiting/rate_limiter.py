@@ -5,15 +5,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from time import monotonic
-from typing import Generic, overload
+from typing import overload
 
-from .types import AsyncCallable, P, R
+from .types import AsyncCallable
 from .utils import split_pos_args
 
 logger = logging.getLogger(__name__)
 
 
-RateLimDecorator = Callable[[AsyncCallable[P, R]], AsyncCallable[P, R]]
+type RateLimDecorator[**P, R] = Callable[[AsyncCallable[P, R]], AsyncCallable[P, R]]
 
 
 @dataclass
@@ -21,7 +21,7 @@ class RateLimiterState:
     next_request_time: float = 0.0
 
 
-class RateLimiter(Generic[R]):
+class RateLimiter[R]:
     def __init__(self, rpm: float, max_concurrency: int = 200):
         self._rpm = rpm
         self._max_concurrency = max_concurrency
@@ -57,18 +57,18 @@ class RateLimiter(Generic[R]):
 
 
 @overload
-def limit_rate(
+def limit_rate[**P, R](
     call: AsyncCallable[P, R], rate_limiter: RateLimiter[R] | None = None
 ) -> AsyncCallable[P, R]: ...
 
 
 @overload
-def limit_rate(
+def limit_rate[**P, R](
     call: None = None, rate_limiter: RateLimiter[R] | None = None
 ) -> RateLimDecorator[P, R]: ...
 
 
-def limit_rate(
+def limit_rate[**P, R](
     call: AsyncCallable[P, R] | None = None, rate_limiter: RateLimiter[R] | None = None
 ) -> AsyncCallable[P, R] | RateLimDecorator[P, R]:
     if call is None:

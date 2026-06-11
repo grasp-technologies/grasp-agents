@@ -1,4 +1,4 @@
-from typing import Literal, TypeAlias
+from typing import Literal
 
 import httpx
 import openai
@@ -88,7 +88,7 @@ class LlmUnprocessableEntityError(openai.UnprocessableEntityError):
     status_code: Literal[422] = 422
 
 
-LlmError: TypeAlias = (
+type LlmError = (
     LlmContentFilterError
     | LlmContextWindowError
     | LlmApiError

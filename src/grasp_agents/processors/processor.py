@@ -6,9 +6,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Generic,
     Self,
-    TypeVar,
     cast,
     final,
 )
@@ -28,7 +26,7 @@ from grasp_agents.types.errors import (
 from ..durability.checkpoint_mixin import CheckpointPersistMixin
 from ..durability.checkpoints import CheckpointKind
 from ..packet import Packet
-from ..run_context import CtxT, RunContext
+from ..run_context import RunContext
 from ..types.events import (
     Event,
     ProcPacketOutEvent,
@@ -37,7 +35,7 @@ from ..types.events import (
     ProcStreamingErrorEvent,
 )
 from ..types.hooks import RecipientSelector
-from ..types.io import InT, OutT, ProcName
+from ..types.io import ProcName
 from ..utils.callbacks import is_method_overridden
 from ..utils.generics import AutoInstanceAttributesMixin
 
@@ -47,10 +45,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-F = TypeVar("F", bound=Callable[..., AsyncIterator[Event[Any]]])
-
-
-def with_retry(func: F) -> F:
+def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
     @wraps(func)
     async def wrapper(
         self: "Processor[Any, Any, Any]", *args: Any, **kwargs: Any
@@ -90,10 +85,9 @@ def with_retry(func: F) -> F:
     return cast("F", wrapper)
 
 
-class Processor(
+class Processor[InT, OutT, CtxT](
     AutoInstanceAttributesMixin,
     CheckpointPersistMixin,
-    Generic[InT, OutT, CtxT],
 ):
     """
     Base computation unit in the framework. Supports typed input/output validation,

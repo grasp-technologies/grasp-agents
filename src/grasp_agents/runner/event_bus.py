@@ -2,18 +2,15 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from types import TracebackType
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 
 from ..types.events import Event, RoutedEvent
 
 logger = logging.getLogger(__name__)
 
 
-_D_contra = TypeVar("_D_contra", contravariant=True)
-
-
-class EventHandler(Protocol[_D_contra]):
-    async def __call__(self, event: Event[_D_contra], **kwargs: Any) -> None: ...
+class EventHandler[D](Protocol):
+    async def __call__(self, event: Event[D], **kwargs: Any) -> None: ...
 
 
 class EventBus:
