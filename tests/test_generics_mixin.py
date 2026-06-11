@@ -113,3 +113,78 @@ def test_bounded_param_resolution() -> None:
         pass
 
     assert BoundedConcrete().model_type is Payload
+
+
+# ---------------------------------------------------------------------------
+# 2026-06 regressions: subscriptions must not poison the origin class
+# ---------------------------------------------------------------------------
+
+
+def test_alias_survives_other_parameterizations() -> None:
+    """Store-alias-then-instantiate-later, with interleaved subscriptions."""
+    alias = Base[bytes, float]
+    # A different parameterization in between (e.g. another agent factory,
+    # or a runtime `Base[Any, Any]` check) must not clobber the alias.
+    _ = Base[int, str]
+    _ = Base[Any, Any]
+
+    obj = alias()
+    assert obj.elem_type is bytes
+    assert obj.meta_type is float
+
+
+def test_runtime_any_subscription_does_not_poison_origin() -> None:
+    _ = Base[Any, Any]
+    # Class-statement subclasses keep their own resolution.
+    assert Concrete().elem_type is int
+    # The origin class's own (unparameterized) mapping is untouched.
+    assert getattr(Base, "_resolved_instance_attr_types", {}) in ({}, None) or (
+        Base._resolved_instance_attr_types.get("elem_type") is not Any
+    )
+
+
+def test_repeated_subscription_returns_same_class() -> None:
+    assert Base[int, str] is Base[int, str]
+
+
+def test_partially_concrete_subscription_resolves_concrete_args() -> None:
+    # e.g. AgentTool building LLMAgent[Input, str, CtxT] with CtxT still free.
+    def build[T]() -> Any:
+        return Base[bytes, T]  # type: ignore[valid-type]
+
+    specialized = build()
+    obj = specialized()
+    assert obj.elem_type is bytes
+    assert obj.meta_type is object  # unresolved position falls back
+
+
+def test_concurrent_parameterizations_are_isolated() -> None:
+    import threading
+
+    errors: list[str] = []
+
+    def worker(elem: type, meta: type) -> None:
+        for _ in range(50):
+            obj = Base[elem, meta]()  # type: ignore[valid-type]
+            if obj.elem_type is not elem or obj.meta_type is not meta:
+                errors.append(f"got {obj.elem_type}/{obj.meta_type}")
+
+    threads = [
+        threading.Thread(target=worker, args=(int, str)),
+        threading.Thread(target=worker, args=(bytes, float)),
+        threading.Thread(target=worker, args=(dict, list)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+
+
+def test_dunder_introspection_preserved() -> None:
+    specialized = Base[int, str]
+    assert specialized.__args__ == (int, str)  # type: ignore[attr-defined]
+    assert specialized.__origin__ is Base  # type: ignore[attr-defined]
+    # And it is a real subclass — isinstance works (it raised on the alias).
+    assert issubclass(specialized, Base)
+    assert isinstance(specialized(), Base)

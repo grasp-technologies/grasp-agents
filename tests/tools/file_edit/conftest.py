@@ -39,6 +39,6 @@ def agent_ctx(state: FileEditSessionState) -> AgentContext:
             agent_name="test", transcript=transcript, tools={}
         ),
         session_holder=BashSessionHolder(),
-        kernel_holder=KernelHolder(),
+        nb_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )

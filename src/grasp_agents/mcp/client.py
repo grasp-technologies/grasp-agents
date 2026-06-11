@@ -142,10 +142,22 @@ class MCPClient:
         tools: list[MCPTool | MCPListResourcesTool | MCPReadResourceTool] = []
 
         response = await self._session.list_tools()
-        tools.extend(
-            MCPTool(session=self._session, tool_def=t, timeout=self._tool_timeout)
-            for t in response.tools
-        )
+        for t in response.tools:
+            try:
+                tools.append(
+                    MCPTool(
+                        session=self._session, tool_def=t, timeout=self._tool_timeout
+                    )
+                )
+            except Exception:
+                # One tool with a pathological schema must not take down the
+                # whole server connection — skip it and keep the rest.
+                _logger.exception(
+                    "Skipping MCP tool %r (server %r): failed to build its "
+                    "input schema",
+                    t.name,
+                    self.name,
+                )
 
         if self._capabilities.resources:
             tools.extend(

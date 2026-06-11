@@ -44,6 +44,10 @@ class ResponseUsage(_SDKResponseUsage):
         default_factory=lambda: OutputTokensDetails(reasoning_tokens=0)
     )
     total_tokens: int = 0
+    # Input tokens written to the provider's prompt cache this call (a subset
+    # of ``input_tokens``, like ``cached_tokens``). Cache writes are billed at
+    # a premium (e.g. 1.25x on Anthropic), so cost accounting needs the split.
+    cache_creation_tokens: int = 0
     cost: float | None = None
 
     def __add__(self, other: ResponseUsage) -> ResponseUsage:
@@ -59,6 +63,8 @@ class ResponseUsage(_SDKResponseUsage):
                 reasoning_tokens=self.output_tokens_details.reasoning_tokens
                 + other.output_tokens_details.reasoning_tokens
             ),
+            cache_creation_tokens=self.cache_creation_tokens
+            + other.cache_creation_tokens,
             cost=(self.cost or 0) + (other.cost or 0)
             if self.cost is not None or other.cost is not None
             else None,

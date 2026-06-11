@@ -21,9 +21,15 @@ from ..types.errors import (
 )
 from ..types.items import InputItem
 from ..types.llm_errors import LlmErrorTuple
-from ..types.llm_events import LlmEvent, ResponseCompleted, ResponseRetrying
+from ..types.llm_events import (
+    LlmEvent,
+    ResponseCompleted,
+    ResponseIncomplete,
+    ResponseRetrying,
+)
 from ..types.response import Response
 from ..types.tool import BaseTool, ToolChoice
+from ..usage_tracker import add_cost_to_usage
 from ..utils.validation import validate_obj_from_json_or_py_string
 from .model_info import ModelCapabilities, get_model_capabilities
 from .resilience import RetryPolicy
@@ -44,7 +50,10 @@ class LLM(ABC):
     llm_settings: LLMSettings | None = None
     model_id: str = field(default_factory=lambda: str(uuid4())[:8])
     litellm_provider: str | None = None
-    retry_policy: RetryPolicy | None = None
+    # The framework's retry layer is the ONE retry system: provider SDK
+    # client retries default to 0 so the two never multiply. ``None``
+    # disables retries entirely.
+    retry_policy: RetryPolicy | None = field(default_factory=RetryPolicy)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         # Frozen + non-copyable SDK clients (AsyncOpenAI, etc.) — share by ref
@@ -79,6 +88,25 @@ class LLM(ABC):
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         yield NotImplemented
+
+    # --- Cost stamping ---
+
+    def _stamp_cost(self, response: Response) -> None:
+        """
+        Stamp the response's cost with THIS model's pricing identity.
+
+        Called by implementations at response-production time, so cost
+        attribution is correct however the LLM is composed — a FallbackLLM
+        member's response is priced as that member, not as whatever
+        ``model_name`` the outer layer reports.
+        """
+        usage = response.usage_with_cost
+        if usage is not None and usage.cost is None and self.model_name:
+            add_cost_to_usage(
+                usage,
+                model_name=self.model_name,
+                litellm_provider=self.litellm_provider,
+            )
 
     # --- API retry layer ---
 
@@ -256,7 +284,11 @@ class LLM(ABC):
                     yield event
                     last_seq = event.sequence_number
 
-                    if isinstance(event, ResponseCompleted):
+                    if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                        # Incomplete responses validate exactly like the
+                        # non-streaming path (which returns them as response
+                        # objects): a content filter raises a typed refusal
+                        # error; a truncated response reaches the caller.
                         self._validate_response(
                             event.response, tools=tools, output_schema=output_schema
                         )

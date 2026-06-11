@@ -374,10 +374,10 @@ def build_store_approval(
                 )
                 continue
             except asyncio.CancelledError:
-                decisions[call.call_id] = RejectToolContent(
-                    content=f"Approval for '{call.name}' was cancelled.",
-                )
-                continue
+                # The run was cancelled while parked at the approval gate —
+                # propagate the cancellation; converting it into a denial
+                # would keep the cancelled run going.
+                raise
             if isinstance(decision, ApprovalDeny):
                 decisions[call.call_id] = RejectToolContent(content=decision.reason)
             # ApprovalAllow → AllowTool default → no entry needed

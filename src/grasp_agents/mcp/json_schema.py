@@ -178,6 +178,32 @@ def _resolve_schema_node(
 
     json_type = schema.get("type", "string")
 
+    # Type-array form ("type": ["string", "null"]) — nullable / multi-typed
+    # params (draft-04 style, common in MCP servers). Resolve each member and
+    # union them; a crash here would take down the whole server connection.
+    if isinstance(json_type, list):
+        member_types: list[Any] = []
+        for member in json_type:  # pyright: ignore[reportUnknownVariableType]
+            if member == "null":
+                member_types.append(None.__class__)
+                continue
+            member_types.append(
+                _resolve_schema_node(
+                    name,
+                    {**schema, "type": member},
+                    defs,
+                    parent_name,
+                    resolving,
+                    cache,
+                )
+            )
+        if not member_types:
+            return str
+        result = member_types[0]
+        for member_type in member_types[1:]:
+            result |= member_type
+        return result
+
     # object with properties → nested model
     if json_type == "object" and "properties" in schema:
         nested_name = _to_pascal(name)

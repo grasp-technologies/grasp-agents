@@ -892,7 +892,14 @@ class TestDurableTaskRecords:
         assert "interrupted" in joined
         assert "slow" in joined
 
-        # The record is now terminal, so a second resume surfaces nothing.
+        # The record stays PENDING until a checkpoint persists the notice —
+        # a crash before that must re-surface it on the next resume.
+        recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
+        assert all(r.status == TaskStatus.PENDING for r in recs)
+
+        # flush_delivered (called after the agent checkpoint) makes the
+        # record terminal, so a second resume surfaces nothing.
+        await mgr2.flush_delivered(ctx=ctx)
         t3 = LLMAgentTranscript()
         t3.reset(instructions="sys")
         mgr3 = BackgroundTaskManager[None](

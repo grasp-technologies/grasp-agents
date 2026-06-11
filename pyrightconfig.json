@@ -15,7 +15,6 @@
         "node_modules",
         "venv",
         "src/grasp_agents/examples",
-        "src/grasp_agents/kits",
         "scripts"
     ],
     "extraPaths": [
@@ -27,7 +26,10 @@
     "executionEnvironments": [
         {
             "root": "tests",
-            "extraPaths": [".", "src"],
+            "extraPaths": [
+                ".",
+                "src"
+            ],
             "reportPrivateUsage": "none",
             "reportUnusedFunction": "none",
             "reportUnusedVariable": "none",

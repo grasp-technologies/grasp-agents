@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from copy import deepcopy
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
@@ -53,6 +52,7 @@ from grasp_agents.types.tool import (
 )
 from grasp_agents.untrusted_content import wrap_untrusted
 from grasp_agents.utils.streaming import stream_concurrent
+from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 from .background_tasks import BackgroundTaskManager
 from .loop_state import (
@@ -76,9 +76,7 @@ if TYPE_CHECKING:
     from grasp_agents.llm.llm import LLM
     from grasp_agents.run_context import RunContext
     from grasp_agents.tools.bash_common import ShellState
-    from grasp_agents.tools.bash_session import BashSessionHolder
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
-    from grasp_agents.tools.notebook_exec import KernelHolder
     from grasp_agents.types.hooks import (
         AfterLlmHook,
         AfterToolHook,
@@ -307,14 +305,6 @@ class AgentLoop[CtxT]:
         return self._agent_ctx.file_edit_state
 
     @property
-    def bash_session_holder(self) -> BashSessionHolder:
-        return self._agent_ctx.session_holder
-
-    @property
-    def kernel_holder(self) -> KernelHolder:
-        return self._agent_ctx.kernel_holder
-
-    @property
     def shell_state(self) -> ShellState:
         return self._agent_ctx.shell_state
 
@@ -423,8 +413,12 @@ class AgentLoop[CtxT]:
         exec_id: str,
     ) -> BaseModel:
         tool = self.tools[call.name]
-        args = json.loads(call.arguments)
-        llm_args = TypeAdapter(tool.llm_in_type).validate_python(args)
+        llm_args = validate_obj_from_json_or_py_string(
+            call.arguments,
+            schema=tool.llm_in_type,
+            from_substring=False,
+            strip_language_markdown=False,
+        )
         converter = self.tool_input_converters.get(tool.name)
 
         if converter is not None:
@@ -495,12 +489,11 @@ class AgentLoop[CtxT]:
                         # the next attempt's items don't pile on top.
                         pending = []
                     if isinstance(se, OutputItemDone):
-                        item = se.item
-                        if isinstance(
-                            item,
-                            (OutputMessageItem, FunctionToolCallItem, ReasoningItem),
-                        ):
-                            pending.append(item)
+                        # Mirror the non-streaming commit: every output item —
+                        # including server-tool records (web search) — enters
+                        # the transcript, or the histories diverge and
+                        # citation round-trips break.
+                        pending.append(se.item)
                     elif isinstance(se, ResponseCompleted):
                         response = se.response
 
@@ -683,7 +676,19 @@ class AgentLoop[CtxT]:
                 skipped[i] = True
                 continue
             tool = self.tools[call.name]
-            inp = await self._convert_tool_input(call, exec_id=exec_id)
+            try:
+                inp = await self._convert_tool_input(call, exec_id=exec_id)
+            except Exception as err:
+                # A bad input must become a tool_result the model can react
+                # to next turn, never an uncaught crash of the whole run.
+                outputs[i] = f"Tool '{call.name}' input is invalid: {err}"
+                logger.warning(
+                    "Tool '%s' (call_id %s) input conversion failed",
+                    call.name,
+                    call.call_id,
+                    exc_info=True,
+                )
+                continue
             if tool.auto_background_at is not None:
                 backgroundable.append((i, call, tool, inp))
             else:
@@ -836,10 +841,9 @@ class AgentLoop[CtxT]:
         async for event in stream:
             yield event
 
+        # ``query_llm`` already committed the response items to the transcript
+        # and recorded usage — do not repeat either here.
         assert stream.response is not None
-
-        self.transcript.update(stream.response.output_items)
-        self._process_response(stream.response)
 
         self.final_answer = self._extract_final_answer(
             response=stream.response,
@@ -847,6 +851,7 @@ class AgentLoop[CtxT]:
         )
         if self.final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, exec_id=exec_id)
+        self._close_stop_tool_calls(stream.response)
 
     # --- Main execution loop ---
 
@@ -912,16 +917,42 @@ class AgentLoop[CtxT]:
 
         return cancellations
 
+    def _close_stop_tool_calls(self, response: Response) -> None:
+        """
+        Pair every tool call in a stopping response with a synthetic output.
+
+        A stop extracted from a ``final_answer`` tool call (forced or
+        voluntary) — or from a custom extractor that stops despite pending
+        calls — leaves the calls in the transcript with no results. The next
+        run on the same transcript (or a durable resume) would then violate
+        the tool_call → tool_result pairing invariant.
+        """
+        closures = [
+            FunctionToolOutputItem.from_tool_result(
+                call_id=tc.call_id,
+                output=(
+                    "Final answer recorded."
+                    if tc.name == self._final_answer_tool.name
+                    else "[Tool call cancelled: agent stopped with a final answer]"
+                ),
+            )
+            for tc in response.tool_call_items
+        ]
+        if closures:
+            self.transcript.update(closures)
+
     # --- Per-state handlers (dispatched from execute_stream) ---
 
     async def _handle_stop(
         self,
         step: NextStepStop,
+        response: Response,
         *,
         exec_id: str,
     ) -> AsyncIterator[Event[Any]]:
         """``NextStepStop``: final answer extracted, end loop cleanly."""
         self.final_answer = step.final_answer
+        self._close_stop_tool_calls(response)
         await self.checkpoint(
             turn=self.turn,
             location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
@@ -1218,7 +1249,9 @@ class AgentLoop[CtxT]:
                 # ── Dispatch to per-state handler ──
 
                 if isinstance(step, NextStepStop):
-                    async for event in self._handle_stop(step, exec_id=exec_id):
+                    async for event in self._handle_stop(
+                        step, response, exec_id=exec_id
+                    ):
                         yield event
                     return
 
@@ -1244,16 +1277,15 @@ class AgentLoop[CtxT]:
                 self.turn += 1
 
         finally:
-            # Close the shell + kernels before cancel_all() so process cleanup
-            # always runs: cancel_all() may raise (store-save failures are
-            # intentionally un-caught), and a leaked shell/kernel must not be the
-            # price of that crash.
-            await self.bash_session_holder.close()
-            await self.kernel_holder.close()
-            code_kernel_holder = self._agent_ctx.code_kernel_holder
-            if code_kernel_holder is not None:
-                await code_kernel_holder.close()
-            await self.bg_tasks.cancel_all(ctx=self._ctx)
+            # Background tasks are cancelled first — one may be mid-command, holding
+            # a session/kernel lock that would stall the holder closes for the full
+            # command timeout. Holder cleanup then runs even if ``cancel_all()``
+            # raises (store-save failures are intentionally un-caught): a leaked
+            # shell/kernel must not be the price of that crash.
+            try:
+                await self.bg_tasks.cancel_all(ctx=self._ctx)
+            finally:
+                await self._agent_ctx.close()
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):

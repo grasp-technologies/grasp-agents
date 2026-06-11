@@ -275,18 +275,26 @@ def _tool_use_block_to_tool_call_item(
     )
 
 
-def _convert_usage(usage: AnthropicUsage) -> ResponseUsage:
-    # TODO: more cached token details (extend ResponseUsage?)
+def convert_usage(usage: AnthropicUsage) -> ResponseUsage:
+    """
+    Normalize Anthropic usage to OpenAI semantics.
 
-    input_tokens = usage.input_tokens
+    Anthropic's ``input_tokens`` EXCLUDES cache reads and writes;
+    ``ResponseUsage`` (and litellm pricing) treat ``input_tokens`` as the
+    total with cache reads/writes as subsets — passing the exclusive count
+    through makes pricing subtract the cache reads twice (negative cost).
+    """
+    cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", None) or 0
+    input_tokens = usage.input_tokens + cache_read + cache_write
     output_tokens = usage.output_tokens
-    cached = getattr(usage, "cache_read_input_tokens", None) or 0
 
     return ResponseUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=input_tokens + output_tokens,
-        input_tokens_details=InputTokensDetails(cached_tokens=cached),
+        input_tokens_details=InputTokensDetails(cached_tokens=cache_read),
+        cache_creation_tokens=cache_write,
         output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
     )
 
@@ -311,7 +319,7 @@ def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
     # NOTE: ignored AnthropicMessage fields: `container`, `model``, `stop_sequence`
 
     output_items = _anthropic_message_to_items(provider_output)
-    usage = _convert_usage(provider_output.usage)
+    usage = convert_usage(provider_output.usage)
     status, incomplete_details = _map_stop_reason(provider_output.stop_reason)
 
     return Response(

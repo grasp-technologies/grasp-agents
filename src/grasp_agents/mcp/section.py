@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..agent.prompt_builder import SystemPromptSection
 from ..types.content import CacheControl
+from ..untrusted_content import wrap_untrusted
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -58,7 +59,11 @@ def make_mcp_instructions_section(
             text = client.instructions
             if not text:
                 continue
-            blocks.append(f"### {client.name}\n\n{text.strip()}")
+            # Server-supplied text is third-party content: fence it so a
+            # malicious/compromised server's instructions read as data, not
+            # as trusted system-prompt directives.
+            fenced = wrap_untrusted(text.strip(), source=f"mcp:{client.name}")
+            blocks.append(f"### {client.name}\n\n{fenced}")
         if not blocks:
             return None
         return "\n\n".join([_BLOCK_HEADING, *blocks])

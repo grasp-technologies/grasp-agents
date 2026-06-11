@@ -305,19 +305,20 @@ class Processor[InT, OutT, CtxT](
             resolved_args = cast("list[InT]", in_args)
 
         elif in_args is not None:
-            raise ProcInputValidationError(
-                message=f"in_args are neither of type {self.in_type} "
-                f"nor a list of {self.in_type}.",
-                **err_kwargs,
-            )
+            # Not the declared type and not a list — let the validation below
+            # attempt coercion (e.g. a raw dict from a resumed checkpoint).
+            resolved_args = [cast("InT", in_args)]
 
         else:
             # 4) in_packet is provided
             resolved_args = list(cast("Packet[InT]", in_packet).payloads)
 
+        # Validate AND coerce: a resumed checkpoint round-trips payloads
+        # through JSON, so they arrive as raw dicts — the coerced values
+        # (not the raw inputs) must be what downstream code receives.
+        adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
         try:
-            for args in resolved_args:
-                TypeAdapter(self._in_type).validate_python(args)
+            resolved_args = [adapter.validate_python(args) for args in resolved_args]
         except PydanticValidationError as err:
             raise ProcInputValidationError(message=str(err), **err_kwargs) from err
 

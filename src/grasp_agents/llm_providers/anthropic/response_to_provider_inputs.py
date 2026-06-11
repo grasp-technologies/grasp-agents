@@ -8,11 +8,13 @@ takes it as a top-level parameter, not inside the messages array.
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from anthropic.types import (
     Base64ImageSourceParam,
+    Base64PDFSourceParam,
     CacheControlEphemeralParam,
     CitationWebSearchResultLocationParam,
     DocumentBlockParam,
@@ -26,6 +28,7 @@ from anthropic.types import (
     ToolResultBlockParam,
     ToolUseBlockParam,
     URLImageSourceParam,
+    URLPDFSourceParam,
     WebFetchBlockParam,
     WebFetchToolResultBlockParam,
     WebFetchToolResultErrorBlockParam,
@@ -35,9 +38,11 @@ from anthropic.types import (
 from anthropic.types.web_search_tool_request_error_param import (
     WebSearchToolRequestErrorParam,
 )
+from grasp_agents.llm_providers._file_helpers import file_part_data  # noqa: PLC2701
 from grasp_agents.types.content import (
     BASE64_DATA_PREFIX,
     CacheControl,
+    InputFile,
     InputImage,
     InputText,
     OutputMessageRefusal,
@@ -195,10 +200,59 @@ def _image_to_block(img: InputImage) -> ImageBlockParam:
     raise ValueError("InputImage must have either a URL or base64 data")
 
 
+def _file_to_block(file: InputFile) -> DocumentBlockParam:
+    cc = _to_cache_control(file.cache_control)
+
+    if file.file_data:
+        data, media_type = file_part_data(file.file_data, file.filename)
+        if media_type == "application/pdf":
+            return DocumentBlockParam(
+                type="document",
+                source=Base64PDFSourceParam(
+                    type="base64", media_type="application/pdf", data=data
+                ),
+                cache_control=cc,
+            )
+        if media_type.startswith("text/"):
+            return DocumentBlockParam(
+                type="document",
+                source=PlainTextSourceParam(
+                    type="text",
+                    media_type="text/plain",
+                    data=base64.b64decode(data).decode("utf-8", errors="replace"),
+                ),
+                cache_control=cc,
+            )
+        raise ValueError(
+            f"Unsupported InputFile media type for Anthropic: {media_type}"
+        )
+    if file.file_url:
+        return DocumentBlockParam(
+            type="document",
+            source=URLPDFSourceParam(type="url", url=file.file_url),
+            cache_control=cc,
+        )
+
+    raise ValueError("InputFile must have base64 file_data or a file_url")
+
+
 def _convert_content_parts(
-    content_parts: list[InputImage | InputText],
-) -> str | list[TextBlockParam | ImageBlockParam | WebSearchResultBlockParam]:
-    content: list[TextBlockParam | ImageBlockParam | WebSearchResultBlockParam] = []
+    content_parts: list[InputImage | InputText | InputFile],
+) -> (
+    str
+    | list[
+        TextBlockParam
+        | ImageBlockParam
+        | DocumentBlockParam
+        | WebSearchResultBlockParam
+    ]
+):
+    content: list[
+        TextBlockParam
+        | ImageBlockParam
+        | DocumentBlockParam
+        | WebSearchResultBlockParam
+    ] = []
     has_cache_control = False
 
     for part in content_parts:
@@ -214,10 +268,15 @@ def _convert_content_parts(
                 )
             )
 
-        elif isinstance(part, InputImage):  # type: ignore[unreachable]
+        elif isinstance(part, InputImage):
             if part.cache_control is not None:
                 has_cache_control = True
             content.append(_image_to_block(part))
+
+        elif isinstance(part, InputFile):  # type: ignore[unreachable]
+            if part.cache_control is not None:
+                has_cache_control = True
+            content.append(_file_to_block(part))
 
     # String shortcut only when there's no cache_control to carry
     if not has_cache_control and len(content) == 1 and content[0]["type"] == "text":
@@ -244,12 +303,15 @@ def _output_group_to_message_param(output_items: Sequence[OutputItem]) -> Messag
                 content.extend(_web_search_to_blocks(item))
 
         else:
+            # Tolerate empty arguments from older transcripts (a no-arg
+            # call); they must not crash the request build.
+            raw_args = item.arguments.strip()
             content.append(
                 ToolUseBlockParam(
                     type="tool_use",
                     id=item.call_id,
                     name=item.name,
-                    input=json.loads(item.arguments),
+                    input=json.loads(raw_args) if raw_args else {},
                     cache_control=_to_cache_control(item.cache_control),
                 )
             )

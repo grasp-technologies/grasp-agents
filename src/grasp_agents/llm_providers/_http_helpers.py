@@ -8,6 +8,8 @@ output across providers that all speak standard HTTP headers.
 
 from __future__ import annotations
 
+import math
+
 import httpx
 
 
@@ -19,12 +21,17 @@ def parse_retry_after(response: httpx.Response) -> float | None:
     §7.1.3) is not currently supported — returns ``None`` in that case,
     matching historical behavior of the provider-local helpers this
     function replaces. Returns ``None`` if the header is absent, blank,
-    or otherwise unparseable.
+    or otherwise unparseable. Non-finite and negative values are rejected:
+    this is the single source of ``LlmRateLimitError.retry_after``, so the
+    retry layer can trust the value to be a sane, finite delay.
     """
     raw = response.headers.get("retry-after")
     if raw is None:
         return None
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value

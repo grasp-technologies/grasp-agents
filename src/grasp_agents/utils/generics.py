@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import threading
+import types
 from typing import Any, ClassVar, Self, TypeVar, cast, get_args
+
+# Concrete specializations built by ``__class_getitem__``, keyed by
+# ``(origin class, params)`` so repeated subscriptions return the same class.
+_SPECIALIZATIONS: dict[tuple[type, tuple[Any, ...]], type] = {}
+_SPECIALIZATIONS_LOCK = threading.Lock()
+
+
+def _param_name(param: Any) -> str:
+    return getattr(param, "__name__", None) or repr(param)
 
 
 class AutoInstanceAttributesMixin:
@@ -54,14 +65,56 @@ class AutoInstanceAttributesMixin:
     def __class_getitem__(cls, params: Any) -> type[Self]:
         """
         Run when someone writes ``SomeGeneric[ConcreteTypes]``.
-        Ensures aliases receive the same resolved-type mapping.
-        """
-        specialized: type[Self] = cast("type[Self]", super().__class_getitem__(params))  # type: ignore[assignment]
-        specialized._resolved_instance_attr_types = cls._compute_resolved_attrs(  # noqa: SLF001
-            specialized
-        )
 
-        return specialized
+        A concrete subscription returns a real (cached) subclass carrying its
+        own resolved-type mapping. The typing alias must NOT be annotated in
+        place: a plain class's alias forwards attribute writes to the ORIGIN
+        class, so every subscription would overwrite one shared global —
+        breaking the store-alias-then-instantiate-later pattern and racing
+        across threads.
+        """
+        params_tuple: tuple[Any, ...] = (
+            cast("tuple[Any, ...]", params) if isinstance(params, tuple) else (params,)
+        )
+        if all(isinstance(p, TypeVar) for p in params_tuple):
+            # Pure re-parameterization (generic base lists, annotations) —
+            # nothing concrete to resolve. Partially-concrete subscriptions
+            # (e.g. ``LLMAgent[Input, str, CtxT]``) fall through: their
+            # concrete positions must resolve.
+            return cast("type[Self]", super().__class_getitem__(params))  # type: ignore[misc]
+
+        try:
+            cache_key = (cls, params_tuple)
+            with _SPECIALIZATIONS_LOCK:
+                cached = _SPECIALIZATIONS.get(cache_key)
+        except TypeError:  # unhashable parameter
+            cache_key = None
+            cached = None
+        if cached is not None:
+            return cast("type[Self]", cached)
+
+        alias = super().__class_getitem__(params)  # type: ignore[misc]
+        if isinstance(alias, type):
+            # Already a real class (e.g. a pydantic generic specialization) —
+            # annotating it is safe and shared with nothing else.
+            alias._resolved_instance_attr_types = cls._compute_resolved_attrs(  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+                alias
+            )
+            specialized = alias
+        else:
+            # ``__init_subclass__`` resolves the attrs from ``__orig_bases__``.
+            name = f"{cls.__name__}[{', '.join(_param_name(p) for p in params_tuple)}]"
+            specialized = types.new_class(name, (cast("type", alias),))
+            specialized.__module__ = cls.__module__
+            # Direct ``__args__`` / ``__origin__`` introspection still works
+            # (``typing.get_args`` does not — it only reads alias types).
+            specialized.__args__ = params_tuple  # pyright: ignore[reportAttributeAccessIssue]
+            specialized.__origin__ = cls  # pyright: ignore[reportAttributeAccessIssue]
+
+        if cache_key is not None:
+            with _SPECIALIZATIONS_LOCK:
+                specialized = _SPECIALIZATIONS.setdefault(cache_key, specialized)
+        return cast("type[Self]", specialized)
 
     @staticmethod
     def _compute_resolved_attrs(_cls: type) -> dict[str, type]:

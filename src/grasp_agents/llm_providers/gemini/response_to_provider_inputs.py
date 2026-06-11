@@ -12,8 +12,10 @@ import base64
 import json
 from typing import TYPE_CHECKING
 
+from grasp_agents.llm_providers._file_helpers import file_part_data  # noqa: PLC2701
 from grasp_agents.types.content import (
     BASE64_DATA_PREFIX,
+    InputFile,
     InputImage,
     InputText,
 )
@@ -112,6 +114,9 @@ def _input_to_user_content(item: InputMessageItem) -> GeminiContent:
         elif isinstance(part, InputImage):
             parts.append(_image_to_part(part))
 
+        else:  # InputFile — the remaining InputPart member
+            parts.append(_file_to_part(part))
+
     if not parts:
         parts.append(GeminiPart(text=item.text))
 
@@ -152,6 +157,21 @@ def _image_to_part(img: InputImage) -> GeminiPart:
         )
 
     raise ValueError("InputImage must have a URL, base64 data, or file_id")
+
+
+def _file_to_part(file: InputFile) -> GeminiPart:
+    if file.file_data:
+        data, mime_type = file_part_data(file.file_data, file.filename)
+        return GeminiPart(
+            inline_data=GeminiBlob(data=base64.b64decode(data), mime_type=mime_type)
+        )
+    if file.file_url:
+        _, mime_type = file_part_data("", file.filename)
+        return GeminiPart(
+            file_data=GeminiFileData(file_uri=file.file_url, mime_type=mime_type)
+        )
+
+    raise ValueError("InputFile must have base64 file_data or a file_url")
 
 
 def _tool_output_to_content(
@@ -222,11 +242,14 @@ def _message_to_part(item: OutputMessageItem) -> GeminiPart:
 
 
 def _tool_call_to_part(item: FunctionToolCallItem) -> GeminiPart:
+    # Tolerate empty/None-ish arguments from older transcripts; they mean a
+    # no-arg call and must not crash the request build.
+    raw = item.arguments.strip()
     part = GeminiPart(
         function_call=GeminiFunctionCall(
             id=item.call_id,
             name=item.name,
-            args=json.loads(item.arguments),
+            args=json.loads(raw) if raw and raw != "null" else {},
         )
     )
     psf = item.provider_specific_fields

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from grasp_agents.durability.context_serialization import ContextKind
 from grasp_agents.packet import Packet
-from grasp_agents.types.events import ProcPacketOutEvent
+from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
@@ -209,3 +209,6 @@ class RunnerCheckpoint(ProcessorCheckpoint):
 
     pending_events: list[ProcPacketOutEvent]
     active_steps: dict[str, int] = Field(default_factory=dict)
+    # The run's final (END-routed) result, set when the run completes — lets a
+    # resume of a completed session return the result instead of failing.
+    final_event: RunPacketOutEvent | None = None

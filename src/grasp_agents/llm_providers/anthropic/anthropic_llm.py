@@ -20,6 +20,7 @@ from grasp_agents.llm.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
+from grasp_agents.llm.model_info import get_model_capabilities
 
 from .error_mapping import map_api_error
 from .llm_event_converters import AnthropicStreamConverter
@@ -48,7 +49,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_TOKENS = 65536
+# Fallback ``max_tokens`` when the model's output cap is unknown. Known models
+# use their own cap from the pricing/capability registry — sending a value
+# above the cap is a hard 400 on the Messages API.
+DEFAULT_MAX_TOKENS = 32768
 
 WebSearchToolParam = WebSearchTool20260209Param | WebSearchTool20250305Param
 WebFetchToolParam = WebFetchTool20260209Param
@@ -67,9 +71,15 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
 class AnthropicLLM(CloudLLM):
     litellm_provider: str | None = "anthropic"
     llm_settings: AnthropicLLMSettings | None = None
-    anthropic_client_timeout: float = 60.0
-    anthropic_client_max_retries: int = 2
+    # Matches the SDK default. A long generation (large max_tokens, extended
+    # thinking) easily exceeds one minute; a short client timeout makes it
+    # fail deterministically through every retry and fallback.
+    anthropic_client_timeout: float = 600.0
+    # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
+    # system, and a non-zero value here would multiply with it.
+    anthropic_client_max_retries: int = 0
     client: AsyncAnthropic = field(init=False)
+    _default_max_tokens: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -87,8 +97,11 @@ class AnthropicLLM(CloudLLM):
             max_retries=self.anthropic_client_max_retries,
         )
 
+        cap = get_model_capabilities(self.model_name, "anthropic").max_output_tokens
+
         object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
+        object.__setattr__(self, "_default_max_tokens", cap or DEFAULT_MAX_TOKENS)
 
     # --- Input preparation ---
 
@@ -161,7 +174,9 @@ class AnthropicLLM(CloudLLM):
         api_output_schema: Any | None = None,
         **api_llm_settings: Any,
     ) -> AnthropicMessage:
-        max_tokens: int = api_llm_settings.pop("max_tokens", DEFAULT_MAX_TOKENS)
+        max_tokens: int = (
+            api_llm_settings.pop("max_tokens", None) or self._default_max_tokens
+        )
 
         if self.apply_output_schema_via_provider:
             return await self.client.messages.parse(
@@ -194,7 +209,9 @@ class AnthropicLLM(CloudLLM):
         api_output_schema: Any | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[AnthropicStreamEvent]:
-        max_tokens: int = api_llm_settings.pop("max_tokens", DEFAULT_MAX_TOKENS)
+        max_tokens: int = (
+            api_llm_settings.pop("max_tokens", None) or self._default_max_tokens
+        )
 
         async def iterator() -> AsyncIterator[AnthropicStreamEvent]:
             async with self.client.messages.stream(

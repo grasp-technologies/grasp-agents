@@ -8,7 +8,7 @@ from grasp_agents.utils.streaming import stream_concurrent
 from ..durability.checkpoints import CheckpointKind, ParallelCheckpoint
 from ..packet import Packet
 from ..run_context import RunContext, shared_child_ctx
-from ..types.errors import ProcInputValidationError
+from ..types.errors import ProcInputValidationError, ProcRunError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.io import ProcName
 from ..utils.callbacks import is_method_overridden
@@ -222,6 +222,22 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
             if merged.errors:
                 failed = [pending_indices[e.index] for e in merged.errors]
+                if not self.drop_failed:
+                    # Failures must surface, not flow downstream as ``None``
+                    # payloads; opting into ``drop_failed`` drops them instead.
+                    detail = "; ".join(
+                        f"index {pending_indices[e.index]}: {e.exception!r}"
+                        for e in merged.errors
+                    )
+                    raise ProcRunError(
+                        proc_name=self.name,
+                        exec_id=exec_id,
+                        message=(
+                            f"{len(merged.errors)}/{len(all_in_args)} parallel "
+                            f"copies of '{self._subproc.name}' failed ({detail}). "
+                            "Set drop_failed=True to drop failed copies instead."
+                        ),
+                    ) from merged.errors[0].exception
                 logger.warning(
                     "ParallelProcessor %s: %d/%d copies failed (indices %s)",
                     self.name,
@@ -230,12 +246,13 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                     failed,
                 )
 
-        # Emit results in input order
-
-        # TODO: Consider returning error instances instead of None for failed copies
-        out_packets = [out_packets_map[i] for i in sorted(out_packets_map)]
-        if self.drop_failed:
-            out_packets = [p for p in out_packets if p is not None]
+        # Emit results in input order; failed copies are either raised above
+        # (default) or dropped here (drop_failed=True), never ``None`` payloads.
+        out_packets = [
+            p
+            for p in (out_packets_map[i] for i in sorted(out_packets_map))
+            if p is not None
+        ]
 
         for p in self._join_payloads_from_packets(out_packets):
             yield ProcPayloadOutEvent(data=p, source=self.name, exec_id=exec_id)

@@ -10,6 +10,37 @@ from .types.response import Response, ResponseUsage
 logger = logging.getLogger(__name__)
 
 
+def add_cost_to_usage(
+    usage: ResponseUsage,
+    model_name: str,
+    litellm_provider: str | None,
+) -> None:
+    """Stamp ``usage.cost`` from litellm pricing data (no-op when unmapped)."""
+    # Prefixed names like "openai/gpt-4o" (OpenRouter-style): use the prefix
+    # as the provider hint only when none was given. With an explicit
+    # provider, the full (possibly prefixed) name is what litellm expects —
+    # e.g. provider "openrouter" + model "openai/gpt-4o".
+    if "/" in model_name and litellm_provider is None:
+        litellm_provider, model_name = model_name.split("/", 1)
+
+    try:
+        prompt_cost, completion_cost = cost_per_token(
+            model=model_name,
+            prompt_tokens=usage.input_tokens,
+            completion_tokens=usage.output_tokens,
+            cache_read_input_tokens=usage.input_tokens_details.cached_tokens,
+            cache_creation_input_tokens=usage.cache_creation_tokens,
+            custom_llm_provider=litellm_provider,
+        )
+        usage.cost = prompt_cost + completion_cost
+    except Exception:
+        logger.warning(
+            "No pricing data for model %s (provider %s); cost not tracked",
+            model_name,
+            litellm_provider,
+        )
+
+
 class UsageTracker(BaseModel):
     usages: dict[str, ResponseUsage] = Field(default_factory=dict)
 
@@ -67,21 +98,6 @@ class UsageTracker(BaseModel):
         model_name: str,
         litellm_provider: str | None,
     ) -> None:
-        # OpenRouter-style names like "openai/gpt-4o": strip the prefix,
-        # use it as the provider hint for cost lookup.
-        if "/" in model_name:
-            prefix, model_name = model_name.rsplit("/", 1)
-            if litellm_provider is None:
-                litellm_provider = prefix
-
-        try:
-            prompt_cost, completion_cost = cost_per_token(
-                model=model_name,
-                prompt_tokens=usage.input_tokens,
-                completion_tokens=usage.output_tokens,
-                cache_read_input_tokens=usage.input_tokens_details.cached_tokens,
-                custom_llm_provider=litellm_provider,
-            )
-            usage.cost = prompt_cost + completion_cost
-        except Exception:
-            logger.debug("No pricing data for model %s", model_name)
+        add_cost_to_usage(
+            usage, model_name=model_name, litellm_provider=litellm_provider
+        )

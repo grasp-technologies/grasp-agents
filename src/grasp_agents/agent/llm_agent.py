@@ -664,6 +664,10 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             exec_context_id=exec_context_id,
         )
         await self._serialize_agent_checkpoint(self._ctx, checkpoint)
+        # The transcript persisted above contains any background-task notes
+        # delivered so far — only now is it safe to flip their durable records
+        # to DELIVERED (see ``BackgroundTaskManager.flush_delivered``).
+        await self._loop.bg_tasks.flush_delivered(ctx=self._ctx)
 
     async def _prepare_transcript(
         self,
@@ -681,20 +685,24 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
         fresh_init = self.reset_transcript_on_run or self.transcript.is_empty
-        if fresh_init:
-            # A from-scratch transcript invalidates any persisted message-log;
-            # the next checkpoint rewrites it rather than appending a delta onto
-            # stale records (e.g. reset_transcript_on_run over a resumed session).
-            self._log_dirty = True
-
-        if fresh_init and not self._has_build_transcript_impl:
-            self.transcript.reset(sys_prompt_parts)
-        elif self._has_build_transcript_impl:
+        if self._has_build_transcript_impl:
+            # The builder runs on EVERY step: it owns transcript preparation —
+            # seeding a fresh history and/or processing the accumulated one
+            # between steps (pruning, truncation, context management). It may
+            # rewrite already-persisted messages, so the message-log is
+            # rewritten on the next checkpoint.
             self.build_transcript_impl(
                 instructions=sys_prompt_parts,
                 in_args=in_args,
                 exec_id=exec_id,
             )
+            self._log_dirty = True
+        elif fresh_init:
+            # A from-scratch transcript invalidates any persisted message-log;
+            # the next checkpoint rewrites it rather than appending a delta onto
+            # stale records (e.g. reset_transcript_on_run over a resumed session).
+            self.transcript.reset(sys_prompt_parts)
+            self._log_dirty = True
 
         messages_to_expose: list[InputMessageItem] = []
         if fresh_init:
@@ -787,7 +795,21 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Always load checkpoint (restores memory, background tasks, turn).
         checkpoint = await self.load_checkpoint(exec_id=exec_id)
 
-        is_redelivery = (
+        # A direct run with no inputs at all resumes the session — continue
+        # the loop on the restored (or live) transcript instead of rendering
+        # an input prompt from nothing.
+        pure_resume = step is None and chat_inputs is None and inp is None
+        if pure_resume and self.transcript.is_empty:
+            raise ProcInputValidationError(
+                proc_name=self.name,
+                exec_id=exec_id,
+                message=(
+                    "No inputs were provided and there is no session "
+                    "(checkpoint or live transcript) to resume."
+                ),
+            )
+
+        is_redelivery = pure_resume or (
             step is not None and checkpoint is not None and checkpoint.step == step
         )
 
@@ -798,36 +820,61 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
             return
 
-        # New step (or no checkpoint): memorize inputs and reset turn.
-        # Interrupted re-delivery (same step, no output): memory already
-        # loaded from checkpoint, skip memorization.
-        if not is_redelivery:
-            self._loop.turn = 0
-            messages_to_expose = await self._prepare_transcript(
-                chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
+        # Snapshot for rollback: a failed run must not leave a half-mutated
+        # transcript behind (an input without a response, tool calls without
+        # results) — a reused instance (chat-turn loop, ``with_retry``
+        # re-entry) would then fail pairing validation on every later run.
+        # The agent-context state paired with the transcript (file-read
+        # ledger, shell cwd, deferred task-record flips) rolls back with it.
+        saved_messages = list(self.transcript.messages)
+        saved_turn = self._loop.turn
+        saved_ctx_state = self._loop.agent_ctx.snapshot_state()
+
+        try:
+            # New step (or no checkpoint): memorize inputs and reset turn.
+            # Interrupted re-delivery (same step, no output): memory already
+            # loaded from checkpoint, skip memorization.
+            if not is_redelivery:
+                self._loop.turn = 0
+                messages_to_expose = await self._prepare_transcript(
+                    chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
+                )
+                self._print_messages(messages_to_expose, exec_id=exec_id)
+                for message in messages_to_expose:
+                    if message.role == "system":
+                        yield SystemMessageEvent(
+                            data=message, source=self.name, exec_id=exec_id
+                        )
+                    # TODO: set source
+                    elif message.role == "user":
+                        yield UserMessageEvent(
+                            data=message,
+                            source=None,
+                            destination=self.name,
+                            exec_id=exec_id,
+                        )
+
+            async for event in self._loop.execute_stream(exec_id=exec_id):
+                yield event
+
+            assert self._loop.final_answer is not None
+            output = self.parse_output(
+                self._loop.final_answer, in_args=inp, exec_id=exec_id
             )
-            self._print_messages(messages_to_expose, exec_id=exec_id)
-            for message in messages_to_expose:
-                if message.role == "system":
-                    yield SystemMessageEvent(
-                        data=message, source=self.name, exec_id=exec_id
-                    )
-                # TODO: set source
-                elif message.role == "user":
-                    yield UserMessageEvent(
-                        data=message,
-                        source=None,
-                        destination=self.name,
-                        exec_id=exec_id,
-                    )
 
-        async for event in self._loop.execute_stream(exec_id=exec_id):
-            yield event
+        except GeneratorExit:
+            # Consumer stopped iterating — not a failed run; keep state as-is.
+            raise
 
-        assert self._loop.final_answer is not None
-        output = self.parse_output(
-            self._loop.final_answer, in_args=inp, exec_id=exec_id
-        )
+        except BaseException:
+            self.transcript.messages = saved_messages
+            self._loop.turn = saved_turn
+            self._loop.agent_ctx.restore_state(saved_ctx_state)
+            # Mid-run checkpoints may have appended the rolled-back suffix to
+            # the durable message-log; rewrite it on the next save.
+            self._log_dirty = True
+            raise
+
         yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 
         self.step += 1

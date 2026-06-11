@@ -178,23 +178,29 @@ async def _consume(
             failed = True
 
     if store is not None and task_key is not None:
-        existing = await store.load(task_key)
-        if existing:
-            record = TaskRecord.model_validate_json(existing)
-            if failed:
-                outcome = {
-                    "status": TaskStatus.FAILED,
-                    "error": _serialize_result(result),
-                }
-            else:
-                outcome = {
-                    "status": TaskStatus.COMPLETED,
-                    "result": _serialize_result(result),
-                }
-            record = record.model_copy(
-                update={**outcome, "updated_at": datetime.now(UTC)}
-            )
-            await store.save(task_key, record.model_dump_json().encode())
+        await _persist_outcome(store, task_key, result, failed=failed)
+
+
+async def _persist_outcome(
+    store: CheckpointStore, task_key: str, result: Any, *, failed: bool
+) -> None:
+    """Flip an existing ``TaskRecord`` to its terminal outcome (no-op if absent)."""
+    existing = await store.load(task_key)
+    if not existing:
+        return
+    record = TaskRecord.model_validate_json(existing)
+    if failed:
+        outcome = {
+            "status": TaskStatus.FAILED,
+            "error": _serialize_result(result),
+        }
+    else:
+        outcome = {
+            "status": TaskStatus.COMPLETED,
+            "result": _serialize_result(result),
+        }
+    record = record.model_copy(update={**outcome, "updated_at": datetime.now(UTC)})
+    await store.save(task_key, record.model_dump_json().encode())
 
 
 def _result_of(events: list[Event[Any]]) -> tuple[Any, bool]:
@@ -294,6 +300,10 @@ class BackgroundTaskManager[CtxT]:
         # completion seam): :meth:`drain` pops them to deliver notes, and
         # :meth:`wait_idle` blocks on the next one — one queue, every task kind.
         self._completions: asyncio.Queue[str] = asyncio.Queue()
+        # Deferred record updates (task_key → field update), applied by
+        # :meth:`flush_delivered` once a checkpoint has persisted the
+        # transcript that carries the corresponding notification.
+        self._pending_delivered: dict[str, dict[str, Any]] = {}
 
     @property
     def has_pending(self) -> bool:
@@ -417,12 +427,17 @@ class BackgroundTaskManager[CtxT]:
 
         # abg > 0: run in the foreground, racing the deadline. ``started_at`` is
         # stamped at launch (not at sideline), so a backgrounded task's reported
-        # runtime includes its foreground portion.
+        # runtime includes its foreground portion. ``_consume`` gets the store
+        # key up front: if the call backgrounds, its eventual finish must flip
+        # the pending record to COMPLETED/FAILED (a foreground finish writes
+        # nothing — no record exists yet).
         stream = tool.run_stream(
             inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
         )
         started_at = time.monotonic()
-        task = asyncio.create_task(_consume(stream, events))
+        task = asyncio.create_task(
+            _consume(stream, events, store=ctx.checkpoint_store, task_key=task_key)
+        )
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=abg)
         except TimeoutError:
@@ -453,6 +468,14 @@ class BackgroundTaskManager[CtxT]:
                 await self._write_pending_record(
                     task_key, call, task_id, ctx=ctx, output_path=log_path
                 )
+                if task.done() and ctx.checkpoint_store is not None:
+                    # The call finished while the pending record was being
+                    # written — ``_consume``'s own outcome write found no
+                    # record to update, so persist the outcome here.
+                    result, failed = _result_of(events)
+                    await _persist_outcome(
+                        ctx.checkpoint_store, task_key, result, failed=failed
+                    )
             note = self._launch_note(
                 tool, task_id, backgrounded_after=abg, log_path=log_path
             )
@@ -466,6 +489,7 @@ class BackgroundTaskManager[CtxT]:
             raise
 
         result, _ = _result_of(events)
+
         return result, None
 
     def _launch_note(
@@ -829,23 +853,18 @@ class BackgroundTaskManager[CtxT]:
             )
             self._transcript.update([notification])
 
-            # Durable record → DELIVERED (resumable tasks only). Records are kept
-            # for post-hoc observability; reclaim with ``prune_delivered``.
+            # Durable record → DELIVERED (resumable tasks only). Deferred to
+            # :meth:`flush_delivered` after the next checkpoint persists the
+            # transcript holding this note: flipping now would lose the
+            # outcome on a crash before that checkpoint (resume skips
+            # DELIVERED records). Records are kept for post-hoc
+            # observability; reclaim with ``prune_delivered``.
             if ctx.checkpoint_store is not None and pt.task_key is not None:
-                existing = await ctx.checkpoint_store.load(pt.task_key)
-                if existing:
-                    record = TaskRecord.model_validate_json(existing)
-                    record = record.model_copy(
-                        update={
-                            "status": TaskStatus.DELIVERED,
-                            "result": None if failed else _serialize_result(result),
-                            "error": _serialize_result(result) if failed else None,
-                            "updated_at": datetime.now(UTC),
-                        }
-                    )
-                    await ctx.checkpoint_store.save(
-                        pt.task_key, record.model_dump_json().encode()
-                    )
+                self._pending_delivered[pt.task_key] = {
+                    "status": TaskStatus.DELIVERED,
+                    "result": None if failed else _serialize_result(result),
+                    "error": _serialize_result(result) if failed else None,
+                }
 
             yield BackgroundTaskCompletedEvent(
                 source=self._agent_name,
@@ -988,13 +1007,10 @@ class BackgroundTaskManager[CtxT]:
                 )
                 # The interrupted notice was delivered → terminal (DELIVERED),
                 # not FAILED (which now means an errored task, re-injected below).
-                record = record.model_copy(
-                    update={
-                        "status": TaskStatus.DELIVERED,
-                        "error": "Interrupted: session restarted",
-                        "updated_at": datetime.now(UTC),
-                    }
-                )
+                update = {
+                    "status": TaskStatus.DELIVERED,
+                    "error": "Interrupted: session restarted",
+                }
             elif record.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
                 # Finished (ok or errored) but the crash kept ``drain`` from
                 # delivering it — re-inject the outcome, then mark it delivered.
@@ -1010,16 +1026,13 @@ class BackgroundTaskManager[CtxT]:
                     ),
                     role="user",
                 )
-                record = record.model_copy(
-                    update={
-                        "status": TaskStatus.DELIVERED,
-                        "updated_at": datetime.now(UTC),
-                    }
-                )
+                update = {"status": TaskStatus.DELIVERED}
             else:
                 continue
 
-            await store.save(key, record.model_dump_json().encode())
+            # Deferred to ``flush_delivered`` (after the checkpoint that
+            # persists the notice) — same loss-window reasoning as ``drain``.
+            self._pending_delivered[key] = update
             notifications.append(notification)
 
         if notifications:
@@ -1039,6 +1052,44 @@ class BackgroundTaskManager[CtxT]:
         logger.info(
             "Handled %d task records for session %s", len(keys), ctx.session_key
         )
+
+    def export_pending_delivered(self) -> dict[str, dict[str, Any]]:
+        """The deferred record updates not yet flushed (rollback snapshot)."""
+        return dict(self._pending_delivered)
+
+    def restore_pending_delivered(self, pending: dict[str, dict[str, Any]]) -> None:
+        """
+        Restore a :meth:`export_pending_delivered` snapshot — a failed run's
+        deferred flips are discarded so records whose notes were rolled back
+        stay COMPLETED for a later resume to re-inject.
+        """
+        self._pending_delivered = dict(pending)
+
+    async def flush_delivered(self, *, ctx: RunContext[CtxT]) -> None:
+        """
+        Apply deferred terminal record updates (→ ``DELIVERED``).
+
+        Called after a checkpoint has persisted the transcript containing the
+        corresponding completion/interruption notes. Flipping the records any
+        earlier opens a loss window: a crash between the flip and the next
+        checkpoint leaves a DELIVERED record whose note never became durable,
+        so resume would never re-inject the outcome. (A crash between the
+        checkpoint and this flush yields at worst a re-injected note — a
+        duplicate beats a lost outcome.)
+        """
+        store = ctx.checkpoint_store
+        if store is None or not self._pending_delivered:
+            return
+        pending, self._pending_delivered = self._pending_delivered, {}
+        for key, update in pending.items():
+            existing = await store.load(key)
+            if not existing:
+                continue
+            record = TaskRecord.model_validate_json(existing)
+            record = record.model_copy(
+                update={**update, "updated_at": datetime.now(UTC)}
+            )
+            await store.save(key, record.model_dump_json().encode())
 
     # --- Offline cleanup ---
 

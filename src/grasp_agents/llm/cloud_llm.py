@@ -1,7 +1,7 @@
 import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NoReturn, Required, TypedDict
 
 import httpx
@@ -9,8 +9,8 @@ from pydantic import BaseModel
 
 from ..rate_limiting.rate_limiter import RateLimiter, limit_rate
 from ..types.items import InputItem
-from ..types.llm_errors import LlmError, LlmErrorTuple
-from ..types.llm_events import LlmEvent
+from ..types.llm_errors import LlmError, LlmErrorTuple, LlmInternalServerError
+from ..types.llm_events import LlmEvent, ResponseCompleted, ResponseFailed
 from ..types.response import Response
 from ..types.tool import BaseTool, ToolChoice
 from .llm import LLM, LLMSettings
@@ -44,7 +44,9 @@ class ApiCallParams(TypedDict, total=False):
 @dataclass(frozen=True)
 class CloudLLM(LLM):
     llm_settings: CloudLLMSettings | None = None
-    api_provider: APIProvider | None = None
+    # repr=False: carries the resolved API key — must not leak via repr/str
+    # (logs, tracebacks, printed configs).
+    api_provider: APIProvider | None = field(default=None, repr=False)
     rate_limiter: LLMRateLimiter | None = None
     apply_output_schema_via_provider: bool = False
     apply_tool_call_schema_via_provider: bool = False
@@ -158,12 +160,17 @@ class CloudLLM(LLM):
 
         try:
             raw = await self._get_api_response(**api_kwargs, **extra_settings)
+            # Conversion is inside the mapped region: a 200 response carrying
+            # an error body surfaces here (e.g. ``CompletionError``) and must
+            # reach retry/fallback as a typed LlmError, not a bare exception.
+            response = self._convert_api_response(raw)
         except LlmErrorTuple:
             raise
         except Exception as err:
             self._raise_mapped(err)
 
-        return self._convert_api_response(raw)
+        self._stamp_cost(response)
+        return response
 
     async def _generate_response_stream_once(
         self,
@@ -207,4 +214,21 @@ class CloudLLM(LLM):
                 raise
             except Exception as err:
                 self._raise_mapped(err)
+            if isinstance(event, ResponseFailed):
+                # A terminal failure delivered as a stream event, not an
+                # exception — surface it as a typed, retryable error here so
+                # the retry/fallback layers engage (and the caller never ends
+                # up with no final response at all).
+                error = event.response.error
+                message = error.message if error else "response failed"
+                raise LlmInternalServerError(
+                    f"Streamed response failed: {message}",
+                    response=httpx.Response(
+                        status_code=502,
+                        request=httpx.Request("POST", "https://api.openai.com/v1"),
+                    ),
+                    body=None,
+                )
+            if isinstance(event, ResponseCompleted):
+                self._stamp_cost(event.response)
             yield event

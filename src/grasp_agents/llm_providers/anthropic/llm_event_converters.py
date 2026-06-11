@@ -13,10 +13,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 
 from anthropic.types import (
     CitationsWebSearchResultLocation as _AnthropicWebSearchCitation,
@@ -33,9 +29,9 @@ from grasp_agents.types.items import (
     SearchSource,
     WebSearchCallItem,
 )
-from grasp_agents.types.response import ResponseUsage
 
 from . import AnthropicStreamEvent
+from .provider_output_to_response import convert_usage
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -110,17 +106,9 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
             id=msg.id, model=msg.model, created_at=time.time()
         )
 
-        # Capture initial usage from message_start
-        usage = msg.usage
-        self._usage = ResponseUsage(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.input_tokens + usage.output_tokens,
-            input_tokens_details=InputTokensDetails(
-                cached_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0
-            ),
-            output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
-        )
+        # Capture initial usage from message_start (cache-normalized — see
+        # ``convert_usage``).
+        self._usage = convert_usage(msg.usage)
 
     def _on_block_start(
         self, event: AnthropicContentBlockStartEvent
@@ -266,12 +254,11 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         if msg_usage and self._usage:
             output_tokens = getattr(msg_usage, "output_tokens", None)
             if output_tokens is not None:
-                self._usage = ResponseUsage(
-                    input_tokens=self._usage.input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=self._usage.input_tokens + output_tokens,
-                    input_tokens_details=self._usage.input_tokens_details,
-                    output_tokens_details=self._usage.output_tokens_details,
+                self._usage = self._usage.model_copy(
+                    update={
+                        "output_tokens": output_tokens,
+                        "total_tokens": self._usage.input_tokens + output_tokens,
+                    }
                 )
 
     # ==== Web search ====

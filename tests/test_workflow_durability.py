@@ -425,11 +425,10 @@ class TestParallelProcessorCheckpoint:
     @pytest.mark.asyncio
     async def test_resume_skips_completed_copies(self) -> None:
         """
-        After partial completion, resume only runs pending copies.
+        After a partial failure, resume only runs the pending copies.
 
-        stream_concurrent swallows per-copy errors, so the first run
-        completes with None for the failed copy. On resume, only that
-        copy is re-run.
+        A failed copy fails the whole run (loudly), but the completed copies'
+        checkpoint survives — resume re-runs only the failed one.
         """
         store = InMemoryCheckpointStore()
 
@@ -441,10 +440,11 @@ class TestParallelProcessorCheckpoint:
         )
         par1.on_adopted(ctx=ctx1)
 
-        # stream_concurrent catches the error — run completes
-        await run_parallel(par1, ctx1, in_args=["a", "FAIL"])
+        # The failed copy surfaces as an error (no silent None payloads) …
+        with pytest.raises(ProcRunError):
+            await run_parallel(par1, ctx1, in_args=["a", "FAIL"])
 
-        # Checkpoint: only index 0 completed
+        # … but the checkpoint survives: only index 0 completed
         raw = await store.load("par-2/parallel/worker_par")
         assert raw is not None
         cp = ParallelCheckpoint.model_validate_json(raw)
@@ -490,11 +490,24 @@ class TestParallelProcessorCheckpoint:
         assert subproc2.call_count == 0
 
     @pytest.mark.asyncio
+    async def test_drop_failed_drops_failed_copies(self) -> None:
+        """drop_failed=True drops failures — no ``None`` payloads downstream."""
+        subproc = InputFailProcessor("worker", fail_input="FAIL")
+        par = ParallelProcessor[str, str, None](subproc=subproc, drop_failed=True)
+        ctx: RunContext[None] = RunContext(state=None)
+
+        result = await run_parallel(par, ctx, in_args=["ok", "FAIL"])
+
+        assert result == ["ok->worker_0"]
+        assert None not in result
+
+    @pytest.mark.asyncio
     async def test_checkpoint_stores_input_packet(self) -> None:
         """Checkpoint correctly round-trips the input packet."""
         store = InMemoryCheckpointStore()
         subproc = InputFailProcessor("worker", fail_input="FAIL")
-        par = ParallelProcessor[str, str, None](subproc=subproc)
+        # drop_failed: the failed copy is dropped instead of failing the run.
+        par = ParallelProcessor[str, str, None](subproc=subproc, drop_failed=True)
         ctx: RunContext[None] = RunContext(
             state=None, checkpoint_store=store, session_key="par-rt"
         )

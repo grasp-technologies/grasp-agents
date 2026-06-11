@@ -29,6 +29,10 @@ class RetryPolicy:
     max_delay: float = 60.0
     exponential_base: float = 2.0
     jitter: float = 0.5
+    # Ceiling on a server-provided ``Retry-After`` hint. Genuine rate-limit
+    # hints are seconds to minutes; anything larger is effectively an outage
+    # and should fail over (FallbackLLM) instead of parking the run for hours.
+    max_retry_after: float = 300.0
 
     # --- Validation error retries ---
     validation_retries: int = 0
@@ -52,7 +56,8 @@ class RetryPolicy:
         jittered = base + random.uniform(0, base * self.jitter)  # noqa: S311
 
         if isinstance(error, LlmRateLimitError) and error.retry_after:
-            return max(error.retry_after, base) + random.uniform(  # noqa: S311
+            server_delay = min(error.retry_after, self.max_retry_after)
+            return max(server_delay, base) + random.uniform(  # noqa: S311
                 0, base * self.jitter
             )
 

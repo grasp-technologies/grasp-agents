@@ -61,6 +61,14 @@ def get_openai_compatible_providers() -> list[APIProvider]:
     ]
 
 
+# Compat-prefix name → litellm provider name for pricing lookups.
+_COMPAT_LITELLM_PROVIDERS = {
+    "openai": "openai",
+    "gemini_openai": "gemini",
+    "openrouter": "openrouter",
+}
+
+
 class OpenAILLMSettings(CloudLLMSettings, total=False):
     max_completion_tokens: int | None
     seed: int | None
@@ -99,7 +107,9 @@ class OpenAILLM(CloudLLM):
     litellm_provider: str | None = "openai"
     llm_settings: OpenAILLMSettings | None = None
     openai_client_timeout: float = 60.0
-    openai_client_max_retries: int = 2
+    # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
+    # system, and a non-zero value here would multiply with it.
+    openai_client_max_retries: int = 0
     extra_openai_client_params: dict[str, Any] | None = None
     client: AsyncOpenAI = field(init=False)
 
@@ -127,6 +137,13 @@ class OpenAILLM(CloudLLM):
                     f"{', '.join(compat_providers_map.keys())}"
                 )
             _api_provider = compat_providers_map[_provider_name]
+            # The prefix selects the real provider; cost lookup must use its
+            # litellm name, not "openai" (the wire protocol).
+            object.__setattr__(
+                self,
+                "litellm_provider",
+                _COMPAT_LITELLM_PROVIDERS.get(_provider_name, _provider_name),
+            )
 
         else:
             raise ValueError(

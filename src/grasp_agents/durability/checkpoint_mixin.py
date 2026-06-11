@@ -29,10 +29,11 @@ class CheckpointPersistMixin:
 
     # Append-only message-log bookkeeping. Only meaningful for the agent
     # checkpoint (the only message-bearing one); harmless defaults elsewhere.
-    # ``_persisted_message_count`` is the offset already on the log;
-    # ``_log_dirty`` is set when the transcript is rebuilt from scratch, so the
-    # next checkpoint rewrites the log instead of appending a stale delta.
-    _persisted_message_count: int = 0
+    # ``_persisted_messages`` holds the exact message objects already on the
+    # log (strong refs, so identity comparison stays sound); ``_log_dirty`` is
+    # set when the transcript is rebuilt from scratch, so the next checkpoint
+    # rewrites the log instead of appending a stale delta.
+    _persisted_messages: tuple[Any, ...] = ()
     _log_dirty: bool = False
 
     def _checkpoint_store_key(self, ctx: RunContext[Any]) -> str | None:
@@ -81,11 +82,17 @@ class CheckpointPersistMixin:
         """
         Persist an :class:`AgentCheckpoint` as message-log + head.
 
-        Appends only the messages added since the last checkpoint (or rewrites
-        the whole log after a from-scratch transcript), then overwrites the
-        small head blob with ``messages`` excluded. Log is written before the
-        head so the head's ``message_count`` only ever undercounts a crash —
-        never points past what is on the log.
+        Appends only the messages added since the last checkpoint, then
+        overwrites the small head blob with ``messages`` excluded. Log is
+        written before the head so the head's ``message_count`` only ever
+        undercounts a crash — never points past what is on the log.
+
+        The whole log is rewritten instead when the transcript was rebuilt
+        from scratch (``_log_dirty``) or the already-persisted prefix changed
+        — e.g. a context-management hook pruned or replaced messages in place.
+        Divergence is detected by object identity, so hooks must replace
+        message objects rather than mutating their fields (in-place field
+        mutation of a persisted message is not detected).
         """
         store = ctx.checkpoint_store
         key = self._checkpoint_store_key(ctx)
@@ -93,11 +100,15 @@ class CheckpointPersistMixin:
             return
 
         messages = checkpoint.messages
-        if self._log_dirty:
+        persisted = self._persisted_messages
+        prefix_intact = len(messages) >= len(persisted) and all(
+            m is p for m, p in zip(messages, persisted, strict=False)
+        )
+        if self._log_dirty or not prefix_intact:
             await store.rewrite_messages(key, messages)
             self._log_dirty = False
         else:
-            new_messages = messages[self._persisted_message_count :]
+            new_messages = messages[len(persisted) :]
             if new_messages:
                 await store.append_messages(key, new_messages)
 
@@ -106,7 +117,7 @@ class CheckpointPersistMixin:
         head_blob = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
         await store.save(key, head_blob)
 
-        self._persisted_message_count = len(messages)
+        self._persisted_messages = tuple(messages)
         self._checkpoint_number += 1
 
     async def _deserialize_agent_checkpoint(
@@ -143,5 +154,5 @@ class CheckpointPersistMixin:
             await store.rewrite_messages(key, committed)
 
         self._checkpoint_number = head.checkpoint_number
-        self._persisted_message_count = len(committed)
+        self._persisted_messages = tuple(committed)
         return head

@@ -21,6 +21,12 @@ from openai.types.chat.chat_completion_content_part_image_param import (
     ChatCompletionContentPartImageParam,
     ImageURL,
 )
+from openai.types.chat.chat_completion_content_part_param import (
+    File as ChatCompletionContentPartFileParam,
+)
+from openai.types.chat.chat_completion_content_part_param import (
+    FileFile as ChatCompletionFileFileParam,
+)
 from openai.types.chat.chat_completion_content_part_text_param import (
     ChatCompletionContentPartTextParam,
 )
@@ -126,12 +132,14 @@ def _input_message_to_message_param(
     if item.role == "developer":
         return ChatCompletionDeveloperMessageParam(role="developer", content=item.text)
 
-    has_images = any(isinstance(part, InputImage) for part in item.content_parts)
-    if not has_images:
+    text_only = all(isinstance(part, InputText) for part in item.content_parts)
+    if text_only:
         return ChatCompletionUserMessageParam(role="user", content=item.text)
 
     content: list[
-        ChatCompletionContentPartTextParam | ChatCompletionContentPartImageParam
+        ChatCompletionContentPartTextParam
+        | ChatCompletionContentPartImageParam
+        | ChatCompletionContentPartFileParam
     ] = []
 
     for part in item.content_parts:
@@ -145,6 +153,17 @@ def _input_message_to_message_param(
                     type="image_url",
                     image_url=ImageURL(url=part.to_str(), detail=part.detail),  # type: ignore[call-arg]
                 )
+            )
+        else:  # InputFile — the remaining InputPart member
+            file_param: ChatCompletionFileFileParam = {}
+            if part.file_data:
+                file_param["file_data"] = part.file_data
+            if part.file_id:
+                file_param["file_id"] = part.file_id
+            if part.filename:
+                file_param["filename"] = part.filename
+            content.append(
+                ChatCompletionContentPartFileParam(type="file", file=file_param)
             )
 
     return ChatCompletionUserMessageParam(role="user", content=content)

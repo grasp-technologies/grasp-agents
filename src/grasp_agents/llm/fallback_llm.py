@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from ..types.items import InputItem
 from ..types.llm_errors import LlmErrorTuple
-from ..types.llm_events import LlmEvent, ResponseFallback
+from ..types.llm_events import LlmEvent, ResponseCompleted, ResponseFallback
 from ..types.response import Response
 from ..types.tool import BaseTool, ToolChoice
 from .llm import LLM
@@ -49,13 +49,18 @@ class FallbackLLM(LLM):
             try:
                 # Call the un-retried core on purpose: the cascade is the
                 # retry layer here.
-                return await llm._generate_response_once(  # noqa: SLF001
+                response = await llm._generate_response_once(  # noqa: SLF001
                     input,
                     tools=tools,
                     output_schema=output_schema,
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
+                # CloudLLM members stamp at the source; this covers members
+                # that don't (so cost is attributed to the SERVING member,
+                # never to the primary's name reported by this wrapper).
+                llm._stamp_cost(response)  # noqa: SLF001
+                return response
             except LlmErrorTuple as e:
                 last_error = e
                 logger.warning(
@@ -90,6 +95,8 @@ class FallbackLLM(LLM):
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 ):
+                    if isinstance(event, ResponseCompleted):
+                        llm._stamp_cost(event.response)  # noqa: SLF001
                     seq = event.sequence_number
                     yield event
                 return

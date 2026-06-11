@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from google.genai import Client
+from google.genai.types import HttpOptions as GeminiHttpOptions
 from google.genai.types import UrlContext
 
 from grasp_agents.llm.cloud_llm import (
@@ -81,16 +82,27 @@ class GeminiLLM(CloudLLM):
     vertexai: bool = False
     project: str | None = None
     location: str | None = None
+    # Per-request HTTP timeout in seconds (``None`` disables). Without one the
+    # SDK waits forever on a stalled request — the retry layer never engages
+    # and ``run_timeout`` (checked at turn boundaries) cannot interrupt it.
+    gemini_client_timeout: float | None = 120.0
     client: Client = field(init=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
+
+        http_options: GeminiHttpOptions | None = None
+        if self.gemini_client_timeout is not None:
+            http_options = GeminiHttpOptions(
+                timeout=int(self.gemini_client_timeout * 1000)  # milliseconds
+            )
 
         if self.vertexai:
             _client = Client(
                 vertexai=True,
                 project=self.project,
                 location=self.location or "us-central1",
+                http_options=http_options,
             )
         else:
             _api_provider = self.api_provider or APIProvider(
@@ -100,6 +112,7 @@ class GeminiLLM(CloudLLM):
             )
             _client = Client(
                 api_key=_api_provider.get("api_key"),
+                http_options=http_options,
             )
             object.__setattr__(self, "api_provider", _api_provider)
 
@@ -140,17 +153,21 @@ class GeminiLLM(CloudLLM):
         extra_body = merged.pop("extra_body", None)
         merged.pop("extra_query", None)  # no Gemini equivalent
         if extra_headers or extra_body:
+            # Request-level http_options replace the client-level ones, so
+            # the client timeout must be re-applied here.
             http_options: GeminiHttpOptionsDict = {}
+            if self.gemini_client_timeout is not None:
+                http_options["timeout"] = int(self.gemini_client_timeout * 1000)
             if extra_headers:
                 http_options["headers"] = extra_headers
             if extra_body:
                 http_options["extra_body"] = extra_body
             config_kwargs["http_options"] = http_options
 
-        # Structured output via dynamic output_schema parameter
-        if output_schema is not None:
-            config_kwargs["response_schema"] = output_schema
-            config_kwargs.setdefault("response_mime_type", "application/json")
+        # Structured output is NOT baked into the config here: CloudLLM strips
+        # ``api_output_schema`` when ``apply_output_schema_via_provider`` is
+        # off (the default), and it is applied to the config at call time
+        # (see ``_apply_output_schema``).
 
         # Google Search grounding tool
         google_search_config: GeminiGoogleSearchDict | None = merged.pop(
@@ -173,7 +190,12 @@ class GeminiLLM(CloudLLM):
 
         config = GeminiConfig(**config_kwargs)
 
-        return ApiCallParams(api_input=contents, extra_settings={"config": config})
+        api_kwargs = ApiCallParams(
+            api_input=contents, extra_settings={"config": config}
+        )
+        if output_schema is not None:
+            api_kwargs["api_output_schema"] = output_schema
+        return api_kwargs
 
     # --- Error mapping ---
 
@@ -182,18 +204,42 @@ class GeminiLLM(CloudLLM):
 
     # --- Provider API layer ---
 
+    @staticmethod
+    def _apply_output_schema(
+        config: GeminiConfig | None, output_schema: type | None
+    ) -> GeminiConfig | None:
+        """Bake the (gate-surviving) output schema into the request config."""
+        if output_schema is None or config is None:
+            return config
+        config.response_schema = output_schema
+        if config.response_mime_type is None:
+            config.response_mime_type = "application/json"
+        return config
+
     async def _get_api_response(
-        self, api_input: list[Any], **api_llm_settings: Any
+        self,
+        api_input: list[Any],
+        *,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
     ) -> GeminiResponse:
-        config = api_llm_settings.get("config")
+        config = self._apply_output_schema(
+            api_llm_settings.get("config"), api_output_schema
+        )
         return await self.client.aio.models.generate_content(  # pyright: ignore[reportUnknownMemberType]
             model=self.model_name, contents=api_input, config=config
         )
 
     async def _get_api_stream(
-        self, api_input: list[Any], **api_llm_settings: Any
+        self,
+        api_input: list[Any],
+        *,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
     ) -> AsyncIterator[GeminiResponse]:
-        config = api_llm_settings.get("config")
+        config = self._apply_output_schema(
+            api_llm_settings.get("config"), api_output_schema
+        )
 
         async def iterator() -> AsyncIterator[GeminiResponse]:
             stream = await self.client.aio.models.generate_content_stream(  # pyright: ignore[reportUnknownMemberType]

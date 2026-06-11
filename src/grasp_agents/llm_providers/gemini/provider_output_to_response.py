@@ -183,7 +183,8 @@ def _function_call_to_tool_call_item(
     return FunctionToolCallItem(
         call_id=function_call.id or prefixed_id("fc"),
         name=function_call.name or "",
-        arguments=json.dumps(function_call.args),
+        # A no-arg call has args=None; "null" would poison the round-trip.
+        arguments=json.dumps(function_call.args) if function_call.args else "{}",
         status="completed",
         provider_specific_fields=(
             {"thought_signature": encoded_sig} if encoded_sig else None

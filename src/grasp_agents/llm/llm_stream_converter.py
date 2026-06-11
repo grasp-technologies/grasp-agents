@@ -581,8 +581,12 @@ class BaseLlmStreamConverter[T](ABC):
 
     def _close_tool_calls(self) -> Iterator[LlmEvent]:
         for state in self._tool_calls.values():
+            # A call streamed with no argument deltas (a no-arg tool) must
+            # commit as "{}": an empty string is not valid JSON and poisons
+            # the next request when the transcript is converted back.
+            arguments = state.arguments.strip() or "{}"
             yield FunctionCallArgumentsDone(
-                arguments=state.arguments,
+                arguments=arguments,
                 item_id=state.item_id,
                 name=state.name,
                 output_index=state.item_index,
@@ -593,7 +597,7 @@ class BaseLlmStreamConverter[T](ABC):
                 id=state.item_id,
                 call_id=state.call_id,
                 name=state.name,
-                arguments=state.arguments,
+                arguments=arguments,
                 status="completed",
                 provider_specific_fields=state.provider_specific_fields,
             )

@@ -53,7 +53,9 @@ class LiteLLM(CloudLLM):
     llm_settings: LiteLLMSettings | None = None
 
     client_timeout: float = 60.0
-    max_client_retries: int = 2
+    # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
+    # system, and a non-zero value here would multiply with it.
+    max_client_retries: int = 0
 
     # Drop unsupported OpenAI params
     drop_params: bool = False
@@ -81,22 +83,23 @@ class LiteLLM(CloudLLM):
         )
 
         _api_provider = self.api_provider
-        try:
-            _, provider_name, api_key, api_base = litellm.get_llm_provider(  # type: ignore[no-untyped-call]
-                self.model_name
+        if _api_provider is not None:
+            # An explicit provider wins: keep it as-is and thread its
+            # credentials into every completion call (litellm otherwise
+            # resolves keys from the environment only).
+            self._lite_llm_completion_params["api_key"] = _api_provider.get("api_key")
+            self._lite_llm_completion_params["api_base"] = _api_provider.get(
+                "base_url"
             )
-            _api_provider = APIProvider(
-                name=provider_name, api_key=api_key, base_url=api_base
-            )
-        except Exception as exc:
-            if self.api_provider is not None:
-                self._lite_llm_completion_params["api_key"] = self.api_provider.get(
-                    "api_key"
+        else:
+            try:
+                _, provider_name, api_key, api_base = litellm.get_llm_provider(  # type: ignore[no-untyped-call]
+                    self.model_name
                 )
-                self._lite_llm_completion_params["api_base"] = self.api_provider.get(
-                    "api_base"
+                _api_provider = APIProvider(
+                    name=provider_name, api_key=api_key, base_url=api_base
                 )
-            else:
+            except Exception as exc:
                 raise ValueError(
                     f"Failed to retrieve a LiteLLM supported API provider for model "
                     f"'{self.model_name}' and no custom API provider was specified."
@@ -204,8 +207,17 @@ class LiteLLM(CloudLLM):
             **self._lite_llm_completion_params,
             **api_llm_settings,
         )
-        # Should not be needed in litellm>=1.74
-        completion._hidden_params["response_cost"] = litellm.completion_cost(completion)  # type: ignore[no-untyped-call]  # noqa: SLF001
+        # Should not be needed in litellm>=1.74. Unmapped models raise here —
+        # never fail a successful (already paid-for) response over pricing.
+        try:
+            completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]  # noqa: SLF001
+                completion
+            )
+        except Exception:
+            logger.warning(
+                "Failed to compute response cost for model %s; cost not tracked",
+                self.model_name,
+            )
 
         return completion  # type: ignore[return-value]
 

@@ -412,6 +412,10 @@ class TestGeminiStructuredOutput:
                 api_key=google_api_key,
             ),
             llm_settings={"max_output_tokens": 200},
+            # Provider-native structured output (matching the Anthropic /
+            # OpenAI structured-output tests); without this the default gate
+            # strips the schema from the request, as on every provider.
+            apply_output_schema_via_provider=True,
         )
 
     @pytest.mark.asyncio

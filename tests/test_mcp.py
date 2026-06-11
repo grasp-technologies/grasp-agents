@@ -647,3 +647,32 @@ class TestMCPPrompts:
         client = MCPClient("test", server=_SERVER_CONFIG)
         with pytest.raises(RuntimeError, match="Not connected"):
             await client.list_prompts()
+
+
+# ---------- 2026-06 regression: nullable / type-array params ----------
+
+
+class TestNullableTypeArray:
+    def test_nullable_string_param(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "q": {"type": ["string", "null"]},
+            },
+            "required": ["q"],
+        }
+        model = json_schema_to_pydantic(schema, "NullableInput")
+        assert model(q="hello").q == "hello"  # type: ignore[attr-defined]
+        assert model(q=None).q is None  # type: ignore[attr-defined]
+
+    def test_multi_type_param(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "v": {"type": ["integer", "string"]},
+            },
+            "required": ["v"],
+        }
+        model = json_schema_to_pydantic(schema, "MultiInput")
+        assert model(v=3).v == 3  # type: ignore[attr-defined]
+        assert model(v="x").v == "x"  # type: ignore[attr-defined]
