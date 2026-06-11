@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import uuid4
 
 from openai.types.responses import (
@@ -424,7 +424,7 @@ class OpenPageAction(BaseModel):
     url: str | None = None
 
 
-WebSearchAction: TypeAlias = SearchAction | OpenPageAction
+type WebSearchAction = SearchAction | OpenPageAction
 
 
 class WebSearchCallItem(BaseModel):
@@ -456,7 +456,7 @@ class DeveloperMessage(InputMessageItem):
     role: InputMessageRole = Field(default="developer", frozen=True)
 
 
-InputItem: TypeAlias = (
+type InputItem = (
     InputMessageItem
     | OutputMessageItem
     | FunctionToolCallItem
@@ -465,7 +465,7 @@ InputItem: TypeAlias = (
     | WebSearchCallItem
 )
 
-OutputItem: TypeAlias = Annotated[
+type OutputItem = Annotated[
     OutputMessageItem | FunctionToolCallItem | ReasoningItem | WebSearchCallItem,
     Field(discriminator="type"),
 ]

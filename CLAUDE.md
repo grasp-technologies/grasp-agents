@@ -65,7 +65,6 @@ Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.
 - **Ruff** with `select = ["ALL"]` and explicit ignores in `ruff.toml`. Key: no docstring enforcement (D1xx ignored), annotations not enforced (ANN ignored), `print()` allowed (T201 ignored)
 - **Line length**: 88
 - **Line endings**: LF
-- Generic types use the pattern `ClassName[InT, OutT, CtxT]` where `InT` = input type, `OutT` = output type, `CtxT` = context state type
 - Pydantic `BaseModel` for all data types that cross API boundaries (tool inputs, agent outputs, state)
 - Async throughout — all agent/tool `run()` methods are `async`
 - Commit messages: short imperative descriptions (e.g., "update LiteLLM", "version bump", "fix copilot comments")

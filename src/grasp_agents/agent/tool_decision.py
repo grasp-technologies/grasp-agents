@@ -24,7 +24,6 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,4 +59,4 @@ class RaiseToolException:
     exception: Exception
 
 
-ToolCallDecision: TypeAlias = AllowTool | RejectToolContent | RaiseToolException
+type ToolCallDecision = AllowTool | RejectToolContent | RaiseToolException

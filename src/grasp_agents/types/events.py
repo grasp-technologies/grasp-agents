@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
 
@@ -133,7 +133,7 @@ class TurnInfo(BaseModel):
     turn: int
 
 
-class StopReason(str, Enum):
+class StopReason(StrEnum):
     FINAL_ANSWER = "final_answer"
     MAX_TURNS = "max_turns"
     ERROR = "error"

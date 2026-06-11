@@ -110,7 +110,8 @@ def render_event(
         text = event.data.text
         if not text:
             return None
-        return _Markdown(text, code_theme=_active_code_theme(), inline_code_theme=_active_code_theme())
+        theme = _active_code_theme()
+        return _Markdown(text, code_theme=theme, inline_code_theme=theme)
 
     if isinstance(event, ReasoningItemEvent):
         parts = [
@@ -756,7 +757,8 @@ def _build_result_renderable(
     content = truncate(content, _TRUNC)
     if _looks_like_markdown(content):
         # agent tools often return markdown reports — render them formatted
-        return _Markdown(content, code_theme=_active_code_theme(), inline_code_theme=_active_code_theme())
+        theme = _active_code_theme()
+        return _Markdown(content, code_theme=theme, inline_code_theme=theme)
     if _looks_like_xml(content):
         # tagged payloads (e.g. background <task_notification>…) as highlighted XML
         return _code_block(content, "xml")

@@ -11,7 +11,7 @@ dataclasses carry any payload the handler needs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 from ..types.events import StopReason
 
@@ -56,7 +56,7 @@ class NextStepContinue:
     """
 
 
-NextStep: TypeAlias = (
+type NextStep = (
     NextStepStop | NextStepForceFinalAnswer | NextStepRunTools | NextStepContinue
 )
 

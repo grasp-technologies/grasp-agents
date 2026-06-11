@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from openai.types.responses import (
     ResponseCompletedEvent,
@@ -393,7 +393,7 @@ class ResponseFallback(BaseModel):
 # --- Union types ---
 
 
-LlmEvent: TypeAlias = Annotated[
+type LlmEvent = Annotated[
     ResponseCreated
     | ResponseIncomplete
     | ResponseRetrying

@@ -4,7 +4,7 @@ import inspect
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 
 from ..types.selector import Selector
 from .loader import discover_skills
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-SkillSelector: TypeAlias = Selector["Skill"]
+type SkillSelector = Selector[Skill]
 """Relevance selector for the skills catalog. See :class:`Selector`."""
 
 INVOCATION_WRAPPER = "[SYSTEM: user invoked skill {name}]"

@@ -1,9 +1,9 @@
-from typing import TypeAlias, TypeVar
+from typing import TypeVar
 
-ProcName: TypeAlias = str
+type ProcName = str
 
 
 InT = TypeVar("InT")
 OutT = TypeVar("OutT")
 
-LLMPrompt: TypeAlias = str
+type LLMPrompt = str

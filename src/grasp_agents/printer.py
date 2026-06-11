@@ -3,7 +3,7 @@ import json
 import logging
 import sys
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal
 
 from pydantic import BaseModel
 from rich.console import Console
@@ -63,7 +63,7 @@ AVAILABLE_STYLES: list[str] = [
     "red",
 ]
 
-ColoringMode: TypeAlias = Literal["agent", "role"]
+type ColoringMode = Literal["agent", "role"]
 
 
 def stream_colored_text(new_colored_text: str) -> None:

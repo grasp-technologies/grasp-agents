@@ -1172,7 +1172,15 @@ class AgentLoop(Generic[CtxT]):
                 # backgrounded Bash command is waited on but never blocks it —
                 # see JUDGE / has_pending.)
                 if self.turn > 0 and not had_tool_calls:
-                    await self.bg_tasks.wait_idle()
+                    # Bound the idle wait by the remaining run-timeout budget so a
+                    # non-blocking background task that never completes can't block
+                    # past the deadline (the next JUDGE check then stops the run).
+                    idle_timeout = (
+                        max(0.0, self._deadline - time.monotonic())
+                        if self._deadline is not None
+                        else None
+                    )
+                    await self.bg_tasks.wait_idle(timeout=idle_timeout)
 
                 # Drain backgrounded tasks at the turn boundary: bubble their new
                 # events as live progress, mirror stream output to the .grasp

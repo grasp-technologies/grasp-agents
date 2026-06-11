@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -23,7 +23,7 @@ MAX_MEMORY_FILES = 200
 DEFAULT_STALE_AFTER = timedelta(days=7)
 
 
-MemoryType: TypeAlias = Literal["user", "feedback", "project", "reference"]
+type MemoryType = Literal["user", "feedback", "project", "reference"]
 MEMORY_TYPES: tuple[MemoryType, ...] = get_args(MemoryType)
 
 

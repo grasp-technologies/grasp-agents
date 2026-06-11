@@ -310,19 +310,25 @@ class BackgroundTaskManager(Generic[CtxT]):
             pt.blocks_final_answer and not pt.announced for pt in self._tasks.values()
         )
 
-    async def wait_idle(self) -> None:
+    async def wait_idle(self, timeout: float | None = None) -> None:  # noqa: ASYNC109
         """
         Block until the next tracked task completes — the loop's idle wait.
 
         Returns immediately if a completion is already queued, or if nothing is
         pending (so the loop never blocks with no work outstanding). The awaited
-        id is requeued so :meth:`drain` still delivers it.
+        id is requeued so :meth:`drain` still delivers it. ``timeout`` bounds the
+        wait (the caller passes the remaining run-deadline budget) so an idle
+        wait on a task that never completes cannot sail past ``run_timeout`` — on
+        expiry it returns and the loop's next deadline check stops the run.
         """
         if not self._completions.empty():
             return
         if not any(not pt.announced for pt in self._tasks.values()):
             return
-        task_id = await self._completions.get()
+        try:
+            task_id = await asyncio.wait_for(self._completions.get(), timeout)
+        except TimeoutError:
+            return
         self._completions.put_nowait(task_id)
 
     # --- Launch ---

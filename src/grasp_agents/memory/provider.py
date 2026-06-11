@@ -19,7 +19,7 @@ import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 
 from grasp_agents.types.selector import Selector
 
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from .types import MemoryEntry
 
 
-MemorySelector: TypeAlias = Selector["MemoryEntry"]
+type MemorySelector = Selector[MemoryEntry]
 """Relevance selector for the memory topic catalog. See :class:`Selector`."""
 
 logger = logging.getLogger(__name__)
@@ -273,9 +273,7 @@ class MemoryProvider:
         entries = snapshot.entries
         if seen_paths:
             seen = set(seen_paths)
-            entries = tuple(
-                e for e in entries if e.path is None or e.path not in seen
-            )
+            entries = tuple(e for e in entries if e.path is None or e.path not in seen)
         if self._selector is None:
             return entries
         result = self._selector(

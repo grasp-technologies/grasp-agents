@@ -30,7 +30,7 @@ reuse the alias), never silently on every sandbox create.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -119,7 +119,7 @@ class SetUser(_Step):
     user: str
 
 
-Step: TypeAlias = Annotated[
+type Step = Annotated[
     RunCmd
     | PipInstall
     | AptInstall
