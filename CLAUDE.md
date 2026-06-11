@@ -60,7 +60,7 @@ Publishing: tag with `v*` triggers GitHub Actions → PyPI trusted publishing.
 
 ## Code conventions
 
-- **Python >=3.12.12**
+- **Python >=3.12**
 - **Pyright strict mode** — all public APIs must be well-typed
 - **Ruff** with `select = ["ALL"]` and explicit ignores in `ruff.toml`. Key: no docstring enforcement (D1xx ignored), annotations not enforced (ANN ignored), `print()` allowed (T201 ignored)
 - **Line length**: 88
@@ -190,10 +190,7 @@ src/
     telemetry/                # @traced decorators, Phoenix + Traceloop exporters
     ui/                       # EventConsole + _event_render (shared) + Textual app ([tui] extra)
     rate_limiting/            # Rate limiter for LLM calls
-    data_retrieval/           # AsyncHTTPXRetriever + caching/batching primitives for tool kits
     utils/                    # Helpers (streaming merging, etc.)
-    kits/                     # Domain-specific tool kits built on grasp_agents
-      research/               #   research kits: arXiv, S2, HF Papers, Tavily, OpenAlex, vault
     examples/
       notebooks/              #   Jupyter demos
     run_context.py            # RunContext[CtxT]

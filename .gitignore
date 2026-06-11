@@ -177,4 +177,17 @@ cython_debug/
 **/.DS_Store
 
 docs/*
-reference_agent_spec/*
+.claude/settings.local.json
+.claude/worktrees
+
+# grasp-agents TUI data-copilot demo workspace (default COPILOT_WORKDIR)
+copilot_workdir/
+
+# pytest-textual-snapshot failure report
+snapshot_report.html
+
+# TUI dev scratch + rendered review screenshots
+_scratch_*.py
+tests/tui/_review/
+
+.worktreeinclude

@@ -122,11 +122,19 @@ def items_to_provider_inputs(
             tool_results: list[ToolResultBlockParam] = []
             while i < n and isinstance(items[i], FunctionToolOutputItem):
                 tool_item: FunctionToolOutputItem = items[i]  # type: ignore[assignment]
+                # output_parts is a plain string on the default tool-result
+                # path; Anthropic accepts it directly as tool_result content.
+                output_parts = tool_item.output_parts
+                content = (
+                    output_parts
+                    if isinstance(output_parts, str)
+                    else _convert_content_parts(output_parts)  # type: ignore[arg-type]
+                )
                 tool_results.append(
                     ToolResultBlockParam(
                         type="tool_result",
                         tool_use_id=tool_item.call_id,
-                        content=_convert_content_parts(tool_item.output_parts),  # type: ignore[assignment]
+                        content=content,  # type: ignore[typeddict-item]
                         cache_control=_to_cache_control(tool_item.cache_control),
                     )
                 )

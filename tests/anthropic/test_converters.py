@@ -59,7 +59,7 @@ from grasp_agents.llm_providers.anthropic.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
-from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.content import InputText, OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -540,6 +540,54 @@ class TestResponseToMessage:
 
 
 # ==== tool_converters ====
+
+
+class TestToolResultContent:
+    """
+    Tool-result *content* must survive conversion — not just the call id.
+
+    Regression: plain-string ``output_parts`` (the default tool-result path)
+    used to be iterated char-by-char and converted to ``content: []``, so the
+    model never saw any tool output.
+    """
+
+    def test_str_output_parts_sent_verbatim(self):
+        item = FunctionToolOutputItem(call_id="toolu_str", output_parts="Sunny, 22°C")
+
+        _, messages = items_to_anthropic_messages([item])
+
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        block = content[0]
+        assert block["type"] == "tool_result"
+        assert block["content"] == "Sunny, 22°C"
+
+    def test_from_tool_result_serialized_output_not_empty(self):
+        item = FunctionToolOutputItem.from_tool_result(
+            call_id="toolu_json", output={"temp": 22, "sky": "sunny"}
+        )
+
+        _, messages = items_to_anthropic_messages([item])
+
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        result_content = content[0]["content"]
+        assert isinstance(result_content, str)
+        assert json.loads(result_content) == {"temp": 22, "sky": "sunny"}
+
+    def test_typed_output_parts_all_converted(self):
+        item = FunctionToolOutputItem(
+            call_id="toolu_parts",
+            output_parts=[InputText(text="part one"), InputText(text="part two")],
+        )
+
+        _, messages = items_to_anthropic_messages([item])
+
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        result_content = content[0]["content"]
+        assert isinstance(result_content, list)
+        assert [b["text"] for b in result_content] == ["part one", "part two"]
 
 
 class _WeatherInput(BaseModel):

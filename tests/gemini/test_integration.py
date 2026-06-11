@@ -23,6 +23,7 @@ from grasp_agents.types.items import (
     OutputMessageItem,
     WebSearchCallItem,
 )
+from grasp_agents.types.llm_errors import LlmNotFoundError
 from grasp_agents.types.llm_events import (
     OutputMessageTextPartTextDelta,
     ResponseCompleted,
@@ -45,7 +46,7 @@ class TestGeminiIntegration:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.0-flash",
+            model_name="gemini-2.5-flash",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
@@ -540,7 +541,7 @@ class TestGeminiParallelToolUse:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.0-flash",
+            model_name="gemini-2.5-flash",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
@@ -618,3 +619,44 @@ class TestGeminiParallelToolUse:
 
         assert r2.status == "completed"
         assert "42" in r2.output_text
+
+
+@pytest.mark.integration
+class TestGeminiErrorMappingLive:
+    """
+    Live API errors must surface as mapped ``Llm*`` types — including during
+    stream iteration, where the SDK request actually fires — so the retry and
+    fallback layers can engage. Exercises the real transport (aiohttp when
+    importable), which supplies a non-httpx response to the error mapper.
+    """
+
+    @pytest.fixture
+    def bad_model_llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+
+        return GeminiLLM(
+            model_name="gemini-nonexistent-model",
+            api_provider=APIProvider(
+                name="google",
+                base_url=None,
+                api_key=google_api_key,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_api_error_is_mapped(self, bad_model_llm: CloudLLM) -> None:
+        with pytest.raises(LlmNotFoundError):
+            await bad_model_llm.generate_response(
+                [InputMessageItem.from_text("hi")]
+            )
+
+    @pytest.mark.asyncio
+    async def test_stream_api_error_is_mapped(self, bad_model_llm: CloudLLM) -> None:
+        async def _consume() -> None:
+            async for _ in bad_model_llm.generate_response_stream(
+                [InputMessageItem.from_text("hi")]
+            ):
+                pass
+
+        with pytest.raises(LlmNotFoundError):
+            await _consume()

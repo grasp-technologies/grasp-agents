@@ -2,7 +2,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Required, TypedDict
+from typing import Any, NoReturn, Required, TypedDict
 
 import httpx
 from pydantic import BaseModel
@@ -119,6 +119,12 @@ class CloudLLM(LLM):
         del err
         return None
 
+    def _raise_mapped(self, err: Exception) -> NoReturn:
+        mapped = self._map_api_error(err)
+        if mapped is not None:
+            raise mapped from err
+        raise err
+
     # --- LLM interface implementation ---
 
     def __init_subclass__(cls, **kwargs: Any):
@@ -155,10 +161,7 @@ class CloudLLM(LLM):
         except LlmErrorTuple:
             raise
         except Exception as err:
-            mapped = self._map_api_error(err)
-            if mapped is not None:
-                raise mapped from err
-            raise
+            self._raise_mapped(err)
 
         return self._convert_api_response(raw)
 
@@ -188,10 +191,20 @@ class CloudLLM(LLM):
         except LlmErrorTuple:
             raise
         except Exception as err:
-            mapped = self._map_api_error(err)
-            if mapped is not None:
-                raise mapped from err
-            raise
+            self._raise_mapped(err)
 
-        async for event in self._convert_api_stream(api_stream):
+        # Provider SDKs typically defer the HTTP request to the first iteration
+        # of a lazily-returned stream, so SDK errors can surface here rather
+        # than at acquisition — map them too, or the retry/fallback layers
+        # (which catch only LlmErrorTuple) never see streaming failures.
+        event_stream = self._convert_api_stream(api_stream)
+        while True:
+            try:
+                event = await anext(event_stream)
+            except StopAsyncIteration:
+                break
+            except LlmErrorTuple:
+                raise
+            except Exception as err:
+                self._raise_mapped(err)
             yield event

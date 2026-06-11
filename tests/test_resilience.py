@@ -13,9 +13,11 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import openai
 import pytest
 from pydantic import BaseModel
 
+from grasp_agents.llm.cloud_llm import ApiCallParams, CloudLLM
 from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm.llm import LLM
 from grasp_agents.llm.resilience import RetryPolicy
@@ -260,6 +262,94 @@ class FailMidStreamLLM(LLM):
         yield ResponseCreated(response=resp, sequence_number=1)  # type: ignore[arg-type]
         yield OutputItemAdded(item=resp.output[0], output_index=0, sequence_number=2)
         raise self.error_to_raise
+
+
+@dataclass(frozen=True)
+class LazyStreamCloudLLM(CloudLLM):
+    """
+    Mimics real provider adapters: ``_get_api_stream`` returns a lazy
+    generator, so the (fake) SDK request only fires on first iteration —
+    exactly where raw SDK errors surface in production.
+    """
+
+    fail_attempts: int = 1
+    events_before_failure: int = 0
+    raw_error: Exception = field(
+        default_factory=lambda: openai.RateLimitError(
+            "raw 429", response=_resp(429), body=None
+        )
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "_attempts", 0)
+
+    @property
+    def attempts(self) -> int:
+        return self._attempts  # type: ignore[attr-defined]
+
+    def _make_api_input(
+        self,
+        input: Sequence[InputItem],
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        tool_choice: Any | None = None,
+        output_schema: Any | None = None,
+        **extra_llm_settings: Any,
+    ) -> ApiCallParams:
+        return {"api_input": list(input)}
+
+    async def _get_api_response(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    def _convert_api_response(self, raw: Any) -> Response:
+        raise NotImplementedError
+
+    async def _get_api_stream(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
+    ) -> AsyncIterator[Any]:
+        async def iterator() -> AsyncIterator[Any]:
+            count: int = self._attempts  # type: ignore[attr-defined]
+            object.__setattr__(self, "_attempts", count + 1)
+            if count < self.fail_attempts:
+                for idx in range(self.events_before_failure):
+                    yield f"chunk-{idx}"
+                raise self.raw_error
+            yield "done"
+
+        return iterator()
+
+    async def _convert_api_stream(
+        self, api_stream: AsyncIterator[Any]
+    ) -> AsyncIterator[LlmEvent]:
+        seq = 0
+        async for chunk in api_stream:
+            seq += 1
+            resp = _text_response("recovered" if chunk == "done" else str(chunk))
+            if chunk == "done":
+                yield ResponseCompleted(response=resp, sequence_number=seq)  # type: ignore[arg-type]
+            else:
+                yield OutputItemAdded(
+                    item=resp.output[0], output_index=0, sequence_number=seq
+                )
+
+    def _map_api_error(self, err: Exception) -> LlmError | None:
+        if isinstance(err, openai.RateLimitError):
+            return LlmRateLimitError(err.message, response=err.response, body=err.body)
+        return None
 
 
 # ---------- FallbackLLM ----------
@@ -588,3 +678,96 @@ class TestRetryPolicy:
         err = LlmRateLimitError("429", response=_resp(429), body=None, retry_after=30.0)
         delay = policy.api_delay_for(0, err)
         assert delay >= 30.0
+
+
+# ---------- Streaming error mapping (CloudLLM) ----------
+
+
+class TestStreamErrorMapping:
+    """
+    Raw SDK errors surfacing during stream *iteration* (providers return lazy
+    generators — the request fires on first iteration) must be mapped to Llm*
+    types, or the retry and fallback layers — which catch only LlmErrorTuple —
+    never engage for streaming requests.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lazy_acquisition_error_is_mapped(self) -> None:
+        """Raw SDK error on first iteration → LlmRateLimitError, not the raw type."""
+        llm = LazyStreamCloudLLM(model_name="mock", fail_attempts=99)
+
+        with pytest.raises(LlmRateLimitError):
+            async for _ in llm._generate_response_stream_once(_USER_MSG):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_midstream_error_is_mapped_after_partial_events(self) -> None:
+        """Partial events are yielded, then the mid-stream SDK error is mapped."""
+        llm = LazyStreamCloudLLM(
+            model_name="mock", fail_attempts=99, events_before_failure=2
+        )
+
+        events: list[LlmEvent] = []
+
+        async def _collect() -> None:
+            async for event in llm._generate_response_stream_once(_USER_MSG):
+                events.append(event)
+
+        with pytest.raises(LlmRateLimitError):
+            await _collect()
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_unmapped_error_passes_through_unchanged(self) -> None:
+        """Non-SDK errors (e.g. converter bugs) are not swallowed or re-typed."""
+        llm = LazyStreamCloudLLM(
+            model_name="mock",
+            fail_attempts=99,
+            raw_error=ValueError("converter bug"),
+        )
+
+        with pytest.raises(ValueError, match="converter bug"):
+            async for _ in llm._generate_response_stream_once(_USER_MSG):
+                pass
+
+    @pytest.mark.asyncio
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
+    async def test_stream_retry_engages_on_lazy_sdk_error(
+        self, mock_sleep: AsyncMock
+    ) -> None:
+        """429 during iteration → ResponseRetrying, then a successful retry."""
+        llm = LazyStreamCloudLLM(
+            model_name="mock",
+            fail_attempts=1,
+            retry_policy=RetryPolicy(api_retries=2),
+        )
+
+        events: list[LlmEvent] = []
+        async for event in llm.generate_response_stream(_USER_MSG):
+            events.append(event)
+
+        retrying = [e for e in events if isinstance(e, ResponseRetrying)]
+        assert len(retrying) == 1
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        assert completed[0].response.output_text == "recovered"
+        assert llm.attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_fallback_engages_on_lazy_sdk_error(self) -> None:
+        """429 during primary's stream iteration → cascade to the fallback."""
+        primary = LazyStreamCloudLLM(model_name="primary", fail_attempts=99)
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+
+        events: list[LlmEvent] = []
+        async for event in llm._generate_response_stream_once(_USER_MSG):
+            events.append(event)
+
+        fb = next(e for e in events if isinstance(e, ResponseFallback))
+        assert fb.failed_model == "primary"
+        assert fb.fallback_model == "fallback"
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        assert completed[0].response.output_text == "rescued"
