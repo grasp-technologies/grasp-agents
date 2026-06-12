@@ -30,12 +30,16 @@ toggle (``RunContext.serialize_state``) is configured.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
+from dataclasses import fields as dataclass_fields
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class ContextKind(StrEnum):
@@ -96,6 +100,45 @@ def rehydrate_context(
         return current_state
 
     if is_dataclass(current_state) and not isinstance(current_state, type):
-        return type(current_state)(**data)
+        # ``TypeAdapter`` (not ``cls(**data)``) so nested dataclasses are
+        # constructed rather than left as dicts, and ``init=False`` fields
+        # don't crash the constructor.
+        cls = type(current_state)
+        try:
+            restored = TypeAdapter(cls).validate_python(data)
+            _restore_init_false_fields(cls, restored, data)
+        except Exception:
+            logger.warning(
+                "Failed to rehydrate %s state from checkpoint; "
+                "keeping the current state",
+                cls.__name__,
+                exc_info=True,
+            )
+            return current_state
+        return restored
 
     return current_state
+
+
+def _restore_init_false_fields(cls: type, restored: Any, data: Any) -> None:
+    """
+    Re-apply persisted values of ``init=False`` fields.
+
+    Dataclass construction (and pydantic validation, which honors it)
+    ignores inputs for ``init=False`` fields, so they would silently
+    revert to their defaults on resume.
+    """
+    if not isinstance(data, Mapping):
+        return
+    data_map = cast("Mapping[str, Any]", data)
+    init_false = [
+        f for f in dataclass_fields(cls) if not f.init and f.name in data_map
+    ]
+    if not init_false:
+        return
+    hints = get_type_hints(cls)
+    for f in init_false:
+        value: Any = TypeAdapter(hints.get(f.name, Any)).validate_python(  # type: ignore[arg-type]
+            data_map[f.name]
+        )
+        object.__setattr__(restored, f.name, value)  # noqa: PLC2801  # frozen-safe

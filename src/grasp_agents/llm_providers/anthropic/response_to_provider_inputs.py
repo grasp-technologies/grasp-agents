@@ -326,8 +326,11 @@ def _output_message_to_blocks(item: OutputMessageItem) -> list[TextBlockParam]:
         if isinstance(part, OutputMessageRefusal):
             continue
 
+        # Each text block carries its own citations — using the item-level
+        # aggregate would duplicate every citation across all blocks on
+        # round-trip.
         citation_params: list[CitationWebSearchResultLocationParam] = []
-        for citation in item.citations:
+        for citation in part.citations:
             citation_params.append(
                 CitationWebSearchResultLocationParam(
                     type="web_search_result_location",

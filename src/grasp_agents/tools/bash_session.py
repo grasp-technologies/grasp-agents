@@ -154,6 +154,12 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         self._heartbeat_every = heartbeat_every
         self._block_leading_sleep = block_leading_sleep
 
+    def concurrency_conflict_keys(self, inp: BashInput) -> list[str] | None:
+        # A shell command can write anywhere in the workspace — claim global
+        # exclusivity so it never interleaves with concurrent writers.
+        del inp
+        return ["/"]
+
     async def _run(
         self,
         inp: BashInput,

@@ -145,21 +145,65 @@ def fuzzy_find(
     return [], None, "Could not find a match for old_string in the file"
 
 
+def _dominant_eol(text: str) -> str | None:
+    r"""``"\r\n"`` / ``"\n"`` when ``text`` uses one style consistently."""
+    lf = text.count("\n")
+    if lf == 0:
+        return None
+    crlf = text.count("\r\n")
+    if crlf == lf:
+        return "\r\n"
+    if crlf == 0:
+        return "\n"
+    return None  # mixed — no convention to preserve
+
+
+def preserve_line_endings(
+    original_slice: str, new_string: str, *, fallback_eol: str | None = None
+) -> str:
+    """
+    Match the replacement's line endings to the replaced region's.
+
+    A CRLF file edited with model-typed LF text would otherwise come out
+    with mixed line endings in the edited region. ``fallback_eol`` (the
+    file's dominant style) applies when the replaced region itself has no
+    newlines.
+    """
+    if "\n" not in new_string:
+        return new_string
+    eol = _dominant_eol(original_slice) or fallback_eol
+    if eol == "\r\n":
+        out = new_string.replace("\r\n", "\n").replace("\n", "\r\n")
+        # A line-based match can end on the CR of a CRLF pair split across
+        # the region boundary — restore it or the following LF goes bare.
+        if original_slice.endswith("\r") and not out.endswith("\r"):
+            out += "\r"
+        return out
+    if eol == "\n":
+        return new_string.replace("\r\n", "\n")
+    return new_string
+
+
 def apply_replacements(
     content: str,
     matches: list[tuple[int, int]],
     new_string: str,
 ) -> str:
     """
-    Replace each ``(start, end)`` in ``matches`` with ``new_string``.
+    Replace each ``(start, end)`` in ``matches`` with ``new_string``,
+    preserving the replaced region's line-ending convention.
 
     Processing from right to left preserves offset validity for earlier
     matches — critical when ``len(new_string) != end - start``.
     """
+    file_eol = _dominant_eol(content)
     sorted_matches = sorted(matches, key=operator.itemgetter(0), reverse=True)
     result = content
     for start, end in sorted_matches:
-        result = result[:start] + new_string + result[end:]
+        replacement = preserve_line_endings(
+            content[start:end], new_string, fallback_eol=file_eol
+        )
+        result = result[:start] + replacement + result[end:]
     return result
 
 

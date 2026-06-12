@@ -31,6 +31,7 @@ backend renders them as POSIX strings for the wire.
 from __future__ import annotations
 
 import json
+import posixpath
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -131,7 +132,10 @@ class MCPFileBackend(FileBackend):
     # ---- Path / URI helpers --------------------------------------------------
 
     def _posix(self, path: Path) -> PurePosixPath:
-        return PurePosixPath(path)
+        # ``normpath`` collapses ``./`` and ``../`` lexically (safe — MCP
+        # paths live in the server's address space, no client-side
+        # symlinks), so containment checks cannot be escaped via ``..``.
+        return PurePosixPath(posixpath.normpath(PurePosixPath(path).as_posix()))
 
     def _to_uri(self, path: Path) -> str:
         return self._index.make_uri(self._posix(path))
@@ -144,11 +148,11 @@ class MCPFileBackend(FileBackend):
         Canonical key for read_file_state / write tracking.
 
         MCP paths live in the server's address space — there are no
-        symlinks to follow client-side. We normalize via PurePosixPath
-        (collapses ``./``, ``../``, trailing slashes) and rebuild in the
-        caller's Path flavor so two equivalent paths from different
-        callers (e.g. ``Read`` post-validate_path vs. ``MemoryProvider``
-        loading the snapshot) hash to the same entry.
+        symlinks to follow client-side. We normalize lexically (collapses
+        ``./``, ``../``, trailing slashes) and rebuild in the caller's
+        Path flavor so two equivalent paths from different callers
+        (e.g. ``Read`` post-validate_path vs. ``MemoryProvider`` loading
+        the snapshot) hash to the same entry.
         """
         return type(path)(str(self._posix(path)))
 
@@ -219,8 +223,17 @@ class MCPFileBackend(FileBackend):
             raise OSError(f"MCP resources/read for {uri!r} failed: {exc}") from exc
         for content in result.contents:
             if isinstance(content, TextResourceContents):
-                meta = content.meta or {}
-                mtime = _ms_to_seconds(meta.get("mtime_ms"))
+                # Report the mtime from the SAME surface the staleness guard
+                # later consults via ``stat`` (the list index) — mixing it
+                # with the read-meta surface causes spurious edit refusals
+                # whenever the two disagree. Read-meta is the fallback for
+                # files the index doesn't know yet.
+                entry = await self._index.get(uri)
+                if entry is not None:
+                    mtime = entry.mtime_seconds
+                else:
+                    meta = content.meta or {}
+                    mtime = _ms_to_seconds(meta.get("mtime_ms"))
                 return content.text, mtime
         raise OSError(f"MCP resources/read for {uri!r} returned no text content.")
 
@@ -247,6 +260,12 @@ class MCPFileBackend(FileBackend):
         )
         # Server mutation → stale index. Drop it; next read repopulates.
         await self._index.refresh()
+        # Same-surface mtime as ``stat`` (see ``read_text``); the write
+        # tool's response is the fallback if the index doesn't list the
+        # file yet.
+        entry = await self._index.get(self._to_uri(path))
+        if entry is not None:
+            return entry.mtime_seconds
         return _ms_to_seconds(result.get("mtime_ms"))
 
     async def delete(self, path: Path) -> None:

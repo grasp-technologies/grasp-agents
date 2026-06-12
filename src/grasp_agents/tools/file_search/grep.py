@@ -169,7 +169,13 @@ class GrepError(ValueError):
 
 
 async def _run_rg(args: list[str]) -> tuple[bytes, bytes, int]:
-    """Run rg with ``args`` and return ``(stdout, stderr, returncode)``."""
+    """
+    Run rg with ``args`` and return ``(stdout, stderr, returncode)``.
+
+    stdout is read incrementally against ``MAX_STDOUT_BYTES`` and the
+    process is killed on overflow — buffering everything first
+    (``communicate()``) would exhaust memory before the cap could fire.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "rg",
@@ -184,14 +190,34 @@ async def _run_rg(args: list[str]) -> tuple[bytes, bytes, int]:
             "`apt install ripgrep`) and retry."
         ) from exc
 
-    stdout, stderr = await proc.communicate()
-    if len(stdout) > MAX_STDOUT_BYTES:
-        raise GrepError(
-            f"rg produced {len(stdout):,} bytes of output "
-            f"(> {MAX_STDOUT_BYTES:,}). Narrow the search path, glob, or "
-            "pattern."
-        )
-    return stdout, stderr, proc.returncode or 0
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    # Drain stderr concurrently so a chatty stderr can't deadlock the
+    # stdout loop.
+    stderr_task = asyncio.create_task(proc.stderr.read())
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_STDOUT_BYTES:
+                raise GrepError(  # noqa: TRY301
+                    f"rg produced more than {MAX_STDOUT_BYTES:,} bytes of "
+                    "output. Narrow the search path, glob, or pattern."
+                )
+            chunks.append(chunk)
+    except BaseException:
+        proc.kill()
+        raise
+    finally:
+        stderr = await stderr_task
+        await proc.wait()
+
+    return b"".join(chunks), stderr, proc.returncode or 0
 
 
 def _build_args(

@@ -49,7 +49,15 @@ from .test_sessions import (  # type: ignore[attr-defined]
     MockLLM,
     _text_response,
     _tool_call_response,
+    load_agent_checkpoint,
 )
+
+
+async def _persisted_log(store: InMemoryCheckpointStore, key: str) -> list[Any]:
+    """The committed message-log as resume would see it (head's version)."""
+    head = await load_agent_checkpoint(store, key)
+    assert head is not None
+    return list(head.messages)
 
 
 def _make_agent(
@@ -140,7 +148,7 @@ class TestTranscriptBuilderRunsEveryStep:
         await agent.run("input-alpha")
         await agent.run("input-bravo")
 
-        persisted = await store.read_messages("tb-1/agent/test_agent")
+        persisted = await _persisted_log(store, "tb-1/agent/test_agent")
         assert len(persisted) == len(agent.transcript.messages)
         assert not any("alpha" in str(m) for m in persisted)
 
@@ -389,7 +397,7 @@ class TestAppendLogPruneRewrite:
 
         await agent.run("input-bravo")
 
-        persisted = await store.read_messages("s1/agent/test_agent")
+        persisted = await _persisted_log(store, "s1/agent/test_agent")
         assert len(persisted) == len(agent.transcript.messages)
         texts = [str(m) for m in persisted]
         assert not any("alpha" in t for t in texts)  # no stale prefix restored

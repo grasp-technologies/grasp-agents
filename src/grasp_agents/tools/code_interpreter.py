@@ -19,7 +19,7 @@ checkpoint is never base64'd into the prompt); to *see* an image the model
 displays it, to *hand over* a file it lists it.
 
 ``RunPython`` runs in its **own** persistent kernel (one per agent loop, via
-``AgentContext.code_kernel_holder``) — a stateful REPL where variables/imports
+``AgentContext.ipy_kernel_holder``) — a stateful REPL where variables/imports
 persist across calls, so the model loads data once and explores it over several
 calls. It is deliberately **not** the notebook kernel used by ``RunCell``: the
 two are independent Python sessions. Used outside a loop, each call opens a
@@ -157,7 +157,7 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
     plus references to any files named in ``artifacts``.
 
     Stateless: the kernel comes from the call's :class:`AgentContext`
-    (``code_kernel_holder`` — its own, not the notebook's); files named in
+    (``ipy_kernel_holder`` — its own, not the notebook's); files named in
     ``artifacts`` are read via :attr:`RunContext.file_backend`.
     """
 
@@ -198,6 +198,12 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
         self._max_images = max_images
         self._max_artifact_files = max_artifact_files
 
+    def concurrency_conflict_keys(self, inp: RunPythonInput) -> list[str] | None:
+        # Executed code can write anywhere in the workspace — claim global
+        # exclusivity so it never interleaves with concurrent writers.
+        del inp
+        return ["/"]
+
     async def _run(
         self,
         inp: RunPythonInput,
@@ -225,7 +231,7 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
 
         requested = inp.timeout if inp.timeout is not None else self._default_timeout
 
-        holder = agent_ctx.code_kernel_holder if agent_ctx is not None else None
+        holder = agent_ctx.ipy_kernel_holder if agent_ctx is not None else None
         own_kernel = holder is None
         kernel = (
             await kernel_backend.open_kernel()

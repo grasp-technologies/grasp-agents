@@ -32,6 +32,7 @@ from rich.table import Table
 from rich.text import Text, TextType
 from rich.theme import Theme
 
+from ..printer import sanitize_terminal_text
 from ..types.content import InputImage, InputText
 from ..types.events import (
     BackgroundTaskCompletedEvent,
@@ -162,7 +163,7 @@ def render_event(
         msg = f"✗ {info.error}" + (" (timed out)" if info.timed_out else "")
         return panel(
             info.tool_name,
-            Text(msg, style=PALETTE["tool_result"]),
+            Text(sanitize_terminal_text(msg), style=PALETTE["tool_result"]),
             PALETTE["error"],
         )
 
@@ -194,7 +195,10 @@ def render_event(
         )
 
     if isinstance(event, (LLMStreamingErrorEvent, ProcStreamingErrorEvent)):
-        return Text(f"Error: {event.data.error}", style=f"bold {PALETTE['error']}")
+        return Text(
+            sanitize_terminal_text(f"Error: {event.data.error}"),
+            style=f"bold {PALETTE['error']}",
+        )
 
     return None
 
@@ -817,10 +821,15 @@ def extract_input_text(msg: InputMessageItem) -> str:
 
 
 def truncate(text: str, limit: int) -> str:
+    # Every untrusted body flows through here or truncate_lines — the
+    # sanitization point against terminal-escape injection (CSI / OSC in
+    # tool output clearing the screen or spoofing what an approver sees).
+    text = sanitize_terminal_text(text)
     return text[:limit] + "…" if len(text) > limit else text
 
 
 def truncate_lines(text: str, max_lines: int) -> str:
+    text = sanitize_terminal_text(text)
     if max_lines <= 0:
         return text
     lines = text.split("\n")

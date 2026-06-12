@@ -264,11 +264,16 @@ def _entity_method[F: Callable[..., Any]](
                     with tracer.start_as_current_span(span_name) as span:
                         _set_span_attributes(span, entity_name, resolved_kind, version)
                         _handle_span_input(span, input_args, kwargs, exclude_fields)
-                        items: list[Any] = []
+                        # Track only the LAST item (the span output) — buffering
+                        # every yielded event for the stream's lifetime multiplies
+                        # memory by the traced-nesting depth on long runs.
+                        last_item: Any = None
+                        has_items = False
 
                         try:
                             async for item in fn(*args, **kwargs):
-                                items.append(item)
+                                last_item = item
+                                has_items = True
                                 yield item
                         except Exception as e:
                             span.set_status(
@@ -279,8 +284,8 @@ def _entity_method[F: Callable[..., Any]](
                             )
                             raise
                         finally:
-                            if items:
-                                _handle_span_output(span, items[-1])
+                            if has_items:
+                                _handle_span_output(span, last_item)
 
                 return cast("F", async_gen_wrap)
 
@@ -342,11 +347,15 @@ def _entity_method[F: Callable[..., Any]](
                 with tracer.start_as_current_span(span_name) as span:
                     _set_span_attributes(span, entity_name, resolved_kind, version)
                     _handle_span_input(span, input_args, kwargs, exclude_fields)
-                    items: list[Any] = []
+                    # Track only the LAST item (the span output) — see the
+                    # async generator wrapper above.
+                    last_item: Any = None
+                    has_items = False
 
                     try:
                         for item in fn(*args, **kwargs):
-                            items.append(item)
+                            last_item = item
+                            has_items = True
                             yield item
                     except Exception as e:
                         span.set_status(
@@ -357,8 +366,8 @@ def _entity_method[F: Callable[..., Any]](
                         )
                         raise
                     finally:
-                        if items:
-                            _handle_span_output(span, items[-1])
+                        if has_items:
+                            _handle_span_output(span, last_item)
 
             return cast("F", sync_gen_wrap)
 

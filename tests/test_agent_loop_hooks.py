@@ -466,13 +466,12 @@ class TestHookOrdering:
         ]
 
     @pytest.mark.asyncio
-    async def test_max_turns_fires_before_after_generate_on_forced_answer(self):
+    async def test_max_turns_fires_before_llm_on_forced_answer_too(self):
         """
         When max_turns is hit, the loop generates a forced final answer.
-        before_generate fires for the tool call turn (turn 0) and after_generate
-        fires for it too. But the forced answer generation is separate — it
-        goes through query_llm directly, NOT through the loop
-        iteration, so it doesn't fire before/after_generate hooks.
+        The before-LLM hook fires for the tool-call turn (turn 0) AND for
+        the forced final-answer call — the forced call carries the longest
+        transcript of the run, so context-trimming hooks must see it.
         """
         responses = [
             _tool_call_response("echo", '{"text":"x"}', "tc1"),
@@ -490,9 +489,8 @@ class TestHookOrdering:
         ctx = RunContext[None]()
         await _drain(executor, ctx)
 
-        # Only turn 0's before_generate fires from the loop.
-        # The forced answer generation bypasses the loop's hook dispatch.
-        assert gen_turns == [0]
+        # Turn 0's regular ACT call, then the forced final-answer call.
+        assert gen_turns == [0, 0]
 
 
 class TestToolInputConverter:

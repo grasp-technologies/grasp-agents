@@ -126,7 +126,18 @@ def test_render_outputs_caps_text() -> None:
     outputs = [make_output("stream", name="stdout", text="x" * 100)]
     parts = render_outputs_as_parts(outputs, max_text_chars=20)
     assert isinstance(parts[0], InputText)
-    assert "[output truncated]" in parts[0].text
+    assert "[... output truncated ...]" in parts[0].text
+
+
+def test_render_outputs_truncation_keeps_tail() -> None:
+    # A traceback's most informative line is its last — truncation must
+    # keep the tail, not just the head.
+    text = "start " + "x" * 200 + " ValueError: the actual error"
+    outputs = [make_output("stream", name="stdout", text=text)]
+    parts = render_outputs_as_parts(outputs, max_text_chars=80)
+    assert isinstance(parts[0], InputText)
+    assert parts[0].text.startswith("start")
+    assert "ValueError: the actual error" in parts[0].text
 
 
 def test_render_outputs_multiformat_images() -> None:

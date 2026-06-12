@@ -100,7 +100,11 @@ def render_outputs_as_parts(
                 segments.append(f"[{mime}]")
     body = "\n\n".join(s for s in segments if s).strip()
     if len(body) > max_text_chars:
-        body = body[:max_text_chars] + "\n[output truncated]"
+        # Keep head AND tail: a traceback's most informative line is its
+        # last (the exception itself) — head-only truncation drops it.
+        head = body[: max_text_chars // 2].rstrip()
+        tail = body[-(max_text_chars - len(head)) :].lstrip()
+        body = f"{head}\n[... output truncated ...]\n{tail}"
     text = (f"{header}\n\n" if header else "") + (body or "(no text output)")
     return [InputText(text=text), *images]
 

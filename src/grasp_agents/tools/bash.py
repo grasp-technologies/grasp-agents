@@ -211,6 +211,12 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         stream = ctx.exec_backend.stream(command, cwd=cwd, timeout=effective_timeout)
         return stream, effective_timeout, state_file
 
+    def concurrency_conflict_keys(self, inp: BashInput) -> list[str] | None:
+        # A shell command can write anywhere in the workspace — claim global
+        # exclusivity so it never interleaves with concurrent writers.
+        del inp
+        return ["/"]
+
     async def _run(
         self,
         inp: BashInput,

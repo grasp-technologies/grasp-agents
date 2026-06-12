@@ -264,6 +264,15 @@ def _build_exec_backend(
             raise RuntimeError(
                 "sandbox-exec was not found; cannot use confinement='seatbelt'."
             )
+        # Fail at construction, not on the first command: Seatbelt has no
+        # proxy layer, so per-domain / loopback policies cannot be enforced.
+        if policy.network not in {NetworkPolicy.NONE, NetworkPolicy.ALL}:
+            raise ValueError(
+                f"network={policy.network.value!r} is not enforceable under "
+                "Seatbelt (no proxy layer): use NetworkPolicy.NONE or "
+                "NetworkPolicy.ALL, or confinement='srt' for a domain "
+                "allowlist."
+            )
         from .seatbelt import SeatbeltExecBackend  # noqa: PLC0415
 
         return SeatbeltExecBackend(

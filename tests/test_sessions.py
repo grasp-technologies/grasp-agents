@@ -661,7 +661,9 @@ async def save_agent_checkpoint(
 ) -> None:
     """Plant a complete agent checkpoint (message-log + head) for tests."""
     checkpoint.message_count = len(checkpoint.messages)
-    await store.rewrite_messages(key, checkpoint.messages)
+    await store.rewrite_messages(
+        key, checkpoint.messages, version=checkpoint.log_version
+    )
     head = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
     await store.save(key, head)
 
@@ -673,7 +675,8 @@ async def load_agent_checkpoint(
     head = await store.load_json(key, AgentCheckpoint, subject=f"checkpoint at {key}")
     if head is None:
         return None
-    head.messages = (await store.read_messages(key))[: head.message_count]
+    raw = await store.read_messages(key, version=head.log_version)
+    head.messages = raw[: head.message_count]
     return head
 
 
@@ -1310,8 +1313,8 @@ class TestTaskRecordPersistence:
         assert "slow: research" in record.result
 
     @pytest.mark.anyio
-    async def test_bg_task_cancellation_marks_failed(self):
-        """Background task cancelled on max_turns is marked FAILED."""
+    async def test_bg_task_survives_max_turns_until_aclose(self):
+        """A background task outlives max_turns; ``aclose`` cancels it."""
         store = InMemoryCheckpointStore()
         very_slow = SlowTool(delay=10.0, name="very_slow", resumable=True)
 
@@ -1334,8 +1337,17 @@ class TestTaskRecordPersistence:
 
         await agent.run("go")
 
+        # Still running after the run — record stays PENDING (a crash here
+        # would resume it; a clean session end goes through aclose below).
         keys = await store.list_keys(task_prefix("s1"))
         assert len(keys) == 1
+        data = await store.load(keys[0])
+        assert data is not None
+        record = TaskRecord.model_validate_json(data)
+        assert record.status == TaskStatus.PENDING
+
+        await agent.aclose()
+
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)

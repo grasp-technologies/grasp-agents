@@ -48,6 +48,12 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
     def processor(self) -> Processor[InT, OutT, CtxT]:
         return self._processor
 
+    async def aclose(self) -> None:
+        # The template is never run, but close it for symmetry/safety (a user
+        # may have run the wrapped processor directly before wrapping it).
+        # Per-call clones are closed by the dispatch paths below.
+        await self._processor.aclose()
+
     @property
     def resumable(self) -> bool:
         return True
@@ -110,7 +116,11 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
     ) -> OutT:
         del progress_callback, agent_ctx
         proc = self._resolve_processor(ctx=ctx, path=path)
-        result = await proc.run(in_args=inp, exec_id=exec_id)
+        # The clone is unreachable after this call — its session ends here.
+        try:
+            result = await proc.run(in_args=inp, exec_id=exec_id)
+        finally:
+            await proc.aclose()
 
         return result.payloads[0]
 
@@ -154,10 +164,17 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         exec_id: str | None = None,
         step: int | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        async for event in proc.run_stream(in_args=in_args, exec_id=exec_id, step=step):
-            if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
-                yield ToolOutputEvent(
-                    data=event.data.payloads[0], source=proc.name, exec_id=exec_id
-                )
-            else:
-                yield event
+        # The per-call clone is unreachable after this stream — its session
+        # ends with it (also on cancellation/error).
+        try:
+            async for event in proc.run_stream(
+                in_args=in_args, exec_id=exec_id, step=step
+            ):
+                if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
+                    yield ToolOutputEvent(
+                        data=event.data.payloads[0], source=proc.name, exec_id=exec_id
+                    )
+                else:
+                    yield event
+        finally:
+            await proc.aclose()

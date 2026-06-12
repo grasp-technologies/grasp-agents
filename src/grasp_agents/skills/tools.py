@@ -10,6 +10,7 @@ no separate ``attach_*`` step is needed.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
@@ -38,7 +39,7 @@ LIST_SKILLS_DESCRIPTION = (
 
 
 @function_tool(name="load_skill", description=LOAD_SKILL_DESCRIPTION)
-async def load_skill(  # noqa: RUF029
+async def load_skill(
     name: Annotated[
         str, Field(description="Exact skill name from the <available_skills> catalog.")
     ],
@@ -54,7 +55,7 @@ async def load_skill(  # noqa: RUF029
             f"Pick one from the <available_skills> catalog."
         )
     try:
-        text = skill.path.read_text(encoding="utf-8")
+        text = await asyncio.to_thread(skill.path.read_text, encoding="utf-8")
     except OSError as exc:
         raise SkillNotFoundError(f"Skill {name!r} could not be read: {exc}") from exc
     try:
@@ -65,7 +66,7 @@ async def load_skill(  # noqa: RUF029
 
 
 @function_tool(name="list_skills", description=LIST_SKILLS_DESCRIPTION)
-async def list_skills(  # noqa: RUF029
+async def list_skills(
     refresh: Annotated[
         bool,
         Field(
@@ -79,7 +80,8 @@ async def list_skills(  # noqa: RUF029
     if ctx is None or ctx.skills is None:
         return "No skills are configured for this run."
     if refresh:
-        ctx.skills.refresh()
+        # The re-walk hits the filesystem — keep it off the event loop.
+        await asyncio.to_thread(ctx.skills.refresh)
     rendered = render_available_skills_block(ctx.skills.all, include_license=True)
     if not rendered:
         return "No skills available."

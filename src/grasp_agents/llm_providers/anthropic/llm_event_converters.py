@@ -119,11 +119,12 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
 
         match block.type:
             case "thinking":
-                if not self._reasoning_open:
-                    yield from self._open_reasoning()
-                else:
-                    # New thinking block within same item → close previous part
-                    yield from self._close_reasoning_summary_part()
+                if self._reasoning_open:
+                    # Each thinking block is signed individually — close the
+                    # previous item so its signature stays with its own text
+                    # instead of being overwritten by the next block's.
+                    yield from self._close_reasoning()
+                yield from self._open_reasoning()
                 yield from self._open_reasoning_summary_part()
 
             case "redacted_thinking":

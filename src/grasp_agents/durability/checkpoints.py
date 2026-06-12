@@ -10,13 +10,22 @@ from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 6
+CURRENT_SCHEMA_VERSION: int = 8
 """
 Version of the persisted checkpoint / task-record schema.
 
 Bump when the shape of any ``ProcessorCheckpoint`` subclass or ``TaskRecord``
 changes in a way that older code could not load. Add an entry to
 ``SCHEMA_VERSION_SUMMARIES`` describing what changed.
+"""
+
+MIN_SUPPORTED_SCHEMA_VERSION: int = 5
+"""
+Oldest persisted schema version this code can still load.
+
+Pre-v5 agent checkpoints embedded the transcript in the head blob (there is
+no message log to read) — loading one would silently resume an empty session,
+so records below this floor are rejected instead.
 """
 
 SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
@@ -52,6 +61,24 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "state (E2B), not a Python-kernel id specifically. v5 records load fine "
         "(old field ignored, exec_context_id defaults None); v5 code resuming a v6 "
         "session loses the re-attach and resumes with a fresh kernel."
+    ),
+    7: (
+        "AgentCheckpoint gained log_version: full-history rewrites of the "
+        "message log go to a fresh version file so a crash mid-rewrite "
+        "cannot pair the old head with a rewritten log. v6 records load fine "
+        "(version defaults 0 = the unsuffixed log); v6 code resuming a v7 "
+        "session that has rewritten (version >= 1) would read a stale or "
+        "missing log."
+    ),
+    8: (
+        "AgentCheckpoint.exec_context_id renamed to ipy_exec_context_id (the "
+        "RunPython kernel's execution context — the old name implied it "
+        "covered all exec state), and AgentCheckpoint gained "
+        "nb_exec_context_id (the RunCell notebook kernel's), both captured "
+        "with fs_snapshot_ref. v7 records load fine (old field ignored, both "
+        "default None); v7 code resuming a v8 session skips the kernel "
+        "re-attaches and falls back to fresh kernels (the .ipynb stays the "
+        "notebook's recoverable artifact)."
     ),
 }
 """
@@ -102,6 +129,13 @@ class PersistedRecord(BaseModel):
                 f"newer than this process understands "
                 f"(current={CURRENT_SCHEMA_VERSION}). Known versions:\n{known}."
             )
+        if self.schema_version < MIN_SUPPORTED_SCHEMA_VERSION:
+            raise CheckpointSchemaError(
+                f"Persisted record schema version {self.schema_version} is "
+                f"older than the oldest this process can load "
+                f"(minimum={MIN_SUPPORTED_SCHEMA_VERSION}): "
+                f"{SCHEMA_VERSION_SUMMARIES[MIN_SUPPORTED_SCHEMA_VERSION]}"
+            )
         return self
 
 
@@ -129,6 +163,12 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # can leave uncommitted trailing records; on resume only the first
     # ``message_count`` are trusted (the rest are dropped).
     message_count: int = 0
+
+    # Which log version this head describes. Full-history rewrites go to
+    # a fresh version, so a crash before the head lands leaves the old
+    # head + old log pair intact (the watermark is only meaningful against
+    # the log it was computed for).
+    log_version: int = 0
 
     usage: ResponseUsage | None = None
     step: int | None = None  # caller's delivery step (None = chat / untracked)
@@ -163,14 +203,18 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # checkpoint records only the ref. ``None`` = no snapshot taken.
     fs_snapshot_ref: str | None = None
 
-    # A code-execution context id, captured together with ``fs_snapshot_ref``
-    # (only meaningful as a pair: the id re-attaches to a context inside the
-    # *restored* sandbox). The context holds arbitrary in-memory state — today
-    # the RunPython kernel's, but it is not Python-specific. On a backend that
-    # preserves running processes in its snapshot (E2B), resume re-binds to this
-    # context so in-memory state survives. ``None`` = no persistent context / a
-    # backend that can't persist it.
-    exec_context_id: str | None = None
+    # The RunPython kernel's execution-context id, captured together with
+    # ``fs_snapshot_ref`` (only meaningful as a pair: the id re-attaches to a
+    # context inside the *restored* sandbox). On a backend that preserves
+    # running processes in its snapshot (E2B), resume re-binds to this
+    # context so in-memory state survives. ``None`` = no persistent context /
+    # a backend that can't persist it.
+    ipy_exec_context_id: str | None = None
+
+    # Same, for the RunCell notebook kernel (its own context, never shared
+    # with RunPython's). When the backend can't re-attach, resume falls back
+    # to a fresh kernel — the ``.ipynb`` remains the recoverable artifact.
+    nb_exec_context_id: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

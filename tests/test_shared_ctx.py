@@ -1,23 +1,23 @@
 """
-Container ctx resolution (PR #30) + session cascade (PR #15).
-
-Containers no longer borrow a ctx from an arbitrary child (``start_proc`` /
-``subproc``). Instead ``shared_child_ctx`` inherits the single ctx the
-children were *built* with (if any) and otherwise falls back to a fresh one;
-either way every subprocessor and the container end up sharing one
-``RunContext`` instance. Conflicting explicit child ctxs are surfaced, not
-silently resolved.
+ctx is a top-down session concern: set it at the top (a container, a
+standalone processor, or a ``with RunContext(...)`` block) and it cascades
+onto every subprocessor via ``on_adopted``. A subprocessor never carries its
+own session — a container that adopts it overrides whatever ctx it was built
+with (one session per composition tree). A bare container resolves the
+ambient / process-default ctx like any bare processor.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
-
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext, shared_child_ctx
+from grasp_agents.run_context import (
+    RunContext,
+    current_run_context,
+    reset_default_run_context,
+)
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
@@ -37,70 +37,60 @@ def _proc(
     return _Pass(name=name, ctx=ctx, recipients=recipients)
 
 
-class TestSharedChildCtx:
-    def test_none_when_all_children_built_bare(self) -> None:
-        assert shared_child_ctx([_proc("a"), _proc("b")]) is None
-
-    def test_returns_the_single_explicit_child_ctx(self) -> None:
-        ctx: RunContext[None] = RunContext(state=None)
-        # ``b`` is bare (placeholder) and must be ignored.
-        assert shared_child_ctx([_proc("a", ctx), _proc("b")]) is ctx
-
-    def test_same_instance_on_two_children_is_not_a_conflict(self) -> None:
-        ctx: RunContext[None] = RunContext(state=None)
-        assert shared_child_ctx([_proc("a", ctx), _proc("b", ctx)]) is ctx
-
-    def test_raises_on_conflicting_explicit_child_ctxs(self) -> None:
-        a = _proc("a", RunContext(state=None))
-        b = _proc("b", RunContext(state=None))
-        with pytest.raises(ValueError, match="different RunContext"):
-            shared_child_ctx([a, b])
-
-    def test_explicit_ctx_via_on_adopted_counts_as_deliberate(self) -> None:
-        # A processor built bare but later given a ctx via on_adopted should
-        # count as deliberate (supports "build bare -> on_adopted -> wrap").
-        ctx: RunContext[None] = RunContext(state=None)
-        a = _proc("a")
-        a.on_adopted(ctx=ctx)
-        assert shared_child_ctx([a, _proc("b")]) is ctx
-
-
 class TestContainersShareOneCtx:
-    def test_workflow_bare_subprocs_all_share_fresh_ctx(self) -> None:
+    def test_workflow_bare_subprocs_all_share_ctx(self) -> None:
         a, b = _proc("a"), _proc("b")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
         assert a.ctx is wf.ctx
         assert b.ctx is wf.ctx
 
-    def test_workflow_inherits_shared_subproc_ctx(self) -> None:
+    def test_explicit_container_ctx_cascades_to_subprocs(self) -> None:
         ctx: RunContext[None] = RunContext(state=None)
-        a, b = _proc("a", ctx), _proc("b", ctx)
-        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
+        a, b = _proc("a"), _proc("b")
+        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b], ctx=ctx)
         assert wf.ctx is ctx
         assert a.ctx is ctx
         assert b.ctx is ctx
 
-    def test_workflow_raises_on_conflicting_subproc_ctxs(self) -> None:
+    def test_container_ctx_overrides_subproc_explicit_ctx(self) -> None:
+        # ctx flows top-down: a subprocessor's own ctx is just its standalone
+        # default; the container's wins (same as ProcessorTool's per-call
+        # rebind). No bottom-up inheritance, no conflict error.
+        child_ctx: RunContext[None] = RunContext(state=None)
+        container_ctx: RunContext[None] = RunContext(state=None)
+        a, b = _proc("a", child_ctx), _proc("b", child_ctx)
+        wf = SequentialWorkflow[str, str, None](
+            name="wf", subprocs=[a, b], ctx=container_ctx
+        )
+        assert wf.ctx is container_ctx
+        assert a.ctx is container_ctx
+        assert b.ctx is container_ctx
+
+    def test_divergent_subproc_ctxs_unify_to_container(self) -> None:
+        # Two subprocs built with different ctxs no longer raise — the
+        # container's ctx silently wins for both.
         a = _proc("a", RunContext(state=None))
         b = _proc("b", RunContext(state=None))
-        with pytest.raises(ValueError, match="different RunContext"):
-            SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
+        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
+        assert a.ctx is wf.ctx
+        assert b.ctx is wf.ctx
 
     def test_parallel_processor_shares_ctx_with_subproc(self) -> None:
         sub = _proc("sub")
         par = ParallelProcessor[str, str, None](subproc=sub)
         assert sub.ctx is par.ctx
 
-    def test_runner_bare_procs_share_fresh_ctx(self) -> None:
+    def test_runner_bare_procs_share_ctx(self) -> None:
         a = _proc("a", recipients=[END_PROC_NAME])
         runner: Runner[str, None] = Runner(entry_proc=a, procs=[a])
         assert a.ctx is runner.ctx
 
-    def test_runner_inherits_shared_proc_ctx(self) -> None:
+    def test_runner_explicit_ctx_cascades(self) -> None:
         ctx: RunContext[None] = RunContext(state=None)
-        a = _proc("a", ctx, recipients=[END_PROC_NAME])
-        runner: Runner[str, None] = Runner(entry_proc=a, procs=[a])
+        a = _proc("a", recipients=[END_PROC_NAME])
+        runner: Runner[str, None] = Runner(entry_proc=a, procs=[a], ctx=ctx)
         assert runner.ctx is ctx
+        assert a.ctx is ctx
 
 
 class TestSessionCascade:
@@ -128,3 +118,42 @@ class TestSessionCascade:
         # ctx axis untouched by a path-only change.
         assert a.ctx is ctx
         assert wf.ctx is ctx
+
+
+class TestDefaultAndAmbientCtx:
+    """Bare construction binds to one shared ctx, never a per-agent throwaway."""
+
+    def test_uncomposed_bare_agents_share_the_process_default(self) -> None:
+        # The leak this design closes: two agents that are never composed
+        # still belong to one session.
+        a, b = _proc("a"), _proc("b")
+        assert a.ctx is b.ctx
+        assert a.ctx is current_run_context()
+
+    def test_reset_default_gives_a_fresh_one(self) -> None:
+        first = _proc("a").ctx
+        reset_default_run_context()
+        assert _proc("b").ctx is not first
+
+    def test_with_block_binds_bare_agents_to_that_ctx(self) -> None:
+        with RunContext[None](state=None) as ctx:
+            a, b = _proc("a"), _proc("b")
+            assert a.ctx is ctx
+            assert b.ctx is ctx
+        # Outside the block, bare construction falls back to the default.
+        assert _proc("c").ctx is not ctx
+
+    def test_with_block_restores_outer_ambient(self) -> None:
+        with RunContext[None](state=None) as outer:
+            assert _proc("a").ctx is outer
+            with RunContext[None](state=None) as inner:
+                assert _proc("b").ctx is inner
+            # Inner exit restores the outer ambient ctx.
+            assert _proc("c").ctx is outer
+
+    def test_explicit_ctx_wins_over_ambient(self) -> None:
+        explicit: RunContext[None] = RunContext(state=None)
+        with RunContext[None](state=None) as ambient:
+            p = _proc("a", explicit)
+            assert p.ctx is explicit
+            assert p.ctx is not ambient

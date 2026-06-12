@@ -600,14 +600,15 @@ class TestMultipleBackgroundTasks:
             assert launched_ids[tid] in str(notif.data)
 
 
-class TestCancellationOnMaxTurns:
-    """Background tasks are cancelled when max_turns is reached."""
+class TestMaxTurnsKeepsBackgroundTasks:
+    """Background tasks survive max_turns — resources are session-scoped."""
 
     @pytest.mark.asyncio
-    async def test_bg_tasks_cancelled_on_max_turns(self):
+    async def test_bg_tasks_survive_max_turns(self):
         """
-        With max_turns=1, bg task still pending at turn limit should
-        be cancelled, not left running.
+        With max_turns=1, a bg task still pending at the turn limit keeps
+        running after the forced final answer; only an explicit teardown
+        (``cancel_all`` — what ``LLMAgent.aclose`` calls) releases it.
         """
         # Very slow tool that won't finish before max_turns
         very_slow = SlowTool(delay=10.0, name="very_slow")
@@ -635,8 +636,10 @@ class TestCancellationOnMaxTurns:
         completed = [e for e in events if isinstance(e, BackgroundTaskCompletedEvent)]
         assert len(completed) == 0
 
-        # Verify tasks dict is clean
-        assert not executor.bg_tasks.has_pending
+        # The task outlives the run; explicit teardown releases it.
+        assert executor.bg_tasks.has_live_tasks
+        await executor.bg_tasks.cancel_all(ctx=ctx)
+        assert not executor.bg_tasks.has_live_tasks
 
 
 class TestFunctionToolBackground:

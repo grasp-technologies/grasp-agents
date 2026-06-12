@@ -9,10 +9,26 @@ import pytest
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from grasp_agents.run_context import reset_default_run_context
 from grasp_agents.types.tool import BaseTool
 
 # Load .env file (gitignored) for local development
 load_dotenv()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_default_run_context() -> Any:
+    """
+    Give every test a fresh process-default ``RunContext``.
+
+    Bare-constructed agents now share one process-wide default (so uncomposed
+    agents stay in one session); without this reset that default would
+    accumulate state / responses / usage across unrelated tests. Tests that
+    pass an explicit ``ctx`` are unaffected.
+    """
+    reset_default_run_context()
+    yield
+    reset_default_run_context()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

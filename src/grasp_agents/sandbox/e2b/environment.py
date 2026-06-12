@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self, TypedDict
 
 from e2b import AsyncSandbox
 
@@ -25,6 +26,29 @@ from .file_backend import E2BFileBackend
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+logger = logging.getLogger(__name__)
+
+
+class E2BCreateParams(TypedDict, total=False):
+    """
+    Keyword args splatted into ``AsyncSandbox.create(**...)``.
+
+    Mirrors the subset of the E2B SDK's create signature the framework
+    populates (in :func:`e2b_environment`). Typing it — rather than a bare
+    ``dict[str, Any]`` — checks the factory's dict literal and catches a key
+    typo at the splat. ``restore`` overrides ``template`` to spawn from a
+    snapshot.
+    """
+
+    template: str | None
+    timeout: int | None
+    metadata: dict[str, str] | None
+    envs: dict[str, str] | None
+    secure: bool
+    allow_internet_access: bool
+    api_key: str
+    domain: str
 
 
 def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
@@ -61,7 +85,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         holder: SandboxHandle,
         file_backend: E2BFileBackend,
         exec_backend: E2BExecBackend,
-        create_params: dict[str, Any] | None = None,
+        create_params: E2BCreateParams | None = None,
         owns_sandbox: bool = True,
         pause_on_exit: bool = False,
         code_interpreter: bool = False,
@@ -116,6 +140,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         )
 
     async def __aenter__(self) -> Self:
+        created_here = False
         if self._holder.sandbox is None:
             if self._create_params is None:
                 raise RuntimeError(
@@ -124,9 +149,24 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                 )
             sandbox_cls = _sandbox_cls(self._code_interpreter)
             self._holder.sandbox = await sandbox_cls.create(**self._create_params)
+            created_here = True
         sandbox = self._holder.require()
-        for root in self._file_backend.allowed_roots:
-            await sandbox.files.make_dir(wire(root))
+        try:
+            for root in self._file_backend.allowed_roots:
+                await sandbox.files.make_dir(wire(root))
+        except BaseException:
+            # Don't orphan a just-created (billed) sandbox when setup fails.
+            if created_here:
+                self._holder.sandbox = None
+                try:
+                    await sandbox.kill()
+                except Exception:
+                    logger.warning(
+                        "Failed to kill E2B sandbox after setup failure; "
+                        "it may keep running (and billing) until its timeout.",
+                        exc_info=True,
+                    )
+            raise
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -161,8 +201,8 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         The previous sandbox, if owned, is killed.
         """
         previous = self._holder.sandbox
-        params = dict(self._create_params or {})
-        params["template"] = ref  # create from the snapshot, not a base template
+        # Create from the snapshot, not a base template.
+        params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
         sandbox_cls = _sandbox_cls(self._code_interpreter)
         self._holder.sandbox = await sandbox_cls.create(**params)
         if previous is not None and self._owns_sandbox:
@@ -270,7 +310,7 @@ def e2b_environment(
         env=dict(env) if env else {},
     )
 
-    create_params: dict[str, Any] = {
+    create_params: E2BCreateParams = {
         "template": template,
         "timeout": sandbox_timeout,
         "metadata": dict(metadata) if metadata else None,

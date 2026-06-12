@@ -105,74 +105,90 @@ class MCPClient:
         return self._require_session()
 
     async def connect(self) -> None:
-        """Connect to the MCP server and discover tools."""
-        if self._session is not None:
+        """
+        Connect to the MCP server and discover tools.
+
+        Exception-safe: a failed handshake or discovery tears down the
+        transport (terminating a stdio server subprocess) and leaves the
+        client cleanly disconnected, so a retrying ``connect()`` starts
+        over instead of finding a half-connected, wedged client.
+        """
+        if self._tools is not None:
             return
 
-        self._exit_stack = AsyncExitStack()
-
-        if isinstance(self._server, MCPServerStdio):
-            server_params = StdioServerParameters(
-                command=self._server.command,
-                args=self._server.args,
-                env=self._server.env,
-            )
-            transport = await self._exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-        else:
-            try:
-                # Deferred: SSE transport needs the optional httpx-sse extra.
-                from mcp.client.sse import sse_client  # noqa: PLC0415
-            except ImportError as err:
-                msg = "SSE transport requires the 'mcp' package with httpx-sse support."
-                raise ImportError(msg) from err
-            transport = await self._exit_stack.enter_async_context(
-                sse_client(self._server.url)
-            )
-
-        read, write = transport
-        self._session = await self._exit_stack.enter_async_context(
-            ClientSession(read, write)
-        )
-        init_result = await self._session.initialize()
-        self._capabilities = init_result.capabilities
-        self._instructions = init_result.instructions
-
-        tools: list[MCPTool | MCPListResourcesTool | MCPReadResourceTool] = []
-
-        response = await self._session.list_tools()
-        for t in response.tools:
-            try:
-                tools.append(
-                    MCPTool(
-                        session=self._session, tool_def=t, timeout=self._tool_timeout
+        exit_stack = AsyncExitStack()
+        try:
+            if isinstance(self._server, MCPServerStdio):
+                server_params = StdioServerParameters(
+                    command=self._server.command,
+                    args=self._server.args,
+                    env=self._server.env,
+                )
+                transport = await exit_stack.enter_async_context(
+                    stdio_client(server_params)
+                )
+            else:
+                try:
+                    # Deferred: SSE transport needs the optional httpx-sse extra.
+                    from mcp.client.sse import sse_client  # noqa: PLC0415
+                except ImportError as err:
+                    msg = (
+                        "SSE transport requires the 'mcp' package with "
+                        "httpx-sse support."
                     )
-                )
-            except Exception:
-                # One tool with a pathological schema must not take down the
-                # whole server connection — skip it and keep the rest.
-                _logger.exception(
-                    "Skipping MCP tool %r (server %r): failed to build its "
-                    "input schema",
-                    t.name,
-                    self.name,
+                    raise ImportError(msg) from err
+                transport = await exit_stack.enter_async_context(
+                    sse_client(self._server.url)
                 )
 
-        if self._capabilities.resources:
-            tools.extend(
-                [
-                    MCPListResourcesTool(session=self._session, server_name=self._name),
-                    MCPReadResourceTool(session=self._session, server_name=self._name),
-                ]
-            )
+            read, write = transport
+            session = await exit_stack.enter_async_context(ClientSession(read, write))
+            init_result = await session.initialize()
+            capabilities = init_result.capabilities
 
+            tools: list[MCPTool | MCPListResourcesTool | MCPReadResourceTool] = []
+
+            response = await session.list_tools()
+            for t in response.tools:
+                try:
+                    tools.append(
+                        MCPTool(
+                            session=session, tool_def=t, timeout=self._tool_timeout
+                        )
+                    )
+                except Exception:
+                    # One tool with a pathological schema must not take down the
+                    # whole server connection — skip it and keep the rest.
+                    _logger.exception(
+                        "Skipping MCP tool %r (server %r): failed to build its "
+                        "input schema",
+                        t.name,
+                        self.name,
+                    )
+
+            if capabilities.resources:
+                tools.extend(
+                    [
+                        MCPListResourcesTool(session=session, server_name=self._name),
+                        MCPReadResourceTool(session=session, server_name=self._name),
+                    ]
+                )
+        except BaseException:
+            await exit_stack.aclose()
+            raise
+
+        # Commit only after full success — a retry of a failed connect must
+        # find a cleanly disconnected client.
+        self._exit_stack = exit_stack
+        self._session = session
+        self._capabilities = capabilities
+        self._instructions = init_result.instructions
         self._tools = tools
         _logger.info(
             "MCPClient '%s': connected, discovered %d tools (resources: %s)",
             self._name,
             len(self._tools),
-            "yes" if self._capabilities.resources else "no",
+            "yes" if capabilities.resources else "no",
         )
 
     async def close(self) -> None:

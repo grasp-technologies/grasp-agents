@@ -7,7 +7,7 @@ from grasp_agents.utils.streaming import stream_concurrent
 
 from ..durability.checkpoints import CheckpointKind, ParallelCheckpoint
 from ..packet import Packet
-from ..run_context import RunContext, shared_child_ctx
+from ..run_context import RunContext
 from ..types.errors import ProcInputValidationError, ProcRunError
 from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from ..types.io import ProcName
@@ -35,10 +35,10 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         super().__init__(
             name=subproc.name + "_par",
-            # Inherit the subproc's ctx only if it was built with one; else
-            # the base ctor creates a fresh ctx. ``_propagate_to_children``
-            # then shares the result with the subproc + its replicas.
-            ctx=ctx if ctx is not None else shared_child_ctx([subproc]),
+            # ctx flows top-down: an explicit one, else the base ctor resolves
+            # the ambient / process default. ``_propagate_to_children`` then
+            # cascades it onto the subproc + its replicas.
+            ctx=ctx,
             recipients=subproc.recipients,
             max_retries=0,
             path=path,
@@ -84,6 +84,15 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         await self._serialize_checkpoint(self._ctx, checkpoint)
 
     # --- Core ---
+
+    async def aclose(self) -> None:
+        """
+        Cascade session teardown to the subprocessor template.
+
+        Per-run replicas are clones closed at the end of each run; the
+        template itself may also have been run directly.
+        """
+        await self._subproc.aclose()
 
     @property
     def subproc(self) -> Processor[InT, OutT, CtxT]:
@@ -203,22 +212,35 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
             merged = stream_concurrent(streams)
 
-            async for stream_idx, event in merged:
-                real_idx = pending_indices[stream_idx]
-                if (
-                    isinstance(event, ProcPacketOutEvent)
-                    # match this stream's own replica, not just any replica name,
-                    # so a nested same-named packet can't be miscaptured
-                    and event.source == replicas[real_idx].name
-                ):
-                    out_packets_map[real_idx] = event.data
-                    completed_map[real_idx] = event.data
-                    await self.save_checkpoint(
-                        input_packet=input_packet,
-                        completed=completed_map,
-                    )
-                else:
-                    yield event
+            try:
+                async for stream_idx, event in merged:
+                    real_idx = pending_indices[stream_idx]
+                    if (
+                        isinstance(event, ProcPacketOutEvent)
+                        # match this stream's own replica, not just any replica
+                        # name, so a nested same-named packet can't be
+                        # miscaptured
+                        and event.source == replicas[real_idx].name
+                    ):
+                        out_packets_map[real_idx] = event.data
+                        completed_map[real_idx] = event.data
+                        await self.save_checkpoint(
+                            input_packet=input_packet,
+                            completed=completed_map,
+                        )
+                    else:
+                        yield event
+            finally:
+                # Replicas are per-run clones — unreachable after this run, so
+                # their sessions (shells/kernels/bg tasks) end here.
+                for rep in replicas.values():
+                    try:
+                        await rep.aclose()
+                    except Exception:
+                        logger.warning(
+                            "Failed to close parallel replica %r", rep.name,
+                            exc_info=True,
+                        )
 
             if merged.errors:
                 failed = [pending_indices[e.index] for e in merged.errors]

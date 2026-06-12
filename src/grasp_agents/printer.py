@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 import sys
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, Literal
@@ -38,6 +39,25 @@ from .types.llm_events import (
 
 logger = logging.getLogger(__name__)
 
+# C0 control characters (including ESC) minus tab / newline, plus DEL: any of
+# these reaching the terminal can clear the screen, move the cursor, or spoof
+# the window title (CSI / OSC injection via untrusted tool output — Rich
+# strips BEL but passes ESC through).
+_TERMINAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_terminal_text(text: str) -> str:
+    r"""
+    Neutralize terminal control / escape characters in untrusted text.
+
+    Lone ``\r`` becomes ``\n`` (carriage-return line-overwrite spoofing);
+    other control characters are dropped, leaving any sequence payload
+    visible as plain text.
+    """
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _TERMINAL_CONTROL_RE.sub("", normalized)
+
+
 _console = Console(
     force_jupyter=False,
     force_terminal=True,
@@ -73,7 +93,7 @@ def stream_colored_text(new_colored_text: str) -> None:
 
 def _styled_str(text: str, style: str) -> str:
     """Return text wrapped in ANSI escape codes via Rich."""
-    t = Text(text, style=style)
+    t = Text(sanitize_terminal_text(text), style=style)
     with _console.capture() as capture:
         _console.print(t, end="")
     return capture.get()
@@ -138,7 +158,9 @@ class Printer:
     def _output(self, text: str, style: str) -> None:
         if self._output_to == "log":
             log_kwargs: dict[str, Any] = {"extra": {"color": style}}
-            getattr(logger, self._logging_level)(text, **log_kwargs)
+            getattr(logger, self._logging_level)(
+                sanitize_terminal_text(text), **log_kwargs
+            )
         else:
             stream_colored_text(_styled_str(text + "\n", style))
 

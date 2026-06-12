@@ -42,6 +42,7 @@ from ..file_backend.paths import PathAccessError
 if TYPE_CHECKING:
     from ...agent.agent_context import AgentContext
     from ...run_context import RunContext
+    from .redact import SecretRedactor
 
 # Per-cell cap on captured output text in the structured view / redirect.
 # Full outputs live in the .ipynb; the model sees a preview.
@@ -472,11 +473,17 @@ class NotebookReadTool(
         max_notebook_bytes: int = DEFAULT_MAX_NOTEBOOK_BYTES,
         max_images: int = DEFAULT_MAX_IMAGES,
         timeout: float | None = None,
+        redactor: SecretRedactor | None = None,
     ) -> None:
+        from .redact import DefaultSecretRedactor  # noqa: PLC0415
+
         super().__init__(timeout=timeout)
         self._output_preview_chars = output_preview_chars
         self._max_notebook_bytes = max_notebook_bytes
         self._max_images = max_images
+        # Same final pass as ``Read`` — notebook sources and stored outputs
+        # can hold secrets just like any file content.
+        self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
 
     async def _run(
         self,
@@ -527,7 +534,9 @@ class NotebookReadTool(
                     f"Available ids: {_available_ids(nb)}."
                 )
         views = [
-            _build_cell_view(c, output_preview_chars=self._output_preview_chars)
+            self._redact_view(
+                _build_cell_view(c, output_preview_chars=self._output_preview_chars)
+            )
             for c in cells
         ]
 
@@ -549,6 +558,12 @@ class NotebookReadTool(
                 cell, max_images=self._max_images - len(images)
             )
         return [InputText(text=render_cell_views(resolved, views)), *images]
+
+    def _redact_view(self, view: NotebookCellView) -> NotebookCellView:
+        view.source = self._redactor(view.source)
+        if view.output_preview is not None:
+            view.output_preview = self._redactor(view.output_preview)
+        return view
 
 
 class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
@@ -578,6 +593,9 @@ class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
 
     def __init__(self, *, timeout: float | None = None) -> None:
         super().__init__(timeout=timeout)
+
+    def concurrency_conflict_keys(self, inp: NotebookEditInput) -> list[str] | None:
+        return [inp.notebook_path]
 
     async def _run(
         self,

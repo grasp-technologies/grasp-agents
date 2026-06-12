@@ -33,8 +33,11 @@ class CheckpointPersistMixin:
     # log (strong refs, so identity comparison stays sound); ``_log_dirty`` is
     # set when the transcript is rebuilt from scratch, so the next checkpoint
     # rewrites the log instead of appending a stale delta.
+    # ``_log_version`` is the log file the current head points at —
+    # rewrites bump it (see :meth:`_serialize_agent_checkpoint`).
     _persisted_messages: tuple[Any, ...] = ()
     _log_dirty: bool = False
+    _log_version: int = 0
 
     def _checkpoint_store_key(self, ctx: RunContext[Any]) -> str | None:
         if ctx.checkpoint_store is None or self._checkpoint_kind is None:
@@ -93,6 +96,13 @@ class CheckpointPersistMixin:
         Divergence is detected by object identity, so hooks must replace
         message objects rather than mutating their fields (in-place field
         mutation of a persisted message is not detected).
+
+        A rewrite goes to a **new log version**, with the head re-pointed
+        only after the rewrite lands: a crash in between leaves the old
+        head + old log pair intact, instead of pairing the old head's
+        watermark with a log it no longer describes. The superseded
+        version is removed best-effort once the new head is durable (a
+        crash can orphan one file — harmless, cleaned by ``delete``).
         """
         store = ctx.checkpoint_store
         key = self._checkpoint_store_key(ctx)
@@ -104,19 +114,42 @@ class CheckpointPersistMixin:
         prefix_intact = len(messages) >= len(persisted) and all(
             m is p for m, p in zip(messages, persisted, strict=False)
         )
-        if self._log_dirty or not prefix_intact:
-            await store.rewrite_messages(key, messages)
-            self._log_dirty = False
+        rewrite = self._log_dirty or not prefix_intact
+        # A new version is only needed when an existing head + log pair
+        # would be superseded; the first save of a fresh session rewrites
+        # its own (empty) version in place.
+        supersedes = bool(persisted) or self._checkpoint_number > 0
+        log_version = self._log_version + (1 if rewrite and supersedes else 0)
+        if rewrite:
+            await store.rewrite_messages(key, messages, version=log_version)
         else:
             new_messages = messages[len(persisted) :]
             if new_messages:
-                await store.append_messages(key, new_messages)
+                await store.append_messages(
+                    key, new_messages, version=log_version
+                )
 
         checkpoint.checkpoint_number = self._checkpoint_number + 1
         checkpoint.message_count = len(messages)
+        checkpoint.log_version = log_version
         head_blob = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
         await store.save(key, head_blob)
 
+        if rewrite and self._log_version != log_version:
+            try:
+                await store.rewrite_messages(
+                    key, [], version=self._log_version
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to remove superseded message-log version %d at %s",
+                    self._log_version,
+                    key,
+                    exc_info=True,
+                )
+
+        self._log_version = log_version
+        self._log_dirty = False
         self._persisted_messages = tuple(messages)
         self._checkpoint_number += 1
 
@@ -144,15 +177,20 @@ class CheckpointPersistMixin:
         if head is None:
             return None
 
-        raw = await store.read_messages(key)
+        raw = await store.read_messages(key, version=head.log_version)
         committed = raw[: head.message_count]
         head.messages = committed
         # Drop an uncommitted / torn tail (records past the head's watermark)
         # so later appends extend a clean file. Skip when the log is already
-        # exactly the committed prefix — the common, clean resume.
+        # exactly the committed prefix — the common, clean resume. (Same
+        # version: the content is a prefix of what is there, so a crash
+        # mid-rewrite cannot invalidate the head's watermark.)
         if len(raw) != len(committed):
-            await store.rewrite_messages(key, committed)
+            await store.rewrite_messages(
+                key, committed, version=head.log_version
+            )
 
         self._checkpoint_number = head.checkpoint_number
+        self._log_version = head.log_version
         self._persisted_messages = tuple(committed)
         return head

@@ -5,15 +5,19 @@ from functools import partial
 from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
+from pydantic import TypeAdapter
+from pydantic import ValidationError as PydanticValidationError
+
 from grasp_agents.telemetry import SpanKind, traced
 
 from ..durability.checkpoint_mixin import CheckpointPersistMixin
 from ..durability.checkpoints import CheckpointKind, RunnerCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import RunContext, shared_child_ctx
+from ..run_context import RunContext, current_run_context
 from ..types.errors import RunnerError
 from ..types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
+from ..utils.generics import AutoInstanceAttributesMixin
 from .event_bus import EventBus
 
 logger = logging.getLogger(__name__)
@@ -22,8 +26,15 @@ START_PROC_NAME: Literal["*START*"] = "*START*"
 END_PROC_NAME: Literal["*END*"] = "*END*"
 
 
-class Runner[OutT, CtxT](CheckpointPersistMixin):
+class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
     _checkpoint_kind: ClassVar[CheckpointKind | None] = CheckpointKind.RUNNER
+
+    # Captures ``OutT`` at runtime (``Runner[MyOut, ...]``) so the final
+    # END-routed payloads can be validated. Unsubscripted construction
+    # resolves to ``object`` → validation is skipped.
+    _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {0: "_out_type"}
+
+    _out_type: type
 
     def __init__(
         self,
@@ -34,6 +45,7 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
         path: list[str] | None = None,
         session_metadata: dict[str, Any] | None = None,
     ) -> None:
+        super().__init__()
         if entry_proc not in procs:
             raise RunnerError(
                 f"Entry processor {entry_proc.name} must be in the list of processors: "
@@ -85,15 +97,11 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
 
         self._event_bus = EventBus()
 
-        # Like the workflow/parallel containers: inherit a single ctx the
-        # procs were built with (if any), else create a fresh one. The
-        # ``on_adopted`` loop below then shares it with every proc, so all
-        # subprocessors and the Runner hold one ctx instance.
-        self._ctx = (
-            ctx
-            if ctx is not None
-            else (shared_child_ctx(procs) or RunContext[CtxT](state=None))  # type: ignore
-        )
+        # ctx flows top-down: an explicit one, else the ambient / process
+        # default. The ``on_adopted`` loop below cascades it onto every proc,
+        # so all subprocessors and the Runner hold one ctx instance —
+        # subprocessors never carry their own session.
+        self._ctx = ctx if ctx is not None else current_run_context()  # type: ignore
 
         self._path = path or []
         for proc in procs:
@@ -106,6 +114,29 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
         self._checkpoint_number: int = 0
         self._checkpoint_lock = asyncio.Lock()
         self._active_steps: dict[str, int] = {}  # proc_name -> last delivery step
+
+    async def aclose(self) -> None:
+        """
+        Tear down every processor's session (shells, kernels, background
+        tasks). Resources are session-scoped — runs never release them — so
+        the embedder closes the runner (directly or via ``async with``) when
+        the multi-agent session ends.
+        """
+        for proc in self._procs:
+            try:
+                await proc.aclose()
+            except Exception:
+                logger.warning(
+                    "Failed to close processor %r during runner teardown",
+                    proc.name,
+                    exc_info=True,
+                )
+
+    async def __aenter__(self) -> "Runner[OutT, CtxT]":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
     @property
     def name(self) -> str:
@@ -208,6 +239,7 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
                 "everything to END, or nothing."
             )
         if routed_to_end:
+            self._validate_final_packet(out_packet)
             final_event = RunPacketOutEvent(
                 id=out_packet.id,
                 data=out_packet,
@@ -217,6 +249,26 @@ class Runner[OutT, CtxT](CheckpointPersistMixin):
             )
             return [], final_event
         return sub_events, None
+
+    def _validate_final_packet(self, packet: Packet[Any]) -> None:
+        """
+        Validate END-routed payloads against ``OutT``.
+
+        Only enforced when the runner was subscripted (``Runner[MyOut, ...]``);
+        an unsubscripted runner resolves ``OutT`` to ``object`` and skips.
+        """
+        out_type = getattr(self, "_out_type", object)
+        if out_type in {object, Any}:
+            return
+        adapter: TypeAdapter[Any] = TypeAdapter(out_type)
+        for i, payload in enumerate(packet.payloads):
+            try:
+                adapter.validate_python(payload)
+            except PydanticValidationError as err:
+                raise RunnerError(
+                    f"Final payload {i} from processor '{packet.sender}' does "
+                    f"not match the runner's output type {out_type!r}: {err}"
+                ) from err
 
     async def _checkpoint_transition(
         self,

@@ -27,6 +27,7 @@ from .provider_output_to_response import (
     attach_grounding_annotations,
     extract_url_context_data,
     extract_web_search_data,
+    map_finish_reason,
 )
 
 if TYPE_CHECKING:
@@ -192,21 +193,4 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
     def _map_finish_reason(
         self,
     ) -> tuple[ResponseStatus, IncompleteDetails | None]:
-        if self._finish_reason in {"STOP", "FINISH_REASON_STOP"}:
-            return "completed", None
-
-        if self._finish_reason in {
-            "MAX_TOKENS",
-            "FINISH_REASON_MAX_TOKENS",
-        }:
-            return "incomplete", IncompleteDetails(reason="max_output_tokens")
-
-        if self._finish_reason in {
-            "SAFETY",
-            "FINISH_REASON_SAFETY",
-            "BLOCKLIST",
-            "RECITATION",
-        }:
-            return "incomplete", IncompleteDetails(reason="content_filter")
-
-        return "completed", None
+        return map_finish_reason(self._finish_reason)

@@ -68,7 +68,7 @@ def _agent_ctx() -> AgentContext:
         ),
         session_holder=BashSessionHolder(),
         nb_kernel_holder=KernelHolder(),
-        code_kernel_holder=KernelHolder(),
+        ipy_kernel_holder=KernelHolder(),
         shell_state=ShellState(),
     )
 
@@ -259,8 +259,8 @@ async def test_run_python_on_e2b_code_interpreter() -> None:
             assert any(isinstance(p, InputImage) for p in plot)
         finally:
             await agent_ctx.nb_kernel_holder.close()
-            if agent_ctx.code_kernel_holder is not None:
-                await agent_ctx.code_kernel_holder.close()
+            if agent_ctx.ipy_kernel_holder is not None:
+                await agent_ctx.ipy_kernel_holder.close()
 
 
 @pytest.mark.integration

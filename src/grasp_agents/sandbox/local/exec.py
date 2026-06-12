@@ -188,12 +188,14 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
         return resolve_safe(cwd, roots, must_exist=True)
 
     def _merged_env(self, env: Mapping[str, str] | None) -> dict[str, str]:
-        scrub = self._policy.env_scrub
+        # Case-insensitive scrub: a lowercase secret var must not slip past
+        # uppercase patterns.
+        scrub = [pat.upper() for pat in self._policy.env_scrub]
         if self._inherit_host_env:
             merged = {
                 k: v
                 for k, v in os.environ.items()
-                if not any(fnmatch.fnmatchcase(k, pat) for pat in scrub)
+                if not any(fnmatch.fnmatchcase(k.upper(), pat) for pat in scrub)
             }
         else:
             merged = {}

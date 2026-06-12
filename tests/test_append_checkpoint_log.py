@@ -279,8 +279,14 @@ async def test_reset_transcript_rewrites_log(tmp_path: Path) -> None:
     )
     await agent2.run("second message")
 
-    log = await store.read_messages("sess/agent/test_agent")
+    # The rewrite went to a fresh generation — read via the head, like resume.
+    head = await load_agent_checkpoint(store, "sess/agent/test_agent")
+    assert head is not None
     user_texts = [
-        m.text for m in log if isinstance(m, InputMessageItem) and m.role == "user"
+        m.text
+        for m in head.messages
+        if isinstance(m, InputMessageItem) and m.role == "user"
     ]
     assert user_texts == ["second message"]  # the first run's records are gone
+    # The superseded generation-0 file is removed.
+    assert await store.read_messages("sess/agent/test_agent") == []

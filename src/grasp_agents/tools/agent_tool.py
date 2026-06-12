@@ -247,7 +247,11 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         agent, in_prompt = await self._prepare_child(
             inp, ctx=ctx, exec_id=exec_id, path=path, agent_ctx=agent_ctx
         )
-        result = await agent.run(chat_inputs=in_prompt, exec_id=exec_id)
+        # The child is built per call — its session ends with the call.
+        try:
+            result = await agent.run(chat_inputs=in_prompt, exec_id=exec_id)
+        finally:
+            await agent.aclose()
 
         return result.payloads[0]
 
@@ -293,10 +297,17 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         exec_id: str | None = None,
         chat_inputs: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        async for event in agent.run_stream(chat_inputs=chat_inputs, exec_id=exec_id):
-            if isinstance(event, ProcPacketOutEvent) and event.source == agent.name:
-                yield ToolOutputEvent(
-                    data=event.data.payloads[0], source=agent.name, exec_id=exec_id
-                )
-            else:
-                yield event
+        # The child is built per call — its session ends with this stream
+        # (also on cancellation/error).
+        try:
+            async for event in agent.run_stream(
+                chat_inputs=chat_inputs, exec_id=exec_id
+            ):
+                if isinstance(event, ProcPacketOutEvent) and event.source == agent.name:
+                    yield ToolOutputEvent(
+                        data=event.data.payloads[0], source=agent.name, exec_id=exec_id
+                    )
+                else:
+                    yield event
+        finally:
+            await agent.aclose()

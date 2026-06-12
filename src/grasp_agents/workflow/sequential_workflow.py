@@ -63,6 +63,9 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         if checkpoint is not None:
             packet = checkpoint.packet
             start_step = checkpoint.completed_step + 1
+            # The checkpointed packet supersedes re-delivered inputs — the
+            # first resumed subprocessor must not receive both.
+            chat_inputs = None
 
             # All steps completed in a prior run — emit cached final output
             if start_step >= len(self.subprocs):

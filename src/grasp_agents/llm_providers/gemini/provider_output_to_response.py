@@ -488,15 +488,16 @@ def _convert_usage(usage: GenerateContentResponseUsageMetadata | None) -> Respon
     )
 
 
-def _map_finish_reason(
-    response: GenerateContentResponse,
+def map_finish_reason(
+    reason: str | None,
 ) -> tuple[ResponseStatus, IncompleteDetails | None]:
-    if not response.candidates or not response.candidates[0].finish_reason:
-        return "completed", None
+    """
+    Map a Gemini candidate finish-reason name to ``(status, details)``.
 
-    reason = response.candidates[0].finish_reason.name
-
-    if reason in {"STOP", "FINISH_REASON_STOP"}:
+    Shared by the non-streaming converter and the stream converter so the
+    two paths cannot drift.
+    """
+    if reason is None or reason in {"STOP", "FINISH_REASON_STOP"}:
         return "completed", None
 
     if reason in {"MAX_TOKENS", "FINISH_REASON_MAX_TOKENS"}:
@@ -507,10 +508,31 @@ def _map_finish_reason(
         "FINISH_REASON_SAFETY",
         "BLOCKLIST",
         "RECITATION",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
     }:
         return "incomplete", IncompleteDetails(reason="content_filter")
 
+    if reason in {
+        "MALFORMED_FUNCTION_CALL",
+        "UNEXPECTED_TOOL_CALL",
+        "LANGUAGE",
+        "OTHER",
+    }:
+        # Abnormal termination with unusable content — must not read as a
+        # clean completion. No dedicated reason in the OpenAI-shaped enum.
+        return "incomplete", IncompleteDetails()
+
     return "completed", None
+
+
+def _map_finish_reason(
+    response: GenerateContentResponse,
+) -> tuple[ResponseStatus, IncompleteDetails | None]:
+    if not response.candidates or not response.candidates[0].finish_reason:
+        return "completed", None
+    return map_finish_reason(response.candidates[0].finish_reason.name)
 
 
 def provider_output_to_response(provider_output: GenerateContentResponse) -> Response:

@@ -96,7 +96,9 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         )
         return await self._session.call_tool(
             name=self.name,
-            arguments=inp.model_dump(),
+            # ``exclude_none`` so omitted optionals are not sent as explicit
+            # ``null`` — schema-strict servers reject those.
+            arguments=inp.model_dump(exclude_none=True),
             progress_callback=progress_callback,
             meta=meta,
             read_timeout_seconds=timeout_delta,

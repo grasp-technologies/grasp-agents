@@ -369,6 +369,14 @@ def build_store_approval(
                 else:
                     decision = await fut
             except TimeoutError:
+                # Clear the store's pending entry — nothing will consume a
+                # late decision, and a late ``resolve()`` should report
+                # ``False`` rather than silently succeeding without effect.
+                await store.resolve(
+                    session_key,
+                    call.call_id,
+                    ApprovalDeny(reason=f"Approval timed out after {timeout}s."),
+                )
                 decisions[call.call_id] = RejectToolContent(
                     content=(f"Approval for '{call.name}' timed out after {timeout}s.")
                 )
@@ -376,7 +384,15 @@ def build_store_approval(
             except asyncio.CancelledError:
                 # The run was cancelled while parked at the approval gate —
                 # propagate the cancellation; converting it into a denial
-                # would keep the cancelled run going.
+                # would keep the cancelled run going. Clear the batch's
+                # remaining entries first: their waiters are gone (a no-op
+                # for entries already resolved).
+                for late_call, _ in pending_futures:
+                    await store.resolve(
+                        session_key,
+                        late_call.call_id,
+                        ApprovalDeny(reason="Run cancelled."),
+                    )
                 raise
             if isinstance(decision, ApprovalDeny):
                 decisions[call.call_id] = RejectToolContent(content=decision.reason)

@@ -491,7 +491,7 @@ class TestOpenAIResponsesWebFetch:
 
     @pytest.mark.asyncio
     async def test_web_fetch_unreachable(self, llm: CloudLLM) -> None:
-        """Unreachable URL — OpenAI returns OpenPageAction with url=None."""
+        """Unreachable URL still converts to OpenPageAction items."""
         input_items = [
             InputMessageItem.from_text(
                 "Go to https://this-domain-does-not-exist-abc123xyz.invalid/page "
@@ -505,9 +505,15 @@ class TestOpenAIResponsesWebFetch:
             for i in response.output_items
             if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
-        # OpenAI still produces OpenPageAction but with url=None for unreachable
+        # OpenAI's live behavior has varied here: older responses carried
+        # url=None for an unreachable page, newer ones report the attempted
+        # URL. Either way the conversion must surface the OpenPageAction.
         assert len(open_page_items) >= 1
-        assert any(op.action.url is None for op in open_page_items)
+        assert all(
+            op.action.url is None
+            or "this-domain-does-not-exist" in (op.action.url or "")
+            for op in open_page_items
+        )
 
     @pytest.mark.asyncio
     async def test_web_fetch_multi_turn(self, llm: CloudLLM) -> None:

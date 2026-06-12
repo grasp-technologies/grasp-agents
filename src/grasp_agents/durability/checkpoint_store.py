@@ -97,18 +97,27 @@ class CheckpointStore(ABC):
     # uncommitted / torn tail). ``read_messages`` must tolerate a torn final
     # record (see :func:`decode_message_log`); ``encode_messages`` /
     # ``decode_message_log`` give backends a ready JSONL framing.
+    #
+    # ``version`` namespaces independent log files for one key. A
+    # full-history rewrite goes to a NEW version while the head still
+    # points at the old one — a crash between the two leaves the old
+    # head + old log pair intact instead of pairing the old head with a
+    # rewritten log (whose prefix it no longer describes). Rewriting a
+    # version to an empty message list deletes it.
 
     @abstractmethod
     async def append_messages(
-        self, key: str, messages: Sequence[InputItem]
+        self, key: str, messages: Sequence[InputItem], *, version: int = 0
     ) -> None: ...
 
     @abstractmethod
-    async def read_messages(self, key: str) -> list[InputItem]: ...
+    async def read_messages(
+        self, key: str, *, version: int = 0
+    ) -> list[InputItem]: ...
 
     @abstractmethod
     async def rewrite_messages(
-        self, key: str, messages: Sequence[InputItem]
+        self, key: str, messages: Sequence[InputItem], *, version: int = 0
     ) -> None: ...
 
 
@@ -117,7 +126,7 @@ class InMemoryCheckpointStore(CheckpointStore):
 
     def __init__(self) -> None:
         self._data: dict[str, bytes] = {}
-        self._logs: dict[str, list[InputItem]] = {}
+        self._logs: dict[tuple[str, int], list[InputItem]] = {}
 
     async def save(self, key: str, data: bytes) -> None:
         self._data[key] = data
@@ -127,20 +136,27 @@ class InMemoryCheckpointStore(CheckpointStore):
 
     async def delete(self, key: str) -> None:
         self._data.pop(key, None)
-        self._logs.pop(key, None)
+        for log_key in [k for k in self._logs if k[0] == key]:
+            self._logs.pop(log_key, None)
 
     async def list_keys(self, prefix: str) -> list[str]:
         return [k for k in self._data if k.startswith(prefix)]
 
-    async def append_messages(self, key: str, messages: Sequence[InputItem]) -> None:
+    async def append_messages(
+        self, key: str, messages: Sequence[InputItem], *, version: int = 0
+    ) -> None:
         if messages:
-            self._logs.setdefault(key, []).extend(messages)
+            self._logs.setdefault((key, version), []).extend(messages)
 
-    async def read_messages(self, key: str) -> list[InputItem]:
-        return list(self._logs.get(key, []))
+    async def read_messages(
+        self, key: str, *, version: int = 0
+    ) -> list[InputItem]:
+        return list(self._logs.get((key, version), []))
 
-    async def rewrite_messages(self, key: str, messages: Sequence[InputItem]) -> None:
+    async def rewrite_messages(
+        self, key: str, messages: Sequence[InputItem], *, version: int = 0
+    ) -> None:
         if messages:
-            self._logs[key] = list(messages)
+            self._logs[key, version] = list(messages)
         else:
-            self._logs.pop(key, None)
+            self._logs.pop((key, version), None)

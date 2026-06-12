@@ -178,8 +178,8 @@ async def _run(
 
 async def _close(agent_ctx: AgentContext) -> None:
     await agent_ctx.nb_kernel_holder.close()
-    if agent_ctx.code_kernel_holder is not None:
-        await agent_ctx.code_kernel_holder.close()
+    if agent_ctx.ipy_kernel_holder is not None:
+        await agent_ctx.ipy_kernel_holder.close()
 
 
 @_needs_srt

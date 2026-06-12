@@ -54,7 +54,6 @@ from grasp_agents.untrusted_content import wrap_untrusted
 from grasp_agents.utils.streaming import stream_concurrent
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
-from .background_tasks import BackgroundTaskManager
 from .loop_state import (
     NextStep,
     NextStepContinue,
@@ -88,6 +87,7 @@ if TYPE_CHECKING:
     )
     from grasp_agents.types.response import Response
 
+    from .background_tasks import BackgroundTaskManager
     from .llm_agent_transcript import LLMAgentTranscript
 
 logger = getLogger(__name__)
@@ -208,9 +208,9 @@ class AgentLoop[CtxT]:
         self._llm_output_schema = llm_output_schema
         self._final_answer_tool = self._make_final_answer_tool()
 
-        tools_list = (tools or [])[:]
-        if tools and final_answer_as_tool_call:
-            tools_list = tools + [self._final_answer_tool]
+        tools_list = list(tools or [])
+        if final_answer_as_tool_call:
+            tools_list.append(self._final_answer_tool)
         # Tools are dispatched and their events routed by name, so names must be
         # unique and must not shadow the agent's own name — otherwise the dict
         # below silently drops a duplicate, and a name shared with the agent (or
@@ -247,27 +247,21 @@ class AgentLoop[CtxT]:
         self.checkpoint_callback = None
         self.path = path
 
-        # One manager per loop: it runs both background subagent tools and
-        # auto-backgrounded Bash commands.
-        bg_tasks = BackgroundTaskManager[CtxT](
-            agent_name=agent_name,
-            transcript=transcript,
-            tools=tools_dict,
-            path=path,
-            max_background=max_background,
-        )
-        # The single agent-scope state handed to each tool call. ``create`` fills
-        # the fresh per-loop state (file-edit ledger, Bash session, the RunCell +
-        # RunPython kernels, the shell cwd). Tools read what they need from here
-        # and store nothing, so a single tool instance is safe to share across
-        # agents; ``agent.copy()`` deep-copies the loop and this context together,
-        # so a replica's tools resolve the replica's own state. Exposed via the
-        # read-only properties below.
+        # The single agent-scope state handed to each tool call. ``create``
+        # fills the fresh session state (file-edit ledger, Bash session, the
+        # RunCell + RunPython kernels, the shell cwd, the background-task
+        # manager). Tools read what they need from here and store nothing, so
+        # a single tool instance is safe to share across agents;
+        # ``agent.copy()`` deep-copies the loop and this context together, so
+        # a replica's tools resolve the replica's own state. Session-scoped:
+        # released by ``LLMAgent.aclose()``, never at run end. Exposed via
+        # the read-only properties below.
         self._agent_ctx = AgentContext.create(
             transcript=transcript,
             tools=tools_dict,
-            bg_tasks=bg_tasks,
             agent_name=agent_name,
+            path=path,
+            max_background=max_background,
         )
 
     @property
@@ -826,32 +820,40 @@ class AgentLoop[CtxT]:
                 exec_id=exec_id,
             )
 
+        settings = deepcopy(extra_llm_settings)
+        await self.on_before_llm(
+            extra_llm_settings=settings, turn=self.turn, exec_id=exec_id
+        )
+
+        hook_tool_choice = settings.pop("tool_choice", None)
         tool_choice = (
             NamedToolChoice(name=self._final_answer_tool.name)
             if self.final_answer_as_tool_call
-            else None
+            else hook_tool_choice
         )
         stream = ResponseCapture(
             self.query_llm(
                 tool_choice=tool_choice,
-                extra_llm_settings=extra_llm_settings,
+                extra_llm_settings=settings,
                 exec_id=exec_id,
             ),
         )
         async for event in stream:
             yield event
 
-        # ``query_llm`` already committed the response items to the transcript
-        # and recorded usage — do not repeat either here.
         assert stream.response is not None
 
+        await self.on_after_llm(stream.response, turn=self.turn, exec_id=exec_id)
+
         self.final_answer = self._extract_final_answer(
-            response=stream.response,
-            exec_id=exec_id,
+            response=stream.response, exec_id=exec_id
         )
         if self.final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, exec_id=exec_id)
-        self._close_stop_tool_calls(stream.response)
+
+        closures = self._close_stop_tool_calls(stream.response)
+        for closure_event in self._closure_events(closures, exec_id=exec_id):
+            yield closure_event
 
     # --- Main execution loop ---
 
@@ -891,9 +893,29 @@ class AgentLoop[CtxT]:
             and time.monotonic() >= self._deadline,
         )
 
+    def _unanswered_tool_calls(self, response: Response) -> list[FunctionToolCallItem]:
+        """
+        The response's tool calls that have no tool_result in the transcript.
+
+        A call whose result was already synthesized (LLM-layer validation
+        failure) must not be paired a second time — providers reject
+        duplicate tool_results, and they would persist into checkpoints.
+        """
+        tool_calls = response.tool_call_items
+        if not tool_calls:
+            return []
+        answered = {
+            m.call_id
+            for m in self.transcript.messages
+            if isinstance(m, FunctionToolOutputItem)
+        }
+        for tc in tool_calls:
+            self._skip_call_ids.discard(tc.call_id)
+        return [tc for tc in tool_calls if tc.call_id not in answered]
+
     def _close_dangling_tool_calls(
         self, response: Response
-    ) -> list[FunctionToolOutputItem]:
+    ) -> list[tuple[FunctionToolCallItem, FunctionToolOutputItem]]:
         """
         Inject synthetic tool outputs for tool calls that will never execute.
 
@@ -902,24 +924,27 @@ class AgentLoop[CtxT]:
         reject requests with unmatched tool_use/tool_result pairs. This method
         adds cancellation outputs so the conversation stays valid.
         """
-        tool_calls = response.tool_call_items
-        if not tool_calls:
-            return []
-
-        cancellations = [
-            FunctionToolOutputItem.from_tool_result(
-                call_id=tc.call_id,
-                output="[Tool call cancelled: agent reached turn limit]",
+        closures = [
+            (
+                tc,
+                FunctionToolOutputItem.from_tool_result(
+                    call_id=tc.call_id,
+                    output="[Tool call cancelled: agent reached turn limit]",
+                ),
             )
-            for tc in tool_calls
+            for tc in self._unanswered_tool_calls(response)
         ]
-        self.transcript.update(cancellations)
+        if closures:
+            self.transcript.update([msg for _, msg in closures])
 
-        return cancellations
+        return closures
 
-    def _close_stop_tool_calls(self, response: Response) -> None:
+    def _close_stop_tool_calls(
+        self, response: Response
+    ) -> list[tuple[FunctionToolCallItem, FunctionToolOutputItem]]:
         """
-        Pair every tool call in a stopping response with a synthetic output.
+        Pair every unanswered tool call in a stopping response with a
+        synthetic output.
 
         A stop extracted from a ``final_answer`` tool call (forced or
         voluntary) — or from a custom extractor that stops despite pending
@@ -928,18 +953,55 @@ class AgentLoop[CtxT]:
         the tool_call → tool_result pairing invariant.
         """
         closures = [
-            FunctionToolOutputItem.from_tool_result(
-                call_id=tc.call_id,
-                output=(
-                    "Final answer recorded."
-                    if tc.name == self._final_answer_tool.name
-                    else "[Tool call cancelled: agent stopped with a final answer]"
+            (
+                tc,
+                FunctionToolOutputItem.from_tool_result(
+                    call_id=tc.call_id,
+                    output=(
+                        "Final answer recorded."
+                        if tc.name == self._final_answer_tool.name
+                        else "[Tool call cancelled: agent stopped with a final answer]"
+                    ),
                 ),
             )
-            for tc in response.tool_call_items
+            for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self.transcript.update(closures)
+            self.transcript.update([msg for _, msg in closures])
+
+        return closures
+
+    def _closure_events(
+        self,
+        closures: list[tuple[FunctionToolCallItem, FunctionToolOutputItem]],
+        *,
+        exec_id: str,
+    ) -> Iterator[Event[Any]]:
+        """
+        Announce synthetic closure outputs on the event stream (+ printer).
+
+        Parity with every other synthetic tool_result (validation synthesis,
+        rejections): the transcript write is surfaced as a
+        :class:`ToolOutputItemEvent`, so event-driven consumers (UIs,
+        embedders mirroring history) never diverge from the persisted
+        transcript. Deliberately NOT fed to ``on_after_tool`` — closures are
+        bookkeeping, not tool executions.
+        """
+        if not closures:
+            return
+        for call, msg in closures:
+            yield ToolOutputItemEvent(
+                source=call.name,
+                destination=self.agent_name,
+                exec_id=exec_id,
+                data=msg,
+            )
+        if self._ctx.printer:
+            self._ctx.printer.print_messages(
+                [msg for _, msg in closures],
+                agent_name=self.agent_name,
+                exec_id=exec_id,
+            )
 
     # --- Per-state handlers (dispatched from execute_stream) ---
 
@@ -952,7 +1014,9 @@ class AgentLoop[CtxT]:
     ) -> AsyncIterator[Event[Any]]:
         """``NextStepStop``: final answer extracted, end loop cleanly."""
         self.final_answer = step.final_answer
-        self._close_stop_tool_calls(response)
+        closures = self._close_stop_tool_calls(response)
+        for closure_event in self._closure_events(closures, exec_id=exec_id):
+            yield closure_event
         await self.checkpoint(
             turn=self.turn,
             location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
@@ -980,12 +1044,15 @@ class AgentLoop[CtxT]:
         ``NextStepForceFinalAnswer``: budget exhausted (turn count or the run's
         wall-clock deadline).
 
-        Cancels background tasks, closes dangling tool calls, force-generates a
-        final answer, and ends the loop with the given ``stop_reason``
-        (``MAX_TURNS`` or ``TIMEOUT``).
+        Closes dangling tool calls, force-generates a final answer, and ends
+        the loop with the given ``stop_reason`` (``MAX_TURNS`` or ``TIMEOUT``).
+        Background tasks are NOT cancelled — exhausting a turn budget must not
+        kill deliberately backgrounded work; completion notes land at a later
+        run's drain.
         """
-        await self.bg_tasks.cancel_all(ctx=self._ctx)
-        self._close_dangling_tool_calls(response)
+        closures = self._close_dangling_tool_calls(response)
+        for closure_event in self._closure_events(closures, exec_id=exec_id):
+            yield closure_event
 
         async for event in self._force_generate_final_answer_stream(
             exec_id=exec_id,
@@ -1037,9 +1104,35 @@ class AgentLoop[CtxT]:
         a tool output and skips execution; otherwise the call runs
         normally.
         """
-        decisions = await self.on_before_tool(
-            tool_calls=step.tool_calls, exec_id=exec_id
-        )
+        # The approval gate (or any before-tool hook) can park indefinitely;
+        # bound it by the run deadline so ``run_timeout`` holds here too. On
+        # expiry the calls are rejected and the next JUDGE forces a final
+        # answer with ``StopReason.TIMEOUT``.
+        try:
+            if self._deadline is not None:
+                async with asyncio.timeout_at(
+                    asyncio.get_running_loop().time()
+                    + max(0.0, self._deadline - time.monotonic())
+                ):
+                    decisions = await self.on_before_tool(
+                        tool_calls=step.tool_calls, exec_id=exec_id
+                    )
+            else:
+                decisions = await self.on_before_tool(
+                    tool_calls=step.tool_calls, exec_id=exec_id
+                )
+        except TimeoutError:
+            logger.warning(
+                "Before-tool hook exceeded the run deadline (%ss); "
+                "rejecting the batch.",
+                self.run_timeout,
+            )
+            decisions = {
+                call.call_id: RejectToolContent(
+                    content="[Tool call cancelled: run deadline exceeded]"
+                )
+                for call in step.tool_calls
+            }
 
         if decisions:
             for decision in decisions.values():
@@ -1051,6 +1144,13 @@ class AgentLoop[CtxT]:
         rejection_msgs: list[FunctionToolOutputItem] = []
 
         for call in step.tool_calls:
+            if call.call_id in self._skip_call_ids:
+                # ``query_llm`` already synthesized a tool_result for this
+                # call (argument-validation failure). A Reject decision here
+                # would append a second output for the same call_id — route
+                # it to the dispatcher, which consumes and skips it.
+                allowed_calls.append(call)
+                continue
             decision = (decisions or {}).get(call.call_id, AllowTool())
             if isinstance(decision, RejectToolContent):
                 msg = FunctionToolOutputItem.from_tool_result(
@@ -1079,14 +1179,19 @@ class AgentLoop[CtxT]:
             async for event in self.execute_tools_stream(
                 allowed_calls, exec_id=exec_id
             ):
-                if isinstance(event, ToolOutputItemEvent):
+                # A foreground sub-agent's internal tool_results bubble
+                # through with the sub-agent as destination — collecting
+                # them would hand user hooks results that don't pair with
+                # this agent's calls.
+                if (
+                    isinstance(event, ToolOutputItemEvent)
+                    and event.destination == self.agent_name
+                ):
                     tool_msgs.append(event.data)
                 yield event
 
         await self.on_after_tool(
-            tool_calls=step.tool_calls,
-            tool_messages=tool_msgs,
-            exec_id=exec_id,
+            tool_calls=step.tool_calls, tool_messages=tool_msgs, exec_id=exec_id
         )
 
         await self.checkpoint(
@@ -1140,9 +1245,7 @@ class AgentLoop[CtxT]:
         """
         settings = deepcopy(extra_llm_settings)
         await self.on_before_llm(
-            extra_llm_settings=settings,
-            turn=self.turn,
-            exec_id=exec_id,
+            extra_llm_settings=settings, turn=self.turn, exec_id=exec_id
         )
 
         tool_choice: ToolChoice | None = None
@@ -1152,9 +1255,7 @@ class AgentLoop[CtxT]:
 
         stream = ResponseCapture(
             self.query_llm(
-                tool_choice=tool_choice,
-                extra_llm_settings=settings,
-                exec_id=exec_id,
+                tool_choice=tool_choice, extra_llm_settings=settings, exec_id=exec_id
             ),
         )
         async for event in stream:
@@ -1163,11 +1264,7 @@ class AgentLoop[CtxT]:
         response = stream.response
         assert response is not None
 
-        await self.on_after_llm(
-            response,
-            turn=self.turn,
-            exec_id=exec_id,
-        )
+        await self.on_after_llm(response, turn=self.turn, exec_id=exec_id)
 
         yield GenerationEndEvent(source=self.agent_name, exec_id=exec_id, data=response)
 
@@ -1186,106 +1283,90 @@ class AgentLoop[CtxT]:
             else None
         )
 
-        try:
-            # Checkpoint after input memorization (new step only)
-            if self.turn == 0:
-                await self.checkpoint(
-                    turn=self.turn,
-                    location=AgentCheckpointLocation.AFTER_INPUT,
+        # Checkpoint after input memorization (new step only)
+        if self.turn == 0:
+            await self.checkpoint(
+                turn=self.turn,
+                location=AgentCheckpointLocation.AFTER_INPUT,
+            )
+
+        while self.turn <= self.max_turns:
+            # ── PRE-ACT: prepare for generation ──
+
+            # When the model has nothing to do but wait on background work,
+            # block on the next completion instead of spinning poll turns.
+            # (Only answer-blocking tasks delay a final answer; a
+            # backgrounded Bash command is waited on but never blocks it —
+            # see JUDGE / has_pending.)
+            if self.turn > 0 and not had_tool_calls:
+                # Bound the idle wait by the remaining run-timeout budget so a
+                # non-blocking background task that never completes can't block
+                # past the deadline (the next JUDGE check then stops the run).
+                idle_timeout = (
+                    max(0.0, self._deadline - time.monotonic())
+                    if self._deadline is not None
+                    else None
                 )
+                await self.bg_tasks.wait_idle(timeout=idle_timeout)
 
-            while self.turn <= self.max_turns:
-                # ── PRE-ACT: prepare for generation ──
+            # Drain backgrounded tasks at the turn boundary: bubble their new
+            # events as live progress, mirror stream output to the .grasp
+            # logs (so a crash leaves a recoverable trace and a completing
+            # task's note points at a current file), and deliver completion
+            # notes.
+            async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
+                yield event
 
-                # When the model has nothing to do but wait on background work,
-                # block on the next completion instead of spinning poll turns.
-                # (Only answer-blocking tasks delay a final answer; a
-                # backgrounded Bash command is waited on but never blocks it —
-                # see JUDGE / has_pending.)
-                if self.turn > 0 and not had_tool_calls:
-                    # Bound the idle wait by the remaining run-timeout budget so a
-                    # non-blocking background task that never completes can't block
-                    # past the deadline (the next JUDGE check then stops the run).
-                    idle_timeout = (
-                        max(0.0, self._deadline - time.monotonic())
-                        if self._deadline is not None
-                        else None
-                    )
-                    await self.bg_tasks.wait_idle(timeout=idle_timeout)
+            yield TurnStartEvent(
+                source=self.agent_name, exec_id=exec_id, data=TurnInfo(turn=self.turn)
+            )
 
-                # Drain backgrounded tasks at the turn boundary: bubble their new
-                # events as live progress, mirror stream output to the .grasp
-                # logs (so a crash leaves a recoverable trace and a completing
-                # task's note points at a current file), and deliver completion
-                # notes.
-                async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
-                    yield event
+            # ── ACT: LLM generates response ──
 
-                yield TurnStartEvent(
-                    source=self.agent_name,
+            act = ResponseCapture(
+                self._run_act_stream(
                     exec_id=exec_id,
-                    data=TurnInfo(turn=self.turn),
-                )
+                    extra_llm_settings=extra_llm_settings or {},
+                    had_tool_calls=had_tool_calls,
+                ),
+            )
+            async for event in act:
+                yield event
 
-                # ── ACT: LLM generates response ──
+            assert act.response is not None
+            response = act.response
 
-                act = ResponseCapture(
-                    self._run_act_stream(
-                        exec_id=exec_id,
-                        extra_llm_settings=extra_llm_settings or {},
-                        had_tool_calls=had_tool_calls,
-                    ),
-                )
-                async for event in act:
+            # ── JUDGE: classify next transition ──
+
+            step = self._decide_next_step(response, exec_id=exec_id)
+
+            # ── Dispatch to per-state handler ──
+
+            if isinstance(step, NextStepStop):
+                async for event in self._handle_stop(step, response, exec_id=exec_id):
+                    yield event
+                return
+
+            if isinstance(step, NextStepForceFinalAnswer):
+                async for event in self._handle_force_final_answer(
+                    response,
+                    exec_id=exec_id,
+                    stop_reason=step.stop_reason,
+                    extra_llm_settings=deepcopy(extra_llm_settings or {}),
+                ):
+                    yield event
+                return
+
+            if isinstance(step, NextStepRunTools):
+                async for event in self._handle_run_tools(step, exec_id=exec_id):
+                    yield event
+            else:
+                assert isinstance(step, NextStepContinue)
+                async for event in self._handle_continue(exec_id=exec_id):
                     yield event
 
-                assert act.response is not None
-                response = act.response
-
-                # ── JUDGE: classify next transition ──
-
-                step = self._decide_next_step(response, exec_id=exec_id)
-
-                # ── Dispatch to per-state handler ──
-
-                if isinstance(step, NextStepStop):
-                    async for event in self._handle_stop(
-                        step, response, exec_id=exec_id
-                    ):
-                        yield event
-                    return
-
-                if isinstance(step, NextStepForceFinalAnswer):
-                    async for event in self._handle_force_final_answer(
-                        response,
-                        exec_id=exec_id,
-                        stop_reason=step.stop_reason,
-                        extra_llm_settings=deepcopy(extra_llm_settings or {}),
-                    ):
-                        yield event
-                    return
-
-                if isinstance(step, NextStepRunTools):
-                    async for event in self._handle_run_tools(step, exec_id=exec_id):
-                        yield event
-                else:
-                    assert isinstance(step, NextStepContinue)
-                    async for event in self._handle_continue(exec_id=exec_id):
-                        yield event
-
-                had_tool_calls = isinstance(step, NextStepRunTools)
-                self.turn += 1
-
-        finally:
-            # Background tasks are cancelled first — one may be mid-command, holding
-            # a session/kernel lock that would stall the holder closes for the full
-            # command timeout. Holder cleanup then runs even if ``cancel_all()``
-            # raises (store-save failures are intentionally un-caught): a leaked
-            # shell/kernel must not be the price of that crash.
-            try:
-                await self.bg_tasks.cancel_all(ctx=self._ctx)
-            finally:
-                await self._agent_ctx.close()
+            had_tool_calls = isinstance(step, NextStepRunTools)
+            self.turn += 1
 
     def _make_final_answer_tool(self) -> BaseTool[BaseModel, None, Any]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):

@@ -64,8 +64,10 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v6: AgentCheckpoint.code_context_id renamed to exec_context_id.
-        assert CURRENT_SCHEMA_VERSION == 6
+        # v8: exec_context_id renamed to ipy_exec_context_id (RunPython), and
+        # nb_exec_context_id added (the RunCell notebook kernel's context) —
+        # both re-attached on resume.
+        assert CURRENT_SCHEMA_VERSION == 8
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
@@ -76,7 +78,8 @@ class TestSchemaVersion:
         assert snap.read_file_state == {}
         assert snap.dotfile_overrides == []
         assert snap.fs_snapshot_ref is None
-        assert snap.exec_context_id is None
+        assert snap.ipy_exec_context_id is None
+        assert snap.nb_exec_context_id is None
 
 
 # ---------------------------------------------------------------------------

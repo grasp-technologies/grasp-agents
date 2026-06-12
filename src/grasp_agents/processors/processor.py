@@ -9,6 +9,7 @@ from typing import (
     Self,
     cast,
     final,
+    get_origin,
 )
 from uuid import uuid4
 
@@ -26,7 +27,7 @@ from grasp_agents.types.errors import (
 from ..durability.checkpoint_mixin import CheckpointPersistMixin
 from ..durability.checkpoints import CheckpointKind
 from ..packet import Packet
-from ..run_context import RunContext
+from ..run_context import RunContext, current_run_context
 from ..types.events import (
     Event,
     ProcPacketOutEvent,
@@ -138,19 +139,38 @@ class Processor[InT, OutT, CtxT](
 
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
-        # Records whether the caller handed us a ctx (vs. the fresh
-        # placeholder below). Container processors read this on their
-        # children to decide whose session to share — see
-        # :func:`~grasp_agents.run_context.shared_child_ctx`.
-        self._ctx_explicit: bool = ctx is not None
-        # ``ctx`` is an immutable instance attribute (passing a different
-        # ``ctx`` to ``run`` / ``run_stream`` is unsupported). Set both
-        # session axes, then cascade to any children built before us.
+        # ``ctx`` is this processor's session. Set explicitly here, or — when
+        # none is given — the ambient ``with RunContext(...)`` ctx, else the
+        # process default (``current_run_context``), never a private throwaway,
+        # so uncomposed agents still share one session. ctx flows **top-down**:
+        # this is just the standalone default; a container that adopts this
+        # processor overrides it via ``on_adopted`` (one session per tree —
+        # subprocessors never carry their own). Passing a different ``ctx`` to
+        # ``run`` / ``run_stream`` is unsupported.
         self._ctx: RunContext[CtxT] = (
-            ctx if ctx is not None else RunContext[CtxT](state=None)  # type: ignore
+            ctx if ctx is not None else current_run_context()  # type: ignore
         )
         self._path: list[str] = [self.name] if path is None else list(path)
         self._propagate_to_children()
+
+    # --- Session lifecycle ---
+
+    async def aclose(self) -> None:
+        """
+        Release session-scoped resources (shells, kernels, background tasks).
+
+        Runs never tear these down — they live for the processor's whole
+        session and are released only here. The base processor holds none, so
+        this is a no-op; ``LLMAgent`` closes its execution resources, and
+        composite processors (workflows, parallel) cascade to their children.
+        """
+        return
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
     # --- Identity & utilities ---
 
@@ -219,7 +239,6 @@ class Processor[InT, OutT, CtxT](
                     path = [*parent_path, self.name]
         if ctx is not None:
             self._ctx = ctx
-            self._ctx_explicit = True
         if path is not None:
             self._path = list(path)
         self._propagate_to_children()
@@ -296,9 +315,9 @@ class Processor[InT, OutT, CtxT](
 
         resolved_args: list[InT]
 
-        if isinstance(in_args, self.in_type):
+        if self._is_single_in_arg(in_args):
             # 2) Single in_args of correct type is provided
-            resolved_args = [in_args]
+            resolved_args = [cast("InT", in_args)]
 
         elif isinstance(in_args, list):
             # 3) List of in_args is provided
@@ -323,6 +342,24 @@ class Processor[InT, OutT, CtxT](
             raise ProcInputValidationError(message=str(err), **err_kwargs) from err
 
         return resolved_args
+
+    def _is_single_in_arg(self, in_args: Any) -> bool:
+        """
+        Whether ``in_args`` is one argument of the declared input type
+        (rather than a list of arguments).
+
+        ``isinstance`` raises TypeError for parameterized generics
+        (``list[int]``); fall back to the runtime origin — a ``list``
+        passed to a list-typed processor is one argument, with element
+        validation left to the coercion step.
+        """
+        try:
+            return isinstance(in_args, self.in_type)
+        except TypeError:
+            origin = get_origin(self.in_type)
+            if isinstance(origin, type):
+                return isinstance(in_args, origin)
+            return False
 
     def validate_output(self, out_payload: OutT, exec_id: str) -> OutT:
         if out_payload is None:

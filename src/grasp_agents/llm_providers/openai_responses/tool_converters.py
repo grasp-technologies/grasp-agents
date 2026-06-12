@@ -17,12 +17,19 @@ from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
 def to_api_tool(
     tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None
 ) -> OpenAIFunctionToolParam:
+    # The strict transformation rewrites the schema (optionals become
+    # required, ``additionalProperties: false``) — only apply it when strict
+    # mode is actually requested.
     return OpenAIFunctionToolParam(
         type="function",
         name=tool.name,
         description=tool.description,
-        parameters=to_strict_json_schema(tool.llm_in_type),
-        strict=True if strict is None else strict,
+        parameters=(
+            to_strict_json_schema(tool.llm_in_type)
+            if strict
+            else tool.llm_in_type.model_json_schema()
+        ),
+        strict=bool(strict),
     )
 
 

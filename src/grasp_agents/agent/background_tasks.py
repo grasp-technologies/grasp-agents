@@ -306,6 +306,17 @@ class BackgroundTaskManager[CtxT]:
         self._pending_delivered: dict[str, dict[str, Any]] = {}
 
     @property
+    def has_live_tasks(self) -> bool:
+        """
+        True while any background task is still running.
+
+        Tasks are session-scoped — they survive run boundaries and are
+        released only by :meth:`cancel_all` (via ``LLMAgent.aclose``) or
+        ``KillTask``.
+        """
+        return any(not pt.task.done() for pt in self._tasks.values())
+
+    @property
     def has_pending(self) -> bool:
         """
         True while any *answer-blocking* background task is undelivered.
@@ -911,7 +922,12 @@ class BackgroundTaskManager[CtxT]:
     # --- Cancel ---
 
     async def cancel_all(self, ctx: RunContext[CtxT] | None = None) -> None:
-        """Cancel all pending background tasks and wait for cleanup."""
+        """
+        Cancel all background tasks and wait for cleanup.
+
+        Session teardown — reached via ``LLMAgent.aclose()``, never at run
+        end (tasks are session-scoped and survive run boundaries).
+        """
         store = ctx.checkpoint_store if ctx else None
 
         if store is not None and ctx is not None:
@@ -924,7 +940,7 @@ class BackgroundTaskManager[CtxT]:
                     record = record.model_copy(
                         update={
                             "status": TaskStatus.CANCELLED,
-                            "error": "Cancelled: agent loop terminated",
+                            "error": "Cancelled: agent session closed",
                             "updated_at": datetime.now(UTC),
                         }
                     )

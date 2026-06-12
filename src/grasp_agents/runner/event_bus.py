@@ -8,9 +8,33 @@ from ..types.events import Event, RoutedEvent
 
 logger = logging.getLogger(__name__)
 
+# Queue bound: a publisher awaiting ``put`` on a full queue blocks until the
+# consumer catches up (backpressure) instead of growing memory without limit.
+MAX_QUEUE_SIZE = 1024
+
 
 class EventHandler[D](Protocol):
     async def __call__(self, event: Event[D], **kwargs: Any) -> None: ...
+
+
+def _put_sentinel(queue: asyncio.Queue[Event[Any] | None]) -> None:
+    """
+    Enqueue the shutdown sentinel without blocking.
+
+    A full queue whose consumer is gone (crashed handler) must not park
+    shutdown forever — drop queued events to make room; the bus is
+    stopping anyway.
+    """
+    while True:
+        try:
+            queue.put_nowait(None)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                continue
+        else:
+            return
 
 
 class EventBus:
@@ -18,7 +42,9 @@ class EventBus:
         self._task_group: asyncio.TaskGroup | None = None
 
         self._routed_event_queues: dict[str, asyncio.Queue[Event[Any] | None]] = {}
-        self._streamed_event_queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue()
+        self._streamed_event_queue: asyncio.Queue[Event[Any] | None] = asyncio.Queue(
+            maxsize=MAX_QUEUE_SIZE
+        )
 
         self._event_handlers: dict[str, EventHandler[Any]] = {}
         self._handler_tasks: dict[str, asyncio.Task[None]] = {}
@@ -39,7 +65,9 @@ class EventBus:
         if dst_name in self._handler_tasks and not self._handler_tasks[dst_name].done():
             raise RuntimeError(f"Handler already registered for {dst_name}")
 
-        self._routed_event_queues.setdefault(dst_name, asyncio.Queue())
+        self._routed_event_queues.setdefault(
+            dst_name, asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        )
 
         self._event_handlers[dst_name] = handler
         if self._task_group is not None:
@@ -165,7 +193,7 @@ class EventBus:
         self._stopping = True
         try:
             for queue in self._routed_event_queues.values():
-                await queue.put(None)
-            await self._streamed_event_queue.put(None)
+                _put_sentinel(queue)
+            _put_sentinel(self._streamed_event_queue)
         finally:
             self._stopped_evt.set()

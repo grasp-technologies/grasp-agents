@@ -218,6 +218,12 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         self._max_images = max_images
         self._sanitize_outputs = sanitize_outputs
 
+    def concurrency_conflict_keys(self, inp: RunCellInput) -> list[str] | None:
+        # Executed cells mutate the notebook AND can write anywhere in the
+        # workspace — claim global exclusivity.
+        del inp
+        return ["/"]
+
     async def _run(
         self,
         inp: RunCellInput,

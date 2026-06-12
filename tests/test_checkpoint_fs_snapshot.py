@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import AgentCheckpoint, InMemoryCheckpointStore
+from grasp_agents.durability.checkpoints import CheckpointSchemaError
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
@@ -263,8 +264,9 @@ async def test_ledger_round_trips_through_checkpoint(tmp_path: Path) -> None:
     assert resumed._loop.file_edit_state.dotfile_overrides == {tmp_path / ".env"}
 
 
-async def test_v1_checkpoint_loads_with_empty_ledger() -> None:
-    # A pre-ledger record (schema v1, no new fields) must still load.
+async def test_v1_checkpoint_rejected_by_version_floor() -> None:
+    # Pre-v5 records embedded the transcript in the head blob — loading one
+    # would silently resume an empty session, so the floor rejects it.
     payload = AgentCheckpoint(
         session_key="s1",
         processor_name="fs_agent",
@@ -274,15 +276,13 @@ async def test_v1_checkpoint_loads_with_empty_ledger() -> None:
             "read_file_state",
             "dotfile_overrides",
             "fs_snapshot_ref",
-            "exec_context_id",
+            "ipy_exec_context_id",
+            "nb_exec_context_id",
         }
     )
     payload["schema_version"] = 1
-    checkpoint = AgentCheckpoint.model_validate(payload)
-    assert checkpoint.read_file_state == {}
-    assert checkpoint.dotfile_overrides == []
-    assert checkpoint.fs_snapshot_ref is None
-    assert checkpoint.exec_context_id is None
+    with pytest.raises(CheckpointSchemaError, match="older than the oldest"):
+        AgentCheckpoint.model_validate(payload)
 
 
 # ---------- fs_snapshot policy ----------
@@ -390,7 +390,9 @@ async def test_resume_with_ref_but_incapable_environment_raises(
 # ---------- Resume re-attaches the RunPython kernel ----------
 
 
-async def test_exec_context_id_round_trips_through_checkpoint(tmp_path: Path) -> None:
+async def test_ipy_exec_context_id_round_trips_through_checkpoint(
+    tmp_path: Path,
+) -> None:
     """
     The RunPython kernel's context id is captured with the FS snapshot and
     re-seeds the resumed loop's holder. (The actual kernel re-attach is an E2B
@@ -402,13 +404,13 @@ async def test_exec_context_id_round_trips_through_checkpoint(tmp_path: Path) ->
         [_text_response("done")], store=store, environment=env, fs_snapshot="final"
     )
     # Stand in for "a RunPython kernel was opened" (no real kernel offline).
-    holder = agent._loop.agent_ctx.code_kernel_holder
+    holder = agent._loop.agent_ctx.ipy_kernel_holder
     assert holder is not None
     holder.rebind("ctx-abc")
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).exec_context_id == "ctx-abc"
+    assert (await _stored_checkpoint(store)).ipy_exec_context_id == "ctx-abc"
 
     # Fresh process: resume re-seeds the new loop's holder with the same id, so
     # the next RunPython re-attaches instead of opening a fresh context.
@@ -416,12 +418,35 @@ async def test_exec_context_id_round_trips_through_checkpoint(tmp_path: Path) ->
     resumed, _ = _make_agent([], store=store, environment=fresh_env)
     loaded = await resumed.load_checkpoint()
     assert loaded is not None
-    resumed_holder = resumed._loop.agent_ctx.code_kernel_holder
+    resumed_holder = resumed._loop.agent_ctx.ipy_kernel_holder
     assert resumed_holder is not None
     assert resumed_holder.context_id == "ctx-abc"
 
 
-async def test_exec_context_id_not_captured_without_fs_snapshot(
+async def test_nb_exec_context_id_round_trips_through_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """Same persist + restore wiring for the RunCell notebook kernel."""
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("done")], store=store, environment=env, fs_snapshot="final"
+    )
+    # Stand in for "a RunCell kernel was opened" (no real kernel offline).
+    agent._loop.agent_ctx.nb_kernel_holder.rebind("nb-ctx-xyz")
+
+    await agent.run("hello")
+
+    assert (await _stored_checkpoint(store)).nb_exec_context_id == "nb-ctx-xyz"
+
+    fresh_env = _FakeSnapshotEnv(tmp_path)
+    resumed, _ = _make_agent([], store=store, environment=fresh_env)
+    loaded = await resumed.load_checkpoint()
+    assert loaded is not None
+    assert resumed._loop.agent_ctx.nb_kernel_holder.context_id == "nb-ctx-xyz"
+
+
+async def test_ipy_exec_context_id_not_captured_without_fs_snapshot(
     tmp_path: Path,
 ) -> None:
     """
@@ -433,10 +458,10 @@ async def test_exec_context_id_not_captured_without_fs_snapshot(
     agent, _ = _make_agent(
         [_text_response("done")], store=store, environment=env, fs_snapshot="off"
     )
-    holder = agent._loop.agent_ctx.code_kernel_holder
+    holder = agent._loop.agent_ctx.ipy_kernel_holder
     assert holder is not None
     holder.rebind("ctx-abc")
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).exec_context_id is None
+    assert (await _stored_checkpoint(store)).ipy_exec_context_id is None

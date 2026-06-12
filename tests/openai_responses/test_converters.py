@@ -33,8 +33,15 @@ class TestResponsesToolConverters:
         assert result["type"] == "function"
         assert result["name"] == "add"
         assert result["description"] == "Add two integers and return their sum."
-        assert result["strict"] is True
+        # Strict mode is opt-in; the default sends the plain schema.
+        assert result["strict"] is False
         assert "properties" in result["parameters"]
+
+    def test_to_api_tool_explicit_strict_true(self) -> None:
+        tool = _make_add_tool()
+        result = to_api_tool(tool, strict=True)
+
+        assert result["strict"] is True
 
     def test_to_api_tool_explicit_strict_false(self) -> None:
         tool = _make_add_tool()

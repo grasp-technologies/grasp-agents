@@ -6,7 +6,7 @@ from typing import Any, cast
 from ..durability.checkpoints import CheckpointKind, WorkflowCheckpoint
 from ..packet import Packet
 from ..processors.processor import Processor
-from ..run_context import RunContext, shared_child_ctx
+from ..run_context import RunContext
 from ..telemetry import SpanKind
 from ..types.errors import WorkflowConstructionError
 from ..types.io import ProcName
@@ -67,11 +67,10 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
 
         super().__init__(
             name=name,
-            # No arbitrary borrow from ``start_proc``: inherit a single ctx
-            # the subprocs were built with (if any), else the base ctor
-            # creates a fresh one. Either way ``_propagate_to_children`` then
-            # shares it with every subproc.
-            ctx=ctx if ctx is not None else shared_child_ctx(subprocs),
+            # ctx flows top-down: an explicit one, else the base ctor resolves
+            # the ambient / process default. ``_propagate_to_children`` then
+            # cascades it onto every subproc (no bottom-up borrow from a child).
+            ctx=ctx,
             recipients=(recipients or end_proc.recipients),
             max_retries=0,
             path=path,
@@ -138,6 +137,18 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
                 output=output, exec_id=exec_id
             )
         return cast("list[ProcName]", self.recipients or [])
+
+    async def aclose(self) -> None:
+        """Cascade session teardown to every subprocessor."""
+        for subproc in self._subprocs:
+            try:
+                await subproc.aclose()
+            except Exception:
+                logger.warning(
+                    "Failed to close subprocessor %r during workflow teardown",
+                    subproc.name,
+                    exc_info=True,
+                )
 
     @property
     def subprocs(self) -> Sequence[Processor[Any, Any, CtxT]]:

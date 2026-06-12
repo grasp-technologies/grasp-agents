@@ -29,8 +29,9 @@ class NetworkPolicy(StrEnum):
     ALL = "all"  # unrestricted
 
 
-# Inherited host env vars matching these ``fnmatch`` (case-sensitive) patterns
-# are scrubbed from a command's environment by default, so an unconfined
+# Inherited host env vars matching these ``fnmatch`` patterns
+# (case-insensitively — lowercase secret vars must not slip through) are
+# scrubbed from a command's environment by default, so an unconfined
 # subprocess (``confinement="none"``) the model runs cannot read the host's
 # credentials — API keys, tokens, cloud secrets. Security-first and deliberately
 # broad; pass ``env_scrub=()`` to disable or an explicit list to override.
@@ -51,6 +52,15 @@ DEFAULT_ENV_SCRUB: tuple[str, ...] = (
     "*_CREDENTIALS",
     "*_CREDS",
     "*_KEY",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "MONGODB_URI",
+    "SSH_AUTH_SOCK",
+    "KUBECONFIG",
+    "DOCKER_AUTH_CONFIG",
+    "SENTRY_DSN",
+    "SLACK_WEBHOOK_URL",
+    "OP_SESSION_*",
 )
 
 

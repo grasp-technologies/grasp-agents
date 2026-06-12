@@ -1,9 +1,9 @@
+import contextvars
 from collections import defaultdict
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from .agent.approval_store import ApprovalStore
 from .durability.checkpoint_store import CheckpointStore
@@ -76,6 +76,38 @@ class RunContext[CtxT](BaseModel):
     memory: MemoryProvider | None = Field(default=None, exclude=True)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    # Stack of ContextVar tokens, one per active ``with self:`` frame, so a
+    # context can be entered re-entrantly and each exit restores the right
+    # outer ambient ctx.
+    _ambient_tokens: list[contextvars.Token[Any]] = PrivateAttr(
+        default_factory=list["contextvars.Token[Any]"]
+    )
+
+    def __enter__(self) -> "RunContext[CtxT]":
+        """
+        Make this the **ambient** ctx for bare-constructed processors.
+
+        Inside the ``with`` block, any ``Processor`` / ``LLMAgent`` /
+        container built without an explicit ``ctx`` binds to *this* instance
+        (resolved by :func:`current_run_context`), so a group of agents shares
+        one session without threading ctx through every constructor::
+
+            with RunContext(state=..., checkpoint_store=store) as ctx:
+                planner = LLMAgent("planner", llm=...)
+                critic = LLMAgent("critic", llm=...)   # same ctx
+
+        Binding happens at *construction* time (ctx is read once in
+        ``__init__``); an agent built outside any block binds to the process
+        default. ``ContextVar`` is task-local, so concurrent sessions in one
+        process stay isolated.
+        """
+        self._ambient_tokens.append(_AMBIENT_RUN_CONTEXT.set(self))
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self._ambient_tokens:
+            _AMBIENT_RUN_CONTEXT.reset(self._ambient_tokens.pop())
 
     @property
     def exec_backend(self) -> ExecBackend | None:
@@ -183,32 +215,44 @@ class RunContext[CtxT](BaseModel):
         return self
 
 
-def shared_child_ctx(children: Iterable[Any]) -> "RunContext[Any] | None":
+# The ambient ctx set by ``with RunContext(...)`` (task-local). ``None`` =
+# no active block; bare construction then falls back to the process default.
+_AMBIENT_RUN_CONTEXT: contextvars.ContextVar["RunContext[Any] | None"] = (
+    contextvars.ContextVar("grasp_agents_ambient_run_context", default=None)
+)
+
+# Lazily-created process-wide default. The single session every
+# bare-constructed processor shares when no ctx is passed and no ``with
+# RunContext`` block is active — so two agents that are never composed still
+# share one usage tracker / state / store set, instead of each minting a
+# private throwaway ctx that silently drops those bindings.
+_default_run_context: "RunContext[Any] | None" = None
+
+
+def current_run_context() -> "RunContext[Any]":
     """
-    The single :class:`RunContext` explicitly provided to ``children``, or
-    ``None`` when none was.
+    The ctx a processor binds to when constructed without an explicit one.
 
-    Container processors (``WorkflowProcessor`` / ``ParallelProcessor`` /
-    ``Runner``) call this when no ``ctx`` was passed to them: the shared
-    session is then inherited from whichever children were *built* with one,
-    rather than borrowed from an arbitrary child. Children carrying only the
-    fresh placeholder default (no ``ctx`` at construction) are ignored. The
-    container cascades the chosen ctx to every child via ``on_adopted``, so
-    all subprocessors end up sharing one instance regardless.
-
-    Raises:
-        ValueError: if children were built with *different* ctx instances —
-            an ambiguous setup the caller should resolve by passing a single
-            ctx to the container.
-
+    Resolution: the innermost active ``with RunContext(...)`` block, else the
+    lazily-created process-wide default (created on first use). Never mints a
+    fresh per-call ctx — that was the old placeholder behavior, which left
+    uncomposed agents in separate sessions.
     """
-    explicit = {
-        id(c.ctx): c.ctx for c in children if getattr(c, "_ctx_explicit", False)
-    }
-    if len(explicit) > 1:
-        raise ValueError(
-            "Subprocessors were built with different RunContext instances. "
-            "Pass a single ctx to the container so all subprocessors share "
-            "one session."
-        )
-    return next(iter(explicit.values()), None)
+    ambient = _AMBIENT_RUN_CONTEXT.get()
+    if ambient is not None:
+        return ambient
+    global _default_run_context
+    if _default_run_context is None:
+        _default_run_context = RunContext()
+    return _default_run_context
+
+
+def reset_default_run_context() -> None:
+    """
+    Drop the process-wide default so the next bare construction makes a fresh
+    one. For test isolation (the default otherwise accumulates state across
+    unrelated bare agents); production rarely needs it. Does not affect any
+    active ``with RunContext`` block.
+    """
+    global _default_run_context
+    _default_run_context = None

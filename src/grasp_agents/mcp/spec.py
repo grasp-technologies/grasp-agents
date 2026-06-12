@@ -16,10 +16,9 @@ class MCPClientSpec:
     """
     Wrap an :class:`MCPClient` with optional tool-name filters.
 
-    Used at :class:`LLMAgent` construction (``mcp_clients=[...]``) or with
-    :meth:`LLMAgent.add_mcp_client` (passing the spec fields as kwargs).
-    Bare ``MCPClient`` instances are also accepted by the ctor — they expand
-    to ``MCPClientSpec(client)`` (all tools, no filter).
+    Used at :class:`LLMAgent` construction (``mcp_clients=[...]``). Bare
+    ``MCPClient`` instances are also accepted by the ctor — they expand to
+    ``MCPClientSpec(client)`` (all tools, no filter).
 
     ``include`` and ``exclude`` are tool-name filters. Both can be ``None``
     (no filter on that axis). ``include={"a", "b"}`` exposes only ``a`` and

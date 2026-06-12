@@ -15,6 +15,7 @@ TTL / GC — retention is the caller's concern.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -70,32 +71,53 @@ class FileCheckpointStore(CheckpointStore):
             await asyncio.to_thread(
                 _unlink_if_exists, self._key_to_path(key, suffix=".jsonl")
             )
+            # Version-suffixed message logs (``<leaf>.v<N>.jsonl``).
+            await asyncio.to_thread(
+                _unlink_log_versions, self._key_to_path(key, suffix="")
+            )
+        # Evict the per-key lock so long-lived stores serving many sessions
+        # don't grow it unboundedly. A task racing this delete on the same
+        # key may briefly hold the old lock object — delete-vs-write races
+        # on one key are a caller-level conflict either way.
+        async with self._locks_guard:
+            self._locks.pop(key, None)
 
     async def list_keys(self, prefix: str) -> list[str]:
         return await asyncio.to_thread(_list_keys, self._root, prefix)
 
     # --- Append-only message log ---
     #
-    # The transcript lives in a sibling ``.jsonl`` at the head key's path.
-    # Appends go straight to the file's end (no temp+rename), so a torn final
-    # record is possible — ``decode_message_log`` discards it. ``list_keys``
-    # globs ``*.json`` only, so logs never surface as checkpoint keys.
+    # The transcript lives in a sibling ``.jsonl`` at the head key's path
+    # (``.v<N>.jsonl`` for versions > 0 — see the base class on why
+    # rewrites go to a fresh version). Appends go straight to the file's
+    # end (no temp+rename), so a torn final record is possible —
+    # ``decode_message_log`` discards it. ``list_keys`` globs ``*.json``
+    # only, so logs never surface as checkpoint keys.
 
-    async def append_messages(self, key: str, messages: Sequence[InputItem]) -> None:
+    def _log_suffix(self, version: int) -> str:
+        return ".jsonl" if version == 0 else f".v{version}.jsonl"
+
+    async def append_messages(
+        self, key: str, messages: Sequence[InputItem], *, version: int = 0
+    ) -> None:
         if not messages:
             return
-        path = self._key_to_path(key, suffix=".jsonl")
+        path = self._key_to_path(key, suffix=self._log_suffix(version))
         blob = encode_messages(messages)
         lock = await self._get_lock(key)
         async with lock:
             await asyncio.to_thread(_append_bytes, path, blob)
 
-    async def read_messages(self, key: str) -> list[InputItem]:
-        path = self._key_to_path(key, suffix=".jsonl")
+    async def read_messages(
+        self, key: str, *, version: int = 0
+    ) -> list[InputItem]:
+        path = self._key_to_path(key, suffix=self._log_suffix(version))
         return await asyncio.to_thread(_read_message_log, path)
 
-    async def rewrite_messages(self, key: str, messages: Sequence[InputItem]) -> None:
-        path = self._key_to_path(key, suffix=".jsonl")
+    async def rewrite_messages(
+        self, key: str, messages: Sequence[InputItem], *, version: int = 0
+    ) -> None:
+        path = self._key_to_path(key, suffix=self._log_suffix(version))
         lock = await self._get_lock(key)
         async with lock:
             if not messages:
@@ -180,6 +202,11 @@ def _append_bytes(path: Path, blob: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as f:
         f.write(blob)
+        # fsync to match the head's durability: the head is saved (fsynced)
+        # right after this append, so a power loss must not be able to keep
+        # the head while losing the log tail it acknowledges.
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _read_message_log(path: Path) -> list[InputItem]:
@@ -196,6 +223,15 @@ def _unlink_if_exists(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
+
+
+def _unlink_log_versions(base_path: Path) -> None:
+    """Remove every version-suffixed log (``<leaf>.v<N>.jsonl``)."""
+    parent = base_path.parent
+    if not parent.is_dir():
+        return
+    for path in parent.glob(f"{base_path.name}.v*.jsonl"):
+        _unlink_if_exists(path)
 
 
 def _list_keys(root: Path, prefix: str) -> list[str]:

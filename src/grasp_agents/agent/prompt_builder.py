@@ -339,6 +339,15 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
             ]
             return InputMessageItem(content_parts=input_parts, role="user")
 
+        if (
+            in_args is None
+            and self._in_type is type(None)
+            and self.input_content_builder is None
+        ):
+            # An ``InT=None`` agent has no input payload to render — emit no
+            # user message rather than a JSON-dumped ``"null"``.
+            return None
+
         content = self.build_input_content(in_args=in_args, exec_id=exec_id)
 
         return InputMessageItem(content_parts=content.parts, role="user")

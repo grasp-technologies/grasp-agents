@@ -42,6 +42,9 @@ class SkillRegistry:
 
     def __init__(self, skills: Iterable[Skill] = ()) -> None:
         self._by_name: dict[str, Skill] = {}
+        # Skills registered directly (ctor / ``register``) rather than
+        # discovered under a source path — preserved across ``refresh``.
+        self._programmatic: dict[str, Skill] = {}
         self._sources: list[Path] = []
         self._selector: SkillSelector | None = None
         for skill in skills:
@@ -69,17 +72,30 @@ class SkillRegistry:
             self._sources.append(path)
         added: list[Skill] = []
         for skill in discover_skills(path):
-            self.register(skill)
+            self._register_discovered(skill)
             added.append(skill)
         return added
 
     def refresh(self) -> None:
-        """Re-walk all known sources and replace the catalog."""
+        """
+        Re-walk all known sources and replace the discovered catalog.
+
+        Programmatically-registered skills are kept. A source that can no
+        longer be walked (vanished directory, permission change) is skipped
+        with a warning rather than failing the whole refresh.
+        """
         if not self._sources:
             return
-        new_by_name: dict[str, Skill] = {}
+        new_by_name: dict[str, Skill] = dict(self._programmatic)
         for source in self._sources:
-            for skill in discover_skills(source):
+            try:
+                discovered = discover_skills(source)
+            except Exception:
+                logger.warning(
+                    "Skipping skill source %s during refresh", source, exc_info=True
+                )
+                continue
+            for skill in discovered:
                 if skill.name in new_by_name:
                     existing = new_by_name[skill.name]
                     if existing.path != skill.path:
@@ -94,6 +110,10 @@ class SkillRegistry:
         self._by_name = new_by_name
 
     def register(self, skill: Skill) -> None:
+        self._register_discovered(skill)
+        self._programmatic[skill.name] = skill
+
+    def _register_discovered(self, skill: Skill) -> None:
         existing = self._by_name.get(skill.name)
         if existing is not None and existing.path != skill.path:
             logger.warning(

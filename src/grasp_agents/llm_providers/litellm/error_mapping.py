@@ -62,6 +62,11 @@ def map_api_error(err: Exception) -> LlmError | None:
     if isinstance(err, litellm.NotFoundError):
         return LlmNotFoundError(msg, response=err.response, body=err.body)
 
+    # Checked before BadRequestError — ContextWindowExceededError subclasses
+    # it, and the generic mapping would shadow the NEEDS_COMPACTION signal.
+    if isinstance(err, litellm.ContextWindowExceededError):
+        return LlmContextWindowError(msg, response=err.response, body=err.body)
+
     if isinstance(err, litellm.BadRequestError):
         return LlmBadRequestError(msg, response=err.response, body=err.body)
 
@@ -70,8 +75,5 @@ def map_api_error(err: Exception) -> LlmError | None:
 
     if isinstance(err, (litellm.InternalServerError, litellm.ServiceUnavailableError)):
         return LlmInternalServerError(msg, response=err.response, body=err.body)
-
-    if isinstance(err, litellm.ContextWindowExceededError):
-        return LlmContextWindowError(msg, response=err.response, body=err.body)
 
     return None

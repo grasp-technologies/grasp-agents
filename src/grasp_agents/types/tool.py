@@ -1,6 +1,7 @@
 import asyncio
 import copy as copy_mod
 import logging
+import posixpath
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from pathlib import PurePosixPath
@@ -252,13 +253,24 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         *,
         exec_id: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        """Yield events from *stream*, applying timeout and error handling."""
+        """
+        Yield events from *stream*, applying timeout and error handling.
+
+        ``timeout`` bounds the whole call (a fixed deadline from the first
+        event wait), not the gap between events — a stream that trickles
+        events forever would otherwise never time out.
+        """
         try:
             if self.timeout is not None:
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + self.timeout
                 while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError  # noqa: TRY301
                     try:
                         event = await asyncio.wait_for(
-                            anext(stream), timeout=self.timeout
+                            anext(stream), timeout=remaining
                         )
                     except StopAsyncIteration:
                         break
@@ -408,6 +420,19 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         del inp
         return None
 
+    # --- Session lifecycle ---
+
+    async def aclose(self) -> None:
+        """
+        Release session-scoped resources this tool owns.
+
+        No-op for plain tools (per-agent state lives on the call's
+        ``AgentContext``, not the tool). Tools that wrap a processor
+        (``AgentTool`` / ``ProcessorTool``) cascade to it. Called by the
+        owning agent's ``aclose()``.
+        """
+        return
+
     # --- Session persistence (overridden by resumable tools) ---
 
     @property
@@ -467,17 +492,33 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         return copy_mod.deepcopy(self)
 
 
+def _key_parts(key: str) -> tuple[str, ...]:
+    """Lexically-normalized POSIX parts (collapses ``.`` / ``..`` / ``//``)."""
+    return PurePosixPath(posixpath.normpath(key)).parts
+
+
 def _keys_overlap(a: str, b: str) -> bool:
     """
     True if two exclusivity keys collide: the same key, or one nests under the
     other (a prefix of POSIX-path parts — so ``/x`` conflicts with ``/x/a``;
-    flat keys conflict only when equal). Best-effort: keys are normalized but
-    not resolved against a backend root.
+    flat keys conflict only when equal). Keys are normalized lexically, and a
+    relative key collides with an absolute one whose tail it matches —
+    best-effort without a backend root; a false positive only serializes the
+    batch. ``"/"`` claims global exclusivity (mutating exec tools).
     """
-    pa = PurePosixPath(a).parts
-    pb = PurePosixPath(b).parts
+    pa = _key_parts(a)
+    pb = _key_parts(b)
+    if pa == ("/",) or pb == ("/",):
+        return True
     n = min(len(pa), len(pb))
-    return pa[:n] == pb[:n]
+    if pa[:n] == pb[:n]:
+        return True
+    a_abs = bool(pa) and pa[0] == "/"
+    b_abs = bool(pb) and pb[0] == "/"
+    if a_abs != b_abs:
+        rel, absolute = (pb, pa) if a_abs else (pa, pb)
+        return bool(rel) and absolute[-len(rel) :] == rel
+    return False
 
 
 def batch_has_concurrency_conflict(

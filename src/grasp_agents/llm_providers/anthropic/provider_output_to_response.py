@@ -66,7 +66,6 @@ def _anthropic_message_to_items(
     items: list[OutputItem] = []
 
     pending_text_blocks: list[AnthropicTextBlock] = []
-    pending_thinking_blocks: list[AnthropicThinkingBlock] = []
 
     # Track server_tool_use blocks to pair with web_search_tool_result
     pending_server_tools: dict[str, AnthropicServerToolUseBlock] = {}
@@ -76,25 +75,21 @@ def _anthropic_message_to_items(
             items.append(_merge_text_blocks(pending_text_blocks))
             pending_text_blocks.clear()
 
-    def _flush_thinking() -> None:
-        if pending_thinking_blocks:
-            items.append(_merge_thinking_blocks(pending_thinking_blocks))
-            pending_thinking_blocks.clear()
-
     for block in message.content:
         if block.type == "text":
-            _flush_thinking()
             pending_text_blocks.append(block)
             continue
 
         if block.type == "thinking":
+            # One ReasoningItem per thinking block: each block is signed
+            # individually, so merging would replay N texts under one
+            # signature — an invalid signed block.
             _flush_text()
-            pending_thinking_blocks.append(block)
+            items.append(_thinking_block_to_reasoning_item(block))
             continue
 
-        # Any other block type flushes both pending lists
+        # Any other block type flushes pending text
         _flush_text()
-        _flush_thinking()
 
         if block.type == "redacted_thinking":
             items.append(_redacted_thinking_block_to_reasoning_item(block))
@@ -116,7 +111,6 @@ def _anthropic_message_to_items(
             items.append(_extract_web_fetch_data(call_block, block))
 
     _flush_text()
-    _flush_thinking()
 
     return items
 
@@ -245,11 +239,11 @@ def _merge_text_blocks(
     return OutputMessageItem(status="completed", content_parts=list(parts))
 
 
-def _merge_thinking_blocks(blocks: list[AnthropicThinkingBlock]) -> ReasoningItem:
+def _thinking_block_to_reasoning_item(block: AnthropicThinkingBlock) -> ReasoningItem:
     return ReasoningItem(
         status="completed",
-        summary_parts=[ReasoningSummary(text=b.thinking) for b in blocks],
-        encrypted_content=blocks[-1].signature if blocks else None,
+        summary_parts=[ReasoningSummary(text=block.thinking)],
+        encrypted_content=block.signature,
     )
 
 

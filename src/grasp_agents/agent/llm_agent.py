@@ -2,7 +2,16 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, cast, final
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    cast,
+    final,
+    get_origin,
+)
 
 if TYPE_CHECKING:
     from ..tools.file_edit.session_state import FileEditSessionState
@@ -234,9 +243,8 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         )
 
         # MCP clients. The auto-attached ``mcp_instructions`` system-prompt
-        # section reads this list at compute time, so adding / removing
-        # clients mid-life is reflected automatically. Populated below from
-        # the ``mcp_clients`` ctor kwarg and / or :meth:`add_mcp_client`.
+        # section reads this list at compute time. Populated below from the
+        # ``mcp_clients`` ctor kwarg (clients must be ``connect()``-ed first).
         self.mcp_clients: list[MCPClient] = []
 
         # Auto-attached sections. Each compute returns ``None`` when its
@@ -273,6 +281,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             )
         if enable_skills:
             self._prompt_builder.add_system_prompt_section(make_skills_section())
+
         if time_aware:
             self._prompt_builder.add_input_attachment(
                 make_current_time_attachment() if time_aware is True else time_aware
@@ -288,7 +297,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         # Resolve MCP tools up front so the loop is built once with the full
         # tool set and AgentLoop.__init__ validates native + MCP name-uniqueness
-        # together, in one place (no post-construction mutation).
+        # together, in one place (no post-construction mutation). MCP clients
+        # must be ``connect()``-ed before construction — the natural order,
+        # since the client is async and the ctor is sync.
         mcp_tools: list[BaseTool[BaseModel, Any, CtxT]] = []
         for item in mcp_clients or []:
             if isinstance(item, _MCPClientSpec):
@@ -379,40 +390,18 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             and (exclude_set is None or tool.name not in exclude_set)
         ]
 
-    def add_mcp_client(
-        self,
-        client: "MCPClient",
-        *,
-        include: "Iterable[str] | None" = None,
-        exclude: "Iterable[str] | None" = None,
-    ) -> None:
+    async def aclose(self) -> None:
         """
-        Attach a connected :class:`MCPClient`'s tools (filtered by ``include`` /
-        ``exclude``) to the running loop and track the client so the
-        ``mcp_instructions`` system-prompt section can read its instructions.
+        Tear down this agent's session — delegated to :meth:`AgentContext.close`
+        (cancel background tasks, close the shell/kernel holders, cascade to
+        tools that wrap sub-processors).
 
-        ``include`` (when set) is an allowlist of tool names; ``exclude`` a
-        denylist; both set ⇒ intersection. ``include=set()`` blocks every tool
-        but still surfaces the server's instructions.
-
-        Prefer passing ``mcp_clients=`` at construction (validated together with
-        the native tools in one place). Use this for clients ``connect()``-ed
-        *after* the agent is built. Re-adding the same client is idempotent; a
-        tool whose name collides with an existing tool or the agent's own name
-        raises — names must be unique or the dispatch dict silently drops one.
+        Execution resources are session-scoped — no run ever releases them —
+        so the embedder owns this call (directly, via ``async with agent:``,
+        or through the owning workflow/runner's ``aclose``). ``ctx`` is passed
+        so ``cancel_all`` can persist CANCELLED task records.
         """
-        client_already_added = client in self.mcp_clients
-        for tool in self._filter_mcp_tools(client, include, exclude):
-            if tool.name == self.name or (
-                not client_already_added and tool.name in self.tools
-            ):
-                raise ValueError(
-                    f"MCP tool {tool.name!r} collides with an existing tool or "
-                    "the agent's own name; tool and processor names must be unique."
-                )
-            self.tools[tool.name] = tool
-        if not client_already_added:
-            self.mcp_clients.append(client)
+        await self._loop.agent_ctx.close(ctx=self._ctx)
 
     @property
     def llm(self) -> LLM:
@@ -544,14 +533,19 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                 )
             await environment.restore(checkpoint.fs_snapshot_ref)
 
-        # Re-attach the RunPython kernel to its persisted code context (captured
-        # with the FS snapshot) so the resumed session keeps its in-memory Python
-        # state. Seed-only: the kernel re-opens lazily on the next RunPython,
-        # bound to this context inside the restored sandbox.
-        if checkpoint.exec_context_id is not None:
-            code_holder = self._loop.agent_ctx.code_kernel_holder
+        # Re-attach the RunPython and RunCell kernels to their persisted
+        # contexts (captured with the FS snapshot) so the resumed session
+        # keeps its in-memory Python state. Seed-only: each kernel re-opens
+        # lazily on its next use, bound to its context inside the restored
+        # sandbox; backends without persistent contexts saved None and start
+        # fresh (the .ipynb stays the notebook's recoverable artifact).
+        if checkpoint.ipy_exec_context_id is not None:
+            code_holder = self._loop.agent_ctx.ipy_kernel_holder
             if code_holder is not None:
-                code_holder.rebind(checkpoint.exec_context_id)
+                code_holder.rebind(checkpoint.ipy_exec_context_id)
+        if checkpoint.nb_exec_context_id is not None:
+            nb_holder = self._loop.agent_ctx.nb_kernel_holder
+            nb_holder.rebind(checkpoint.nb_exec_context_id)
 
         # Restore the read-before-write ledger so the staleness guard
         # resumes where it left off; files changed while suspended still
@@ -573,7 +567,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         logger.info(
             "Loaded session %s for agent %s "
             "(checkpoints=%d, messages=%d, interruption=%s, "
-            "stripped=%d, step=%d, turn=%d)",
+            "stripped=%d, step=%s, turn=%d)",
             self._checkpoint_store_key(self._ctx),
             self.name,
             self.checkpoint_number,
@@ -635,15 +629,18 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # the save — a checkpoint silently missing its filesystem half
         # is worse than no checkpoint.
         fs_snapshot_ref: str | None = None
-        exec_context_id: str | None = None
+        ipy_exec_context_id: str | None = None
+        nb_exec_context_id: str | None = None
         if self._fs_snapshot_due(location):
             environment = cast("SnapshotCapable", self._ctx.environment)
             fs_snapshot_ref = await environment.snapshot()
-            # Capture the RunPython kernel's context with the FS snapshot so the
-            # pair stays consistent: resume re-attaches to this context inside the
-            # restored sandbox (E2B keeps the kernel running in the snapshot).
-            code_holder = self._loop.agent_ctx.code_kernel_holder
-            exec_context_id = code_holder.context_id if code_holder else None
+            # Capture both kernels' contexts with the FS snapshot so the
+            # tuple stays consistent: resume re-attaches each inside the
+            # restored sandbox (E2B keeps the kernels running in the
+            # snapshot). Backends without persistent contexts report None.
+            code_holder = self._loop.agent_ctx.ipy_kernel_holder
+            ipy_exec_context_id = code_holder.context_id if code_holder else None
+            nb_exec_context_id = self._loop.agent_ctx.nb_kernel_holder.context_id
 
         read_file_state, dotfile_overrides = self._loop.file_edit_state.export_state()
         checkpoint = AgentCheckpoint(
@@ -661,7 +658,8 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             read_file_state=read_file_state,
             dotfile_overrides=dotfile_overrides,
             fs_snapshot_ref=fs_snapshot_ref,
-            exec_context_id=exec_context_id,
+            ipy_exec_context_id=ipy_exec_context_id,
+            nb_exec_context_id=nb_exec_context_id,
         )
         await self._serialize_agent_checkpoint(self._ctx, checkpoint)
         # The transcript persisted above contains any background-task notes
@@ -765,6 +763,17 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         if not has_input and self.is_resumable:
             return None
 
+        # Fan-in: a multi-payload packet (e.g. a ParallelProcessor's output)
+        # feeds a list-typed agent as ONE aggregated input — an LLMAgent
+        # processes a single input per run.
+        if (
+            in_packet is not None
+            and len(in_packet.payloads) > 1
+            and get_origin(self._in_type) is list
+        ):
+            in_args = list(in_packet.payloads)
+            in_packet = None
+
         result = super().validate_inputs(
             exec_id=exec_id,
             chat_inputs=chat_inputs,
@@ -775,7 +784,11 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             raise ProcInputValidationError(
                 proc_name=self.name,
                 exec_id=exec_id,
-                message="LLMAgent expects a single input argument.",
+                message=(
+                    f"LLMAgent expects a single input argument; got "
+                    f"{len(result)} payloads. Declare the agent's input type "
+                    "as list[...] to fan in a multi-payload packet."
+                ),
             )
         return result
 
