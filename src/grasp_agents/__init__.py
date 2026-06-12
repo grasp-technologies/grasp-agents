@@ -86,6 +86,8 @@ from .printer import Printer, print_event_stream
 from .processors.parallel_processor import ParallelProcessor
 from .processors.processor import Processor
 from .run_context import RunContext
+from .runner.event_bus import EventBus
+from .runner.runner import Runner
 from .skills import (
     ParsedSlashCommand,
     Skill,
@@ -108,6 +110,7 @@ from .skills import (
 )
 from .tools.agent_tool import AgentTool, AgentToolInput, AgentToolPromptBuilder
 from .tools.function_tool import FunctionTool, function_tool
+from .tools.processor_tool import ProcessorTool
 from .types.content import CacheControl, Content, InputImage, InputRenderable
 from .types.events import (
     BackgroundTaskCompletedEvent,
@@ -165,6 +168,9 @@ from .untrusted_content import (
     wrap_untrusted,
 )
 from .utils.schema import exclude_fields
+from .workflow.looped_workflow import LoopedWorkflow
+from .workflow.sequential_workflow import SequentialWorkflow
+from .workflow.workflow_processor import WorkflowProcessor
 
 try:
     from .mcp import (
@@ -214,6 +220,7 @@ __all__ = [
     "Content",
     "DeveloperMessage",
     "Event",
+    "EventBus",
     "EventConsole",
     "FallbackLLM",
     "FunctionTool",
@@ -241,6 +248,7 @@ __all__ = [
     "LlmNotFoundError",
     "LlmPermissionDeniedError",
     "LlmRateLimitError",
+    "LoopedWorkflow",
     "MCPClient",
     "MCPClientSpec",
     "MCPListResourcesTool",
@@ -266,7 +274,9 @@ __all__ = [
     "PendingApproval",
     "Printer",
     "ProcName",
+    "ProcPacketOutEvent",
     "Processor",
+    "ProcessorTool",
     "RaiseToolException",
     "ReasoningItemEvent",
     "RecoveryHint",
@@ -274,7 +284,10 @@ __all__ = [
     "Response",
     "RetryPolicy",
     "RunContext",
+    "RunPacketOutEvent",
+    "Runner",
     "SectionCompute",
+    "SequentialWorkflow",
     "Skill",
     "SkillError",
     "SkillFormatError",
@@ -295,6 +308,7 @@ __all__ = [
     "TurnStartEvent",
     "UserMessage",
     "WebSearchCallItem",
+    "WorkflowProcessor",
     "build_callback_approval",
     "build_store_approval",
     "classify_error",
