@@ -20,9 +20,7 @@ _SLASH_RE = re.compile(
     re.DOTALL,
 )
 
-_NAMED_ARG_RE = re.compile(
-    r"--(?P<key>[A-Za-z_][A-Za-z0-9_-]*)(?:=(?P<value>\S*))?"
-)
+_NAMED_ARG_RE = re.compile(r"--(?P<key>[A-Za-z_][A-Za-z0-9_-]*)(?:=(?P<value>\S*))?")
 
 
 @dataclass(frozen=True)

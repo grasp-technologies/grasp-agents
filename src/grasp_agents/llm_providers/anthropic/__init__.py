@@ -1,7 +1,6 @@
 # pyright: reportUnusedImport=false
 """Native Anthropic Messages API provider for grasp-agents."""
 
-# Param types
 from anthropic.types import (
     Base64ImageSourceParam,
     ImageBlockParam,

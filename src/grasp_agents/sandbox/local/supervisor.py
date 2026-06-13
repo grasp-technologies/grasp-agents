@@ -11,7 +11,7 @@ never in how a process is supervised.
 
 POSIX only: process-group containment uses ``start_new_session`` (``setsid``)
 at spawn so the whole tree can be killed with :func:`os.killpg`. Windows is an
-explicit gap (see ``docs/roadmap/15-sandbox-and-terminal.md``).
+explicit gap.
 """
 
 from __future__ import annotations

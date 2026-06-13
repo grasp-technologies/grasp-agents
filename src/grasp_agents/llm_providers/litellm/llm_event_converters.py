@@ -1,12 +1,4 @@
-"""
-Stateful converter: LiteLLM ModelResponseStream → LlmEvent stream.
-
-Extends the base CompletionsStreamConverter with:
-- structured thinking_blocks (signatures, redacted blocks)
-- annotations (URL citations from web search)
-- provider-specific metadata (hidden_params, response_ms, cost,
-  provider_specific_fields)
-"""
+"""Stateful converter: LiteLLM ModelResponseStream → LlmEvent stream."""
 
 from __future__ import annotations
 
@@ -43,13 +35,7 @@ if TYPE_CHECKING:
 
 
 class LiteLLMStreamConverter(CompletionsStreamConverter):
-    """
-    Converts a LiteLLM ModelResponseStream async stream into a LlmEvent stream.
-
-    Extends CompletionsStreamConverter with thinking_blocks handling for models
-    that support thinking/reasoning (e.g., Anthropic Claude, DeepSeek), and
-    captures LiteLLM-specific metadata (hidden_params, cost, response_ms, etc.).
-    """
+    """Converts a LiteLLM ModelResponseStream async stream into a LlmEvent stream."""
 
     def __init__(self) -> None:
         super().__init__()

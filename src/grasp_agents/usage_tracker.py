@@ -81,9 +81,7 @@ class UsageTracker(BaseModel):
         )
         token_usage_str += f"/{usage.output_tokens_details.reasoning_tokens}"
         token_usage_str += f"/{usage.input_tokens_details.cached_tokens}"
-        logger.debug(
-            token_usage_str, extra={"color": "bright_black"}
-        )
+        logger.debug(token_usage_str, extra={"color": "bright_black"})
 
         if usage.cost is not None:
             logger.debug(

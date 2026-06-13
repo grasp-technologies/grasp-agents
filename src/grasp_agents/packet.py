@@ -58,9 +58,7 @@ class Packet[PayloadT](BaseModel):
         if self.routing is None:
             return None
 
-        recipient_to_payloads: defaultdict[ProcName, list[PayloadT]] = defaultdict(
-            list
-        )
+        recipient_to_payloads: defaultdict[ProcName, list[PayloadT]] = defaultdict(list)
         for payload, recipients in zip(self.payloads, self.routing, strict=True):
             for recipient in recipients:
                 recipient_to_payloads[recipient].append(payload)

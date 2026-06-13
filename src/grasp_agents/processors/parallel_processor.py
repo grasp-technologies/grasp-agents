@@ -35,9 +35,6 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         super().__init__(
             name=subproc.name + "_par",
-            # ctx flows top-down: an explicit one, else the base ctor resolves
-            # the ambient / process default. ``_propagate_to_children`` then
-            # cascades it onto the subproc + its replicas.
             ctx=ctx,
             recipients=subproc.recipients,
             max_retries=0,
@@ -106,9 +103,7 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self, output: OutT, *, exec_id: str
     ) -> Sequence[ProcName]:
         if is_method_overridden("select_recipients_impl", self._subproc, Processor):
-            return self._subproc.select_recipients_impl(
-                output=output, exec_id=exec_id
-            )
+            return self._subproc.select_recipients_impl(output=output, exec_id=exec_id)
         return cast("list[ProcName]", self.recipients or [])
 
     def validate_inputs(
@@ -238,7 +233,8 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                         await rep.aclose()
                     except Exception:
                         logger.warning(
-                            "Failed to close parallel replica %r", rep.name,
+                            "Failed to close parallel replica %r",
+                            rep.name,
                             exc_info=True,
                         )
 

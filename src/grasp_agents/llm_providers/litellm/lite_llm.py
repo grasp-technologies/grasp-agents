@@ -88,9 +88,7 @@ class LiteLLM(CloudLLM):
             # credentials into every completion call (litellm otherwise
             # resolves keys from the environment only).
             self._lite_llm_completion_params["api_key"] = _api_provider.get("api_key")
-            self._lite_llm_completion_params["api_base"] = _api_provider.get(
-                "base_url"
-            )
+            self._lite_llm_completion_params["api_base"] = _api_provider.get("base_url")
         else:
             try:
                 _, provider_name, api_key, api_base = litellm.get_llm_provider(  # type: ignore[no-untyped-call]
@@ -137,8 +135,6 @@ class LiteLLM(CloudLLM):
 
     @property
     def supports_output_schema(self) -> bool:
-        # litellm renamed this helper ``supports_output_schema`` →
-        # ``supports_response_schema``; our property name is unchanged.
         return supports_response_schema(model=self.model_name)
 
     @property
@@ -207,8 +203,7 @@ class LiteLLM(CloudLLM):
             **self._lite_llm_completion_params,
             **api_llm_settings,
         )
-        # Should not be needed in litellm>=1.74. Unmapped models raise here —
-        # never fail a successful (already paid-for) response over pricing.
+        # Unmapped models raise here — never fail a successful response over pricing.
         try:
             completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]  # noqa: SLF001
                 completion
@@ -230,7 +225,6 @@ class LiteLLM(CloudLLM):
         api_output_schema: type | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[LiteLLMCompletionChunk]:
-        # Ensure usage is included in the streamed responses
         stream_options = dict(api_llm_settings.get("stream_options") or {})
         stream_options["include_usage"] = True
         _api_llm_settings = api_llm_settings | {"stream_options": stream_options}

@@ -34,7 +34,6 @@ class NamedToolChoice(BaseModel):
     name: str
 
 
-# TODO: expand to support more options
 ToolChoice = Literal["none", "auto", "required"] | NamedToolChoice
 
 
@@ -142,7 +141,6 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         # whose events are structural): no log, so neither cites one. Independent
         # of ``auto_background_at``, which is only *when* the call backgrounds.
         self.has_progress_log = has_progress_log
-        # ``None`` keeps the class-level ``untrusted_output``; a bool overrides.
         if untrusted_output is not None:
             self.untrusted_output = untrusted_output
         self.tracing_enabled = tracing_enabled
@@ -198,11 +196,6 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> OutT:
-        # ``path`` is the per-call tool-call lineage (consumed by resumable
-        # ``AgentTool`` / ``ProcessorTool``); ``agent_ctx`` is the calling
-        # loop's agent-scope state (file-edit ledger, shell session,
-        # background tasks, parent transcript / sibling tools). Both are
-        # passed to every tool call; a tool ignores whichever it doesn't use.
         pass
 
     async def _run_stream(
@@ -269,9 +262,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
                     if remaining <= 0:
                         raise TimeoutError  # noqa: TRY301
                     try:
-                        event = await asyncio.wait_for(
-                            anext(stream), timeout=remaining
-                        )
+                        event = await asyncio.wait_for(anext(stream), timeout=remaining)
                     except StopAsyncIteration:
                         break
                     yield event
@@ -382,9 +373,6 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        # Owning agent for this call; stamped onto the tool's own stream events
-        # below so a UI routes their (possibly backgrounded / bubbled) output to
-        # the right agent's pane instead of guessing from the most recent one.
         dest = agent_ctx.agent_name if agent_ctx else None
         async for event in self._run_stream_with_timeout(
             inp,
@@ -394,9 +382,6 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
             path=path,
             agent_ctx=agent_ctx,
         ):
-            # Only when unset, so a sub-agent's nested tool events keep the inner
-            # agent they were already stamped with (this wrapper runs at every
-            # level, parent and child).
             if (
                 dest
                 and isinstance(event, ToolStreamEvent)
@@ -466,8 +451,6 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
 
     # --- Copy ---
 
-    # Attributes that should be shared (not deepcopied) across copies.
-    # Subclasses add entries for shared resources like network sessions.
     _copy_shared_attrs: ClassVar[frozenset[str]] = frozenset()
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:

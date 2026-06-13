@@ -139,14 +139,6 @@ class Processor[InT, OutT, CtxT](
 
         self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
-        # ``ctx`` is this processor's session. Set explicitly here, or — when
-        # none is given — the ambient ``with RunContext(...)`` ctx, else the
-        # process default (``current_run_context``), never a private throwaway,
-        # so uncomposed agents still share one session. ctx flows **top-down**:
-        # this is just the standalone default; a container that adopts this
-        # processor overrides it via ``on_adopted`` (one session per tree —
-        # subprocessors never carry their own). Passing a different ``ctx`` to
-        # ``run`` / ``run_stream`` is unsupported.
         self._ctx: RunContext[CtxT] = (
             ctx if ctx is not None else current_run_context()  # type: ignore
         )

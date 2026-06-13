@@ -174,12 +174,11 @@ def _format_mtime(mtime_ms: int) -> str:
 
 def _format_entry_heading(entry: MemoryEntry) -> str:
     """
-    One-line header per surfaced memory.
+    One-line header per surfaced memory: ``[type] name (updated TS)``.
 
-    Mirrors CC's manifest line format ``[type] name (updated TS): desc`` —
-    type tag tells the agent how to treat the memory (e.g. ``feedback``
-    is normative), timestamp telegraphs staleness, description gives a
-    hook so the agent can decide relevance without reading the body.
+    The type tag tells the agent how to treat the memory (e.g. ``feedback``
+    is normative); the timestamp telegraphs staleness; the description gives
+    a hook so the agent can decide relevance without reading the body.
     """
     type_tag = f"[{entry.memory_type}] " if entry.memory_type else ""
     ts = _format_mtime(entry.mtime_ms)

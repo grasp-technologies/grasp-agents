@@ -370,14 +370,16 @@ class LLM(ABC):
         failed: list[tuple[str, str, str]] = []  # (call_id, name, error)
         for tc in response.tool_call_items:
             if tc.name not in available_tool_names:
-                failed.append((
-                    tc.call_id,
-                    tc.name,
+                failed.append(
                     (
-                        f"Tool '{tc.name}' is not available "
-                        f"(available: {available_tool_names})"
-                    ),
-                ))
+                        tc.call_id,
+                        tc.name,
+                        (
+                            f"Tool '{tc.name}' is not available "
+                            f"(available: {available_tool_names})"
+                        ),
+                    )
+                )
                 continue
             tool = tools[tc.name]
             try:
@@ -385,11 +387,13 @@ class LLM(ABC):
                     tc.arguments, schema=tool.llm_in_type
                 )
             except JSONSchemaValidationError as exc:
-                failed.append((
-                    tc.call_id,
-                    tc.name,
-                    f"Tool '{tc.name}' arguments failed validation: {exc}",
-                ))
+                failed.append(
+                    (
+                        tc.call_id,
+                        tc.name,
+                        f"Tool '{tc.name}' arguments failed validation: {exc}",
+                    )
+                )
 
         if not failed:
             return
@@ -401,8 +405,7 @@ class LLM(ABC):
         detail = "\n".join(f"- {msg}" for _, _, msg in failed)
         plural = "s" if len(failed) != 1 else ""
         message = (
-            f"{len(failed)} tool call{plural} failed validation "
-            f"({names}):\n{detail}"
+            f"{len(failed)} tool call{plural} failed validation ({names}):\n{detail}"
         )
         raise LLMToolCallValidationError(
             message, response=response, failed_calls=failed

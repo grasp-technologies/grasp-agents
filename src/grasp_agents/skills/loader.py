@@ -53,9 +53,7 @@ def parse_skill_md(
     try:
         frontmatter = SkillFrontmatter.model_validate(loaded)
     except ValidationError as exc:
-        raise SkillFormatError(
-            path, f"Frontmatter validation failed: {exc}"
-        ) from exc
+        raise SkillFormatError(path, f"Frontmatter validation failed: {exc}") from exc
 
     return frontmatter, body.strip("\n")
 

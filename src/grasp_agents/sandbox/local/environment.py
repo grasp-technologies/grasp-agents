@@ -1,7 +1,6 @@
 """
-``LocalEnvironment`` + the :func:`local_environment` factory — backend #1 of
-Phase D: a co-located host filesystem + host subprocess pair sharing one
-:class:`SandboxPolicy`.
+``LocalEnvironment`` + the :func:`local_environment` factory — a co-located
+host filesystem + host subprocess pair sharing one :class:`SandboxPolicy`.
 
 The factory is the co-location guarantee: it unpacks a single policy into a
 :class:`~grasp_agents.tools.file_backend.local.LocalFileBackend` and an
@@ -122,11 +121,10 @@ def local_environment(
         deny_write: Carve write-protected regions out of ``allowed_roots``
             (deny wins). Enforced on both planes (file tools + exec).
         confinement: ``"none"`` (plain subprocess, no isolation), ``"seatbelt"``
-            (macOS OS confinement), ``"srt"`` (delegate to Anthropic's
-            sandbox-runtime CLI if installed — adds domain-allowlisted network
-            egress our native Seatbelt lacks), or ``"auto"`` (Seatbelt on macOS,
-            else a warned fallback to ``"none"``). ``"bwrap"`` (Linux) is not
-            built yet.
+            (macOS OS confinement), ``"srt"`` (delegates to the ``srt`` CLI if
+            installed — adds domain-allowlisted network egress that native
+            Seatbelt lacks), or ``"auto"`` (Seatbelt on macOS, else a warned
+            fallback to ``"none"``). ``"bwrap"`` (Linux) is not built yet.
         network: Recorded on the policy. Not enforced under ``"none"``; under
             Seatbelt, ``NONE`` and ``ALL`` are enforced (loopback / allowlist
             need a proxy — deferred).

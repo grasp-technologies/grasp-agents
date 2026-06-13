@@ -176,9 +176,8 @@ class LocalFileBackend(FileBackend):
 
     async def stat(self, path: Path) -> FileStat:
         st = await asyncio.to_thread(path.stat)
-        # Keep the full mode (type bits + permissions). The 0o7777 mask
-        # was applied here previously which stripped S_IFDIR / S_IFREG —
-        # callers that need just the permissions can mask themselves.
+        # Keep the full mode (type bits + permissions); callers that need
+        # only the permission bits can apply 0o7777 themselves.
         return FileStat(mtime=st.st_mtime, mode=st.st_mode, size=st.st_size)
 
     async def exists(self, path: Path) -> bool:

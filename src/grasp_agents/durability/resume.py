@@ -92,14 +92,12 @@ def prepare_messages_for_resume(
     messages: list[InputItem],
 ) -> ResumeState:
     """
-    CC-style message cleanup for session resume.
+    Prepare a saved message list for session resume.
 
-    1. Strip trailing incomplete assistant turn (dangling tool calls)
-    2. Detect interruption type for diagnostics
-
-    The cleaned messages can be fed directly into an agent loop.
-    Stripping ensures no unmatched tool_use/tool_result pairs, which
-    would cause LLM API errors.
+    Strips any trailing incomplete assistant turn (dangling tool calls),
+    then classifies the interruption type. The cleaned messages can be
+    fed directly into an agent loop; stripping prevents unmatched
+    tool_use/tool_result pairs that would cause LLM API errors.
     """
     if not messages:
         return ResumeState(messages=[], interruption=InterruptionType.NONE)

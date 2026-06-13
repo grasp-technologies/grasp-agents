@@ -67,9 +67,6 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
 
         super().__init__(
             name=name,
-            # ctx flows top-down: an explicit one, else the base ctor resolves
-            # the ambient / process default. ``_propagate_to_children`` then
-            # cascades it onto every subproc (no bottom-up borrow from a child).
             ctx=ctx,
             recipients=(recipients or end_proc.recipients),
             max_retries=0,
@@ -133,9 +130,7 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
         self, output: OutT, *, exec_id: str
     ) -> Sequence[ProcName]:
         if is_method_overridden("select_recipients_impl", self._end_proc, Processor):
-            return self._end_proc.select_recipients_impl(
-                output=output, exec_id=exec_id
-            )
+            return self._end_proc.select_recipients_impl(output=output, exec_id=exec_id)
         return cast("list[ProcName]", self.recipients or [])
 
     async def aclose(self) -> None:

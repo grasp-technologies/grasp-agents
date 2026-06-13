@@ -1,14 +1,12 @@
 """
-Agent Skills — implementation of the agentskills.io specification.
+Agent Skills — implementation of the `agentskills.io specification
+<https://agentskills.io/specification>`_.
 
 A *skill* is a folder containing a ``SKILL.md`` file with YAML frontmatter
 (``name`` + ``description`` required) and markdown instructions. Skills are
 catalog-injected into the system prompt as an ``<available_skills>`` block;
 the agent resolves a skill on demand via the ``load_skill`` tool. Slash-style
 user invocations are rendered via :meth:`SkillRegistry.render_invocation`.
-
-See ``docs/roadmap/12-skills.md`` for the design and the agentskills.io
-specification at https://agentskills.io/specification.
 """
 
 from __future__ import annotations

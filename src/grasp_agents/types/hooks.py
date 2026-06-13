@@ -214,9 +214,7 @@ class OutputParser[InT, OutT](Protocol):
 
 
 class RecipientSelector[OutT](Protocol):
-    def __call__(
-        self, output: OutT, *, exec_id: str
-    ) -> Sequence[ProcName]: ...
+    def __call__(self, output: OutT, *, exec_id: str) -> Sequence[ProcName]: ...
 
 
 class WorkflowLoopTerminator[OutT](Protocol):

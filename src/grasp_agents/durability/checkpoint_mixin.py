@@ -125,9 +125,7 @@ class CheckpointPersistMixin:
         else:
             new_messages = messages[len(persisted) :]
             if new_messages:
-                await store.append_messages(
-                    key, new_messages, version=log_version
-                )
+                await store.append_messages(key, new_messages, version=log_version)
 
         checkpoint.checkpoint_number = self._checkpoint_number + 1
         checkpoint.message_count = len(messages)
@@ -137,9 +135,7 @@ class CheckpointPersistMixin:
 
         if rewrite and self._log_version != log_version:
             try:
-                await store.rewrite_messages(
-                    key, [], version=self._log_version
-                )
+                await store.rewrite_messages(key, [], version=self._log_version)
             except Exception:
                 logger.warning(
                     "Failed to remove superseded message-log version %d at %s",
@@ -186,9 +182,7 @@ class CheckpointPersistMixin:
         # version: the content is a prefix of what is there, so a crash
         # mid-rewrite cannot invalidate the head's watermark.)
         if len(raw) != len(committed):
-            await store.rewrite_messages(
-                key, committed, version=head.log_version
-            )
+            await store.rewrite_messages(key, committed, version=head.log_version)
 
         self._checkpoint_number = head.checkpoint_number
         self._log_version = head.log_version

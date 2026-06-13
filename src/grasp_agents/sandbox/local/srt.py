@@ -1,15 +1,14 @@
 """
-``SrtExecBackend`` — delegate confinement to Anthropic's ``sandbox-runtime``
-(`srt`) CLI when it is installed.
+``SrtExecBackend`` — delegate confinement to the ``srt`` CLI when it is
+installed.
 
-`srt` is a production-grade OS sandbox (macOS Seatbelt / Linux bwrap + seccomp)
-with a host-side HTTP/SOCKS proxy for **domain-allowlisted network egress** —
-the one capability our native :class:`SeatbeltExecBackend` deliberately does not
-reproduce. Rather than reimplement srt's ~20k LOC, this backend shells out to
-its CLI exactly the way the local backend shells out to ``sandbox-exec``: it
-maps our :class:`SandboxPolicy` to an srt settings file and runs
-``srt --settings <file> -c <command>`` (srt's ``-c`` mode runs the string via
-``bash -c``).
+``srt`` is a production-grade OS sandbox (macOS Seatbelt / Linux bwrap +
+seccomp) with a host-side HTTP/SOCKS proxy for **domain-allowlisted network
+egress** — the one capability our native :class:`SeatbeltExecBackend`
+deliberately does not reproduce. This backend shells out to its CLI exactly the
+way the local backend shells out to ``sandbox-exec``: it maps our
+:class:`SandboxPolicy` to an srt settings file and runs ``srt --settings <file>
+-c <command>`` (srt's ``-c`` mode runs the string via ``bash -c``).
 
 **Boundary doc (the three questions):**
 

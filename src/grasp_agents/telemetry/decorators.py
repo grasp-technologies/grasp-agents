@@ -67,7 +67,6 @@ _TRACER_NAME = "grasp_agents"
 
 
 def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
-    """Recursively convert objects to JSON-serializable primitives."""
     all_exclude = DEFAULT_EXCLUDE_FIELDS.union(exclude_fields or set())
     if isinstance(obj, BaseModel):
         try:
@@ -179,7 +178,10 @@ def _handle_span_input(
                 indent=2,
             )
             span.set_attribute(ATTR_ENTITY_INPUT, _truncate_if_needed(json_input))
-    except TypeError as e:
+    except (TypeError, ValueError, RecursionError) as e:
+        # Telemetry serialization must never fail the traced call. json.dumps
+        # raises ValueError on circular refs and RecursionError on deeply
+        # nested payloads; _to_plain can raise either too.
         span.record_exception(e)
 
 
@@ -198,12 +200,14 @@ def _handle_span_output(
                 indent=2,
             )
             span.set_attribute(ATTR_ENTITY_OUTPUT, _truncate_if_needed(json_output))
-    except TypeError as e:
+    except (TypeError, ValueError, RecursionError) as e:
+        # Telemetry serialization must never fail the traced call. json.dumps
+        # raises ValueError on circular refs and RecursionError on deeply
+        # nested payloads; _to_plain can raise either too.
         span.record_exception(e)
 
 
 def _resolve_span_kind(instance: Any | None, default: SpanKind) -> SpanKind:
-    """Resolve span kind from instance ``_span_kind`` attribute, else use default."""
     if instance is not None:
         kind = getattr(instance, "_span_kind", None)
         if isinstance(kind, SpanKind):
@@ -264,9 +268,8 @@ def _entity_method[F: Callable[..., Any]](
                     with tracer.start_as_current_span(span_name) as span:
                         _set_span_attributes(span, entity_name, resolved_kind, version)
                         _handle_span_input(span, input_args, kwargs, exclude_fields)
-                        # Track only the LAST item (the span output) — buffering
-                        # every yielded event for the stream's lifetime multiplies
-                        # memory by the traced-nesting depth on long runs.
+                        # Track only the LAST item — buffering every yielded
+                        # event multiplies memory by the tracing nesting depth.
                         last_item: Any = None
                         has_items = False
 
@@ -313,9 +316,7 @@ def _entity_method[F: Callable[..., Any]](
                         _handle_span_output(span, res)
                         return res
                     except Exception as e:
-                        span.set_status(
-                            trace.Status(trace.StatusCode.ERROR, str(e))
-                        )
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(
                             e, attributes={"tb": traceback.format_exc()}
                         )
@@ -347,8 +348,7 @@ def _entity_method[F: Callable[..., Any]](
                 with tracer.start_as_current_span(span_name) as span:
                     _set_span_attributes(span, entity_name, resolved_kind, version)
                     _handle_span_input(span, input_args, kwargs, exclude_fields)
-                    # Track only the LAST item (the span output) — see the
-                    # async generator wrapper above.
+                    # Track only the LAST item — see the async generator path.
                     last_item: Any = None
                     has_items = False
 
@@ -358,9 +358,7 @@ def _entity_method[F: Callable[..., Any]](
                             has_items = True
                             yield item
                     except Exception as e:
-                        span.set_status(
-                            trace.Status(trace.StatusCode.ERROR, str(e))
-                        )
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(
                             e, attributes={"tb": traceback.format_exc()}
                         )
@@ -395,12 +393,8 @@ def _entity_method[F: Callable[..., Any]](
                     _handle_span_output(span, res)
                     return res
                 except Exception as e:
-                    span.set_status(
-                        trace.Status(trace.StatusCode.ERROR, str(e))
-                    )
-                    span.record_exception(
-                        e, attributes={"tb": traceback.format_exc()}
-                    )
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    span.record_exception(e, attributes={"tb": traceback.format_exc()})
                     raise
 
         return cast("F", sync_wrap)

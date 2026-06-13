@@ -23,9 +23,7 @@ MIN_SUPPORTED_SCHEMA_VERSION: int = 5
 """
 Oldest persisted schema version this code can still load.
 
-Pre-v5 agent checkpoints embedded the transcript in the head blob (there is
-no message log to read) — loading one would silently resume an empty session,
-so records below this floor are rejected instead.
+Records below this floor are rejected rather than partially loaded.
 """
 
 SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
@@ -50,16 +48,15 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "records load fine (fields default None)."
     ),
     5: (
-        "AgentCheckpoint.messages moved to an append-only message log: the head "
-        "blob no longer embeds messages and gains message_count (the log's commit "
-        "watermark). Pre-v5 single-blob agent checkpoints are NOT loadable — their "
-        "transcript lived inside the head and there is no log to read."
+        "AgentCheckpoint uses an append-only message log: the head blob stores only "
+        "message_count (commit watermark) and session metadata; the transcript lives "
+        "in a sibling JSONL file. Single-blob agent checkpoints from earlier versions "
+        "are NOT loadable."
     ),
     6: (
-        "AgentCheckpoint.code_context_id renamed to exec_context_id: the persisted "
-        "value is a code-execution context that holds arbitrary in-memory sandbox "
-        "state (E2B), not a Python-kernel id specifically. v5 records load fine "
-        "(old field ignored, exec_context_id defaults None); v5 code resuming a v6 "
+        "AgentCheckpoint.exec_context_id holds a code-execution context for arbitrary "
+        "in-memory sandbox state (E2B). v5 records load fine "
+        "(field defaults None); v5 code resuming a v6 "
         "session loses the re-attach and resumes with a fresh kernel."
     ),
     7: (
@@ -71,14 +68,11 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "missing log."
     ),
     8: (
-        "AgentCheckpoint.exec_context_id renamed to ipy_exec_context_id (the "
-        "RunPython kernel's execution context — the old name implied it "
-        "covered all exec state), and AgentCheckpoint gained "
-        "nb_exec_context_id (the RunCell notebook kernel's), both captured "
-        "with fs_snapshot_ref. v7 records load fine (old field ignored, both "
-        "default None); v7 code resuming a v8 session skips the kernel "
-        "re-attaches and falls back to fresh kernels (the .ipynb stays the "
-        "notebook's recoverable artifact)."
+        "AgentCheckpoint has ipy_exec_context_id (the RunPython kernel's execution "
+        "context) and nb_exec_context_id (the RunCell notebook kernel's), both "
+        "captured with fs_snapshot_ref. v7 records load fine (both fields default "
+        "None); v7 code resuming a v8 session skips kernel re-attaches and falls "
+        "back to fresh kernels (the .ipynb stays the notebook's recoverable artifact)."
     ),
 }
 """

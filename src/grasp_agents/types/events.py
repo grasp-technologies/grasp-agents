@@ -73,20 +73,14 @@ class ToolStreamEvent(Event[Any], frozen=True):
     Incremental output from a still-running tool, yielded *before* its terminal
     :class:`ToolOutputEvent`.
 
-    ``data`` is any object: generic consumers (the
-    :class:`~grasp_agents.agent.background_tasks.BackgroundTaskManager` buffer
-    and progress log, consoles) render it with ``str(data)``, so a tool
-    can carry a plain ``str`` or a structured object whose ``__str__`` produces
-    the LLM-facing text. A tool with structure to expose subclasses this and
-    narrows ``data`` (e.g. the shell tools' ``ExecStreamEvent`` carries an
-    ``ExecStreamChunk`` with a stdout/stderr ``channel``); structure-aware
-    consumers ``isinstance``-check the subclass, everyone else still sees a
-    plain ``ToolStreamEvent``.
+    ``data`` is any object rendered with ``str(data)`` by generic consumers; a
+    tool can carry a plain ``str`` or a structured object. Tools that expose
+    structure subclass this and narrow ``data``; structure-aware consumers
+    ``isinstance``-check the subclass, all others see a plain
+    ``ToolStreamEvent``.
 
-    ``destination`` is the owning agent, stamped by :meth:`BaseTool.run_stream`
-    from the call's :class:`AgentContext` so a UI routes a tool's live output
-    (foreground or backgrounded-and-bubbled) to that agent's pane instead of
-    guessing from whichever agent generated most recently.
+    ``destination`` is the owning agent so a UI can route a tool's live output
+    to that agent's pane.
     """
 
     type: Literal["tool.stream"] = "tool.stream"
@@ -142,8 +136,6 @@ class TurnEndInfo(BaseModel):
     turn: int
     had_tool_calls: bool
     stop_reason: StopReason | None = None
-
-    model_config = ConfigDict(use_enum_values=True)
 
 
 class TurnStartEvent(Event[TurnInfo], frozen=True):

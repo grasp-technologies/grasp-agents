@@ -84,21 +84,21 @@ class SandboxPolicy:
     - ``deny_read`` / ``allow_read`` — carve unreadable regions out of the
       readable space; ``allow_read`` re-allows within them (**allow wins**).
     - ``deny_write`` — carve write-protected regions out of ``allowed_roots``
-      (**deny wins**). There is no write carve-back: as in srt / Claude Code,
-      ``deny_write`` always wins, so protect a sub-region by denying it rather
-      than re-allowing within a denied one.
+      (**deny wins**). There is no write carve-back: ``deny_write`` always
+      wins, so protect a sub-region by denying it rather than re-allowing
+      within a denied one.
     - ``include_dotfile_denylist`` stacks the credential deny set (``.ssh`` /
       ``.aws`` / ``.env`` / ...) on top; ``dotfile_overrides`` are explicit
       opt-ins that bypass it.
 
-    The allow/deny precedence is **reversed for reads vs writes — the same
-    reversal srt and Claude Code use**: ``allow_read`` overrides ``deny_read``
-    (carve readable regions back within denied areas), while ``deny_write``
-    overrides ``allowed_roots`` (carve protected regions within the writable
-    workspace). Reads also cannot be positively allowlisted at the OS plane
-    (dev tooling needs broad reads), so under Seatbelt a subprocess sees
-    "everything readable minus ``deny_read``", while the file tools stay
-    confined to ``allowed_roots`` — same policy, stricter on the tool plane.
+    The allow/deny precedence is **reversed for reads vs writes**:
+    ``allow_read`` overrides ``deny_read`` (carve readable regions back within
+    denied areas), while ``deny_write`` overrides ``allowed_roots`` (carve
+    protected regions within the writable workspace). Reads also cannot be
+    positively allowlisted at the OS plane (dev tooling needs broad reads), so
+    under Seatbelt a subprocess sees "everything readable minus
+    ``deny_read``", while the file tools stay confined to ``allowed_roots`` —
+    same policy, stricter on the tool plane.
 
     Network / env (exec surface only):
 

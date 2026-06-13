@@ -77,9 +77,6 @@ class RunContext[CtxT](BaseModel):
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
-    # Stack of ContextVar tokens, one per active ``with self:`` frame, so a
-    # context can be entered re-entrantly and each exit restores the right
-    # outer ambient ctx.
     _ambient_tokens: list[contextvars.Token[Any]] = PrivateAttr(
         default_factory=list["contextvars.Token[Any]"]
     )
@@ -149,18 +146,6 @@ class RunContext[CtxT](BaseModel):
 
     @model_validator(mode="after")
     def _reconcile_environment(self) -> "RunContext[CtxT]":
-        """
-        Source the file surface from the :class:`ExecutionEnvironment` when one
-        is wired, and reject a standalone ``file_backend`` that diverges from
-        it.
-
-        Exec capability is exposed only via the :attr:`exec_backend` property
-        (off :attr:`environment`), so there is no separate exec field to
-        reconcile — co-location with the environment's ``file_backend`` is
-        structural. A ``file_backend`` may still be wired alone for file-only
-        sessions (memory authoring, MCP artifact backends) that need no exec
-        surface. No-op when no environment was provided.
-        """
         if self.environment is None:
             return self
         env_file_backend = self.environment.file_backend
@@ -179,20 +164,6 @@ class RunContext[CtxT](BaseModel):
 
     @model_validator(mode="after")
     def _validate_memory_under_backend_roots(self) -> "RunContext[CtxT]":
-        """
-        Wire memory to the session's file backend at start:
-
-        - When :attr:`memory` is set with a concrete ``root``, :attr:`file_backend`
-          is required (memory I/O routes through it). The memdir is admitted
-          into the backend's address space (:meth:`FileBackend.add_allowed_root`)
-          so memory authoring via the file tools works without the host
-          repeating the memdir in ``allowed_roots``. The backend is then bound
-          on the provider so its methods can fetch bytes without re-receiving
-          a ctx kwarg.
-        - When :attr:`memory.root` is the ``Path()`` sentinel (e.g.
-          :class:`InMemoryMemoryProvider`), the backend is not required —
-          the provider serves a static snapshot.
-        """
         if self.memory is None:
             return self
         root = self.memory.root
@@ -205,27 +176,15 @@ class RunContext[CtxT](BaseModel):
                 "LocalFileBackend(allowed_roots=...) or "
                 "MCPFileBackend(client=..., allowed_roots=...) explicitly."
             )
-        # Admit the configured memdir so memory authoring through the file
-        # tools is allowed without the host repeating it in allowed_roots
-        # (idempotent if already covered).
         self.file_backend.add_allowed_root(root)
-        # Wire the backend onto the provider so its methods can read
-        # bytes without callers threading ctx through again.
         self.memory.bind_backend(self.file_backend)
         return self
 
 
-# The ambient ctx set by ``with RunContext(...)`` (task-local). ``None`` =
-# no active block; bare construction then falls back to the process default.
 _AMBIENT_RUN_CONTEXT: contextvars.ContextVar["RunContext[Any] | None"] = (
     contextvars.ContextVar("grasp_agents_ambient_run_context", default=None)
 )
 
-# Lazily-created process-wide default. The single session every
-# bare-constructed processor shares when no ctx is passed and no ``with
-# RunContext`` block is active — so two agents that are never composed still
-# share one usage tracker / state / store set, instead of each minting a
-# private throwaway ctx that silently drops those bindings.
 _default_run_context: "RunContext[Any] | None" = None
 
 
@@ -234,9 +193,7 @@ def current_run_context() -> "RunContext[Any]":
     The ctx a processor binds to when constructed without an explicit one.
 
     Resolution: the innermost active ``with RunContext(...)`` block, else the
-    lazily-created process-wide default (created on first use). Never mints a
-    fresh per-call ctx — that was the old placeholder behavior, which left
-    uncomposed agents in separate sessions.
+    lazily-created process-wide default (created on first use).
     """
     ambient = _AMBIENT_RUN_CONTEXT.get()
     if ambient is not None:

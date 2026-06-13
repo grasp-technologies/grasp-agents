@@ -229,7 +229,6 @@ class InputFile(ResponseInputFile):
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
 
-    # check if only one of file_data, file_url, or file_id is provided
     @model_validator(mode="before")
     @classmethod
     def _check_exclusive_fields(cls, data: dict[str, Any]) -> dict[str, Any]:

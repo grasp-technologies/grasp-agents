@@ -108,9 +108,7 @@ class FileCheckpointStore(CheckpointStore):
         async with lock:
             await asyncio.to_thread(_append_bytes, path, blob)
 
-    async def read_messages(
-        self, key: str, *, version: int = 0
-    ) -> list[InputItem]:
+    async def read_messages(self, key: str, *, version: int = 0) -> list[InputItem]:
         path = self._key_to_path(key, suffix=self._log_suffix(version))
         return await asyncio.to_thread(_read_message_log, path)
 
@@ -179,13 +177,6 @@ class FileCheckpointStore(CheckpointStore):
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    """
-    Blocking write — run via :func:`asyncio.to_thread`.
-
-    Delegates to the shared :func:`atomic_write_bytes` primitive
-    (tmpfile + ``os.replace``); only the parent-dir creation is
-    checkpoint-store-specific.
-    """
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(path, data)
 
@@ -198,7 +189,6 @@ def _read_if_exists(path: Path) -> bytes | None:
 
 
 def _append_bytes(path: Path, blob: bytes) -> None:
-    """Blocking append to the message log — run via :func:`asyncio.to_thread`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as f:
         f.write(blob)
@@ -210,7 +200,6 @@ def _append_bytes(path: Path, blob: bytes) -> None:
 
 
 def _read_message_log(path: Path) -> list[InputItem]:
-    """Blocking read+parse of the message log — run via :func:`asyncio.to_thread`."""
     try:
         blob = path.read_bytes()
     except FileNotFoundError:

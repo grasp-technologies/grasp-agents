@@ -91,12 +91,12 @@ class CheckpointStore(ABC):
 
     # --- Append-only message log (the agent transcript) ---
     #
-    # Keyed to the checkpoint head: ``append_messages`` extends it incrementally
-    # (no full-transcript rewrite per turn), ``read_messages`` returns the whole
-    # log, ``rewrite_messages`` replaces it (used on resume to drop an
-    # uncommitted / torn tail). ``read_messages`` must tolerate a torn final
-    # record (see :func:`decode_message_log`); ``encode_messages`` /
-    # ``decode_message_log`` give backends a ready JSONL framing.
+    # Keyed to the checkpoint head: ``append_messages`` extends it incrementally,
+    # ``read_messages`` returns the whole log, ``rewrite_messages`` replaces it
+    # (used on resume to drop an uncommitted / torn tail). ``read_messages`` must
+    # tolerate a torn final record (see :func:`decode_message_log`);
+    # ``encode_messages`` / ``decode_message_log`` give backends a ready JSONL
+    # framing.
     #
     # ``version`` namespaces independent log files for one key. A
     # full-history rewrite goes to a NEW version while the head still
@@ -111,9 +111,7 @@ class CheckpointStore(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def read_messages(
-        self, key: str, *, version: int = 0
-    ) -> list[InputItem]: ...
+    async def read_messages(self, key: str, *, version: int = 0) -> list[InputItem]: ...
 
     @abstractmethod
     async def rewrite_messages(
@@ -148,9 +146,7 @@ class InMemoryCheckpointStore(CheckpointStore):
         if messages:
             self._logs.setdefault((key, version), []).extend(messages)
 
-    async def read_messages(
-        self, key: str, *, version: int = 0
-    ) -> list[InputItem]:
+    async def read_messages(self, key: str, *, version: int = 0) -> list[InputItem]:
         return list(self._logs.get((key, version), []))
 
     async def rewrite_messages(

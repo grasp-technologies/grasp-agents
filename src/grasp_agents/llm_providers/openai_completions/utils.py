@@ -4,7 +4,6 @@ from grasp_agents.types.errors import CompletionError
 
 
 def validate_completion(completion: ChatCompletion) -> None:
-    """Convert an OpenAI Chat Completion → internal Response."""
     if completion.choices is None:  # type: ignore[comparison-overlap]
         raise CompletionError(
             f"Completion API error: {getattr(completion, 'error', None)}"

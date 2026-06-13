@@ -131,9 +131,7 @@ def _restore_init_false_fields(cls: type, restored: Any, data: Any) -> None:
     if not isinstance(data, Mapping):
         return
     data_map = cast("Mapping[str, Any]", data)
-    init_false = [
-        f for f in dataclass_fields(cls) if not f.init and f.name in data_map
-    ]
+    init_false = [f for f in dataclass_fields(cls) if not f.init and f.name in data_map]
     if not init_false:
         return
     hints = get_type_hints(cls)

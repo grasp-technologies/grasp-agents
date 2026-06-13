@@ -17,13 +17,11 @@ def parse_retry_after(response: httpx.Response) -> float | None:
     """
     Extract ``Retry-After`` as a float number of seconds.
 
-    Only the integer/float form is parsed. The HTTP-date form (RFC 7231
-    §7.1.3) is not currently supported — returns ``None`` in that case,
-    matching historical behavior of the provider-local helpers this
-    function replaces. Returns ``None`` if the header is absent, blank,
-    or otherwise unparseable. Non-finite and negative values are rejected:
-    this is the single source of ``LlmRateLimitError.retry_after``, so the
-    retry layer can trust the value to be a sane, finite delay.
+    Only the integer/float form is parsed; the HTTP-date form (RFC 7231
+    §7.1.3) is not supported — returns ``None`` in that case.
+    Returns ``None`` if the header is absent, blank, or otherwise unparseable.
+    Non-finite and negative values are rejected so callers receive a sane,
+    finite delay or ``None``.
     """
     raw = response.headers.get("retry-after")
     if raw is None:

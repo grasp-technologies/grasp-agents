@@ -1,12 +1,11 @@
 """
 Reference relevance selector for cross-session memory.
 
-Models Claude Code's ``findRelevantMemories``: a small system prompt
-plus a single user message containing the latest query and a manifest
-of available memories (filename + type + timestamp + description, no
-bodies), with a tight JSON-schema-bounded output. The model picks up
-to :data:`DEFAULT_MAX_SELECT` filenames; the selector filters the
-snapshot down to those entries.
+Issues a small system prompt plus a single user message containing the
+latest query and a manifest of available memories (filename + type +
+timestamp + description, no bodies), with a tight JSON-schema-bounded
+output. The model picks up to :data:`DEFAULT_MAX_SELECT` filenames; the
+selector filters the snapshot down to those entries.
 
 Cost discipline (per call, at Sonnet rates):
 

@@ -24,8 +24,7 @@ Security notes:
 
 This helper is intentionally sync. Async wrappers (``asyncio.to_thread``)
 live at the tool-call boundary so the helper stays testable without an
-event loop and is directly reusable by the upcoming
-``FileCheckpointStore`` in B2 (which is sync-only on its persistence path).
+event loop.
 """
 
 from __future__ import annotations

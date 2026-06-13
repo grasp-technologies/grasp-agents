@@ -152,9 +152,7 @@ class MCPClient:
             for t in response.tools:
                 try:
                     tools.append(
-                        MCPTool(
-                            session=session, tool_def=t, timeout=self._tool_timeout
-                        )
+                        MCPTool(session=session, tool_def=t, timeout=self._tool_timeout)
                     )
                 except Exception:
                     # One tool with a pathological schema must not take down the

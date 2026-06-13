@@ -1,5 +1,5 @@
 """
-Cross-session memory — Claude-Code-style memdir loader and provider.
+Cross-session memory — memdir loader and provider.
 
 A *memdir* is a directory of markdown files: an always-loaded ``MEMORY.md``
 index plus topic ``.md`` files with YAML frontmatter (``name`` +
@@ -20,8 +20,6 @@ populating that field with a :class:`MemoryProvider` and pointing
 Distinct from :class:`LLMAgentTranscript` (the per-run message history owned
 by an agent). "Transcript" = within-run conversation; "memory" =
 cross-session knowledge.
-
-See ``docs/roadmap/13-memory-system.md``.
 """
 
 from __future__ import annotations

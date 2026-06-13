@@ -1,7 +1,7 @@
 """
 Convert grasp-agents InputItem[] → Gemini Content[].
 
-The main entry point is ``items_to_gemini_contents``, which returns
+The main entry point is ``items_to_provider_inputs``, which returns
 ``(system_instruction, contents)`` — system is extracted separately since
 Gemini takes it as a config parameter, not inside the contents array.
 """
@@ -242,8 +242,8 @@ def _message_to_part(item: OutputMessageItem) -> GeminiPart:
 
 
 def _tool_call_to_part(item: FunctionToolCallItem) -> GeminiPart:
-    # Tolerate empty/None-ish arguments from older transcripts; they mean a
-    # no-arg call and must not crash the request build.
+    # Tolerate empty/None-ish arguments; they mean a no-arg call and must
+    # not crash the request build.
     raw = item.arguments.strip()
     part = GeminiPart(
         function_call=GeminiFunctionCall(

@@ -1022,7 +1022,7 @@ class BackgroundTaskManager[CtxT]:
                     role="user",
                 )
                 # The interrupted notice was delivered → terminal (DELIVERED),
-                # not FAILED (which now means an errored task, re-injected below).
+                # not FAILED (which is an errored task, re-injected below).
                 update = {
                     "status": TaskStatus.DELIVERED,
                     "error": "Interrupted: session restarted",

@@ -65,11 +65,6 @@ def _render_default_field(
 
 
 def _effective_cwd(ctx: RunContext[Any] | None) -> str:
-    """
-    Sandbox working directory (first allowed root) when a sandbox is on the
-    context, else the host process cwd — keeps the env section consistent with
-    the directory the agent actually operates in.
-    """
     env = getattr(ctx, "environment", None)
     policy = getattr(env, "policy", None)
     roots = getattr(policy, "allowed_roots", None)
@@ -151,10 +146,9 @@ def make_current_time_attachment(
     Unlike the ``datetime`` field of :func:`make_env_info_section`, this rides
     on the *input* (the new user message), not the system prompt — so a live,
     per-turn timestamp never invalidates the cached prompt prefix. It gives a
-    time-aware agent a clock for reasoning about deadlines / staleness / "now"
-    (the framework owns durations elsewhere — e.g. a backgrounded task's
-    ``ran_for``). Stamped once per agent run and frozen in the transcript, so a
-    resume replays the original time rather than "now".
+    time-aware agent a clock for reasoning about deadlines / staleness / "now".
+    Stamped once per agent run and frozen in the transcript, so a resume
+    replays the original time rather than "now".
     """
 
     def compute(

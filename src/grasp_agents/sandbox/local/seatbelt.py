@@ -18,8 +18,8 @@ source, two enforcement points). No Node / ``srt`` runtime dependency.
    explicitly denied. **Network** is denied unless ``policy.network`` is
    ``ALL``.
 2. *What is outside the boundary / trusted to the host?* **Reads** — Seatbelt
-   cannot meaningfully confine reads (Apple/Codex), so dev tooling gets broad
-   read access and read-scoping stays a *tool-layer* concern (the file tools'
+   cannot meaningfully confine reads, so dev tooling gets broad read access
+   and read-scoping stays a *tool-layer* concern (the file tools'
    ``allowed_roots`` on ``Read``). Credential paths are still read-denied as
    defense-in-depth, but general read isolation is *not* claimed. Also trusted:
    raw ``socket()`` and Mach IPC have documented kernel holes every
@@ -168,8 +168,7 @@ def build_seatbelt_profile(policy: SandboxPolicy) -> tuple[str, dict[str, str]]:
             )
             cred_filters.append(f'(regex #"/\\.({alt})(/|$)")')
         cred_filters += [
-            f'(regex #"/{_ci_regex(nm)}($|\\.)")'
-            for nm in rules.credential_file_names
+            f'(regex #"/{_ci_regex(nm)}($|\\.)")' for nm in rules.credential_file_names
         ]
         if cred_filters:
             lines.append(

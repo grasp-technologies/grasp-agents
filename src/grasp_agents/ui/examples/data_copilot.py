@@ -106,9 +106,8 @@ def build_copilot(
         kernel_setup_code="%matplotlib inline",  # opt into inline plotting
     )
     # The sandbox environment supplies a file backend rooted at the workspace;
-    # that alone lets the engineer's backgrounded Bash job mirror its output to
-    # `<workdir>/.grasp/tasks/*.log` (a crash-recoverable, Grep-able trace). A
-    # checkpoint store would additionally persist durable task records for resume.
+    # the engineer's backgrounded Bash job mirrors its output to
+    # `<workdir>/.grasp/tasks/*.log` (a crash-recoverable, Grep-able trace).
     ctx = RunContext[None](state=None, environment=env)
 
     def specialist(
