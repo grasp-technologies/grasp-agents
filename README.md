@@ -33,15 +33,15 @@
 
 ## Project Structure
 
-- `processors/`, `llm_agent.py`: Core processor and agent class implementations.
-- `event_bus.py`, `runner.py`: Communication management and orchestration.
-- `llm_policy_executor.py`: LLM actions and tool call loops.
-- `prompt_builder.py`: Tools for constructing prompts.
+- `processors/`, `agent/llm_agent.py`: Core processor and agent class implementations.
+- `runner/`: Communication management and multi-agent orchestration (`Runner`, `EventBus`).
+- `agent/agent_loop.py`: The agentic loop and tool-call handling.
+- `agent/prompt_builder.py`: Tools for constructing prompts.
 - `workflow/`: Modules for defining and managing static agent workflows.
-- `llm.py`, `cloud_llm.py`: LLM integration and base LLM functionalities.
-- `openai/`: Modules specific to OpenAI API integration.
-- `litellm/`: Modules specific to LiteLLM integration.
-- `memory.py`, `llm_agent_memory.py`: Memory management.
+- `llm/`: Base LLM abstractions (`LLM`, `CloudLLM`, `FallbackLLM`, resilience).
+- `llm_providers/`: Per-provider integrations (OpenAI, Anthropic, Gemini, LiteLLM).
+- `memory/`, `agent/llm_agent_transcript.py`: Cross-session memory and per-run conversation transcript.
+- `tools/`, `sandbox/`: Built-in tools (file/terminal/code/notebook) and sandboxed execution.
 - `run_context.py`: Shared run context management.
 
 ## Usage
@@ -82,10 +82,13 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from grasp_agents import BaseTool, LLMAgent, RunContext
-from grasp_agents.litellm import LiteLLM, LiteLLMSettings
-from grasp_agents.printer import print_event_stream
-from grasp_agents.typing.events import ProcPacketOutEvent
+from grasp_agents import (
+    BaseTool,
+    LLMAgent,
+    ProcPacketOutEvent,
+    print_event_stream,
+)
+from grasp_agents.llm_providers.litellm import LiteLLM, LiteLLMSettings
 
 load_dotenv()
 
@@ -124,7 +127,7 @@ class AskStudentTool(BaseTool[TeacherQuestion, StudentReply, None]):
     name: str = "ask_student"
     description: str = ask_student_tool_description
 
-    async def run(self, inp: TeacherQuestion, **kwargs: Any) -> StudentReply:
+    async def _run(self, inp: TeacherQuestion, **kwargs: Any) -> StudentReply:
         return input(inp.question)
 
 
@@ -145,8 +148,7 @@ teacher = LLMAgent[None, Problem, None](
 )
 
 async def main():
-    ctx = RunContext[None]()
-    async for event in print_event_stream(teacher.run_stream("start", ctx=ctx)):
+    async for event in print_event_stream(teacher.run_stream("start")):
         if isinstance(event, ProcPacketOutEvent):
             result = event.data.payloads[0]
             print(f"\n<Suggested Problem>:\n\n{result.problem}\n")

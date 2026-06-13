@@ -24,7 +24,7 @@ from grasp_agents.agent.loop_state import (
     NextStepStop,
     decide_next_step,
 )
-from grasp_agents.types.events import StopReason
+from grasp_agents.types.events import StopReason, TurnEndInfo
 from grasp_agents.types.items import FunctionToolCallItem
 
 if TYPE_CHECKING:
@@ -315,3 +315,25 @@ def test_loop_state_is_public_api() -> None:
     assert grasp_agents.NextStepContinue is NextStepContinue
     assert grasp_agents.decide_next_step is decide_next_step
     assert grasp_agents.StopReason is StopReason
+
+
+class TestTurnEndInfoStopReason:
+    """
+    stop_reason stays a StopReason member through TurnEndInfo, so
+    isinstance / is comparisons work — not only ==.
+    """
+
+    def test_construction_keeps_enum_member(self) -> None:
+        info = TurnEndInfo(turn=1, had_tool_calls=False, stop_reason=StopReason.TIMEOUT)
+        assert isinstance(info.stop_reason, StopReason)
+        assert info.stop_reason is StopReason.TIMEOUT
+
+    def test_roundtrip_keeps_enum_member(self) -> None:
+        info = TurnEndInfo(turn=1, had_tool_calls=False, stop_reason=StopReason.TIMEOUT)
+        back = TurnEndInfo.model_validate_json(info.model_dump_json())
+        assert isinstance(back.stop_reason, StopReason)
+        assert back.stop_reason is StopReason.TIMEOUT
+
+    def test_json_still_serializes_to_string(self) -> None:
+        info = TurnEndInfo(turn=1, had_tool_calls=False, stop_reason=StopReason.TIMEOUT)
+        assert '"timeout"' in info.model_dump_json()

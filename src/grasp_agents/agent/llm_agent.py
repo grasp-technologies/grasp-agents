@@ -157,8 +157,8 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # - the ``memory`` system-prompt section (taxonomy + index)
         # - the ``relevant_memories_attachment`` (per-turn surfacing)
         # - in agentic mode, a :class:`FileToolkit` auto-attached so the
-        #   agent can search, author, and maintain memory files with the
-        #   generic file tools (CC's model — no specialized memory tools).
+        #   agent can search, author, and maintain memory files via the
+        #   generic file tools.
         # Default is False — the agent should know it's adding memory
         # to its system prompt before it happens.
         enable_memory: bool = False,
@@ -254,8 +254,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # any of them by adding a section with the same name —
         # ``add_system_prompt_section`` dedupes by name.
         #
-        # Order mirrors Claude Code's dynamic-tail layout (memory →
-        # env_info → mcp_instructions in ``constants/prompts.ts``).
+        # Order: memory → env_info → skills → mcp_instructions.
         # Skills slot between env_info and mcp_instructions — both
         # surface "what the agent can do", with MCP last so its
         # ``cache_control`` checkpoint caches the whole system-prompt
@@ -307,7 +306,10 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             else:
                 mcp_client, include, exclude = item, None, None
             mcp_tools.extend(self._filter_mcp_tools(mcp_client, include, exclude))
-            self.mcp_clients.append(mcp_client)
+            # Two specs may partition one client's tools; register the client
+            # once so its server instructions aren't rendered twice.
+            if not any(mcp_client is c for c in self.mcp_clients):
+                self.mcp_clients.append(mcp_client)
 
         # Agent loop
 

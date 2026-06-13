@@ -12,10 +12,14 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.llm_providers.litellm import LiteLLM
 from grasp_agents.mcp.client import MCPClient, MCPServerStdio
 from grasp_agents.mcp.json_schema import json_schema_to_pydantic
 from grasp_agents.mcp.resource import MCPListResourcesTool, MCPReadResourceTool
+from grasp_agents.mcp.spec import MCPClientSpec
 from grasp_agents.mcp.tool import MCPTool
+from grasp_agents.types.tool import BaseTool
 
 _SERVER_PATH = str(Path(__file__).parent / "mcp_test_server.py")
 _SERVER_CONFIG = MCPServerStdio(command=sys.executable, args=[_SERVER_PATH])
@@ -676,3 +680,51 @@ class TestNullableTypeArray:
         model = json_schema_to_pydantic(schema, "MultiInput")
         assert model(v=3).v == 3  # type: ignore[attr-defined]
         assert model(v="x").v == "x"  # type: ignore[attr-defined]
+
+
+# ---------- LLMAgent MCP client registration ----------
+
+
+class _ToolIn(BaseModel):
+    pass
+
+
+class _StubTool(BaseTool[_ToolIn, str, None]):
+    def __init__(self, name: str) -> None:
+        super().__init__(name=name, description="stub")
+
+    async def _run(self, inp: _ToolIn, **kwargs: Any) -> str:
+        return "ok"
+
+
+class _StubMCPClient:
+    instructions: str | None = "stub server instructions"
+
+    def __init__(self, tools: list[BaseTool[Any, Any, Any]]) -> None:
+        self._tools = tools
+
+    def tools(self) -> list[BaseTool[Any, Any, Any]]:
+        return self._tools
+
+
+class TestMcpClientRegistration:
+    def test_one_client_partitioned_by_two_specs_registers_once(self) -> None:
+        """
+        Two specs may partition one client's tools; the client is registered
+        once so its server instructions aren't rendered twice.
+        """
+        from typing import cast
+
+        client = _StubMCPClient([_StubTool("echo"), _StubTool("nested")])
+        spec_a = MCPClientSpec(client=cast("Any", client), include={"echo"})
+        spec_b = MCPClientSpec(client=cast("Any", client), include={"nested"})
+        agent = LLMAgent[str, str, None](
+            name="t",
+            llm=LiteLLM(model_name="gpt-4.1-nano"),
+            mcp_clients=[cast("Any", spec_a), cast("Any", spec_b)],
+            env_info=False,
+        )
+        assert "echo" in agent.tools
+        assert "nested" in agent.tools
+        assert sum(1 for c in agent.mcp_clients if c is client) == 1
+        assert len(agent.mcp_clients) == 1

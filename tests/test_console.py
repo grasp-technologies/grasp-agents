@@ -1080,3 +1080,45 @@ class TestFullSequence:
         output = buf.getvalue()
         assert "agent" in output
         assert "turn 1" in output
+
+
+class TestBackgroundSuppression:
+    """
+    A tool's subagent chatter is suppressed only while a background task of
+    that tool is in flight; a later foreground run of the same tool renders.
+    """
+
+    @staticmethod
+    def _bg(tool: str) -> BackgroundTaskInfo:
+        return BackgroundTaskInfo(task_id="t", tool_name=tool, tool_call_id="c")
+
+    def test_suppression_lifted_after_completion(self) -> None:
+        ec, _ = _make_console()
+        worker_turn = TurnStartEvent(data=TurnInfo(turn=0), source="research")
+
+        ec._handle(
+            BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+        )
+        assert ec._is_bg_subagent(worker_turn) is True
+
+        ec._handle(
+            BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
+        )
+        assert ec._is_bg_subagent(worker_turn) is False
+
+    def test_concurrent_tasks_refcounted(self) -> None:
+        ec, _ = _make_console()
+        ev = TurnStartEvent(data=TurnInfo(turn=0), source="research")
+        for _ in range(2):
+            ec._handle(
+                BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+            )
+        ec._handle(
+            BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
+        )
+        # One of two still in flight → still suppressed.
+        assert ec._is_bg_subagent(ev) is True
+        ec._handle(
+            BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
+        )
+        assert ec._is_bg_subagent(ev) is False

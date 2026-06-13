@@ -21,7 +21,6 @@
         ".",
         "src",
     ],
-    "autoSearchPaths": false,
     "reportMissingTypeStubs": false,
     "executionEnvironments": [
         {

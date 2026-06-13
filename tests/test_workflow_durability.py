@@ -390,6 +390,42 @@ class TestLoopedWorkflowCheckpoint:
         assert a2.call_count == 0
         assert b2.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_resume_after_max_iterations_with_midloop_exit(self) -> None:
+        """
+        A max-iterations exit at an exit_proc that is NOT the last subproc
+        resumes by re-emitting the saved output — without re-running the
+        trailing subprocs.
+        """
+        store = InMemoryCheckpointStore()
+        # exit_proc B sits in the MIDDLE, so the max-iterations exit leaves a
+        # trailing C that must not re-run on resume.
+        a, b, c = CountingProcessor("A"), CountingProcessor("B"), CountingProcessor("C")
+        wf = LoopedWorkflow[str, str, None](
+            name="loop", subprocs=[a, b, c], exit_proc=b, max_iterations=2
+        )
+        ctx: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="loop-midexit"
+        )
+        first = await run_workflow(wf, ctx, in_args="s")
+        assert first == ["s->A->B->C->A->B"]  # exits at B of the last iteration
+
+        a2, b2, c2 = (
+            CountingProcessor("A"),
+            CountingProcessor("B"),
+            CountingProcessor("C"),
+        )
+        wf2 = LoopedWorkflow[str, str, None](
+            name="loop", subprocs=[a2, b2, c2], exit_proc=b2, max_iterations=2
+        )
+        ctx2: RunContext[None] = RunContext(
+            state=None, checkpoint_store=store, session_key="loop-midexit"
+        )
+        resumed = await run_workflow(wf2, ctx2)
+        # Output re-emitted (not empty) and no subproc re-run — least of all C.
+        assert resumed == ["s->A->B->C->A->B"]
+        assert (a2.call_count, b2.call_count, c2.call_count) == (0, 0, 0)
+
 
 # ---------- ParallelProcessor ----------
 

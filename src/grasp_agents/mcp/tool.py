@@ -145,6 +145,6 @@ def mcp_tool_result_to_llm_input_parts(
 
     if result.structuredContent and struct_output_schema is not None:
         struct_output = struct_output_schema.model_validate(result.structuredContent)
-        parts.append(InputText(text=json.dumps(struct_output, indent=2)))
+        parts.append(InputText(text=struct_output.model_dump_json(indent=2)))
 
     return parts

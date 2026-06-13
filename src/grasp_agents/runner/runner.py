@@ -29,9 +29,6 @@ END_PROC_NAME: Literal["*END*"] = "*END*"
 class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
     _checkpoint_kind: ClassVar[CheckpointKind | None] = CheckpointKind.RUNNER
 
-    # Captures ``OutT`` at runtime (``Runner[MyOut, ...]``) so the final
-    # END-routed payloads can be validated. Unsubscripted construction
-    # resolves to ``object`` → validation is skipped.
     _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {0: "_out_type"}
 
     _out_type: type
@@ -97,10 +94,6 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
 
         self._event_bus = EventBus()
 
-        # ctx flows top-down: an explicit one, else the ambient / process
-        # default. The ``on_adopted`` loop below cascades it onto every proc,
-        # so all subprocessors and the Runner hold one ctx instance —
-        # subprocessors never carry their own session.
         self._ctx = ctx if ctx is not None else current_run_context()  # type: ignore
 
         self._path = path or []

@@ -16,6 +16,7 @@ and the ``show_*`` toggles.
 
 import json
 import textwrap
+from collections import Counter
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -137,9 +138,11 @@ class EventConsole:
         self._in_tool_block = False
         self._pending_tool_spacing = False
 
-        # Tool names launched as background tasks — their subagent
-        # events (turns, thinking, text) are suppressed.
-        self._bg_tool_names: set[str] = set()
+        # Tool names with in-flight background tasks → their subagent
+        # events (turns, thinking, text) are suppressed. Refcounted so a
+        # later *foreground* run of the same tool renders normally once every
+        # background instance has completed.
+        self._bg_tool_counts: Counter[str] = Counter()
 
         # Cumulative cost tracking
         self._total_cost: float = 0.0
@@ -164,7 +167,7 @@ class EventConsole:
         """True if event comes from a background tool's subagent."""
         src = event.source or ""
         return any(
-            src == name or src.startswith(f"{name}:") for name in self._bg_tool_names
+            src == name or src.startswith(f"{name}:") for name in self._bg_tool_counts
         )
 
     def _flush_tool_spacing(self) -> None:
@@ -174,12 +177,12 @@ class EventConsole:
             self._pending_tool_spacing = False
 
     def _handle(self, event: Event[Any]) -> None:
-        # Background task lifecycle events are always handled
         if isinstance(event, BackgroundTaskLaunchedEvent):
             self._on_bg_launched(event)
             return
 
         if isinstance(event, BackgroundTaskCompletedEvent):
+            self._on_bg_completed(event)
             self._print(render_event(event))
             return
 
@@ -370,7 +373,6 @@ class EventConsole:
             line = f"{model} · {' · '.join(parts)}"
             if self._generation_count > 1 and self._total_cost > 0:
                 line += f"  Σ ${self._total_cost:.4f}"
-            # Right-aligned, muted — clearly metadata, not agent text
             self.console.print()
             self.console.print(Text(line, style=f"italic {color}"), justify="right")
             self.console.print()
@@ -434,7 +436,17 @@ class EventConsole:
     def _on_bg_launched(self, event: BackgroundTaskLaunchedEvent) -> None:
         # Track name so we can suppress the subagent's internal events. The
         # launch itself stays silent — the eventual result panel covers it.
-        self._bg_tool_names.add(event.data.tool_name)
+        self._bg_tool_counts[event.data.tool_name] += 1
+
+    def _on_bg_completed(self, event: BackgroundTaskCompletedEvent) -> None:
+        # Drop the suppression once the last in-flight task of this tool ends,
+        # so a subsequent foreground run of the same tool renders normally.
+        name = event.data.tool_name
+        count = self._bg_tool_counts.get(name, 0)
+        if count <= 1:
+            self._bg_tool_counts.pop(name, None)
+        else:
+            self._bg_tool_counts[name] = count - 1
 
     def _on_task_notification(
         self, text: str, source: str | None = None, destination: str | None = None

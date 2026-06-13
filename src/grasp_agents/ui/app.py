@@ -17,6 +17,7 @@ Run the demo::
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -210,7 +211,6 @@ else:
         # screen — the one place graphics protocols are reliable, since nothing
         # scrolls the cells out from under them. Falls back to the inline
         # symbol-art renderable when the dep or terminal can't do graphics.
-        # Untyped dep → behind a runtime branch.
         pil = image_to_pil(src)
         if pil is not None:
             try:
@@ -228,7 +228,12 @@ else:
 
 
 def _slug(source: str) -> str:
-    return re.sub(r"[^0-9A-Za-z_-]+", "-", source).strip("-").lower() or "x"
+    base = re.sub(r"[^0-9A-Za-z_-]+", "-", source).strip("-").lower() or "x"
+    # Distinct sources can collapse to the same base ("worker 1" vs "worker-1");
+    # append a stable digest so the derived DOM ids stay unique (Textual rejects
+    # duplicate ids).
+    digest = hashlib.md5(source.encode()).hexdigest()[:6]  # noqa: S324
+    return f"{base}-{digest}"
 
 
 def _pane_id(source: str) -> str:
@@ -474,8 +479,8 @@ class GraspAgentsApp(App[None]):
         self._ga_parent: dict[str, str] = {}
         self._ga_follow = False
         self._ga_worker: Worker[None] | None = None
-        # Session-wide cost roll-up across all agents, mirrored from the console:
-        # each generation shows its own cost, plus a running Σ total once >1.
+        # Session-wide cost roll-up: each generation shows its own cost,
+        # plus a running Σ total once more than one generation has cost.
         self._ga_total_cost = 0.0
         self._ga_gen_count = 0
         # live-streaming widgets per owner (LLM tokens / reasoning / tool output),
@@ -780,9 +785,7 @@ class GraspAgentsApp(App[None]):
         final = render_event(event, inline_images=False)
         # swap to the canonical panel unless the finalised item carries no summary
         # text (the "thinking…" placeholder), which would clobber streamed tokens
-        has_text = any(
-            getattr(p, "text", "") for p in (event.data.summary_parts or [])
-        )
+        has_text = any(getattr(p, "text", "") for p in (event.data.summary_parts or []))
         if final is not None and has_text:
             widget.update(final)
         if at_bottom:

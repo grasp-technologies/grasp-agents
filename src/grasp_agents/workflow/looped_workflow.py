@@ -78,9 +78,7 @@ class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         return func
 
     @final
-    def terminate_workflow_loop(
-        self, out_packet: Packet[OutT], **kwargs: Any
-    ) -> bool:
+    def terminate_workflow_loop(self, out_packet: Packet[OutT], **kwargs: Any) -> bool:
         base_cls = LoopedWorkflow[Any, Any, Any]
         if is_method_overridden("terminate_workflow_loop_impl", self, base_cls):
             return self.terminate_workflow_loop_impl(out_packet, **kwargs)
@@ -110,9 +108,10 @@ class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
             # Exit proc completed — re-evaluate termination.
             if checkpoint.completed_step % n == exit_idx:
                 exit_packet = cast("Packet[OutT]", packet)
+                completed_iteration = checkpoint.completed_step // n
                 if (
                     self.terminate_workflow_loop(exit_packet)
-                    or start_global >= max_global_steps
+                    or completed_iteration >= self._max_iterations - 1
                 ):
                     for p in exit_packet.payloads:
                         yield ProcPayloadOutEvent(

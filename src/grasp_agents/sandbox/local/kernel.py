@@ -133,12 +133,16 @@ class LocalKernel(KernelSession):
             # lost the REPL state, so there is nothing to preserve — but flag
             # the reset so the tool layer can tell the model the namespace is
             # gone (see :meth:`KernelSession.take_reset`).
+            # Null the client ref before awaiting _terminate so a cancellation
+            # landing in teardown can't leave the dead client installed — its
+            # ZMQ channels would then leak when the next start replaces it.
+            self._was_reset = True
+            client = self._client
+            self._client = None
             with contextlib.suppress(Exception):
-                self._client.stop_channels()
+                client.stop_channels()
             await self._terminate()
             self._cleanup_connection_file()
-            self._client = None
-            self._was_reset = True
         from jupyter_client.asynchronous.client import (  # noqa: PLC0415
             AsyncKernelClient,
         )

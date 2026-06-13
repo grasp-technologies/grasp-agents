@@ -254,6 +254,50 @@ class TestFreshness:
         assert "alpha" in snap.entry_freshness_warnings
 
     @pytest.mark.anyio
+    async def test_subday_threshold_fires(self, tmp_path: Path) -> None:
+        idx = tmp_path / "MEMORY.md"
+        idx.write_text("# idx\n", encoding="utf-8")
+        old = time.time() - 2 * 3600  # 2 hours
+        os.utime(idx, (old, old))
+        ctx = RunContext[Any](
+            file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
+            memory=MemoryProvider(tmp_path, stale_after=timedelta(hours=1)),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert snap.index_freshness_warning is not None
+        assert "hours" in snap.index_freshness_warning
+
+    @pytest.mark.anyio
+    async def test_subday_fresh_no_warning(self, tmp_path: Path) -> None:
+        idx = tmp_path / "MEMORY.md"
+        idx.write_text("# idx\n", encoding="utf-8")
+        old = time.time() - 30 * 60  # 30 minutes
+        os.utime(idx, (old, old))
+        ctx = RunContext[Any](
+            file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
+            memory=MemoryProvider(tmp_path, stale_after=timedelta(hours=1)),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert snap.index_freshness_warning is None
+
+    @pytest.mark.anyio
+    async def test_day_threshold_not_off_by_a_day(self, tmp_path: Path) -> None:
+        idx = tmp_path / "MEMORY.md"
+        idx.write_text("# idx\n", encoding="utf-8")
+        old = time.time() - 2.5 * 86400  # 2.5 days vs a 2-day threshold
+        os.utime(idx, (old, old))
+        ctx = RunContext[Any](
+            file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
+            memory=MemoryProvider(tmp_path, stale_after=timedelta(days=2)),
+        )
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert snap.index_freshness_warning is not None
+        assert "2 days" in snap.index_freshness_warning
+
+    @pytest.mark.anyio
     async def test_zero_threshold_disables(self, tmp_path: Path) -> None:
         idx = tmp_path / "MEMORY.md"
         idx.write_text("# idx\n", encoding="utf-8")

@@ -296,6 +296,7 @@ async def print_event_stream(
                 content = json.dumps(json.loads(content), indent=2)
             except Exception:
                 pass
+            content = truncate_content_str(content, trunc_len=trunc_len)
             style = get_style(
                 agent_name=event.source or "",
                 role="tool",

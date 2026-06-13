@@ -597,3 +597,28 @@ class TestTelemetrySetup:
         ):
             with pytest.raises(RuntimeError, match="No TracerProvider configured"):
                 add_exporter(MemoryExporter())
+
+
+# ========================================================================= #
+#  Span I/O serialization must never fail the traced call                    #
+# ========================================================================= #
+
+
+class TestSerializationFailureContained:
+    def test_circular_output_does_not_break_traced_call(self) -> None:
+        @traced(name="circular")
+        def make() -> Any:
+            d: dict[str, Any] = {}
+            d["self"] = d  # circular → recursion while serializing the span
+            return d
+
+        result = make()  # must return normally despite the unserializable value
+        assert result["self"] is result
+
+        spans = _exporter.get_finished_spans()
+        assert len(spans) == 1
+        # Span still finishes; the serialization failure was swallowed, so no
+        # output attribute was set and the call did not error out.
+        assert spans[0].attributes is not None
+        assert spans[0].attributes.get(ATTR_ENTITY_OUTPUT) is None
+        assert spans[0].status.status_code != trace.StatusCode.ERROR

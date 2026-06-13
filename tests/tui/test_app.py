@@ -13,8 +13,20 @@ pytest.importorskip("textual")
 
 from textual.widgets import ContentSwitcher
 
-from grasp_agents.ui.app import GraspAgentsApp, _pane_id
+from grasp_agents.ui.app import GraspAgentsApp, _pane_id, _slug, _tab_id
 from grasp_agents.ui.demo import build_demo_events
+
+
+def test_slug_distinguishes_colliding_sources() -> None:
+    """
+    Distinct sources must not collapse to one DOM id (Textual rejects
+    duplicate ids, which would kill the feed worker).
+    """
+    assert _slug("worker 1") != _slug("worker-1")
+    assert _pane_id("worker 1") != _pane_id("worker-1")
+    assert _tab_id("worker 1") != _tab_id("worker-1")
+    # Stable for a given source.
+    assert _slug("research-agent") == _slug("research-agent")
 
 
 async def _drain(app: GraspAgentsApp) -> None:

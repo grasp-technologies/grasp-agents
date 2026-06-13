@@ -409,3 +409,18 @@ class TestPrintEventStream:
         assert len(collected) == 2
         assert isinstance(collected[0], UserMessageEvent)
         assert isinstance(collected[1], LLMStreamEvent)
+
+    @pytest.mark.asyncio
+    async def test_tool_result_output_truncated(self, capsys):
+        """A large tool result is truncated for display, not dumped whole."""
+        item = FunctionToolOutputItem(call_id="c1", output="x" * 50_000)
+
+        async def gen():
+            yield ToolOutputItemEvent(source="tool", exec_id="e", data=item)
+
+        async for _ in print_event_stream(gen(), trunc_len=2000):
+            pass
+
+        output = capsys.readouterr().out
+        assert "[...]" in output
+        assert len(output) < 5_000

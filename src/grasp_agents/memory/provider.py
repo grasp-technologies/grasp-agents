@@ -487,16 +487,16 @@ def build_snapshot(
 
     index_warning: str | None = None
     if index is not None and index_mtime_ms is not None and threshold_ms > 0:
-        age_days = _age_days(now_ms, index_mtime_ms)
-        if age_days * 86_400_000 > threshold_ms:
-            index_warning = _freshness_warning(age_days)
+        age_ms = _age_ms(now_ms, index_mtime_ms)
+        if age_ms > threshold_ms:
+            index_warning = _freshness_warning(age_ms)
 
     entry_warnings: dict[str, str] = {}
     if threshold_ms > 0:
         for entry in entries:
-            age_days = _age_days(now_ms, entry.mtime_ms)
-            if age_days * 86_400_000 > threshold_ms:
-                entry_warnings[entry.name] = _freshness_warning(age_days)
+            age_ms = _age_ms(now_ms, entry.mtime_ms)
+            if age_ms > threshold_ms:
+                entry_warnings[entry.name] = _freshness_warning(age_ms)
 
     return MemorySnapshot(
         index=index,
@@ -509,18 +509,23 @@ def build_snapshot(
     )
 
 
-def _freshness_warning(age_days: int) -> str:
+def _freshness_warning(age_ms: int) -> str:
+    age_days = age_ms // 86_400_000
+    if age_days >= 1:
+        age_str = f"{age_days} days"
+    else:
+        age_hours = max(1, age_ms // 3_600_000)
+        age_str = f"{age_hours} hours"
     return (
-        f"<system-reminder>This memory is {age_days} days old — verify before "
+        f"<system-reminder>This memory is {age_str} old — verify before "
         "acting.</system-reminder>"
     )
 
 
-def _age_days(now_ms: int, mtime_ms: int) -> int:
+def _age_ms(now_ms: int, mtime_ms: int) -> int:
     if mtime_ms <= 0:
         return 0
-    delta = max(0, now_ms - mtime_ms)
-    return delta // 86_400_000
+    return max(0, now_ms - mtime_ms)
 
 
 def _now_ms() -> int:
