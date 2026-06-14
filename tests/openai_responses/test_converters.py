@@ -13,7 +13,12 @@ from grasp_agents.llm_providers.openai_responses.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
-from grasp_agents.types.items import OpenPageAction, SearchAction, WebSearchCallItem
+from grasp_agents.types.items import (
+    FunctionToolOutputItem,
+    OpenPageAction,
+    SearchAction,
+    WebSearchCallItem,
+)
 from grasp_agents.types.response import Response as InternalResponse
 from grasp_agents.types.tool import NamedToolChoice
 
@@ -169,6 +174,25 @@ class TestWebFetchRoundtrip:
         assert "provider_specific_fields" not in sanitized[0]
         assert sanitized[0]["action"]["type"] == "open_page"
         assert sanitized[0]["action"]["url"] == "https://example.com"
+
+    def test_is_error_stripped_from_tool_output(self) -> None:
+        """
+        ``is_error`` is display-only and must never reach the Responses API.
+
+        It defaults to ``False`` (not ``None``), so ``exclude_none`` won't drop
+        it — it has to be in the extension-field denylist. A leaked ``is_error``
+        makes the API reject the request with "Unknown parameter".
+        """
+        item = FunctionToolOutputItem.from_tool_result(
+            call_id="call_1", output="boom", is_error=True
+        )
+        assert item.is_error is True  # retained for display / checkpoint
+
+        sanitized = items_to_provider_inputs([item])
+
+        assert len(sanitized) == 1
+        assert sanitized[0]["type"] == "function_call_output"
+        assert "is_error" not in sanitized[0]
 
     def test_failed_status_preserved(self) -> None:
         """Failed WebSearchCallItem round-trips correctly."""

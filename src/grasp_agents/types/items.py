@@ -229,6 +229,9 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
     # Provider-specific opaque data for round-trip fidelity
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
+    # True when this result carries a tool failure (a ``ToolErrorInfo``), so a UI
+    # can flag it (e.g. a red border). Display-only; not sent to the provider.
+    is_error: bool = False
 
     @property
     def text(self) -> str:
@@ -266,6 +269,7 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
         output: Any,
         *,
         indent: int = 2,
+        is_error: bool = False,
     ) -> FunctionToolOutputItem:
         if isinstance(output, list):
             typed: list[InputText | InputImage | InputFile] = []
@@ -276,14 +280,14 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
                     typed = []
                     break
             if typed:
-                return cls(call_id=call_id, output_parts=typed)
+                return cls(call_id=call_id, output_parts=typed, is_error=is_error)
 
         if isinstance(output, str):
             serialized = output
         else:
             serialized = json.dumps(to_jsonable_python(output), indent=indent)
 
-        return cls(call_id=call_id, output_parts=serialized)
+        return cls(call_id=call_id, output_parts=serialized, is_error=is_error)
 
 
 class ReasoningItem(ResponseReasoningItem):

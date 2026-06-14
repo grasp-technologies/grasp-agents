@@ -107,9 +107,11 @@ class TestWrapParts:
         assert isinstance(out, list)
         assert len(out) == 3
         assert isinstance(out[0], InputText)
-        assert out[0].text == OPEN
+        # The fence parts carry the boundary newlines (open tag ends with one,
+        # close tag starts with one) so tags sit on their own lines.
+        assert out[0].text == f"{OPEN}\n"
         assert isinstance(out[-1], InputText)
-        assert out[-1].text == CLOSE
+        assert out[-1].text == f"\n{CLOSE}"
         assert "&lt;/untrusted_content&gt;" in out[1].text  # type: ignore[union-attr]
 
     def test_passes_image_parts_through_unchanged(self) -> None:

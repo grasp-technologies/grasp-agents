@@ -26,6 +26,7 @@ from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     Event,
     ToolErrorEvent,
+    ToolErrorInfo,
     ToolOutputEvent,
     ToolStreamEvent,
     UserMessageEvent,
@@ -169,13 +170,27 @@ async def _consume(
     """
     result: Any = None
     failed = False
-    async for event in stream:
-        events.append(event)
-        if isinstance(event, ToolOutputEvent):
-            result = event.data
-        elif isinstance(event, ToolErrorEvent):
-            result = event.data
-            failed = True
+    try:
+        async for event in stream:
+            events.append(event)
+            if isinstance(event, ToolOutputEvent):
+                result = event.data
+            elif isinstance(event, ToolErrorEvent):
+                result = event.data
+                failed = True
+    except asyncio.CancelledError:
+        # A genuine interruption (KillTask / shutdown / process death): leave the
+        # record PENDING so a later resume can re-spawn or report the task.
+        raise
+    except Exception as exc:
+        # The task errored (e.g. a sub-agent that could not resume). Record it as
+        # a clean failure: don't leak a dangling task exception, and don't leave
+        # a PENDING record that a later resume would re-spawn forever.
+        logger.warning("Background task errored: %r", exc)
+        err = ToolErrorEvent(data=ToolErrorInfo(tool_name="", error=f"{exc}"))
+        events.append(err)
+        result = err.data
+        failed = True
 
     if store is not None and task_key is not None:
         await _persist_outcome(store, task_key, result, failed=failed)
@@ -521,6 +536,8 @@ class BackgroundTaskManager[CtxT]:
         is identical, so the note encodes only *how* the call backgrounded, never
         the task's kind.
         """
+        parts: list[str] = []
+
         if backgrounded_after is None:
             opening = f"Task '{tool.name}' launched in the background (id: {task_id})."
         else:
@@ -528,24 +545,53 @@ class BackgroundTaskManager[CtxT]:
                 f"Tool '{tool.name}' is still running after {backgrounded_after:g}s "
                 f"and was moved to the background (id: {task_id})."
             )
-        parts = [
-            opening,
-            "Its result and final status will be delivered to you when it "
-            "finishes — until then, assume it is still running.",
-        ]
+        parts.append(opening)
+
+        waiting_guidance = (
+            "You will receive a <task_notification> when it finishes — "
+            "until then, assume it is still running and do NOT call it again. "
+            "You can continue with other work. "
+            "If the only thing left to do is wait for background tasks, "
+            "report immediately that you are waiting for the task(s) to finish "
+            "WITHOUT calling any tools."
+        )
+        parts.append(waiting_guidance)
+
         if log_path is not None:
-            parts.append(
+            output_guidance = (
                 f"Its output is streaming to {log_path} — Read or Grep that file "
                 "to check progress so far (it is partial until the task "
                 "finishes, and a read's own exit code reflects the read, not "
                 "the task)."
             )
-        parts.append("Stop it with KillTask if you no longer need it.")
+            parts.append(output_guidance)
+
+        kill_guidance = (
+            "Stop it with KillTask if you no longer need it "
+            "or the user wants to cancel it."
+        )
+        parts.append(kill_guidance)
+
         return "\n".join(parts)
 
     def _next_id(self) -> str:
         self._bg_counter += 1
         return f"bg_{self._bg_counter}"
+
+    def _reserve_task_id(self, task_id: str) -> None:
+        """
+        Advance the id counter past an existing task's id.
+
+        A re-spawned task keeps its original id (e.g. ``bg_2``); the resumed
+        manager's counter, however, restarts at zero. Without this, a *new* tool
+        call in the same resumed run would be assigned a colliding ``bg_N``,
+        overwriting the re-spawned task in ``_tasks`` and crossing their result
+        deliveries (the re-spawned task's real result is persisted to its record
+        but never delivered; the new call's result is delivered under its id).
+        """
+        _, _, suffix = task_id.rpartition("_")
+        if suffix.isdigit():
+            self._bg_counter = max(self._bg_counter, int(suffix))
 
     def _check_capacity(self) -> None:
         """
@@ -965,7 +1011,7 @@ class BackgroundTaskManager[CtxT]:
         ctx: RunContext[CtxT] | None = None,
         exec_id: str | None = None,
         agent_ctx: "AgentContext | None" = None,
-    ) -> None:
+    ) -> list[InputMessageItem]:
         """
         On resume, re-spawn or notify about interrupted background tasks.
 
@@ -973,10 +1019,13 @@ class BackgroundTaskManager[CtxT]:
         reported to the agent — interrupted ones it may want to redo, completed
         ones whose result never reached it are re-injected. Any such notice is
         prefixed with a one-line framing so the agent understands it was resumed.
+
+        Returns the notification messages injected into the transcript so the
+        caller can stream them as events (no transcript message stays hidden).
         """
         store = ctx.checkpoint_store if ctx else None
         if store is None or ctx is None:
-            return
+            return []
 
         # Scope to *this* manager's own background tasks. Records live at
         # ``<session>/task/<path>/tc_<call_id>``; sibling agents and nested
@@ -993,6 +1042,10 @@ class BackgroundTaskManager[CtxT]:
             if record is None:
                 continue
 
+            # Reserve every prior id so a new tool call in this resumed run
+            # can't be handed a ``bg_N`` that collides with a re-spawned task.
+            self._reserve_task_id(record.task_id)
+
             # Terminal + already surfaced — nothing to do. (FAILED is NOT here:
             # a FAILED record is an errored task that the crash kept ``drain``
             # from delivering, so it still needs re-injecting below.)
@@ -1000,6 +1053,9 @@ class BackgroundTaskManager[CtxT]:
                 continue
 
             if record.status == TaskStatus.PENDING:
+                # A resumable task (sub-agent / workflow) is re-spawned silently
+                # — it continues from its own checkpoint and reports back via its
+                # own bubbled events on completion, so no resume notice is needed.
                 if self._try_respawn_child(
                     record, task_key=key, ctx=ctx, exec_id=exec_id, agent_ctx=agent_ctx
                 ):
@@ -1015,7 +1071,13 @@ class BackgroundTaskManager[CtxT]:
                         task_id=record.task_id,
                         tool_name=record.tool_name,
                         status="interrupted",
-                        error="Session restarted before completion",
+                        error=(
+                            "Task was stopped. "
+                            "Any partial output it produced before stopping is in the "
+                            "log below. Check the output and attempt to continue from "
+                            "where it left off whenever possible, or re-run from "
+                            "scratch if not."
+                        ),
                         log_path=record.output_path,
                         elapsed_s=elapsed,
                     ),
@@ -1051,23 +1113,29 @@ class BackgroundTaskManager[CtxT]:
             self._pending_delivered[key] = update
             notifications.append(notification)
 
+        injected: list[InputMessageItem] = []
         if notifications:
             # One framing line so the agent understands the per-task notices
             # that follow: it was resumed, in-memory state was reconstructed
             # (not continued), and interrupted tasks may need redoing.
+            # (Silently re-spawned resumable tasks add no notice and so don't
+            # trigger a framing on their own.)
             framing = InputMessageItem.from_text(
-                "Session resumed from a checkpoint — in-memory state was "
-                "reconstructed. The background tasks below were in flight when "
-                "the session stopped; for any reported as interrupted, decide "
-                "whether to redo the work (any output it produced is noted with "
-                "it).",
+                "<session_resumed>\n"
+                "Resumed from a checkpoint: your conversation and task records "
+                "were restored from disk, but any in-flight work that was only "
+                "in memory is gone. The background tasks below were running "
+                "when the previous run stopped."
+                "\n</session_resumed>",
                 role="user",
             )
-            self._transcript.update([framing, *notifications])
+            injected = [framing, *notifications]
+            self._transcript.update(injected)
 
         logger.info(
             "Handled %d task records for session %s", len(keys), ctx.session_key
         )
+        return injected
 
     def export_pending_delivered(self) -> dict[str, dict[str, Any]]:
         """The deferred record updates not yet flushed (rollback snapshot)."""
@@ -1166,7 +1234,11 @@ class BackgroundTaskManager[CtxT]:
 
         events: list[Event[Any]] = []
         stream = tool.resume_stream(
-            ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
+            ctx=ctx,
+            exec_id=exec_id,
+            path=child_path,
+            agent_ctx=agent_ctx,
+            tool_call_arguments=record.tool_call_arguments,
         )
         async_task = asyncio.create_task(
             _consume(stream, events, store=ctx.checkpoint_store, task_key=task_key)

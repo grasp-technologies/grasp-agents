@@ -472,6 +472,11 @@ class GraspAgentsApp(App[None]):
         self._ga_last_agent: str | None = None
         self._ga_agents: set[str] = set()
         self._ga_turns: dict[str, int] = {}
+        # owner → deferred turn number: the header is mounted right before that
+        # agent's first content of the turn (see _flush_turn), not at turn start,
+        # so a co-tenant of the pane (e.g. parallel replicas sharing a source
+        # name) can't wedge output between the header and the body it labels.
+        self._ga_pending_turn: dict[str, int] = {}
         self._ga_last_kind: dict[str, str] = {}
         self._ga_panes: dict[str, VerticalScroll] = {}
         self._ga_tab_source: dict[str, str] = {}
@@ -605,6 +610,22 @@ class GraspAgentsApp(App[None]):
         # auto-scroll only when already at the bottom, so streaming content never
         # yanks the user down while they read scrolled-up history
         at_bottom = pane.scroll_offset.y >= pane.max_scroll_y - 1
+
+        # Mount a deferred turn header right before this turn's first output —
+        # content or an error (see _feed_item / _flush_turn) — so it isn't
+        # separated from what it labels. A turn that produces neither drops it.
+        if isinstance(
+            event,
+            (
+                LLMStreamEvent,
+                OutputMessageItemEvent,
+                ToolCallItemEvent,
+                ReasoningItemEvent,
+                LLMStreamingErrorEvent,
+                ProcStreamingErrorEvent,
+            ),
+        ):
+            await self._flush_turn(owner, pane, at_bottom)
 
         # live token / tool-output streaming when the agent streams; if it isn't
         # (or once an item completes) fall through to render the finished item
@@ -818,6 +839,20 @@ class GraspAgentsApp(App[None]):
             generation_count=self._ga_gen_count,
         )
 
+    async def _flush_turn(
+        self, owner: str, pane: VerticalScroll, at_bottom: bool
+    ) -> None:
+        """Mount a deferred turn header, right before its agent's content."""
+        turn = self._ga_pending_turn.pop(owner, None)
+        if turn is None:
+            return
+        self._ga_last_kind[owner] = "turn"
+        await pane.mount(
+            _SelectableStatic(render_turn_rule(owner, turn), classes="ga-turn")
+        )
+        if at_bottom:
+            pane.scroll_end(animate=False)
+
     async def _feed_item(
         self, event: Event[Any], owner: str, pane: VerticalScroll, at_bottom: bool
     ) -> None:
@@ -829,10 +864,13 @@ class GraspAgentsApp(App[None]):
             self._seal_stream_tool(owner)
         if isinstance(event, TurnStartEvent):
             # monotonic per-agent turn count — the loop's own turn resets to 0
-            # each step, so two consecutive turns can both read turn=0
+            # each step, so two consecutive turns can both read turn=0. Defer the
+            # header: _flush_turn mounts it right before this turn's first
+            # content (see _feed).
             self._ga_turns[owner] = self._ga_turns.get(owner, 0) + 1
-            text = render_turn_rule(owner, self._ga_turns[owner])
-        elif isinstance(event, GenerationEndEvent):
+            self._ga_pending_turn[owner] = self._ga_turns[owner]
+            return
+        if isinstance(event, GenerationEndEvent):
             text = self._usage_text(event)
         else:
             text = render_event(event, inline_images=False)

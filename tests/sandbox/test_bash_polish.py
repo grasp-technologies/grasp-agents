@@ -506,10 +506,12 @@ async def test_nonblocking_task_bubbles_stream_events(tmp_path: Path) -> None:
     loop = _loop(ctx)
     mgr = loop.bg_tasks
     _note, task_id = await _bg(
-        loop, Bash(auto_background_at=0.1), "echo streamed && sleep 0.4"
+        loop,
+        Bash(auto_background_at=0.1, blocks_final_answer=False),  # fire-and-forget
+        "echo streamed && sleep 0.4",
     )
     assert task_id is not None
-    assert mgr.get(task_id).blocks_final_answer is False  # non-blocking
+    assert mgr.get(task_id).blocks_final_answer is False  # non-blocking opt-out
 
     await mgr.wait_idle()
     events = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
@@ -972,7 +974,7 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     await mgr2.resume_durable(ctx=ctx, exec_id="t")
 
     joined = "\n".join(str(m) for m in transcript.messages)
-    assert "Session resumed" in joined  # framing
+    assert "Resumed from a checkpoint" in joined  # framing
     assert "interrupted" in joined
     assert "output_file" in joined  # points the agent at the log
     assert ".grasp/tasks" in joined

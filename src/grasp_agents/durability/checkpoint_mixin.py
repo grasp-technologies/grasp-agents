@@ -44,6 +44,19 @@ class CheckpointPersistMixin:
             return None
         return make_store_key(ctx.session_key, self._checkpoint_kind, self._path)
 
+    async def has_checkpoint(self, ctx: RunContext[Any]) -> bool:
+        """
+        True if a checkpoint head exists in the store for this object's key.
+
+        A cheap existence probe (no JSON parse): distinguishes a session that can
+        be resumed from one that was interrupted before it ever checkpointed.
+        """
+        store = ctx.checkpoint_store
+        key = self._checkpoint_store_key(ctx)
+        if store is None or key is None:
+            return False
+        return await store.load(key) is not None
+
     async def _deserialize_checkpoint[CpT: ProcessorCheckpoint](
         self,
         ctx: RunContext[Any],

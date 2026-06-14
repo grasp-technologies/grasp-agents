@@ -379,11 +379,14 @@ class AgentLoop[CtxT]:
         converter = self.tool_output_converters.get(call.name)
         tool = self.tools.get(call.name)
         untrusted = tool is not None and tool.untrusted_output
+        # A tool failure surfaces as a ToolErrorInfo result — flag it so the UI
+        # can mark the result panel (e.g. a red border).
+        is_error = isinstance(output, ToolErrorInfo)
 
         # Common path: default serialization of trusted output.
         if converter is None and not untrusted:
             return FunctionToolOutputItem.from_tool_result(
-                call_id=call.call_id, output=output
+                call_id=call.call_id, output=output, is_error=is_error
             )
 
         if converter is not None:
@@ -398,7 +401,9 @@ class AgentLoop[CtxT]:
         if untrusted:
             parts = wrap_untrusted(parts, source=call.name)
 
-        return FunctionToolOutputItem(call_id=call.call_id, output_parts=parts)
+        return FunctionToolOutputItem(
+            call_id=call.call_id, output_parts=parts, is_error=is_error
+        )
 
     async def _convert_tool_input(
         self,
@@ -1194,8 +1199,13 @@ class AgentLoop[CtxT]:
             tool_calls=step.tool_calls, tool_messages=tool_msgs, exec_id=exec_id
         )
 
+        # Resume point is the NEXT turn: this turn's ACT (the tool calls) and
+        # its results are already in the transcript, so resuming must continue
+        # to turn+1's generation — not re-run this turn's ACT (which would
+        # re-issue the same tool calls, e.g. re-launching background workers).
+        # The loop increments ``turn`` right after this handler returns.
         await self.checkpoint(
-            turn=self.turn,
+            turn=self.turn + 1,
             location=AgentCheckpointLocation.AFTER_TOOL_RESULT,
         )
 

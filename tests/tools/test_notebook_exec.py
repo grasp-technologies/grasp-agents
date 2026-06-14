@@ -99,11 +99,30 @@ def test_render_outputs_text_and_image() -> None:
     parts = render_outputs_as_parts(outputs, header="[execution_count=2 status=ok]")
     assert isinstance(parts[0], InputText)
     assert "hello" in parts[0].text
-    assert "42" in parts[0].text
+    assert "42" in parts[0].text  # a text/plain with no image is kept
     assert "execution_count=2" in parts[0].text
+    # An image output's text/plain is a repr placeholder ("<Figure>") — dropped
+    # in favor of the image itself, so it doesn't clutter the model's view.
+    assert "<Figure>" not in parts[0].text
     images = [p for p in parts if isinstance(p, InputImage)]
     assert len(images) == 1
     assert images[0].mime_type == "image/png"
+
+
+def test_render_outputs_keeps_text_plain_when_images_excluded() -> None:
+    # With images off (e.g. NotebookRead text-only), an image output's
+    # text/plain is the only representation left, so it must be kept.
+    outputs = [
+        make_output(
+            "display_data",
+            data={"image/png": _PNG_B64, "text/plain": "<Figure>"},
+            metadata={},
+        ),
+    ]
+    parts = render_outputs_as_parts(outputs, include_images=False)
+    assert isinstance(parts[0], InputText)
+    assert "<Figure>" in parts[0].text
+    assert not any(isinstance(p, InputImage) for p in parts)
 
 
 def test_render_outputs_error_strips_ansi() -> None:

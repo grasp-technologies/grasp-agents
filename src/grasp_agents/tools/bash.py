@@ -125,15 +125,18 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         auto_background_at: float | None = None,
         max_inline_result_chars: int | None = DEFAULT_MAX_INLINE_RESULT_CHARS,
         block_leading_sleep: bool = True,
+        blocks_final_answer: bool = True,
         timeout: float | None = None,
     ) -> None:
         super().__init__(
             timeout=timeout,
             auto_background_at=auto_background_at,
-            # A backgrounded shell command is notify-and-continue: the loop is
-            # told when it finishes but is never blocked from giving a final
-            # answer waiting on it (unlike a worker sub-agent).
-            blocks_final_answer=False,
+            # Default: a backgrounded command's result is waited for before the
+            # final answer (the model can't "wait" — only the loop can, by
+            # gating the answer on the result). Set False only for genuine
+            # fire-and-forget work (e.g. starting a server) where "I launched it"
+            # IS the answer; then the run finalizes without it.
+            blocks_final_answer=blocks_final_answer,
             max_inline_result_chars=max_inline_result_chars,
             # Streams incremental output (ExecStreamEvent) → mirrored to a
             # ``.grasp`` log the agent can Read / Grep while it runs.
@@ -298,6 +301,7 @@ def bash_tools(
     auto_background_at: float = DEFAULT_AUTO_BACKGROUND_AT,
     max_inline_result_chars: int | None = DEFAULT_MAX_INLINE_RESULT_CHARS,
     block_leading_sleep: bool = True,
+    blocks_final_answer: bool = True,
     manager: BackgroundTaskManager[Any] | None = None,
     timeout: float | None = None,
 ) -> list[BaseTool[Any, Any, Any]]:
@@ -323,6 +327,7 @@ def bash_tools(
             auto_background_at=auto_background_at,
             max_inline_result_chars=max_inline_result_chars,
             block_leading_sleep=block_leading_sleep,
+            blocks_final_answer=blocks_final_answer,
             timeout=timeout,
         ),
         KillTask(manager),

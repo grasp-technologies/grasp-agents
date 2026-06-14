@@ -121,25 +121,37 @@ class EventBus:
         await self.shutdown()
 
         ret: bool | None = False
-        if self._task_group is not None:
-            try:
-                ret = await self._task_group.__aexit__(exc_type, exc, tb)
-            finally:
-                self._task_group = None
+        try:
+            if self._task_group is not None:
+                try:
+                    ret = await self._task_group.__aexit__(exc_type, exc, tb)
+                finally:
+                    self._task_group = None
 
-        # Fallback only: if finalize() already set the result/exception,
-        # don't override it.
-        fut = self._fut()
-        if not fut.done():
-            if exc is not None:
-                if isinstance(exc, asyncio.CancelledError):
-                    fut.cancel()
+            # Fallback only: if finalize() already set the result/exception,
+            # don't override it.
+            fut = self._fut()
+            if not fut.done():
+                if exc is not None:
+                    if isinstance(exc, asyncio.CancelledError):
+                        fut.cancel()
+                    else:
+                        fut.set_exception(exc)
                 else:
-                    fut.set_exception(exc)
-            else:
-                fut.cancel()
+                    fut.cancel()
 
-        return ret
+            return ret
+        finally:
+            # A crashing handler sets the error on the final-result future AND
+            # re-raises so the TaskGroup propagates it; the caller consumes the
+            # latter (run_stream raises before run() awaits the future), leaving
+            # the future's exception unretrieved. Retrieve it here so a GC'd
+            # future can't trip asyncio's "Future exception was never retrieved"
+            # warning in an unrelated later task. Non-destructive: the result /
+            # exception stays available to a caller that does await it.
+            done_fut = self._final_result_fut
+            if done_fut is not None and done_fut.done() and not done_fut.cancelled():
+                done_fut.exception()
 
     async def _handle_events(self, dst_name: str) -> None:
         handler = self._event_handlers[dst_name]

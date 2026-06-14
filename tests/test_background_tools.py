@@ -356,6 +356,34 @@ class TestBackgroundToolLaunch:
         assert "slow: research" in str(user_msgs[0].data)
 
     @pytest.mark.asyncio
+    async def test_launch_note_wait_guidance_depends_on_blocking(self):
+        """
+        A blocking task's launch note tells the model it can reply tool-free to
+        wait (the loop waits); a non-blocking one tells it to continue/answer —
+        a tool-free reply there would finalize with a useless "I'll wait …".
+        """
+        from grasp_agents.agent.background_tasks import BackgroundTaskManager
+        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+
+        transcript = LLMAgentTranscript()
+        transcript.reset(instructions="sys")
+        mgr = BackgroundTaskManager[None](
+            agent_name="a", transcript=transcript, tools={}, path=[]
+        )
+        blocking, nonblocking = SlowTool(), FireAndForgetTool()
+        assert blocking.blocks_final_answer and not nonblocking.blocks_final_answer
+        note_b = mgr._launch_note(  # pyright: ignore[reportPrivateUsage]
+            blocking, "bg_1", backgrounded_after=None, log_path=None
+        )
+        note_n = mgr._launch_note(  # pyright: ignore[reportPrivateUsage]
+            nonblocking, "bg_2", backgrounded_after=None, log_path=None
+        )
+        assert "reply WITHOUT calling any tool" in note_b
+        assert "runs independently" not in note_b
+        assert "runs independently" in note_n
+        assert "reply WITHOUT calling any tool" not in note_n
+
+    @pytest.mark.asyncio
     async def test_background_tool_flag_on_base_tool(self):
         """BaseTool.auto_background_at defaults to None; SlowTool sets 0."""
         echo = EchoTool()
@@ -711,12 +739,13 @@ class TestBlocksFinalAnswerAttribute:
     async def test_default_true_and_overrides(self):
         from grasp_agents.tools.bash import Bash
 
-        # Default on BaseTool is True (you wait for what you asked for)...
+        # Default is True everywhere — you wait for what you asked for (the model
+        # can't wait; only the loop can, by gating the answer on the result).
         assert EchoTool().blocks_final_answer is True
         assert SlowTool().blocks_final_answer is True
-        # ...Bash opts out (notify-and-continue)...
-        assert Bash().blocks_final_answer is False
-        # ...and any tool can opt out explicitly.
+        assert Bash().blocks_final_answer is True
+        # ...any tool can opt out explicitly for genuine fire-and-forget.
+        assert Bash(blocks_final_answer=False).blocks_final_answer is False
         assert FireAndForgetTool().blocks_final_answer is False
 
     @pytest.mark.asyncio
@@ -888,12 +917,18 @@ class TestDurableTaskRecords:
         mgr2 = BackgroundTaskManager[None](
             agent_name="t", transcript=t2, tools={}, path=[]
         )
-        await mgr2.resume_durable(ctx=ctx, exec_id="t")
+        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t")
 
         joined = "\n".join(str(m) for m in t2.messages)
-        assert "Session resumed from a checkpoint" in joined  # the framing line
+        assert "Resumed from a checkpoint" in joined  # the framing line
         assert "interrupted" in joined
         assert "slow" in joined
+
+        # resume_durable RETURNS exactly the messages it injected, so the caller
+        # (LLMAgent._process_stream) can stream them — no transcript message
+        # stays hidden from the event stream.
+        assert injected
+        assert t2.messages[-len(injected):] == injected
 
         # The record stays PENDING until a checkpoint persists the notice —
         # a crash before that must re-surface it on the next resume.
@@ -943,6 +978,146 @@ class TestDurableTaskRecords:
         assert rec.status == TaskStatus.FAILED
         assert rec.error is not None
         assert "exploded" in rec.error
+
+    @pytest.mark.asyncio
+    async def test_respawn_reruns_from_args_when_no_checkpoint(self):
+        """
+        A sub-agent interrupted *before* its first checkpoint is re-run from the
+        spawning call's persisted arguments — not lost to "no session to resume".
+
+        This is the failure mode that left re-spawned researchers returning null
+        / raw inner-tool output: a child cancelled before it checkpointed has
+        nothing to resume, so resume must replay it from ``tool_call_arguments``.
+        """
+        from datetime import UTC, datetime
+
+        from grasp_agents.agent.background_tasks import BackgroundTaskManager
+        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+        from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+        from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+        from grasp_agents.tools.agent_tool import AgentTool
+
+        store = InMemoryCheckpointStore()
+        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+
+        # A resumable sub-agent whose child answers in one LLM turn (no tools).
+        child_llm = MockLLM(
+            model_name="mock",
+            responses_queue=[_text_response("ocean is deep and blue")],
+        )
+        researcher = AgentTool[None](
+            name="researcher",
+            description="Researches a topic",
+            llm=child_llm,
+            sys_prompt="Answer in one sentence.",
+            auto_background_at=0,
+        )
+
+        transcript = LLMAgentTranscript()
+        transcript.reset(instructions="sys")
+        mgr = BackgroundTaskManager[None](
+            agent_name="coordinator",
+            transcript=transcript,
+            tools={"researcher": researcher},
+            path=[],
+        )
+
+        # A PENDING record with the original args but NO child checkpoint on
+        # disk — exactly the state a crash leaves before the child's first
+        # AFTER_INPUT checkpoint.
+        task_key = mgr._task_store_key(ctx, "c1")  # pyright: ignore[reportPrivateUsage]
+        assert task_key is not None
+        await store.save(
+            task_key,
+            TaskRecord(
+                session_key="s1",
+                task_id="bg_1",
+                tool_call_id="c1",
+                tool_name="researcher",
+                tool_call_arguments='{"prompt": "research the ocean"}',
+                status=TaskStatus.PENDING,
+                started_at=datetime.now(UTC),
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        await mgr.resume_durable(ctx=ctx, exec_id="t")
+        # The child was re-spawned; drive it to completion.
+        await mgr.get("bg_1").task
+
+        rec = TaskRecord.model_validate_json(await store.load(task_key))
+        assert rec.status == TaskStatus.COMPLETED, rec.status
+        # The re-run produced the child's actual final answer, not null.
+        assert rec.result == "ocean is deep and blue", rec.result
+        # ...and it got there by actually re-running the child (its LLM was
+        # called), not by some empty-stream shortcut.
+        assert child_llm.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_resume_reserves_task_ids_to_avoid_collision(self):
+        """
+        After resume, a NEW tool call must not be assigned a ``bg_N`` that
+        collides with a re-spawned task's id.
+
+        A re-spawned task keeps its original id while the resumed manager's
+        counter restarts at zero, so without reservation a new call would reuse
+        ``bg_1``/``bg_2`` — overwriting the re-spawned task in ``_tasks`` and
+        crossing their result deliveries (the re-spawned task's real result is
+        persisted but never delivered; the new call's null/raw result is).
+        """
+        from datetime import UTC, datetime
+
+        from grasp_agents.agent.background_tasks import BackgroundTaskManager
+        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+        from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
+        from grasp_agents.durability.task_record import TaskRecord, TaskStatus
+        from grasp_agents.tools.agent_tool import AgentTool
+
+        store = InMemoryCheckpointStore()
+        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+
+        researcher = AgentTool[None](
+            name="researcher",
+            description="Researches a topic",
+            llm=MockLLM(model_name="mock", responses_queue=[_text_response("done")]),
+            sys_prompt="Answer.",
+            auto_background_at=0,
+        )
+        transcript = LLMAgentTranscript()
+        transcript.reset(instructions="sys")
+        mgr = BackgroundTaskManager[None](
+            agent_name="coordinator",
+            transcript=transcript,
+            tools={"researcher": researcher},
+            path=[],
+        )
+
+        # Two interrupted tasks with the original run's ids bg_1, bg_2.
+        for tid, cid in [("bg_1", "c1"), ("bg_2", "c2")]:
+            key = mgr._task_store_key(ctx, cid)  # pyright: ignore[reportPrivateUsage]
+            assert key is not None
+            await store.save(
+                key,
+                TaskRecord(
+                    session_key="s1",
+                    task_id=tid,
+                    tool_call_id=cid,
+                    tool_name="researcher",
+                    tool_call_arguments='{"prompt": "x"}',
+                    status=TaskStatus.PENDING,
+                    started_at=datetime.now(UTC),
+                )
+                .model_dump_json()
+                .encode(),
+            )
+
+        await mgr.resume_durable(ctx=ctx, exec_id="t")
+
+        # A new call this run gets a fresh id past every re-spawned one.
+        assert mgr._next_id() == "bg_3"  # pyright: ignore[reportPrivateUsage]
+
+        await mgr.cancel_all(ctx=ctx)
 
 
 class _StreamingTool(BaseTool[EchoInput, Any, Any]):

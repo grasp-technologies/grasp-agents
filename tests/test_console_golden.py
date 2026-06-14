@@ -198,7 +198,7 @@ class TestGoldenFullTurn:
     @pytest.mark.asyncio
     async def test_input_messages(self, update_golden: bool) -> None:
         """User and system message panels."""
-        ec, buf = _make_console(show_input_messages=True)
+        ec, buf = _make_console(show_input_messages=True, show_system_messages=True)
         await _collect(ec, _input_messages_events())
         _assert_golden(buf.getvalue(), "input_messages", update=update_golden)
 

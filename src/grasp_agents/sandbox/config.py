@@ -69,8 +69,11 @@ class ExecConfig(BaseModel):
     # ``sys.executable``); e.g. ``"/path/to/venv/bin/python"``.
     python: str | None = None
     # Distribution names required in the env (e.g. ``["torch"]``); verified
-    # present at setup (not installed).
+    # present at setup, or installed when ``provision`` is set.
     packages: list[str] = Field(default_factory=list)
+    # Opt in to the framework creating the ``python`` venv (if absent) and
+    # installing missing ``packages`` into it. Off by default.
+    provision: bool = False
     env: dict[str, str] = Field(default_factory=dict)
     # ``None`` (omitted in JSON) keeps the secret-scrub denylist
     # (``DEFAULT_ENV_SCRUB``); an explicit ``[]`` disables scrubbing.
@@ -123,6 +126,7 @@ class EnvironmentConfig(BaseModel):
             inherit_host_env=ex.inherit_host_env,
             python=ex.python,
             packages=ex.packages,
+            provision=ex.provision,
             supervisor=supervisor,
         )
 

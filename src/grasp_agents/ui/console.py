@@ -40,6 +40,7 @@ from ..types.events import (
     ToolCallItemEvent,
     ToolErrorEvent,
     ToolOutputItemEvent,
+    ToolStreamEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
@@ -62,11 +63,10 @@ from ..types.llm_events import (
 from ._event_render import (
     PALETTE,
     extract_input_text,
-    panel,
     render_event,
     render_retry_notice,
+    render_tool_stream,
     truncate,
-    truncate_lines,
 )
 
 # ── Truncation defaults (apply to the console-owned paths: packets + task
@@ -112,8 +112,10 @@ class EventConsole:
         show_thinking: bool = False,
         show_tool_args: bool = True,
         show_usage: bool = True,
-        show_input_messages: bool = False,
+        show_input_messages: bool = True,
+        show_system_messages: bool = False,
         show_packets: bool = False,
+        show_background: bool = False,
         trunc_len: int = 10000,
         max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
         max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
@@ -123,7 +125,9 @@ class EventConsole:
         self.show_tool_args = show_tool_args
         self.show_usage = show_usage
         self.show_input_messages = show_input_messages
+        self.show_system_messages = show_system_messages
         self.show_packets = show_packets
+        self.show_background = show_background
         self.trunc_len = trunc_len
         self.max_tool_output_lines = max_tool_output_lines
         self.max_input_msg_lines = max_input_msg_lines
@@ -138,11 +142,23 @@ class EventConsole:
         self._in_tool_block = False
         self._pending_tool_spacing = False
 
-        # Tool names with in-flight background tasks → their subagent
-        # events (turns, thinking, text) are suppressed. Refcounted so a
-        # later *foreground* run of the same tool renders normally once every
-        # background instance has completed.
+        # Tool names with in-flight background tasks. By default their subagent
+        # events (turns, thinking, text) are suppressed — interleaving several
+        # concurrent streams into one linear column is unreadable; the launch /
+        # completion notices and the result still show, and the full output is
+        # in the task's `.grasp/tasks/<id>.log`. Set ``show_background=True`` to
+        # print them inline anyway (each is tagged with its source). Refcounted
+        # so a later *foreground* run of the same tool renders normally once
+        # every background instance has completed.
         self._bg_tool_counts: Counter[str] = Counter()
+        # tool name → its .grasp log basename, so a streamed chunk can be headed
+        # by the log it's mirrored to (parity with the TUI).
+        self._bg_tool_logs: dict[str, str | None] = {}
+        # Per-agent deferred turn header: rendered right before that agent's
+        # first content of the turn, not at turn start — so a concurrent agent's
+        # output streaming in meanwhile can't wedge between the header and its
+        # body. Keyed by source so interleaved agents stay correctly paired.
+        self._pending_turns: dict[str, TurnStartEvent] = {}
 
         # Cumulative cost tracking
         self._total_cost: float = 0.0
@@ -183,13 +199,17 @@ class EventConsole:
 
         if isinstance(event, BackgroundTaskCompletedEvent):
             self._on_bg_completed(event)
-            self._print(render_event(event))
+            self._print(render_event(event, inline_images=False))
             return
 
-        # Suppress internal events from background subagents,
-        # but let tool results, errors, and task notifications through.
-        if self._is_bg_subagent(event) and not isinstance(
-            event, (ToolOutputItemEvent, ToolErrorEvent, UserMessageEvent)
+        # Suppress internal events from background subagents (unless opted in),
+        # but always let tool results, errors, and task notifications through.
+        if (
+            not self.show_background
+            and self._is_bg_subagent(event)
+            and not isinstance(
+                event, (ToolOutputItemEvent, ToolErrorEvent, UserMessageEvent)
+            )
         ):
             return
 
@@ -198,6 +218,24 @@ class EventConsole:
         # tight but ensures a blank line after the last one.
         if not isinstance(event, (ToolOutputItemEvent, ToolErrorEvent)):
             self._flush_tool_spacing()
+
+        # A turn header is deferred (see _on_turn_start) and flushed right before
+        # its agent's first output of the turn — content or an error — so
+        # concurrent agents' output can't wedge between a header and what it
+        # labels. A turn that produces neither (e.g. a bare max-turns stop) drops
+        # its header entirely.
+        if isinstance(
+            event,
+            (
+                LLMStreamEvent,
+                OutputMessageItemEvent,
+                ToolCallItemEvent,
+                ReasoningItemEvent,
+                LLMStreamingErrorEvent,
+                ProcStreamingErrorEvent,
+            ),
+        ):
+            self._flush_turn(event.source)
 
         if isinstance(event, TurnStartEvent):
             self._on_turn_start(event)
@@ -223,20 +261,28 @@ class EventConsole:
         elif isinstance(event, ToolOutputItemEvent):
             self._on_tool_result(event)
 
+        elif isinstance(event, ToolStreamEvent):
+            # Incremental tool output (e.g. a shell command's progressive
+            # stdout). Off unless show_background: in the linear console it is
+            # noise next to the final result, but it's the live progress you
+            # want when watching background tasks.
+            if self.show_background:
+                self._on_tool_stream(event)
+
         elif isinstance(event, ToolErrorEvent):
             self._on_tool_error(event)
 
         elif isinstance(event, UserMessageEvent):
             text = extract_input_text(event.data)
-            if "<task_notification>" in text:
-                self._on_task_notification(
-                    text, source=event.source, destination=event.destination
-                )
-            elif self.show_input_messages:
+            # Framework notices (task results, resume framing) always show and
+            # are rendered specially by render_event; regular user input is on
+            # by default but can be turned off.
+            is_notice = "<task_notification>" in text or "<session_resumed>" in text
+            if is_notice or self.show_input_messages:
                 self._on_user_message(event)
 
         elif isinstance(event, SystemMessageEvent):
-            if self.show_input_messages:
+            if self.show_system_messages:
                 self._on_system_message(event)
 
         elif isinstance(event, (ProcPacketOutEvent, RunPacketOutEvent)):
@@ -304,7 +350,7 @@ class EventConsole:
             self._streamed_message = False
             return
         self._in_tool_block = False
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
 
     def _on_tool_call_item(self, event: ToolCallItemEvent) -> None:
         self._streamed_tool = False
@@ -312,7 +358,7 @@ class EventConsole:
         self._end_thinking()
         self._in_tool_block = True
         if self.show_tool_args:
-            self._print(render_event(event))
+            self._print(render_event(event, inline_images=False))
         else:
             agent = event.source or "agent"
             tool = event.data.name or "tool"
@@ -326,22 +372,32 @@ class EventConsole:
         if not self.show_thinking:
             return
         self._end_text()
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
 
     # ── Lifecycle events ──
 
     def _on_turn_start(self, event: TurnStartEvent) -> None:
+        # Defer: hold the header until this agent's first content of the turn
+        # (see _flush_turn). Rendering it now would let a concurrent agent's
+        # output stream in between the header and the body it labels.
+        self._pending_turns[event.source or ""] = event
+
+    def _flush_turn(self, source: str | None) -> None:
+        """Render a deferred turn header, right before its agent's content."""
+        event = self._pending_turns.pop(source or "", None)
+        if event is None:
+            return
         self._end_text()
         self._end_thinking()
         self._in_tool_block = False
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
         self.console.print()
 
     def _on_turn_end(self, event: TurnEndEvent) -> None:
         self._end_text()
         self._end_thinking()
         self._in_tool_block = False
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
 
     def _on_generation_end(self, event: GenerationEndEvent) -> None:
         if not self.show_usage:
@@ -382,24 +438,24 @@ class EventConsole:
     def _on_user_message(self, event: UserMessageEvent) -> None:
         self._end_text()
         self._in_tool_block = False
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
         self.console.print()
 
     def _on_system_message(self, event: SystemMessageEvent) -> None:
         self._end_text()
         self._in_tool_block = False
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
         self.console.print()
 
     # ── Tool events ──
 
     def _on_tool_result(self, event: ToolOutputItemEvent) -> None:
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
         self._pending_tool_spacing = True
 
     def _on_tool_error(self, event: ToolErrorEvent) -> None:
         self.console.print()  # breathing room after usage line
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
 
     # ── Packet events ──
 
@@ -429,7 +485,7 @@ class EventConsole:
     ) -> None:
         self._end_text()
         self._in_tool_block = False
-        self._print(render_event(event))
+        self._print(render_event(event, inline_images=False))
 
     # ── Background task events ──
 
@@ -437,6 +493,7 @@ class EventConsole:
         # Track name so we can suppress the subagent's internal events. The
         # launch itself stays silent — the eventual result panel covers it.
         self._bg_tool_counts[event.data.tool_name] += 1
+        self._bg_tool_logs[event.data.tool_name] = event.data.output_name
 
     def _on_bg_completed(self, event: BackgroundTaskCompletedEvent) -> None:
         # Drop the suppression once the last in-flight task of this tool ends,
@@ -447,39 +504,6 @@ class EventConsole:
             self._bg_tool_counts.pop(name, None)
         else:
             self._bg_tool_counts[name] = count - 1
-
-    def _on_task_notification(
-        self, text: str, source: str | None = None, destination: str | None = None
-    ) -> None:
-        """Display a background task's result/error parsed from notification XML."""
-        import re  # noqa: PLC0415
-
-        result = re.search(r"<result>\s*(.+?)\s*</result>", text, re.DOTALL)
-        error = re.search(r"<error>\s*(.+?)\s*</error>", text, re.DOTALL)
-
-        src = source or "background task"
-        dst = destination or "agent"
-        title = f"{escape(src)} → {escape(dst)}"
-
-        if error:
-            self.console.print(
-                panel(
-                    title,
-                    Text(f"✗ {error.group(1)}", style=f"bold {PALETTE['tool_result']}"),
-                    PALETTE["error"],
-                )
-            )
-        elif result:
-            content = truncate(result.group(1), self.trunc_len)
-            display = truncate_lines(content, self.max_tool_output_lines)
-            self.console.print(
-                panel(
-                    title,
-                    Text(escape(display), style=PALETTE["tool_result"]),
-                    PALETTE["border_tool_result"],
-                )
-            )
-        self.console.print()
 
     # ── Streaming text helpers ──
 
@@ -496,6 +520,26 @@ class EventConsole:
         if self._in_text:
             self._write("\n")
             self._in_text = False
+
+    def _on_tool_stream(self, event: ToolStreamEvent) -> None:
+        """Render one incremental tool-output chunk (e.g. live shell stdout)."""
+        text = str(event.data).rstrip("\n")
+        if not text:
+            return
+        self._end_text()
+        self._end_thinking()
+        tool = event.source or "tool"
+        # Same renderer as the TUI: a muted "background progress" panel headed by
+        # the task's log, so live output isn't mistaken for a tool result.
+        self._print(
+            render_tool_stream(
+                event.destination or "agent",
+                tool,
+                text,
+                background=True,
+                log_name=self._bg_tool_logs.get(tool),
+            )
+        )
 
     # ── Streaming thinking ──
     #
@@ -566,8 +610,10 @@ async def stream_events(
     show_thinking: bool = False,
     show_tool_args: bool = True,
     show_usage: bool = True,
-    show_input_messages: bool = False,
+    show_input_messages: bool = True,
+    show_system_messages: bool = False,
     show_packets: bool = False,
+    show_background: bool = False,
     trunc_len: int = 10000,
     max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
     max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
@@ -578,6 +624,11 @@ async def stream_events(
 
         async for event in stream_events(agent.run_stream("hello", ctx=ctx)):
             ...
+
+    User (input) messages show by default (``show_input_messages``); system
+    messages are opt-in (``show_system_messages``). ``show_background=True``
+    prints background subagents' internal events inline (off by default — only
+    their launch/completion notices and results show).
     """
     ec = EventConsole(
         console=console,
@@ -585,7 +636,9 @@ async def stream_events(
         show_tool_args=show_tool_args,
         show_usage=show_usage,
         show_input_messages=show_input_messages,
+        show_system_messages=show_system_messages,
         show_packets=show_packets,
+        show_background=show_background,
         trunc_len=trunc_len,
         max_tool_output_lines=max_tool_output_lines,
         max_input_msg_lines=max_input_msg_lines,

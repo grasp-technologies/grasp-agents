@@ -19,7 +19,12 @@ from grasp_agents.run_context import RunContext
 from grasp_agents.runner.event_bus import MAX_QUEUE_SIZE, EventBus
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
 from grasp_agents.types.errors import ProcInputValidationError, RunnerError
-from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from grasp_agents.types.events import (
+    Event,
+    ProcPacketOutEvent,
+    ProcPayloadOutEvent,
+    RoutedEvent,
+)
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 from .test_runner import (  # type: ignore[attr-defined]
@@ -119,6 +124,34 @@ class TestEventBusBounds:
         # The consumer is gone (bus never entered) — shutdown must still
         # complete by making room for the sentinel.
         await asyncio.wait_for(bus.shutdown(), timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_crashing_handler_retrieves_future_exception(self) -> None:
+        # A crashing handler delivers its error via the TaskGroup; the
+        # final-result future's identical exception must be retrieved on exit
+        # so a GC'd future can't trip asyncio's "Future exception was never
+        # retrieved" warning in an unrelated later task.
+        bus = EventBus()
+
+        async def boom(event: Event[Any], **kwargs: Any) -> None:
+            del event, kwargs
+            raise RuntimeError("handler boom")
+
+        async def drive() -> None:
+            async with bus:
+                bus.register_event_handler("p", boom)
+                await bus.post(RoutedEvent(type="t", data="x", destination="p"))
+                async for _ in bus.stream_events():
+                    pass
+
+        with pytest.raises(BaseExceptionGroup):
+            await drive()
+
+        fut = bus._final_result_fut
+        assert fut is not None
+        assert fut.done()
+        assert fut._log_traceback is False  # retrieved during __aexit__
+        assert isinstance(fut.exception(), RuntimeError)
 
 
 # ---------- Item 26: Runner[OutT] validates final payloads ----------

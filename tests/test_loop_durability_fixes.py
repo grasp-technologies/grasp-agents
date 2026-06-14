@@ -181,6 +181,61 @@ class TestPureResume:
             await agent.run()
         assert "No inputs were provided" in str(excinfo.value.__cause__)
 
+    @pytest.mark.anyio
+    async def test_after_tool_result_resumes_at_next_turn(self) -> None:
+        """
+        A run interrupted after a tool result resumes at the NEXT turn — it does
+        not re-run the completed turn's generation (which would re-issue the
+        same tool calls, e.g. re-launching background workers).
+        """
+        store = InMemoryCheckpointStore()
+        calls: list[str] = []
+
+        class _CountingEcho(BaseTool[EchoInput, str, Any]):
+            def __init__(self) -> None:
+                super().__init__(name="echo", description="Echoes input")
+
+            async def _run(self, inp: EchoInput, **kwargs: Any) -> str:
+                calls.append(inp.text)
+                return f"echo: {inp.text}"
+
+        agent, _ = _make_agent(
+            [_tool_call_response("echo", '{"text": "once"}', "c1")],
+            tools=[_CountingEcho()],
+            session_key="ot1",
+            store=store,
+        )
+
+        hits = {"n": 0}
+
+        @agent.add_before_llm_hook
+        async def crash_after_tool(**kwargs: Any) -> None:
+            hits["n"] += 1
+            if hits["n"] == 2:  # turn 0 issued the tool call; crash at turn 1
+                raise RuntimeError("crash after tool result")
+
+        with pytest.raises(BaseException):
+            await agent.run("go")
+        assert calls == ["once"]  # tool ran exactly once
+
+        # The AFTER_TOOL_RESULT checkpoint records turn 1 (the resume point),
+        # not turn 0 — the just-completed turn is not re-executed.
+        head = await load_agent_checkpoint(store, "ot1/agent/test_agent")
+        assert head is not None
+        assert head.turn == 1, head.turn
+
+        # Resume: the agent answers from the restored tool result without
+        # re-calling echo.
+        agent2, _ = _make_agent(
+            [_text_response("done from tool result")],
+            tools=[_CountingEcho()],
+            session_key="ot1",
+            store=store,
+        )
+        out = await agent2.run()
+        assert out.payloads[0] == "done from tool result"
+        assert calls == ["once"]  # echo was NOT re-issued on resume
+
 
 # ---------------------------------------------------------------------------
 # Force-final-answer: single commit, single usage record

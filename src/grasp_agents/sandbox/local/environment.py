@@ -22,6 +22,7 @@ while ``"none"`` leaves them writable and ``network`` is recorded-not-enforced.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess  # noqa: S404 - trusted interpreter + literal script, no shell
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
 
     from ...tools.file_backend.base import FileBackend
     from ..exec_backend import ExecBackend
+
+logger = logging.getLogger(__name__)
 
 
 class LocalEnvironment(ExecutionEnvironment):
@@ -102,6 +105,7 @@ def local_environment(
     inherit_host_env: bool = True,
     python: str | Path | None = None,
     packages: Sequence[str] = (),
+    provision: bool = False,
     kernel_setup_code: str = "",
     limits: ResourceLimits | None = None,
     supervisor: ProcessSupervisor | None = None,
@@ -151,10 +155,22 @@ def local_environment(
             ``pip install``) only land if its tree is within ``allowed_roots``.
         packages: Distribution names required in the ``python`` environment
             (e.g. ``["torch", "datasets"]``; version specifiers / extras are
-            allowed and ignored for the check). They are **verified** present at
-            setup — not installed: a missing one raises with the ``pip install``
-            command to run. Install them into the env yourself (uv / pip /
-            conda); this env is yours, so the framework won't mutate it.
+            allowed and ignored for the check). With ``provision=False``
+            (default) they are **verified** present at setup — a missing one
+            raises with the ``pip install`` command to run; the framework does
+            not mutate your env. With ``provision=True`` the framework installs
+            the missing ones (see ``provision``).
+        provision: Give the agent its own dedicated, isolated venv. Off by
+            default — the framework then never mutates a configured environment
+            (``packages`` is only verified). When on, a venv is created at
+            ``<first allowed_root>/.venv`` and missing ``packages`` are
+            ``pip install``-ed into it (so the agent's installs never touch the
+            host / project environment). ``python``, if it points to a real
+            interpreter, selects the base to clone from — i.e. the venv's
+            Python version — otherwise ``sys.executable`` is used (logged).
+            Idempotent: an existing venv at that path is reused. To run against
+            an environment you manage yourself instead, leave ``provision``
+            off and point ``python`` at it.
         kernel_setup_code: Code run once at code-interpreter (``RunPython``)
             kernel startup, in its own execution — empty by default (the
             framework imposes nothing). Pass e.g. ``"%matplotlib inline"`` to
@@ -205,15 +221,20 @@ def local_environment(
                 "fully configured `supervisor`, not both."
             )
         supervisor = ProcessSupervisor(SupervisorLimits(**limits))
+    resolved_python: str | Path | None = python
+    if provision:
+        if not roots:
+            raise ValueError("provision=True requires at least one allowed_root")
+        resolved_python = _provision_python_env(python, packages, roots[0] / ".venv")
     exec_backend = _build_exec_backend(
         confinement,
         policy=policy,
         supervisor=supervisor,
         inherit_host_env=inherit_host_env,
-        python=python,
+        python=resolved_python,
     )
     if packages:
-        _verify_packages(resolve_python(python), packages)
+        _verify_packages(resolve_python(resolved_python), packages)
     return LocalEnvironment(
         policy=policy, file_backend=file_backend, exec_backend=exec_backend
     )
@@ -308,15 +329,11 @@ def _dist_name(spec: str) -> str:
     return re.split(r"[<>=!~;\[ ]", spec.strip(), maxsplit=1)[0].strip()
 
 
-def _verify_packages(python: str, packages: Sequence[str]) -> None:
-    """
-    Verify each distribution in ``packages`` is installed in the ``python``
-    environment; raise with an install hint if any are missing. Does not install
-    (this environment is the caller's to manage).
-    """
+def _missing_packages(python: str, packages: Sequence[str]) -> list[str]:
+    """Distribution names in ``packages`` not installed in the ``python`` env."""
     names = [_dist_name(p) for p in packages if p.strip()]
     if not names:
-        return
+        return []
     check = (
         "import importlib.metadata as m, sys\n"
         "missing = []\n"
@@ -339,13 +356,84 @@ def _verify_packages(python: str, packages: Sequence[str]) -> None:
         raise ValueError(
             f"could not verify packages with interpreter {python!r}: {exc}"
         ) from exc
-    missing = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def _verify_packages(python: str, packages: Sequence[str]) -> None:
+    """
+    Verify each distribution in ``packages`` is installed in the ``python``
+    environment; raise with an install hint if any are missing. Does not install
+    (this environment is the caller's to manage unless ``provision=True``).
+    """
+    missing = _missing_packages(python, packages)
     if missing:
         raise ValueError(
             f"the configured Python environment ({python}) is missing required "
             f"packages: {', '.join(missing)}. Install them into that environment, "
             f"e.g. `{python} -m pip install {' '.join(missing)}`."
         )
+
+
+def _venv_interpreter(venv_dir: Path) -> Path:
+    """The interpreter path inside a venv created at ``venv_dir``."""
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _install_missing(python: str, packages: Sequence[str]) -> None:
+    """``pip install`` the ``packages`` not already present in ``python``."""
+    missing = _missing_packages(python, packages)
+    if not missing:
+        return
+    logger.info("provision: installing %s into %s", ", ".join(missing), python)
+    try:
+        subprocess.run([python, "-m", "pip", "install", *missing], check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(
+            f"failed to install {', '.join(missing)} into {python}: {exc}"
+        ) from exc
+
+
+def _provision_python_env(
+    python: str | Path | None, packages: Sequence[str], venv_dir: Path
+) -> str:
+    """
+    Create the agent's dedicated venv at ``venv_dir`` and return its interpreter.
+
+    ``provision=True`` always gives the agent its OWN isolated venv (so its
+    ``pip install``s never touch the host / project environment). ``python``,
+    if it points to a real interpreter, only selects the base to clone from
+    (i.e. the venv's Python version); otherwise ``sys.executable`` is used (and
+    the unusable value is logged). Missing ``packages`` are then installed into
+    the venv. Idempotent: an existing venv at ``venv_dir`` is reused.
+    """
+    interpreter = _venv_interpreter(venv_dir)
+    if interpreter.is_file():
+        # Reuse an existing venv as-is (e.g. on resume); only top up packages.
+        logger.info("provision: reusing the existing venv at %s", venv_dir)
+    else:
+        base = sys.executable
+        if python is not None:
+            candidate = Path(python).expanduser()
+            if candidate.is_file():
+                base = str(candidate)
+            else:
+                logger.warning(
+                    "provision: configured python %r does not exist; using %s "
+                    "as the base for the agent's venv.",
+                    str(python),
+                    sys.executable,
+                )
+        logger.info(
+            "provision: creating the agent's venv at %s from %s", venv_dir, base
+        )
+        try:
+            subprocess.run([base, "-m", "venv", str(venv_dir)], check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(f"failed to create venv at {venv_dir}: {exc}") from exc
+    _install_missing(str(interpreter), packages)
+    return str(interpreter)
 
 
 __all__ = ["LocalEnvironment", "local_environment"]

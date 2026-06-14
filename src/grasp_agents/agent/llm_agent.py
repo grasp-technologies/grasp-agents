@@ -355,6 +355,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Session persistence
         self.step: int = 0  # completed invocation counter (observability)
         self._delivery_step: int | None = None  # caller's step for checkpoint
+        # Resume notifications injected into the transcript by load_checkpoint,
+        # awaiting emission as stream events (no hidden transcript messages).
+        self._resume_notifications: list[InputMessageItem] = []
 
         # Provider-supplied prompt cache key (OpenAI Responses / Anthropic
         # prompt caching). Populated by provider adapters post-LLM-call;
@@ -580,7 +583,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             checkpoint.turn,
         )
 
-        await self._loop.bg_tasks.resume_durable(
+        self._resume_notifications = await self._loop.bg_tasks.resume_durable(
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
 
@@ -809,6 +812,17 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         # Always load checkpoint (restores memory, background tasks, turn).
         checkpoint = await self.load_checkpoint(exec_id=exec_id)
+
+        # Stream any messages resume injected into the transcript (interrupted /
+        # re-delivered background-task notices) so they aren't hidden — the
+        # transcript and the event stream stay in lockstep.
+        if self._resume_notifications:
+            self._print_messages(self._resume_notifications, exec_id=exec_id)
+            for message in self._resume_notifications:
+                yield UserMessageEvent(
+                    data=message, source=self.name, exec_id=exec_id
+                )
+            self._resume_notifications = []
 
         # A direct run with no inputs at all resumes the session — continue
         # the loop on the restored (or live) transcript instead of rendering

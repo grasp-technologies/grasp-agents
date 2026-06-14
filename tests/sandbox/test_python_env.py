@@ -7,6 +7,7 @@ kernel, so these run under the default sandbox.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import sys
@@ -68,6 +69,80 @@ def test_config_python_field(tmp_path: Path) -> None:
     backend = cfg.build().exec_backend
     assert isinstance(backend, LocalExecBackend)
     assert backend._kernel_launch_argv("cf")[0] == sys.executable
+
+
+# ---------------------------------------------------------------------------
+# provision=True (create venv + install missing packages)
+# ---------------------------------------------------------------------------
+
+
+def test_provision_config_field_round_trips(tmp_path: Path) -> None:
+    cfg = EnvironmentConfig.model_validate(
+        {
+            "filesystem": {"allowed_roots": [str(tmp_path)]},
+            "exec": {"packages": ["ipykernel"], "provision": True},
+        }
+    )
+    assert cfg.exec_.provision is True
+
+
+def test_provision_reuses_existing_venv(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A venv already at the location is reused (logged), never recreated.
+    interp = tmp_path / ".venv" / "bin" / "python"
+    interp.parent.mkdir(parents=True)
+    interp.write_text("#!/bin/sh\n")  # stand-in interpreter file
+    interp.chmod(0o755)
+
+    with caplog.at_level(
+        logging.INFO, logger="grasp_agents.sandbox.local.environment"
+    ):
+        local_environment(allowed_roots=[tmp_path], provision=True)  # no packages
+
+    assert any("reusing the existing venv" in r.getMessage() for r in caplog.records)
+    assert interp.read_text() == "#!/bin/sh\n"  # untouched — not recreated
+
+
+@pytest.mark.integration
+def test_provision_creates_venv_at_first_allowed_root(tmp_path: Path) -> None:
+    """provision=True with no usable `python` builds a venv at <root>/.venv."""
+    env = local_environment(
+        allowed_roots=[tmp_path],
+        packages=["ipykernel"],
+        provision=True,
+    )
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    assert venv_python.is_file()
+    backend = env.exec_backend
+    assert isinstance(backend, LocalExecBackend)
+    assert backend._kernel_launch_argv("cf")[0] == str(venv_python)
+    # Idempotent: a second call with everything present is a no-op (no raise).
+    local_environment(
+        allowed_roots=[tmp_path],
+        packages=["ipykernel"],
+        provision=True,
+    )
+
+
+@pytest.mark.integration
+def test_provision_always_makes_a_dedicated_venv(tmp_path: Path) -> None:
+    """
+    Even when `python` exists, provision builds a SEPARATE venv (isolation)
+    cloned from it — it never runs the agent on the given interpreter.
+    """
+    env = local_environment(
+        allowed_roots=[tmp_path],
+        python=sys.executable,  # an existing interpreter — used only as the base
+        provision=True,
+    )
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    assert venv_python.is_file()
+    backend = env.exec_backend
+    assert isinstance(backend, LocalExecBackend)
+    # The agent runs on its own venv, NOT on the passed-in interpreter.
+    assert backend._kernel_launch_argv("cf")[0] == str(venv_python)
+    assert backend._kernel_launch_argv("cf")[0] != sys.executable
 
 
 @pytest.mark.integration

@@ -76,11 +76,11 @@ def wrap_untrusted(
     boundary; image / file parts pass through and are fenced positionally.
     ``source`` is the tool name, surfaced in the opening tag for provenance.
     """
-    open_tag = f'<{UNTRUSTED_CONTENT_TAG} source="{_sanitize_source(source)}">'
-    close_tag = f"</{UNTRUSTED_CONTENT_TAG}>"
+    open_tag = f'<{UNTRUSTED_CONTENT_TAG} source="{_sanitize_source(source)}">\n'
+    close_tag = f"\n</{UNTRUSTED_CONTENT_TAG}>"
 
     if isinstance(output_parts, str):
-        return f"{open_tag}\n{_neutralize(output_parts)}\n{close_tag}"
+        return f"{open_tag}{_neutralize(output_parts)}{close_tag}"
 
     fenced: list[ToolOutputPart] = [InputText(text=open_tag)]
     for part in output_parts:

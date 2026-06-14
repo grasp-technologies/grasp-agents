@@ -32,6 +32,7 @@ _GRASP_EXTENSION_FIELDS = {
     "summary_parts",
     "redacted",
     "provider_specific_fields",
+    "is_error",
 }
 
 

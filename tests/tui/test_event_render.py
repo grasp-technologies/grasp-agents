@@ -37,11 +37,36 @@ from grasp_agents.types.response import (
     ResponseUsage,
 )
 from grasp_agents.ui._event_render import (
+    PALETTE,
     render_event,
     render_image,
     render_tool_stream,
     truncate_lines,
 )
+
+
+def test_errored_tool_result_has_red_border() -> None:
+    # A failed tool result (is_error, set by the loop for a ToolErrorInfo) gets
+    # the red error border; a normal result keeps the neutral one.
+    err = ToolOutputItemEvent(
+        data=FunctionToolOutputItem.from_tool_result(
+            call_id="1", output="boom: exit 1", is_error=True
+        ),
+        source="Bash",
+        destination="agent",
+    )
+    panel = render_event(err)
+    assert isinstance(panel, Panel)
+    assert panel.border_style == PALETTE["error"]
+
+    ok = ToolOutputItemEvent(
+        data=FunctionToolOutputItem.from_tool_result(call_id="1", output="done"),
+        source="Bash",
+        destination="agent",
+    )
+    panel = render_event(ok)
+    assert isinstance(panel, Panel)
+    assert panel.border_style == PALETTE["border_tool_result"]
 
 
 def test_turn_start_is_rule() -> None:
@@ -158,6 +183,35 @@ def test_message_is_markdown() -> None:
     ev = OutputMessageItemEvent(
         data=OutputMessageItem(
             content_parts=[OutputMessageText(text="hello")], status="completed"
+        ),
+        source="agent",
+    )
+    assert isinstance(render_event(ev), Markdown)
+
+
+def test_pure_json_output_renders_like_tool_args() -> None:
+    from rich.table import Table
+
+    # A structured (pure-JSON object) answer renders as the same key/value
+    # table used for tool-call arguments — not as prose.
+    ev = OutputMessageItemEvent(
+        data=OutputMessageItem(
+            content_parts=[OutputMessageText(text='{"verdict": "pass", "score": 9}')],
+            status="completed",
+        ),
+        source="grader",
+    )
+    assert isinstance(render_event(ev), Table)
+
+
+def test_prose_output_with_leading_brace_stays_markdown() -> None:
+    from rich.markdown import Markdown
+
+    # Prose that merely starts with "{" is not valid JSON → stays Markdown.
+    ev = OutputMessageItemEvent(
+        data=OutputMessageItem(
+            content_parts=[OutputMessageText(text="{not json} here is the answer")],
+            status="completed",
         ),
         source="agent",
     )
@@ -342,20 +396,68 @@ def test_tool_output_plain_log_stays_text() -> None:
     assert isinstance(panel.renderable, Text)
 
 
-def test_user_message_xml_payload_is_highlighted() -> None:
-    from rich.syntax import Syntax
+def test_completed_task_notification_is_a_plain_box() -> None:
+    from grasp_agents.types.events import UserMessageEvent
+    from grasp_agents.types.items import InputMessageItem
+
+    notif = (
+        "<task_notification>\n<task_id>bg_1</task_id>\n"
+        "<tool_name>Bash</tool_name>\n<status>completed</status>\n"
+        "</task_notification>"
+    )
+    ev = UserMessageEvent(
+        data=InputMessageItem.from_text(notif, role="user"),
+        source="Bash",
+        destination="data_engineer",
+    )
+    box = render_event(ev)
+    # A completed task adds no status line of its own (its
+    # BackgroundTaskCompletedEvent already shows "✓ … completed" above the box) —
+    # just a box titled "<tool> → <agent>" (recipient = destination).
+    assert isinstance(box, Panel)
+    assert "Bash → data_engineer" in str(box.title)
+
+
+def test_interrupted_task_notification_has_status_line_above_box() -> None:
+    from rich.console import Group
 
     from grasp_agents.types.events import UserMessageEvent
     from grasp_agents.types.items import InputMessageItem
 
     notif = (
         "<task_notification>\n<task_id>bg_1</task_id>\n"
-        "<status>completed</status>\n</task_notification>"
+        "<tool_name>Bash</tool_name>\n<status>interrupted</status>\n"
+        "</task_notification>"
     )
     ev = UserMessageEvent(
         data=InputMessageItem.from_text(notif, role="user"),
         source="Bash",
         destination="data_engineer",
+    )
+    result = render_event(ev)
+    # Interrupted/failed (no completion event) get a "✗ … (id)" line ABOVE the
+    # box — never inside it.
+    assert isinstance(result, Group)
+    parts = list(result.renderables)
+    assert isinstance(parts[0], Text)
+    assert "✗" in parts[0].plain and "Bash interrupted" in parts[0].plain
+    assert "bg_1" in parts[0].plain
+    assert isinstance(parts[1], Panel)
+    assert "Bash → data_engineer" in str(parts[1].title)
+
+
+def test_user_message_xml_payload_is_highlighted() -> None:
+    from rich.syntax import Syntax
+
+    from grasp_agents.types.events import UserMessageEvent
+    from grasp_agents.types.items import InputMessageItem
+
+    # A non-notice XML payload still renders syntax-highlighted.
+    xml = "<data>\n  <item>x</item>\n</data>"
+    ev = UserMessageEvent(
+        data=InputMessageItem.from_text(xml, role="user"),
+        source="upstream",
+        destination="agent",
     )
     panel = render_event(ev)
     assert isinstance(panel, Panel)

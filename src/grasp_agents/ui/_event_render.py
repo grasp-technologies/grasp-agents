@@ -111,6 +111,11 @@ def render_event(
         text = event.data.text
         if not text:
             return None
+        # A pure-JSON answer (e.g. a structured ``llm_output_schema`` output)
+        # renders like tool-call arguments — structured, not as prose.
+        structured = _structured_output(text)
+        if structured is not None:
+            return structured
         theme = _active_code_theme()
         return _Markdown(text, code_theme=theme, inline_code_theme=theme)
 
@@ -139,6 +144,9 @@ def render_event(
         agent = event.destination or "agent"
         tool = event.source or "tool"
         title = f"{escape(agent)} ← {escape(tool)}"
+        # A failed tool result (a ToolErrorInfo the loop flagged) gets the red
+        # error border; a normal result keeps the neutral one.
+        border = PALETTE["error"] if item.is_error else PALETTE["border_tool_result"]
         text_out: Any = item.output if isinstance(item.output, str) else item.text
         images = item.images
         if not images or not inline_images:
@@ -147,7 +155,7 @@ def render_event(
                 _build_result_renderable(
                     text_out, PALETTE["tool_result"], inline_images=inline_images
                 ),
-                PALETTE["border_tool_result"],
+                border,
             )
         blocks: list[RenderableType] = []
         if isinstance(text_out, str) and text_out.strip():
@@ -156,7 +164,7 @@ def render_event(
             if blocks:
                 blocks.append(Text(""))
             blocks.append(render_input_image(img))
-        return panel(title, Group(*blocks), PALETTE["border_tool_result"])
+        return panel(title, Group(*blocks), border)
 
     if isinstance(event, ToolErrorEvent):
         info = event.data
@@ -167,15 +175,31 @@ def render_event(
             PALETTE["error"],
         )
 
-    if isinstance(event, (UserMessageEvent, SystemMessageEvent)):
+    if isinstance(event, SystemMessageEvent):
         text = extract_input_text(event.data)
-        if isinstance(event, SystemMessageEvent):
-            label = f"System → {event.source or 'agent'}"
-            border = PALETTE["border_system"]
-        else:
-            label = f"{event.source or 'User'} → {event.destination or 'agent'}"
-            border = PALETTE["border_input"]
-        return panel(label, _message_body(text), border)
+        return panel(
+            f"System → {event.source or 'agent'}",
+            _message_body(text),
+            PALETTE["border_system"],
+        )
+
+    if isinstance(event, UserMessageEvent):
+        text = extract_input_text(event.data)
+        # Framework notices get a specialized render (shared by every surface).
+        # The owning agent is the recipient: drain delivers with
+        # destination=agent, resume injects with source=agent.
+        if "<task_notification>" in text:
+            return render_task_notification(
+                text, agent=event.destination or event.source
+            )
+        if "<session_resumed>" in text:
+            return render_resume_notice(text)
+        # A received input — we don't reliably know the sender (it may be the
+        # user or an upstream agent), so don't assert one; just show the
+        # recipient.
+        dst = event.destination or "agent"
+        label = f"{event.source} → {dst}" if event.source else f"→ {dst}"
+        return panel(label, _message_body(text), PALETTE["border_input"])
 
     if isinstance(event, GenerationEndEvent):
         return usage_line(event)
@@ -267,6 +291,45 @@ def render_tool_stream(
         Text(body or "…", style=PALETTE["tool_result"]),
         PALETTE["border_tool_result"],
     )
+
+
+def _notification_field(text: str, tag: str) -> str:
+    m = re.search(rf"<{tag}>\s*(.+?)\s*</{tag}>", text, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def render_task_notification(text: str, *, agent: str | None = None) -> RenderableType:
+    """
+    A background-task notification delivered to an agent.
+
+    Shows the FULL message the model received, XML-highlighted (not stripped),
+    under a ``<tool> → <agent>`` heading (the box keeps a status-cue border —
+    red for interrupted/failed). An interrupted / failed task is prefixed with a
+    gray ``✗ <tool> <status> (id)`` line — same gray as the ``✓ … completed``
+    line a completed task gets from its :class:`BackgroundTaskCompletedEvent`
+    (so a completed task adds none here).
+    """
+    tool = _notification_field(text, "tool_name") or "background task"
+    status = _notification_field(text, "status")
+    task_id = _notification_field(text, "task_id")
+    failed = status in {"interrupted", "failed"}
+
+    title = f"{escape(tool)} → {escape(agent)}" if agent else escape(tool)
+    border = PALETTE["error"] if failed else PALETTE["border_tool_result"]
+    box = panel(title, _message_body(text), border)
+    if not failed:
+        return box
+    # Gray text (matching the "✓ … completed" line), even though the box keeps
+    # its status-cue border.
+    line = f"✗ {tool} {status}".rstrip()
+    if task_id:
+        line += f" (id: {task_id})"
+    return Group(Text(line, style=PALETTE["tool_result"]), box)
+
+
+def render_resume_notice(text: str) -> RenderableType:
+    """Panel for the resume framing — the full message, XML-highlighted."""
+    return panel("session resumed", _message_body(text), PALETTE["muted"])
 
 
 def render_thinking_stream(text: str) -> RenderableType:
@@ -695,6 +758,29 @@ def _build_args_renderable(args_json: str) -> RenderableType:
     if not isinstance(parsed, dict):
         return Text(escape(str(parsed)))
     return _kv_table(cast("dict[str, Any]", parsed), PALETTE["tool_call"])
+
+
+def _structured_output(text: str) -> RenderableType | None:
+    """
+    Renderable for a pure-JSON output message, else ``None`` (prose).
+
+    A JSON object renders as the same key/value table used for tool-call
+    arguments; a JSON array as a highlighted JSON block. A payload that isn't a
+    JSON object/array (ordinary prose, a bare string/number) returns ``None`` so
+    the caller falls back to Markdown.
+    """
+    stripped = text.strip()
+    if stripped[:1] not in {"{", "["}:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(parsed, dict):
+        return _kv_table(cast("dict[str, Any]", parsed), PALETTE["tool_call"])
+    if isinstance(parsed, list):
+        return _code_block(json.dumps(parsed, indent=2, ensure_ascii=False), "json")
+    return None
 
 
 def _unwrap_json(value: Any) -> Any:

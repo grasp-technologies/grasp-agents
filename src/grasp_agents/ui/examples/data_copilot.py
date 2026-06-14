@@ -63,13 +63,14 @@ _VIZ_SYS = """\
 You write and run Python in a sandbox (RunPython + Bash) sharing the workspace. \
 Only factory Python packages, numpy and matplotlib are available (no pandas/sklearn/etc). \
 Load the prepared dataset and compute the requested statistics with numpy. Make at \
-least one matplotlib chart, display it inline, then save to a file. \
-The inline backend is already active, so just build the \
-figure and show it:
+least one matplotlib chart. The inline backend is already active; build the figure, \
+save it, THEN show it (save before show — the inline backend closes the figure on \
+show, so saving afterwards writes a blank image):
 
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
     # ...draw on ax...
+    fig.savefig("chart.png")  # save BEFORE show
     plt.show()
 
 `plt.show()` returns the figure as an image the user sees. Then report the key \
@@ -102,6 +103,10 @@ def build_copilot(
     env = local_environment(
         allowed_roots=[workdir],
         confinement=confinement,
+        # A dedicated agent venv at <workdir>/.venv with its own stack, so the
+        # demo is self-contained and the agent never touches the host env.
+        provision=True,
+        packages=["ipykernel", "numpy", "matplotlib"],
         env={"MPLCONFIGDIR": str(workdir / ".mpl")},
         kernel_setup_code="%matplotlib inline",  # opt into inline plotting
     )

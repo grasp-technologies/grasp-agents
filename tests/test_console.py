@@ -150,7 +150,18 @@ class TestTurnEvents:
     @pytest.mark.asyncio
     async def test_turn_start(self):
         ec, buf = _make_console()
-        events = [TurnStartEvent(data=TurnInfo(turn=0), source="teacher")]
+        # The turn header is deferred until the agent's first content of the
+        # turn, so a content event is needed to flush it.
+        events = [
+            TurnStartEvent(data=TurnInfo(turn=0), source="teacher"),
+            OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                ),
+                source="teacher",
+                exec_id="c",
+            ),
+        ]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "teacher" in output
@@ -538,36 +549,78 @@ class TestToolEvents:
 
 class TestMessageEvents:
     @pytest.mark.asyncio
-    async def test_user_message_hidden_by_default(self):
+    async def test_user_message_shown_by_default(self):
+        # User (input) messages are on by default.
         ec, buf = _make_console()
         msg = InputMessageItem.from_text("Hello agent", role="user")
         events = [UserMessageEvent(data=msg, source="agent", exec_id="c1")]
         await _collect(ec, events)
-        output = buf.getvalue()
-        assert "User:" not in output
+        assert "Hello agent" in buf.getvalue()
 
     @pytest.mark.asyncio
-    async def test_user_message_shown_when_enabled(self):
-        ec, buf = _make_console_with(show_input_messages=True)
+    async def test_user_message_hidden_when_disabled(self):
+        ec, buf = _make_console_with(show_input_messages=False)
         msg = InputMessageItem.from_text("Hello agent", role="user")
-        events = [
-            UserMessageEvent(data=msg, source=None, destination="agent", exec_id="c1")
-        ]
+        events = [UserMessageEvent(data=msg, source="agent", exec_id="c1")]
         await _collect(ec, events)
-        output = buf.getvalue()
-        assert "User" in output
-        assert "agent" in output
-        assert "Hello agent" in output
+        assert "Hello agent" not in buf.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_system_message_hidden_by_default(self):
+        # System messages are opt-in.
+        ec, buf = _make_console()
+        msg = InputMessageItem.from_text("You are helpful.", role="system")
+        events = [SystemMessageEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        assert "You are helpful." not in buf.getvalue()
 
     @pytest.mark.asyncio
     async def test_system_message_shown_when_enabled(self):
-        ec, buf = _make_console_with(show_input_messages=True)
+        ec, buf = _make_console_with(show_system_messages=True)
         msg = InputMessageItem.from_text("You are helpful.", role="system")
         events = [SystemMessageEvent(data=msg, source="agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "System" in output
         assert "You are helpful." in output
+
+    @pytest.mark.asyncio
+    async def test_task_notification_shows_full_body(self):
+        # The whole notification the agent saw — every field, not just the
+        # error — under a "<tool> → <agent>" heading with a ✗ status line
+        # (symmetric with the ✓ a completed task's notification carries).
+        ec, buf = _make_console()
+        text = (
+            "<task_notification>\n<task_id>bg_1</task_id>\n"
+            "<tool_name>Bash</tool_name>\n<status>interrupted</status>\n"
+            "<ran_for>2s</ran_for>\n"
+            "<error>\nSession restarted before completion\n</error>\n"
+            "<output_file>\n.grasp/tasks/x.log\n</output_file>\n"
+            "</task_notification>"
+        )
+        msg = InputMessageItem.from_text(text, role="user")
+        await _collect(ec, [UserMessageEvent(data=msg, source="bg_agent", exec_id="c")])
+        out = buf.getvalue()
+        for field in (
+            "bg_1", "Bash", "interrupted", "2s",
+            "Session restarted before completion", ".grasp/tasks/x.log",
+        ):
+            assert field in out, field
+        assert "bg_agent" in out  # the owning agent, in the "<tool> → <agent>" title
+        assert "✗" in out  # interrupted/failed get a ✗ status line
+
+    @pytest.mark.asyncio
+    async def test_resume_framing_shown(self):
+        ec, buf = _make_console()
+        text = (
+            "<session_resumed>\nSession resumed from a checkpoint — state was "
+            "reconstructed.\n</session_resumed>"
+        )
+        msg = InputMessageItem.from_text(text, role="user")
+        await _collect(ec, [UserMessageEvent(data=msg, source="agent", exec_id="c")])
+        out = buf.getvalue()
+        assert "session resumed" in out.lower()
+        assert "Session resumed from a checkpoint" in out
 
 
 # ── Usage display ──
@@ -895,12 +948,20 @@ class TestStreamEventsFunction:
 
         async def gen():
             yield TurnStartEvent(data=TurnInfo(turn=0), source="agent")
+            # flushes the deferred turn header
+            yield OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                ),
+                source="agent",
+                exec_id="c",
+            )
 
         collected = []
         async for event in stream_events(gen(), console=console):
             collected.append(event)
 
-        assert len(collected) == 1
+        assert len(collected) == 2
         output = buf.getvalue()
         assert "agent" in output
         assert "turn 1" in output
@@ -1073,9 +1134,18 @@ class TestFullSequence:
 
     @pytest.mark.asyncio
     async def test_turn_header_format(self):
-        """Turn header shows agent name and turn number."""
+        """Turn header shows agent name and turn number, before the content."""
         ec, buf = _make_console()
-        events = [TurnStartEvent(data=TurnInfo(turn=0), source="agent")]
+        events = [
+            TurnStartEvent(data=TurnInfo(turn=0), source="agent"),
+            OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                ),
+                source="agent",
+                exec_id="c",
+            ),
+        ]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "agent" in output
@@ -1122,3 +1192,66 @@ class TestBackgroundSuppression:
             BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
         )
         assert ec._is_bg_subagent(ev) is False
+
+    def test_default_suppresses_bg_subagent_turn(self) -> None:
+        ec, buf = _make_console()
+        ec._handle(
+            BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+        )
+        buf.truncate(0)
+        buf.seek(0)
+        ec._handle(TurnStartEvent(data=TurnInfo(turn=0), source="research"))
+        assert buf.getvalue().strip() == ""  # suppressed
+
+    def test_show_background_prints_bg_subagent_turn(self) -> None:
+        ec, buf = _make_console_with(show_background=True)
+        ec._handle(
+            BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+        )
+        buf.truncate(0)
+        buf.seek(0)
+        # Still a bg subagent, but now rendered inline instead of dropped.
+        ev = TurnStartEvent(data=TurnInfo(turn=0), source="research")
+        assert ec._is_bg_subagent(ev) is True
+        ec._handle(ev)
+        # The turn header is deferred until the agent's first content; feeding a
+        # content event flushes it (header) followed by the content.
+        ec._handle(
+            OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="found it")],
+                    status="completed",
+                ),
+                source="research",
+                exec_id="c",
+            )
+        )
+        out = buf.getvalue()
+        assert "research" in out and "turn" in out  # header rendered
+        assert "found it" in out  # ...followed by the content
+
+    @staticmethod
+    def _exec_stream() -> Any:
+        from grasp_agents.tools.bash_common import ExecStreamChunk, ExecStreamEvent
+
+        return ExecStreamEvent(
+            source="Bash", data=ExecStreamChunk(channel="stdout", text="item 1 of 5\n")
+        )
+
+    def test_default_suppresses_bg_tool_stdout(self) -> None:
+        # Progressive stdout from a backgrounded shell command is dropped...
+        ec, buf = _make_console()
+        ec._handle(BackgroundTaskLaunchedEvent(source="agent", data=self._bg("Bash")))
+        buf.truncate(0)
+        buf.seek(0)
+        ec._handle(self._exec_stream())
+        assert buf.getvalue().strip() == ""
+
+    def test_show_background_prints_bg_tool_stdout(self) -> None:
+        # ...but show_background streams the backgrounded command's live output.
+        ec, buf = _make_console_with(show_background=True)
+        ec._handle(BackgroundTaskLaunchedEvent(source="agent", data=self._bg("Bash")))
+        buf.truncate(0)
+        buf.seek(0)
+        ec._handle(self._exec_stream())
+        assert "item 1 of 5" in buf.getvalue()
