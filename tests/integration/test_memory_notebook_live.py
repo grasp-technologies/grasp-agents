@@ -38,11 +38,6 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
 def _make_llm() -> OpenAILLM:
     model_name = os.environ.get("MEMORY_TEST_MODEL", "openai/gpt-4o-mini")
     retries = int(os.environ.get("MEMORY_TEST_VALIDATION_RETRIES", "3"))

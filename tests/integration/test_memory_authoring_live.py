@@ -36,11 +36,6 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
 @pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
-@pytest.fixture
 def memdir(tmp_path: Path) -> Path:
     d = tmp_path / "memdir"
     d.mkdir()

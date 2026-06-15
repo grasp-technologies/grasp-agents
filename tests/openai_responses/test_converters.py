@@ -24,8 +24,8 @@ from grasp_agents.types.response import Response as InternalResponse
 
 
 def _make_add_tool() -> Any:
-    """Reuse the same AddTool definition from conftest."""
-    from tests.conftest import AddTool
+    """Reuse the shared AddTool definition."""
+    from tests._helpers import AddTool
 
     return AddTool()
 

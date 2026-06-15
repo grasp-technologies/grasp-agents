@@ -7,10 +7,11 @@ from typing import Any
 
 import pytest
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
 
 from grasp_agents.run_context import reset_default_run_context
 from grasp_agents.tools.base import BaseTool
+
+from ._helpers import AddTool, MultiplyTool
 
 # Load .env file (gitignored) for local development
 load_dotenv()
@@ -29,6 +30,12 @@ def _fresh_default_run_context() -> Any:
     reset_default_run_context()
     yield
     reset_default_run_context()
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """Run ``anyio``-marked tests on the asyncio backend."""
+    return "asyncio"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -72,58 +79,6 @@ def openai_api_key() -> str:
 # ------------------------------------------------------------------ #
 #  Shared tool fixtures for integration tests                          #
 # ------------------------------------------------------------------ #
-
-
-class AddInput(BaseModel):
-    a: int = Field(description="First integer")
-    b: int = Field(description="Second integer")
-
-
-class AddTool(BaseTool[AddInput, int, Any]):
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(
-            name="add",
-            description="Add two integers and return their sum.",
-            **kwargs,
-        )
-
-    async def _run(
-        self,
-        inp: AddInput,
-        *,
-        ctx: Any = None,
-        exec_id: str | None = None,
-        progress_callback: Any = None,
-        path: Any = None,
-        agent_ctx: Any = None,
-    ) -> int:
-        return inp.a + inp.b
-
-
-class MultiplyInput(BaseModel):
-    a: int = Field(description="First integer")
-    b: int = Field(description="Second integer")
-
-
-class MultiplyTool(BaseTool[MultiplyInput, int, Any]):
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(
-            name="multiply",
-            description="Multiply two integers and return their product.",
-            **kwargs,
-        )
-
-    async def _run(
-        self,
-        inp: MultiplyInput,
-        *,
-        ctx: Any = None,
-        exec_id: str | None = None,
-        progress_callback: Any = None,
-        path: Any = None,
-        agent_ctx: Any = None,
-    ) -> int:
-        return inp.a * inp.b
 
 
 @pytest.fixture

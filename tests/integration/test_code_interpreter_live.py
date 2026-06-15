@@ -41,11 +41,6 @@ _SYS_PROMPT = (
 )
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
 def _make_llm() -> OpenAIResponsesLLM:
     # The Responses API (unlike Chat Completions) supports image tool outputs,
     # which is what lets a displayed plot be fed back to the model.
