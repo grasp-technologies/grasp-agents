@@ -95,7 +95,7 @@ class _EchoTool(BaseTool[EchoInput, str, Any]):
 
 
 class TestTranscriptBuilderRunsEveryStep:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_builder_runs_each_step_and_can_preserve_history(self) -> None:
         agent, _ = _make_agent([_text_response("one"), _text_response("two")])
         calls: list[str] = []
@@ -120,7 +120,7 @@ class TestTranscriptBuilderRunsEveryStep:
         assert any("first" in t for t in texts)
         assert any("second" in t for t in texts)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_builder_mutation_rewrites_persisted_log(self) -> None:
         # The builder may rewrite history between steps — the persisted
         # message log must follow it, not keep the stale prefix.
@@ -158,7 +158,7 @@ class TestTranscriptBuilderRunsEveryStep:
 
 
 class TestPureResume:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_resume_completed_session_returns_cached_output(self) -> None:
         store = InMemoryCheckpointStore()
         agent, _ = _make_agent(
@@ -172,7 +172,7 @@ class TestPureResume:
         out2 = await agent2.run()
         assert out2.payloads[0] == "answer"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_input_and_nothing_to_resume_raises_cleanly(self) -> None:
         store = InMemoryCheckpointStore()
         agent, _ = _make_agent([], session_key="fresh", store=store)
@@ -180,7 +180,7 @@ class TestPureResume:
             await agent.run()
         assert "No inputs were provided" in str(excinfo.value.__cause__)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_after_tool_result_resumes_at_next_turn(self) -> None:
         """
         A run interrupted after a tool result resumes at the NEXT turn — it does
@@ -242,7 +242,7 @@ class TestPureResume:
 
 
 class TestForceFinalAnswerSingleCommit:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_duplicate_messages_or_usage(self) -> None:
         agent, ctx = _make_agent(
             [
@@ -292,7 +292,7 @@ def _make_answer_agent(
 
 
 class TestFinalAnswerToolCallClosure:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_voluntary_final_answer_call_is_closed(self) -> None:
         agent = _make_answer_agent(
             [_tool_call_response("final_answer", '{"answer": "42"}', "fa_1")]
@@ -308,7 +308,7 @@ class TestFinalAnswerToolCallClosure:
         # The pairing invariant holds for the next run on this transcript.
         agent.transcript.validate_tool_call_pairing()
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_forced_final_answer_call_is_closed(self) -> None:
         agent = _make_answer_agent(
             [
@@ -334,7 +334,7 @@ class TestFinalAnswerToolCallClosure:
 
 
 class TestFailedRunRollback:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_failed_run_restores_transcript(self) -> None:
         agent, _ = _make_agent([_text_response("bad"), _text_response("good")])
         agent_ctx = agent._loop.agent_ctx
@@ -377,7 +377,7 @@ class TestFailedRunRollback:
 
 
 class TestLenientArgsDispatch:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_python_literal_args_dispatch(self) -> None:
         # Single-quoted (Python-literal) args pass the LLM layer's lenient
         # validation; dispatch must accept them too instead of crashing.
@@ -397,7 +397,7 @@ class TestLenientArgsDispatch:
         ]
         assert any("echo: hi" in t for t in tool_outputs)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_input_converter_failure_becomes_tool_result(self) -> None:
         agent, _ = _make_agent(
             [
@@ -429,7 +429,7 @@ class TestLenientArgsDispatch:
 
 
 class TestAppendLogPruneRewrite:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_pruned_transcript_rewrites_log(self) -> None:
         store = InMemoryCheckpointStore()
         agent, _ = _make_agent(

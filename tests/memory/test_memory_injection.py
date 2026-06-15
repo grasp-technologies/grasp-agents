@@ -61,7 +61,7 @@ class TestMemorySection:
     def test_section_name_is_memory(self) -> None:
         assert memory_system_prompt_section.name == "memory"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_compute_no_ctx_returns_none(self) -> None:
         result = memory_system_prompt_section.compute(ctx=None, exec_id="e")
         if inspect.isawaitable(result):

@@ -335,13 +335,13 @@ class TestBuildInputMessage:
 class TestSystemPromptBuilder:
     """Test system prompt hook."""
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_default_returns_sys_prompt(self):
         builder = _make_builder(str, sys_prompt="Be helpful.")
         result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result == "Be helpful."
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_hook_overrides_sys_prompt(self):
         builder = _make_builder(str, sys_prompt="Original.")
 
@@ -352,13 +352,13 @@ class TestSystemPromptBuilder:
         result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result == "Dynamic prompt"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_sys_prompt_returns_none(self):
         builder = _make_builder(str)
         result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_section_cache_control_rides_on_part(self):
         """
         A section's ``cache_control`` lands on its rendered part as the
@@ -385,7 +385,7 @@ class TestSystemPromptBuilder:
         # No provider-specific field is set on either part.
         assert all(p.provider_specific_fields is None for p in parts)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_builder_can_return_parts(self):
         """
         ``system_prompt_builder`` may return a list of ``InputText`` so a

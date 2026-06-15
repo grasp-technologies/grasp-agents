@@ -97,14 +97,14 @@ class TestEnableMemory:
 
 
 class TestSystemPromptIntegration:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_provider_no_memory_block(self) -> None:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(state=_State())
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")
         assert prompt is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_provider_renders_memory_block(self) -> None:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(
@@ -116,7 +116,7 @@ class TestSystemPromptIntegration:
         assert "<memory-index>" in prompt
         assert "index body" in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_combines_with_user_sys_prompt(self) -> None:
         agent = _make_agent(sys_prompt="You are a helper.")
         ctx: RunContext[_State] = RunContext(
@@ -128,7 +128,7 @@ class TestSystemPromptIntegration:
         assert prompt.startswith("You are a helper.")
         assert "<memory-index>" in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_empty_provider_emits_instructions_only(self) -> None:
         agent = _make_agent(sys_prompt="head.")
         ctx: RunContext[_State] = RunContext(
@@ -165,7 +165,7 @@ class TestUserOverride:
 
 
 class TestAutoMemoryInstructions:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_instructions_render_whenever_provider_set(self) -> None:
         # No matter which tools are wired, when ctx.memory is configured
         # the instructions block describes the substrate (taxonomy +
@@ -187,7 +187,7 @@ class TestAutoMemoryInstructions:
         # save_memory / list_memories names appear.
         assert "file tools" in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_instructions_do_not_enumerate_tools(self) -> None:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(
@@ -203,7 +203,7 @@ class TestAutoMemoryInstructions:
         assert "update_memory_index" not in prompt
         assert "delete_memory" not in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_selector_adds_per_turn_note(self) -> None:
         provider = InMemoryMemoryProvider(index="# idx\n")
 
@@ -220,7 +220,7 @@ class TestAutoMemoryInstructions:
         assert prompt is not None
         assert "surfaced into each turn" in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_memory_provider_no_section(self) -> None:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(state=_State())
@@ -228,7 +228,7 @@ class TestAutoMemoryInstructions:
         # No ctx.memory → memory section drops entirely.
         assert prompt is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_empty_provider_emits_instructions_only(self) -> None:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(

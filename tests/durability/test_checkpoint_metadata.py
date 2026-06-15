@@ -87,7 +87,7 @@ class TestSchemaVersion:
 
 
 class TestContextRoundTrip:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_pydantic_state_persisted_on_save(self) -> None:
         store = InMemoryCheckpointStore()
         agent, ctx = _make_agent([_text_response("hi")], session_key="s1", store=store)
@@ -102,7 +102,7 @@ class TestContextRoundTrip:
         assert snap.context_kind == ContextKind.PYDANTIC
         assert snap.context_data == {"pathway_id": "p-1", "count": 7}
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_pydantic_state_restored_on_resume(self) -> None:
         store = InMemoryCheckpointStore()
         agent1, ctx1 = _make_agent(
@@ -121,7 +121,7 @@ class TestContextRoundTrip:
         assert ctx2.state.pathway_id == "p-42"
         assert ctx2.state.count == 3
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_none_state_produces_omitted_kind(self) -> None:
         store = InMemoryCheckpointStore()
         agent = LLMAgent[str, str, None](
@@ -153,7 +153,7 @@ class TestContextRoundTrip:
 class TestSerializeStateOptIn:
     """Default stance: state is rebuilt via state_builder, not the checkpoint."""
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_state_not_persisted_by_default(self) -> None:
         store = InMemoryCheckpointStore()
         agent = LLMAgent[str, str, _MyState](
@@ -175,7 +175,7 @@ class TestSerializeStateOptIn:
         assert snap.context_kind is None
         assert snap.context_data is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_state_not_restored_by_default(self) -> None:
         store = InMemoryCheckpointStore()
         agent1 = LLMAgent[str, str, _MyState](
@@ -211,7 +211,7 @@ class TestSerializeStateOptIn:
 
 
 class TestPromptCacheKey:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_round_trip_through_checkpoint(self) -> None:
         store = InMemoryCheckpointStore()
 
@@ -230,7 +230,7 @@ class TestPromptCacheKey:
         await agent2.load_checkpoint()
         assert agent2.prompt_cache_key == "cache-abc"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_defaults_to_none_when_never_set(self) -> None:
         store = InMemoryCheckpointStore()
         agent, ctx = _make_agent([_text_response("hi")], session_key="s", store=store)
@@ -248,7 +248,7 @@ class TestPromptCacheKey:
 
 
 class TestPrePersistInput:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_checkpoint_exists_before_first_llm_call(self) -> None:
         """
         When the LLM runs, a checkpoint must already be on disk with the

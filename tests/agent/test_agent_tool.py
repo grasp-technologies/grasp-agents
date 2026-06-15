@@ -192,7 +192,7 @@ def _agent_ctx(
 
 
 class TestAgentToolBasics:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_type_resolution(self) -> None:
         tool = AgentTool(
             name="sub",
@@ -202,7 +202,7 @@ class TestAgentToolBasics:
         assert tool.in_type is AgentToolInput
         assert tool.out_type is str
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_resumable(self) -> None:
         tool = AgentTool(
             name="sub",
@@ -211,7 +211,7 @@ class TestAgentToolBasics:
         )
         assert tool.resumable is True
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_basic_foreground_execution(self) -> None:
         tool = AgentTool[None](
             name="sub",
@@ -226,7 +226,7 @@ class TestAgentToolBasics:
         )
         assert result == "hello world"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_streaming_yields_child_events(self) -> None:
         tool = AgentTool[None](
             name="sub",
@@ -247,7 +247,7 @@ class TestAgentToolBasics:
         assert len(output_events) == 1
         assert output_events[0].data == "streamed result"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_fresh_agent_per_invocation(self) -> None:
         """Each call creates a fresh agent — no memory leaking."""
         llm = _make_child_llm("first", "second", "third", "fourth")
@@ -274,7 +274,7 @@ class TestAgentToolBasics:
 
 
 class TestToolInheritance:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_inherit_tools_excludes_agent_tools(self) -> None:
         @function_tool
         async def search(query: str) -> str:
@@ -299,7 +299,7 @@ class TestToolInheritance:
         assert "search" in names
         assert "other" not in names  # AgentTool excluded
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_inheritance_when_disabled(self) -> None:
         @function_tool
         async def search(query: str) -> str:
@@ -315,7 +315,7 @@ class TestToolInheritance:
         resolved = tool._resolve_tools([search])  # type: ignore[list-item]
         assert resolved is None  # No own tools, inheritance disabled
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_own_tools_take_precedence(self) -> None:
         @function_tool(name="search")
         async def parent_search(query: str) -> str:
@@ -338,7 +338,7 @@ class TestToolInheritance:
         # Only one "search" — own version wins
         assert len(resolved) == 1
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_parent_wiring_in_llm_agent(self) -> None:
         """The parent loop's AgentContext exposes sibling tools to AgentTool."""
 
@@ -370,7 +370,7 @@ class TestToolInheritance:
 
 
 class TestAgentToolWithParentAgent:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_agent_calls_agent_tool(self) -> None:
         """Parent agent calls AgentTool, gets child's answer."""
         # Child LLM returns "child answer"
@@ -403,7 +403,7 @@ class TestAgentToolWithParentAgent:
         result = await parent.run(chat_inputs="do research")
         assert result.payloads[0] == "Based on research: all good"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_background_agent_tool(self) -> None:
         """Background AgentTool spawns, drains, delivers notification."""
         child_llm = _make_child_llm("bg result")
@@ -454,7 +454,7 @@ class TestAgentToolWithParentAgent:
 
 
 class TestAgentToolPromptBuilders:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_sys_prompt_builder_overrides_static(self) -> None:
         """sys_prompt_builder replaces static sys_prompt."""
         child_llm = _make_child_llm("ok")
@@ -486,7 +486,7 @@ class TestAgentToolPromptBuilders:
         )
         assert agent._prompt_builder.sys_prompt == "Dynamic: hello"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_in_prompt_builder_transforms_user_msg(self) -> None:
         """in_prompt_builder transforms the prompt into the child's user message."""
         captured: list[str] = []
@@ -525,7 +525,7 @@ class TestAgentToolPromptBuilders:
         )
         assert any("[enriched] raw task" in c for c in captured)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_builder_receives_parent_transcript(self) -> None:
         """Builder receives the parent agent's memory."""
         received_memory: list[LLMAgentTranscript | None] = []
@@ -561,7 +561,7 @@ class TestAgentToolPromptBuilders:
         assert received_memory[0] is parent_mem
         assert len(received_memory[0].messages) == 1
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_async_builder(self) -> None:
         """Async builders are awaited properly."""
         child_llm = _make_child_llm("ok")
@@ -584,7 +584,7 @@ class TestAgentToolPromptBuilders:
         )
         assert agent._prompt_builder.sys_prompt == "async: test"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_builders_preserves_defaults(self) -> None:
         """Without builders, static sys_prompt and raw prompt are used."""
         child_llm = _make_child_llm("ok")
@@ -603,7 +603,7 @@ class TestAgentToolPromptBuilders:
         assert agent._prompt_builder.sys_prompt == "static"
         assert user_msg == "raw"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_forwards_llm_agent_params_to_child(self) -> None:
         """#8: passthrough ctor params land on the spawned child."""
         child_llm = _make_child_llm("ok")
@@ -625,7 +625,7 @@ class TestAgentToolPromptBuilders:
         assert agent.max_retries == 2
         assert agent._loop.stream_llm is True
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_parent_agent_wires_memory(self) -> None:
         """The parent loop's AgentContext carries its transcript for AgentTool."""
         child_llm = _make_child_llm("ok")

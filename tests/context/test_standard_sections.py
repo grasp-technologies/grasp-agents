@@ -214,13 +214,13 @@ async def _await_compute(section: SystemPromptSection) -> str | None:
 
 
 class TestMcpInstructionsSection:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_clients_returns_none(self, mcp_section_factory: Any) -> None:
         section = mcp_section_factory([])
         assert section.cache_control == CacheControl()
         assert await _await_compute(section) is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_clients_with_no_instructions_omitted(
         self, mcp_section_factory: Any
     ) -> None:
@@ -229,7 +229,7 @@ class TestMcpInstructionsSection:
         )
         assert await _await_compute(section) is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_single_client_renders(self, mcp_section_factory: Any) -> None:
         section = mcp_section_factory([_StubClient("alpha", "Connect with --auth")])
         text = await _await_compute(section)
@@ -238,7 +238,7 @@ class TestMcpInstructionsSection:
         assert "### alpha" in text
         assert "Connect with --auth" in text
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_multiple_clients_concatenated(
         self, mcp_section_factory: Any
     ) -> None:
@@ -256,7 +256,7 @@ class TestMcpInstructionsSection:
         assert "Use tool foo for queries." in text
         assert "Set BAR=1 first." in text
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_custom_section_name(self, mcp_section_factory: Any) -> None:
         section = mcp_section_factory(
             [_StubClient("alpha", "x")], section_name="mcp_extra"

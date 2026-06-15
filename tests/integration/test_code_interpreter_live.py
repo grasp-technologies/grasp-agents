@@ -30,7 +30,7 @@ from grasp_agents.types.events import ToolOutputItemEvent
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = pytest.mark.anyio
+pytestmark = pytest.mark.asyncio
 
 _SYS_PROMPT = (
     "You are a Python data assistant with a RunPython tool backed by a live "

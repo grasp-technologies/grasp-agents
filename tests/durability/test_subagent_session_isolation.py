@@ -50,7 +50,7 @@ from tests.durability.test_sessions import (  # type: ignore[attr-defined]  # py
     _tool_call_response,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = pytest.mark.asyncio
 
 
 def _make_child_tool(responses: list[Any]) -> AgentTool[None]:

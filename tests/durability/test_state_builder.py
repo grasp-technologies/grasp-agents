@@ -60,7 +60,7 @@ def _make_agent(
 
 
 class TestStateBuilder:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_does_not_fire_on_fresh_init(self) -> None:
         """With no saved checkpoint, state builder must NOT be called."""
         store = InMemoryCheckpointStore()
@@ -82,7 +82,7 @@ class TestStateBuilder:
         await agent.run("hi")
         assert calls == []
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_fires_on_resume_with_checkpoint(self) -> None:
         """After a first run persists, a second agent's load triggers builder."""
         store = InMemoryCheckpointStore()
@@ -123,7 +123,7 @@ class TestStateBuilder:
         # restored history.
         assert ctx2.state.message_count_at_load > 0
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_does_not_fire_when_memory_already_populated(self) -> None:
         """
         load_checkpoint short-circuits if memory is non-empty (the agent
@@ -155,7 +155,7 @@ class TestStateBuilder:
         assert result is None
         assert calls == 0
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_subclass_override_is_honored(self) -> None:
         """Overriding ``build_state_impl`` on a subclass works identically."""
         store = InMemoryCheckpointStore()
@@ -196,7 +196,7 @@ class TestStateBuilder:
         assert len(agent.build_state_calls) == 1
         assert ctx.state.loaded_from_db is True
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_state_persists_into_followup_run(self) -> None:
         """State mutated by the builder survives into the post-resume run."""
         store = InMemoryCheckpointStore()

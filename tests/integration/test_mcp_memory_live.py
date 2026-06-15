@@ -34,7 +34,7 @@ MCPClient = mcp_module.MCPClient
 MCPServerStdio = mcp_module.MCPServerStdio
 from grasp_agents.file_backend import MCPFileBackend
 
-pytestmark = [pytest.mark.anyio, pytest.mark.integration]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def _make_llm() -> OpenAILLM:

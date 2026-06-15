@@ -38,7 +38,7 @@ def _cached_section() -> SystemPromptSection:
 
 
 class TestTranscriptBuilderReceivesParts:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_hook_receives_parts_with_cache_control(self) -> None:
         # env_info off so the parts list is exactly base + our section.
         agent = LLMAgent[str, str, None](
@@ -82,7 +82,7 @@ class TestTranscriptBuilderReceivesParts:
         assert isinstance(cached_part, InputText)
         assert cached_part.cache_control == CacheControl(ttl="1h")
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_subclass_override_receives_parts(self) -> None:
         """Overriding ``build_transcript_impl`` on a subclass works too."""
         seen: list[Sequence[InputText] | str | None] = []

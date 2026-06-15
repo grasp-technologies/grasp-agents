@@ -100,7 +100,7 @@ def test_processor_tool_wrapped_proc_inherits() -> None:
     assert ptool.processor.tracing_exclude_input_fields == {"secret"}
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_agent_tool_inherits_and_threads_to_spawned_child() -> None:
     sub = AgentTool[None](name="sub", description="subagent", llm=_llm())
     LLMAgent[str, str, None](
@@ -201,7 +201,7 @@ def test_enabled_is_noop_for_parent_without_the_flag() -> None:
     assert agent.tracing_enabled is True
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_agent_tool_threads_disabled_tracing_to_spawned_child() -> None:
     sub = AgentTool[None](name="sub", description="subagent", llm=_llm())
     LLMAgent[str, str, None](

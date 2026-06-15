@@ -43,8 +43,6 @@ from tests.durability.test_sessions import (  # type: ignore[attr-defined]
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = pytest.mark.anyio
-
 
 def _msgs(*texts: str) -> list[InputItem]:
     return [InputMessageItem.from_text(t, role="user") for t in texts]
@@ -75,6 +73,7 @@ class _FlakyLLM(MockLLM):
 
 
 class TestWithRetryTranscript:
+    @pytest.mark.asyncio
     async def test_retry_does_not_duplicate_input(self) -> None:
         agent = LLMAgent[str, str, None](
             name="t",
@@ -98,6 +97,7 @@ class TestWithRetryTranscript:
 
 
 class TestRunDeadlineBoundsApprovalWait:
+    @pytest.mark.asyncio
     async def test_parked_before_tool_hook_times_out(self) -> None:
         from tests.agent.test_agent_loop import (
             EchoTool,
@@ -155,6 +155,7 @@ class _CrashBeforeHeadStore(FileCheckpointStore):
 
 
 class TestRewriteGenerations:
+    @pytest.mark.asyncio
     async def test_crash_between_rewrite_and_head_keeps_old_pair(
         self, tmp_path: Path
     ) -> None:
@@ -183,6 +184,7 @@ class TestRewriteGenerations:
         assert head is not None
         assert _texts(head.messages) == ["a", "b"]
 
+    @pytest.mark.asyncio
     async def test_successful_rewrite_supersedes_and_cleans_up(
         self, tmp_path: Path
     ) -> None:
@@ -215,6 +217,7 @@ class TestRewriteGenerations:
 
 
 class TestAppendFsync:
+    @pytest.mark.asyncio
     async def test_append_fsyncs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -274,6 +277,7 @@ class TestDataclassRehydration:
 
 
 class TestResumeLogLine:
+    @pytest.mark.asyncio
     async def test_loaded_session_log_renders(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -326,6 +330,7 @@ class TestSchemaVersionFloor:
 
 
 class TestLockEviction:
+    @pytest.mark.asyncio
     async def test_delete_evicts_lock(self, tmp_path: Path) -> None:
         store = FileCheckpointStore(tmp_path)
         await store.save("s1/agent/x", b"{}")

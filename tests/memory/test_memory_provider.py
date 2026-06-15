@@ -50,7 +50,7 @@ def _make_ctx(memdir: Path) -> RunContext[Any]:
 
 
 class TestInMemoryProvider:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_default_empty(self) -> None:
         p = InMemoryMemoryProvider()
         snap = await p.load()
@@ -58,13 +58,13 @@ class TestInMemoryProvider:
         assert snap.index is None
         assert snap.entries == ()
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_with_index(self) -> None:
         p = InMemoryMemoryProvider(index="# hello")
         snap = await p.load()
         assert snap.index == "# hello"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_with_entries(self, tmp_path: Path) -> None:
         e = _aged_entry("alpha", age_seconds=10, tmp_path=tmp_path)
         p = InMemoryMemoryProvider(entries=[e])
@@ -78,7 +78,7 @@ class TestInMemoryProvider:
 
 
 class TestMemoryProviderLocal:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_load_from_disk(self, tmp_path: Path) -> None:
         (tmp_path / "MEMORY.md").write_text("# idx\n", encoding="utf-8")
         _topic_file(tmp_path / "alpha.md", "alpha")
@@ -89,7 +89,7 @@ class TestMemoryProviderLocal:
         assert "idx" in snap.index
         assert {e.name for e in snap.entries} == {"alpha"}
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_load_caches(self, tmp_path: Path) -> None:
         _topic_file(tmp_path / "alpha.md", "alpha")
         ctx = _make_ctx(tmp_path)
@@ -101,7 +101,7 @@ class TestMemoryProviderLocal:
         assert first is second
         assert {e.name for e in second.entries} == {"alpha"}
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_refresh_picks_up_changes(self, tmp_path: Path) -> None:
         _topic_file(tmp_path / "alpha.md", "alpha")
         ctx = _make_ctx(tmp_path)
@@ -113,7 +113,7 @@ class TestMemoryProviderLocal:
         assert first is not second
         assert {e.name for e in second.entries} == {"alpha", "beta"}
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_missing_root(self, tmp_path: Path) -> None:
         missing = tmp_path / "missing"
         # Use the parent dir for allowed_roots so validation accepts the
@@ -128,7 +128,7 @@ class TestMemoryProviderLocal:
         snap = await ctx.memory.load()
         assert snap.is_empty
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_auto_creates_index(self, tmp_path: Path) -> None:
         """Default auto-create bootstraps MEMORY.md (and the dir) when absent."""
         memdir = tmp_path / "mem"
@@ -140,7 +140,7 @@ class TestMemoryProviderLocal:
         assert snap.index is not None
         assert not snap.is_empty
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_auto_create_disabled_leaves_index_absent(
         self, tmp_path: Path
     ) -> None:
@@ -156,12 +156,12 @@ class TestMemoryProviderLocal:
         assert not (memdir / "MEMORY.md").exists()
         assert snap.index is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_root_property(self, tmp_path: Path) -> None:
         p = MemoryProvider(tmp_path)
         assert p.root == tmp_path
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_load_requires_file_backend(self, tmp_path: Path) -> None:
         # Validator catches missing backend at RunContext construction,
         # but call ``load`` directly with a hand-rolled namespace to
@@ -210,7 +210,7 @@ class TestMemdirAdmission:
 
 
 class TestFreshness:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_stale_index_gets_warning(self, tmp_path: Path) -> None:
         idx = tmp_path / "MEMORY.md"
         idx.write_text("# idx\n", encoding="utf-8")
@@ -227,7 +227,7 @@ class TestFreshness:
         assert "30" in snap.index_freshness_warning
         assert "<system-reminder>" in snap.index_freshness_warning
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_fresh_index_no_warning(self, tmp_path: Path) -> None:
         (tmp_path / "MEMORY.md").write_text("# idx\n", encoding="utf-8")
         backend = LocalFileBackend(allowed_roots=[tmp_path])
@@ -239,7 +239,7 @@ class TestFreshness:
         snap = await ctx.memory.load()
         assert snap.index_freshness_warning is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_stale_entries_warned(self, tmp_path: Path) -> None:
         f = _topic_file(tmp_path / "alpha.md", "alpha")
         old = time.time() - 100 * 86400
@@ -253,7 +253,7 @@ class TestFreshness:
         snap = await ctx.memory.load()
         assert "alpha" in snap.entry_freshness_warnings
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_subday_threshold_fires(self, tmp_path: Path) -> None:
         idx = tmp_path / "MEMORY.md"
         idx.write_text("# idx\n", encoding="utf-8")
@@ -268,7 +268,7 @@ class TestFreshness:
         assert snap.index_freshness_warning is not None
         assert "hours" in snap.index_freshness_warning
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_subday_fresh_no_warning(self, tmp_path: Path) -> None:
         idx = tmp_path / "MEMORY.md"
         idx.write_text("# idx\n", encoding="utf-8")
@@ -282,7 +282,7 @@ class TestFreshness:
         snap = await ctx.memory.load()
         assert snap.index_freshness_warning is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_day_threshold_not_off_by_a_day(self, tmp_path: Path) -> None:
         idx = tmp_path / "MEMORY.md"
         idx.write_text("# idx\n", encoding="utf-8")
@@ -297,7 +297,7 @@ class TestFreshness:
         assert snap.index_freshness_warning is not None
         assert "2 days" in snap.index_freshness_warning
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_zero_threshold_disables(self, tmp_path: Path) -> None:
         idx = tmp_path / "MEMORY.md"
         idx.write_text("# idx\n", encoding="utf-8")

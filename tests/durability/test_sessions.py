@@ -129,30 +129,30 @@ async def _drain_stream(
 
 
 class TestInMemoryCheckpointStore:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_save_and_load(self):
         store = InMemoryCheckpointStore()
         await store.save("key1", b"data1")
         assert await store.load("key1") == b"data1"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_load_missing(self):
         store = InMemoryCheckpointStore()
         assert await store.load("missing") is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_delete(self):
         store = InMemoryCheckpointStore()
         await store.save("key1", b"data1")
         await store.delete("key1")
         assert await store.load("key1") is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_delete_missing_is_noop(self):
         store = InMemoryCheckpointStore()
         await store.delete("missing")  # should not raise
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_list_keys(self):
         store = InMemoryCheckpointStore()
         await store.save("chat/1", b"a")
@@ -162,7 +162,7 @@ class TestInMemoryCheckpointStore:
         keys = await store.list_keys("chat/")
         assert sorted(keys) == ["chat/1", "chat/2"]
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_overwrite(self):
         store = InMemoryCheckpointStore()
         await store.save("key1", b"v1")
@@ -358,7 +358,7 @@ class TestResumeCleanup:
 
 
 class TestAgentSessionPersistence:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_fresh_session_saves_snapshot(self):
         """First run with store saves state via checkpoint callback."""
         store = InMemoryCheckpointStore()
@@ -378,7 +378,7 @@ class TestAgentSessionPersistence:
         assert snap.processor_name == "test_agent"
         assert len(snap.messages) > 0
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_session_resume_restores_memory(self):
         """Second agent instance picks up where first left off."""
         store = InMemoryCheckpointStore()
@@ -411,7 +411,7 @@ class TestAgentSessionPersistence:
         assert snap2 is not None
         assert len(snap2.messages) > saved_msg_count
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_with_tools_checkpoints_after_tool_turn(self):
         """Checkpoint fires after tool execution, not just on final answer."""
         store = InMemoryCheckpointStore()
@@ -440,7 +440,7 @@ class TestAgentSessionPersistence:
         # At least 2 checkpoints: after tool turn + after final answer
         assert checkpoint_count >= 2
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_reset_transcript_on_run_with_store(self):
         """reset_transcript_on_run=True wipes memory even with a store."""
         store = InMemoryCheckpointStore()
@@ -474,14 +474,14 @@ class TestAgentSessionPersistence:
         ]
         assert len(user_msgs) == 1  # only "follow up"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_store_works_normally(self):
         """Agent without store/session_key works exactly as before."""
         agent, ctx = _make_agent([_text_response("hello")])
         result = await agent.run("hi")
         assert result.payloads[0] == "hello"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_session_metadata_persisted(self):
         """Session metadata is stored in the snapshot."""
         store = InMemoryCheckpointStore()
@@ -500,7 +500,7 @@ class TestAgentSessionPersistence:
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.session_metadata == {"pathway_id": "pw_123"}
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_checkpoint_number_increments(self):
         """Checkpoint number increases with each save."""
         store = InMemoryCheckpointStore()
@@ -521,7 +521,7 @@ class TestAgentSessionPersistence:
         snap = AgentCheckpoint.model_validate_json(data)
         assert snap.checkpoint_number > 0
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_stream_interface(self):
         """run_stream with session persistence works."""
         store = InMemoryCheckpointStore()
@@ -609,7 +609,7 @@ class TestResumeInputDetection:
     or a chat continuation (clean completion + new input).
     """
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_standalone_resume_no_inputs(self):
         """Standalone resume (no inputs, interrupted) skips memorization."""
         store = InMemoryCheckpointStore()
@@ -633,7 +633,7 @@ class TestResumeInputDetection:
             _count_user_messages(agent) == 1
         )  # "hello" from checkpoint, not duplicated
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_workflow_rerun_with_in_args(self):
         """Workflow re-delivers in_args after crash — must not duplicate input."""
         store = InMemoryCheckpointStore()
@@ -655,7 +655,7 @@ class TestResumeInputDetection:
 
         assert _count_user_messages(agent) == 1  # not duplicated
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_runner_redelivery_with_chat_inputs(self):
         """Runner re-delivers chat_inputs after crash — must not duplicate input."""
         store = InMemoryCheckpointStore()
@@ -677,7 +677,7 @@ class TestResumeInputDetection:
 
         assert _count_user_messages(agent) == 1  # not duplicated
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_chat_continuation_adds_new_input(self):
         """Clean completion + new chat_inputs = continuation, must memorize."""
         store = InMemoryCheckpointStore()
@@ -704,7 +704,7 @@ class TestResumeInputDetection:
 
         assert _count_user_messages(agent) == 2  # "hello" + "follow up"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_multi_turn_session_no_duplication(self):
         """Multiple run() calls on same agent — each adds exactly one input."""
         store = InMemoryCheckpointStore()
@@ -727,7 +727,7 @@ class TestResumeInputDetection:
         await agent.run("turn3")
         assert _count_user_messages(agent) == 3
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_resume_then_continuation(self):
         """
         Interrupted agent resumes (skip memorization), completes, then
@@ -844,7 +844,7 @@ class TestResumeIntegration:
     with LLMAgent sub-processors and verify no input duplication on resume.
     """
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_workflow_agent_crash_after_agent_step(self):
         """
         Workflow: [Append("A"), LLMAgent].
@@ -911,7 +911,7 @@ class TestResumeIntegration:
         ]
         assert len(user_msgs2) == 1
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_workflow_agent_crash_before_agent_step(self):
         """
         Workflow: [LLMAgent, Append("B")].
@@ -969,7 +969,7 @@ class TestResumeIntegration:
         assert b2.call_count == 1
         assert payloads == ["agent_out->B"]
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_runner_agent_resume_no_duplication(self):
         """
         Runner: Append("A") → LLMAgent → END.
@@ -1155,7 +1155,7 @@ class SlowTool(BaseTool[EchoInput, str, Any]):
 
 
 class TestTaskRecordPersistence:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_bg_task_creates_task_record(self):
         """Spawning a background tool persists a PENDING TaskRecord."""
         store = InMemoryCheckpointStore()
@@ -1183,7 +1183,7 @@ class TestTaskRecordPersistence:
         assert record.tool_name == "slow"
         assert record.tool_call_id == "fc_1"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_bg_task_completion_updates_record(self):
         """Completed background task is marked DELIVERED after drain."""
         store = InMemoryCheckpointStore()
@@ -1209,7 +1209,7 @@ class TestTaskRecordPersistence:
         assert record.result is not None
         assert "slow: research" in record.result
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_bg_task_survives_max_turns_until_aclose(self):
         """A background task outlives max_turns; ``aclose`` cancels it."""
         store = InMemoryCheckpointStore()
@@ -1252,7 +1252,7 @@ class TestTaskRecordPersistence:
         assert record.error is not None
         assert "Cancelled" in record.error
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_task_records_without_store(self):
         """Without store, no TaskRecords are created."""
         agent, ctx = _make_agent(
@@ -1274,7 +1274,7 @@ class TestTaskRecordPersistence:
 
 
 class TestPendingTaskResume:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_pending_record_injects_interruption_notification(self):
         """On resume, a PENDING TaskRecord injects an interruption message."""
         store = InMemoryCheckpointStore()
@@ -1340,7 +1340,7 @@ class TestPendingTaskResume:
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.DELIVERED
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_resume_ignores_other_agents_tasks(self):
         """handle_pending scopes to this agent's path, not the whole session."""
         store = InMemoryCheckpointStore()
@@ -1392,7 +1392,7 @@ class TestPendingTaskResume:
         assert other_data is not None
         assert TaskRecord.model_validate_json(other_data).status == TaskStatus.PENDING
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_completed_record_injects_result(self):
         """On resume, a COMPLETED record whose result isn't in memory gets injected."""
         store = InMemoryCheckpointStore()
@@ -1452,7 +1452,7 @@ class TestPendingTaskResume:
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.DELIVERED
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_delivered_record_skipped(self):
         """DELIVERED records are skipped on resume (already injected)."""
         store = InMemoryCheckpointStore()
@@ -1507,7 +1507,7 @@ class TestPendingTaskResume:
         completed_msgs = [t for t in memory_texts if "completed" in t and "done1" in t]
         assert len(completed_msgs) == 1
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_failed_record_reinjected(self):
         """A FAILED record (errored before drain delivered it) is re-injected."""
         store = InMemoryCheckpointStore()
@@ -1555,7 +1555,7 @@ class TestPendingTaskResume:
         assert data is not None
         assert TaskRecord.model_validate_json(data).status == TaskStatus.DELIVERED
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_multiple_pending_tasks_all_handled(self):
         """Multiple pending TaskRecords all get interruption notifications."""
         store = InMemoryCheckpointStore()
@@ -1647,7 +1647,7 @@ def _make_child_tool(
 
 
 class TestChildTaskResume:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_bg_agent_tool_creates_child_session(self):
         """
         Background agent-as-tool nests its checkpoint under the parent's
@@ -1688,7 +1688,7 @@ class TestChildTaskResume:
         # its own configured name ("child"), not the tool's name.
         assert child_snap.processor_name == "child"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_child_resumes_from_checkpoint(self):
         """PENDING child with checkpoint is re-spawned, not reported interrupted."""
         store = InMemoryCheckpointStore()
@@ -1784,7 +1784,7 @@ class TestChildTaskResume:
         updated = TaskRecord.model_validate_json(data)
         assert updated.status == TaskStatus.DELIVERED
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_non_session_tool_still_reports_interrupted(self):
         """Regular bg tools without child session still get interrupted msg."""
         store = InMemoryCheckpointStore()
@@ -1839,7 +1839,7 @@ class TestChildTaskResume:
         interrupted = [t for t in memory_texts if "interrupted" in t and "t1" in t]
         assert len(interrupted) >= 1
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_multiple_children_resume_independently(self):
         """Two children from the same tool both resume independently."""
         store = InMemoryCheckpointStore()

@@ -54,7 +54,7 @@ def _builder() -> PromptBuilder[str, _State]:
 
 
 class TestApplyInputAttachments:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_attachments_returns_unchanged(self) -> None:
         b = _builder()
         msg = InputMessageItem.from_text("hello")
@@ -63,7 +63,7 @@ class TestApplyInputAttachments:
         )
         assert out is msg
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_text_return_wrapped_in_system_reminder(self) -> None:
         b = _builder()
 
@@ -83,7 +83,7 @@ class TestApplyInputAttachments:
         assert "Relevant note here." in attached.text
         assert attached.text.endswith("</system-reminder>")
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_current_time_attachment_stamps_input(self) -> None:
         from grasp_agents.context import make_current_time_attachment
 
@@ -98,7 +98,7 @@ class TestApplyInputAttachments:
         assert "<system-reminder>" in attached.text
         assert "Current time:" in attached.text
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_text_return_unwrapped_when_disabled(self) -> None:
         b = _builder()
 
@@ -115,7 +115,7 @@ class TestApplyInputAttachments:
         assert isinstance(out.content_parts[1], InputText)
         assert out.content_parts[1].text == "raw text"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_none_return_is_skipped(self) -> None:
         b = _builder()
 
@@ -129,7 +129,7 @@ class TestApplyInputAttachments:
         )
         assert out is msg
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_input_part_sequence_passes_through(self) -> None:
         b = _builder()
 
@@ -150,7 +150,7 @@ class TestApplyInputAttachments:
         assert out.content_parts[1].text == "block"
         assert isinstance(out.content_parts[2], InputImage)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_multiple_attachments_run_in_order(self) -> None:
         b = _builder()
 
@@ -178,7 +178,7 @@ class TestApplyInputAttachments:
         assert out.content_parts[1].text == "first"
         assert out.content_parts[2].text == "second"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_async_attachment(self) -> None:
         b = _builder()
 
@@ -209,7 +209,7 @@ class TestApplyInputAttachments:
 
 
 class TestMemoryRelevanceAttachment:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_provider_returns_none(self) -> None:
         ctx: RunContext[_State] = RunContext(state=_State())
         result = await relevant_memories_attachment.compute(
@@ -217,7 +217,7 @@ class TestMemoryRelevanceAttachment:
         )
         assert result is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_selector_returns_none(self, tmp_path: Path) -> None:
         provider = InMemoryMemoryProvider(
             entries=[_entry("alpha", "Alpha", "body", tmp_path / "alpha.md")]
@@ -228,7 +228,7 @@ class TestMemoryRelevanceAttachment:
         )
         assert result is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_selector_renders_selected_bodies(self, tmp_path: Path) -> None:
         entries = [
             _entry("alpha", "Alpha desc", "ALPHA BODY", tmp_path / "alpha.md"),
@@ -254,7 +254,7 @@ class TestMemoryRelevanceAttachment:
         # beta wasn't selected.
         assert "BETA BODY" not in result
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_seen_memories_are_filtered_out(self, tmp_path: Path) -> None:
         """A memory already in the session read-set is not re-injected."""
         from grasp_agents.memory.injection import (
@@ -291,7 +291,7 @@ class TestMemoryRelevanceAttachment:
         assert "BETA BODY" in rendered
         assert "ALPHA BODY" not in rendered
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_selector_returning_empty_returns_none(self, tmp_path: Path) -> None:
         entries = [_entry("alpha", "Alpha", "x", tmp_path / "alpha.md")]
         provider = InMemoryMemoryProvider(entries=entries)

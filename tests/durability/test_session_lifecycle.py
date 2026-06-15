@@ -28,7 +28,7 @@ from tests.durability.test_sessions import (  # type: ignore[attr-defined]
 )
 from tests.orchestration.test_runner import ListProcessor  # type: ignore[attr-defined]
 
-pytestmark = pytest.mark.anyio
+pytestmark = pytest.mark.asyncio
 
 
 def _make_agent(

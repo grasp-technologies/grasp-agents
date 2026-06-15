@@ -112,9 +112,7 @@ class TestExtractLatestUserText:
 # ---- Selector behavior tests -------------------------------------------------
 
 
-pytestmark = pytest.mark.anyio
-
-
+@pytest.mark.asyncio
 async def test_selector_picks_listed_entries() -> None:
     llm = _FakeLLM('{"selected_memories": ["alpha.md", "beta.md"]}')
     selector = make_llm_relevance_selector(llm, max_select=5)  # type: ignore[arg-type]
@@ -129,6 +127,7 @@ async def test_selector_picks_listed_entries() -> None:
     assert names == ["alpha", "beta"]
 
 
+@pytest.mark.asyncio
 async def test_selector_caps_at_max_select() -> None:
     llm = _FakeLLM(
         '{"selected_memories": ["a.md", "b.md", "c.md", "d.md", "e.md", "f.md"]}'
@@ -145,6 +144,7 @@ async def test_selector_caps_at_max_select() -> None:
     assert [e.name for e in picked] == ["a", "b", "c"]
 
 
+@pytest.mark.asyncio
 async def test_selector_empty_query_returns_empty() -> None:
     llm = _FakeLLM('{"selected_memories": ["a.md"]}')
     selector = make_llm_relevance_selector(llm)  # type: ignore[arg-type]
@@ -156,6 +156,7 @@ async def test_selector_empty_query_returns_empty() -> None:
     assert llm.calls == []
 
 
+@pytest.mark.asyncio
 async def test_selector_empty_entries_returns_empty() -> None:
     llm = _FakeLLM('{"selected_memories": []}')
     selector = make_llm_relevance_selector(llm)  # type: ignore[arg-type]
@@ -168,6 +169,7 @@ async def test_selector_empty_entries_returns_empty() -> None:
     assert llm.calls == []
 
 
+@pytest.mark.asyncio
 async def test_selector_skips_unknown_names() -> None:
     llm = _FakeLLM('{"selected_memories": ["alpha.md", "nope.md"]}')
     selector = make_llm_relevance_selector(llm)  # type: ignore[arg-type]
@@ -179,6 +181,7 @@ async def test_selector_skips_unknown_names() -> None:
     assert [e.name for e in picked] == ["alpha"]
 
 
+@pytest.mark.asyncio
 async def test_selector_failure_returns_empty() -> None:
     class _BrokenLLM:
         async def generate_response(self, **_: Any) -> Any:
@@ -194,6 +197,7 @@ async def test_selector_failure_returns_empty() -> None:
     assert picked == ()
 
 
+@pytest.mark.asyncio
 async def test_selector_input_shape() -> None:
     """The selector sends only the system prompt + a single user message."""
     llm = _FakeLLM('{"selected_memories": []}')
@@ -222,6 +226,7 @@ async def test_selector_input_shape() -> None:
     assert "alpha.md" in inputs[1].text
 
 
+@pytest.mark.asyncio
 async def test_selector_parses_fenced_json() -> None:
     """Fenced / non-bare JSON from the model is still parsed (shared validator)."""
     llm = _FakeLLM('```json\n{"selected_memories": ["alpha.md"]}\n```')
@@ -233,6 +238,7 @@ async def test_selector_parses_fenced_json() -> None:
     assert [e.name for e in picked] == ["alpha"]
 
 
+@pytest.mark.asyncio
 async def test_selector_unparseable_output_returns_empty() -> None:
     """Unparseable model output falls back to surfacing nothing, not a crash."""
     llm = _FakeLLM("not json at all")
@@ -244,6 +250,7 @@ async def test_selector_unparseable_output_returns_empty() -> None:
     assert picked == ()
 
 
+@pytest.mark.asyncio
 async def test_selector_forwards_image_only_query() -> None:
     """An image-only turn anchors selection: the image is sent, not dropped."""
     llm = _FakeLLM('{"selected_memories": ["alpha.md"]}')
@@ -271,6 +278,7 @@ def _path_entry(name: str, path: Any) -> MemoryEntry:
     )
 
 
+@pytest.mark.asyncio
 async def test_select_relevant_filters_seen_paths(tmp_path: Any) -> None:
     """Entries already read this session are dropped before selection."""
     a = _path_entry("a", tmp_path / "a.md")
@@ -288,6 +296,7 @@ async def test_select_relevant_filters_seen_paths(tmp_path: Any) -> None:
     assert {e.name for e in picked} == {"b", "c"}
 
 
+@pytest.mark.asyncio
 async def test_select_relevant_no_seen_paths_keeps_all() -> None:
     """Empty/None seen-set is a no-op — the filter never over-suppresses."""
     a = _path_entry("a", None)
@@ -305,6 +314,7 @@ async def test_select_relevant_no_seen_paths_keeps_all() -> None:
 # ---- Integration with renderer ------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_per_entry_staleness_warning_surfaced() -> None:
     """The relevance renderer must surface entry_freshness_warnings."""
     from grasp_agents.memory.injection import (

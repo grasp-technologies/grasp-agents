@@ -32,12 +32,6 @@ def _fresh_default_run_context() -> Any:
     reset_default_run_context()
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    """Run ``anyio``-marked tests on the asyncio backend."""
-    return "asyncio"
-
-
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--update-golden",

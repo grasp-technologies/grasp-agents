@@ -142,7 +142,7 @@ class TestEnableSkills:
 
 
 class TestSystemPromptSection:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_empty_registry_no_block(self, tmp_path: Path) -> None:
         del tmp_path
         agent = _make_agent()
@@ -151,7 +151,7 @@ class TestSystemPromptSection:
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_section_renders_catalog(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill description.")
         agent = _make_agent()
@@ -165,7 +165,7 @@ class TestSystemPromptSection:
         assert "<name>alpha</name>" in prompt
         assert "Alpha skill description." in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_combines_with_user_sys_prompt(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x")
         agent = LLMAgent[str, str, _State](
@@ -185,7 +185,7 @@ class TestSystemPromptSection:
         assert prompt.startswith("You are a helper.")
         assert "<available_skills>" in prompt
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_combines_with_dynamic_builder(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x")
         agent = _make_agent()
@@ -217,7 +217,7 @@ class TestCatalogSelectorHelper:
     in future ``InputAttachment``-style per-turn surfacing).
     """
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_select_relevant_filters(self, tmp_path: Path) -> None:
         from grasp_agents.skills import Skill
 
@@ -232,7 +232,7 @@ class TestCatalogSelectorHelper:
         kept = await registry.select_relevant()
         assert [s.name for s in kept] == ["alpha"]
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_system_prompt_ignores_selector(self, tmp_path: Path) -> None:
 
         from grasp_agents.skills import Skill
@@ -259,7 +259,7 @@ class TestCatalogSelectorHelper:
 
 
 class TestLoadSkillTool:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_returns_body(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x", body="ALPHA BODY")
         ctx: RunContext[_State] = RunContext(
@@ -269,14 +269,14 @@ class TestLoadSkillTool:
         assert isinstance(result, str)
         assert "ALPHA BODY" in result
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_registry_errors(self) -> None:
         ctx: RunContext[_State] = RunContext(state=_State())
         result = await load_skill(name="nope", ctx=ctx)
         assert isinstance(result, ToolErrorInfo)
         assert "no skills" in result.error.lower()
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_unknown_skill_errors(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x")
         ctx: RunContext[_State] = RunContext(
@@ -286,7 +286,7 @@ class TestLoadSkillTool:
         assert isinstance(result, ToolErrorInfo)
         assert "not available" in result.error.lower()
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_mid_session_edit_visible(self, tmp_path: Path) -> None:
         skill_md = _write_skill(tmp_path, "alpha", "x", body="ORIGINAL BODY")
         ctx: RunContext[_State] = RunContext(
@@ -309,14 +309,14 @@ class TestLoadSkillTool:
 
 
 class TestListSkillsTool:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_registry(self) -> None:
         ctx: RunContext[_State] = RunContext(state=_State())
         result = await list_skills(ctx=ctx)
         assert isinstance(result, str)
         assert "no skills" in result.lower()
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_returns_catalog(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill.")
         ctx: RunContext[_State] = RunContext(
@@ -327,7 +327,7 @@ class TestListSkillsTool:
         assert "<available_skills>" in result
         assert "<name>alpha</name>" in result
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_refresh_picks_up_new_skill(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill.")
         ctx: RunContext[_State] = RunContext(

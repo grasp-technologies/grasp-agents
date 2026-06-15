@@ -32,7 +32,7 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = [pytest.mark.anyio, pytest.mark.integration]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 @pytest.fixture

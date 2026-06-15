@@ -234,7 +234,7 @@ class TestConvertToolOutput:
             name="a", llm=MockLLM(responses_queue=[]), tools=[tool]
         )
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_untrusted_tool_output_is_wrapped(self) -> None:
         @function_tool(untrusted_output=True)
         async def ext(q: str) -> str:
@@ -249,7 +249,7 @@ class TestConvertToolOutput:
             '<untrusted_content source="ext">\nEXTERNAL DATA\n</untrusted_content>'
         )
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_trusted_tool_output_is_not_wrapped(self) -> None:
         @function_tool
         async def safe(q: str) -> str:
@@ -262,7 +262,7 @@ class TestConvertToolOutput:
         )
         assert item.text == "TRUSTED"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_converter_output_is_also_wrapped_when_untrusted(self) -> None:
         @function_tool(untrusted_output=True)
         async def ext(q: str) -> str:

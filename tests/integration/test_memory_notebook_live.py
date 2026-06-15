@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-pytestmark = [pytest.mark.anyio, pytest.mark.integration]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def _make_llm() -> OpenAILLM:

@@ -2,8 +2,8 @@
 Shared, importable test utilities: a queue-driven mock ``LLM``, ``Response``
 builders, and simple ``BaseTool`` subclasses.
 
-Pytest *fixtures* (``tools``, ``parallel_tools``, ``anyio_backend``, API keys)
-live in ``conftest.py``; this module holds the plain building blocks that tests
+Pytest *fixtures* (``tools``, ``parallel_tools``, API keys) live in
+``conftest.py``; this module holds the plain building blocks that tests
 import explicitly. The leading-underscore builder names match the originals so
 call sites are unchanged when a local copy is replaced by an import.
 """

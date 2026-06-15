@@ -134,7 +134,7 @@ def _make_ctx(session: _FakeSession) -> RunContext[Any]:
 
 
 class TestLoadOverMCP:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_filters_to_memdir_and_skips_index(self) -> None:
         session = _FakeSession(
             resources=[
@@ -173,7 +173,7 @@ class TestLoadOverMCP:
         # Index loaded separately.
         assert snap.index == "# Memory index"
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_skipped_invalid_frontmatter_logged(self) -> None:
         session = _FakeSession(
             resources=[
@@ -201,7 +201,7 @@ class TestLoadOverMCP:
 
 
 class TestRenderIndexOverMCP:
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_reads_index_resource(self) -> None:
         session = _FakeSession(
             resources=[_FakeResource(uri=index_uri(), name="MEMORY.md")],
