@@ -1,0 +1,32 @@
+{
+    "typeCheckingMode": "strict",
+    "exclude": [
+        ".bzr",
+        ".direnv",
+        ".eggs",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".nox",
+        ".pants.d",
+        ".pytype",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        "__pypackages__",
+        "_build",
+        "buck-out",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+    ],
+    "extraPaths": [
+        ".",
+        "src",
+    ],
+    "autoSearchPaths": false,
+    "reportMissingTypeStubs": false,
+    "pythonVersion": "3.11"
+}

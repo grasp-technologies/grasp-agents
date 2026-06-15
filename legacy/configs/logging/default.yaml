@@ -1,0 +1,25 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  simple:
+    format: '%(message)s'
+  detailed:
+    format: '%(name)s %(asctime)s %(levelname)s %(message)s'
+
+handlers:
+  fileHandler:
+    class: logging.FileHandler
+    level: INFO
+    formatter: detailed
+    mode: 'w'
+    filename: 'app.log'
+  consoleHandler:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: simple
+    stream: ext://sys.stdout
+
+root:
+  level: INFO
+  handlers: [fileHandler, consoleHandler]
