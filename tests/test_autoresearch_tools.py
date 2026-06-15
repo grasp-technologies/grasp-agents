@@ -319,8 +319,8 @@ class TestExperimentLog:
         )
         ctx.state.submissions_used = 2
         out = str(await tools["research_status"](ctx=ctx))
-        assert "Holdout split: not yet" in out
-        assert "Submissions: 2/8" in out
+        assert "Holdout split ready: no" in out
+        assert "Submissions: 2/8 (best holdout: 0.8100)" in out
         assert "rf | 0.8300 | 0.8100 | - | -" in out
 
 

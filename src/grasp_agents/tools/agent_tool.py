@@ -281,12 +281,18 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         exec_id: str | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
+        tool_call_arguments: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        agent, _ = await self._prepare_child(
-            inp=None, ctx=ctx, exec_id=exec_id, path=path, agent_ctx=agent_ctx
+        # Reconstruct the original input so the child can be cold-started if it
+        # was interrupted before writing its first checkpoint (otherwise the
+        # built prompt is unused — the child resumes from its own checkpoint).
+        inp = self._input_from_arguments(tool_call_arguments)
+        agent, in_prompt = await self._prepare_child(
+            inp=inp, ctx=ctx, exec_id=exec_id, path=path, agent_ctx=agent_ctx
         )
+        cold_start = await self._should_cold_start(agent, ctx)
         async for event in self._yield_child_events(
-            agent, chat_inputs=None, exec_id=exec_id
+            agent, chat_inputs=in_prompt if cold_start else None, exec_id=exec_id
         ):
             yield event
 

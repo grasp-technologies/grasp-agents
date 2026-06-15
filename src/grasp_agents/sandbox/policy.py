@@ -114,6 +114,9 @@ class SandboxPolicy:
 
     - ``kernel_setup_code`` is a snippet (e.g. ``%matplotlib inline``) run in a
       RunPython kernel at startup to configure the Python environment.
+    - ``kernel_startup_timeout`` is the ceiling (seconds) for a RunPython kernel
+      to become ready; a cold first launch under confinement may need more than
+      a tight default.
     """
 
     allowed_roots: tuple[Path, ...]
@@ -129,6 +132,10 @@ class SandboxPolicy:
     env: Mapping[str, str] = field(default_factory=dict[str, str])
     env_scrub: tuple[str, ...] = DEFAULT_ENV_SCRUB
     kernel_setup_code: str = ""
+    # Seconds a RunPython kernel may take to become ready; mirrors
+    # local.kernel.DEFAULT_KERNEL_STARTUP_TIMEOUT (a cold confined launch needs
+    # headroom over a tight 60s).
+    kernel_startup_timeout: float = 120.0
 
 
 __all__ = ["NetworkPolicy", "SandboxPolicy"]

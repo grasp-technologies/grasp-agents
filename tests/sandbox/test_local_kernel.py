@@ -241,3 +241,30 @@ async def test_kernel_under_srt(
         assert any("srt hello" in (t or "") for t in streams)
     finally:
         await kernel.close()
+
+
+@pytest.mark.skipif(shutil.which("srt") is None, reason="srt not installed")
+async def test_provisioned_kernel_first_launch_succeeds_under_srt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A freshly-provisioned venv's *first* kernel launch under srt used to die
+    # ("kernel died before replying to kernel_info"): the cold first exec of the
+    # new interpreter races the readiness handshake. Provisioning now warms the
+    # venv's imports once, so the first launch succeeds with no prior exec.
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    monkeypatch.delenv("CLAUDE_TMPDIR", raising=False)
+    env = local_environment(
+        allowed_roots=[tmp_path],
+        confinement="srt",
+        network=NetworkPolicy.ALLOWLIST,
+        provision=True,
+        packages=["ipykernel"],
+    )
+    backend = env.exec_backend
+    assert isinstance(backend, KernelCapable)
+    kernel = await backend.open_kernel(cwd=tmp_path)
+    try:
+        _, result = await _collect(kernel, "print('warm')")
+        assert result.status == "ok"
+    finally:
+        await kernel.close()

@@ -15,7 +15,7 @@ from typing import (
     runtime_checkable,
 )
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from grasp_agents.run_context import RunContext
 from grasp_agents.telemetry import SpanKind, traced
@@ -443,11 +443,40 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         exec_id: str | None = None,
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
+        tool_call_arguments: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
-        """Resume from a session checkpoint. Override in resumable tools."""
-        del ctx, exec_id, path, agent_ctx
+        """
+        Resume from a session checkpoint. Override in resumable tools.
+
+        ``tool_call_arguments`` is the spawning call's serialized input, used to
+        re-run from scratch when the task was interrupted before it ever
+        checkpointed (nothing to resume from).
+        """
+        del ctx, exec_id, path, agent_ctx, tool_call_arguments
         raise NotImplementedError(f"{type(self).__name__} does not support resume")
         yield  # type: ignore[unreachable]  # makes this an async generator
+
+    async def _should_cold_start(
+        self, child: Any, ctx: RunContext[CtxT] | None
+    ) -> bool:
+        """
+        Whether a re-spawned child must cold-start rather than resume.
+
+        A backgrounded child that died before writing its first checkpoint has
+        nothing to resume from, so the spawning call's serialized input is
+        replayed instead (see :meth:`resume_stream`). With a checkpoint of its
+        own — or no durable ``ctx`` — it pure-resumes.
+        """
+        return ctx is not None and not await child.has_checkpoint(ctx)
+
+    def _input_from_arguments(self, arguments: str | None) -> InT | None:
+        """Reconstruct the call input from its serialized JSON (None on failure)."""
+        if arguments is None:
+            return None
+        try:
+            return TypeAdapter(self.in_type).validate_json(arguments)
+        except ValidationError:
+            return None
 
     # --- Copy ---
 

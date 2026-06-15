@@ -52,6 +52,16 @@ def test_configured_interpreter_leads_path(tmp_path: Path) -> None:
     assert merged["PATH"].split(os.pathsep)[0] == bin_dir
 
 
+def test_kernel_startup_timeout_config(tmp_path: Path) -> None:
+    from grasp_agents.sandbox.local.kernel import DEFAULT_KERNEL_STARTUP_TIMEOUT
+
+    # Default carries cold-start headroom; tunable per environment.
+    default = _backend(tmp_path)
+    assert default._policy.kernel_startup_timeout == DEFAULT_KERNEL_STARTUP_TIMEOUT
+    custom = _backend(tmp_path, kernel_startup_timeout=300.0)
+    assert custom._policy.kernel_startup_timeout == 300.0
+
+
 def test_missing_interpreter_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not found"):
         local_environment(

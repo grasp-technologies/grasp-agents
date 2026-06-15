@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import signal
 import time
@@ -43,12 +44,18 @@ if TYPE_CHECKING:
 
     from jupyter_client.asynchronous.client import AsyncKernelClient
 
-DEFAULT_KERNEL_STARTUP_TIMEOUT = 60.0
+# A cold first launch under a confined backend compiles the kernel's .pyc and
+# warms the OS page cache, which can outlast a tight 60s ceiling (the next
+# launch is then fast); 120s gives that first start headroom. Tunable per
+# environment via ``local_environment(kernel_startup_timeout=...)``.
+DEFAULT_KERNEL_STARTUP_TIMEOUT = 120.0
 DEFAULT_KILL_GRACE = 5.0
 # Bound the captured output of a single cell. Full outputs still land in the
 # notebook; these caps protect the in-memory collection + the model context.
 DEFAULT_MAX_STREAM_CHARS = 200_000
 DEFAULT_MAX_IMAGES = 50
+
+logger = logging.getLogger(__name__)
 
 
 class KernelStartError(RuntimeError):
@@ -152,6 +159,11 @@ class LocalKernel(KernelSession):
         self._connection_file = connection_file
         argv = tuple(self._launch_argv(connection_file))
 
+        # A cold first launch (esp. under a confined backend, right after
+        # provisioning a venv) can be slow; log the launch→ready span so the
+        # cost is visible rather than a silent wait.
+        logger.info("starting local kernel (backend=%s)", self._backend)
+        launch_t0 = time.monotonic()
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.DEVNULL,
@@ -185,6 +197,11 @@ class LocalKernel(KernelSession):
                 "Ensure ipykernel is installed (grasp-agents[notebook-exec]); "
                 "under a confined backend, loopback networking must be permitted."
             ) from exc
+        logger.info(
+            "local kernel ready in %.1fs (backend=%s)",
+            time.monotonic() - launch_t0,
+            self._backend,
+        )
         self._client = client
         # Run caller-supplied setup once, in its own execution (empty by
         # default — the framework imposes nothing). A separate execution matters

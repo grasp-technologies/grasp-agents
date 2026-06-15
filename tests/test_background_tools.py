@@ -356,11 +356,13 @@ class TestBackgroundToolLaunch:
         assert "slow: research" in str(user_msgs[0].data)
 
     @pytest.mark.asyncio
-    async def test_launch_note_wait_guidance_depends_on_blocking(self):
+    async def test_launch_note_guidance_is_uniform(self):
         """
-        A blocking task's launch note tells the model it can reply tool-free to
-        wait (the loop waits); a non-blocking one tells it to continue/answer —
-        a tool-free reply there would finalize with a useless "I'll wait …".
+        The launch-note guidance does not depend on ``blocks_final_answer``:
+        every backgrounded task is told it will get a ``<task_notification>``,
+        not to re-call the tool, and — if all that's left is waiting — to reply
+        tool-free (the loop then waits). Only the opening line differs (it names
+        the tool + task id).
         """
         from grasp_agents.agent.background_tasks import BackgroundTaskManager
         from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
@@ -378,10 +380,14 @@ class TestBackgroundToolLaunch:
         note_n = mgr._launch_note(  # pyright: ignore[reportPrivateUsage]
             nonblocking, "bg_2", backgrounded_after=None, log_path=None
         )
-        assert "reply WITHOUT calling any tool" in note_b
-        assert "runs independently" not in note_b
-        assert "runs independently" in note_n
-        assert "reply WITHOUT calling any tool" not in note_n
+        for note in (note_b, note_n):
+            assert "<task_notification>" in note
+            assert "do NOT call it again" in note
+            assert "WITHOUT calling any tools" in note
+            assert "KillTask" in note
+        # Identical regardless of blocks_final_answer — only the opening line,
+        # which names the tool + id, differs.
+        assert note_b.split("\n", 1)[1] == note_n.split("\n", 1)[1]
 
     @pytest.mark.asyncio
     async def test_background_tool_flag_on_base_tool(self):

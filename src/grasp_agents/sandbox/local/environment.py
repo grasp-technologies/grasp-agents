@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess  # noqa: S404 - trusted interpreter + literal script, no shell
 import sys
+import time
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
@@ -35,6 +36,7 @@ from ...tools.file_backend.local import LocalFileBackend
 from ..environment import ExecutionEnvironment
 from ..policy import DEFAULT_ENV_SCRUB, NetworkPolicy, SandboxPolicy
 from .exec import LocalExecBackend, resolve_python
+from .kernel import DEFAULT_KERNEL_STARTUP_TIMEOUT
 from .supervisor import ProcessSupervisor, ResourceLimits, SupervisorLimits
 
 if TYPE_CHECKING:
@@ -107,6 +109,7 @@ def local_environment(
     packages: Sequence[str] = (),
     provision: bool = False,
     kernel_setup_code: str = "",
+    kernel_startup_timeout: float = DEFAULT_KERNEL_STARTUP_TIMEOUT,
     limits: ResourceLimits | None = None,
     supervisor: ProcessSupervisor | None = None,
 ) -> LocalEnvironment:
@@ -175,6 +178,10 @@ def local_environment(
             kernel startup, in its own execution — empty by default (the
             framework imposes nothing). Pass e.g. ``"%matplotlib inline"`` to
             opt into the inline plotting backend.
+        kernel_startup_timeout: Seconds a ``RunPython`` kernel may take to become
+            ready before launch is given up. The default has headroom for a cold
+            first launch under confinement (which compiles ``.pyc`` + warms
+            caches; a later launch is fast); raise it for a heavier base venv.
         limits: Convenient per-command resource ceilings (CPU-seconds, memory,
             file size) applied via ``setrlimit`` — a shortcut for a
             :class:`ProcessSupervisor` built with these :class:`SupervisorLimits`.
@@ -204,6 +211,7 @@ def local_environment(
         env=env or {},
         env_scrub=tuple(env_scrub),
         kernel_setup_code=kernel_setup_code,
+        kernel_startup_timeout=kernel_startup_timeout,
     )
 
     file_backend = LocalFileBackend(
@@ -381,11 +389,15 @@ def _venv_interpreter(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def _install_missing(python: str, packages: Sequence[str]) -> None:
-    """``pip install`` the ``packages`` not already present in ``python``."""
+def _install_missing(python: str, packages: Sequence[str]) -> list[str]:
+    """
+    ``pip install`` the ``packages`` not already present in ``python``.
+
+    Returns the packages it installed (empty if all were already present).
+    """
     missing = _missing_packages(python, packages)
     if not missing:
-        return
+        return []
     logger.info("provision: installing %s into %s", ", ".join(missing), python)
     try:
         subprocess.run([python, "-m", "pip", "install", *missing], check=True)
@@ -393,6 +405,55 @@ def _install_missing(python: str, packages: Sequence[str]) -> None:
         raise ValueError(
             f"failed to install {', '.join(missing)} into {python}: {exc}"
         ) from exc
+    return missing
+
+
+# Import the venv's packages once (best-effort) via a throwaway interpreter run.
+# Resolves each distribution's top-level modules from its metadata; ``sys.argv``
+# carries the distribution names so no list is interpolated into the source.
+_WARMUP_SNIPPET = """\
+import importlib, importlib.metadata as md, sys
+mods = {"ipykernel"}
+for dist in sys.argv[1:]:
+    try:
+        top = md.distribution(dist).read_text("top_level.txt") or ""
+        mods.update(top.split())
+    except Exception:
+        pass
+for name in mods:
+    try:
+        importlib.import_module(name)
+    except Exception:
+        pass
+"""
+
+
+def _warmup_venv(python: str, packages: Sequence[str]) -> None:
+    """
+    Pre-import the venv's packages once so the first ``RunPython`` kernel launch
+    and first cell don't pay the cold tax.
+
+    A freshly-provisioned venv's first interpreter exec under a confined backend
+    is slow — the OS verifies the new interpreter + freshly-installed native
+    extensions, and ``.pyc`` / page cache are cold. Left unpaid, the kernel's
+    readiness handshake can race that first exec and the launch fails ("kernel
+    died before replying"); and the first heavy ``import`` (numpy/pandas/…) can
+    take tens of seconds. One throwaway import here, during setup, warms all of
+    it. Best-effort: a warm-up failure never blocks provisioning.
+    """
+    logger.info("provision: warming up imports in %s", python)
+    t0 = time.monotonic()
+    try:
+        subprocess.run(
+            [python, "-c", _WARMUP_SNIPPET, *packages],
+            check=False,
+            timeout=600,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("provision: import warm-up skipped (%s)", exc)
+        return
+    logger.info("provision: import warm-up done in %.1fs", time.monotonic() - t0)
 
 
 def _provision_python_env(
@@ -409,7 +470,8 @@ def _provision_python_env(
     the venv. Idempotent: an existing venv at ``venv_dir`` is reused.
     """
     interpreter = _venv_interpreter(venv_dir)
-    if interpreter.is_file():
+    created = not interpreter.is_file()
+    if not created:
         # Reuse an existing venv as-is (e.g. on resume); only top up packages.
         logger.info("provision: reusing the existing venv at %s", venv_dir)
     else:
@@ -432,7 +494,12 @@ def _provision_python_env(
             subprocess.run([base, "-m", "venv", str(venv_dir)], check=True)
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"failed to create venv at {venv_dir}: {exc}") from exc
-    _install_missing(str(interpreter), packages)
+    installed = _install_missing(str(interpreter), packages)
+    # Warm imports only when the venv is fresh or just changed (the cold,
+    # crash-prone case); a pure reuse (resume) already ran the interpreter in a
+    # prior session, so skip the warm-up to keep resumes fast.
+    if packages and (created or installed):
+        _warmup_venv(str(interpreter), packages)
     return str(interpreter)
 
 

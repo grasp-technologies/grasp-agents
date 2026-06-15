@@ -148,11 +148,16 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         exec_id: str | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
+        tool_call_arguments: str | None = None,
     ) -> AsyncIterator[Event[Any]]:
         del agent_ctx  # proc builds its own
         proc = self._resolve_processor(ctx=ctx, path=path)
+        cold_start = await self._should_cold_start(proc, ctx)
+        in_args = (
+            self._input_from_arguments(tool_call_arguments) if cold_start else None
+        )
         async for event in self._yield_proc_events(
-            proc, in_args=None, exec_id=exec_id, step=0
+            proc, in_args=in_args, exec_id=exec_id, step=0
         ):
             yield event
 
