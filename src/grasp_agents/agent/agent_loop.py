@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from copy import deepcopy
-from logging import getLogger
+from logging import DEBUG, getLogger
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel
@@ -1349,6 +1349,18 @@ class AgentLoop[CtxT]:
             # ── JUDGE: classify next transition ──
 
             step = self._decide_next_step(response, exec_id=exec_id)
+
+            if logger.isEnabledFor(DEBUG):
+                n_calls = (
+                    len(step.tool_calls) if isinstance(step, NextStepRunTools) else 0
+                )
+                logger.debug(
+                    "agent '%s' turn %d → %s%s",
+                    self.agent_name,
+                    self.turn,
+                    type(step).__name__,
+                    f" ({n_calls} tool calls)" if n_calls else "",
+                )
 
             # ── Dispatch to per-state handler ──
 

@@ -134,6 +134,9 @@ class LocalKernel(KernelSession):
         if self._proc is not None and self._client is not None:
             if self._proc.returncode is None:
                 return
+            logger.warning(
+                "local kernel died (rc=%s); restarting", self._proc.returncode
+            )
             # Kernel died unexpectedly (crash / OOM-kill / external signal).
             # Reusing it would hang the next execute until the cell timeout, so
             # tear the corpse down and start a fresh one below. The crash already

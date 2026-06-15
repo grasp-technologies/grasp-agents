@@ -16,6 +16,7 @@ from uuid import uuid4
 from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
+from grasp_agents import grasp_logging
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.hooks import RecipientSelector
@@ -498,32 +499,33 @@ class Processor[InT, OutT, CtxT](
     ) -> AsyncIterator[Event[Any]]:
         exec_id = self.generate_exec_id(exec_id)
 
-        val_in_args = self.validate_inputs(
-            exec_id=exec_id,
-            chat_inputs=chat_inputs,
-            in_packet=in_packet,
-            in_args=in_args,
-        )
+        with grasp_logging.log_context(exec_id=exec_id, proc=self.name):
+            val_in_args = self.validate_inputs(
+                exec_id=exec_id,
+                chat_inputs=chat_inputs,
+                in_packet=in_packet,
+                in_args=in_args,
+            )
 
-        outputs: list[OutT] = []
-        async for event in self._process_stream(
-            chat_inputs=chat_inputs,
-            in_args=val_in_args,
-            exec_id=exec_id,
-            step=step,
-        ):
-            if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
-                outputs.append(event.data)
-            else:
-                yield event
+            outputs: list[OutT] = []
+            async for event in self._process_stream(
+                chat_inputs=chat_inputs,
+                in_args=val_in_args,
+                exec_id=exec_id,
+                step=step,
+            ):
+                if isinstance(event, ProcPayloadOutEvent) and event.source == self.name:
+                    outputs.append(event.data)
+                else:
+                    yield event
 
-        out_packet = self._build_packet(outputs=outputs, exec_id=exec_id)
-        yield ProcPacketOutEvent(
-            id=out_packet.id,
-            data=out_packet,
-            source=self.name,
-            exec_id=exec_id,
-        )
+            out_packet = self._build_packet(outputs=outputs, exec_id=exec_id)
+            yield ProcPacketOutEvent(
+                id=out_packet.id,
+                data=out_packet,
+                source=self.name,
+                exec_id=exec_id,
+            )
 
     async def run(
         self,

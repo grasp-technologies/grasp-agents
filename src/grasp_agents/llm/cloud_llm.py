@@ -1,4 +1,5 @@
 import logging
+import time
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -7,6 +8,7 @@ from typing import Any, NoReturn, Required, TypedDict
 import httpx
 from pydantic import BaseModel
 
+from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
@@ -21,6 +23,13 @@ from grasp_agents.types.response import Response
 from .llm import LLM, LLMSettings
 
 logger = logging.getLogger(__name__)
+
+
+def _format_usage(response: Response) -> str:
+    usage = response.usage_with_cost
+    if usage is None:
+        return "usage n/a"
+    return f"{usage.input_tokens or 0:,} in / {usage.output_tokens or 0:,} out tok"
 
 
 class APIProvider(TypedDict, total=False):
@@ -163,6 +172,18 @@ class CloudLLM(LLM):
         if not self.apply_output_schema_via_provider:
             api_kwargs.pop("api_output_schema", None)
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "llm %s: request (%d input items, %d tools): %s",
+                self.model_name,
+                len(input),
+                len(tools) if tools else 0,
+                grasp_logging.body_for_log(
+                    repr(api_kwargs), full=grasp_logging.LOG_LLM_INPUT
+                ),
+            )
+
+        t0 = time.monotonic()
         try:
             raw = await self._get_api_response(**api_kwargs, **extra_settings)
             # Conversion is inside the mapped region: a 200 response carrying
@@ -175,6 +196,20 @@ class CloudLLM(LLM):
             self._raise_mapped(err)
 
         self._stamp_cost(response)
+        logger.info(
+            "llm %s → %s in %.2fs",
+            self.model_name,
+            _format_usage(response),
+            time.monotonic() - t0,
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "llm %s response: %s",
+                self.model_name,
+                grasp_logging.body_for_log(
+                    response.output_text or "", full=grasp_logging.LOG_LLM_OUTPUT
+                ),
+            )
         return response
 
     async def _generate_response_stream_once(
@@ -198,6 +233,18 @@ class CloudLLM(LLM):
         if not self.apply_output_schema_via_provider:
             api_kwargs.pop("api_output_schema", None)
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "llm %s: streaming request (%d input items, %d tools): %s",
+                self.model_name,
+                len(input),
+                len(tools) if tools else 0,
+                grasp_logging.body_for_log(
+                    repr(api_kwargs), full=grasp_logging.LOG_LLM_INPUT
+                ),
+            )
+
+        t0 = time.monotonic()
         try:
             api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)
         except LlmErrorTuple:
@@ -236,4 +283,19 @@ class CloudLLM(LLM):
                 )
             if isinstance(event, ResponseCompleted):
                 self._stamp_cost(event.response)
+                logger.info(
+                    "llm %s → %s in %.2fs (streamed)",
+                    self.model_name,
+                    _format_usage(event.response),
+                    time.monotonic() - t0,
+                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "llm %s response: %s",
+                        self.model_name,
+                        grasp_logging.body_for_log(
+                            event.response.output_text or "",
+                            full=grasp_logging.LOG_LLM_OUTPUT,
+                        ),
+                    )
             yield event

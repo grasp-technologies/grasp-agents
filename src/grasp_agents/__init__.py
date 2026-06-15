@@ -20,6 +20,9 @@ from .agent import LLMAgent
 
 # --- Sessions / durability / memory / skills ---
 from .durability import AgentCheckpoint, CheckpointStore, InMemoryCheckpointStore
+
+# --- Logging ---
+from .grasp_logging import enable_verbose_stdout_logging, setup_logging
 from .llm import LLM, FallbackLLM, LLMSettings, RetryPolicy
 from .memory import MemoryEntry, MemoryProvider
 from .printer import Printer, print_event_stream
@@ -97,7 +100,9 @@ __all__ = [
     "SystemMessage",
     "UserMessage",
     "WorkflowProcessor",
+    "enable_verbose_stdout_logging",
     "function_tool",
     "print_event_stream",
+    "setup_logging",
     "stream_events",
 ]

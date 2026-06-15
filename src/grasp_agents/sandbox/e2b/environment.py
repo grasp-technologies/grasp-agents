@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, TypedDict
 
@@ -149,7 +150,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                     "it via e2b_environment(...) or E2BEnvironment.from_sandbox(...)."
                 )
             sandbox_cls = _sandbox_cls(self._code_interpreter)
+            logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
+            t0 = time.monotonic()
             self._holder.sandbox = await sandbox_cls.create(**self._create_params)
+            logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
             created_here = True
         sandbox = self._holder.require()
         try:

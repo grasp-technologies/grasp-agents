@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from .checkpoints import AgentCheckpoint, CheckpointKind, ProcessorCheckpoint
@@ -86,9 +87,15 @@ class CheckpointPersistMixin:
         if store is None or key is None:
             return
 
+        t0 = time.monotonic()
         checkpoint.checkpoint_number = self._checkpoint_number + 1
         await store.save(key, checkpoint.model_dump_json().encode("utf-8"))
         self._checkpoint_number += 1
+        logger.debug(
+            "checkpoint saved (#%d) in %.0fms",
+            self._checkpoint_number,
+            (time.monotonic() - t0) * 1000,
+        )
 
     async def _serialize_agent_checkpoint(
         self,
@@ -122,6 +129,7 @@ class CheckpointPersistMixin:
         if store is None or key is None:
             return
 
+        t0 = time.monotonic()
         messages = checkpoint.messages
         persisted = self._persisted_messages
         prefix_intact = len(messages) >= len(persisted) and all(
@@ -161,6 +169,13 @@ class CheckpointPersistMixin:
         self._log_dirty = False
         self._persisted_messages = tuple(messages)
         self._checkpoint_number += 1
+        logger.debug(
+            "checkpoint saved (#%d, %d msgs%s) in %.0fms",
+            self._checkpoint_number,
+            len(messages),
+            ", full rewrite" if rewrite else "",
+            (time.monotonic() - t0) * 1000,
+        )
 
     async def _deserialize_agent_checkpoint(
         self,
@@ -180,6 +195,7 @@ class CheckpointPersistMixin:
         if store is None or key is None:
             return None
 
+        t0 = time.monotonic()
         head = await store.load_json(
             key, AgentCheckpoint, subject=f"checkpoint at {key}"
         )
@@ -200,4 +216,10 @@ class CheckpointPersistMixin:
         self._checkpoint_number = head.checkpoint_number
         self._log_version = head.log_version
         self._persisted_messages = tuple(committed)
+        logger.info(
+            "checkpoint resumed (#%d, %d msgs) in %.0fms",
+            head.checkpoint_number,
+            len(committed),
+            (time.monotonic() - t0) * 1000,
+        )
         return head

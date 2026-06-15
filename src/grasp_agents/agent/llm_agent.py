@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
@@ -833,9 +834,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         if self._resume_notifications:
             self._print_messages(self._resume_notifications, exec_id=exec_id)
             for message in self._resume_notifications:
-                yield UserMessageEvent(
-                    data=message, source=self.name, exec_id=exec_id
-                )
+                yield UserMessageEvent(data=message, source=self.name, exec_id=exec_id)
             self._resume_notifications = []
 
         # A direct run with no inputs at all resumes the session — continue
@@ -897,8 +896,21 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                             exec_id=exec_id,
                         )
 
+            logger.info(
+                "agent '%s' run started (model=%s, max_turns=%s)",
+                self.name,
+                self._loop.llm.model_name,
+                self._loop.max_turns,
+            )
+            run_t0 = time.monotonic()
             async for event in self._loop.execute_stream(exec_id=exec_id):
                 yield event
+            logger.info(
+                "agent '%s' run finished: %d turn(s) in %.2fs",
+                self.name,
+                self._loop.turn + 1,
+                time.monotonic() - run_t0,
+            )
 
             assert self._loop.final_answer is not None
             output = self.parse_output(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Self
@@ -116,6 +117,7 @@ class MCPClient:
         if self._tools is not None:
             return
 
+        t0 = time.monotonic()
         exit_stack = AsyncExitStack()
         try:
             if isinstance(self._server, MCPServerStdio):
@@ -183,8 +185,9 @@ class MCPClient:
         self._instructions = init_result.instructions
         self._tools = tools
         _logger.info(
-            "MCPClient '%s': connected, discovered %d tools (resources: %s)",
+            "MCPClient '%s': connected in %.2fs, discovered %d tools (resources: %s)",
             self._name,
+            time.monotonic() - t0,
             len(self._tools),
             "yes" if capabilities.resources else "no",
         )
@@ -194,6 +197,7 @@ class MCPClient:
         if self._exit_stack is not None:
             await self._exit_stack.aclose()
             self._exit_stack = None
+            _logger.info("MCPClient '%s': disconnected", self._name)
         self._session = None
         self._tools = None
         self._capabilities = None

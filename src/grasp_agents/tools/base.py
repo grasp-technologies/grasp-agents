@@ -2,6 +2,7 @@ import asyncio
 import copy as copy_mod
 import logging
 import posixpath
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from pathlib import PurePosixPath
@@ -17,6 +18,7 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from grasp_agents import grasp_logging
 from grasp_agents.run_context import RunContext
 from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.types.events import (
@@ -257,6 +259,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         event wait), not the gap between events — a stream that trickles
         events forever would otherwise never time out.
         """
+        t0 = time.monotonic()
         try:
             if self.timeout is not None:
                 loop = asyncio.get_running_loop()
@@ -276,6 +279,8 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         except Exception as e:
             error_data = self._on_error(e)
             yield ToolErrorEvent(data=error_data, source=self.name, exec_id=exec_id)
+        else:
+            logger.info("tool %s ok in %.2fs", self.name, time.monotonic() - t0)
 
     async def _run_with_timeout(
         self,
@@ -287,6 +292,15 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> OutT | ToolErrorInfo:
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "tool %s: started, args=%s",
+                self.name,
+                grasp_logging.body_for_log(
+                    inp.model_dump_json(), full=grasp_logging.LOG_TOOL_INPUT
+                ),
+            )
+        t0 = time.monotonic()
         try:
             coro = self._run(
                 inp,
@@ -300,9 +314,18 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
                 result = await asyncio.wait_for(coro, timeout=self.timeout)
             else:
                 result = await coro
-            return result  # type: ignore[return-value]
         except Exception as e:
             return self._on_error(e)
+        logger.info("tool %s ok in %.2fs", self.name, time.monotonic() - t0)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "tool %s result: %s",
+                self.name,
+                grasp_logging.body_for_log(
+                    str(result), full=grasp_logging.LOG_TOOL_OUTPUT
+                ),
+            )
+        return result  # type: ignore[return-value]
 
     async def _run_stream_with_timeout(
         self,
@@ -314,6 +337,14 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "tool %s: started (stream), args=%s",
+                self.name,
+                grasp_logging.body_for_log(
+                    inp.model_dump_json(), full=grasp_logging.LOG_TOOL_INPUT
+                ),
+            )
         stream = self._run_stream(
             inp,
             ctx=ctx,

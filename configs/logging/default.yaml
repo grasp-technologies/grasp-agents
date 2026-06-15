@@ -5,7 +5,7 @@ formatters:
   simple:
     format: '%(message)s'
   detailed:
-    format: '%(name)s %(asctime)s %(levelname)s %(message)s'
+    format: '%(asctime)s %(levelname)-7s %(name)s [%(exec_id)s] %(message)s'
 
 handlers:
   fileHandler:

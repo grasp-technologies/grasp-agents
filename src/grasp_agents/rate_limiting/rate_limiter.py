@@ -12,6 +12,10 @@ from .utils import split_pos_args
 
 logger = logging.getLogger(__name__)
 
+# Only surface a throttle wait once it is long enough to matter — sub-second
+# pacing between calls is normal and would otherwise flood the log.
+_RATE_LIMIT_LOG_THRESHOLD_S = 0.5
+
 
 type RateLimDecorator[**P, R] = Callable[[AsyncCallable[P, R]], AsyncCallable[P, R]]
 
@@ -34,8 +38,13 @@ class RateLimiter[R]:
         async with self._semaphore:
             async with self._lock:
                 now = monotonic()
-                if now < self._state.next_request_time:
-                    await asyncio.sleep(self._state.next_request_time - now)
+                wait = self._state.next_request_time - now
+                if wait > 0:
+                    if wait >= _RATE_LIMIT_LOG_THRESHOLD_S:
+                        logger.info(
+                            "rate limit: throttling %.1fs (%.0f rpm)", wait, self._rpm
+                        )
+                    await asyncio.sleep(wait)
                 self._state.next_request_time = monotonic() + 1.01 * 60.0 / self._rpm
             return await func_partial()
 
