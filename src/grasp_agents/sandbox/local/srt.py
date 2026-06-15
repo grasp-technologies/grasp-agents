@@ -38,14 +38,16 @@ import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..policy import NetworkPolicy
+from grasp_agents.sandbox.policy import NetworkPolicy
+
 from .exec import LocalExecBackend
 from .supervisor import ExecSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ..policy import SandboxPolicy
+    from grasp_agents.sandbox.policy import SandboxPolicy
+
     from .supervisor import ProcessSupervisor
 
 

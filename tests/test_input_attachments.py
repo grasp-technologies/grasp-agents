@@ -9,7 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.prompt_builder import (
+from grasp_agents.context.prompt_builder import (
     InputAttachment,
     PromptBuilder,
 )
@@ -86,7 +86,7 @@ class TestApplyInputAttachments:
 
     @pytest.mark.anyio
     async def test_current_time_attachment_stamps_input(self) -> None:
-        from grasp_agents import make_current_time_attachment
+        from grasp_agents.context import make_current_time_attachment
 
         b = _builder()
         b.add_input_attachment(make_current_time_attachment())

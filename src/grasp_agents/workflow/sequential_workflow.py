@@ -3,12 +3,13 @@ from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
 from typing import Any, cast
 
-from ..packet import Packet
-from ..processors.processor import Processor
-from ..run_context import RunContext
-from ..types.errors import WorkflowConstructionError
-from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..types.io import ProcName
+from grasp_agents.processors.processor import Processor
+from grasp_agents.run_context import RunContext
+from grasp_agents.types.errors import WorkflowConstructionError
+from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from grasp_agents.types.io import ProcName
+from grasp_agents.types.packet import Packet
+
 from .workflow_processor import WorkflowProcessor
 
 logger = logging.getLogger(__name__)

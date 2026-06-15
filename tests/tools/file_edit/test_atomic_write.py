@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from grasp_agents.tools.file_backend.atomic_write import (
+from grasp_agents.file_backend.atomic_write import (
     atomic_write_bytes,
     atomic_write_text,
 )

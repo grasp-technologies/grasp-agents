@@ -30,6 +30,7 @@ from grasp_agents.tools.agent_tool import (
     AgentTool,
     AgentToolInput,
 )
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import FileEditSessionState
@@ -51,7 +52,6 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
-from grasp_agents.types.tool import BaseTool
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence

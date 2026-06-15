@@ -31,6 +31,7 @@ from grasp_agents.agent.tool_decision import (
 )
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -46,7 +47,6 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
-from grasp_agents.types.tool import BaseTool
 
 # ---------- Infrastructure (mirrors test_agent_loop_hooks.py) ----------
 
@@ -511,8 +511,8 @@ class TestADTShape:
 
 
 def test_tool_decision_is_public_api():
-    """The ADT and its variants are exported from the top-level package."""
-    assert grasp_agents.AllowTool is AllowTool
-    assert grasp_agents.RejectToolContent is RejectToolContent
-    assert grasp_agents.RaiseToolException is RaiseToolException
-    assert grasp_agents.ToolCallDecision is ToolCallDecision
+    """The ADT and its variants are exported from the grasp_agents.agent package."""
+    assert grasp_agents.agent.AllowTool is AllowTool
+    assert grasp_agents.agent.RejectToolContent is RejectToolContent
+    assert grasp_agents.agent.RaiseToolException is RaiseToolException
+    assert grasp_agents.agent.ToolCallDecision is ToolCallDecision

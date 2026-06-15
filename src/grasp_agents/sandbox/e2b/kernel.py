@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from e2b import TimeoutException
 
-from ..kernel import CellOutput, CellResult, KernelSession
+from grasp_agents.sandbox.kernel import CellOutput, CellResult, KernelSession
+
 from ._handle import DEFAULT_EXEC_TIMEOUT
 
 if TYPE_CHECKING:

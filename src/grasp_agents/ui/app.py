@@ -48,8 +48,8 @@ from textual.widgets import (
 )
 from textual.worker import Worker
 
-from ..types.content import InputImage
-from ..types.events import (
+from grasp_agents.types.content import InputImage
+from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     Event,
@@ -68,13 +68,14 @@ from ..types.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from ..types.llm_events import (
+from grasp_agents.types.llm_events import (
     OutputMessageTextPartTextDelta,
     ReasoningContentPartTextDelta,
     ReasoningSummaryPartTextDelta,
     ResponseFallback,
     ResponseRetrying,
 )
+
 from ._event_render import (
     event_images,
     image_to_pil,

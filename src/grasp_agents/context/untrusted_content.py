@@ -4,7 +4,7 @@ Untrusted-content boundary for external tool output.
 A tool whose result carries content from outside the agent's own reasoning —
 file contents, web pages, search results, command / code output, a third-party
 or MCP server — opts in by setting ``untrusted_output=True`` (see
-:class:`~grasp_agents.types.tool.BaseTool`). The agent loop then wraps that
+:class:`~grasp_agents.tools.base.BaseTool`). The agent loop then wraps that
 result in ``<untrusted_content>`` tags via :func:`wrap_untrusted` before it
 enters the model's context, and :func:`make_untrusted_content_section` adds a
 system-prompt line telling the model to treat tagged text as data, never as
@@ -21,12 +21,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from .types.content import InputText
+from grasp_agents.types.content import InputText
 
 if TYPE_CHECKING:
-    from .agent.prompt_builder import SystemPromptSection
-    from .types.content import CacheControl
-    from .types.items import ToolOutputPart
+    from grasp_agents.types.content import CacheControl
+    from grasp_agents.types.items import ToolOutputPart
+
+    from .prompt_builder import SystemPromptSection
 
 
 UNTRUSTED_CONTENT_TAG = "untrusted_content"
@@ -107,7 +108,7 @@ def make_untrusted_content_section(
     cache-stable; leave ``cache_control`` None so it stays inside the single
     system-prompt cache span rather than fragmenting it.
     """
-    from .agent.prompt_builder import SystemPromptSection  # noqa: PLC0415
+    from .prompt_builder import SystemPromptSection  # noqa: PLC0415
 
     def compute(**_: Any) -> str:
         return instruction

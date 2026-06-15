@@ -14,36 +14,29 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from ..tools.file_edit.session_state import FileEditSessionState
-    from .prompt_builder import InputAttachment, SystemPromptSection
+    from grasp_agents.context.prompt_builder import (
+        InputAttachment,
+        SystemPromptSection,
+    )
+    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
 
 from pydantic import BaseModel
 
-from ..durability import AgentCheckpoint
-from ..durability.checkpoints import AgentCheckpointLocation, CheckpointKind
-from ..durability.context_serialization import (
+from grasp_agents.context.env_section import (
+    make_current_time_attachment,
+    make_env_info_section,
+)
+from grasp_agents.context.prompt_builder import PromptBuilder
+from grasp_agents.context.untrusted_content import make_untrusted_content_section
+from grasp_agents.durability import AgentCheckpoint
+from grasp_agents.durability.checkpoints import AgentCheckpointLocation, CheckpointKind
+from grasp_agents.durability.context_serialization import (
     ContextKind,
     rehydrate_context,
     serialize_context,
 )
-from ..durability.resume import prepare_messages_for_resume
-from ..env_section import make_current_time_attachment, make_env_info_section
-from ..llm.llm import LLM
-from ..memory.injection import make_memory_section, relevant_memories_attachment
-from ..processors.processor import Processor
-from ..run_context import RunContext
-from ..sandbox.environment import SnapshotCapable
-from ..skills.injection import make_skills_section
-from ..telemetry import SpanKind
-from ..types.content import Content, InputImage, InputText
-from ..types.errors import ProcInputValidationError
-from ..types.events import (
-    Event,
-    ProcPayloadOutEvent,
-    SystemMessageEvent,
-    UserMessageEvent,
-)
-from ..types.hooks import (
+from grasp_agents.durability.resume import prepare_messages_for_resume
+from grasp_agents.hooks import (
     AfterLlmHook,
     AfterToolHook,
     BeforeLlmHook,
@@ -57,24 +50,41 @@ from ..types.hooks import (
     ToolOutputConverter,
     TranscriptBuilder,
 )
-from ..types.io import LLMPrompt, ProcName
-from ..types.items import FunctionToolCallItem, InputMessageItem
-from ..types.response import Response
-from ..types.tool import BaseTool
-from ..untrusted_content import make_untrusted_content_section
-from ..utils.callbacks import is_method_overridden
-from ..utils.io import get_prompt
-from ..utils.validation import validate_obj_from_json_or_py_string
+from grasp_agents.llm.llm import LLM
+from grasp_agents.memory.injection import (
+    make_memory_section,
+    relevant_memories_attachment,
+)
+from grasp_agents.processors.processor import Processor
+from grasp_agents.run_context import RunContext
+from grasp_agents.sandbox.environment import SnapshotCapable
+from grasp_agents.skills.injection import make_skills_section
+from grasp_agents.telemetry import SpanKind
+from grasp_agents.tools.base import BaseTool
+from grasp_agents.types.content import Content, InputImage, InputText
+from grasp_agents.types.errors import ProcInputValidationError
+from grasp_agents.types.events import (
+    Event,
+    ProcPayloadOutEvent,
+    SystemMessageEvent,
+    UserMessageEvent,
+)
+from grasp_agents.types.io import LLMPrompt, ProcName
+from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
+from grasp_agents.types.response import Response
+from grasp_agents.utils.callbacks import is_method_overridden
+from grasp_agents.utils.io import get_prompt
+from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
+
 from .agent_loop import AgentLoop
 from .llm_agent_transcript import LLMAgentTranscript
-from .prompt_builder import PromptBuilder
 from .tool_decision import ToolCallDecision
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from ..mcp.client import MCPClient
-    from ..mcp.spec import MCPClientSpec
+    from grasp_agents.mcp.client import MCPClient
+    from grasp_agents.mcp.spec import MCPClientSpec
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +221,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # The toolkit is stateless: backend / allowed_roots / read-state
             # all live on the backend the host wires onto ``RunContext``.
             if enable_memory:
-                from ..tools import FileToolkit  # noqa: PLC0415
+                from grasp_agents.tools import FileToolkit  # noqa: PLC0415
 
                 for tool in FileToolkit().tools():
                     if tool.name not in existing_names:
@@ -222,7 +232,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # ``list_skills`` stays opt-in — the catalog is already in the
             # system prompt.
             if enable_skills:
-                from ..skills.tools import load_skill  # noqa: PLC0415
+                from grasp_agents.skills.tools import load_skill  # noqa: PLC0415
 
                 if load_skill.name not in existing_names:
                     tools.append(load_skill)
@@ -287,8 +297,12 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             )
         # Local import to dodge the ``mcp`` package's optional-dependency
         # import guard at module load.
-        from ..mcp.section import make_mcp_instructions_section  # noqa: PLC0415
-        from ..mcp.spec import MCPClientSpec as _MCPClientSpec  # noqa: PLC0415
+        from grasp_agents.mcp.section import (  # noqa: PLC0415
+            make_mcp_instructions_section,
+        )
+        from grasp_agents.mcp.spec import (  # noqa: PLC0415
+            MCPClientSpec as _MCPClientSpec,
+        )
 
         self._prompt_builder.add_system_prompt_section(
             make_mcp_instructions_section(lambda: self.mcp_clients)

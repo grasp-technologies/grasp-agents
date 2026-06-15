@@ -16,10 +16,10 @@ import pytest
 from mcp.types import CallToolResult, TextResourceContents
 from mcp.types import Tool as McpToolDef
 
+from grasp_agents.file_backend.mcp import MCPFileBackend
+from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.mcp.client import MCPClient, MCPServerStdio
 from grasp_agents.mcp.tool import MCPTool
-from grasp_agents.tools.file_backend.mcp import MCPFileBackend
-from grasp_agents.tools.file_backend.paths import PathAccessError
 
 # ---------- Item 29: connect() exception safety ----------
 

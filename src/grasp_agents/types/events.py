@@ -5,8 +5,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from grasp_agents.packet import Packet
-
 from .items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -15,6 +13,7 @@ from .items import (
     ReasoningItem,
 )
 from .llm_events import LlmEvent
+from .packet import Packet
 from .response import Response
 
 

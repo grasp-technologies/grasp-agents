@@ -36,15 +36,17 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...tools.file_backend.paths import sensitive_path_rules
-from ..policy import NetworkPolicy
+from grasp_agents.file_backend.paths import sensitive_path_rules
+from grasp_agents.sandbox.policy import NetworkPolicy
+
 from .exec import LocalExecBackend
 from .supervisor import ExecSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ..policy import SandboxPolicy
+    from grasp_agents.sandbox.policy import SandboxPolicy
+
     from .supervisor import ProcessSupervisor
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"

@@ -13,7 +13,6 @@ import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import InMemoryCheckpointStore
-from grasp_agents.packet import Packet
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.runner.event_bus import MAX_QUEUE_SIZE, EventBus
@@ -25,6 +24,7 @@ from grasp_agents.types.events import (
     ProcPayloadOutEvent,
     RoutedEvent,
 )
+from grasp_agents.types.packet import Packet
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 from .test_runner import (  # type: ignore[attr-defined]

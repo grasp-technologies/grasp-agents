@@ -33,9 +33,9 @@ from .tool_decision import RejectToolContent, ToolCallDecision
 if TYPE_CHECKING:
     from collections.abc import Container, Mapping, Sequence
 
-    from ..run_context import RunContext
-    from ..types.hooks import BeforeToolHook
-    from ..types.items import FunctionToolCallItem
+    from grasp_agents.hooks import BeforeToolHook
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.types.items import FunctionToolCallItem
 
 
 DEFAULT_DENY_MESSAGE = "User denied tool call '{name}'."

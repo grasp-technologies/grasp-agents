@@ -47,11 +47,11 @@ from grasp_agents.llm_providers.openai_responses.responses_llm import (
 from grasp_agents.llm_providers.openai_responses.tool_converters import (
     to_api_tool as responses_to_api_tool,
 )
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText, UrlCitation
 from grasp_agents.types.items import OutputMessageItem, ReasoningItem
 from grasp_agents.types.llm_errors import LlmBadRequestError, LlmContextWindowError
 from grasp_agents.types.llm_events import OutputItemDone
-from grasp_agents.types.tool import BaseTool
 
 from .anthropic.test_converters import (
     _make_message,  # pyright: ignore[reportPrivateUsage]

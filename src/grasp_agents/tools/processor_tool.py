@@ -3,12 +3,12 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from ..agent.agent_context import AgentContext
-from ..durability.checkpoints import CheckpointKind
-from ..processors.processor import Processor
-from ..run_context import RunContext
-from ..types.events import Event, ProcPacketOutEvent, ToolOutputEvent
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.agent.agent_context import AgentContext
+from grasp_agents.durability.checkpoints import CheckpointKind
+from grasp_agents.processors.processor import Processor
+from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 
 
 class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
@@ -98,7 +98,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         if self._reset_transcript_on_run:
             # Only LLM agents carry a transcript — other processors have no
             # working-state slot to reset.
-            from ..agent.llm_agent import LLMAgent  # noqa: PLC0415
+            from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
 
             if isinstance(proc, LLMAgent):
                 proc.transcript.reset()

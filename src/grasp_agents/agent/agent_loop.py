@@ -9,9 +9,16 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
+from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
 from grasp_agents.telemetry import traced
+from grasp_agents.tools.base import (
+    BaseTool,
+    NamedToolChoice,
+    ToolChoice,
+    batch_has_concurrency_conflict,
+)
 from grasp_agents.types.errors import AgentFinalAnswerError, LLMToolCallValidationError
 from grasp_agents.types.events import (
     Event,
@@ -44,13 +51,6 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
     ResponseRetrying,
 )
-from grasp_agents.types.tool import (
-    BaseTool,
-    NamedToolChoice,
-    ToolChoice,
-    batch_has_concurrency_conflict,
-)
-from grasp_agents.untrusted_content import wrap_untrusted
 from grasp_agents.utils.streaming import stream_concurrent
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
@@ -72,11 +72,7 @@ from .tool_decision import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
-    from grasp_agents.llm.llm import LLM
-    from grasp_agents.run_context import RunContext
-    from grasp_agents.tools.bash_common import ShellState
-    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
-    from grasp_agents.types.hooks import (
+    from grasp_agents.hooks import (
         AfterLlmHook,
         AfterToolHook,
         BeforeLlmHook,
@@ -85,6 +81,10 @@ if TYPE_CHECKING:
         ToolInputConverter,
         ToolOutputConverter,
     )
+    from grasp_agents.llm.llm import LLM
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.tools.bash_common import ShellState
+    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.response import Response
 
     from .background_tasks import BackgroundTaskManager

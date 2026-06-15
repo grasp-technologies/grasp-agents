@@ -7,7 +7,7 @@ from typing import Any, cast
 import httpx
 from google.genai import errors as genai_errors
 
-from grasp_agents.llm_providers._http_helpers import parse_retry_after  # noqa: PLC2701
+from grasp_agents.llm_providers._http_helpers import parse_retry_after
 from grasp_agents.types.llm_errors import (
     LlmAuthenticationError,
     LlmBadRequestError,

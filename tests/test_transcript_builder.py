@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.prompt_builder import SystemPromptSection
+from grasp_agents.context.prompt_builder import SystemPromptSection
 from grasp_agents.types.content import CacheControl, InputText
 from grasp_agents.types.items import InputMessageItem
 

@@ -34,8 +34,8 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.durability.checkpoints import AgentCheckpoint
-from grasp_agents.packet import Packet
 from grasp_agents.run_context import RunContext
+from grasp_agents.selector import Selector
 from grasp_agents.types.content import Content, InputText
 from grasp_agents.types.io import LLMPrompt, ProcName
 from grasp_agents.types.items import (
@@ -44,8 +44,8 @@ from grasp_agents.types.items import (
     InputMessageItem,
     ToolOutputPart,
 )
+from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import Response
-from grasp_agents.types.selector import Selector
 
 __all__ = [
     "AfterLlmHook",

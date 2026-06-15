@@ -34,7 +34,8 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..policy import NetworkPolicy
+from grasp_agents.sandbox.policy import NetworkPolicy
+
 from ._handle import DEFAULT_EXEC_TIMEOUT, DEFAULT_WORKSPACE
 
 if TYPE_CHECKING:

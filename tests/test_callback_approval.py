@@ -33,6 +33,7 @@ from grasp_agents.agent.approval_callback import (
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -48,7 +49,6 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
-from grasp_agents.types.tool import BaseTool
 
 # ---------- Infrastructure (mirrors test_before_tool_decision.py) ----------
 
@@ -487,7 +487,7 @@ class TestMixedBatch:
 
 
 def test_approval_guard_public_api():
-    """Helpers are exported from the top-level package."""
-    assert grasp_agents.build_callback_approval is build_callback_approval
-    assert grasp_agents.ApprovalCallback is ApprovalCallback
-    assert grasp_agents.DEFAULT_DENY_MESSAGE == DEFAULT_DENY_MESSAGE
+    """Helpers are exported from the grasp_agents.agent package."""
+    assert grasp_agents.agent.build_callback_approval is build_callback_approval
+    assert grasp_agents.agent.ApprovalCallback is ApprovalCallback
+    assert grasp_agents.agent.DEFAULT_DENY_MESSAGE == DEFAULT_DENY_MESSAGE

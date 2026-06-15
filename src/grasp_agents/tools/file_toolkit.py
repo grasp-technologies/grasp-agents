@@ -39,7 +39,7 @@ from .file_search.glob import GlobTool
 from .file_search.grep import GrepTool
 
 if TYPE_CHECKING:
-    from ..types.tool import BaseTool
+    from grasp_agents.tools.base import BaseTool
 
 
 class FileToolkit:

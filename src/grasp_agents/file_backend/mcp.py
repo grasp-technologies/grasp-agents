@@ -35,7 +35,8 @@ import posixpath
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
-from ...mcp.resource_index import AnyUrl, MCPResourceIndex
+from grasp_agents.mcp.resource_index import AnyUrl, MCPResourceIndex
+
 from .base import FileBackend, FileEntry, FileStat, GrepRawResult
 from .local import glob_filter_entries
 from .paths import PathAccessError
@@ -55,7 +56,8 @@ if TYPE_CHECKING:
 
     from mcp.types import ContentBlock
 
-    from ...mcp.client import MCPClient
+    from grasp_agents.mcp.client import MCPClient
+
     from .paths import AccessMode
 
 

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 
-from grasp_agents.agent.prompt_builder import InputAttachment, SystemPromptSection
+from grasp_agents.context.prompt_builder import InputAttachment, SystemPromptSection
 
 from .types import INDEX_FILE_NAME, MAX_INDEX_BYTES, MAX_INDEX_LINES, MEMORY_TYPES
 

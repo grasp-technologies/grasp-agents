@@ -328,7 +328,7 @@ class LocalFileBackend(FileBackend):
     ) -> GrepRawResult:
         # Defer the heavy rg-driving helper to keep this module slim and
         # avoid a circular import from ``..file_search``.
-        from ..file_search.grep import (  # noqa: PLC0415
+        from grasp_agents.tools.file_search.grep import (  # noqa: PLC0415
             local_backend_grep,
         )
 

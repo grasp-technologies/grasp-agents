@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from google.genai.types import FunctionCallingConfigMode
 from pydantic import BaseModel
 
-from grasp_agents.types.tool import NamedToolChoice, ToolChoice
+from grasp_agents.tools.base import NamedToolChoice, ToolChoice
 
 from . import (
     GeminiFunctionCallingConfig,
@@ -19,7 +19,7 @@ from . import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from grasp_agents.types.tool import BaseTool
+    from grasp_agents.tools.base import BaseTool
 
 
 def to_api_tools(

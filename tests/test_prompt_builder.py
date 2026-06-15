@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from grasp_agents.agent.prompt_builder import PromptBuilder, SystemPromptSection
+from grasp_agents.context.prompt_builder import PromptBuilder, SystemPromptSection
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.content import (
     CacheControl,

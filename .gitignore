@@ -191,3 +191,6 @@ _scratch_*.py
 tests/tui/_review/
 
 .worktreeinclude
+orchestration_workdir/
+autoresearch_workdir/
+CLAUDE.md

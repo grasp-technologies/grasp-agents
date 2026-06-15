@@ -3,7 +3,7 @@
 host filesystem + host subprocess pair sharing one :class:`SandboxPolicy`.
 
 The factory is the co-location guarantee: it unpacks a single policy into a
-:class:`~grasp_agents.tools.file_backend.local.LocalFileBackend` and an
+:class:`~grasp_agents.file_backend.local.LocalFileBackend` and an
 exec backend that address the *same* host filesystem, so a host cannot
 accidentally point the two surfaces at different locations. Wire the result onto
 :attr:`RunContext.environment`; the ``RunContext`` validator sources
@@ -32,9 +32,10 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
-from ...tools.file_backend.local import LocalFileBackend
-from ..environment import ExecutionEnvironment
-from ..policy import DEFAULT_ENV_SCRUB, NetworkPolicy, SandboxPolicy
+from grasp_agents.file_backend.local import LocalFileBackend
+from grasp_agents.sandbox.environment import ExecutionEnvironment
+from grasp_agents.sandbox.policy import DEFAULT_ENV_SCRUB, NetworkPolicy, SandboxPolicy
+
 from .exec import LocalExecBackend, resolve_python
 from .kernel import DEFAULT_KERNEL_STARTUP_TIMEOUT
 from .supervisor import ProcessSupervisor, ResourceLimits, SupervisorLimits
@@ -42,8 +43,8 @@ from .supervisor import ProcessSupervisor, ResourceLimits, SupervisorLimits
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ...tools.file_backend.base import FileBackend
-    from ..exec_backend import ExecBackend
+    from grasp_agents.file_backend.base import FileBackend
+    from grasp_agents.sandbox.exec_backend import ExecBackend
 
 logger = logging.getLogger(__name__)
 

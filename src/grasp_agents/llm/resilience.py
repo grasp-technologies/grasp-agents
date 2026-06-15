@@ -3,8 +3,8 @@
 import random
 from dataclasses import dataclass
 
-from ..types.llm_errors import LlmErrorTuple, LlmRateLimitError
-from ..types.recovery import RecoveryHint, classify_error, is_retryable
+from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
+from grasp_agents.types.recovery import RecoveryHint, classify_error, is_retryable
 
 
 @dataclass(frozen=True)

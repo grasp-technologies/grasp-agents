@@ -14,15 +14,16 @@ from typing import TYPE_CHECKING, Literal
 
 from e2b import AsyncCommandHandle, CommandExitException
 
-from ...tools.file_backend.paths import PathAccessError
-from ..exec_backend import (
+from grasp_agents.file_backend.paths import PathAccessError
+from grasp_agents.sandbox.exec_backend import (
     ExecBackend,
     ExecChunk,
     ExecResult,
     SessionCapable,
     TerminationReason,
 )
-from ..kernel import KernelCapable
+from grasp_agents.sandbox.kernel import KernelCapable
+
 from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     MAX_OUTPUT_CHARS,
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from pathlib import Path
 
-    from ..policy import SandboxPolicy
+    from grasp_agents.sandbox.policy import SandboxPolicy
 
 
 class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):

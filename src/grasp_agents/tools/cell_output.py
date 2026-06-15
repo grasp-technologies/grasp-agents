@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..types.content import InputImage, InputText
+from grasp_agents.types.content import InputImage, InputText
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

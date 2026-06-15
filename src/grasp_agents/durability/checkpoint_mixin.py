@@ -9,7 +9,7 @@ from .checkpoints import AgentCheckpoint, CheckpointKind, ProcessorCheckpoint
 from .store_keys import make_store_key
 
 if TYPE_CHECKING:
-    from ..run_context import RunContext
+    from grasp_agents.run_context import RunContext
 
 logger = logging.getLogger(__name__)
 

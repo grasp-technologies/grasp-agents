@@ -38,7 +38,8 @@ from anthropic.types import (
 from anthropic.types.web_search_tool_request_error_param import (
     WebSearchToolRequestErrorParam,
 )
-from grasp_agents.llm_providers._file_helpers import file_part_data  # noqa: PLC2701
+
+from grasp_agents.llm_providers._file_helpers import file_part_data
 from grasp_agents.types.content import (
     BASE64_DATA_PREFIX,
     CacheControl,

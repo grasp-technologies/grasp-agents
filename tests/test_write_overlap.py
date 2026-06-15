@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from grasp_agents.types.tool import _keys_overlap, batch_has_concurrency_conflict
+from grasp_agents.tools.base import _keys_overlap, batch_has_concurrency_conflict
 
 
 class _WriteFake:

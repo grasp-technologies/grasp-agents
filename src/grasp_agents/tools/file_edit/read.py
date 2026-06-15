@@ -32,12 +32,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ...types.tool import BaseTool, ToolProgressCallback
-from ..file_backend.paths import PathAccessError, has_binary_extension
+from grasp_agents.file_backend.paths import PathAccessError, has_binary_extension
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
-    from ...agent.agent_context import AgentContext
-    from ...run_context import RunContext
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+
     from .redact import SecretRedactor
 
 # Default char cap on the formatted read output. 100 KiB is ~25-35K

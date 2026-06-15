@@ -19,15 +19,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from .agent.prompt_builder import InputAttachment, SystemPromptSection
+from .prompt_builder import InputAttachment, SystemPromptSection
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from .agent.agent_context import AgentContext
-    from .run_context import RunContext
-    from .types.content import CacheControl
-    from .types.items import InputItem, InputMessageItem
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.types.content import CacheControl
+    from grasp_agents.types.items import InputItem, InputMessageItem
 
 
 ENV_INFO_SECTION_NAME = "env_info"

@@ -6,15 +6,17 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..types.selector import Selector
+from grasp_agents.selector import Selector
+
 from .loader import discover_skills
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
 
-    from ..run_context import RunContext
-    from ..types.items import InputItem
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.types.items import InputItem
+
     from .types import Skill
 
 logger = logging.getLogger(__name__)

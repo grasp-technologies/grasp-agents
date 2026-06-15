@@ -52,9 +52,9 @@ def _agent_task_key(session_key: str, parent_name: str, call_id: str) -> str:
 
 
 from grasp_agents.llm.llm import LLM
-from grasp_agents.packet import Packet
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.events import Event
@@ -72,8 +72,8 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
     ResponseCreated,
 )
+from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import Response, ResponseUsage
-from grasp_agents.types.tool import BaseTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 # ---------- Infrastructure ----------

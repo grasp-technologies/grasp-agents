@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from grasp_agents.llm.llm import LLM
 from grasp_agents.llm.resilience import RetryPolicy
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText
 from grasp_agents.types.errors import (
     LLMResponseRefusalError,
@@ -40,7 +41,6 @@ from grasp_agents.types.llm_events import (
     ResponseRetrying,
 )
 from grasp_agents.types.response import Response
-from grasp_agents.types.tool import BaseTool
 
 # ---------- Mocks ----------
 

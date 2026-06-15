@@ -13,6 +13,7 @@ from grasp_agents.llm_providers.openai_responses.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
+from grasp_agents.tools.base import NamedToolChoice
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
     OpenPageAction,
@@ -20,7 +21,6 @@ from grasp_agents.types.items import (
     WebSearchCallItem,
 )
 from grasp_agents.types.response import Response as InternalResponse
-from grasp_agents.types.tool import NamedToolChoice
 
 
 def _make_add_tool() -> Any:

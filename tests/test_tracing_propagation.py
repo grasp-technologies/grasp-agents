@@ -30,9 +30,9 @@ from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
 
+    from grasp_agents.tools.base import BaseTool
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
-    from grasp_agents.types.tool import BaseTool
 
 
 @dataclass(frozen=True)

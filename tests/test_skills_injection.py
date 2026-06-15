@@ -19,7 +19,7 @@ from grasp_agents.skills import (
 )
 
 if TYPE_CHECKING:
-    from grasp_agents.agent.prompt_builder import SystemPromptSection
+    from grasp_agents.context.prompt_builder import SystemPromptSection
 
 
 async def _run_section(

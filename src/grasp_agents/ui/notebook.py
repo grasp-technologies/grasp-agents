@@ -17,7 +17,7 @@ from ._event_render import image_path_of, render_event
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from ..types.events import Event
+    from grasp_agents.types.events import Event
 
     # Typed shims: IPython is only partially typed, so the real calls live in
     # the runtime ``else`` branch (invisible to the type-checker).

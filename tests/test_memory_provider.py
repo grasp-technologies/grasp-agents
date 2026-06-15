@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.memory import (
     DEFAULT_STALE_AFTER,
     InMemoryMemoryProvider,
@@ -19,7 +20,6 @@ from grasp_agents.memory import (
 )
 from grasp_agents.memory.default_path import GRASP_MEMORY_ENV
 from grasp_agents.run_context import RunContext
-from grasp_agents.tools.file_backend.local import LocalFileBackend
 
 if TYPE_CHECKING:
     from pathlib import Path

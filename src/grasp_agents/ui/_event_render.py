@@ -32,9 +32,9 @@ from rich.table import Table
 from rich.text import Text, TextType
 from rich.theme import Theme
 
-from ..printer import sanitize_terminal_text
-from ..types.content import InputImage, InputText
-from ..types.events import (
+from grasp_agents.printer import sanitize_terminal_text
+from grasp_agents.types.content import InputImage, InputText
+from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     Event,
@@ -51,10 +51,10 @@ from ..types.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from ..types.llm_events import ResponseFallback, ResponseRetrying
+from grasp_agents.types.llm_events import ResponseFallback, ResponseRetrying
 
 if TYPE_CHECKING:
-    from ..types.items import InputMessageItem
+    from grasp_agents.types.items import InputMessageItem
 
 PALETTE: dict[str, str] = {
     "border_tool_call": "#BEE4F7",

@@ -19,7 +19,7 @@ from grasp_agents.mcp.json_schema import json_schema_to_pydantic
 from grasp_agents.mcp.resource import MCPListResourcesTool, MCPReadResourceTool
 from grasp_agents.mcp.spec import MCPClientSpec
 from grasp_agents.mcp.tool import MCPTool
-from grasp_agents.types.tool import BaseTool
+from grasp_agents.tools.base import BaseTool
 
 _SERVER_PATH = str(Path(__file__).parent / "mcp_test_server.py")
 _SERVER_CONFIG = MCPServerStdio(command=sys.executable, args=[_SERVER_PATH])

@@ -16,15 +16,15 @@ from typing import Any, cast
 
 import pytest
 
+from grasp_agents.file_backend.paths import (
+    PathAccessError,
+    check_sensitive_path,
+)
 from grasp_agents.sandbox.config import EnvironmentConfig
 from grasp_agents.sandbox.e2b._handle import normalize_posix
 from grasp_agents.sandbox.e2b.file_backend import E2BFileBackend
 from grasp_agents.sandbox.local.seatbelt import build_seatbelt_profile
 from grasp_agents.sandbox.policy import DEFAULT_ENV_SCRUB, SandboxPolicy
-from grasp_agents.tools.file_backend.paths import (
-    PathAccessError,
-    check_sensitive_path,
-)
 
 
 class TestEnvScrubConfigDefault:
@@ -110,8 +110,8 @@ class TestE2BPathNormalization:
 class TestGrepRedaction:
     @pytest.mark.asyncio
     async def test_content_mode_redacts_secrets(self, tmp_path: Path) -> None:
+        from grasp_agents.file_backend.local import LocalFileBackend
         from grasp_agents.run_context import RunContext
-        from grasp_agents.tools.file_backend.local import LocalFileBackend
         from grasp_agents.tools.file_search.grep import GrepTool, rg_available
 
         if not rg_available():

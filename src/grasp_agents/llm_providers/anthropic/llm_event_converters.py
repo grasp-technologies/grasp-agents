@@ -12,8 +12,6 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from openai.types.responses.response import IncompleteDetails
-
 from anthropic.types import (
     CitationsWebSearchResultLocation as _AnthropicWebSearchCitation,
 )
@@ -21,6 +19,8 @@ from anthropic.types import WebFetchBlock as _AnthropicWebFetchBlock
 from anthropic.types import (
     WebFetchToolResultBlock as _AnthropicWebFetchToolResultBlock,
 )
+from openai.types.responses.response import IncompleteDetails
+
 from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.content import Citation, UrlCitation
 from grasp_agents.types.items import (

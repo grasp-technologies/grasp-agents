@@ -21,6 +21,8 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .agent_tool import AgentTool, AgentToolInput, AgentToolPromptBuilder
+    from .base import BaseTool, ToolProgressCallback
     from .bash import (
         Bash,
         BashInput,
@@ -30,11 +32,21 @@ if TYPE_CHECKING:
     from .bash_session import BashSession
     from .code_interpreter import RunPython, RunPythonInput
     from .file_toolkit import FileToolkit
+    from .function_tool import FunctionTool, function_tool
     from .notebook_exec import RunCell, RunCellInput
+    from .processor_tool import ProcessorTool
     from .task_tools import KillTask
 
 
 _LAZY: dict[str, str] = {
+    "AgentTool": "agent_tool",
+    "AgentToolInput": "agent_tool",
+    "AgentToolPromptBuilder": "agent_tool",
+    "BaseTool": "base",
+    "ToolProgressCallback": "base",
+    "FunctionTool": "function_tool",
+    "function_tool": "function_tool",
+    "ProcessorTool": "processor_tool",
     "Bash": "bash",
     "BashInput": "bash",
     "BashResult": "bash",
@@ -60,15 +72,23 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "AgentTool",
+    "AgentToolInput",
+    "AgentToolPromptBuilder",
+    "BaseTool",
     "Bash",
     "BashInput",
     "BashResult",
     "BashSession",
     "FileToolkit",
+    "FunctionTool",
     "KillTask",
+    "ProcessorTool",
     "RunCell",
     "RunCellInput",
     "RunPython",
     "RunPythonInput",
+    "ToolProgressCallback",
     "bash_tools",
+    "function_tool",
 ]

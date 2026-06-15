@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
-from ..exec_backend import ExecChunk, ExecResult, TerminationReason
+from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping

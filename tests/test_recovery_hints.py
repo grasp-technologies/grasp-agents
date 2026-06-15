@@ -295,17 +295,17 @@ class TestRetryPolicyAlignment:
 
 class TestPublicExport:
     def test_top_level_import(self) -> None:
-        """Ensure public surface is exposed from top-level package."""
-        from grasp_agents import (
+        """Ensure the recovery surface is exposed from grasp_agents.types."""
+        from grasp_agents.types import (
             RecoveryHint as PkgRecoveryHint,
         )
-        from grasp_agents import (
+        from grasp_agents.types import (
             classify_error as pkg_classify_error,
         )
-        from grasp_agents import (
+        from grasp_agents.types import (
             is_retryable as pkg_is_retryable,
         )
-        from grasp_agents import (
+        from grasp_agents.types import (
             register_recovery_hint as pkg_register_recovery_hint,
         )
 

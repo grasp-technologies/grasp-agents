@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from grasp_agents.run_context import reset_default_run_context
-from grasp_agents.types.tool import BaseTool
+from grasp_agents.tools.base import BaseTool
 
 # Load .env file (gitignored) for local development
 load_dotenv()

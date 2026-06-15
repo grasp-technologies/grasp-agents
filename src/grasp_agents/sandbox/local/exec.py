@@ -36,9 +36,15 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...tools.file_backend.paths import PathAccessError, resolve_safe
-from ..exec_backend import ExecBackend, ExecChunk, ExecResult, SessionCapable
-from ..kernel import KernelCapable
+from grasp_agents.file_backend.paths import PathAccessError, resolve_safe
+from grasp_agents.sandbox.exec_backend import (
+    ExecBackend,
+    ExecChunk,
+    ExecResult,
+    SessionCapable,
+)
+from grasp_agents.sandbox.kernel import KernelCapable
+
 from .kernel import LocalKernel
 from .session import LocalExecSession
 from .supervisor import ExecSpec, ProcessSupervisor
@@ -46,7 +52,8 @@ from .supervisor import ExecSpec, ProcessSupervisor
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
-    from ..policy import SandboxPolicy
+    from grasp_agents.sandbox.policy import SandboxPolicy
+
     from .supervisor import SupervisorLimits
 
 

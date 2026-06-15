@@ -10,7 +10,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 if TYPE_CHECKING:
-    from ..tools.file_backend.base import FileBackend
+    from grasp_agents.file_backend.base import FileBackend
+
     from .exec_backend import ExecBackend
     from .policy import SandboxPolicy
 

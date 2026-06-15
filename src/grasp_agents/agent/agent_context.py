@@ -21,12 +21,13 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..run_context import RunContext
-    from ..tools.bash_common import ShellState
-    from ..tools.bash_session import BashSessionHolder
-    from ..tools.file_edit.session_state import FileEditSessionState
-    from ..tools.notebook_exec import KernelHolder
-    from ..types.tool import BaseTool
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.tools.base import BaseTool
+    from grasp_agents.tools.bash_common import ShellState
+    from grasp_agents.tools.bash_session import BashSessionHolder
+    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
+    from grasp_agents.tools.notebook_exec import KernelHolder
+
     from .background_tasks import BackgroundTaskManager
     from .llm_agent_transcript import LLMAgentTranscript
 
@@ -104,12 +105,13 @@ class AgentContext:
         read them from the holders' ``context_id`` before the sandbox was
         paused/snapshotted. See :class:`KernelHolder`.
         """
-        from ..tools.bash_common import ShellState  # noqa: PLC0415
-        from ..tools.bash_session import BashSessionHolder  # noqa: PLC0415
-        from ..tools.file_edit.session_state import (  # noqa: PLC0415
+        from grasp_agents.tools.bash_common import ShellState  # noqa: PLC0415
+        from grasp_agents.tools.bash_session import BashSessionHolder  # noqa: PLC0415
+        from grasp_agents.tools.file_edit.session_state import (  # noqa: PLC0415
             FileEditSessionState as _FileEditSessionState,
         )
-        from ..tools.notebook_exec import KernelHolder  # noqa: PLC0415
+        from grasp_agents.tools.notebook_exec import KernelHolder  # noqa: PLC0415
+
         from .background_tasks import (  # noqa: PLC0415
             BackgroundTaskManager as _BackgroundTaskManager,
         )

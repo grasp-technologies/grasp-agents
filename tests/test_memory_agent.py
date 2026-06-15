@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.prompt_builder import SystemPromptSection
+from grasp_agents.context.prompt_builder import SystemPromptSection
 from grasp_agents.memory import (
     InMemoryMemoryProvider,
     MemoryEntry,

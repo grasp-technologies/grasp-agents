@@ -883,7 +883,7 @@ class TestBackgroundTasks:
 class TestPacketEvents:
     @pytest.mark.asyncio
     async def test_packets_hidden_by_default(self):
-        from grasp_agents.packet import Packet
+        from grasp_agents.types.packet import Packet
 
         ec, buf = _make_console()
         packet = Packet(payloads=["result"], sender="agent")
@@ -894,7 +894,7 @@ class TestPacketEvents:
 
     @pytest.mark.asyncio
     async def test_packets_shown_when_enabled(self):
-        from grasp_agents.packet import Packet
+        from grasp_agents.types.packet import Packet
 
         ec, buf = _make_console_with(show_packets=True)
         packet = Packet(payloads=["hello"], sender="my_agent")

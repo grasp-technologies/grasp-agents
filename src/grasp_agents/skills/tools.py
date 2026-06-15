@@ -15,13 +15,14 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 
-from ..tools.function_tool import function_tool
+from grasp_agents.tools.function_tool import function_tool
+
 from .injection import LOAD_INSTRUCTION, render_available_skills_block
 from .loader import parse_skill_md
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
-    from ..run_context import RunContext
+    from grasp_agents.run_context import RunContext
 
 LOAD_SKILL_DESCRIPTION = (
     "Load the full body (markdown instructions) of an available skill by name. "

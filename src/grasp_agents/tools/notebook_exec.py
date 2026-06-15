@@ -24,9 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ..sandbox.kernel import CellOutput, CellResult, KernelCapable
-from ..types.content import InputImage, InputText
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.sandbox.kernel import CellOutput, CellResult, KernelCapable
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+from grasp_agents.types.content import InputImage, InputText
+
 from .cell_output import (
     DEFAULT_MAX_IMAGES,
     DEFAULT_OUTPUT_TEXT_CHARS,
@@ -42,9 +43,9 @@ from .file_edit.notebook import (
 )
 
 if TYPE_CHECKING:
-    from ..agent.agent_context import AgentContext
-    from ..run_context import RunContext
-    from ..sandbox.kernel import KernelSession
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.sandbox.kernel import KernelSession
 
 DEFAULT_CELL_TIMEOUT = 120.0
 

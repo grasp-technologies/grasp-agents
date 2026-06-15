@@ -30,8 +30,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
     from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.hooks import InputContentBuilder, SystemPromptBuilder
     from grasp_agents.run_context import RunContext
-    from grasp_agents.types.hooks import InputContentBuilder, SystemPromptBuilder
     from grasp_agents.types.io import LLMPrompt
     from grasp_agents.types.items import InputItem
 from grasp_agents.types.items import InputMessageItem

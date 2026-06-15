@@ -3,13 +3,6 @@
 import json
 from typing import Any
 
-from openai.types.responses import ResponseStatus
-from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
-
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import RedactedThinkingBlock as AnthropicRedactedThinkingBlock
 from anthropic.types import ServerToolUseBlock as AnthropicServerToolUseBlock
@@ -30,6 +23,13 @@ from anthropic.types.web_search_tool_result_block import (
 from anthropic.types.web_search_tool_result_error import (
     WebSearchToolResultError as AnthropicWebSearchToolResultError,
 )
+from openai.types.responses import ResponseStatus
+from openai.types.responses.response import IncompleteDetails
+from openai.types.responses.response_usage import (
+    InputTokensDetails,
+    OutputTokensDetails,
+)
+
 from grasp_agents.types.content import (
     Citation,
     OutputMessageText,

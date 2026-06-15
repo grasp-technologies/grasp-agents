@@ -3,12 +3,12 @@ File-edit tool package: ``Read`` / ``Write`` / ``Edit`` / ``Delete`` +
 ``NotebookRead`` / ``NotebookEdit``, plus their per-session bookkeeping
 (:class:`FileEditSessionState`), fuzzy-match chain, and secret redaction.
 
-These operate over a :class:`~grasp_agents.tools.file_backend.FileBackend`
+These operate over a :class:`~grasp_agents.file_backend.FileBackend`
 (the I/O substrate, now in the sibling :mod:`..file_backend` package) wired onto
 :attr:`RunContext.file_backend`. To bundle them with the search tools (``Glob``
 / ``Grep``), use :class:`grasp_agents.tools.FileToolkit`.
 
-Imports are lazy (PEP 562) to avoid pulling :mod:`types.tool` into
+Imports are lazy (PEP 562) to avoid pulling :mod:`tools.base` into
 :class:`RunContext` construction.
 """
 

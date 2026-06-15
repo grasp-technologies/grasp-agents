@@ -31,6 +31,8 @@ from typing import Any, cast
 import pytest
 from e2b import AsyncSandbox, CommandExitException, TimeoutException
 
+from grasp_agents.file_backend.base import FileBackend
+from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     E2BEnvironment,
@@ -45,8 +47,6 @@ from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
-from grasp_agents.tools.file_backend.base import FileBackend
-from grasp_agents.tools.file_backend.paths import PathAccessError
 
 from ._bg_harness import (
     background,

@@ -14,14 +14,15 @@ from typing import TYPE_CHECKING
 
 from e2b import AsyncSandbox, CommandExitException
 
-from ...tools.file_backend.base import (
+from grasp_agents.file_backend.base import (
     FileBackend,
     FileEntry,
     FileStat,
     GrepRawResult,
 )
-from ...tools.file_backend.local import glob_filter_entries
-from ...tools.file_backend.paths import PathAccessError, check_access_path
+from grasp_agents.file_backend.local import glob_filter_entries
+from grasp_agents.file_backend.paths import PathAccessError, check_access_path
+
 from ._handle import (
     RECURSIVE_DEPTH,
     SandboxHandle,
@@ -32,9 +33,9 @@ from ._handle import (
 )
 
 if TYPE_CHECKING:
-    from ...tools.file_backend.base import GrepOutputMode
-    from ...tools.file_backend.paths import AccessMode
-    from ..policy import SandboxPolicy
+    from grasp_agents.file_backend.base import GrepOutputMode
+    from grasp_agents.file_backend.paths import AccessMode
+    from grasp_agents.sandbox.policy import SandboxPolicy
 
 
 class E2BFileBackend(FileBackend):

@@ -28,6 +28,7 @@ from grasp_agents.llm_providers.openai_completions.tool_converters import (
     to_api_tool,
     to_api_tool_choice,
 )
+from grasp_agents.tools.base import NamedToolChoice
 from grasp_agents.types.content import (
     OutputMessageRefusal,
     OutputMessageText,
@@ -38,7 +39,6 @@ from grasp_agents.types.items import (
     OutputMessageItem,
     ReasoningItem,
 )
-from grasp_agents.types.tool import NamedToolChoice
 
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #

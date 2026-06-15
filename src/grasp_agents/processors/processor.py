@@ -16,6 +16,10 @@ from uuid import uuid4
 from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
+from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
+from grasp_agents.durability.checkpoints import CheckpointKind
+from grasp_agents.hooks import RecipientSelector
+from grasp_agents.run_context import RunContext, current_run_context
 from grasp_agents.telemetry import traced
 from grasp_agents.types.errors import (
     PacketRoutingError,
@@ -23,25 +27,20 @@ from grasp_agents.types.errors import (
     ProcOutputValidationError,
     ProcRunError,
 )
-
-from ..durability.checkpoint_mixin import CheckpointPersistMixin
-from ..durability.checkpoints import CheckpointKind
-from ..packet import Packet
-from ..run_context import RunContext, current_run_context
-from ..types.events import (
+from grasp_agents.types.events import (
     Event,
     ProcPacketOutEvent,
     ProcPayloadOutEvent,
     ProcStreamingErrorData,
     ProcStreamingErrorEvent,
 )
-from ..types.hooks import RecipientSelector
-from ..types.io import ProcName
-from ..utils.callbacks import is_method_overridden
-from ..utils.generics import AutoInstanceAttributesMixin
+from grasp_agents.types.io import ProcName
+from grasp_agents.types.packet import Packet
+from grasp_agents.utils.callbacks import is_method_overridden
+from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
-    from ..tools.processor_tool import ProcessorTool
+    from grasp_agents.tools.processor_tool import ProcessorTool
 
 logger = logging.getLogger(__name__)
 
@@ -565,7 +564,7 @@ class Processor[InT, OutT, CtxT](
         blocks_final_answer: bool = True,
         max_inline_result_chars: int | None = None,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
-        from ..tools.processor_tool import (  # noqa: PLC0415
+        from grasp_agents.tools.processor_tool import (  # noqa: PLC0415
             ProcessorTool as _ProcessorTool,
         )
 

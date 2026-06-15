@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from grasp_agents.types.selector import Selector
+from grasp_agents.selector import Selector
 
 from .types import DEFAULT_STALE_AFTER
 
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
     from datetime import timedelta
 
+    from grasp_agents.file_backend.base import FileBackend
     from grasp_agents.run_context import RunContext
-    from grasp_agents.tools.file_backend.base import FileBackend
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.items import InputItem
 

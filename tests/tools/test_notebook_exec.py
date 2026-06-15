@@ -18,6 +18,7 @@ from nbformat import v4
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
 from grasp_agents.sandbox.kernel import CellOutput
@@ -27,7 +28,6 @@ from grasp_agents.tools.cell_output import (
     render_outputs_as_parts,
     sanitize_output_data,
 )
-from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
     NotebookReadInput,

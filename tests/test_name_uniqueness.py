@@ -25,8 +25,8 @@ from grasp_agents.llm.llm import LLM
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import RunnerError, WorkflowConstructionError
-from grasp_agents.types.tool import BaseTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 if TYPE_CHECKING:

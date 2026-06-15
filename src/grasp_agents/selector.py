@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
-    from ..run_context import RunContext
-    from .items import InputItem
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.types.items import InputItem
 
 
 class Selector[T](Protocol):

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import AnyUrl, BaseModel
 
-from grasp_agents.types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext

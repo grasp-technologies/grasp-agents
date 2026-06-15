@@ -44,7 +44,7 @@ from grasp_agents.tools.notebook_exec import KernelHolder, RunCell, RunCellInput
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
-    from grasp_agents.tools.file_backend.base import FileBackend
+    from grasp_agents.file_backend.base import FileBackend
 
 pytestmark = pytest.mark.asyncio
 

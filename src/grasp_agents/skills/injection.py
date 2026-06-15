@@ -4,12 +4,13 @@ from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
 
-from ..agent.prompt_builder import SystemPromptSection
+from grasp_agents.context.prompt_builder import SystemPromptSection
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ..run_context import RunContext
+    from grasp_agents.run_context import RunContext
+
     from .types import Skill
 
 SKILLS_SECTION_NAME = "skills"

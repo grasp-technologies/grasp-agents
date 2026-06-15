@@ -8,9 +8,9 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import ToolOutputPart
-from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 
 from .json_schema import json_schema_to_pydantic
 

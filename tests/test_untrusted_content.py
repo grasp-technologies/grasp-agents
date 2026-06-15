@@ -15,6 +15,13 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.context.untrusted_content import (
+    UNTRUSTED_CONTENT_INSTRUCTION,
+    UNTRUSTED_CONTENT_SECTION_NAME,
+    make_untrusted_content_section,
+    wrap_untrusted,
+)
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.bash import Bash
 from grasp_agents.tools.bash_session import BashSession
 from grasp_agents.tools.code_interpreter import RunPython
@@ -28,18 +35,11 @@ from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.tools.notebook_exec import RunCell
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import FunctionToolCallItem
-from grasp_agents.types.tool import BaseTool
-from grasp_agents.untrusted_content import (
-    UNTRUSTED_CONTENT_INSTRUCTION,
-    UNTRUSTED_CONTENT_SECTION_NAME,
-    make_untrusted_content_section,
-    wrap_untrusted,
-)
 
 from .test_sessions import MockLLM  # type: ignore[attr-defined]
 
 if TYPE_CHECKING:
-    from grasp_agents.agent.prompt_builder import SystemPromptSection
+    from grasp_agents.context.prompt_builder import SystemPromptSection
 
 OPEN = '<untrusted_content source="Read">'
 CLOSE = "</untrusted_content>"

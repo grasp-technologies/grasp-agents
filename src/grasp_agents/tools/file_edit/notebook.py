@@ -34,14 +34,19 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ...types.content import InputImage, InputText
-from ...types.tool import BaseTool, ToolProgressCallback
-from ..cell_output import DEFAULT_MAX_IMAGES, coerce_text, image_parts_from_data
-from ..file_backend.paths import PathAccessError
+from grasp_agents.file_backend.paths import PathAccessError
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+from grasp_agents.tools.cell_output import (
+    DEFAULT_MAX_IMAGES,
+    coerce_text,
+    image_parts_from_data,
+)
+from grasp_agents.types.content import InputImage, InputText
 
 if TYPE_CHECKING:
-    from ...agent.agent_context import AgentContext
-    from ...run_context import RunContext
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+
     from .redact import SecretRedactor
 
 # Per-cell cap on captured output text in the structured view / redirect.

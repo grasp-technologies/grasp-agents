@@ -33,8 +33,9 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..types.events import ToolOutputEvent
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+from grasp_agents.types.events import ToolOutputEvent
+
 from .bash_common import (
     DEFAULT_BASH_TIMEOUT,
     DEFAULT_HEARTBEAT_EVERY,
@@ -51,11 +52,11 @@ from .task_tools import KillTask
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from ..agent.agent_context import AgentContext
-    from ..agent.background_tasks import BackgroundTaskManager
-    from ..run_context import RunContext
-    from ..sandbox.exec_backend import ExecChunk, ExecResult
-    from ..types.events import Event
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.agent.background_tasks import BackgroundTaskManager
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult
+    from grasp_agents.types.events import Event
 
 DEFAULT_AUTO_BACKGROUND_AT = 120.0
 # A backgrounded command's completion note inlines its result up to this many

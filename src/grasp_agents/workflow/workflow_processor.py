@@ -3,14 +3,14 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import Any, cast
 
-from ..durability.checkpoints import CheckpointKind, WorkflowCheckpoint
-from ..packet import Packet
-from ..processors.processor import Processor
-from ..run_context import RunContext
-from ..telemetry import SpanKind
-from ..types.errors import WorkflowConstructionError
-from ..types.io import ProcName
-from ..utils.callbacks import is_method_overridden
+from grasp_agents.durability.checkpoints import CheckpointKind, WorkflowCheckpoint
+from grasp_agents.processors.processor import Processor
+from grasp_agents.run_context import RunContext
+from grasp_agents.telemetry import SpanKind
+from grasp_agents.types.errors import WorkflowConstructionError
+from grasp_agents.types.io import ProcName
+from grasp_agents.types.packet import Packet
+from grasp_agents.utils.callbacks import is_method_overridden
 
 logger = logging.getLogger(__name__)
 

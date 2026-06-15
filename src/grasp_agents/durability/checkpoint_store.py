@@ -4,7 +4,8 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, TypeAdapter
 
-from ..types.items import InputItem
+from grasp_agents.types.items import InputItem
+
 from .checkpoints import CheckpointSchemaError
 
 logger = logging.getLogger(__name__)

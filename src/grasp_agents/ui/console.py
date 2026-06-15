@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
-from ..types.events import (
+from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     Event,
@@ -45,12 +45,12 @@ from ..types.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from ..types.items import (
+from grasp_agents.types.items import (
     FunctionToolCallItem,
     OutputMessageItem,
     ReasoningItem,
 )
-from ..types.llm_events import (
+from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
     OutputItemAdded,
     OutputItemDone,
@@ -60,6 +60,7 @@ from ..types.llm_events import (
     ResponseFallback,
     ResponseRetrying,
 )
+
 from ._event_render import (
     PALETTE,
     extract_input_text,

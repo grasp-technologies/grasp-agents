@@ -5,23 +5,21 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability.checkpoints import CheckpointKind
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
-from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 from grasp_agents.utils.io import get_prompt
-
-from ..agent.llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable
     from pathlib import Path
 
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.agent.llm_agent import LLMAgent
+    from grasp_agents.context.prompt_builder import InputAttachment, SystemPromptSection
     from grasp_agents.llm.llm import LLM
     from grasp_agents.run_context import RunContext
-
-    from ..agent.agent_context import AgentContext
-    from ..agent.llm_agent import LLMAgent
-    from ..agent.prompt_builder import InputAttachment, SystemPromptSection
 
 
 @runtime_checkable
@@ -200,7 +198,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         message history.
         """
         del exec_id
-        from ..agent.llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
+        from grasp_agents.agent.llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
 
         parent_transcript = agent_ctx.transcript if agent_ctx is not None else None
         parent_tools = list(agent_ctx.tools.values()) if agent_ctx is not None else []

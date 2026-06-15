@@ -13,12 +13,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..types.events import StopReason
+from grasp_agents.types.events import StopReason
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ..types.items import FunctionToolCallItem
+    from grasp_agents.types.items import FunctionToolCallItem
 
 
 @dataclass(frozen=True, slots=True)

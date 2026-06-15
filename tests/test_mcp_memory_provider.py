@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 
 pytest.importorskip("mcp")
 
+from grasp_agents.file_backend.mcp import MCPFileBackend
 from grasp_agents.memory import MemoryProvider
 from grasp_agents.run_context import RunContext
-from grasp_agents.tools.file_backend.mcp import MCPFileBackend
 
 MEMDIR = "/memdir"
 

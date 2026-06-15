@@ -20,12 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ..agent.background_tasks import BackgroundTaskManager, KillTaskResult
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.agent.background_tasks import BackgroundTaskManager, KillTaskResult
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
-    from ..agent.agent_context import AgentContext
-    from ..run_context import RunContext
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
 
 
 class TaskIdInput(BaseModel):

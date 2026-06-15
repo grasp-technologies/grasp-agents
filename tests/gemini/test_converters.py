@@ -50,6 +50,7 @@ from grasp_agents.llm_providers.gemini.tool_converters import (
     to_api_tool_config,
     to_api_tools,
 )
+from grasp_agents.tools.base import BaseTool, NamedToolChoice
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -72,7 +73,6 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.llm_events import (
     OutputMessageTextPartTextDelta as LlmTextDelta,
 )
-from grasp_agents.types.tool import BaseTool, NamedToolChoice
 
 # ==== Helpers ====
 

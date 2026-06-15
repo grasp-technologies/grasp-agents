@@ -33,6 +33,7 @@ from grasp_agents.agent.approval_store import (
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -48,7 +49,6 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
-from grasp_agents.types.tool import BaseTool
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
@@ -707,12 +707,12 @@ class TestProtocolConformance:
 
 
 def test_approval_store_public_api():
-    """All approval-store names exported from the top-level package."""
-    assert grasp_agents.ApprovalScope is ApprovalScope
-    assert grasp_agents.ApprovalAllow is ApprovalAllow
-    assert grasp_agents.ApprovalDeny is ApprovalDeny
-    assert grasp_agents.ApprovalDecision is ApprovalDecision
-    assert grasp_agents.PendingApproval is PendingApproval
-    assert grasp_agents.ApprovalStore is ApprovalStore
-    assert grasp_agents.InMemoryApprovalStore is InMemoryApprovalStore
-    assert grasp_agents.build_store_approval is build_store_approval
+    """All approval-store names exported from the grasp_agents.agent package."""
+    assert grasp_agents.agent.ApprovalScope is ApprovalScope
+    assert grasp_agents.agent.ApprovalAllow is ApprovalAllow
+    assert grasp_agents.agent.ApprovalDeny is ApprovalDeny
+    assert grasp_agents.agent.ApprovalDecision is ApprovalDecision
+    assert grasp_agents.agent.PendingApproval is PendingApproval
+    assert grasp_agents.agent.ApprovalStore is ApprovalStore
+    assert grasp_agents.agent.InMemoryApprovalStore is InMemoryApprovalStore
+    assert grasp_agents.agent.build_store_approval is build_store_approval

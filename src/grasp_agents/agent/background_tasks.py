@@ -20,6 +20,7 @@ from grasp_agents.durability.store_keys import (
 )
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
@@ -32,7 +33,6 @@ from grasp_agents.types.events import (
     UserMessageEvent,
 )
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
-from grasp_agents.types.tool import BaseTool
 
 from .llm_agent_transcript import LLMAgentTranscript
 from .task_progress import (
@@ -43,7 +43,8 @@ from .task_progress import (
 )
 
 if TYPE_CHECKING:
-    from ..tools.file_backend.base import FileBackend
+    from grasp_agents.file_backend.base import FileBackend
+
     from .agent_context import AgentContext
 
 logger = getLogger(__name__)

@@ -35,22 +35,23 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ..sandbox.kernel import CellOutput, CellResult, KernelCapable
-from ..types.content import InputImage, InputText
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.file_backend.paths import PathAccessError
+from grasp_agents.sandbox.kernel import CellOutput, CellResult, KernelCapable
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+from grasp_agents.types.content import InputImage, InputText
+
 from .cell_output import (
     DEFAULT_MAX_IMAGES,
     DEFAULT_OUTPUT_TEXT_CHARS,
     render_outputs_as_parts,
 )
-from .file_backend.paths import PathAccessError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ..agent.agent_context import AgentContext
-    from ..run_context import RunContext
-    from .file_backend.base import FileBackend, FileStat
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.file_backend.base import FileBackend, FileStat
+    from grasp_agents.run_context import RunContext
 
 DEFAULT_CODE_TIMEOUT = 120.0
 # Cap on files surfaced from ``artifacts`` in one call (bounds a directory

@@ -13,14 +13,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..agent.prompt_builder import SystemPromptSection
-from ..types.content import CacheControl
-from ..untrusted_content import wrap_untrusted
+from grasp_agents.context.prompt_builder import SystemPromptSection
+from grasp_agents.context.untrusted_content import wrap_untrusted
+from grasp_agents.types.content import CacheControl
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from ..run_context import RunContext
+    from grasp_agents.run_context import RunContext
+
     from .client import MCPClient
 
 

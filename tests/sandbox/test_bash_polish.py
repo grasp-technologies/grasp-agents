@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
+    from grasp_agents.tools.base import BaseTool
     from grasp_agents.types.response import Response
-    from grasp_agents.types.tool import BaseTool
 
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
@@ -577,10 +577,10 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
         OutputTokensDetails,
     )
 
+    from grasp_agents.tools.base import BaseTool as _BaseTool
     from grasp_agents.types.content import OutputMessageText
     from grasp_agents.types.items import InputMessageItem, OutputMessageItem
     from grasp_agents.types.response import Response, ResponseUsage
-    from grasp_agents.types.tool import BaseTool as _BaseTool
 
     usage = ResponseUsage(
         input_tokens=1,

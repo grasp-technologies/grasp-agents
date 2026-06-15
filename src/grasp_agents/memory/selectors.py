@@ -24,7 +24,7 @@ Usage::
         MemoryProvider,
         make_llm_relevance_selector,
     )
-    from grasp_agents.tools.file_backend import LocalFileBackend
+    from grasp_agents.file_backend import LocalFileBackend
 
     selector_llm = OpenAILLM(model="gpt-4o-mini")
     memory = MemoryProvider(root="/path/to/memdir")
@@ -44,17 +44,18 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ..types.content import InputPart, InputText
-from ..types.errors import JSONSchemaValidationError
-from ..types.items import InputMessageItem
-from ..utils.validation import validate_obj_from_json_or_py_string
+from grasp_agents.types.content import InputPart, InputText
+from grasp_agents.types.errors import JSONSchemaValidationError
+from grasp_agents.types.items import InputMessageItem
+from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    from ..llm.llm import LLM
-    from ..run_context import RunContext
-    from ..types.items import InputItem
+    from grasp_agents.llm.llm import LLM
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.types.items import InputItem
+
     from .provider import MemorySelector
     from .types import MemoryEntry
 

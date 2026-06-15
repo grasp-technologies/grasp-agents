@@ -25,13 +25,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ...types.tool import BaseTool, ToolProgressCallback
-from ..file_backend.paths import PathAccessError
+from grasp_agents.file_backend.paths import PathAccessError
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
-    from ...agent.agent_context import AgentContext
-    from ...run_context import RunContext
-    from ..file_backend.base import FileStat
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.file_backend.base import FileStat
+    from grasp_agents.run_context import RunContext
 
 
 def _is_directory(stat: FileStat) -> bool:

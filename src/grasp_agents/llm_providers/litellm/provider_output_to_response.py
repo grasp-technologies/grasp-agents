@@ -1,6 +1,23 @@
 from datetime import UTC, datetime
 from typing import Any
 
+from litellm.litellm_core_utils.prompt_templates.factory import (
+    _get_thought_signature_from_tool,  # type: ignore  # noqa: PLC2701
+)
+from litellm.types.llms.openai import (
+    ChatCompletionAnnotation as LiteLLMChatCompletionAnnotation,
+)
+from litellm.types.llms.openai import (
+    ChatCompletionRedactedThinkingBlock as LiteLLMChatCompletionRedactedThinkingBlock,
+)
+from litellm.types.llms.openai import (
+    ChatCompletionThinkingBlock as LiteLLMChatCompletionThinkingBlock,
+)
+from litellm.types.llms.openai import OpenAIChatCompletionFinishReason
+from litellm.types.utils import Choices as LiteLLMChoice
+from litellm.types.utils import Message as LiteLLMChatCompletionMessage
+from litellm.types.utils import ModelResponse as LiteLLMCompletion
+from litellm.types.utils import Usage as LiteLLMUsage
 from openai.types.chat.chat_completion import (
     ChoiceLogprobs as ChatCompletionChoiceLogprobs,
 )
@@ -29,23 +46,6 @@ from grasp_agents.types.items import (
     prefixed_id,
 )
 from grasp_agents.types.response import Response, ResponseUsage
-from litellm.litellm_core_utils.prompt_templates.factory import (
-    _get_thought_signature_from_tool,  # type: ignore
-)
-from litellm.types.llms.openai import (
-    ChatCompletionAnnotation as LiteLLMChatCompletionAnnotation,
-)
-from litellm.types.llms.openai import (
-    ChatCompletionRedactedThinkingBlock as LiteLLMChatCompletionRedactedThinkingBlock,
-)
-from litellm.types.llms.openai import (
-    ChatCompletionThinkingBlock as LiteLLMChatCompletionThinkingBlock,
-)
-from litellm.types.llms.openai import OpenAIChatCompletionFinishReason
-from litellm.types.utils import Choices as LiteLLMChoice
-from litellm.types.utils import Message as LiteLLMChatCompletionMessage
-from litellm.types.utils import ModelResponse as LiteLLMCompletion
-from litellm.types.utils import Usage as LiteLLMUsage
 
 from .utils import validate_completion
 

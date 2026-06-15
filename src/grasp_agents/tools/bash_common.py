@@ -23,14 +23,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from ..sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
-from ..types.events import Event, ToolOutputEvent, ToolStreamEvent
+from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
+from grasp_agents.types.events import Event, ToolOutputEvent, ToolStreamEvent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
 
-    from ..types.tool import ToolProgressCallback
+    from grasp_agents.tools.base import ToolProgressCallback
 
 DEFAULT_BASH_TIMEOUT = 120.0
 MAX_BASH_TIMEOUT = 600.0

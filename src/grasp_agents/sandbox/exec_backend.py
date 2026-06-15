@@ -1,7 +1,7 @@
 """
 The exec surface: an :class:`ExecBackend` runs shell commands inside an
 :class:`~grasp_agents.sandbox.environment.ExecutionEnvironment`, co-located
-with the environment's :class:`~grasp_agents.tools.file_backend.base.FileBackend`.
+with the environment's :class:`~grasp_agents.file_backend.base.FileBackend`.
 
 The contract is non-interactive — no TTY, no persistent shell state between
 calls. Concrete backends (host subprocess + Seatbelt/bwrap confinement,

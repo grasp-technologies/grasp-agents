@@ -7,7 +7,10 @@ from typing import Annotated, Any, get_args, get_origin
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from ..types.errors import JSONSchemaValidationError, PyJSONStringParsingError
+from grasp_agents.types.errors import (
+    JSONSchemaValidationError,
+    PyJSONStringParsingError,
+)
 
 logger = getLogger(__name__)
 

@@ -8,12 +8,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from anthropic import AsyncAnthropic
-from anthropic._types import omit  # type: ignore[import]
+from anthropic._types import omit  # type: ignore[import]  # noqa: PLC2701
 from anthropic.types import (
     WebFetchTool20260209Param,
     WebSearchTool20250305Param,
     WebSearchTool20260209Param,
 )
+
 from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
     APIProvider,
@@ -33,11 +34,11 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
+    from grasp_agents.tools.base import BaseTool, ToolChoice
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.llm_errors import LlmError
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
-    from grasp_agents.types.tool import BaseTool, ToolChoice
 
     from . import (
         AnthropicMessage,

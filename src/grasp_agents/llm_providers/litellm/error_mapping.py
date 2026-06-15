@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import httpx
-
 import litellm
-from grasp_agents.llm_providers._http_helpers import parse_retry_after  # noqa: PLC2701
+
+from grasp_agents.llm_providers._http_helpers import parse_retry_after
 from grasp_agents.types.errors import CompletionError
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,

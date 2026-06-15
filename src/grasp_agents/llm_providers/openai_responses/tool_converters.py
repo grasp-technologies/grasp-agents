@@ -11,7 +11,7 @@ from openai.types.responses.response_create_params import (
 )
 from pydantic import BaseModel
 
-from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
+from grasp_agents.tools.base import BaseTool, NamedToolChoice, ToolChoice
 
 
 def to_api_tool(

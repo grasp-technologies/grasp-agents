@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..tools.file_backend.base import FileBackend
+    from grasp_agents.file_backend.base import FileBackend
 
 logger = logging.getLogger(__name__)
 

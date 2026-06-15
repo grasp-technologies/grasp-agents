@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from litellm.types.llms.openai import (
+    ChatCompletionRedactedThinkingBlock,
+    ChatCompletionThinkingBlock,
+)
+from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 from openai.types.chat import ChatCompletionChunk
 
 from grasp_agents.llm_providers.openai_completions.llm_event_converters import (
@@ -18,11 +23,6 @@ from grasp_agents.llm_providers.openai_completions.provider_output_to_response i
 )
 from grasp_agents.types.llm_events import ResponseCompleted
 from grasp_agents.types.response import Response
-from litellm.types.llms.openai import (
-    ChatCompletionRedactedThinkingBlock,
-    ChatCompletionThinkingBlock,
-)
-from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 
 from .utils import patch_thought_signatures, validate_chunk
 

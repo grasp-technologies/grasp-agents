@@ -19,10 +19,10 @@ import pytest
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput, _human_size
-from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
 

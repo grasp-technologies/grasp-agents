@@ -3,14 +3,15 @@ from itertools import pairwise
 from logging import getLogger
 from typing import Any, cast, final
 
-from ..packet import Packet
-from ..processors.processor import Processor
-from ..run_context import RunContext
-from ..types.errors import WorkflowConstructionError
-from ..types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..types.hooks import WorkflowLoopTerminator
-from ..types.io import ProcName
-from ..utils.callbacks import is_method_overridden
+from grasp_agents.hooks import WorkflowLoopTerminator
+from grasp_agents.processors.processor import Processor
+from grasp_agents.run_context import RunContext
+from grasp_agents.types.errors import WorkflowConstructionError
+from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from grasp_agents.types.io import ProcName
+from grasp_agents.types.packet import Packet
+from grasp_agents.utils.callbacks import is_method_overridden
+
 from .workflow_processor import WorkflowProcessor
 
 logger = getLogger(__name__)

@@ -32,9 +32,9 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
-from grasp_agents.packet import Packet
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -42,7 +42,7 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OutputMessageItem,
 )
-from grasp_agents.types.tool import BaseTool
+from grasp_agents.types.packet import Packet
 
 from .test_background_tools import EchoInput, SlowTool
 from .test_sessions import (  # type: ignore[attr-defined]

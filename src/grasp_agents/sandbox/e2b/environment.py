@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Self, TypedDict
 
 from e2b import AsyncSandbox
 
-from ..environment import ExecutionEnvironment, SnapshotCapable
-from ..policy import NetworkPolicy, SandboxPolicy
+from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.policy import NetworkPolicy, SandboxPolicy
+
 from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     DEFAULT_WORKSPACE,

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import StrEnum, auto
 
-from ..types.items import (
+from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputItem,

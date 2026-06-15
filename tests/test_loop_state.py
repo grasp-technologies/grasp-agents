@@ -308,12 +308,12 @@ class TestADTShape:
 
 
 def test_loop_state_is_public_api() -> None:
-    assert grasp_agents.NextStep is NextStep
-    assert grasp_agents.NextStepStop is NextStepStop
-    assert grasp_agents.NextStepForceFinalAnswer is NextStepForceFinalAnswer
-    assert grasp_agents.NextStepRunTools is NextStepRunTools
-    assert grasp_agents.NextStepContinue is NextStepContinue
-    assert grasp_agents.decide_next_step is decide_next_step
+    assert grasp_agents.agent.NextStep is NextStep
+    assert grasp_agents.agent.NextStepStop is NextStepStop
+    assert grasp_agents.agent.NextStepForceFinalAnswer is NextStepForceFinalAnswer
+    assert grasp_agents.agent.NextStepRunTools is NextStepRunTools
+    assert grasp_agents.agent.NextStepContinue is NextStepContinue
+    assert grasp_agents.agent.decide_next_step is decide_next_step
     assert grasp_agents.StopReason is StopReason
 
 

@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from grasp_agents.file_backend import LocalFileBackend, PathAccessError
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     ExecChunk,
@@ -30,7 +31,6 @@ from grasp_agents.sandbox import (
 from grasp_agents.sandbox.local.exec import LocalExecBackend
 from grasp_agents.sandbox.local.supervisor import ExecSpec
 from grasp_agents.tools.bash import Bash, BashInput, BashResult
-from grasp_agents.tools.file_backend import LocalFileBackend, PathAccessError
 from grasp_agents.types.events import ToolErrorInfo
 
 pytestmark = pytest.mark.asyncio

@@ -36,7 +36,7 @@ import signal
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..kernel import CellOutput, CellResult, KernelSession
+from grasp_agents.sandbox.kernel import CellOutput, CellResult, KernelSession
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping, Sequence

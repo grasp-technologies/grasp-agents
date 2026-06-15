@@ -36,14 +36,14 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
-from ...types.tool import BaseTool, ToolProgressCallback
-from ..file_backend.base import GrepRawResult
-from ..file_backend.paths import PathAccessError
+from grasp_agents.file_backend.base import GrepRawResult
+from grasp_agents.file_backend.paths import PathAccessError
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
-    from ...agent.agent_context import AgentContext
-    from ...run_context import RunContext
-    from ..file_edit.redact import SecretRedactor
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.tools.file_edit.redact import SecretRedactor
 
 DEFAULT_HEAD_LIMIT = 250
 
@@ -460,7 +460,9 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         # Same redaction pass Read applies — content mode returns file
         # contents, so it must not leak what Read would have redacted. Pass
         # NullRedactor to opt out.
-        from ..file_edit.redact import DefaultSecretRedactor  # noqa: PLC0415
+        from grasp_agents.tools.file_edit.redact import (  # noqa: PLC0415
+            DefaultSecretRedactor,
+        )
 
         self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
 

@@ -24,8 +24,9 @@ import contextlib
 import shlex
 from typing import TYPE_CHECKING, Any
 
-from ..sandbox.exec_backend import SessionCapable
-from ..types.tool import BaseTool, ToolProgressCallback
+from grasp_agents.sandbox.exec_backend import SessionCapable
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
 from .bash_common import (
     DEFAULT_BASH_TIMEOUT,
     DEFAULT_HEARTBEAT_EVERY,
@@ -38,9 +39,9 @@ from .bash_common import (
 )
 
 if TYPE_CHECKING:
-    from ..agent.agent_context import AgentContext
-    from ..run_context import RunContext
-    from ..sandbox.exec_backend import ExecSession
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.sandbox.exec_backend import ExecSession
 
 
 class BashSessionHolder:

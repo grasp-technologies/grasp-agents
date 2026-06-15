@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any, Protocol
 
-from ..types.events import Event, RoutedEvent
+from grasp_agents.types.events import Event, RoutedEvent
 
 logger = logging.getLogger(__name__)
 

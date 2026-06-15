@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .types.io import ProcName
+from .io import ProcName
 
 type PacketRouting = Sequence[Sequence[ProcName]]
 

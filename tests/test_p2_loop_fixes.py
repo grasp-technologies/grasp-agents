@@ -23,10 +23,12 @@ from grasp_agents.agent.approval_store import (
 )
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.agent.prompt_builder import PromptBuilder
 from grasp_agents.agent.tool_decision import RejectToolContent
+from grasp_agents.context.prompt_builder import PromptBuilder
+from grasp_agents.context.untrusted_content import UNTRUSTED_CONTENT_SECTION_NAME
 from grasp_agents.llm.llm import LLM
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     Event,
@@ -47,8 +49,6 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
-from grasp_agents.types.tool import BaseTool
-from grasp_agents.untrusted_content import UNTRUSTED_CONTENT_SECTION_NAME
 
 # ---------- Infrastructure ----------
 

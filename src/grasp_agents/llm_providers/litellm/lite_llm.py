@@ -4,11 +4,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
-
 import litellm
-from grasp_agents.llm.cloud_llm import ApiCallParams, APIProvider, CloudLLM
-from grasp_agents.types.llm_errors import LlmError
 from litellm.litellm_core_utils.get_supported_openai_params import (
     get_supported_openai_params,  # type: ignore[no-redef]
 )
@@ -20,14 +16,23 @@ from litellm.utils import (
     supports_response_schema,
     supports_tool_choice,
 )
+from pydantic import BaseModel
 
-from ...types.items import InputItem
-from ...types.llm_events import LlmEvent
-from ...types.response import Response
-from ...types.tool import BaseTool, ToolChoice
-from ..openai_completions import OpenAILLMSettings
-from ..openai_completions.response_to_provider_inputs import items_to_provider_inputs
-from ..openai_completions.tool_converters import to_api_tool, to_api_tool_choice
+from grasp_agents.llm.cloud_llm import ApiCallParams, APIProvider, CloudLLM
+from grasp_agents.llm_providers.openai_completions import OpenAILLMSettings
+from grasp_agents.llm_providers.openai_completions.response_to_provider_inputs import (
+    items_to_provider_inputs,
+)
+from grasp_agents.llm_providers.openai_completions.tool_converters import (
+    to_api_tool,
+    to_api_tool_choice,
+)
+from grasp_agents.tools.base import BaseTool, ToolChoice
+from grasp_agents.types.items import InputItem
+from grasp_agents.types.llm_errors import LlmError
+from grasp_agents.types.llm_events import LlmEvent
+from grasp_agents.types.response import Response
+
 from . import (
     LiteLLMCompletion,
     LiteLLMCompletionChunk,

@@ -1,350 +1,103 @@
 # pyright: reportUnusedImport=false
+"""
+grasp-agents public API.
 
+This root namespace exposes the headline surface — what you need to build, run,
+and stream an agent. Lower-tier helpers (prompt-section builders, loaders,
+parsers, the loop ADT, error/event taxonomies, approval primitives, …) live in
+their own subpackages and are imported from there, e.g.::
 
-from .agent.approval_callback import (
-    DEFAULT_DENY_MESSAGE,
-    ApprovalCallback,
-    build_callback_approval,
-)
-from .agent.approval_store import (
-    ApprovalAllow,
-    ApprovalDecision,
-    ApprovalDeny,
-    ApprovalScope,
-    ApprovalStore,
-    InMemoryApprovalStore,
-    PendingApproval,
-    build_store_approval,
-)
-from .agent.llm_agent import LLMAgent
-from .agent.llm_agent_transcript import LLMAgentTranscript
-from .agent.loop_state import (
-    NextStep,
-    NextStepContinue,
-    NextStepForceFinalAnswer,
-    NextStepRunTools,
-    NextStepStop,
-    decide_next_step,
-)
-from .agent.prompt_builder import (
-    InputAttachment,
-    InputAttachmentCompute,
-    SectionCompute,
-    SystemPromptSection,
-)
-from .agent.tool_decision import (
-    AllowTool,
-    RaiseToolException,
-    RejectToolContent,
-    ToolCallDecision,
-)
-from .durability import (
-    AgentCheckpoint,
-    CheckpointStore,
-    InMemoryCheckpointStore,
-    TaskRecord,
-    TaskStatus,
-)
-from .env_section import (
-    CURRENT_TIME_ATTACHMENT_NAME,
-    ENV_INFO_SECTION_NAME,
-    make_current_time_attachment,
-    make_env_info_section,
-)
-from .llm.fallback_llm import FallbackLLM
-from .llm.llm import LLM, LLMSettings
-from .llm.model_info import (
-    ModelCapabilities,
-    count_tokens,
-    get_context_window,
-    get_model_capabilities,
-)
-from .llm.resilience import RetryPolicy
-from .memory import (
-    MEMORY_SECTION_NAME,
-    MEMORY_TYPES,
-    RELEVANT_MEMORIES_ATTACHMENT_NAME,
-    InMemoryMemoryProvider,
-    MemoryEntry,
-    MemoryFrontmatter,
-    MemoryProvider,
-    MemorySelector,
-    MemorySnapshot,
-    MemoryType,
-    default_memdir_path,
-    load_memory_entry,
-    make_memory_section,
-    memory_system_prompt_section,
-    parse_memory_md,
-    relevant_memories_attachment,
-    render_memory_index,
-    render_memory_instructions,
-    scan_memdir,
-)
-from .packet import Packet
+    from grasp_agents.agent import NextStep, ToolCallDecision
+    from grasp_agents.context import make_env_info_section, SystemPromptSection
+    from grasp_agents.types.llm_errors import LlmRateLimitError
+    from grasp_agents.types.events import TurnStartEvent
+    from grasp_agents.memory import scan_memdir
+    from grasp_agents.skills import parse_slash_command
+"""
+
+# --- Agents / processors / workflows ---
+from .agent import LLMAgent
+
+# --- Sessions / durability / memory / skills ---
+from .durability import AgentCheckpoint, CheckpointStore, InMemoryCheckpointStore
+from .llm import LLM, FallbackLLM, LLMSettings, RetryPolicy
+from .memory import MemoryEntry, MemoryProvider
 from .printer import Printer, print_event_stream
-from .processors.parallel_processor import ParallelProcessor
-from .processors.processor import Processor
+from .processors import ParallelProcessor, Processor
 from .run_context import RunContext
-from .runner.event_bus import EventBus
-from .runner.runner import Runner
-from .skills import (
-    ParsedSlashCommand,
-    Skill,
-    SkillError,
-    SkillFormatError,
-    SkillFrontmatter,
-    SkillNotFoundError,
-    SkillRegistry,
-    discover_skills,
-    list_skills,
-    load_skill,
-    load_skill_md,
-    make_skills_section,
-    parse_named_args,
-    parse_skill_md,
-    parse_slash_command,
-    render_available_skills_block,
-    render_skill_instructions,
-    skills_system_prompt_section,
-)
-from .tools.agent_tool import AgentTool, AgentToolInput, AgentToolPromptBuilder
+from .runner import Runner
+from .skills import SkillRegistry
+
+# --- Tools ---
+from .tools.agent_tool import AgentTool
+from .tools.base import BaseTool
 from .tools.function_tool import FunctionTool, function_tool
 from .tools.processor_tool import ProcessorTool
+
+# --- Messages / content / responses ---
 from .types.content import CacheControl, Content, InputImage, InputRenderable
-from .types.events import (
-    BackgroundTaskCompletedEvent,
-    BackgroundTaskInfo,
-    BackgroundTaskLaunchedEvent,
-    Event,
-    GenerationEndEvent,
-    LLMStreamEvent,
-    OutputMessageItemEvent,
-    ProcPacketOutEvent,
-    ReasoningItemEvent,
-    RunPacketOutEvent,
-    StopReason,
-    ToolCallItemEvent,
-    ToolOutputItemEvent,
-    TurnEndEvent,
-    TurnStartEvent,
-)
-from .types.hooks import ToolInputConverter
-from .types.io import LLMPrompt, ProcName
+from .types.events import Event, ProcPacketOutEvent, RunPacketOutEvent, StopReason
 from .types.items import (
     AssistantMessage,
     DeveloperMessage,
     SystemMessage,
     UserMessage,
-    WebSearchCallItem,
 )
-from .types.llm_errors import (
-    LlmApiConnectionError,
-    LlmApiError,
-    LlmApiTimeoutError,
-    LlmAuthenticationError,
-    LlmBadRequestError,
-    LlmContentFilterError,
-    LlmContextWindowError,
-    LlmInternalServerError,
-    LlmNotFoundError,
-    LlmPermissionDeniedError,
-    LlmRateLimitError,
-)
-from .types.recovery import (
-    RecoveryHint,
-    classify_error,
-    is_retryable,
-    register_recovery_hint,
-)
+from .types.packet import Packet
 from .types.response import Response
-from .types.tool import BaseTool, ToolProgressCallback
+
+# --- UI ---
 from .ui.console import EventConsole, stream_events
-from .untrusted_content import (
-    UNTRUSTED_CONTENT_INSTRUCTION,
-    UNTRUSTED_CONTENT_SECTION_NAME,
-    UNTRUSTED_CONTENT_TAG,
-    make_untrusted_content_section,
-    wrap_untrusted,
-)
-from .utils.schema import exclude_fields
-from .workflow.looped_workflow import LoopedWorkflow
-from .workflow.sequential_workflow import SequentialWorkflow
-from .workflow.workflow_processor import WorkflowProcessor
+from .workflow import LoopedWorkflow, SequentialWorkflow, WorkflowProcessor
 
 try:
-    from .mcp import (
-        MCP_INSTRUCTIONS_SECTION_NAME,
-        MCPClient,
-        MCPClientSpec,
-        MCPListResourcesTool,
-        MCPReadResourceTool,
-        MCPServerSSE,
-        MCPServerStdio,
-        MCPTool,
-        make_mcp_instructions_section,
-    )
+    from .mcp import MCPClient, MCPServerSSE, MCPServerStdio
 except ImportError:
     pass
 
 __all__ = [
-    "CURRENT_TIME_ATTACHMENT_NAME",
-    "DEFAULT_DENY_MESSAGE",
-    "ENV_INFO_SECTION_NAME",
     "LLM",
-    "MCP_INSTRUCTIONS_SECTION_NAME",
-    "MEMORY_SECTION_NAME",
-    "MEMORY_TYPES",
-    "RELEVANT_MEMORIES_ATTACHMENT_NAME",
-    "UNTRUSTED_CONTENT_INSTRUCTION",
-    "UNTRUSTED_CONTENT_SECTION_NAME",
-    "UNTRUSTED_CONTENT_TAG",
     "AgentCheckpoint",
     "AgentTool",
-    "AgentToolInput",
-    "AgentToolPromptBuilder",
-    "AllowTool",
-    "ApprovalAllow",
-    "ApprovalCallback",
-    "ApprovalDecision",
-    "ApprovalDeny",
-    "ApprovalScope",
-    "ApprovalStore",
     "AssistantMessage",
-    "BackgroundTaskCompletedEvent",
-    "BackgroundTaskInfo",
-    "BackgroundTaskLaunchedEvent",
     "BaseTool",
     "CacheControl",
     "CheckpointStore",
     "Content",
     "DeveloperMessage",
     "Event",
-    "EventBus",
     "EventConsole",
     "FallbackLLM",
     "FunctionTool",
-    "GenerationEndEvent",
-    "InMemoryApprovalStore",
     "InMemoryCheckpointStore",
-    "InMemoryMemoryProvider",
-    "InputAttachment",
-    "InputAttachmentCompute",
     "InputImage",
     "InputRenderable",
     "LLMAgent",
-    "LLMAgentTranscript",
-    "LLMPrompt",
     "LLMSettings",
-    "LLMStreamEvent",
-    "LlmApiConnectionError",
-    "LlmApiError",
-    "LlmApiTimeoutError",
-    "LlmAuthenticationError",
-    "LlmBadRequestError",
-    "LlmContentFilterError",
-    "LlmContextWindowError",
-    "LlmInternalServerError",
-    "LlmNotFoundError",
-    "LlmPermissionDeniedError",
-    "LlmRateLimitError",
     "LoopedWorkflow",
     "MCPClient",
-    "MCPClientSpec",
-    "MCPListResourcesTool",
-    "MCPReadResourceTool",
     "MCPServerSSE",
     "MCPServerStdio",
-    "MCPTool",
     "MemoryEntry",
-    "MemoryFrontmatter",
     "MemoryProvider",
-    "MemorySelector",
-    "MemorySnapshot",
-    "MemoryType",
-    "NextStep",
-    "NextStepContinue",
-    "NextStepForceFinalAnswer",
-    "NextStepRunTools",
-    "NextStepStop",
-    "OutputMessageItemEvent",
     "Packet",
     "ParallelProcessor",
-    "ParsedSlashCommand",
-    "PendingApproval",
     "Printer",
-    "ProcName",
     "ProcPacketOutEvent",
     "Processor",
     "ProcessorTool",
-    "RaiseToolException",
-    "ReasoningItemEvent",
-    "RecoveryHint",
-    "RejectToolContent",
     "Response",
     "RetryPolicy",
     "RunContext",
     "RunPacketOutEvent",
     "Runner",
-    "SectionCompute",
     "SequentialWorkflow",
-    "Skill",
-    "SkillError",
-    "SkillFormatError",
-    "SkillFrontmatter",
-    "SkillNotFoundError",
     "SkillRegistry",
     "StopReason",
     "SystemMessage",
-    "SystemPromptSection",
-    "TaskRecord",
-    "TaskStatus",
-    "ToolCallDecision",
-    "ToolCallItemEvent",
-    "ToolInputConverter",
-    "ToolOutputItemEvent",
-    "ToolProgressCallback",
-    "TurnEndEvent",
-    "TurnStartEvent",
     "UserMessage",
-    "WebSearchCallItem",
     "WorkflowProcessor",
-    "build_callback_approval",
-    "build_store_approval",
-    "classify_error",
-    "count_tokens",
-    "decide_next_step",
-    "default_memdir_path",
-    "discover_skills",
-    "exclude_fields",
     "function_tool",
-    "get_context_window",
-    "get_model_capabilities",
-    "is_retryable",
-    "list_skills",
-    "load_memory_entry",
-    "load_skill",
-    "load_skill_md",
-    "make_current_time_attachment",
-    "make_env_info_section",
-    "make_mcp_instructions_section",
-    "make_memory_section",
-    "make_skills_section",
-    "make_untrusted_content_section",
-    "memory_system_prompt_section",
-    "parse_memory_md",
-    "parse_named_args",
-    "parse_skill_md",
-    "parse_slash_command",
     "print_event_stream",
-    "register_recovery_hint",
-    "relevant_memories_attachment",
-    "render_available_skills_block",
-    "render_memory_index",
-    "render_memory_instructions",
-    "render_skill_instructions",
-    "scan_memdir",
-    "skills_system_prompt_section",
     "stream_events",
-    "wrap_untrusted",
 ]

@@ -7,8 +7,8 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.types.events import ToolErrorEvent, ToolErrorInfo
-from grasp_agents.types.tool import BaseTool, ToolProgressCallback
 
 # ---------- Test tools ----------
 

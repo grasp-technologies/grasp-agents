@@ -111,7 +111,8 @@ ignore = [
   "TD002",
   "TD003",
   "TD004",
-  "TID",     # flake8-tidy-imports
+  "TID251",  # flake8-tidy-imports: banned-api (inert; no bans configured)
+  "TID253",  # flake8-tidy-imports: banned-module-level (inert; none configured)
   "TRY003",  # verbose exception messages
   "TRY201",
   "TRY300",
@@ -120,6 +121,12 @@ ignore = [
 
 fixable = ["ALL"]
 unfixable = ["F401"]
+
+[lint.flake8-tidy-imports]
+# Convention: same-package imports use `from .sibling`; everything reaching
+# into another subpackage uses absolute `from grasp_agents.x`. TID252 bans the
+# parent-relative `from ..x` / `from ...x` forms that blur that boundary.
+ban-relative-imports = "parents"
 
 [lint.per-file-ignores]
 "__init__.py" = ["F401"]

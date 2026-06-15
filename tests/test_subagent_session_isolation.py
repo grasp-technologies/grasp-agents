@@ -26,10 +26,10 @@ from grasp_agents.durability import (
     InMemoryCheckpointStore,
 )
 from grasp_agents.durability.checkpoints import ParallelCheckpoint
-from grasp_agents.packet import Packet
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools.agent_tool import AgentTool
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import ProcPacketOutEvent
 from grasp_agents.types.items import (
@@ -38,8 +38,8 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OutputMessageItem,
 )
+from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import Response
-from grasp_agents.types.tool import BaseTool
 
 if TYPE_CHECKING:
     from grasp_agents.llm.llm import LLM

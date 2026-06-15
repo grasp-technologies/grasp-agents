@@ -19,9 +19,13 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from grasp_agents.run_context import RunContext
 from grasp_agents.telemetry import SpanKind, traced
+from grasp_agents.types.events import (
+    Event,
+    ToolErrorEvent,
+    ToolErrorInfo,
+    ToolStreamEvent,
+)
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
-
-from .events import Event, ToolErrorEvent, ToolErrorInfo, ToolStreamEvent
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -208,7 +212,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        from .events import ToolOutputEvent  # noqa: PLC0415  (circular import)
+        from grasp_agents.types.events import ToolOutputEvent  # noqa: PLC0415
 
         out = await self._run(
             inp,

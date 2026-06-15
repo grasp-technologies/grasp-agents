@@ -19,7 +19,6 @@ from grasp_agents.durability.checkpoints import (
     ParallelCheckpoint,
     WorkflowCheckpoint,
 )
-from grasp_agents.packet import Packet
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
@@ -30,6 +29,7 @@ from grasp_agents.types.events import (
     ProcPayloadOutEvent,
 )
 from grasp_agents.types.io import ProcName
+from grasp_agents.types.packet import Packet
 from grasp_agents.workflow.looped_workflow import LoopedWorkflow
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 

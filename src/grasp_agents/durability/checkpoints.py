@@ -5,9 +5,9 @@ from typing import Any, Self
 from pydantic import BaseModel, Field, model_validator
 
 from grasp_agents.durability.context_serialization import ContextKind
-from grasp_agents.packet import Packet
 from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent
 from grasp_agents.types.items import InputItem
+from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
 CURRENT_SCHEMA_VERSION: int = 8

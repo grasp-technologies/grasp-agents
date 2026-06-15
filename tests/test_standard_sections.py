@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents import (
-    CacheControl,
+from grasp_agents import CacheControl
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.context import (
     make_current_time_attachment,
     make_env_info_section,
 )
-from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.types.items import InputMessageItem
 
 from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
@@ -22,7 +22,7 @@ from .test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[re
 )
 
 if TYPE_CHECKING:
-    from grasp_agents.agent.prompt_builder import SystemPromptSection
+    from grasp_agents.context.prompt_builder import SystemPromptSection
 
 # ---------- env_info ----------
 
@@ -196,7 +196,7 @@ class TestTimeAwareAgentWiring:
 @pytest.fixture
 def mcp_section_factory() -> Any:
     pytest.importorskip("mcp")
-    from grasp_agents import make_mcp_instructions_section
+    from grasp_agents.mcp import make_mcp_instructions_section
 
     return make_mcp_instructions_section
 

@@ -12,7 +12,7 @@ import base64
 import json
 from typing import TYPE_CHECKING
 
-from grasp_agents.llm_providers._file_helpers import file_part_data  # noqa: PLC2701
+from grasp_agents.llm_providers._file_helpers import file_part_data
 from grasp_agents.types.content import (
     BASE64_DATA_PREFIX,
     InputFile,

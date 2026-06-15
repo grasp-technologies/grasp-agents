@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
-
 from anthropic.types import (
     ToolChoiceAnyParam,
     ToolChoiceAutoParam,
@@ -14,7 +12,9 @@ from anthropic.types import (
     ToolChoiceToolParam,
     ToolParam,
 )
-from grasp_agents.types.tool import BaseTool, NamedToolChoice, ToolChoice
+from pydantic import BaseModel
+
+from grasp_agents.tools.base import BaseTool, NamedToolChoice, ToolChoice
 
 
 def to_api_tool(tool: BaseTool[BaseModel, Any, Any]) -> ToolParam:

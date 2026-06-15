@@ -38,11 +38,11 @@ from grasp_agents.llm.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
+from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import LlmError
 from grasp_agents.types.llm_events import LlmEvent
 from grasp_agents.types.response import Response as InternalResponse
-from grasp_agents.types.tool import BaseTool, ToolChoice
 
 from .error_mapping import map_api_error
 from .response_to_provider_inputs import items_to_provider_inputs

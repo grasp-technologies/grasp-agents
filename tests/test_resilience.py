@@ -21,6 +21,7 @@ from grasp_agents.llm.cloud_llm import ApiCallParams, CloudLLM
 from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm.llm import LLM
 from grasp_agents.llm.resilience import RetryPolicy
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import InputItem, InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_errors import (
@@ -44,7 +45,6 @@ from grasp_agents.types.llm_events import (
     ResponseRetrying,
 )
 from grasp_agents.types.response import Response
-from grasp_agents.types.tool import BaseTool
 
 _REQ = httpx.Request("POST", "https://test")
 

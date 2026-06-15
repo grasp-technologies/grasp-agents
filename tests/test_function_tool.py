@@ -6,9 +6,9 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import FunctionTool, function_tool
 from grasp_agents.types.events import ToolErrorInfo
-from grasp_agents.types.tool import BaseTool
 
 # ---------- Basic usage ----------
 

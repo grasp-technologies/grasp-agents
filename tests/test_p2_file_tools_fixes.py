@@ -13,11 +13,12 @@ import nbformat
 import pytest
 from nbformat import v4
 
+from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.base import _keys_overlap, batch_has_concurrency_conflict
 from grasp_agents.tools.bash import Bash
 from grasp_agents.tools.bash_session import BashSession
 from grasp_agents.tools.code_interpreter import RunPython
-from grasp_agents.tools.file_backend import LocalFileBackend
 from grasp_agents.tools.file_edit.fuzzy_match import fuzzy_find_and_replace
 from grasp_agents.tools.file_edit.notebook import (
     NotebookEditInput,
@@ -28,7 +29,6 @@ from grasp_agents.tools.file_edit.notebook import (
 )
 from grasp_agents.tools.file_search.grep import GrepError, _run_rg
 from grasp_agents.tools.notebook_exec import RunCell
-from grasp_agents.types.tool import _keys_overlap, batch_has_concurrency_conflict
 from grasp_agents.utils.io import read_contents_from_file
 
 # ---------- Item 32: CRLF files keep their line endings ----------
