@@ -42,6 +42,7 @@ dev = [
     "ipywidgets>=8.0.4,<9",
     "matplotlib>=3.8,<4",
     "pytest-textual-snapshot>=1.0,<2",
+    "pytest-cov>=7.1.0",
 ]
 
 [project.optional-dependencies]
@@ -85,6 +86,27 @@ testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = ["integration: requires real API keys (skipped by default)"]
 addopts = "-m 'not integration'"
+
+[tool.coverage.run]
+source = ["src/grasp_agents"]
+branch = true
+omit = [
+    "*/examples/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 1
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "\\.\\.\\.",
+    "if t\\.TYPE_CHECKING:",
+]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/grasp_agents"]

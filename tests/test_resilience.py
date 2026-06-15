@@ -25,11 +25,7 @@ from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import InputItem, InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_errors import (
-    LlmApiConnectionError,
-    LlmApiTimeoutError,
     LlmAuthenticationError,
-    LlmBadRequestError,
-    LlmContentFilterError,
     LlmContextWindowError,
     LlmError,
     LlmInternalServerError,
@@ -626,34 +622,9 @@ class TestAPIRetries:
 class TestRetryPolicy:
     """RetryPolicy: error classification, delay bounds."""
 
-    def test_transient_errors_are_retryable(self) -> None:
-        policy = RetryPolicy()
-        assert policy.is_retryable_api_error(
-            LlmRateLimitError("429", response=_resp(429), body=None)
-        )
-        assert policy.is_retryable_api_error(
-            LlmInternalServerError("500", response=_resp(500), body=None)
-        )
-        assert policy.is_retryable_api_error(LlmApiTimeoutError(request=_REQ))
-        assert policy.is_retryable_api_error(LlmApiConnectionError(request=_REQ))
-
-    def test_deterministic_errors_not_retryable(self) -> None:
-        policy = RetryPolicy()
-        assert not policy.is_retryable_api_error(
-            LlmAuthenticationError("bad key", response=_resp(401), body=None)
-        )
-        assert not policy.is_retryable_api_error(
-            LlmBadRequestError("malformed", response=_resp(400), body=None)
-        )
-        assert not policy.is_retryable_api_error(
-            LlmContextWindowError("too long", response=_resp(400), body=None)
-        )
-        assert not policy.is_retryable_api_error(LlmContentFilterError())
-
-    def test_non_llm_error_not_retryable(self) -> None:
-        policy = RetryPolicy()
-        assert not policy.is_retryable_api_error(ValueError("bad"))
-        assert not policy.is_retryable_api_error(RuntimeError("crash"))
+    # Error-classification (retryable vs not) is covered exhaustively by
+    # ``test_recovery_hints.py::TestRetryPolicyAlignment``; only the delay
+    # math is unique here.
 
     def test_exponential_backoff(self) -> None:
         """Delay grows exponentially (jitter=0 for determinism)."""

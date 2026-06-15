@@ -1,5 +1,5 @@
 """
-Regression tests for the 2026-06 transcript/durability fix cluster:
+Transcript / durability behavior:
 
 * transcript builder fires on fresh init only (multi-turn history survives)
 * pure resume (``agent.run()`` with no input) works instead of crashing

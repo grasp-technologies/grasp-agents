@@ -116,7 +116,7 @@ def test_bounded_param_resolution() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2026-06 regressions: subscriptions must not poison the origin class
+# Subscriptions must not poison the origin class
 # ---------------------------------------------------------------------------
 
 

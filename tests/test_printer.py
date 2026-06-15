@@ -7,6 +7,7 @@ from grasp_agents.printer import (
     _input_message_text,
     get_style,
     print_event_stream,
+    sanitize_terminal_text,
     truncate_content_str,
 )
 from grasp_agents.types.content import (
@@ -35,6 +36,7 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response
+from grasp_agents.ui._event_render import truncate, truncate_lines
 
 # ---------- Utility functions ----------
 
@@ -424,3 +426,33 @@ class TestPrintEventStream:
         output = capsys.readouterr().out
         assert "[...]" in output
         assert len(output) < 5_000
+
+
+# ---------- terminal escape-sequence sanitization ----------
+
+
+class TestTerminalSanitization:
+    def test_csi_clear_screen_neutralized(self) -> None:
+        out = sanitize_terminal_text("before\x1b[2Jafter")
+        assert "\x1b" not in out
+        assert "before" in out
+        assert "after" in out
+
+    def test_osc_title_spoof_neutralized(self) -> None:
+        out = sanitize_terminal_text("\x1b]0;you-have-been-pwned\x07rest")
+        assert "\x1b" not in out
+        assert "\x07" not in out
+        assert "rest" in out
+
+    def test_carriage_return_overwrite_neutralized(self) -> None:
+        # "\r" rewinds the line — classic approval-prompt spoof.
+        out = sanitize_terminal_text("rm -rf /\rls -la    ")
+        assert "\r" not in out
+        assert "rm -rf /" in out
+
+    def test_newlines_and_tabs_kept(self) -> None:
+        assert sanitize_terminal_text("a\n\tb\r\nc") == "a\n\tb\nc"
+
+    def test_render_truncate_helpers_sanitize(self) -> None:
+        assert "\x1b" not in truncate("x\x1b[2Jy", 100)
+        assert "\x1b" not in truncate_lines("x\x1b[2Jy\nz", 10)

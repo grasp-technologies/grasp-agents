@@ -1,5 +1,5 @@
 """
-Regression tests for the 2026-06 LLM core/resilience fix cluster:
+LLM core / resilience behavior:
 
 * server ``Retry-After`` hints are sanitized at parse and capped at retry time
 * Anthropic usage is cache-normalized (no $0 cache writes, no negative cost)

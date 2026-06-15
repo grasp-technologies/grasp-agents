@@ -1219,3 +1219,68 @@ async def test_e2b_live_background_writes_greppable_log() -> None:
         assert "HELLO" in content
 
         await kill(mgr, task_id)
+
+
+# ---------- created sandbox not orphaned on setup failure ----------
+
+
+class _SetupFailFiles:
+    async def make_dir(self, path: str) -> None:
+        del path
+        msg = "make_dir failed"
+        raise RuntimeError(msg)
+
+
+class _SetupFailSandbox:
+    def __init__(self) -> None:
+        self.files = _SetupFailFiles()
+        self.killed = False
+
+    @classmethod
+    async def create(cls, **kwargs: Any) -> _SetupFailSandbox:
+        del kwargs
+        return cls()
+
+    async def kill(self) -> None:
+        self.killed = True
+
+
+class TestE2BSetupFailure:
+    async def test_created_sandbox_killed_when_setup_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        del tmp_path
+        e2b_env_mod = pytest.importorskip("grasp_agents.sandbox.e2b.environment")
+
+        created: list[_SetupFailSandbox] = []
+
+        class _Recorder(_SetupFailSandbox):
+            @classmethod
+            async def create(cls, **kwargs: Any) -> _SetupFailSandbox:
+                sandbox = await super().create(**kwargs)
+                created.append(sandbox)  # type: ignore[arg-type]
+                return sandbox
+
+        monkeypatch.setattr(e2b_env_mod, "_sandbox_cls", lambda _ci: _Recorder)
+
+        from grasp_agents.sandbox.e2b._handle import SandboxHandle
+        from grasp_agents.sandbox.e2b.exec import E2BExecBackend
+        from grasp_agents.sandbox.e2b.file_backend import E2BFileBackend
+
+        policy = SandboxPolicy(allowed_roots=(Path("/home/user/workspace"),))
+        holder = SandboxHandle(None)
+        env = e2b_env_mod.E2BEnvironment(
+            policy=policy,
+            holder=holder,
+            file_backend=E2BFileBackend(holder, policy=policy),
+            exec_backend=E2BExecBackend(holder, policy=policy),
+            create_params={},
+            owns_sandbox=True,
+        )
+
+        with pytest.raises(RuntimeError, match="make_dir failed"):
+            await env.__aenter__()
+
+        assert len(created) == 1
+        assert created[0].killed is True
+        assert holder.sandbox is None

@@ -1,5 +1,5 @@
 """
-Integration tests for the B2.c metadata borrows on ``AgentCheckpoint``:
+Tests for the metadata fields on ``AgentCheckpoint``:
 
 - context_kind / context_data auto-round-trip
 - prompt_cache_key round-trip

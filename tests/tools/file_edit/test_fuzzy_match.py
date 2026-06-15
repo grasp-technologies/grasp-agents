@@ -429,7 +429,7 @@ def test_preserve_quote_style_empty_inputs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2026-06 regression: overlapping matches must not corrupt replace_all
+# Overlapping matches must not corrupt replace_all
 # ---------------------------------------------------------------------------
 
 

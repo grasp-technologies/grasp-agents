@@ -1,6 +1,7 @@
 """
-Regression tests for the P2 file / exec tool fixes
-(consolidated audit 2026-06-11, §3 items 32-36).
+File / exec tool behavior: CRLF-preserving edits, output-overflow guards,
+secret redaction, write-conflict key detection, and exec-tool write
+exclusivity.
 """
 
 from __future__ import annotations

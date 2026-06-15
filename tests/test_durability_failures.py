@@ -1,5 +1,5 @@
 """
-B2.d hardening: extended store-failure coverage + task-record GC.
+Store-failure propagation and task-record garbage collection.
 
 Covers:
 - LLMAgent save failure propagates

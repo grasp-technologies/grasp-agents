@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -622,3 +623,24 @@ class TestSerializationFailureContained:
         assert spans[0].attributes is not None
         assert spans[0].attributes.get(ATTR_ENTITY_OUTPUT) is None
         assert spans[0].status.status_code != trace.StatusCode.ERROR
+
+
+# ---------- @traced generators stream through ----------
+
+
+class TestTracedGeneratorPassThrough:
+    @pytest.mark.asyncio
+    async def test_async_gen_yields_all_items(self) -> None:
+        @traced(name="gen")
+        async def gen() -> AsyncIterator[int]:
+            for i in range(5):
+                yield i
+
+        assert [i async for i in gen()] == [0, 1, 2, 3, 4]
+
+    def test_sync_gen_yields_all_items(self) -> None:
+        @traced(name="gen")
+        def gen():
+            yield from range(5)
+
+        assert list(gen()) == [0, 1, 2, 3, 4]

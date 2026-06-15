@@ -1,6 +1,7 @@
 """
-Regression tests for the P2 provider-converter fixes
-(consolidated audit 2026-06-11, §3 items 9-14).
+Provider request/response behavior: structured-output schema gating, parallel
+tool outputs, custom-provider threading, SDK retry defaults, context-window
+error mapping, safety finish-reasons, and citation / thinking-block handling.
 """
 
 from __future__ import annotations

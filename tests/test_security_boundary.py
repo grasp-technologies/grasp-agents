@@ -1,5 +1,5 @@
 """
-Regression tests for the 2026-06 security fix cluster:
+Security-boundary behavior:
 
 * a JSON config that omits ``env_scrub`` keeps the secret-scrub denylist
 * the sensitive-path denylist matches case-insensitively (APFS/NTFS open

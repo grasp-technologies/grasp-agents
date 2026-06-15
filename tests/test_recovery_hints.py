@@ -50,12 +50,6 @@ def _fake_response() -> httpx.Response:
 class TestRecoveryHintClassification:
     """Each LlmError subclass must classify to a deterministic hint."""
 
-    def test_rate_limit_maps_to_rate_limited(self) -> None:
-        err = LlmRateLimitError(
-            "slow down", response=_fake_response(), body=None, retry_after=2.0
-        )
-        assert classify_error(err) is RecoveryHint.RATE_LIMITED
-
     def test_context_window_beats_bad_request_parent(self) -> None:
         """LlmContextWindowError must map to NEEDS_COMPACTION, not INVALID_REQUEST."""
         err = LlmContextWindowError(
@@ -65,43 +59,63 @@ class TestRecoveryHintClassification:
         )
         assert classify_error(err) is RecoveryHint.NEEDS_COMPACTION
 
-    def test_authentication_maps_to_reauth(self) -> None:
-        err = LlmAuthenticationError("bad key", response=_fake_response(), body=None)
-        assert classify_error(err) is RecoveryHint.REAUTH_REQUIRED
-
-    def test_permission_denied_maps_to_reauth(self) -> None:
-        err = LlmPermissionDeniedError(
-            "forbidden", response=_fake_response(), body=None
-        )
-        assert classify_error(err) is RecoveryHint.REAUTH_REQUIRED
-
-    def test_bad_request_maps_to_invalid(self) -> None:
-        err = LlmBadRequestError("bad input", response=_fake_response(), body=None)
-        assert classify_error(err) is RecoveryHint.INVALID_REQUEST
-
-    def test_not_found_maps_to_invalid(self) -> None:
-        err = LlmNotFoundError("not there", response=_fake_response(), body=None)
-        assert classify_error(err) is RecoveryHint.INVALID_REQUEST
-
-    def test_unprocessable_maps_to_invalid(self) -> None:
-        err = LlmUnprocessableEntityError("bad", response=_fake_response(), body=None)
-        assert classify_error(err) is RecoveryHint.INVALID_REQUEST
-
-    def test_conflict_maps_to_transient(self) -> None:
-        err = LlmConflictError("conflict", response=_fake_response(), body=None)
-        assert classify_error(err) is RecoveryHint.TRANSIENT
-
-    def test_timeout_maps_to_transient(self) -> None:
-        err = LlmApiTimeoutError(request=_fake_request())
-        assert classify_error(err) is RecoveryHint.TRANSIENT
-
-    def test_connection_maps_to_transient(self) -> None:
-        err = LlmApiConnectionError(request=_fake_request())
-        assert classify_error(err) is RecoveryHint.TRANSIENT
-
-    def test_internal_server_maps_to_transient(self) -> None:
-        err = LlmInternalServerError("boom", response=_fake_response(), body=None)
-        assert classify_error(err) is RecoveryHint.TRANSIENT
+    @pytest.mark.parametrize(
+        ("err_factory", "expected"),
+        [
+            (
+                lambda: LlmRateLimitError("x", response=_fake_response(), body=None),
+                RecoveryHint.RATE_LIMITED,
+            ),
+            (
+                lambda: LlmAuthenticationError(
+                    "x", response=_fake_response(), body=None
+                ),
+                RecoveryHint.REAUTH_REQUIRED,
+            ),
+            (
+                lambda: LlmPermissionDeniedError(
+                    "x", response=_fake_response(), body=None
+                ),
+                RecoveryHint.REAUTH_REQUIRED,
+            ),
+            (
+                lambda: LlmBadRequestError("x", response=_fake_response(), body=None),
+                RecoveryHint.INVALID_REQUEST,
+            ),
+            (
+                lambda: LlmNotFoundError("x", response=_fake_response(), body=None),
+                RecoveryHint.INVALID_REQUEST,
+            ),
+            (
+                lambda: LlmUnprocessableEntityError(
+                    "x", response=_fake_response(), body=None
+                ),
+                RecoveryHint.INVALID_REQUEST,
+            ),
+            (
+                lambda: LlmConflictError("x", response=_fake_response(), body=None),
+                RecoveryHint.TRANSIENT,
+            ),
+            (
+                lambda: LlmApiTimeoutError(request=_fake_request()),
+                RecoveryHint.TRANSIENT,
+            ),
+            (
+                lambda: LlmApiConnectionError(request=_fake_request()),
+                RecoveryHint.TRANSIENT,
+            ),
+            (
+                lambda: LlmInternalServerError(
+                    "x", response=_fake_response(), body=None
+                ),
+                RecoveryHint.TRANSIENT,
+            ),
+        ],
+    )
+    def test_error_classifies_to_hint(
+        self, err_factory: Callable[[], Exception], expected: RecoveryHint
+    ) -> None:
+        assert classify_error(err_factory()) is expected
 
     def test_content_filter_maps_to_refused(self) -> None:
         err = LlmContentFilterError()

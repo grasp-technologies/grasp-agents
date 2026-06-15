@@ -1,6 +1,7 @@
 """
-Regression tests for the P2 durability / resume fixes
-(consolidated audit 2026-06-11, §3 items 15-22).
+Durability / resume internals: retry input de-duplication, append-log fsync
+and rewrite-crash safety, schema-version floor enforcement, and per-key store
+lock eviction.
 """
 
 from __future__ import annotations
@@ -99,7 +100,7 @@ class TestWithRetryTranscript:
 
 class TestRunDeadlineBoundsApprovalWait:
     async def test_parked_before_tool_hook_times_out(self) -> None:
-        from .test_p2_loop_fixes import (
+        from .test_agent_loop import (
             EchoTool,
             _make_loop,
             _tool_outputs_for,

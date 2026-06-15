@@ -1,6 +1,5 @@
 """
-Session-scoped execution-resource lifecycle
-(doc 15 §Execution-resource lifecycle, decided 2026-06-12).
+Session-scoped execution-resource lifecycle.
 
 Shells, kernels, and background tasks survive run boundaries; they are
 released only by ``aclose()`` (LLMAgent / workflow / runner cascade), and
@@ -22,10 +21,8 @@ from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.tools.processor_tool import ProcessorTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
-from .test_p2_loop_fixes import EchoTool  # type: ignore[attr-defined]
-from .test_p2_orchestration_fixes import (  # type: ignore[attr-defined]
-    ListProcessor,
-)
+from .test_agent_loop import EchoTool  # type: ignore[attr-defined]
+from .test_runner import ListProcessor  # type: ignore[attr-defined]
 from .test_sessions import (  # type: ignore[attr-defined]
     MockLLM,
     _text_response,

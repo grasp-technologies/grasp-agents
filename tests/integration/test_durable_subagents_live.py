@@ -1,6 +1,5 @@
 """
-True background-task persistence with sub-agents (rigorous proof of the
-mechanism demonstrated in the orchestration notebook's §3.5).
+True background-task persistence with sub-agents.
 
 Two sub-agents (``AgentTool``, ``resumable=True``) run as background tasks of a
 manager. The manager crashes mid-flight; the in-flight sub-agent tasks are
@@ -154,10 +153,10 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
         f"{[(r.tool_name, r.status) for r in recs]}"
     )
     # Every re-spawned researcher that was actually delivered carried its OWN
-    # final answer — never the raw ``slow_probe`` output. This is the §3.5.3
-    # regression: a re-spawned child used to deliver null / the inner tool's raw
-    # text (a no-checkpoint child erroring out, or a task-id collision crossing
-    # a re-spawned task's result with a fresh call's). Cancelled duplicates
+    # final answer — never the raw ``slow_probe`` output. A re-spawned child
+    # must not deliver null / the inner tool's raw text (a no-checkpoint child
+    # erroring out, or a task-id collision crossing a re-spawned task's result
+    # with a fresh call's). Cancelled duplicates
     # (a weak coordinator re-calling) carry no result and are skipped.
     for r in recs:
         if not r.result:

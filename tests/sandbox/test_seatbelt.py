@@ -483,3 +483,34 @@ async def test_seatbelt_background_writes_greppable_log(tmp_path: Path) -> None:
 
     await kill(mgr, task_id)
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+# ---------- seatbelt rejects unenforceable network policies ----------
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("sandbox-exec") is None,
+    reason="seatbelt requires macOS with sandbox-exec",
+)
+class TestSeatbeltNetworkValidation:
+    @pytest.mark.parametrize(
+        "network", [NetworkPolicy.LOOPBACK, NetworkPolicy.ALLOWLIST]
+    )
+    async def test_unenforceable_network_rejected_at_construction(
+        self, tmp_path: Path, network: NetworkPolicy
+    ) -> None:
+        with pytest.raises(ValueError, match="not enforceable under"):
+            local_environment(
+                allowed_roots=[tmp_path],
+                confinement="seatbelt",
+                network=network,
+                allowed_domains=["example.com"],
+            )
+
+    async def test_all_or_none_accepted(self, tmp_path: Path) -> None:
+        for network in (NetworkPolicy.NONE, NetworkPolicy.ALL):
+            local_environment(
+                allowed_roots=[tmp_path],
+                confinement="seatbelt",
+                network=network,
+            )

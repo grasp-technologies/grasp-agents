@@ -1,6 +1,7 @@
 """
-Regression tests for the P2 agent-loop / prompt fixes
-(consolidated audit 2026-06-11, §3 items 1-8 + 39).
+Agent-loop behavior: final-answer tool registration and forced synthesis,
+tool-result pairing, closure-event streaming, approval-pending cleanup,
+MCP-client construction, and ``None`` input handling.
 """
 
 import asyncio

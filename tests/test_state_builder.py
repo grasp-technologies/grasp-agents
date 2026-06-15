@@ -1,7 +1,7 @@
 """
 Unit tests for the ``@agent.add_state_builder`` hook.
 
-Contract (``docs/roadmap/03-checkpointing-and-sessions.md`` §2):
+Contract:
 
 1. Fires exactly once per resume (``load_checkpoint`` returned non-None).
 2. Does NOT fire on fresh init (``add_transcript_builder`` handles that).

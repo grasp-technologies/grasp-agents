@@ -1,5 +1,5 @@
 """
-Regression tests for the 2026-06 provider-converter fix cluster:
+Provider converter behavior:
 
 * empty / ``None`` tool-call arguments normalize to ``"{}"`` and never crash
   the next request build (streamed and non-streamed)

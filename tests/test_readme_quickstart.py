@@ -27,7 +27,7 @@ def test_readme_quickstart_runs() -> None:
 
     # Drop the lines that would do real I/O: launching the agent (hits the
     # network) and dotenv (needs a .env). Everything else — imports, the tool
-    # subclass, the agent construction — runs and is asserted below.
+    # definition, the agent construction — runs and is asserted below.
     lines = [
         line
         for line in code.splitlines()
@@ -36,13 +36,12 @@ def test_readme_quickstart_runs() -> None:
     namespace: dict[str, object] = {}
     exec("\n".join(lines), namespace)  # noqa: S102
 
-    from grasp_agents import BaseTool, LLMAgent
+    from grasp_agents import LLMAgent
 
-    teacher = namespace["teacher"]
-    assert isinstance(teacher, LLMAgent)
+    agent = namespace["agent"]
+    assert isinstance(agent, LLMAgent)
 
-    tool_cls = namespace["AskStudentTool"]
-    assert issubclass(tool_cls, BaseTool)
-    tool = tool_cls()
-    # The typed-args schema the LLM sees must expose the declared field.
-    assert "question" in tool.in_type.model_fields
+    # The @function_tool is registered and the typed-args schema the LLM sees
+    # exposes the declared field.
+    assert "get_weather" in agent.tools
+    assert "city" in agent.tools["get_weather"].in_type.model_fields
