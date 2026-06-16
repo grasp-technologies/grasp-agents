@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "0.7.0"
+version = "1.0.0"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
@@ -90,10 +90,7 @@ addopts = "-m 'not integration'"
 [tool.coverage.run]
 source = ["src/grasp_agents"]
 branch = true
-omit = [
-    "*/examples/*",
-    "*/__pycache__/*",
-]
+omit = ["*/examples/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
 show_missing = true

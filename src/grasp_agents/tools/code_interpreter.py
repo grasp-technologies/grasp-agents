@@ -274,7 +274,9 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
         lines = await self._collect_artifacts(ctx, agent_ctx, inp.artifacts)
         if not lines:
             return parts
-        artifact_text = InputText(text="\n\nFiles produced:\n" + "\n".join(lines))
+
+        artifact_text = InputText(text="\nFiles produced:\n" + "\n".join(lines))
+
         # Text (output + the file list) first, then the displayed images.
         return [parts[0], artifact_text, *parts[1:]]
 
