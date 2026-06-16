@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         NotebookReadTool,
     )
     from .read import ReadInput, ReadResult, ReadTool
+    from .read_image import ReadImageInput, ReadImageTool
     from .redact import DefaultSecretRedactor, NullRedactor, SecretRedactor
     from .session_state import FileEditSessionState, ReadRecord
     from .write import WriteInput, WriteResult, WriteTool
@@ -66,6 +67,8 @@ _LAZY: dict[str, str] = {
     "ReadInput": "read",
     "ReadResult": "read",
     "ReadTool": "read",
+    "ReadImageInput": "read_image",
+    "ReadImageTool": "read_image",
     "DefaultSecretRedactor": "redact",
     "NullRedactor": "redact",
     "SecretRedactor": "redact",
@@ -105,6 +108,8 @@ __all__ = [
     "NotebookReadResult",
     "NotebookReadTool",
     "NullRedactor",
+    "ReadImageInput",
+    "ReadImageTool",
     "ReadInput",
     "ReadRecord",
     "ReadResult",

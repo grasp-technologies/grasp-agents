@@ -32,6 +32,7 @@ from .file_edit.read import (
     DEFAULT_MAX_READ_CHARS,
     ReadTool,
 )
+from .file_edit.read_image import DEFAULT_MAX_IMAGE_BYTES, ReadImageTool
 from .file_edit.redact import DefaultSecretRedactor, SecretRedactor
 from .file_edit.write import DEFAULT_NEW_FILE_MODE, WriteTool
 from .file_search.glob import DEFAULT_HEAD_LIMIT as DEFAULT_GLOB_HEAD_LIMIT
@@ -55,6 +56,8 @@ class FileToolkit:
         glob_head_limit: int = DEFAULT_GLOB_HEAD_LIMIT,
         glob_include_hidden: bool = False,
         include_notebook: bool = False,
+        include_image: bool = False,
+        max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
         tool_timeout: float | None = None,
     ) -> None:
         """
@@ -78,6 +81,12 @@ class FileToolkit:
                 agents don't touch notebooks, and the generic ``Read`` already
                 renders a notebook's cells (so a non-notebook agent still sees
                 them). Requires the ``nbformat`` package.
+            include_image: Add ``ReadImage`` to :meth:`tools` and
+                :meth:`read_only_tools`, letting the agent view image files
+                (PNG/JPEG/GIF/WebP) as visual content. Off by default — only
+                vision-capable agents need it.
+            max_image_bytes: Whole-file size ceiling for ``ReadImage``; larger
+                images are refused. Default ``5_000_000``.
             tool_timeout: Per-tool async timeout in seconds. ``None``
                 disables the timeout.
 
@@ -103,7 +112,12 @@ class FileToolkit:
         self._grep_tool = GrepTool(timeout=tool_timeout)
         self._notebook_read_tool = NotebookReadTool(timeout=tool_timeout)
         self._notebook_edit_tool = NotebookEditTool(timeout=tool_timeout)
+        self._image_read_tool = ReadImageTool(
+            max_image_bytes=max_image_bytes,
+            timeout=tool_timeout,
+        )
         self._include_notebook = include_notebook
+        self._include_image = include_image
 
     # ---- Tool accessors ----------------------------------------------------
 
@@ -139,12 +153,17 @@ class FileToolkit:
     def notebook_edit(self) -> NotebookEditTool:
         return self._notebook_edit_tool
 
+    @property
+    def read_image(self) -> ReadImageTool:
+        return self._image_read_tool
+
     def tools(self) -> list[BaseTool[Any, Any, Any]]:
         """
         The file tools, ready to attach to an agent.
 
         ``Read`` / ``Write`` / ``Edit`` / ``Delete`` / ``Glob`` / ``Grep``,
-        plus ``NotebookRead`` + ``NotebookEdit`` when ``include_notebook``.
+        plus ``NotebookRead`` + ``NotebookEdit`` when ``include_notebook`` and
+        ``ReadImage`` when ``include_image``.
         """
         base: list[BaseTool[Any, Any, Any]] = [
             self._read_tool,
@@ -156,10 +175,15 @@ class FileToolkit:
         ]
         if self._include_notebook:
             base += [self._notebook_read_tool, self._notebook_edit_tool]
+        if self._include_image:
+            base.append(self._image_read_tool)
         return base
 
     def read_only_tools(self) -> list[BaseTool[Any, Any, Any]]:
-        """Non-mutating subset: Read, Glob, Grep (and NotebookRead if enabled)."""
+        """
+        Non-mutating subset: Read, Glob, Grep (plus NotebookRead / ReadImage
+        when their ``include_*`` flag is set).
+        """
         base: list[BaseTool[Any, Any, Any]] = [
             self._read_tool,
             self._glob_tool,
@@ -167,4 +191,6 @@ class FileToolkit:
         ]
         if self._include_notebook:
             base.append(self._notebook_read_tool)
+        if self._include_image:
+            base.append(self._image_read_tool)
         return base
