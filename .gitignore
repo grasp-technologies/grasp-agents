@@ -177,8 +177,6 @@ cython_debug/
 **/.DS_Store
 
 docs/*
-.claude/settings.local.json
-.claude/worktrees
 
 # grasp-agents TUI data-copilot demo workspace (default COPILOT_WORKDIR)
 copilot_workdir/
@@ -194,3 +192,4 @@ tests/tui/_review/
 orchestration_workdir/
 autoresearch_workdir/
 CLAUDE.md
+.claude
