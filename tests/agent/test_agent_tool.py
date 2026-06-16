@@ -15,7 +15,7 @@ Verifies:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from pydantic import BaseModel
@@ -164,18 +164,25 @@ def _agent_ctx(
     *,
     transcript: LLMAgentTranscript | None = None,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
+    explicit_tool_names: frozenset[str] | None = None,
 ) -> AgentContext:
     """
     A minimal *parent* AgentContext for AgentTool calls.
 
     AgentTool reads the parent's transcript and sibling tools from the
     ``AgentContext`` the loop hands each call; everything else is filler.
+    ``explicit_tool_names`` defaults to all passed tools (i.e. treat them as
+    explicitly-given, hence inheritable); pass ``frozenset()`` to simulate
+    auto-attached tools that must NOT be inherited.
     """
     transcript = transcript or LLMAgentTranscript()
     tool_map = {t.name: t for t in (tools or [])}
+    if explicit_tool_names is None:
+        explicit_tool_names = frozenset(tool_map)
     return AgentContext(
         transcript=transcript,
         tools=tool_map,
+        explicit_tool_names=explicit_tool_names,
         file_edit_state=FileEditSessionState(),
         bg_tasks=BackgroundTaskManager(
             agent_name="parent", transcript=transcript, tools=tool_map
@@ -292,8 +299,12 @@ class TestToolInheritance:
             llm=_make_child_llm("done"),
             inherit_tools=True,
         )
-        # Parent's sibling tools are passed in (from the call's AgentContext).
-        resolved = tool._resolve_tools([search, other_agent_tool])  # type: ignore[list-item]
+        # Parent's sibling tools are passed in (from the call's AgentContext);
+        # both are "explicit" parent tools here.
+        resolved = tool._resolve_tools(
+            [search, other_agent_tool],  # type: ignore[list-item]
+            frozenset({"search", "other"}),
+        )
         assert resolved is not None
         names = [t.name for t in resolved]
         assert "search" in names
@@ -312,7 +323,10 @@ class TestToolInheritance:
             inherit_tools=False,
         )
 
-        resolved = tool._resolve_tools([search])  # type: ignore[list-item]
+        resolved = tool._resolve_tools(
+            [search],  # type: ignore[list-item]
+            frozenset({"search"}),
+        )
         assert resolved is None  # No own tools, inheritance disabled
 
     @pytest.mark.asyncio
@@ -333,7 +347,10 @@ class TestToolInheritance:
             inherit_tools=True,
         )
 
-        resolved = tool._resolve_tools([parent_search])  # type: ignore[list-item]
+        resolved = tool._resolve_tools(
+            [parent_search],  # type: ignore[list-item]
+            frozenset({"search"}),
+        )
         assert resolved is not None
         # Only one "search" — own version wins
         assert len(resolved) == 1
@@ -361,7 +378,8 @@ class TestToolInheritance:
 
         # AgentTool resolves inherited tools from the parent's AgentContext.
         resolved = agent_tool._resolve_tools(
-            list(parent._loop.agent_ctx.tools.values())
+            list(parent._loop.agent_ctx.tools.values()),
+            parent._loop.agent_ctx.explicit_tool_names,
         )
         assert resolved is not None
         names = [t.name for t in resolved]
@@ -698,3 +716,120 @@ class TestToolCopy:
 
         with pytest.raises(ValueError, match="non-empty name"):
             BadTool()
+
+
+# ------------------------------------------------------------------ #
+#  MCP forwarding                                                      #
+# ------------------------------------------------------------------ #
+
+
+class _StubMCPClient:
+    """Minimal connected-MCP-client stand-in exposing a fixed tool list."""
+
+    instructions: str | None = None
+
+    def __init__(self, tools: list[BaseTool[Any, Any, Any]]) -> None:
+        self._tools = tools
+
+    def tools(self) -> list[BaseTool[Any, Any, Any]]:
+        return self._tools
+
+
+@function_tool(name="mcp_echo", description="Echo the text back.")
+async def _mcp_echo(text: str, *, ctx: RunContext[Any] | None = None) -> str:
+    del ctx
+    return text
+
+
+class TestAgentToolMcp:
+    @pytest.mark.asyncio
+    async def test_forwards_mcp_clients_to_child(self) -> None:
+        # mcp_clients passed to AgentTool reach the per-call child, so it gets
+        # the MCP tools AND registers the client (→ the MCP-instructions section
+        # renders instead of being empty).
+        tool = AgentTool[None](
+            name="sub",
+            description="A subagent",
+            llm=_make_child_llm("ok"),
+            mcp_clients=[cast("Any", _StubMCPClient([_mcp_echo]))],
+            env_info=False,
+        )
+        agent, _ = await tool._prepare_child(
+            AgentToolInput(prompt="hi"),
+            ctx=RunContext[None](),
+            exec_id="e",
+            agent_ctx=None,
+        )
+        try:
+            assert "mcp_echo" in agent.tools
+            assert len(agent.mcp_clients) == 1
+        finally:
+            await agent.aclose()
+
+    @pytest.mark.asyncio
+    async def test_no_mcp_clients_means_no_mcp_tool(self) -> None:
+        tool = AgentTool[None](
+            name="sub",
+            description="A subagent",
+            llm=_make_child_llm("ok"),
+            env_info=False,
+        )
+        agent, _ = await tool._prepare_child(
+            AgentToolInput(prompt="hi"),
+            ctx=RunContext[None](),
+            exec_id="e",
+            agent_ctx=None,
+        )
+        try:
+            assert "mcp_echo" not in agent.tools
+            assert agent.mcp_clients == []
+        finally:
+            await agent.aclose()
+
+    @pytest.mark.asyncio
+    async def test_auto_attached_parent_tools_not_inherited(self) -> None:
+        # A capability tool the parent has but did NOT pass explicitly (MCP /
+        # skills / memory — here simulated by an empty explicit set) must not be
+        # inherited: the child sources it from its own clients/flags, so
+        # forwarding the same tool adds it once — no duplicate-name error.
+        tool = AgentTool[None](
+            name="sub",
+            description="A subagent",
+            llm=_make_child_llm("ok"),
+            inherit_tools=True,
+            mcp_clients=[cast("Any", _StubMCPClient([_mcp_echo]))],
+            env_info=False,
+        )
+        parent_ctx = _agent_ctx(tools=[_mcp_echo], explicit_tool_names=frozenset())
+        agent, _ = await tool._prepare_child(
+            AgentToolInput(prompt="hi"),
+            ctx=RunContext[None](),
+            exec_id="e",
+            agent_ctx=parent_ctx,
+        )
+        try:
+            assert "mcp_echo" in agent.tools
+        finally:
+            await agent.aclose()
+
+    @pytest.mark.asyncio
+    async def test_explicit_parent_tools_are_inherited(self) -> None:
+        # The flip side: a tool the parent passed explicitly IS inherited.
+        tool = AgentTool[None](
+            name="sub",
+            description="A subagent",
+            llm=_make_child_llm("ok"),
+            inherit_tools=True,
+            env_info=False,
+        )
+        parent_ctx = _agent_ctx(tools=[_mcp_echo])  # default: mcp_echo is explicit
+        agent, _ = await tool._prepare_child(
+            AgentToolInput(prompt="hi"),
+            ctx=RunContext[None](),
+            exec_id="e",
+            agent_ctx=parent_ctx,
+        )
+        try:
+            assert "mcp_echo" in agent.tools
+        finally:
+            await agent.aclose()

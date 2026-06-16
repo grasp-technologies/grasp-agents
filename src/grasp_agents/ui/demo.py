@@ -37,7 +37,6 @@ from grasp_agents.types.events import (
     ReasoningItemEvent,
     SystemMessageEvent,
     ToolCallItemEvent,
-    ToolErrorEvent,
     ToolErrorInfo,
     ToolOutputItemEvent,
     TurnEndEvent,
@@ -478,13 +477,18 @@ def console_demo_events() -> list[Event[Any]]:
             source="coordinator",
             exec_id="c1",
         ),
-        ToolErrorEvent(
-            data=ToolErrorInfo(
-                tool_name="publish",
-                error="Authentication failed: invalid API key",
-                timed_out=False,
+        ToolOutputItemEvent(
+            data=FunctionToolOutputItem.from_tool_result(
+                call_id="tc_3",
+                output=ToolErrorInfo(
+                    tool_name="publish",
+                    error="Authentication failed: invalid API key",
+                    timed_out=False,
+                ),
+                is_error=True,
             ),
-            source="coordinator",
+            source="publish",
+            destination="coordinator",
             exec_id="c1",
         ),
         # ── Turn 3: a streaming error ──

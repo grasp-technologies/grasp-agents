@@ -120,17 +120,22 @@ class TestEnableSkills:
         assert "load_skill" in agent.tools
         assert "list_skills" not in agent.tools
 
-    def test_load_skill_not_attached_in_structured_mode(self) -> None:
-        # tools=None → structured-output mode; no tool auto-attach.
+    def test_enable_skills_implies_agentic_without_tools(self) -> None:
+        # enable_skills attaches load_skill, which the model must be able to
+        # call — so it implies agentic mode even with tools=None (regression:
+        # tools=None previously left the agent non-agentic and the loader
+        # unattached, so the model could never load a skill).
         agent = LLMAgent[str, str, _State](
-            name="structured",
+            name="skills_no_tools",
             llm=MockLLM(responses_queue=[]),
             stream_llm=True,
             env_info=False,
             enable_skills=True,
             tools=None,
         )
-        assert "load_skill" not in agent.tools
+        assert "load_skill" in agent.tools
+        # agentic ⇒ no default structured-output schema was applied
+        assert agent._used_default_llm_output_schema is False
 
     def test_explicit_list_skills_via_tools_kwarg(self) -> None:
         agent = _make_agent(with_skill_tools=True)
@@ -268,6 +273,19 @@ class TestLoadSkillTool:
         result = await load_skill(name="alpha", ctx=ctx)
         assert isinstance(result, str)
         assert "ALPHA BODY" in result
+
+    @pytest.mark.asyncio
+    async def test_substitutes_arguments_placeholder(self, tmp_path: Path) -> None:
+        # A model-invoked load has no arguments, so `$ARGUMENTS` resolves to
+        # empty rather than leaking the literal placeholder into the body.
+        _write_skill(tmp_path, "alpha", "x", body="Proofread: $ARGUMENTS")
+        ctx: RunContext[_State] = RunContext(
+            state=_State(), skills=SkillRegistry.from_path(tmp_path)
+        )
+        result = await load_skill(name="alpha", ctx=ctx)
+        assert isinstance(result, str)
+        assert "$ARGUMENTS" not in result
+        assert result.strip() == "Proofread:"
 
     @pytest.mark.asyncio
     async def test_no_registry_errors(self) -> None:

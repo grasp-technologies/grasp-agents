@@ -7,7 +7,12 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from grasp_agents.types.content import InputImage, InputText, OutputMessageText
+from grasp_agents.types.content import (
+    InputImage,
+    InputText,
+    OutputMessageText,
+    ReasoningSummary,
+)
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
@@ -394,6 +399,32 @@ class TestStreamingThinking:
         assert "thinking" in output
         assert "deep thought" in output
 
+    @pytest.mark.asyncio
+    async def test_streamed_reasoning_without_summary_shows_nothing(self):
+        # A reasoning item that streams no summary text prints no thinking
+        # header (the header is opened lazily on the first delta) — matching
+        # the TUI, which only creates its thinking widget on a delta.
+        ec, buf = _make_console_with(show_thinking=True)
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(
+                    item=ReasoningItem(), output_index=0, sequence_number=1
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=OutputItemDone(
+                    item=ReasoningItem(), output_index=0, sequence_number=2
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            ReasoningItemEvent(data=ReasoningItem(), source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        assert "thinking" not in buf.getvalue()
+
 
 # ── Non-streaming mode (promoted events) ──
 
@@ -477,11 +508,25 @@ class TestNonStreamingMode:
     @pytest.mark.asyncio
     async def test_reasoning_item_non_streaming(self):
         ec, buf = _make_console_with(show_thinking=True)
-        item = ReasoningItem()
+        item = ReasoningItem(
+            summary_parts=[ReasoningSummary(text="planning the steps")],
+            status="completed",
+        )
         events = [ReasoningItemEvent(data=item, source="agent", exec_id="c1")]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "thinking" in output
+        assert "planning the steps" in output
+
+    @pytest.mark.asyncio
+    async def test_empty_reasoning_item_not_rendered(self):
+        # No summary text → nothing to show; must not print a stray "thinking" box.
+        ec, buf = _make_console_with(show_thinking=True)
+        events = [
+            ReasoningItemEvent(data=ReasoningItem(), source="agent", exec_id="c1")
+        ]
+        await _collect(ec, events)
+        assert buf.getvalue().strip() == ""
 
 
 # ── Tool result and error events ──
@@ -512,7 +557,10 @@ class TestToolEvents:
         assert "status" in output
 
     @pytest.mark.asyncio
-    async def test_tool_error(self):
+    async def test_tool_error_event_not_rendered(self):
+        # The raw ToolErrorEvent is the tool's terminal event; the failure is
+        # also committed as a ToolOutputItemEvent(is_error=True), which is what
+        # renders. The raw event must not duplicate it.
         ec, buf = _make_console()
         events = [
             ToolErrorEvent(
@@ -522,26 +570,25 @@ class TestToolEvents:
             )
         ]
         await _collect(ec, events)
-        output = buf.getvalue()
-        assert "search" in output
-        assert "API down" in output
-        assert "✗" in output
+        assert buf.getvalue().strip() == ""
 
     @pytest.mark.asyncio
-    async def test_tool_error_timeout(self):
+    async def test_tool_failure_surfaces_via_output_item(self):
         ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="c1",
+            output=ToolErrorInfo(tool_name="search", error="API down"),
+            is_error=True,
+        )
         events = [
-            ToolErrorEvent(
-                data=ToolErrorInfo(
-                    tool_name="slow", error="took too long", timed_out=True
-                ),
-                source="agent",
-                exec_id="c1",
+            ToolOutputItemEvent(
+                data=msg, source="search", destination="agent", exec_id="c1"
             )
         ]
         await _collect(ec, events)
         output = buf.getvalue()
-        assert "timed out" in output
+        assert "search" in output
+        assert "API down" in output
 
 
 # ── Message events ──
@@ -784,20 +831,22 @@ class TestToolPanels:
 
     @pytest.mark.asyncio
     async def test_tool_error_panel_has_border(self):
-        """Tool error rendered in a panel with borders."""
+        """A failed tool result (is_error) is rendered in a bordered panel."""
         ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="c1",
+            output=ToolErrorInfo(tool_name="broken", error="something failed"),
+            is_error=True,
+        )
         events = [
-            ToolErrorEvent(
-                data=ToolErrorInfo(tool_name="broken", error="something failed"),
-                source="a",
-                exec_id="c1",
+            ToolOutputItemEvent(
+                data=msg, source="broken", destination="a", exec_id="c1"
             )
         ]
         await _collect(ec, events)
         output = buf.getvalue()
         assert "╭" in output
         assert "╰" in output
-        assert "✗" in output
         assert "something failed" in output
 
     @pytest.mark.asyncio

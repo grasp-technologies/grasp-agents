@@ -19,6 +19,7 @@ from grasp_agents.tools.function_tool import function_tool
 
 from .injection import LOAD_INSTRUCTION, render_available_skills_block
 from .loader import parse_skill_md
+from .registry import substitute_args
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
@@ -62,8 +63,9 @@ async def load_skill(
     try:
         _, body = parse_skill_md(text, path=skill.path)
     except Exception:
-        return skill.body
-    return body
+        body = skill.body
+
+    return substitute_args(body, None)
 
 
 @function_tool(name="list_skills", description=LIST_SKILLS_DESCRIPTION)

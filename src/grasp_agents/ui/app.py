@@ -28,11 +28,14 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from rich.align import Align
 from rich.segment import Segment
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.css.query import NoMatches
+from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.strip import Strip
@@ -41,13 +44,16 @@ from textual.widgets import (
     ContentSwitcher,
     Footer,
     Header,
+    OptionList,
     Static,
     Tab,
     Tabs,
     TextArea,
 )
+from textual.widgets.option_list import Option
 from textual.worker import Worker
 
+from grasp_agents.skills import parse_slash_command
 from grasp_agents.types.content import InputImage
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -96,6 +102,9 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
     from textual.selection import Selection
     from textual.widget import Widget
+
+    from grasp_agents.run_context import RunContext
+    from grasp_agents.skills import Skill
 
 # Events only an LLM-backed agent emits. A source that emits one of these owns
 # an agent pane; tools (RunPython, Bash, …) emit only tool/exec output, so they
@@ -245,6 +254,58 @@ def _tab_id(source: str) -> str:
     return "tab-" + _slug(source)
 
 
+def _skill_row(name: str, description: str) -> RenderableType:
+    """One palette row: the skill name on the left, its description on the right."""
+    row = Table.grid(expand=True, padding=(0, 1))
+    row.add_column(justify="left", no_wrap=True)
+    row.add_column(justify="right", ratio=1, no_wrap=True)
+    row.add_row(
+        Text(f"/{name}", style="bold"),
+        Text(description, style="dim", overflow="ellipsis", no_wrap=True),
+    )
+    return row
+
+
+class _SkillPalette(OptionList):
+    """
+    Dropdown of available skills, shown when the prompt starts with ``/``.
+
+    Each row is the skill name (left) and its one-line description (right).
+    Typing after the ``/`` fuzzy-filters by name; ↑/↓ move the highlight and
+    Enter selects — all routed from the prompt, which keeps focus for typing
+    (so the palette never grabs it: ``can_focus = False``).
+    """
+
+    can_focus = False
+
+    def __init__(self, skills: list[Skill]) -> None:
+        super().__init__(id="skill-palette")
+        self._skills = skills
+        self.display = False
+
+    def filter_to(self, query: str) -> bool:
+        """Repopulate with skills matching ``query`` by name; True if any remain."""
+        self.clear_options()
+        if query:
+            matcher = Matcher(query)
+            skills = [s for s in self._skills if matcher.match(s.name) > 0]
+            skills.sort(key=lambda s: matcher.match(s.name), reverse=True)
+        else:
+            skills = list(self._skills)
+        self.add_options(
+            [Option(_skill_row(s.name, s.description), id=s.name) for s in skills]
+        )
+        if skills:
+            self.highlighted = 0
+        return bool(skills)
+
+    def highlighted_skill(self) -> str | None:
+        """Name (option id) of the highlighted skill, or ``None`` if empty."""
+        if self.highlighted is None:
+            return None
+        return self.get_option_at_index(self.highlighted).id
+
+
 class _PromptArea(TextArea):
     """
     Multi-line prompt: Enter submits; Shift+Enter or Ctrl+J insert a newline; the
@@ -276,8 +337,21 @@ class _PromptArea(TextArea):
             self.value = value
             super().__init__()
 
+    class SkillChosen(Message):
+        """Enter pressed while the skill palette is open — invoke this skill."""
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+            super().__init__()
+
     def on_mount(self) -> None:
         self.sync_height()
+
+    def _skill_palette(self) -> _SkillPalette | None:
+        try:
+            return self.screen.query_one("#skill-palette", _SkillPalette)
+        except NoMatches:
+            return None
 
     @on(TextArea.Changed)
     def _resize_on_change(self) -> None:
@@ -287,6 +361,33 @@ class _PromptArea(TextArea):
         self.sync_height()
 
     async def _on_key(self, event: events.Key) -> None:
+        # When the skill palette is open, ↑/↓ move its highlight, Enter selects,
+        # and Esc closes it — the prompt keeps focus so other keys still type
+        # (filtering the list). Everything else falls through to normal editing.
+        palette = self._skill_palette()
+        if palette is not None and palette.display:
+            if event.key == "down":
+                event.prevent_default()
+                event.stop()
+                palette.action_cursor_down()
+                return
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                palette.action_cursor_up()
+                return
+            if event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                palette.display = False
+                return
+            if event.key == "enter":
+                name = palette.highlighted_skill()
+                if name is not None:
+                    event.prevent_default()
+                    event.stop()
+                    self.post_message(self.SkillChosen(name))
+                    return
         if event.key in self._NEWLINE_KEYS:
             event.prevent_default()
             event.stop()
@@ -451,6 +552,10 @@ class GraspAgentsApp(App[None]):
     #prompt {
         width: 1fr; height: 1; max-height: 10; border: none; background: transparent;
     }
+    #skill-palette {
+        height: auto; max-height: 10; margin: 0 3; padding: 0 1;
+        border: round $accent; background: $surface;
+    }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -464,12 +569,24 @@ class GraspAgentsApp(App[None]):
         *,
         on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
         main_agent: str | None = None,
+        ctx: RunContext[Any] | None = None,
     ) -> None:
         super().__init__()
         _prime_image_protocol()
         self._ga_events = events
         self._ga_on_submit = on_submit
         self._ga_main = main_agent
+        # Skill palette (interactive mode only): typing "/" opens a filtered
+        # picker; selecting one unwraps the skill into a user-message turn. The
+        # skills come from the session ``ctx`` — the same registry the agent
+        # uses — never a separate copy that could drift from it.
+        skills = ctx.skills if ctx is not None else None
+        self._ga_skills = skills
+        self._ga_palette: _SkillPalette | None = (
+            _SkillPalette(skills.all)
+            if on_submit is not None and skills is not None
+            else None
+        )
         self._ga_last_agent: str | None = None
         self._ga_agents: set[str] = set()
         self._ga_turns: dict[str, int] = {}
@@ -511,6 +628,8 @@ class GraspAgentsApp(App[None]):
         yield Header()
         yield ContentSwitcher(id="panes")
         if self._ga_on_submit is not None:
+            if self._ga_palette is not None:
+                yield self._ga_palette
             with Horizontal(id="prompt-bar"):
                 yield Static("❯", id="prompt-arrow")  # noqa: RUF001
                 yield _PromptArea(id="prompt")
@@ -586,6 +705,77 @@ class GraspAgentsApp(App[None]):
         text = event.value.strip()
         if not text or self._ga_on_submit is None:
             return
+        self._hide_palette()
+        self._dispatch(self._unwrap_slash_command(text))
+
+    # ── skill palette (slash commands) ──
+
+    @on(TextArea.Changed, "#prompt")
+    def _on_prompt_changed(self, event: TextArea.Changed) -> None:
+        self._update_palette(event.text_area.text)
+
+    @on(_PromptArea.SkillChosen)
+    def _on_skill_chosen(self, event: _PromptArea.SkillChosen) -> None:
+        self._insert_skill(event.name)
+
+    @on(OptionList.OptionSelected, "#skill-palette")
+    def _on_skill_clicked(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id is not None:
+            self._insert_skill(event.option.id)
+
+    def _update_palette(self, text: str) -> None:
+        """
+        Show/filter the palette while the user is typing the command *name*.
+
+        Once a space (or newline) follows — i.e. the user is typing arguments —
+        the palette gets out of the way so the prompt is free to edit.
+        """
+        palette = self._ga_palette
+        if palette is None:
+            return
+        if (
+            text.startswith("/")
+            and not any(c in text for c in " \t\n")
+            and palette.filter_to(text[1:])
+        ):
+            palette.display = True
+            return
+        palette.display = False
+
+    def _hide_palette(self) -> None:
+        if self._ga_palette is not None:
+            self._ga_palette.display = False
+
+    def _insert_skill(self, name: str) -> None:
+        """
+        Insert ``/name `` into the prompt — selecting a skill does NOT submit.
+
+        It fills in the command and leaves the cursor after it, ready for
+        arguments; the trailing space also dismisses the palette. Submitting
+        (Enter) then unwraps it (see :meth:`_unwrap_slash_command`).
+        """
+        if self._ga_skills is None or self._ga_skills.get_optional(name) is None:
+            self._hide_palette()
+            return
+        prompt = self.query_one("#prompt", _PromptArea)
+        prompt.text = f"/{name} "
+        prompt.sync_height()
+        self._hide_palette()
+        prompt.focus()
+        prompt.move_cursor(prompt.document.end)
+
+    def _unwrap_slash_command(self, text: str) -> str:
+        """Expand a ``/name args`` line into the skill's wrapped body (else as-is)."""
+        if self._ga_skills is None:
+            return text
+        parsed = parse_slash_command(text)
+        if parsed is None or self._ga_skills.get_optional(parsed.name) is None:
+            return text
+        return self._ga_skills.render_invocation(
+            parsed.name, args=parsed.args or None, wrap=True
+        )
+
+    def _dispatch(self, text: str) -> None:
         prompt = self.query_one("#prompt", _PromptArea)
         prompt.text = ""
         prompt.sync_height()
@@ -1031,6 +1221,15 @@ def run_tui_interactive(
     on_submit: Callable[[str], AsyncIterator[Event[Any]]],
     *,
     main_agent: str | None = None,
+    ctx: RunContext[Any] | None = None,
 ) -> None:
-    """Interactive TUI: type a message, the agent runs, events stream into panes."""
-    GraspAgentsApp(on_submit=on_submit, main_agent=main_agent).run()
+    """
+    Interactive TUI: type a message, the agent runs, events stream into panes.
+
+    Pass the agent's session ``ctx`` to enable the slash-command palette when
+    ``ctx.skills`` is set: typing ``/`` opens a filtered picker of those skills;
+    selecting one unwraps it into a user turn. Using ``ctx`` (rather than a bare
+    registry) keeps the palette in lockstep with the skills the agent itself
+    sees — no second source of truth to drift.
+    """
+    GraspAgentsApp(on_submit=on_submit, main_agent=main_agent, ctx=ctx).run()

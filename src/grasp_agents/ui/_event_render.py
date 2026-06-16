@@ -33,6 +33,7 @@ from rich.text import Text, TextType
 from rich.theme import Theme
 
 from grasp_agents.printer import sanitize_terminal_text
+from grasp_agents.skills import match_invocation_wrapper
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -123,10 +124,15 @@ def render_event(
         parts = [
             p.text for p in (event.data.summary_parts or []) if getattr(p, "text", "")
         ]
-        body = "\n".join(parts) or "thinking…"
+        # A finalized reasoning item with no summary text (e.g. low effort, or
+        # encrypted server-side reasoning) has nothing to show — skip it rather
+        # than render an empty "thinking…" box. The live placeholder belongs to
+        # the streaming path only.
+        if not parts:
+            return None
         return panel(
             "thinking",
-            Text(escape(body), style=PALETTE["thinking"]),
+            Text(escape("\n".join(parts)), style=PALETTE["thinking"]),
             PALETTE["border_thinking"],
         )
 
@@ -167,13 +173,11 @@ def render_event(
         return panel(title, Group(*blocks), border)
 
     if isinstance(event, ToolErrorEvent):
-        info = event.data
-        msg = f"✗ {info.error}" + (" (timed out)" if info.timed_out else "")
-        return panel(
-            info.tool_name,
-            Text(sanitize_terminal_text(msg), style=PALETTE["tool_result"]),
-            PALETTE["error"],
-        )
+        # A tool failure is also committed as a ToolOutputItemEvent(is_error=True)
+        # — the red-bordered result panel that the model actually sees. That is
+        # the canonical record; this raw terminal event would only duplicate it,
+        # so it has no display of its own. (Non-tool errors keep their rendering.)
+        return None
 
     if isinstance(event, SystemMessageEvent):
         text = extract_input_text(event.data)
@@ -194,6 +198,12 @@ def render_event(
             )
         if "<session_resumed>" in text:
             return render_resume_notice(text)
+        # A user-invoked skill (slash-command) — show the message verbatim (the
+        # ``<system-reminder note="user invoked skill …">`` wrapper and the full body,
+        # exactly as the agent receives it) under a distinct "skill" frame.
+        skill = match_invocation_wrapper(text)
+        if skill is not None:
+            return panel(f"skill: /{skill}", _message_body(text), PALETTE["accent"])
         # A received input — we don't reliably know the sender (it may be the
         # user or an upstream agent), so don't assert one; just show the
         # recipient.
@@ -713,6 +723,7 @@ class _Markdown(Markdown):
 _CODE_KEYS: dict[str, str] = {
     "code": "python",
     "source": "python",
+    "new_source": "python",
     "python": "python",
     "command": "bash",
     "cmd": "bash",
@@ -870,17 +881,26 @@ def _kv_table(data: dict[str, Any], text_color: str) -> Table:
     table.add_column("key", style=f"bold {PALETTE['arg_key']}", no_wrap=True)
     table.add_column("value", style=text_color, ratio=1)
     for k, v in data.items():
-        table.add_row(str(k), _value_cell(str(k), v))
+        table.add_row(str(k), _value_cell(str(k), v, data))
     return table
 
 
-def _value_cell(key: str, v: Any) -> RenderableType:
+def _value_cell(key: str, v: Any, row: dict[str, Any] | None = None) -> RenderableType:
     # code-bearing values (a tool's ``code``/``command``/…) render with syntax
     # highlighting in their value cell — the row layout (and column alignment)
     # is unchanged; everything else stays plain text.
     if isinstance(v, str):
         lexer = _code_lexer(key, v)
         if lexer is not None:
+            # a notebook cell's source highlights by its declared type: markdown
+            # for a markdown cell, python (the `source`/`new_source` default)
+            # otherwise.
+            if (
+                key.lower() in {"source", "new_source"}
+                and row is not None
+                and row.get("cell_type") == "markdown"
+            ):
+                lexer = "markdown"
             return _code_block(v, lexer)
     return Text(_format_value(v))
 

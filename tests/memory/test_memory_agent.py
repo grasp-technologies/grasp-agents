@@ -102,7 +102,10 @@ class TestSystemPromptIntegration:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(state=_State())
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")
-        assert prompt is None
+        # No ctx.memory → the memory block drops. (enable_memory still attaches
+        # the file toolkit, so other sections — e.g. untrusted-content — may be
+        # present; only the memory block itself must be absent.)
+        assert "# Memory" not in (prompt or "")
 
     @pytest.mark.asyncio
     async def test_provider_renders_memory_block(self) -> None:
@@ -225,8 +228,10 @@ class TestAutoMemoryInstructions:
         agent = _make_agent()
         ctx: RunContext[_State] = RunContext(state=_State())
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")
-        # No ctx.memory → memory section drops entirely.
-        assert prompt is None
+        # No ctx.memory → the memory section drops. (enable_memory still attaches
+        # the file toolkit, so the prompt may carry other sections; only the
+        # memory section itself must be absent.)
+        assert "# Memory" not in (prompt or "")
 
     @pytest.mark.asyncio
     async def test_empty_provider_emits_instructions_only(self) -> None:

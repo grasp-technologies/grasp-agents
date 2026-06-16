@@ -5,6 +5,7 @@ MCP-client construction, and ``None`` input handling.
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, cast
 
@@ -493,25 +494,40 @@ class TestMcpClientsCtor:
         assert "echo" in agent.tools
         assert "nested" not in agent.tools
 
-    def test_collision_with_native_tool_raises_at_construction(self) -> None:
-        with pytest.raises(ValueError, match="duplicate tool names"):
-            LLMAgent[str, str, None](
+    def test_explicit_tool_wins_over_mcp_collision(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # MCP tools are auto-sourced (the server names them, not the user), so a
+        # clash with an explicit tool is resolved in the explicit tool's favour:
+        # the MCP one is skipped with a warning, never a construction error.
+        native = EchoTool()
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.llm_agent"):
+            agent = LLMAgent[str, str, None](
                 name="t",
                 llm=MockLLM(responses_queue=[]),
-                tools=[EchoTool()],
+                tools=[native],
                 mcp_clients=[cast("Any", _StubMCPClient([EchoTool()]))],
                 stream_llm=True,
                 env_info=False,
             )
+        assert agent.tools["echo"] is native  # the explicit instance wins
+        assert "shadows an existing tool" in caplog.text
 
-    def test_cross_client_collision_raises_at_construction(self) -> None:
-        with pytest.raises(ValueError, match="duplicate tool names"):
-            _agent_with_mcp(
+    def test_cross_client_collision_keeps_first(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Two auto-sourced MCP tools with the same name: the first registered
+        # wins, the rest are skipped with a warning (no construction error).
+        first = EchoTool()
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.llm_agent"):
+            agent = _agent_with_mcp(
                 [
-                    cast("Any", _StubMCPClient([EchoTool()])),
+                    cast("Any", _StubMCPClient([first])),
                     cast("Any", _StubMCPClient([EchoTool()])),
                 ]
             )
+        assert agent.tools["echo"] is first
+        assert "shadows an existing tool" in caplog.text
 
 
 # ---------- Item 7: InT=None produces no junk input message ----------

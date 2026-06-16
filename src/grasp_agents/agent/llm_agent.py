@@ -200,11 +200,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
-        # Distinguish ``tools=None`` (structured-output mode, no agentic
-        # loop) from ``tools=[]`` / ``tools=[...]`` (agentic mode). Used
-        # below to gate the default llm_output_schema and to scope the
-        # memory / skills tool auto-attach.
-        agentic_mode = tools is not None
         # Tools are stateless: per-agent state (file-edit ledger, shell session,
         # background tasks, parent transcript / sibling tools) flows through the
         # ``AgentContext`` passed on each call, never stored on the instance. A
@@ -213,31 +208,33 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # caller's list.
         tools = list(tools or [])
 
-        if agentic_mode:
-            existing_names = {t.name for t in tools}
+        existing_names = {t.name for t in tools}
+        # Names the agent was *explicitly* given, captured before the
+        # capability-tool auto-attach below. A sub-agent (``AgentTool``)
+        # inherits only these, never the auto-attached skills/memory/MCP tools.
+        explicit_tool_names = frozenset(existing_names)
 
-            # Auto-attach the file toolkit when memory is on — memory
-            # authoring (read/edit topic files) and discovery (grep/glob
-            # the memdir) both route through it via ``ctx.file_backend``.
-            # The toolkit is stateless: backend / allowed_roots / read-state
-            # all live on the backend the host wires onto ``RunContext``.
-            if enable_memory:
-                from grasp_agents.tools import FileToolkit  # noqa: PLC0415
+        # Auto-attach the file toolkit when memory is on — memory
+        # authoring (read/edit topic files) and discovery (grep/glob
+        # the memdir) both route through it via ``ctx.file_backend``.
+        # The toolkit is stateless: backend / allowed_roots / read-state
+        # all live on the backend the host wires onto ``RunContext``.
+        if enable_memory:
+            from grasp_agents.tools import FileToolkit  # noqa: PLC0415
 
-                for tool in FileToolkit().tools():
-                    if tool.name not in existing_names:
-                        tools.append(tool)
-                        existing_names.add(tool.name)
+            self._merge_auto_attached(
+                tools, existing_names, FileToolkit().tools(), source="memory"
+            )
 
-            # Auto-attach the skill loader when the skills feature is on.
-            # ``list_skills`` stays opt-in — the catalog is already in the
-            # system prompt.
-            if enable_skills:
-                from grasp_agents.skills.tools import load_skill  # noqa: PLC0415
+        # Auto-attach the skill loader when the skills feature is on.
+        # ``list_skills`` stays opt-in — the catalog is already in the
+        # system prompt.
+        if enable_skills:
+            from grasp_agents.skills.tools import load_skill  # noqa: PLC0415
 
-                if load_skill.name not in existing_names:
-                    tools.append(load_skill)
-                    existing_names.add(load_skill.name)
+            self._merge_auto_attached(
+                tools, existing_names, [load_skill], source="skills"
+            )
 
         # Transcript (per-run message history)
         self._transcript = transcript or LLMAgentTranscript()
@@ -270,6 +267,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # surface "what the agent can do", with MCP last so its
         # ``cache_control`` checkpoint caches the whole system-prompt
         # prefix.
+        #
         # Untrusted-content boundary: when the agent has a tool whose output is
         # untrusted (file / exec / external), add the section telling the model
         # to treat ``<untrusted_content>``-tagged text as data, not instructions.
@@ -309,11 +307,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             make_mcp_instructions_section(lambda: self.mcp_clients)
         )
 
-        # Resolve MCP tools up front so the loop is built once with the full
-        # tool set and AgentLoop.__init__ validates native + MCP name-uniqueness
-        # together, in one place (no post-construction mutation). MCP clients
-        # must be ``connect()``-ed before construction — the natural order,
-        # since the client is async and the ctor is sync.
         mcp_tools: list[BaseTool[BaseModel, Any, CtxT]] = []
         for item in mcp_clients or []:
             if isinstance(item, _MCPClientSpec):
@@ -325,6 +318,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # once so its server instructions aren't rendered twice.
             if not any(mcp_client is c for c in self.mcp_clients):
                 self.mcp_clients.append(mcp_client)
+        # MCP tools are auto-sourced (the server names them, not the user), so
+        # they yield to explicit tools too — a clash is skipped, not an error.
+        self._merge_auto_attached(tools, existing_names, mcp_tools, source="MCP")
 
         # Agent loop
 
@@ -338,6 +334,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                 "final_answer_as_tool_call is True."
             )
 
+        agentic_mode = bool(tools)
         self._used_default_llm_output_schema = False
         if (
             llm_output_schema is None
@@ -352,7 +349,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             agent_name=self.name,
             llm=llm,
-            tools=[*tools, *mcp_tools],
+            tools=tools,
             transcript=self.transcript,
             ctx=self._ctx,
             llm_output_schema=llm_output_schema,
@@ -365,6 +362,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             stream_llm=stream_llm,
             path=path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            explicit_tool_names=explicit_tool_names,
         )
 
         # Session persistence
@@ -393,6 +391,36 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # The loop and its tools are built after super().__init__, so the
         # session set there hasn't reached them yet — cascade it now.
         self._propagate_to_children()
+
+    def _merge_auto_attached(
+        self,
+        tools: list[BaseTool[Any, Any, CtxT]],
+        existing_names: set[str],
+        candidates: list[BaseTool[Any, Any, CtxT]],
+        *,
+        source: str,
+    ) -> None:
+        """
+        Append framework-auto-attached tools, dropping any whose name an
+        explicit (or earlier auto-attached) tool already holds.
+
+        Explicit ``tools=`` are authoritative: a memory / skills / MCP tool
+        that would shadow one is skipped with a warning rather than colliding.
+        Only duplicates *within* the explicit ``tools=`` list reach
+        :class:`AgentLoop`'s hard uniqueness guard.
+        """
+        for tool in candidates:
+            if tool.name in existing_names:
+                logger.warning(
+                    "Agent %r: auto-attached %s tool %r shadows an existing "
+                    "tool of the same name and was skipped.",
+                    self.name,
+                    source,
+                    tool.name,
+                )
+                continue
+            tools.append(tool)
+            existing_names.add(tool.name)
 
     def _filter_mcp_tools(
         self,

@@ -27,6 +27,15 @@ If a skill lists `<allowed-tools>`, treat that as a strong hint about
 which tools it expects you to use, but not a hard ceiling — the actual
 permission gate is enforced by the runtime, not by the skill.
 
+## When the user invokes a skill
+
+A user message wrapped in
+`<system-reminder note="user invoked skill <name>">…</system-reminder>` means the user
+ran that skill themselves (e.g. as a slash-command). The skill's full body —
+with any arguments already substituted — is inside the tags, so you do **not**
+need to `load_skill` it. Treat it as the user's explicit request to apply that
+skill on this turn, and follow the body inside the tags.
+
 ## Authoring skills
 
 Skills are **read-only** within a session. The catalog is loaded once at

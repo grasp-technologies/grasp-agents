@@ -21,7 +21,7 @@ from .injection import (
     skills_system_prompt_section,
 )
 from .loader import discover_skills, load_skill_md, parse_skill_md
-from .registry import SkillRegistry
+from .registry import SkillRegistry, match_invocation_wrapper
 from .slash import (
     ParsedSlashCommand,
     parse_named_args,
@@ -68,6 +68,7 @@ __all__ = [
     "load_skill",
     "load_skill_md",
     "make_skills_section",
+    "match_invocation_wrapper",
     "parse_named_args",
     "parse_skill_md",
     "parse_slash_command",

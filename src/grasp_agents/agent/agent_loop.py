@@ -180,6 +180,9 @@ class AgentLoop[CtxT]:
         stream_llm: bool = True,
         path: list[str] | None = None,
         tracing_exclude_input_fields: set[str] | None = None,
+        # Names of the explicitly-passed tools (excludes auto-attached capability
+        # tools); exposed on the AgentContext so a sub-agent inherits only these.
+        explicit_tool_names: frozenset[str] = frozenset(),
     ) -> None:
         super().__init__()
 
@@ -262,6 +265,7 @@ class AgentLoop[CtxT]:
             agent_name=agent_name,
             path=path,
             max_background=max_background,
+            explicit_tool_names=explicit_tool_names,
         )
 
     @property

@@ -270,9 +270,6 @@ class EventConsole:
             if self.show_background:
                 self._on_tool_stream(event)
 
-        elif isinstance(event, ToolErrorEvent):
-            self._on_tool_error(event)
-
         elif isinstance(event, UserMessageEvent):
             text = extract_input_text(event.data)
             # Framework notices (task results, resume framing) always show and
@@ -303,8 +300,10 @@ class EventConsole:
             if isinstance(item, ReasoningItem):
                 self._end_text()
                 self._streamed_reasoning = True
-                if self.show_thinking:
-                    self._start_thinking()
+                # The "thinking" header is opened lazily on the first reasoning
+                # delta (see _write_thinking), so a reasoning item that streams
+                # no summary text shows nothing — matching the TUI, which only
+                # creates its thinking widget on a delta.
             elif isinstance(item, FunctionToolCallItem):
                 self._end_text()
                 self._end_thinking()

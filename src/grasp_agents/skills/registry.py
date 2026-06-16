@@ -25,9 +25,28 @@ logger = logging.getLogger(__name__)
 type SkillSelector = Selector[Skill]
 """Relevance selector for the skills catalog. See :class:`Selector`."""
 
-INVOCATION_WRAPPER = "[SYSTEM: user invoked skill {name}]"
+# A user-invoked skill (slash-command) turn is wrapped so the agent — and any
+# UI — can tell it apart from a raw user message. The whole message is enclosed:
+#   <system-reminder note="user invoked skill <name>">\n<body>\n</system-reminder>
+INVOCATION_OPEN = '<system-reminder note="user invoked skill {name}">'
+INVOCATION_CLOSE = "</system-reminder>"
+
+_INVOCATION_RE = re.compile(
+    r'^<system-reminder note="user invoked skill (?P<name>[^"]+)">'
+)
 
 _NAMED_ARG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def match_invocation_wrapper(text: str) -> str | None:
+    """
+    The skill name if ``text`` is a skill-invocation message, else ``None``.
+
+    Inverse of :meth:`SkillRegistry.render_invocation` (``wrap=True``): lets a UI
+    tell a slash-command turn from a raw user message and render it accordingly.
+    """
+    match = _INVOCATION_RE.match(text.lstrip())
+    return match.group("name") if match else None
 
 
 class SkillRegistry:
@@ -200,17 +219,24 @@ class SkillRegistry:
 
         Substitutes ``$ARGUMENTS`` (full args string) and ``$ARG_NAME``
         (named arguments, when ``args`` is a mapping). When ``wrap`` is true
-        (default), prepends ``[SYSTEM: user invoked skill <name>]`` so the
+        (default), encloses the whole message in
+        ``<system-reminder note="user invoked skill <name>">…</system-reminder>`` so the
         agent can distinguish a slash-command turn from a raw user message.
         """
         skill = self.get(name)
-        body = _substitute_args(skill.body, args)
+        body = substitute_args(skill.body, args)
         if not wrap:
             return body
-        return f"{INVOCATION_WRAPPER.format(name=name)}\n\n{body}"
+        return f"{INVOCATION_OPEN.format(name=name)}\n{body}\n{INVOCATION_CLOSE}"
 
 
-def _substitute_args(body: str, args: str | Mapping[str, str] | None) -> str:
+def substitute_args(body: str, args: str | Mapping[str, str] | None) -> str:
+    """
+    Substitute ``$ARGUMENTS`` / ``$ARG_NAME`` placeholders in a skill body.
+
+    ``args=None`` (a model-invoked load, with no arguments) resolves
+    ``$ARGUMENTS`` to empty rather than leaving the literal token.
+    """
     if args is None:
         full = ""
         named: Mapping[str, str] = {}

@@ -12,13 +12,15 @@ from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 from grasp_agents.utils.io import get_prompt
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable
+    from collections.abc import AsyncIterator, Awaitable, Sequence
     from pathlib import Path
 
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.agent.llm_agent import LLMAgent
     from grasp_agents.context.prompt_builder import InputAttachment, SystemPromptSection
     from grasp_agents.llm.llm import LLM
+    from grasp_agents.mcp.client import MCPClient
+    from grasp_agents.mcp.spec import MCPClientSpec
     from grasp_agents.run_context import RunContext
 
 
@@ -96,6 +98,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         enable_memory: bool = False,
         enable_skills: bool = False,
         time_aware: bool | InputAttachment = False,
+        mcp_clients: Sequence[MCPClient | MCPClientSpec] | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -122,6 +125,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         self._enable_memory = enable_memory
         self._enable_skills = enable_skills
         self._time_aware = time_aware
+        self._mcp_clients = mcp_clients
 
         self.stream_llm = stream_llm
 
@@ -137,9 +141,19 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         return CheckpointKind.AGENT
 
     def _resolve_tools(
-        self, parent_tools: list[BaseTool[Any, Any, CtxT]]
+        self,
+        parent_tools: list[BaseTool[Any, Any, CtxT]],
+        parent_explicit_names: frozenset[str],
     ) -> list[BaseTool[Any, Any, CtxT]] | None:
-        """Build the child's tool list, excluding AgentTool instances."""
+        """
+        Build the child's tool list.
+
+        Inherits only the parent's *explicitly-passed* tools, never its
+        framework-auto-attached capability tools (skills / memory / MCP /
+        final-answer): the child sources those from its own feature flags, so
+        inheriting them would duplicate-add them and omit their prompt section.
+        ``AgentTool``s are excluded too (they would recurse).
+        """
         seen: set[str] = set()
         result: list[BaseTool[Any, Any, CtxT]] = []
 
@@ -148,10 +162,13 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
             result.append(t)
             seen.add(t.name)
 
-        # Inherited tools (excluding AgentTools to prevent recursion)
         if self.inherit_tools:
             for t in parent_tools:
-                if not isinstance(t, AgentTool) and t.name not in seen:
+                if (
+                    t.name in parent_explicit_names
+                    and not isinstance(t, AgentTool)
+                    and t.name not in seen
+                ):
                     result.append(t)
 
         return result or None
@@ -202,6 +219,9 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
 
         parent_transcript = agent_ctx.transcript if agent_ctx is not None else None
         parent_tools = list(agent_ctx.tools.values()) if agent_ctx is not None else []
+        parent_explicit_names: frozenset[str] = (
+            agent_ctx.explicit_tool_names if agent_ctx is not None else frozenset()
+        )
 
         if inp is not None:
             sys_prompt, in_prompt = await self._build_prompts(
@@ -214,7 +234,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
             name=self.name,
             ctx=ctx,
             llm=self._llm,
-            tools=self._resolve_tools(parent_tools),
+            tools=self._resolve_tools(parent_tools, parent_explicit_names),
             sys_prompt=sys_prompt,
             max_turns=self._max_turns,
             max_retries=self._max_retries,
@@ -224,6 +244,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
             enable_skills=self._enable_skills,
             time_aware=self._time_aware,
             stream_llm=self.stream_llm,
+            mcp_clients=self._mcp_clients,
         )
         # Adopt the tool's tracing settings (excludes + enabled, themselves
         # inherited from the host) and stamp the per-call path lineage.

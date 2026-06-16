@@ -8,6 +8,7 @@ import pytest
 from rich.console import Group
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.syntax import Syntax
 from rich.text import Text
 
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
@@ -38,6 +39,7 @@ from grasp_agents.types.response import (
 )
 from grasp_agents.ui._event_render import (
     PALETTE,
+    _value_cell,
     render_event,
     render_image,
     render_tool_stream,
@@ -67,6 +69,21 @@ def test_errored_tool_result_has_red_border() -> None:
     panel = render_event(ok)
     assert isinstance(panel, Panel)
     assert panel.border_style == PALETTE["border_tool_result"]
+
+
+def test_notebook_edit_source_highlighting() -> None:
+    # NotebookEdit's `new_source` arg renders as a syntax-highlighted code block,
+    # keyed to the cell type: python for a code cell, markdown for a markdown one.
+    code = "import numpy as np\narr = np.arange(10)\nprint(arr.mean())"
+    md = "# Title\n\nSome **bold** text\n\n- a\n- b\n- c"
+    code_cell = _value_cell("new_source", code, {"cell_type": "code"})
+    md_cell = _value_cell("new_source", md, {"cell_type": "markdown"})
+    assert isinstance(code_cell, Syntax)
+    assert code_cell.lexer is not None
+    assert code_cell.lexer.name == "Python"
+    assert isinstance(md_cell, Syntax)
+    assert md_cell.lexer is not None
+    assert md_cell.lexer.name == "Markdown"
 
 
 def test_turn_start_is_rule() -> None:
@@ -229,9 +246,51 @@ def test_reasoning_is_panel() -> None:
     assert isinstance(render_event(ev), Panel)
 
 
-def test_tool_error_is_panel() -> None:
+def test_empty_reasoning_item_not_rendered() -> None:
+    # A finalized reasoning item with no summary text carries nothing to show
+    # (e.g. low effort, or encrypted server-side reasoning) — it must not render
+    # a stray "thinking…" box.
+    ev = ReasoningItemEvent(
+        data=ReasoningItem(summary_parts=[], status="completed"), source="agent"
+    )
+    assert render_event(ev) is None
+
+
+def test_skill_invocation_user_message_shows_raw_content() -> None:
+    from rich.console import Console
+
+    from grasp_agents.types.events import UserMessageEvent
+    from grasp_agents.types.items import InputMessageItem
+
+    raw = (
+        '<system-reminder note="user invoked skill proofread">\n'
+        "Proofread this sentence please.\n"
+        "</system-reminder>"
+    )
+    ev = UserMessageEvent(
+        data=InputMessageItem.from_text(raw, role="user"),
+        source=None,
+        destination="agent",
+    )
+    panel = render_event(ev)
+    assert isinstance(panel, Panel)
+    # distinct "skill" frame, carrying the skill name
+    assert "skill" in str(panel.title)
+    assert "/proofread" in str(panel.title)
+    # the body is the raw text the agent sees — wrapper tags included, verbatim
+    console = Console(width=80, record=True)
+    console.print(panel)
+    rendered = console.export_text()
+    assert "user invoked skill proofread" in rendered
+    assert "Proofread this sentence please." in rendered
+
+
+def test_tool_error_event_has_no_display() -> None:
+    # A tool failure renders only via its ToolOutputItemEvent(is_error=True)
+    # (see test_errored_tool_result_has_red_border). The raw ToolErrorEvent is
+    # the tool's terminal event and would only duplicate it, so it renders None.
     ev = ToolErrorEvent(data=ToolErrorInfo(tool_name="t", error="boom"))
-    assert isinstance(render_event(ev), Panel)
+    assert render_event(ev) is None
 
 
 def test_generation_end_usage_is_text() -> None:

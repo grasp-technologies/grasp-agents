@@ -69,6 +69,11 @@ class AgentContext:
     # ``destination`` on a tool's stream events, so a UI routes their (possibly
     # backgrounded / bubbled) output to the right agent's pane.
     agent_name: str = ""
+    # Names of the tools the owning agent was *explicitly* given (its ``tools=``
+    # arg), as opposed to framework-auto-attached capability tools (skills /
+    # memory / MCP / final-answer). A sub-agent (``AgentTool``) inherits only
+    # these — capability tools come from the child's own feature flags.
+    explicit_tool_names: frozenset[str] = frozenset()
     # Separate persistent kernel for ``RunPython`` — its own Python session, not
     # shared with the notebook kernel. ``None`` (the default) → each call opens a
     # throwaway kernel; ``AgentLoop`` wires a persistent one per loop.
@@ -87,6 +92,7 @@ class AgentContext:
         nb_exec_context_id: str | None = None,
         path: list[str] | None = None,
         max_background: int = 16,
+        explicit_tool_names: frozenset[str] = frozenset(),
     ) -> AgentContext:
         """
         Build an ``AgentContext`` with fresh agent-scope state.
@@ -131,6 +137,7 @@ class AgentContext:
             file_edit_state=file_edit_state or _FileEditSessionState(),
             bg_tasks=bg_tasks,
             agent_name=agent_name,
+            explicit_tool_names=explicit_tool_names,
             session_holder=BashSessionHolder(),
             nb_kernel_holder=KernelHolder(context_id=nb_exec_context_id),
             ipy_kernel_holder=KernelHolder(context_id=ipy_exec_context_id),

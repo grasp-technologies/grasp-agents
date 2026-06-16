@@ -57,12 +57,16 @@ Let me research that for you.
  claude-sonnet-4-5 · 1,500 in · 900 cached · 220 out · 120 thinking · $0.0032  Σ
                                                                          $0.0142
 
+╭─ coordinator ← publish ──────────────────────────────╮
+│                                                      │
+│  tool_name   publish                                 │
+│  ──────────────────────────────────────────────────  │
+│  error       Authentication failed: invalid API key  │
+│  ──────────────────────────────────────────────────  │
+│  timed_out   False                                   │
+│                                                      │
+╰──────────────────────────────────────────────────────╯
 
-╭─ publish ──────────────────────────────────╮
-│                                            │
-│  ✗ Authentication failed: invalid API key  │
-│                                            │
-╰────────────────────────────────────────────╯
 ───────────────────────────── coordinator · turn 3 ─────────────────────────────
 
 Error: Connection reset by peer

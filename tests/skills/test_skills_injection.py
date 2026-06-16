@@ -215,17 +215,17 @@ class TestMakeSkillsSection:
         registry = None if skills is None else SkillRegistry(skills)
         return RunContext[Any](skills=registry)
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_no_skills_attr_returns_none(self) -> None:
         result = await _run_section(make_skills_section(), self._ctx())
         assert result is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_empty_registry_returns_none(self) -> None:
         result = await _run_section(make_skills_section(), self._ctx([]))
         assert result is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_all_disabled_returns_none(self) -> None:
         result = await _run_section(
             make_skills_section(),
@@ -238,7 +238,7 @@ class TestMakeSkillsSection:
         )
         assert result is None
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_visible_skill_renders_both_blocks(self) -> None:
         result = await _run_section(
             make_skills_section(),
@@ -254,7 +254,7 @@ class TestMakeSkillsSection:
         # Order: instructions heading first, catalog payload second.
         assert result.index("# Skills") < result.index("<name>alpha</name>")
 
-    @pytest.mark.anyio
+    @pytest.mark.asyncio
     async def test_section_name_overridable(self) -> None:
         section = make_skills_section(section_name="my_skills")
         assert section.name == "my_skills"
