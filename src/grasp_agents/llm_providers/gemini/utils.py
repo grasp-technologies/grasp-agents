@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,3 +19,10 @@ def validate_response(response: GeminiResponse) -> None:
             f"Gemini response {response.response_id} has no content "
             f"(finish_reason={candidate.finish_reason})"
         )
+
+
+def encode_thought_signature(sig: bytes | str) -> str:
+    """Base64-encode a Gemini thought signature (no-op if already a string)."""
+    if isinstance(sig, bytes):  # type: ignore[unreachable]
+        return base64.b64encode(sig).decode("ascii")
+    return sig  # type: ignore[return-value]

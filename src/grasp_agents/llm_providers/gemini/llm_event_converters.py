@@ -22,13 +22,14 @@ from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.types.items import prefixed_id
 from grasp_agents.types.response import ResponseUsage
 
-from . import GeminiResponse, encode_thought_signature
+from . import GeminiResponse
 from .provider_output_to_response import (
     attach_grounding_annotations,
     extract_url_context_data,
     extract_web_search_data,
     map_finish_reason,
 )
+from .utils import encode_thought_signature
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

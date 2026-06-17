@@ -73,9 +73,4 @@ from google.genai.types import (
     ToolConfig as GeminiToolConfig,
 )
 
-
-def encode_thought_signature(sig: bytes | str) -> str:
-    """Base64-encode a Gemini thought signature (no-op if already a string)."""
-    if isinstance(sig, bytes):  # type: ignore[unreachable]
-        return base64.b64encode(sig).decode("ascii")
-    return sig  # type: ignore[return-value]
+from .gemini_llm import GeminiLLM, GeminiLLMSettings

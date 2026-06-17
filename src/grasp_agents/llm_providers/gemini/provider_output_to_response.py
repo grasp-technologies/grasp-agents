@@ -48,7 +48,7 @@ from grasp_agents.types.response import (
     ResponseUsage,
 )
 
-from . import encode_thought_signature
+from .utils import encode_thought_signature
 
 
 @dataclass
