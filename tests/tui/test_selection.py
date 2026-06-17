@@ -19,7 +19,7 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.events import MouseMove
 
-from grasp_agents.ui.app import GRASP_DARK, _SelectableStatic
+from grasp_agents.ui.app import GRASP_DARK, SelectableStatic
 
 _PANEL_TEXT = "ALPHA BETA GAMMA DELTA"
 
@@ -27,8 +27,8 @@ _PANEL_TEXT = "ALPHA BETA GAMMA DELTA"
 class _SelApp(App[None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield _SelectableStatic(Panel(_PANEL_TEXT, title="tool"), id="p")
-            yield _SelectableStatic(Markdown("hello world of markdown text"), id="m")
+            yield SelectableStatic(Panel(_PANEL_TEXT, title="tool"), id="p")
+            yield SelectableStatic(Markdown("hello world of markdown text"), id="m")
 
     def on_mount(self) -> None:
         self.register_theme(GRASP_DARK)
@@ -49,7 +49,7 @@ async def test_panel_click_resolves_to_a_content_offset() -> None:
     app = _SelApp()
     async with app.run_test(size=(60, 16)) as pilot:
         await pilot.pause()
-        p = app.query_one("#p", _SelectableStatic)
+        p = app.query_one("#p", SelectableStatic)
         widget, offset = app.screen.get_widget_and_offset_at(5, 1)
         assert widget is p, widget
         assert offset is not None, offset
@@ -60,7 +60,7 @@ async def test_panel_partial_selection_extracts_substring() -> None:
     app = _SelApp()
     async with app.run_test(size=(60, 16)) as pilot:
         await pilot.pause()
-        p = app.query_one("#p", _SelectableStatic)
+        p = app.query_one("#p", SelectableStatic)
         await _drag(pilot, p, y=1, x0=4, x1=9)
         text = (app.screen.get_selected_text() or "").strip()
         # a few characters of the panel body — NOT the whole panel, NOT empty
@@ -74,7 +74,7 @@ async def test_selection_highlight_visible_and_text_readable() -> None:
     app = _SelApp()
     async with app.run_test(size=(60, 16)) as pilot:
         await pilot.pause()
-        p = app.query_one("#p", _SelectableStatic)
+        p = app.query_one("#p", SelectableStatic)
         await _drag(pilot, p, y=1, x0=4, x1=12)
         sel_color = app.screen.get_component_rich_style("screen--selection").bgcolor
         row = list(p.render_line(1))
@@ -98,6 +98,6 @@ async def test_markdown_is_selectable() -> None:
     app = _SelApp()
     async with app.run_test(size=(60, 16)) as pilot:
         await pilot.pause()
-        m = app.query_one("#m", _SelectableStatic)
+        m = app.query_one("#m", SelectableStatic)
         await _drag(pilot, m, y=0, x0=0, x1=10)
         assert (app.screen.get_selected_text() or "").strip()

@@ -1,5 +1,5 @@
 """
-Tests for the auto-research demo harness (``examples/autoresearch.py``):
+Tests for the auto-research demo harness (``examples/tui/autoresearch.py``):
 the stratified split, the hidden-holdout scoring protocol, and the
 experiment log carried in session state.
 """
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.examples.autoresearch import (
+from grasp_agents.examples.tui.autoresearch import (
     ExperimentRecord,
     ResearchState,
     accuracy,

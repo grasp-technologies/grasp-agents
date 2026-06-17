@@ -47,12 +47,45 @@ run_tui_interactive(agent.run_stream, main_agent=agent.name)
 `run_tui*` start the app's own event loop, so call them at module top level (not
 inside `asyncio.run`).
 
-Keys: `q` quit · `f` toggle follow-latest · click a tab (or `←`/`→`) to focus an
-agent · `ctrl+p` command palette (theme switch).
+Keys: `q` quit · `f` toggle follow-latest · `esc` interrupt the running turn ·
+click a tab (or `←`/`→`) to focus an agent · `ctrl+p` command palette (theme
+switch).
+
+## Tool approvals
+
+Wire a `TuiApprovalStore` onto the run context and register the approval gate;
+the app then pops a small dialog whenever a gated tool call needs a decision —
+**once**, **session** (skip re-prompting for this tool), **always**, or **deny**
+(`esc` denies). With no dialog open, `esc` interrupts the whole turn instead.
+
+Pass `persist_path` to keep **always** decisions across restarts — they're
+written to that JSON file and reloaded on next launch (the store is otherwise
+in-memory).
+
+```python
+from pathlib import Path
+
+from grasp_agents import RunContext
+from grasp_agents.agent.approval_store import build_store_approval
+from grasp_agents.ui import TuiApprovalStore, run_tui_interactive
+
+store = TuiApprovalStore(persist_path=Path(".grasp/approvals.json"))
+ctx = RunContext(approval_store=store, session_key="user-1")
+agent = LLMAgent(name="assistant", ctx=ctx, llm=llm, tools=[...])
+agent.add_before_tool_hook(build_store_approval(tool_names={"delete_record"}))
+run_tui_interactive(agent.run_stream, main_agent=agent.name, ctx=ctx)
+```
+
+Runnable demo (`grasp_agents.examples.tui.approval_copilot`): an ops assistant
+whose `delete_record` / `update_record` calls require approval.
+
+```bash
+python -m grasp_agents.examples.tui.approval_copilot   # needs OPENAI_API_KEY
+```
 
 ## Real demo: data-analysis copilot (LLM + sandbox)
 
-A non-trivial, runnable example (`grasp_agents.examples.data_copilot`): an
+A non-trivial, runnable example (`grasp_agents.examples.tui.data_copilot`): an
 *analyst* agent that delegates to two **sandboxed** specialists —
 `data_engineer` (generates/inspects data with numpy) and `viz_specialist`
 (computes stats and renders matplotlib charts shown inline) — each running
@@ -60,7 +93,7 @@ Python in a confined local sandbox, sharing one workspace.
 
 ```bash
 # needs OPENAI_API_KEY in .env, the `notebook-exec` extra, and the `srt` CLI
-python -m grasp_agents.examples.data_copilot
+python -m grasp_agents.examples.tui.data_copilot
 ```
 
 Type e.g. *"Generate 120 daily sales values and plot the 7-day moving

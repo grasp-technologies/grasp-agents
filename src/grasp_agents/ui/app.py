@@ -17,29 +17,18 @@ Run the demo::
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
-import importlib
-import json
-import os
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.align import Align
-from rich.segment import Segment
-from rich.style import Style
-from rich.table import Table
 from rich.text import Text
-from textual import events, on, work
+from textual import on, work
 from textual.app import App, ComposeResult
-from textual.binding import Binding, BindingType
-from textual.containers import Container, Horizontal, VerticalScroll
+from textual.binding import BindingType
+from textual.containers import Horizontal, VerticalScroll
 from textual.css.query import NoMatches
-from textual.fuzzy import Matcher
-from textual.message import Message
-from textual.screen import ModalScreen
-from textual.strip import Strip
-from textual.theme import Theme
 from textual.widgets import (
     ContentSwitcher,
     Footer,
@@ -50,8 +39,7 @@ from textual.widgets import (
     Tabs,
     TextArea,
 )
-from textual.widgets.option_list import Option
-from textual.worker import Worker
+from textual.worker import Worker, WorkerState
 
 from grasp_agents.skills import parse_slash_command
 from grasp_agents.types.content import InputImage
@@ -82,9 +70,9 @@ from grasp_agents.types.llm_events import (
     ResponseRetrying,
 )
 
+from ._approval import ApprovalScreen, TuiApprovalStore
 from ._event_render import (
     event_images,
-    image_to_pil,
     render_event,
     render_image,
     render_input_image,
@@ -95,16 +83,29 @@ from ._event_render import (
     set_markup_theme,
     usage_line,
 )
+from ._images import ImageZoomScreen, prime_image_protocol
+from ._theme import (
+    DEFAULT_THEME,
+    GRASP_DARK,
+    GRASP_LIGHT,
+    load_saved_theme,
+    save_theme,
+)
+from ._widgets import (
+    PromptArea,
+    SelectableStatic,
+    SkillPalette,
+    ZoomableImage,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
     from rich.console import RenderableType
-    from textual.selection import Selection
+    from textual.theme import Theme
     from textual.widget import Widget
 
     from grasp_agents.run_context import RunContext
-    from grasp_agents.skills import Skill
 
 # Events only an LLM-backed agent emits. A source that emits one of these owns
 # an agent pane; tools (RunPython, Bash, …) emit only tool/exec output, so they
@@ -127,115 +128,6 @@ _GLYPH: dict[str, str] = {
     "idle": "○",
 }
 
-GRASP_DARK = Theme(
-    name="grasp-dark",
-    primary="#AAACFA",
-    secondary="#BEE4F7",
-    accent="#BFB53B",
-    success="#3BBF69",
-    warning="#BFB53B",
-    error="#FCA9A9",
-    background="#0F0F0F",
-    surface="#1A1A1A",
-    panel="#222222",
-    dark=True,
-)
-GRASP_LIGHT = Theme(
-    name="grasp-light",
-    primary="#5B5FD6",
-    secondary="#2F7FB0",
-    accent="#8A7F10",
-    success="#1F8F4D",
-    warning="#8A7F10",
-    error="#C0392B",
-    background="#FAFAFA",
-    surface="#EEEEEE",
-    panel="#E2E2E2",
-    dark=False,
-)
-
-_DEFAULT_THEME = "catppuccin-macchiato"
-
-
-def _theme_config_path() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "grasp-agents" / "tui.json"
-
-
-def _load_saved_theme() -> str | None:
-    """The theme the user last selected, persisted across launches."""
-    try:
-        data: Any = json.loads(_theme_config_path().read_text())
-        name = data.get("theme")
-    except Exception:
-        return None
-    return name if isinstance(name, str) else None
-
-
-def _save_theme(name: str) -> None:
-    path = _theme_config_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"theme": name}))
-    except Exception:
-        pass
-
-
-def _prime_cell_size() -> None:
-    # textual-image's halfcell/sixel/unicode renderers call get_cell_size() at
-    # RENDER time; its `\x1b[16t` probe + stdin read then fights Textual for the
-    # terminal once the app owns the screen → blank/garbled images (and stolen
-    # keystrokes). The result is cached after the first call, so prime it now,
-    # while the terminal is still in normal mode — the render path then returns
-    # the cached value without ever probing. Best-effort.
-    try:
-        from textual_image._terminal import get_cell_size  # noqa: PLC0415, PLC2701
-
-        get_cell_size()
-    except Exception:
-        pass
-
-
-def _prime_image_protocol() -> None:
-    # The zoom modal renders full-res via textual-image's terminal-graphics
-    # widget; its protocol + cell-size detection probes the terminal over stdin,
-    # which fights Textual once the app owns the screen. Run it now, while the
-    # terminal is still in normal mode — the results are cached for the modal.
-    try:
-        importlib.import_module("textual_image.widget")
-    except Exception:
-        pass
-    _prime_cell_size()
-
-
-if TYPE_CHECKING:
-
-    def _zoom_widget(src: InputImage | str) -> Widget: ...
-
-else:
-
-    def _zoom_widget(src):
-        # Full-resolution zoom view: textual-image's terminal-graphics Image
-        # widget, auto-detecting the terminal's protocol (TGP on Kitty/Ghostty,
-        # Sixel/unicode elsewhere). It lives on a dedicated, non-scrolling modal
-        # screen — the one place graphics protocols are reliable, since nothing
-        # scrolls the cells out from under them. Falls back to the inline
-        # symbol-art renderable when the dep or terminal can't do graphics.
-        pil = image_to_pil(src)
-        if pil is not None:
-            try:
-                from textual_image.widget import Image as TImage  # noqa: PLC0415
-
-                return TImage(pil, classes="zoom-img")
-            except Exception:
-                pass
-        rend = (
-            render_input_image(src)
-            if isinstance(src, InputImage)
-            else render_image(src)
-        )
-        return Static(rend, classes="zoom-img")
-
 
 def _slug(source: str) -> str:
     base = re.sub(r"[^0-9A-Za-z_-]+", "-", source).strip("-").lower() or "x"
@@ -252,285 +144,6 @@ def _pane_id(source: str) -> str:
 
 def _tab_id(source: str) -> str:
     return "tab-" + _slug(source)
-
-
-def _skill_row(name: str, description: str) -> RenderableType:
-    """One palette row: the skill name on the left, its description on the right."""
-    row = Table.grid(expand=True, padding=(0, 1))
-    row.add_column(justify="left", no_wrap=True)
-    row.add_column(justify="right", ratio=1, no_wrap=True)
-    row.add_row(
-        Text(f"/{name}", style="bold"),
-        Text(description, style="dim", overflow="ellipsis", no_wrap=True),
-    )
-    return row
-
-
-class _SkillPalette(OptionList):
-    """
-    Dropdown of available skills, shown when the prompt starts with ``/``.
-
-    Each row is the skill name (left) and its one-line description (right).
-    Typing after the ``/`` fuzzy-filters by name; ↑/↓ move the highlight and
-    Enter selects — all routed from the prompt, which keeps focus for typing
-    (so the palette never grabs it: ``can_focus = False``).
-    """
-
-    can_focus = False
-
-    def __init__(self, skills: list[Skill]) -> None:
-        super().__init__(id="skill-palette")
-        self._skills = skills
-        self.display = False
-
-    def filter_to(self, query: str) -> bool:
-        """Repopulate with skills matching ``query`` by name; True if any remain."""
-        self.clear_options()
-        if query:
-            matcher = Matcher(query)
-            skills = [s for s in self._skills if matcher.match(s.name) > 0]
-            skills.sort(key=lambda s: matcher.match(s.name), reverse=True)
-        else:
-            skills = list(self._skills)
-        self.add_options(
-            [Option(_skill_row(s.name, s.description), id=s.name) for s in skills]
-        )
-        if skills:
-            self.highlighted = 0
-        return bool(skills)
-
-    def highlighted_skill(self) -> str | None:
-        """Name (option id) of the highlighted skill, or ``None`` if empty."""
-        if self.highlighted is None:
-            return None
-        return self.get_option_at_index(self.highlighted).id
-
-
-class _PromptArea(TextArea):
-    """
-    Multi-line prompt: Enter submits; Shift+Enter or Ctrl+J insert a newline; the
-    box grows upward with its content (up to ``_MAX_ROWS``).
-
-    Telling Shift+Enter apart from Enter needs a terminal that speaks the Kitty
-    keyboard protocol (Ghostty, Kitty, WezTerm, iTerm2 ≥ 3.5); elsewhere it
-    arrives as a plain Enter (which submits), so Ctrl+J is the portable newline.
-    """
-
-    _MAX_ROWS = 10
-    # Keys that insert a newline instead of submitting. "shift+enter" = kitty
-    # keyboard protocol; "shift+\r"/"shift+\n" = legacy CSI-u; "ctrl+j" = LF,
-    # which works on every terminal. A terminal with no keyboard protocol sends a
-    # plain Enter for shift+enter — byte-identical to Enter, impossible to tell
-    # apart — so Ctrl+J is the portable newline there.
-    _NEWLINE_KEYS = frozenset({"shift+enter", "shift+\r", "shift+\n", "ctrl+j"})
-
-    # macOS-style word editing (TextArea already binds ctrl+←/→ and ctrl+w); the
-    # alt variants only reach us on terminals that emit them distinctly.
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("alt+left", "cursor_word_left", "Word left", show=False),
-        Binding("alt+right", "cursor_word_right", "Word right", show=False),
-        Binding("alt+backspace", "delete_word_left", "Delete word", show=False),
-    ]
-
-    class Submitted(Message):
-        def __init__(self, value: str) -> None:
-            self.value = value
-            super().__init__()
-
-    class SkillChosen(Message):
-        """Enter pressed while the skill palette is open — invoke this skill."""
-
-        def __init__(self, name: str) -> None:
-            self.name = name
-            super().__init__()
-
-    def on_mount(self) -> None:
-        self.sync_height()
-
-    def _skill_palette(self) -> _SkillPalette | None:
-        try:
-            return self.screen.query_one("#skill-palette", _SkillPalette)
-        except NoMatches:
-            return None
-
-    @on(TextArea.Changed)
-    def _resize_on_change(self) -> None:
-        # every edit (type, newline, paste, delete) posts Changed; resize here so
-        # all of them grow/shrink the box — overriding _on_paste/_on_key to resize
-        # would double-run TextArea's own handler (it's re-dispatched via the MRO)
-        self.sync_height()
-
-    async def _on_key(self, event: events.Key) -> None:
-        # When the skill palette is open, ↑/↓ move its highlight, Enter selects,
-        # and Esc closes it — the prompt keeps focus so other keys still type
-        # (filtering the list). Everything else falls through to normal editing.
-        palette = self._skill_palette()
-        if palette is not None and palette.display:
-            if event.key == "down":
-                event.prevent_default()
-                event.stop()
-                palette.action_cursor_down()
-                return
-            if event.key == "up":
-                event.prevent_default()
-                event.stop()
-                palette.action_cursor_up()
-                return
-            if event.key == "escape":
-                event.prevent_default()
-                event.stop()
-                palette.display = False
-                return
-            if event.key == "enter":
-                name = palette.highlighted_skill()
-                if name is not None:
-                    event.prevent_default()
-                    event.stop()
-                    self.post_message(self.SkillChosen(name))
-                    return
-        if event.key in self._NEWLINE_KEYS:
-            event.prevent_default()
-            event.stop()
-            self.insert("\n")
-            return
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.Submitted(self.text))
-            return
-        await super()._on_key(event)
-
-    def sync_height(self) -> None:
-        # sits at the bottom of the screen, so growing its height expands upward
-        self.styles.height = min(max(self.document.line_count, 1), self._MAX_ROWS)
-
-
-class _SelectableStatic(Static):
-    """
-    A Static whose Rich content — Panels, Tables, Markdown — supports
-    character-range selection and shows the selection highlight.
-
-    Rich renderables go through RichVisual, which neither tags content offsets
-    (so Textual's compositor can't map a click to a character — it would only
-    ever select the whole widget) nor paints the selection. We tag each segment
-    with its ``(char-x, y)`` content offset to enable range selection, then
-    paint a background-only highlight over the selected span — preserving each
-    segment's own foreground so the text stays readable (the theme's
-    ``screen--selection`` foreground is ``transparent``, which collapses to the
-    background if applied as text colour).
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        # cache of offset-tagged strips keyed by line; invalidated when the base
-        # strip object changes (Textual re-renders), so a selection drag — which
-        # leaves content unchanged — reuses them instead of re-tagging per frame
-        self._offset_cache: dict[int, tuple[Strip, Strip]] = {}
-
-    def render_line(self, y: int) -> Strip:
-        base = super().render_line(y)
-        cached = self._offset_cache.get(y)
-        if cached is not None and cached[0] is base:
-            strip = cached[1]
-        else:
-            strip = self._tag_offsets(base, y)
-            self._offset_cache[y] = (base, strip)
-        selection = self.text_selection
-        if selection is None:
-            return strip
-        span = selection.get_span(y)
-        if span is None:
-            return strip
-        start, end = span
-        if end == -1:
-            end = strip.cell_length
-        highlight = Style(
-            bgcolor=self.screen.get_component_rich_style("screen--selection").bgcolor
-        )
-        segments = [
-            *strip.crop(0, start),
-            # post_style (3rd arg) wins over each segment's own style, so the
-            # highlight background paints over the panel's background
-            *Segment.apply_style(list(strip.crop(start, end)), None, highlight),
-            *strip.crop(end, strip.cell_length),
-        ]
-        return Strip(segments, strip.cell_length)
-
-    def _tag_offsets(self, strip: Strip, y: int) -> Strip:
-        segments: list[Segment] = []
-        x = 0
-        for segment in strip:
-            offset = Style.from_meta({"offset": (x, y)})
-            style = segment.style + offset if segment.style is not None else offset
-            segments.append(Segment(segment.text, style, segment.control))
-            x += len(segment.text)
-        return Strip(segments, strip.cell_length)
-
-    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        if not self.size.height:
-            return None
-        # render_line keeps the text intact (highlight/offsets are style-only)
-        text = "\n".join(self.render_line(y).text for y in range(self.size.height))
-        return selection.extract(text), "\n"
-
-
-class _ZoomableImage(Static):
-    """Inline symbol-art image; clicking it requests a full-resolution zoom."""
-
-    class Zoom(Message):
-        def __init__(self, src: InputImage | str) -> None:
-            self.src = src
-            super().__init__()
-
-    def __init__(self, src: InputImage | str, renderable: RenderableType) -> None:
-        super().__init__(renderable, classes="ga-img")
-        self._src = src
-        self.tooltip = "Click to zoom"
-
-    def on_click(self) -> None:
-        self.post_message(self.Zoom(self._src))
-
-
-class _ImageZoomScreen(ModalScreen[None]):
-    """
-    Full-screen overlay showing one image at full terminal-graphics fidelity.
-
-    A dedicated, non-scrolling screen is the one place a graphics protocol (TGP
-    on Kitty/Ghostty) renders reliably — nothing scrolls the cells out from
-    under it. Dismissed with ``esc``/``q`` or a click anywhere.
-    """
-
-    # The image sizes itself (``width/height: auto``) inside a 90% box, so
-    # textual-image fits it to the box preserving aspect ratio. Pinning the
-    # widget to a fixed box instead would stretch the image to fill it.
-    CSS = """
-    _ImageZoomScreen { align: center middle; background: $background 85%; }
-    _ImageZoomScreen #zoom-box { width: 90%; height: 90%; align: center middle; }
-    _ImageZoomScreen .zoom-img { width: auto; height: auto; }
-    _ImageZoomScreen #zoom-hint {
-        dock: bottom; width: 1fr; text-align: center; color: $text-muted;
-    }
-    """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        ("escape", "dismiss_zoom", "Close"),
-        ("q", "dismiss_zoom", "Close"),
-    ]
-
-    def __init__(self, src: InputImage | str) -> None:
-        super().__init__()
-        self._src = src
-
-    def compose(self) -> ComposeResult:
-        with Container(id="zoom-box"):
-            yield _zoom_widget(self._src)
-        yield Static("esc / click to close", id="zoom-hint")
-
-    def on_click(self) -> None:
-        self.dismiss()
-
-    def action_dismiss_zoom(self) -> None:
-        self.dismiss()
 
 
 class GraspAgentsApp(App[None]):
@@ -561,6 +174,7 @@ class GraspAgentsApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         ("q", "quit", "Quit"),
         ("f", "toggle_follow", "Follow latest"),
+        ("escape", "interrupt", "Interrupt run"),
     ]
 
     def __init__(
@@ -572,7 +186,7 @@ class GraspAgentsApp(App[None]):
         ctx: RunContext[Any] | None = None,
     ) -> None:
         super().__init__()
-        _prime_image_protocol()
+        prime_image_protocol()
         self._ga_events = events
         self._ga_on_submit = on_submit
         self._ga_main = main_agent
@@ -582,8 +196,8 @@ class GraspAgentsApp(App[None]):
         # uses — never a separate copy that could drift from it.
         skills = ctx.skills if ctx is not None else None
         self._ga_skills = skills
-        self._ga_palette: _SkillPalette | None = (
-            _SkillPalette(skills.all)
+        self._ga_palette: SkillPalette | None = (
+            SkillPalette(skills.all)
             if on_submit is not None and skills is not None
             else None
         )
@@ -602,17 +216,26 @@ class GraspAgentsApp(App[None]):
         self._ga_parent: dict[str, str] = {}
         self._ga_follow = False
         self._ga_worker: Worker[None] | None = None
+        # the worker driving the current interactive turn; cancelled by Esc
+        self._ga_run_worker: Worker[None] | None = None
+        self._ga_running = False
+        # Approval gate (interactive mode): when the session ctx carries a
+        # TuiApprovalStore, a worker drains its pending queue and pops a dialog
+        # per gated tool call (see _consume_approvals). Any other ApprovalStore
+        # still works — it just won't drive the dialog.
+        store = ctx.approval_store if ctx is not None else None
+        self._ga_approval_store = store if isinstance(store, TuiApprovalStore) else None
         # Session-wide cost roll-up: each generation shows its own cost,
         # plus a running Σ total once more than one generation has cost.
         self._ga_total_cost = 0.0
         self._ga_gen_count = 0
         # live-streaming widgets per owner (LLM tokens / reasoning / tool output),
         # finalised by the matching item event; empty when the agent isn't streaming
-        self._ga_stream_msg: dict[str, _SelectableStatic] = {}
+        self._ga_stream_msg: dict[str, SelectableStatic] = {}
         self._ga_stream_msg_text: dict[str, str] = {}
-        self._ga_stream_think: dict[str, _SelectableStatic] = {}
+        self._ga_stream_think: dict[str, SelectableStatic] = {}
         self._ga_stream_think_text: dict[str, str] = {}
-        self._ga_stream_tool: dict[str, _SelectableStatic] = {}
+        self._ga_stream_tool: dict[str, SelectableStatic] = {}
         self._ga_stream_tool_text: dict[str, str] = {}
         # name of the tool currently owning each pane's live tool-output widget,
         # so a different tool's stream starts its own widget instead of writing
@@ -632,7 +255,7 @@ class GraspAgentsApp(App[None]):
                 yield self._ga_palette
             with Horizontal(id="prompt-bar"):
                 yield Static("❯", id="prompt-arrow")  # noqa: RUF001
-                yield _PromptArea(id="prompt")
+                yield PromptArea(id="prompt")
         yield Tabs(id="agents")
         yield Footer()
 
@@ -641,19 +264,21 @@ class GraspAgentsApp(App[None]):
         self.register_theme(GRASP_LIGHT)
         # restore the last-used theme (persisted across launches) instead of
         # resetting every time; default to Catppuccin Macchiato
-        saved = _load_saved_theme()
+        saved = load_saved_theme()
         self.theme = (
-            saved if saved and self.get_theme(saved) is not None else _DEFAULT_THEME
+            saved if saved and self.get_theme(saved) is not None else DEFAULT_THEME
         )
         self._apply_markup_theme()
         self.theme_changed_signal.subscribe(self, self._on_theme_changed)
         if self._ga_events is not None:
             self._ga_worker = self._consume()
         if self._ga_on_submit is not None:
-            self.query_one("#prompt", _PromptArea).focus()
+            self.query_one("#prompt", PromptArea).focus()
+        if self._ga_approval_store is not None:
+            self._consume_approvals()
 
     def _on_theme_changed(self, theme: Theme) -> None:
-        _save_theme(theme.name)  # persist the user's choice across launches
+        save_theme(theme.name)  # persist the user's choice across launches
         self._apply_markup_theme()
 
     def _apply_markup_theme(self) -> None:
@@ -700,8 +325,8 @@ class GraspAgentsApp(App[None]):
 
     # ── interactive input ──
 
-    @on(_PromptArea.Submitted)
-    def _on_prompt_submit(self, event: _PromptArea.Submitted) -> None:
+    @on(PromptArea.Submitted)
+    def _on_prompt_submit(self, event: PromptArea.Submitted) -> None:
         text = event.value.strip()
         if not text or self._ga_on_submit is None:
             return
@@ -714,8 +339,8 @@ class GraspAgentsApp(App[None]):
     def _on_prompt_changed(self, event: TextArea.Changed) -> None:
         self._update_palette(event.text_area.text)
 
-    @on(_PromptArea.SkillChosen)
-    def _on_skill_chosen(self, event: _PromptArea.SkillChosen) -> None:
+    @on(PromptArea.SkillChosen)
+    def _on_skill_chosen(self, event: PromptArea.SkillChosen) -> None:
         self._insert_skill(event.name)
 
     @on(OptionList.OptionSelected, "#skill-palette")
@@ -757,7 +382,7 @@ class GraspAgentsApp(App[None]):
         if self._ga_skills is None or self._ga_skills.get_optional(name) is None:
             self._hide_palette()
             return
-        prompt = self.query_one("#prompt", _PromptArea)
+        prompt = self.query_one("#prompt", PromptArea)
         prompt.text = f"/{name} "
         prompt.sync_height()
         self._hide_palette()
@@ -776,23 +401,56 @@ class GraspAgentsApp(App[None]):
         )
 
     def _dispatch(self, text: str) -> None:
-        prompt = self.query_one("#prompt", _PromptArea)
+        prompt = self.query_one("#prompt", PromptArea)
         prompt.text = ""
         prompt.sync_height()
         prompt.disabled = True
-        self._run_turn(text)
+        self._ga_run_worker = self._run_turn(text)
 
     @work
     async def _run_turn(self, text: str) -> None:
         if self._ga_on_submit is None:
             return
+        self._ga_running = True
+        stream = self._ga_on_submit(text)
         try:
-            async for event in self._ga_on_submit(text):
+            async for event in stream:
                 await self._feed(event)
         finally:
-            prompt = self.query_one("#prompt", _PromptArea)
-            prompt.disabled = False
-            prompt.focus()
+            self._ga_running = False
+            # Re-enable the prompt (suppress NoMatches: the app may be tearing
+            # down — e.g. quit pressed mid-run — and the widget already gone).
+            with contextlib.suppress(NoMatches):
+                prompt = self.query_one("#prompt", PromptArea)
+                prompt.disabled = False
+                prompt.focus()
+            # Close the agent generator so its per-run cleanup runs even when
+            # the turn was interrupted — Esc cancels this worker, raising
+            # CancelledError out of the loop above. Re-enable the prompt first,
+            # since aclose() may itself be cancelled during teardown.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(Exception):
+                    await aclose()
+
+    # ── approval gate ──
+
+    @work(exclusive=False)
+    async def _consume_approvals(self) -> None:
+        """Drain pending approvals, popping a dialog for each and resolving it."""
+        store = self._ga_approval_store
+        if store is None:
+            return
+        while True:
+            pending = await store.pending_events.get()
+            # Skip if it's no longer pending — already resolved by a prior
+            # session decision, timed out, or cleared when the run was
+            # interrupted (the gate hook denies the batch on cancellation).
+            still = await store.list_pending(pending.session_key)
+            if not any(p.call_id == pending.call_id for p in still):
+                continue
+            decision = await self.push_screen_wait(ApprovalScreen(pending))
+            await store.resolve(pending.session_key, pending.call_id, decision)
 
     async def _feed(self, event: Event[Any]) -> None:
         self._record_edge(event)
@@ -854,7 +512,7 @@ class GraspAgentsApp(App[None]):
                 # retry streams a fresh widget below it.
                 await self._discard_streamed_message(owner)
                 await pane.mount(
-                    _SelectableStatic(render_retry_notice(data), classes="ga-notice")
+                    SelectableStatic(render_retry_notice(data), classes="ga-notice")
                 )
                 if at_bottom:
                     pane.scroll_end(animate=False)
@@ -883,7 +541,7 @@ class GraspAgentsApp(App[None]):
         self._ga_stream_msg_text[owner] = text
         widget = self._ga_stream_msg.get(owner)
         if widget is None:
-            widget = _SelectableStatic(Text(text), classes="ga-msg")
+            widget = SelectableStatic(Text(text), classes="ga-msg")
             self._ga_stream_msg[owner] = widget
             self._ga_last_kind[owner] = "text"
             await pane.mount(widget)
@@ -900,7 +558,7 @@ class GraspAgentsApp(App[None]):
         rend = render_thinking_stream(text)
         widget = self._ga_stream_think.get(owner)
         if widget is None:
-            widget = _SelectableStatic(rend, classes="ga-msg")
+            widget = SelectableStatic(rend, classes="ga-msg")
             self._ga_stream_think[owner] = widget
             self._ga_last_kind[owner] = "box"
             await pane.mount(widget)
@@ -950,7 +608,7 @@ class GraspAgentsApp(App[None]):
         )
         widget = self._ga_stream_tool.get(owner)
         if widget is None:
-            widget = _SelectableStatic(rend, classes="ga-msg")
+            widget = SelectableStatic(rend, classes="ga-msg")
             self._ga_stream_tool[owner] = widget
             self._ga_stream_tool_name[owner] = tool
             self._ga_last_kind[owner] = "box"
@@ -1039,7 +697,7 @@ class GraspAgentsApp(App[None]):
             return
         self._ga_last_kind[owner] = "turn"
         await pane.mount(
-            _SelectableStatic(render_turn_rule(owner, turn), classes="ga-turn")
+            SelectableStatic(render_turn_rule(owner, turn), classes="ga-turn")
         )
         if at_bottom:
             pane.scroll_end(animate=False)
@@ -1092,7 +750,7 @@ class GraspAgentsApp(App[None]):
             ):
                 # border to the right; the text inside the panel stays left
                 text = Align.right(text)
-            await pane.mount(_SelectableStatic(text, classes=cls))
+            await pane.mount(SelectableStatic(text, classes=cls))
         for img in images:
             await pane.mount(self._image_widget(img))
         if (text is not None or images) and at_bottom:
@@ -1107,7 +765,7 @@ class GraspAgentsApp(App[None]):
             else render_image(src)
         )
         # right-aligned to sit with the (right-aligned) tool output it came from
-        return _ZoomableImage(src, Align.right(rend))
+        return ZoomableImage(src, Align.right(rend))
 
     def _owner(self, event: Event[Any]) -> str:
         # An agent pane belongs to whoever emits "generation" events. Only
@@ -1173,9 +831,9 @@ class GraspAgentsApp(App[None]):
         if source is not None:
             self.query_one("#panes", ContentSwitcher).current = _pane_id(source)
 
-    @on(_ZoomableImage.Zoom)
-    def _on_image_zoom(self, event: _ZoomableImage.Zoom) -> None:
-        self.push_screen(_ImageZoomScreen(event.src))
+    @on(ZoomableImage.Zoom)
+    def _on_image_zoom(self, event: ZoomableImage.Zoom) -> None:
+        self.push_screen(ImageZoomScreen(event.src))
 
     # ── status ──
 
@@ -1210,6 +868,30 @@ class GraspAgentsApp(App[None]):
     def action_toggle_follow(self) -> None:
         self._ga_follow = not self._ga_follow
         self.notify(f"Follow latest: {'on' if self._ga_follow else 'off'}")
+
+    async def action_interrupt(self) -> None:
+        """
+        Cancel the in-flight interactive turn (``esc``).
+
+        A no-op when nothing is running, or when a modal (e.g. the approval
+        dialog) is open — that screen handles ``esc`` itself. Cancelling the
+        turn worker raises ``CancelledError`` through the agent's stream, which
+        closes it (see :meth:`_run_turn`).
+        """
+        worker = self._ga_run_worker
+        if not self._ga_running or worker is None:
+            return
+        if worker.state in {WorkerState.PENDING, WorkerState.RUNNING}:
+            worker.cancel()
+        owner = self._ga_last_agent or self._ga_main
+        if owner and owner in self._ga_panes:
+            pane = self._ga_panes[owner]
+            await pane.mount(
+                SelectableStatic(
+                    Text("⊘ run interrupted", style="italic"), classes="ga-msg"
+                )
+            )
+            pane.scroll_end(animate=False)
 
 
 def run_tui(events: AsyncIterator[Event[Any]]) -> None:

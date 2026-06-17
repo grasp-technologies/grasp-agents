@@ -21,12 +21,12 @@ workspace:
 Run interactively in the TUI (needs the ``tui`` + ``notebook`` extras, the
 ``srt`` CLI, and ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` in ``.env``)::
 
-    python -m grasp_agents.examples.autoresearch
+    python -m grasp_agents.examples.tui.autoresearch
 
 or headless::
 
-    python -m grasp_agents.examples.autoresearch --headless
-    python -m grasp_agents.examples.autoresearch --headless --resume
+    python -m grasp_agents.examples.tui.autoresearch --headless
+    python -m grasp_agents.examples.tui.autoresearch --headless --resume
 """
 
 from __future__ import annotations

@@ -46,7 +46,7 @@ from grasp_agents.types.llm_events import (
     ResponseRetrying,
 )
 from grasp_agents.types.response import Response
-from grasp_agents.ui.app import GraspAgentsApp, _pane_id, _PromptArea, _SelectableStatic
+from grasp_agents.ui.app import GraspAgentsApp, PromptArea, SelectableStatic, _pane_id
 
 
 def _llm_delta(text: str, n: int) -> LLMStreamEvent:
@@ -95,7 +95,7 @@ def _fallback(n: int) -> LLMStreamEvent:
     )
 
 
-def _rendered(widget: _SelectableStatic) -> str:
+def _rendered(widget: SelectableStatic) -> str:
     return "\n".join(widget.render_line(y).text for y in range(widget.size.height))
 
 
@@ -454,7 +454,7 @@ async def test_paste_grows_prompt_height_once() -> None:
 
     app = GraspAgentsApp(on_submit=_noop_submit)
     async with app.run_test() as pilot:
-        prompt = app.query_one("#prompt", _PromptArea)
+        prompt = app.query_one("#prompt", PromptArea)
         # production delivery: the driver posts Paste to the app, which forwards
         # it to the focused widget exactly once
         app.post_message(events.Paste("alpha\nbeta\ngamma"))
@@ -471,7 +471,7 @@ async def test_paste_grows_prompt_height_once() -> None:
 async def test_alt_backspace_deletes_word() -> None:
     app = GraspAgentsApp(on_submit=_noop_submit)
     async with app.run_test() as pilot:
-        prompt = app.query_one("#prompt", _PromptArea)
+        prompt = app.query_one("#prompt", PromptArea)
         prompt.text = "hello world"
         prompt.move_cursor(prompt.document.end)
         await pilot.press("alt+backspace")

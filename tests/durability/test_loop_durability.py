@@ -24,7 +24,7 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.approval_store import (
-    InMemoryApprovalStore,
+    LocalApprovalStore,
     build_store_approval,
 )
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
@@ -505,7 +505,7 @@ class TestValidateInputsCoercion:
 class TestApprovalCancellation:
     @pytest.mark.asyncio
     async def test_cancelled_run_propagates_at_approval_gate(self) -> None:
-        ctx: RunContext[None] = RunContext(approval_store=InMemoryApprovalStore())
+        ctx: RunContext[None] = RunContext(approval_store=LocalApprovalStore())
         hook = build_store_approval()
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")
 

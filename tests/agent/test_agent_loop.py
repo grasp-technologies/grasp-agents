@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.approval_store import (
     ApprovalAllow,
-    InMemoryApprovalStore,
+    LocalApprovalStore,
     build_store_approval,
 )
 from grasp_agents.agent.llm_agent import LLMAgent
@@ -410,7 +410,7 @@ class TestAfterToolHookPairing:
 class TestApprovalPendingCleanup:
     @pytest.mark.asyncio
     async def test_timeout_clears_pending_and_late_resolve_fails(self) -> None:
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         hook = build_store_approval(timeout=0.05)
         ctx = RunContext[None](approval_store=store, session_key="s1")
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")
@@ -425,7 +425,7 @@ class TestApprovalPendingCleanup:
 
     @pytest.mark.asyncio
     async def test_cancellation_clears_pending(self) -> None:
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         hook = build_store_approval(timeout=None)
         ctx = RunContext[None](approval_store=store, session_key="s1")
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")

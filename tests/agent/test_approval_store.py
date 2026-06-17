@@ -21,7 +21,7 @@ from grasp_agents.agent.approval_store import (
     ApprovalDeny,
     ApprovalScope,
     ApprovalStore,
-    InMemoryApprovalStore,
+    LocalApprovalStore,
     PendingApproval,
     build_store_approval,
 )
@@ -137,11 +137,11 @@ async def _drain_with_resolver(
 
 
 class TestStoreBasics:
-    """InMemoryApprovalStore basic correctness."""
+    """LocalApprovalStore basic correctness."""
 
     @pytest.mark.asyncio
     async def test_submit_and_resolve(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         pending = PendingApproval(
             session_key="s1",
             call_id="c1",
@@ -160,14 +160,14 @@ class TestStoreBasics:
 
     @pytest.mark.asyncio
     async def test_resolve_unknown_returns_false(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         # Nothing submitted for (s1, c1)
         resolved = await store.resolve("s1", "c1", ApprovalAllow())
         assert resolved is False
 
     @pytest.mark.asyncio
     async def test_list_pending(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         for cid in ("c1", "c2"):
             await store.submit_pending(
                 PendingApproval(
@@ -189,7 +189,7 @@ class TestStoreBasics:
 
     @pytest.mark.asyncio
     async def test_scope_session_adds_to_session_allowlist(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         await store.submit_pending(
             PendingApproval(
                 session_key="s1",
@@ -208,7 +208,7 @@ class TestStoreBasics:
 
     @pytest.mark.asyncio
     async def test_scope_always_adds_to_persistent_allowlist(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         await store.submit_pending(
             PendingApproval(
                 session_key="s1",
@@ -226,7 +226,7 @@ class TestStoreBasics:
 
     @pytest.mark.asyncio
     async def test_scope_once_does_not_persist(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         await store.submit_pending(
             PendingApproval(
                 session_key="s1",
@@ -243,7 +243,7 @@ class TestStoreBasics:
 
     @pytest.mark.asyncio
     async def test_deny_does_not_add_to_allowlist(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         await store.submit_pending(
             PendingApproval(
                 session_key="s1",
@@ -259,7 +259,7 @@ class TestStoreBasics:
 
     @pytest.mark.asyncio
     async def test_clear_session_cancels_pending(self):
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         fut = await store.submit_pending(
             PendingApproval(
                 session_key="s1",
@@ -281,12 +281,12 @@ class TestStoreBasics:
 
 
 class TestPersistence:
-    """File-backed persistence of the `always` allowlist."""
+    """File-backed persistence of the `always` and `session` allowlists."""
 
     @pytest.mark.asyncio
     async def test_always_scope_writes_to_disk(self, tmp_path: Path):
         path = tmp_path / "approvals.json"
-        store = InMemoryApprovalStore(persist_path=path)
+        store = LocalApprovalStore(persist_path=path)
         await store.submit_pending(
             PendingApproval(
                 session_key="s1",
@@ -307,8 +307,51 @@ class TestPersistence:
         path = tmp_path / "approvals.json"
         path.write_text(json.dumps({"always_approved": ["preloaded-key"]}))
 
-        store = InMemoryApprovalStore(persist_path=path)
+        store = LocalApprovalStore(persist_path=path)
         assert await store.is_pre_approved("preloaded-key", session_key="any")
+
+    @pytest.mark.asyncio
+    async def test_session_scope_survives_reconstruction(self, tmp_path: Path):
+        # A SESSION approval must be written to disk and reloaded by a fresh
+        # store (a new process / per-request rebuild), scoped to its session_key.
+        path = tmp_path / "approvals.json"
+        store = LocalApprovalStore(persist_path=path)
+        await store.submit_pending(
+            PendingApproval(
+                session_key="s1",
+                call_id="c1",
+                tool_name="echo",
+                arguments="{}",
+                approval_key="echo-key",
+            )
+        )
+        await store.resolve("s1", "c1", ApprovalAllow(scope=ApprovalScope.SESSION))
+
+        assert json.loads(path.read_text())["sessions"] == {"s1": ["echo-key"]}
+        reloaded = LocalApprovalStore(persist_path=path)
+        assert await reloaded.is_pre_approved("echo-key", session_key="s1")
+        # ...still scoped: another session does not inherit it
+        assert not await reloaded.is_pre_approved("echo-key", session_key="s2")
+
+    @pytest.mark.asyncio
+    async def test_clear_session_persists_removal(self, tmp_path: Path):
+        path = tmp_path / "approvals.json"
+        store = LocalApprovalStore(persist_path=path)
+        await store.add_session("s1", "echo-key")
+        assert json.loads(path.read_text())["sessions"] == {"s1": ["echo-key"]}
+
+        await store.clear_session("s1")
+        assert json.loads(path.read_text())["sessions"] == {}
+        reloaded = LocalApprovalStore(persist_path=path)
+        assert not await reloaded.is_pre_approved("echo-key", session_key="s1")
+
+    @pytest.mark.asyncio
+    async def test_legacy_file_without_sessions_loads(self, tmp_path: Path):
+        # Files written before session persistence (no `sessions` key) still load.
+        path = tmp_path / "approvals.json"
+        path.write_text(json.dumps({"always_approved": ["g"]}))
+        store = LocalApprovalStore(persist_path=path)
+        assert await store.is_pre_approved("g", session_key="any")
 
     @pytest.mark.asyncio
     async def test_malformed_persist_file_is_ignored(self, tmp_path: Path):
@@ -316,7 +359,7 @@ class TestPersistence:
         path.write_text("{not valid json")
 
         # Must not raise — malformed file just starts empty
-        store = InMemoryApprovalStore(persist_path=path)
+        store = LocalApprovalStore(persist_path=path)
         assert not await store.is_pre_approved("x", session_key="s1")
 
 
@@ -353,7 +396,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
 
@@ -393,7 +436,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, memory, _ = _make_executor(responses, tools=[EchoTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
 
@@ -421,7 +464,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
         await store.add_persistent("echo")
 
         executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
@@ -443,7 +486,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         stop = asyncio.Event()
         resolved_ids: list[str] = []
@@ -473,7 +516,7 @@ class TestApprovalGate:
     async def test_session_isolation(self):
         """Two sessions on the same store do not share session state."""
         _invocations.clear()
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         stop = asyncio.Event()
         resolved_sessions: list[str] = []
@@ -527,7 +570,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool(), DeleteTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         async def resolver() -> None:
             for _ in range(100):
@@ -556,7 +599,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, memory, _ = _make_executor(responses, tools=[EchoTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         executor.before_tool_hook = build_store_approval(  # type: ignore[assignment]
             timeout=0.05
@@ -582,7 +625,7 @@ class TestApprovalGate:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        store = InMemoryApprovalStore()
+        store = LocalApprovalStore()
 
         stop = asyncio.Event()
         resolved_ids: list[str] = []
@@ -613,10 +656,10 @@ class TestApprovalGate:
 
 
 class TestProtocolConformance:
-    """InMemoryApprovalStore satisfies the ApprovalStore protocol."""
+    """LocalApprovalStore satisfies the ApprovalStore protocol."""
 
     def test_in_memory_is_approval_store(self):
-        store: ApprovalStore = InMemoryApprovalStore()
+        store: ApprovalStore = LocalApprovalStore()
         assert store is not None
 
 
@@ -628,5 +671,7 @@ def test_approval_store_public_api():
     assert grasp_agents.agent.ApprovalDecision is ApprovalDecision
     assert grasp_agents.agent.PendingApproval is PendingApproval
     assert grasp_agents.agent.ApprovalStore is ApprovalStore
-    assert grasp_agents.agent.InMemoryApprovalStore is InMemoryApprovalStore
+    assert grasp_agents.agent.LocalApprovalStore is LocalApprovalStore
+    # back-compat alias for the former name
+    assert grasp_agents.agent.InMemoryApprovalStore is LocalApprovalStore
     assert grasp_agents.agent.build_store_approval is build_store_approval

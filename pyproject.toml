@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<4"
 license = "MIT"
 license-files = ["LICENSE.md"]
-authors = [{ name = "Grasp Technologies" }]
+authors = [{ name = "Sergey", email = "sergey@grasp.study" }]
 keywords = ["agents", "llm", "ai", "openai", "anthropic", "gemini", "litellm"]
 classifiers = [
     "Programming Language :: Python :: 3",

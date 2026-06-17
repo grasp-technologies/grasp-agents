@@ -15,7 +15,7 @@ Try, for example::
 
 Run (needs ``OPENAI_API_KEY`` in ``.env``)::
 
-    python -m grasp_agents.examples.skills_copilot
+    python -m grasp_agents.examples.tui.skills_copilot
 
 Requires the ``tui`` extra.
 """

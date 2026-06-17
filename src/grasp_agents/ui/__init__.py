@@ -24,12 +24,14 @@ from typing import TYPE_CHECKING, Any
 from .console import EventConsole, stream_events
 
 if TYPE_CHECKING:
+    from ._approval import TuiApprovalStore
     from .app import GraspAgentsApp, run_tui, run_tui_interactive
     from .notebook import display_screenshot, render_events_inline, screenshot
 
 __all__ = [
     "EventConsole",
     "GraspAgentsApp",
+    "TuiApprovalStore",
     "display_screenshot",
     "render_events_inline",
     "run_tui",
@@ -42,6 +44,7 @@ __all__ = [
 # load only when actually used.
 _LAZY = {
     "GraspAgentsApp": "app",
+    "TuiApprovalStore": "_approval",
     "run_tui": "app",
     "run_tui_interactive": "app",
     "render_events_inline": "notebook",

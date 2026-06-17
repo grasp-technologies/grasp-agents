@@ -15,7 +15,7 @@ from grasp_agents.types.events import (
     TurnStartEvent,
 )
 from grasp_agents.types.items import OutputMessageItem
-from grasp_agents.ui.app import GraspAgentsApp, _PromptArea
+from grasp_agents.ui.app import GraspAgentsApp, PromptArea
 
 
 async def _fake_agent(text: str):
@@ -37,7 +37,7 @@ async def test_interactive_submit_runs_agent() -> None:
     app = GraspAgentsApp(on_submit=_fake_agent, main_agent="analyst")
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one("#prompt", _PromptArea).text = "hello"
+        app.query_one("#prompt", PromptArea).text = "hello"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -50,7 +50,7 @@ async def test_newline_keys_insert_newline_and_do_not_submit() -> None:
     app = GraspAgentsApp(on_submit=_fake_agent, main_agent="analyst")
     async with app.run_test() as pilot:
         await pilot.pause()
-        prompt = app.query_one("#prompt", _PromptArea)
+        prompt = app.query_one("#prompt", PromptArea)
         prompt.insert("hello")
         await pilot.press("shift+enter")  # kitty-protocol newline
         await pilot.press("ctrl+j")  # portable newline (LF)

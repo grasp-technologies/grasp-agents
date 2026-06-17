@@ -12,6 +12,7 @@ from .approval_store import (
     ApprovalScope,
     ApprovalStore,
     InMemoryApprovalStore,
+    LocalApprovalStore,
     PendingApproval,
     build_store_approval,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "InMemoryApprovalStore",
     "LLMAgent",
     "LLMAgentTranscript",
+    "LocalApprovalStore",
     "NextStep",
     "NextStepContinue",
     "NextStepForceFinalAnswer",

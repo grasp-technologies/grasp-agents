@@ -124,12 +124,12 @@ First-class integrations.
   durable checkpoint-and-resume, and background tasks.
 
   Auto-research example where an agent experiments in a real notebook
-  inside an `srt`-sandboxed workspace and tracks results against a hidden holdout: [`autoresearch.py`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/autoresearch.py)
+  inside an `srt`-sandboxed workspace and tracks results against a hidden holdout: [`autoresearch.py`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/tui/autoresearch.py)
   
 
   ```bash
-  python -m grasp_agents.examples.autoresearch            # interactive TUI
-  python -m grasp_agents.examples.autoresearch --headless
+  python -m grasp_agents.examples.tui.autoresearch            # interactive TUI
+  python -m grasp_agents.examples.tui.autoresearch --headless
   ```
 
 ## Installation

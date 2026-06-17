@@ -11,7 +11,7 @@ pytest.importorskip("PIL")
 
 from grasp_agents.types.events import ToolOutputItemEvent
 from grasp_agents.types.items import FunctionToolOutputItem
-from grasp_agents.ui.app import GraspAgentsApp, _ImageZoomScreen, _ZoomableImage
+from grasp_agents.ui.app import GraspAgentsApp, ImageZoomScreen, ZoomableImage
 
 
 async def _one_image_event(png_path: str):
@@ -36,18 +36,18 @@ async def test_inline_image_zoomable_opens_and_closes_modal(tmp_path) -> None:
         await app.wait_for_stream()
         await pilot.pause()
 
-        imgs = list(app.query(_ZoomableImage))
+        imgs = list(app.query(ZoomableImage))
         assert imgs, "no zoomable inline image mounted"
 
-        # clicking requests a zoom (bubbles _ZoomableImage.Zoom → app handler)
+        # clicking requests a zoom (bubbles ZoomableImage.Zoom → app handler)
         imgs[0].on_click()
         await pilot.pause()
-        assert isinstance(app.screen, _ImageZoomScreen)
+        assert isinstance(app.screen, ImageZoomScreen)
 
         # esc (or a click) closes it
         await pilot.press("escape")
         await pilot.pause()
-        assert not isinstance(app.screen, _ImageZoomScreen)
+        assert not isinstance(app.screen, ImageZoomScreen)
 
 
 @pytest.mark.asyncio
@@ -63,9 +63,9 @@ async def test_zoom_preserves_aspect_ratio_not_stretched(tmp_path) -> None:
     async with app.run_test(size=(100, 40)) as pilot:
         await app.wait_for_stream()
         await pilot.pause()
-        next(iter(app.query(_ZoomableImage))).on_click()
+        next(iter(app.query(ZoomableImage))).on_click()
         await pilot.pause()
-        assert isinstance(app.screen, _ImageZoomScreen)
+        assert isinstance(app.screen, ImageZoomScreen)
 
         box = app.screen.query_one("#zoom-box")
         img = app.screen.query_one(".zoom-img")

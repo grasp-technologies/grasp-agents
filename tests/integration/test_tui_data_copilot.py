@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from grasp_agents.examples.data_copilot import build_copilot
+from grasp_agents.examples.tui.data_copilot import build_copilot
 from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     ProcPacketOutEvent,
@@ -146,7 +146,7 @@ async def test_interactive_data_copilot_end_to_end(tmp_path: Path) -> None:
     """The full interactive path the user runs: drive the analyst via the TUI."""
     from textual.widgets import Static
 
-    from grasp_agents.ui.app import GraspAgentsApp, _PromptArea
+    from grasp_agents.ui.app import GraspAgentsApp, PromptArea
 
     analyst, _ = build_copilot(tmp_path, confinement="srt")
     app = GraspAgentsApp(on_submit=analyst.run_stream, main_agent=analyst.name)
@@ -163,7 +163,7 @@ async def test_interactive_data_copilot_end_to_end(tmp_path: Path) -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one("#prompt", _PromptArea).text = (
+        app.query_one("#prompt", PromptArea).text = (
             "Generate 60 random sales values and plot a histogram."
         )
         await pilot.press("enter")

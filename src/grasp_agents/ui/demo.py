@@ -12,7 +12,7 @@ path, shared as test fixtures and runnable visual checks.
   ``python -m grasp_agents.ui.demo`` visual check.
 
 For a real (LLM + sandbox) end-to-end demo see
-``grasp_agents.examples.data_copilot``.
+``grasp_agents.examples.tui.data_copilot``.
 """
 
 from __future__ import annotations

@@ -18,7 +18,7 @@ dies, pending approvals are lost.
 
 Usage::
 
-    store = InMemoryApprovalStore(persist_path=Path(".approvals.json"))
+    store = LocalApprovalStore(persist_path=Path(".approvals.json"))
 
     # Poll or surface ``store.list_pending(session_key)`` from your UI
     # and resolve each one via ``store.resolve(...)``.
@@ -179,12 +179,16 @@ class ApprovalStore(Protocol):
         ...
 
 
-class InMemoryApprovalStore:
+class LocalApprovalStore:
     """
-    Default :class:`ApprovalStore` backed by ``asyncio.Future`` objects.
-    State survives across agent turns within the same process. The
-    ``always`` allowlist also survives process restart when
-    ``persist_path`` is set (JSON file).
+    Default, single-process :class:`ApprovalStore`.
+
+    The pending-request queue lives in memory — an :class:`asyncio.Future` per
+    request, lost if the process dies (the awaiting task must stay alive). The
+    *decision* allowlists, by contrast, persist to a local JSON file when
+    ``persist_path`` is set: both ``always`` (global) and ``session`` (per
+    ``session_key``) survive process restart and store reconstruction, so a
+    session resumed in a new process keeps its earlier approvals.
     """
 
     def __init__(self, *, persist_path: Path | None = None) -> None:
@@ -200,9 +204,9 @@ class InMemoryApprovalStore:
 
     def _load_persistent(self) -> None:
         """
-        Populate ``_persistent_allowlist`` from ``persist_path``.
+        Populate the ``always`` and ``session`` allowlists from ``persist_path``.
 
-        Silently ignores malformed files — the allowlist is a user
+        Silently ignores malformed files — the allowlists are a user
         preference cache, not load-bearing state.
         """
         if self._persist_path is None or not self._persist_path.is_file():
@@ -216,6 +220,13 @@ class InMemoryApprovalStore:
         keys: Any = raw.get("always_approved")  # type: ignore[misc]
         if isinstance(keys, list):
             self._persistent_allowlist = {str(k) for k in keys}  # type: ignore[misc]
+        sessions: Any = raw.get("sessions")  # type: ignore[misc]
+        if isinstance(sessions, dict):
+            self._session_allowlist = {
+                str(key): {str(k) for k in vals}  # type: ignore[misc]
+                for key, vals in sessions.items()  # type: ignore[misc]
+                if isinstance(vals, list)
+            }
 
     def _save_persistent(self) -> None:
         if self._persist_path is None:
@@ -223,7 +234,13 @@ class InMemoryApprovalStore:
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
         self._persist_path.write_text(
             json.dumps(
-                {"always_approved": sorted(self._persistent_allowlist)},
+                {
+                    "always_approved": sorted(self._persistent_allowlist),
+                    "sessions": {
+                        key: sorted(keys)
+                        for key, keys in sorted(self._session_allowlist.items())
+                    },
+                },
                 indent=2,
             )
         )
@@ -256,6 +273,7 @@ class InMemoryApprovalStore:
                     self._session_allowlist.setdefault(session_key, set()).add(
                         pending.approval_key
                     )
+                    self._save_persistent()
                 elif decision.scope is ApprovalScope.ALWAYS:
                     self._persistent_allowlist.add(pending.approval_key)
                     self._save_persistent()
@@ -283,6 +301,7 @@ class InMemoryApprovalStore:
     async def add_session(self, session_key: str, approval_key: str) -> None:
         async with self._lock:
             self._session_allowlist.setdefault(session_key, set()).add(approval_key)
+            self._save_persistent()
 
     async def clear_session(self, session_key: str) -> None:
         async with self._lock:
@@ -292,6 +311,12 @@ class InMemoryApprovalStore:
                 fut = self._futures.pop((session_key, call_id), None)
                 if fut is not None and not fut.done():
                     fut.cancel()
+            self._save_persistent()
+
+
+# Deprecated alias: the store persists its allowlists to a local file, so the
+# old "in-memory" name was misleading. Kept for backwards compatibility.
+InMemoryApprovalStore = LocalApprovalStore
 
 
 # ---------------------------------------------------------------------------

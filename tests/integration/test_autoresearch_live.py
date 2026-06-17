@@ -1,5 +1,5 @@
 """
-Live end-to-end test for the auto-research demo (``examples/autoresearch.py``):
+Live end-to-end test for the auto-research demo (``examples/tui/autoresearch.py``):
 a real LLM runs a short but complete research session — venv setup, dataset
 download through the srt network allowlist, notebook-driven modeling, hidden
 holdout scoring — and the session state must survive a simulated restart.
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from grasp_agents.examples.autoresearch import (
+from grasp_agents.examples.tui.autoresearch import (
     ResearchState,
     build_researcher,
     prepare_workspace,
