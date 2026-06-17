@@ -432,15 +432,21 @@ class TestAppendLogPruneRewrite:
     @pytest.mark.asyncio
     async def test_pruned_transcript_rewrites_log(self) -> None:
         store = InMemoryCheckpointStore()
+        # A sys_prompt seeds a surviving system message so the prune below leaves
+        # the transcript non-empty. An empty transcript at run start is the
+        # resume signal (``load_checkpoint`` reloads the persisted log), which
+        # would silently undo the prune — independent of the ``env_info`` default.
         agent, _ = _make_agent(
             [_text_response("answer-alpha"), _text_response("answer-bravo")],
             session_key="s1",
             store=store,
+            sys_prompt="You are a test agent.",
         )
         await agent.run("input-alpha")
 
         # The documented context-management pattern: prune messages in place
-        # between turns (drop the first turn's user+assistant pair).
+        # between turns (drop the first turn's user+assistant pair, keep the
+        # system prompt).
         kept = [
             m
             for m in agent.transcript.messages
