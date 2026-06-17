@@ -60,6 +60,7 @@ from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox.environment import SnapshotCapable
 from grasp_agents.skills.injection import make_skills_section
+from grasp_agents.skills.types import SkillFilter
 from grasp_agents.telemetry import SpanKind
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import Content, InputImage, InputText
@@ -163,7 +164,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # attaches nothing. Pass a ``SystemPromptSection`` built with
         # ``make_env_info_section(include=..., extra_fields=..., ...)`` to
         # control exactly which facts appear.
-        env_info: "bool | SystemPromptSection" = True,
+        env_info: "bool | SystemPromptSection" = False,
         # Memory feature toggle (opt-in). When True, the agent gets:
         # - the ``memory`` system-prompt section (taxonomy + index)
         # - the ``relevant_memories_attachment`` (per-turn surfacing)
@@ -179,6 +180,13 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # - in agentic mode, the ``load_skill`` tool appended
         # Default is False — same rationale as ``enable_memory``.
         enable_skills: bool = False,
+        # Per-agent scoping over the session-shared skill catalog (only
+        # meaningful with ``enable_skills=True``). ``skill_include`` is an
+        # allowlist of skill names, ``skill_exclude`` a blocklist; both set
+        # applies the intersection; both default ``None`` (the full
+        # ``ctx.skills`` catalog). Mirrors ``MCPClientSpec(include=, exclude=)``.
+        skill_include: "Iterable[str] | None" = None,
+        skill_exclude: "Iterable[str] | None" = None,
         # Time-awareness toggle (opt-in). When True, each input message gets a
         # ``current_time`` ``InputAttachment`` — a live wall-clock stamp on the
         # *input* (not the cached system prompt, so no per-turn cache churn),
@@ -239,7 +247,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Transcript (per-run message history)
         self._transcript = transcript or LLMAgentTranscript()
         self.reset_transcript_on_run = reset_transcript_on_run
-        self._fs_snapshot_mode = fs_snapshot
 
         # Prompt builder
 
@@ -250,9 +257,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             agent_name=self.name, sys_prompt=sys_prompt, in_prompt=in_prompt
         )
 
-        # MCP clients. The auto-attached ``mcp_instructions`` system-prompt
-        # section reads this list at compute time. Populated below from the
-        # ``mcp_clients`` ctor kwarg (clients must be ``connect()``-ed first).
         self.mcp_clients: list[MCPClient] = []
 
         # Auto-attached sections. Each compute returns ``None`` when its
@@ -261,26 +265,16 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # just no-op when the relevant data isn't wired. Users override
         # any of them by adding a section with the same name —
         # ``add_system_prompt_section`` dedupes by name.
-        #
-        # Order: memory → env_info → skills → mcp_instructions.
-        # Skills slot between env_info and mcp_instructions — both
-        # surface "what the agent can do", with MCP last so its
-        # ``cache_control`` checkpoint caches the whole system-prompt
-        # prefix.
-        #
-        # Untrusted-content boundary: when the agent has a tool whose output is
-        # untrusted (file / exec / external), add the section telling the model
-        # to treat ``<untrusted_content>``-tagged text as data, not instructions.
-        # MCP tools are always untrusted, so any MCP client implies it too (they
-        # are attached just below, after this cache-leading section). Override
-        # the wording by registering a section named ``untrusted_content``.
+
         if mcp_clients or any(t.untrusted_output for t in tools):
             self._prompt_builder.add_system_prompt_section(
                 make_untrusted_content_section()
             )
+
         if enable_memory:
             self._prompt_builder.add_system_prompt_section(make_memory_section())
             self._prompt_builder.add_input_attachment(relevant_memories_attachment)
+
         if env_info:
             self._prompt_builder.add_system_prompt_section(
                 make_env_info_section(model_name=llm.model_name)
@@ -294,33 +288,37 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             self._prompt_builder.add_input_attachment(
                 make_current_time_attachment() if time_aware is True else time_aware
             )
-        # Local import to dodge the ``mcp`` package's optional-dependency
-        # import guard at module load.
-        from grasp_agents.mcp.section import (  # noqa: PLC0415
-            make_mcp_instructions_section,
-        )
-        from grasp_agents.mcp.spec import (  # noqa: PLC0415
-            MCPClientSpec as _MCPClientSpec,
-        )
 
-        self._prompt_builder.add_system_prompt_section(
-            make_mcp_instructions_section(lambda: self.mcp_clients)
-        )
+        if mcp_clients:
+            from grasp_agents.mcp.section import (  # noqa: PLC0415
+                make_mcp_instructions_section,
+            )
+            from grasp_agents.mcp.spec import (  # noqa: PLC0415
+                MCPClientSpec as _MCPClientSpec,
+            )
 
-        mcp_tools: list[BaseTool[BaseModel, Any, CtxT]] = []
-        for item in mcp_clients or []:
-            if isinstance(item, _MCPClientSpec):
-                mcp_client, include, exclude = (item.client, item.include, item.exclude)
-            else:
-                mcp_client, include, exclude = item, None, None
-            mcp_tools.extend(self._filter_mcp_tools(mcp_client, include, exclude))
-            # Two specs may partition one client's tools; register the client
-            # once so its server instructions aren't rendered twice.
-            if not any(mcp_client is c for c in self.mcp_clients):
-                self.mcp_clients.append(mcp_client)
-        # MCP tools are auto-sourced (the server names them, not the user), so
-        # they yield to explicit tools too — a clash is skipped, not an error.
-        self._merge_auto_attached(tools, existing_names, mcp_tools, source="MCP")
+            self._prompt_builder.add_system_prompt_section(
+                make_mcp_instructions_section(lambda: self.mcp_clients)
+            )
+
+            mcp_tools: list[BaseTool[BaseModel, Any, CtxT]] = []
+            for item in mcp_clients or []:
+                if isinstance(item, _MCPClientSpec):
+                    mcp_client, include, exclude = (
+                        item.client,
+                        item.include,
+                        item.exclude,
+                    )
+                else:
+                    mcp_client, include, exclude = item, None, None
+                mcp_tools.extend(self._filter_mcp_tools(mcp_client, include, exclude))
+                # Two specs may partition one client's tools; register the client
+                # once so its server instructions aren't rendered twice.
+                if not any(mcp_client is c for c in self.mcp_clients):
+                    self.mcp_clients.append(mcp_client)
+            # MCP tools are auto-sourced (the server names them, not the user), so
+            # they yield to explicit tools too — a clash is skipped, not an error.
+            self._merge_auto_attached(tools, existing_names, mcp_tools, source="MCP")
 
         # Agent loop
 
@@ -334,11 +332,10 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                 "final_answer_as_tool_call is True."
             )
 
-        agentic_mode = bool(tools)
         self._used_default_llm_output_schema = False
         if (
             llm_output_schema is None
-            and not agentic_mode
+            and not tools
             and not is_method_overridden(
                 "parse_output_impl", self, LLMAgent[Any, Any, Any]
             )
@@ -363,11 +360,13 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             path=path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
             explicit_tool_names=explicit_tool_names,
+            skill_filter=SkillFilter.build(skill_include, skill_exclude),
         )
 
         # Session persistence
-        self.step: int = 0  # completed invocation counter (observability)
-        self._delivery_step: int | None = None  # caller's step for checkpoint
+
+        self._step: int | None = None  # caller's step= for the current/last run
+
         # Resume notifications injected into the transcript by load_checkpoint,
         # awaiting emission as stream events (no hidden transcript messages).
         self._resume_notifications: list[InputMessageItem] = []
@@ -378,6 +377,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # key and the model-side cache doesn't get invalidated. ``None``
         # when the provider doesn't support caching (or hasn't set one).
         self.prompt_cache_key: str | None = None
+
+        # File system snapshot mode (if ctx.environment is SnapshotCapable).
+        self._fs_snapshot_mode = fs_snapshot
 
         # Wire the loop's checkpoint callback unconditionally. The
         # callback itself short-circuits when no store is attached to
@@ -468,6 +470,11 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         return self._loop.max_turns
 
     @property
+    def step(self) -> int | None:
+        """Caller's ``step=`` for the current/last run; ``None`` if unstepped."""
+        return self._step
+
+    @property
     def sys_prompt(self) -> LLMPrompt | None:
         return self._prompt_builder.sys_prompt
 
@@ -509,7 +516,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         agent's bound ctx is used).
         """
         return await self._prompt_builder.build_system_prompt(
-            ctx=ctx if ctx is not None else self._ctx, exec_id=exec_id
+            ctx=ctx if ctx is not None else self._ctx,
+            exec_id=exec_id,
+            agent_ctx=self._loop.agent_ctx,
         )
 
     @property
@@ -696,7 +705,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             processor_name=self.name,
             messages=list(self.transcript.messages),
             session_metadata=self._session_metadata,
-            step=self._delivery_step,
+            step=self._step,
             turn=turn,
             output=output,
             location=location,
@@ -849,7 +858,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         step: int | None = None,
         ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
     ) -> AsyncIterator[Event[Any]]:
-        self._delivery_step = step
+        self._step = step
 
         inp = in_args[0] if in_args else None
 
@@ -959,8 +968,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             raise
 
         yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
-
-        self.step += 1
 
     def _print_messages(
         self,

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
 NAME_REGEX = re.compile(r"^[a-z0-9](?:-?[a-z0-9])*$")
@@ -104,3 +105,43 @@ class Skill:
     @property
     def inject_body(self) -> bool:
         return self.frontmatter.inject_body
+
+
+@dataclass(frozen=True)
+class SkillFilter:
+    """
+    Per-agent allowlist/blocklist over the session-shared skill catalog.
+
+    The ``SkillRegistry`` on ``RunContext`` is one shared catalog per session;
+    a ``SkillFilter`` narrows it to a *view* for one agent, so different agents
+    in the same run expose different skills. Mirrors
+    :class:`~grasp_agents.mcp.spec.MCPClientSpec`'s ``include`` / ``exclude``:
+    ``include`` exposes only those names, ``exclude`` hides them, both sets
+    applies the intersection. ``None`` on an axis means no filter there;
+    ``include=frozenset()`` (empty) hides every skill.
+    """
+
+    include: frozenset[str] | None = None
+    exclude: frozenset[str] | None = None
+
+    @classmethod
+    def build(
+        cls,
+        include: Iterable[str] | None = None,
+        exclude: Iterable[str] | None = None,
+    ) -> SkillFilter | None:
+        """Normalize ctor args into a filter, or ``None`` when neither is set."""
+        if include is None and exclude is None:
+            return None
+        return cls(
+            include=frozenset(include) if include is not None else None,
+            exclude=frozenset(exclude) if exclude is not None else None,
+        )
+
+    def allows(self, name: str) -> bool:
+        return (self.include is None or name in self.include) and (
+            self.exclude is None or name not in self.exclude
+        )
+
+    def apply(self, skills: Iterable[Skill]) -> list[Skill]:
+        return [s for s in skills if self.allows(s.name)]

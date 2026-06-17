@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 # Parameters with these names are passed through from the executor,
 # not included in the tool's input schema.
-_SPECIAL_PARAMS = {"ctx", "exec_id"}
+_SPECIAL_PARAMS = {"ctx", "exec_id", "agent_ctx"}
 
 
 def _build_input_model(
@@ -87,6 +87,7 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         is_async: bool,
         has_ctx: bool,
         has_exec_id: bool,
+        has_agent_ctx: bool = False,
         timeout: float | None = None,
         auto_background_at: float | None = None,
         blocks_final_answer: bool = True,
@@ -111,6 +112,7 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         self._is_async = is_async
         self._has_ctx = has_ctx
         self._has_exec_id = has_exec_id
+        self._has_agent_ctx = has_agent_ctx
 
     @property
     def in_type(self) -> type[BaseModel]:
@@ -126,12 +128,14 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
     ) -> Any:
-        del progress_callback, path, agent_ctx
+        del progress_callback, path
         kwargs = inp.model_dump()
         if self._has_ctx:
             kwargs["ctx"] = ctx
         if self._has_exec_id:
             kwargs["exec_id"] = exec_id
+        if self._has_agent_ctx:
+            kwargs["agent_ctx"] = agent_ctx
 
         if self._is_async:
             return await self._fn(**kwargs)
@@ -195,6 +199,7 @@ def function_tool(
             is_async=inspect.iscoroutinefunction(f),
             has_ctx=_has_special_param(sig, "ctx"),
             has_exec_id=_has_special_param(sig, "exec_id"),
+            has_agent_ctx=_has_special_param(sig, "agent_ctx"),
             timeout=timeout,
             auto_background_at=auto_background_at,
             blocks_final_answer=blocks_final_answer,

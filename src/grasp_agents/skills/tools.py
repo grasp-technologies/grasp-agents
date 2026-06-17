@@ -23,6 +23,7 @@ from .registry import substitute_args
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.run_context import RunContext
 
 LOAD_SKILL_DESCRIPTION = (
@@ -47,11 +48,17 @@ async def load_skill(
     ],
     *,
     ctx: RunContext[Any] | None = None,
+    agent_ctx: AgentContext | None = None,
 ) -> str:
     if ctx is None or ctx.skills is None:
         raise SkillNotFoundError("No skills are configured for this run.")
     skill = ctx.skills.get_optional(name)
-    if skill is None or skill.disable_model_invocation:
+    skill_filter = agent_ctx.skill_filter if agent_ctx is not None else None
+    if (
+        skill is None
+        or skill.disable_model_invocation
+        or (skill_filter is not None and not skill_filter.allows(name))
+    ):
         raise SkillNotFoundError(
             f"Skill {name!r} is not available. "
             f"Pick one from the <available_skills> catalog."
@@ -79,13 +86,18 @@ async def list_skills(
     ] = False,
     *,
     ctx: RunContext[Any] | None = None,
+    agent_ctx: AgentContext | None = None,
 ) -> str:
     if ctx is None or ctx.skills is None:
         return "No skills are configured for this run."
     if refresh:
         # The re-walk hits the filesystem — keep it off the event loop.
         await asyncio.to_thread(ctx.skills.refresh)
-    rendered = render_available_skills_block(ctx.skills.all, include_license=True)
+    skills = ctx.skills.all
+    skill_filter = agent_ctx.skill_filter if agent_ctx is not None else None
+    if skill_filter is not None:
+        skills = skill_filter.apply(skills)
+    rendered = render_available_skills_block(skills, include_license=True)
     if not rendered:
         return "No skills available."
     return f"{rendered}\n\n{LOAD_INSTRUCTION}"

@@ -9,6 +9,7 @@ from grasp_agents.context.prompt_builder import SystemPromptSection
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.run_context import RunContext
 
     from .types import Skill
@@ -121,12 +122,16 @@ def make_skills_section(
         *,
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
+        agent_ctx: AgentContext | None = None,
         **_: Any,
     ) -> str | None:
         del exec_id
         if ctx is None or ctx.skills is None:
             return None
         visible = ctx.skills.visible
+        skill_filter = agent_ctx.skill_filter if agent_ctx is not None else None
+        if skill_filter is not None:
+            visible = skill_filter.apply(visible)
         if not visible:
             return None
         catalog = render_available_skills_block(visible)

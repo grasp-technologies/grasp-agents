@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     )
     from grasp_agents.llm.llm import LLM
     from grasp_agents.run_context import RunContext
+    from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.bash_common import ShellState
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.response import Response
@@ -183,6 +184,8 @@ class AgentLoop[CtxT]:
         # Names of the explicitly-passed tools (excludes auto-attached capability
         # tools); exposed on the AgentContext so a sub-agent inherits only these.
         explicit_tool_names: frozenset[str] = frozenset(),
+        # Per-agent view over the session-shared skill catalog; ``None`` = all.
+        skill_filter: SkillFilter | None = None,
     ) -> None:
         super().__init__()
 
@@ -266,6 +269,7 @@ class AgentLoop[CtxT]:
             path=path,
             max_background=max_background,
             explicit_tool_names=explicit_tool_names,
+            skill_filter=skill_filter,
         )
 
     @property

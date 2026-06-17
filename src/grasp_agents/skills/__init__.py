@@ -30,6 +30,7 @@ from .slash import (
 from .types import (
     Skill,
     SkillError,
+    SkillFilter,
     SkillFormatError,
     SkillFrontmatter,
     SkillNotFoundError,
@@ -59,6 +60,7 @@ __all__ = [
     "ParsedSlashCommand",
     "Skill",
     "SkillError",
+    "SkillFilter",
     "SkillFormatError",
     "SkillFrontmatter",
     "SkillNotFoundError",

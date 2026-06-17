@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from grasp_agents.run_context import RunContext
+    from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.base import BaseTool
     from grasp_agents.tools.bash_common import ShellState
     from grasp_agents.tools.bash_session import BashSessionHolder
@@ -78,6 +79,10 @@ class AgentContext:
     # shared with the notebook kernel. ``None`` (the default) → each call opens a
     # throwaway kernel; ``AgentLoop`` wires a persistent one per loop.
     ipy_kernel_holder: KernelHolder | None = None
+    # Per-agent view over the session-shared skill catalog (``ctx.skills``). The
+    # skills prompt section and the ``load_skill`` / ``list_skills`` tools read it
+    # so this agent sees only its allowed skills. ``None`` = the full catalog.
+    skill_filter: SkillFilter | None = None
 
     @classmethod
     def create(
@@ -93,6 +98,7 @@ class AgentContext:
         path: list[str] | None = None,
         max_background: int = 16,
         explicit_tool_names: frozenset[str] = frozenset(),
+        skill_filter: SkillFilter | None = None,
     ) -> AgentContext:
         """
         Build an ``AgentContext`` with fresh agent-scope state.
@@ -142,6 +148,7 @@ class AgentContext:
             nb_kernel_holder=KernelHolder(context_id=nb_exec_context_id),
             ipy_kernel_holder=KernelHolder(context_id=ipy_exec_context_id),
             shell_state=ShellState(),
+            skill_filter=skill_filter,
         )
 
     def snapshot_state(self) -> AgentContextState:
