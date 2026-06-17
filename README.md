@@ -212,14 +212,22 @@ print(out.payloads[0])
 
 ## More examples
 
-Additional notebooks live in
+Runnable notebooks in
 [`src/grasp_agents/examples/notebooks/`](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/notebooks):
 
-- [`code_interpreter_demo.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/code_interpreter_demo.ipynb)
+- [`basics.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/basics.ipynb)
+  — agent basics: typed agents, validated/structured outputs, multimodal input,
+  the tool loop, streaming, parallel runs, sequential workflows, agents-as-tools.
+- [`advanced_patterns.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/advanced_patterns.ipynb)
+  — provider-specific features (thinking, web search, grounding), the full hook
+  system, and forced ReAct.
+- [`orchestration_durability.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/orchestration_durability.ipynb)
+  — composition, multi-agent `Runner` routing, and crash/resume durability.
+- [`code_interpreter.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/code_interpreter.ipynb)
   — `RunPython` in a persistent, srt-confined kernel.
-- [`memory_skills_demo.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/memory_skills_demo.ipynb)
+- [`memory_skills.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/memory_skills.ipynb)
   — cross-session memory and skills end to end.
-- [`mcp_memory_demo.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/mcp_memory_demo.ipynb)
+- [`mcp_memory.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/mcp_memory.ipynb)
   — the same memory surface over an MCP file backend.
 
 ## Project structure

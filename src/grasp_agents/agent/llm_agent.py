@@ -556,7 +556,25 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         *,
         exec_id: str | None = None,
     ) -> AgentCheckpoint | None:
-        """Load session checkpoint from store on first run (if available)."""
+        """
+        Rehydrate the session from the checkpoint store on a cold start.
+
+        Called at the start of every run but **no-ops unless the transcript is
+        empty**. An empty transcript is the signal for a cold start (a fresh
+        process / new instance) where the durable log is the only surviving copy
+        of the conversation, so it is reloaded here along with turn, FS snapshot,
+        kernels, file-edit ledger, ``ctx.state``, and background tasks. A
+        non-empty transcript means a live in-memory session is already present
+        (a prior run in this process, or caller-seeded) and must not be clobbered
+        by a reload.
+
+        Contract for context-management hooks (pruning / compaction): never
+        prune the transcript to *zero* messages. An emptied transcript is
+        indistinguishable from a cold start, so the next run reloads the
+        persisted log and silently undoes the prune. Keep at least one message
+        (e.g. the system prompt), or replace/stub messages in place rather than
+        removing them all.
+        """
         if not self.transcript.is_empty:
             return None  # Already has messages — don't reload
 
