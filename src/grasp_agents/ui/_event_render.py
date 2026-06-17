@@ -211,7 +211,7 @@ def render_event(
         # exactly as the agent receives it) under a distinct "skill" frame.
         skill = match_invocation_wrapper(text)
         if skill is not None:
-            return panel(f"skill: /{skill}", _message_body(text), PALETTE["accent"])
+            return panel(f"skill <{skill}>", _message_body(text), PALETTE["accent"])
         # A received input — we don't reliably know the sender (it may be the
         # user or an upstream agent), so don't assert one; just show the
         # recipient.

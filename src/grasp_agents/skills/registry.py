@@ -217,14 +217,16 @@ class SkillRegistry:
         """
         Render a skill body as a user-message string.
 
-        Substitutes ``$ARGUMENTS`` (full args string) and ``$ARG_NAME``
-        (named arguments, when ``args`` is a mapping). When ``wrap`` is true
-        (default), encloses the whole message in
-        ``<system-reminder note="user invoked skill <name>">…</system-reminder>`` so the
-        agent can distinguish a slash-command turn from a raw user message.
+        A skill body is a self-contained procedure. If it declares explicit
+        injection points — ``$ARGUMENTS`` or named ``$ARG_NAME`` placeholders —
+        the user's args are substituted into them; otherwise the args are
+        appended as a labelled ``User input:`` block, leaving the procedure
+        untouched. When ``wrap`` is true (default), the whole message is enclosed
+        in ``<system-reminder note="user invoked skill <name>">…</system-reminder>``
+        so the agent can tell a slash-command turn from a raw user message.
         """
         skill = self.get(name)
-        body = substitute_args(skill.body, args)
+        body = apply_invocation_args(skill.body, args)
         if not wrap:
             return body
         return f"{INVOCATION_OPEN.format(name=name)}\n{body}\n{INVOCATION_CLOSE}"
@@ -254,3 +256,60 @@ def substitute_args(body: str, args: str | Mapping[str, str] | None) -> str:
         return named.get(key, match.group(0))
 
     return _NAMED_ARG_RE.sub(_replace, body)
+
+
+def _has_injection_point(body: str, args: str | Mapping[str, str] | None) -> bool:
+    """True if the body declares a placeholder the given args would fill."""
+    names = {m.group(1) for m in _NAMED_ARG_RE.finditer(body)}
+    if "ARGUMENTS" in names:
+        return True
+    if args is not None and not isinstance(args, str):
+        return bool(names & args.keys())  # named-args mapping
+    return False
+
+
+def apply_invocation_args(body: str, args: str | Mapping[str, str] | None) -> str:
+    """
+    Fill a skill body with a user's slash-command arguments.
+
+    A skill body is a self-contained procedure. If it declares explicit
+    injection points — ``$ARGUMENTS`` or named ``$ARG_NAME`` placeholders that
+    match the supplied mapping — substitute them. Otherwise append the args as a
+    labelled ``User input:`` block, leaving the procedure untouched (so a
+    placeholder-free skill reads the same whether the content arrives inline
+    here or sits in the conversation on a model-invoked load). With no args,
+    return the body unchanged.
+    """
+    if _has_injection_point(body, args):
+        return substitute_args(body, args)
+    if args is None:
+        return body
+    full = (
+        args
+        if isinstance(args, str)
+        else " ".join(f"{k}={v}" for k, v in args.items())
+    )
+    if not full.strip():
+        return body
+    return f"{body.rstrip()}\n\nUser input:\n{full}"
+
+
+def strip_arg_placeholders(body: str) -> str:
+    """
+    Remove slash-command argument placeholders for a model-invoked load.
+
+    ``$ARGUMENTS`` / ``$ARG_NAME`` are filled from the *user's* typed
+    slash-command input. A model-invoked ``load_skill`` has no such input — the
+    material the skill applies to is the user's request already in the
+    conversation, not text injected inline — so the placeholders are dropped
+    (along with any line they leave blank) rather than resolved to an empty
+    inline slot. Author skills with the placeholder on its own line for the
+    cleanest result.
+    """
+    kept: list[str] = []
+    for line in body.splitlines():
+        stripped = _NAMED_ARG_RE.sub("", line)
+        if not stripped.strip() and line.strip():
+            continue  # the line held only placeholder(s) — drop it
+        kept.append(stripped)
+    return "\n".join(kept).rstrip()

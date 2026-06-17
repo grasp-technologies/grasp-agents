@@ -58,7 +58,7 @@ from grasp_agents.ui._event_render import (
     truncate,
     truncate_lines,
 )
-from grasp_agents.ui.console import EventConsole, stream_events
+from grasp_agents.ui.console import EventConsole, render_events
 
 
 def _make_console() -> tuple[EventConsole, StringIO]:
@@ -209,7 +209,9 @@ class TestTurnEvents:
 class TestStreamingText:
     @pytest.mark.asyncio
     async def test_text_deltas_stream(self):
-        ec, buf = _make_console()
+        # Live token streaming is the markdown=False path (markdown=True buffers
+        # and renders the finished message instead).
+        ec, buf = _make_console_with(markdown=False)
         events = [
             LLMStreamEvent(
                 data=OutputMessageTextPartTextDelta(
@@ -243,7 +245,7 @@ class TestStreamingText:
 
     @pytest.mark.asyncio
     async def test_text_block_ends_with_newline(self):
-        ec, buf = _make_console()
+        ec, buf = _make_console_with(markdown=False)  # live raw streaming path
         msg_item = OutputMessageItem(
             content_parts=[OutputMessageText(text="Hello")],
             status="completed",
@@ -447,7 +449,10 @@ class TestNonStreamingMode:
     async def test_output_message_skipped_after_streaming(self):
         """When deltas were seen, promoted OutputMessageItemEvent is skipped."""
         ec, buf = _make_console()
+        # The promoted item carries the same id the deltas streamed under — as
+        # real providers emit (one item id for the deltas and the done item).
         msg = OutputMessageItem(
+            id="i1",
             content_parts=[OutputMessageText(text="Hello world")],
             status="completed",
         )
@@ -953,6 +958,22 @@ class TestPacketEvents:
         assert "my_agent" in output
         assert "hello" in output
 
+    @pytest.mark.asyncio
+    async def test_string_payload_shown_without_quotes(self):
+        # A plain-string payload renders verbatim — no wrapping quotes, no
+        # \\uXXXX escaping of non-ASCII.
+        from grasp_agents.types.packet import Packet
+
+        ec, buf = _make_console_with(show_packets=True)
+        result = "**347 × 829 = 287,663**"  # noqa: RUF001
+        packet = Packet(payloads=[result], sender="calc")
+        events = [ProcPacketOutEvent(data=packet, source="calc", exec_id="c1")]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert result in out
+        assert '"**347' not in out  # not wrapped in quotes
+        assert "\\u" not in out  # multiplication sign not escaped
+
 
 # ── Event passthrough ──
 
@@ -985,13 +1006,13 @@ class TestPassthrough:
         assert isinstance(collected[2], LLMStreamEvent)
 
 
-# ── stream_events convenience function ──
+# ── render_events convenience function ──
 
 
-class TestStreamEventsFunction:
+class TestRenderEventsFunction:
     @pytest.mark.asyncio
-    async def test_stream_events_wrapper(self):
-        """stream_events() is a convenience wrapper like EventConsole.stream()."""
+    async def test_render_events_wrapper(self):
+        """render_events() is a convenience wrapper like EventConsole.stream()."""
         buf = StringIO()
         console = Console(file=buf, no_color=True, highlight=False, width=80)
 
@@ -1007,7 +1028,7 @@ class TestStreamEventsFunction:
             )
 
         collected = []
-        async for event in stream_events(gen(), console=console):
+        async for event in render_events(gen(), console=console):
             collected.append(event)
 
         assert len(collected) == 2
@@ -1026,6 +1047,7 @@ class TestFullSequence:
         ec, buf = _make_console()
 
         text_item = OutputMessageItem(
+            id="i1",
             content_parts=[OutputMessageText(text="Let me search.")],
             status="completed",
         )
@@ -1304,3 +1326,202 @@ class TestBackgroundSuppression:
         buf.seek(0)
         ec._handle(self._exec_stream())
         assert "item 1 of 5" in buf.getvalue()
+
+
+# ── Multiple reasoning items per generation (issue 5: web-search interleaving) ──
+
+
+def _reasoning_added(item_id: str, seq: int) -> LLMStreamEvent:
+    return LLMStreamEvent(
+        data=OutputItemAdded(
+            item=ReasoningItem(id=item_id), output_index=0, sequence_number=seq
+        ),
+        source="agent",
+        exec_id="c1",
+    )
+
+
+def _reasoning_delta(item_id: str, text: str, seq: int) -> LLMStreamEvent:
+    return LLMStreamEvent(
+        data=ReasoningSummaryPartTextDelta(
+            delta=text,
+            summary_index=0,
+            output_index=0,
+            sequence_number=seq,
+            item_id=item_id,
+        ),
+        source="agent",
+        exec_id="c1",
+    )
+
+
+def _reasoning_done(item_id: str, text: str, seq: int) -> LLMStreamEvent:
+    # The done event flushes the line-buffered gutter (parity with real streams,
+    # which always close a reasoning item before the next starts).
+    return LLMStreamEvent(
+        data=OutputItemDone(
+            item=ReasoningItem(
+                id=item_id, summary_parts=[ReasoningSummary(text=text)]
+            ),
+            output_index=0,
+            sequence_number=seq,
+        ),
+        source="agent",
+        exec_id="c1",
+    )
+
+
+class TestMultipleReasoningDedup:
+    """
+    With several reasoning items in one generation (OpenAI web search
+    interleaves reasoning between searches), each streamed thinking block must
+    show exactly once — the promoted ReasoningItemEvents that follow the stream
+    are suppressed per-item-id, not via a single one-shot flag.
+    """
+
+    @pytest.mark.asyncio
+    async def test_three_reasoning_blocks_not_duplicated(self):
+        ec, buf = _make_console_with(show_thinking=True)
+        blocks = [("rs1", "first thought"), ("rs2", "second thought"), ("rs3", "third")]
+        events: list[Event[Any]] = []
+        # Stream three reasoning items, each opened, streamed, and closed.
+        for i, (rid, text) in enumerate(blocks):
+            events.extend(
+                [
+                    _reasoning_added(rid, 3 * i + 1),
+                    _reasoning_delta(rid, text, 3 * i + 2),
+                    _reasoning_done(rid, text, 3 * i + 3),
+                ]
+            )
+        # Then the promoted item events the loop emits post-stream (same ids).
+        events += [
+            ReasoningItemEvent(
+                data=ReasoningItem(
+                    id=rid, summary_parts=[ReasoningSummary(text=text)]
+                ),
+                source="agent",
+                exec_id="c1",
+            )
+            for rid, text in blocks
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert out.count("first thought") == 1
+        assert out.count("second thought") == 1
+        assert out.count("third") == 1
+
+    @pytest.mark.asyncio
+    async def test_ids_reset_between_generations(self):
+        # A second generation reuses the dedup machinery cleanly: its reasoning
+        # is suppressed too, and nothing from the first generation lingers.
+        ec, buf = _make_console_with(show_thinking=True)
+        resp = Response(model="m", output_items=[], usage_with_cost=None)
+        events: list[Event[Any]] = [
+            _reasoning_added("rs1", 1),
+            _reasoning_delta("rs1", "gen one thought", 2),
+            _reasoning_done("rs1", "gen one thought", 3),
+            ReasoningItemEvent(
+                data=ReasoningItem(
+                    id="rs1", summary_parts=[ReasoningSummary(text="gen one thought")]
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            GenerationEndEvent(data=resp, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        assert _strip_ansi(buf.getvalue()).count("gen one thought") == 1
+        assert ec._streamed_live_ids == set()  # reset at generation end
+
+
+# ── Markdown rendering toggle (issue 4) ──
+
+
+class TestMarkdownToggle:
+    @pytest.mark.asyncio
+    async def test_streamed_response_raw_when_markdown_off(self):
+        # markdown=False: the response streams live as raw text, so markdown
+        # syntax is shown verbatim and not re-rendered.
+        ec, buf = _make_console_with(markdown=False)
+        msg = OutputMessageItem(
+            id="m1",
+            content_parts=[OutputMessageText(text="# Title\nbody")],
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="# Title\nbody",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="m1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            OutputMessageItemEvent(data=msg, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "# Title" in out  # raw markdown shown verbatim
+        assert out.count("body") == 1  # not duplicated by the promoted event
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_markdown_when_enabled(self):
+        # markdown=True: live deltas are withheld; the promoted item renders the
+        # message as formatted Markdown (heading marker consumed), shown once.
+        ec, buf = _make_console_with(markdown=True)
+        msg = OutputMessageItem(
+            id="m1",
+            content_parts=[OutputMessageText(text="# Title\nbody text")],
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="# Title\nbody text",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="m1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            OutputMessageItemEvent(data=msg, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "Title" in out
+        assert "body text" in out
+        assert "# Title" not in out  # heading marker consumed by markdown render
+        assert out.count("body text") == 1  # rendered once, not also streamed raw
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_raw_when_markdown_off(self):
+        # markdown off + no deltas (non-streaming run): plain text, no formatting.
+        ec, buf = _make_console_with(markdown=False)
+        msg = OutputMessageItem(
+            content_parts=[OutputMessageText(text="## Heading\ntext")],
+            status="completed",
+        )
+        events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "## Heading" in out  # shown verbatim, not rendered
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_markdown_when_enabled(self):
+        ec, buf = _make_console_with(markdown=True)
+        msg = OutputMessageItem(
+            content_parts=[OutputMessageText(text="## Heading\ntext")],
+            status="completed",
+        )
+        events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "Heading" in out
+        assert "## Heading" not in out  # rendered as markdown

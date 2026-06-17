@@ -169,7 +169,7 @@ from grasp_agents import (
     LLMAgent,
     ProcPacketOutEvent,
     function_tool,
-    stream_events,
+    render_events,
 )
 from grasp_agents.llm_providers.litellm import LiteLLM
 
@@ -190,9 +190,9 @@ agent = LLMAgent[str, str, None](
 )
 
 async def main() -> None:
-    # stream_events renders the run live (system prompt, tool calls, deltas).
+    # render_events renders the run live (system prompt, tool calls, deltas).
     # ProcPacketOutEvent carries the typed final output (here, str).
-    async for event in stream_events(agent.run_stream("What's the weather in Paris?")):
+    async for event in render_events(agent.run_stream("What's the weather in Paris?")):
         if isinstance(event, ProcPacketOutEvent):
             print("\nResult:", event.data.payloads[0])
 

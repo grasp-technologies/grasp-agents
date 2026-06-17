@@ -532,7 +532,7 @@ class AgentLoop[CtxT]:
                         source=self.agent_name,
                         exec_id=exec_id,
                     )
-                    self._process_response(response)
+                    self._process_response(response, exec_id=exec_id)
                 return
             # Clean completion → commit pending items, then surface their
             # item events (post-write, per the convention above).
@@ -562,7 +562,7 @@ class AgentLoop[CtxT]:
                         source=self.agent_name,
                         exec_id=exec_id,
                     )
-                    self._process_response(response)
+                    self._process_response(response, exec_id=exec_id)
                 return
 
             # LLMStream event immediate; item events after the write above.
@@ -577,7 +577,7 @@ class AgentLoop[CtxT]:
         if not response:
             return
 
-        self._process_response(response)
+        self._process_response(response, exec_id=exec_id)
 
     async def _synthesize_validation_tool_results(
         self,
@@ -1420,7 +1420,7 @@ class AgentLoop[CtxT]:
 
         return FinalAnswerTool()
 
-    def _process_response(self, response: Response) -> None:
+    def _process_response(self, response: Response, *, exec_id: str) -> None:
         self._ctx.record_response(self.agent_name, response)
         self._ctx.usage_tracker.update(
             agent_name=self.agent_name,
@@ -1428,3 +1428,13 @@ class AgentLoop[CtxT]:
             model_name=self.llm.model_name,
             litellm_provider=self.llm.litellm_provider,
         )
+        # Mirror generated output (reasoning, text, tool calls) to the raw debug
+        # printer (``ctx.printer``), if attached — the counterpart to the input /
+        # tool-result mirroring elsewhere in the loop, so a non-streaming run
+        # with a :class:`Printer` shows the full raw conversation, model output
+        # included. (For live token-by-token raw output, stream through
+        # ``print_events`` instead; don't also set ``ctx.printer``.)
+        if self._ctx.printer:
+            self._ctx.printer.print_messages(
+                response.output_items, agent_name=self.agent_name, exec_id=exec_id
+            )

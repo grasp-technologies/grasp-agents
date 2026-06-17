@@ -1,12 +1,14 @@
 """Tests for Printer with Responses API items and LLMStreamEvent."""
 
 import pytest
+from pydantic import BaseModel
 
 from grasp_agents.printer import (
     Printer,
     _input_message_text,
     get_style,
-    print_event_stream,
+    print_events,
+    render_payload,
     sanitize_terminal_text,
     truncate_content_str,
 )
@@ -94,6 +96,31 @@ class TestInputMessageText:
         assert "<ENCODED_IMAGE>" in text
 
 
+class TestRenderPayload:
+    """Packet payloads render without redundant quoting / escaping."""
+
+    def test_str_shown_verbatim(self):
+        # A string payload is shown as-is — no wrapping quotes, and a non-ASCII
+        # char (here the multiplication sign) is not escaped to a \\uXXXX
+        # sequence (the bug: json.dumps gave '"**347 \\u00d7 ..."').
+        s = "**347 × 829 = 287,663**"  # noqa: RUF001
+        assert render_payload(s) == s
+
+    def test_model_as_indented_json(self):
+        class M(BaseModel):
+            a: int
+            b: str
+
+        out = render_payload(M(a=1, b="hi"))
+        assert '"a": 1' in out
+        assert '"b": "hi"' in out
+
+    def test_dict_keeps_non_ascii(self):
+        out = render_payload({"label": "café"})
+        assert "café" in out  # kept as-is, not escaped to a \\uXXXX sequence
+        assert "\\u" not in out
+
+
 class TestTruncate:
     def test_no_truncation(self):
         assert truncate_content_str("short", trunc_len=100) == "short"
@@ -153,11 +180,86 @@ class TestPrinterMessage:
         output = capsys.readouterr().out
         assert "raw string" in output
 
+    def test_print_assistant_response(self, capsys):
+        """OutputMessageItem (generated answer) prints <response> tags."""
+        printer = Printer(output_to="stdout")
+        msg = OutputMessageItem(
+            content_parts=[OutputMessageText(text="The answer is 42.")],
+            status="completed",
+        )
 
-# ---------- print_event_stream with LLMStreamEvent ----------
+        printer.print_message(msg, agent_name="test", exec_id="c1")
+
+        output = capsys.readouterr().out
+        assert "<response>" in output
+        assert "The answer is 42." in output
+        assert "</response>" in output
+
+    def test_print_reasoning(self, capsys):
+        """ReasoningItem (thinking) prints <thinking> tags with the summary."""
+        from grasp_agents.types.content import ReasoningSummary
+
+        printer = Printer(output_to="stdout")
+        item = ReasoningItem(
+            summary_parts=[ReasoningSummary(text="Let me work through this.")],
+            status="completed",
+        )
+
+        printer.print_message(item, agent_name="test", exec_id="c1")
+
+        output = capsys.readouterr().out
+        assert "<thinking>" in output
+        assert "Let me work through this." in output
+        assert "</thinking>" in output
+
+    def test_print_tool_call(self, capsys):
+        """FunctionToolCallItem (a tool call) prints <tool call> tags + args."""
+        printer = Printer(output_to="stdout")
+        item = FunctionToolCallItem(
+            call_id="call_1", name="search", arguments='{"query": "weather"}'
+        )
+
+        printer.print_message(item, agent_name="test", exec_id="c1")
+
+        output = capsys.readouterr().out
+        assert "<tool call>" in output
+        assert "search" in output
+        assert "query" in output
+        assert "weather" in output
 
 
-class TestPrintEventStream:
+# ---------- AgentLoop routes generated output to ctx.printer (issue 1) ----------
+
+
+class TestPrinterShowsGeneratedOutput:
+    @pytest.mark.asyncio
+    async def test_non_streaming_run_prints_generated_output(self, capsys):
+        """
+        A non-streaming run with ctx.printer set shows the model's generated
+        output (response / thinking / tool calls), not just inputs + tool
+        results — the raw printer is a full debug view of the conversation.
+        """
+        from grasp_agents import LLMAgent, RunContext
+        from tests._helpers import MockLLM, _text_response
+
+        ctx = RunContext[None](printer=Printer(output_to="stdout"))
+        agent = LLMAgent[None, str, None](
+            name="dbg",
+            ctx=ctx,
+            llm=MockLLM(responses_queue=[_text_response("Generated reply.")]),
+        )
+        await agent.run("hello")
+
+        output = capsys.readouterr().out
+        assert "<input>" in output  # input still shown
+        assert "<response>" in output  # ...and now the generated answer too
+        assert "Generated reply." in output
+
+
+# ---------- print_events with LLMStreamEvent ----------
+
+
+class TestPrintEvents:
     def _make_response(self) -> Response:
         return Response(
             model="test-model",
@@ -185,7 +287,7 @@ class TestPrintEventStream:
             )
 
         collected = []
-        async for event in print_event_stream(gen()):
+        async for event in print_events(gen()):
             collected.append(event)
 
         output = capsys.readouterr().out
@@ -224,7 +326,7 @@ class TestPrintEventStream:
             )
 
         collected = []
-        async for event in print_event_stream(gen()):
+        async for event in print_events(gen()):
             collected.append(event)
 
         output = capsys.readouterr().out
@@ -247,7 +349,7 @@ class TestPrintEventStream:
                 exec_id="c1",
             )
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -265,7 +367,7 @@ class TestPrintEventStream:
                 exec_id="c1",
             )
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -284,7 +386,7 @@ class TestPrintEventStream:
                 exec_id="c1",
             )
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -311,7 +413,7 @@ class TestPrintEventStream:
                 exec_id="c1",
             )
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -334,7 +436,7 @@ class TestPrintEventStream:
                 exec_id="c1",
             )
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -348,7 +450,7 @@ class TestPrintEventStream:
         async def gen():
             yield SystemMessageEvent(data=msg, source="agent", exec_id="c1")
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -363,7 +465,7 @@ class TestPrintEventStream:
         async def gen():
             yield UserMessageEvent(data=msg, source="agent", exec_id="c1")
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -378,7 +480,7 @@ class TestPrintEventStream:
         async def gen():
             yield ToolOutputItemEvent(data=msg, source="agent", exec_id="c1")
 
-        async for _ in print_event_stream(gen()):
+        async for _ in print_events(gen()):
             pass
 
         output = capsys.readouterr().out
@@ -386,7 +488,7 @@ class TestPrintEventStream:
 
     @pytest.mark.asyncio
     async def test_events_are_yielded_through(self):
-        """print_event_stream yields all events through unchanged."""
+        """print_events yields all events through unchanged."""
         msg = InputMessageItem.from_text("Hello", role="user")
 
         async def gen():
@@ -405,7 +507,7 @@ class TestPrintEventStream:
             )
 
         collected = []
-        async for event in print_event_stream(gen()):
+        async for event in print_events(gen()):
             collected.append(event)
 
         assert len(collected) == 2
@@ -420,7 +522,7 @@ class TestPrintEventStream:
         async def gen():
             yield ToolOutputItemEvent(source="tool", exec_id="e", data=item)
 
-        async for _ in print_event_stream(gen(), trunc_len=2000):
+        async for _ in print_events(gen(), trunc_len=2000):
             pass
 
         output = capsys.readouterr().out

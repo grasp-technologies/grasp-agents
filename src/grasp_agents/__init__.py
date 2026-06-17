@@ -25,7 +25,7 @@ from .durability import AgentCheckpoint, CheckpointStore, InMemoryCheckpointStor
 from .grasp_logging import enable_verbose_stdout_logging, setup_logging
 from .llm import LLM, FallbackLLM, LLMSettings, RetryPolicy
 from .memory import MemoryEntry, MemoryProvider
-from .printer import Printer, print_event_stream
+from .printer import Printer, print_events
 from .processors import ParallelProcessor, Processor
 from .run_context import RunContext
 from .runner import Runner
@@ -56,7 +56,7 @@ from .types.packet import Packet
 from .types.response import Response
 
 # --- UI ---
-from .ui.console import EventConsole, stream_events
+from .ui.console import EventConsole, render_events
 from .workflow import LoopedWorkflow, SequentialWorkflow, WorkflowProcessor
 
 try:
@@ -109,7 +109,7 @@ __all__ = [
     "WorkflowProcessor",
     "enable_verbose_stdout_logging",
     "function_tool",
-    "print_event_stream",
+    "print_events",
+    "render_events",
     "setup_logging",
-    "stream_events",
 ]

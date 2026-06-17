@@ -20,7 +20,7 @@ from grasp_agents import (
     MemoryProvider,
     ProcPacketOutEvent,
     RunContext,
-    stream_events,
+    render_events,
 )
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.llm.resilience import RetryPolicy
@@ -94,7 +94,7 @@ async def test_memory_authoring_does_not_clobber(memdir: Path) -> None:
     )
 
     final: str | None = None
-    async for event in stream_events(
+    async for event in render_events(
         agent.run_stream(
             "Please remember: I'm based in Berlin (CET timezone) and "
             "I work on ML research full-time.",

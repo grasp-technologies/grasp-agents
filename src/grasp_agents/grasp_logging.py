@@ -200,7 +200,14 @@ def log_context(
     try:
         yield
     finally:
-        _LOG_CONTEXT.reset(token)
+        try:
+            _LOG_CONTEXT.reset(token)
+        except ValueError:
+            # Finalized in a different context than it was entered — e.g. an
+            # async generator aclose()d / GC'd from another task (an
+            # interrupted run_stream). The originating context is discarded
+            # anyway, so the correlation metadata needs no reset.
+            pass
 
 
 def _current_span_ids() -> tuple[str, str]:

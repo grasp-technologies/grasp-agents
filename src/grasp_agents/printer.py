@@ -129,6 +129,24 @@ def prettify_json_str(json_str: str) -> str:
         return json_str
 
 
+def render_payload(payload: Any) -> str:
+    r"""
+    Stringify a packet payload for display.
+
+    A plain ``str`` is shown verbatim — no wrapping quotes, no ``\uXXXX``
+    escaping; a pydantic model as indented JSON; anything else as indented JSON
+    (UTF-8, non-ASCII kept), falling back to ``str()``.
+    """
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, BaseModel):
+        return payload.model_dump_json(indent=2)
+    try:
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    except TypeError:
+        return str(payload)
+
+
 def _input_message_text(msg: InputMessageItem) -> str:
     parts: list[str] = []
     for part in msg.content_parts:
@@ -195,12 +213,30 @@ class Printer:
             out += f"<tool result> [{message.call_id}]\n{content}\n</tool result>\n"
 
         else:
+            # Generated (assistant) output — the raw printer shows everything the
+            # model produces: its reasoning, its text, and its tool calls.
             style = get_style(
                 agent_name=agent_name,
                 role="assistant",
                 color_by=self.color_by,
             )
-            out += f"{message}\n"
+            if isinstance(message, ReasoningItem):
+                thinking = message.content_text or message.summary_text
+                thinking = truncate_content_str(thinking, trunc_len=self.msg_trunc_len)
+                out += f"<thinking>\n{thinking}\n</thinking>\n"
+            elif isinstance(message, OutputMessageItem):
+                content = message.refusal or message.text
+                content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
+                out += f"<response>\n{content}\n</response>\n"
+            elif isinstance(message, FunctionToolCallItem):
+                args = prettify_json_str(message.arguments)
+                args = truncate_content_str(args, trunc_len=self.msg_trunc_len)
+                out += (
+                    f"<tool call> {message.name} [{message.call_id}]\n"
+                    f"{args}\n</tool call>\n"
+                )
+            else:
+                out += f"{message}\n"
 
         self._output(out, style)
 
@@ -213,143 +249,167 @@ class Printer:
         for _message in messages:
             self.print_message(_message, agent_name=agent_name, exec_id=exec_id)
 
+    async def stream(
+        self,
+        events: AsyncIterator[Event[Any]],
+        *,
+        exclude_packet_events: bool = False,
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        Render an event stream raw, yielding each event through.
 
-async def print_event_stream(
-    event_generator: AsyncIterator[Event[Any]],
+        Shows everything the model produces or ingests — thinking, response
+        text, tool-call arguments, tool results — streamed token-by-token and
+        wrapped in tags, with no formatting. The raw counterpart to
+        :meth:`EventConsole.stream` (use that for readable output);
+        ``ctx.printer`` is the inline (non-wrapping) variant of the same.
+        """
+
+        def _make_stream_event_text(event: LLMStreamEvent) -> str:
+            se = event.data
+            style = get_style(
+                agent_name=event.source or "",
+                role="assistant",
+                color_by=self.color_by,
+            )
+            text = ""
+
+            if isinstance(se, ResponseCreated):
+                text += f"\n<{event.source}> [{event.exec_id}]\n"
+
+            elif isinstance(se, OutputItemAdded):
+                item = se.item
+                if isinstance(item, ReasoningItem):
+                    text += "<thinking>\n"
+                elif isinstance(item, OutputMessageItem):
+                    text += "<response>\n"
+                elif isinstance(item, FunctionToolCallItem):
+                    text += f"<tool call> {item.name} [{item.call_id}]\n"
+
+            elif isinstance(se, OutputItemDone):
+                item = se.item
+                if isinstance(item, ReasoningItem):
+                    text += "\n</thinking>\n"
+                elif isinstance(item, OutputMessageItem):
+                    text += "\n</response>\n"
+                elif isinstance(item, FunctionToolCallItem):
+                    text += "\n</tool call>\n"
+
+            elif isinstance(
+                se,
+                OutputMessageTextPartTextDelta
+                | ReasoningSummaryPartTextDelta
+                | ReasoningContentPartTextDelta
+                | FunctionCallArgumentsDelta,
+            ):
+                text += se.delta
+
+            return _styled_str(text, style)
+
+        def _make_message_text(
+            event: SystemMessageEvent | UserMessageEvent | ToolOutputItemEvent,
+        ) -> str:
+            data = event.data
+            text = f"\n<{event.source}> [{event.exec_id}]\n"
+
+            if isinstance(event, SystemMessageEvent):
+                assert isinstance(data, InputMessageItem)
+                content = _input_message_text(data)
+                content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
+                style = get_style(
+                    agent_name=event.source or "",
+                    role="system",
+                    color_by=self.color_by,
+                )
+                text += f"<system>\n{content}\n</system>\n"
+
+            elif isinstance(event, UserMessageEvent):
+                assert isinstance(data, InputMessageItem)
+                content = _input_message_text(data)
+                content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
+                style = get_style(
+                    agent_name=event.source or "",
+                    role="user",
+                    color_by=self.color_by,
+                )
+                text += f"<input>\n{content}\n</input>\n"
+
+            else:
+                assert isinstance(data, FunctionToolOutputItem)
+                content = data.output if isinstance(data.output, str) else ""
+                try:
+                    content = json.dumps(json.loads(content), indent=2)
+                except Exception:
+                    pass
+                content = truncate_content_str(content, trunc_len=self.msg_trunc_len)
+                style = get_style(
+                    agent_name=event.source or "",
+                    role="tool",
+                    color_by=self.color_by,
+                )
+                text += f"<tool result> [{data.call_id}]\n{content}\n</tool result>\n"
+
+            return _styled_str(text, style)
+
+        def _make_packet_text(
+            event: ProcPacketOutEvent | RunPacketOutEvent,
+        ) -> str:
+            src = "run" if isinstance(event, RunPacketOutEvent) else "processor"
+
+            style = get_style(
+                agent_name=event.source or "",
+                role="assistant",
+                color_by=self.color_by,
+            )
+            text = f"\n<{event.source}> [{event.exec_id}]\n"
+
+            if event.data.payloads:
+                text += f"<{src} output>\n"
+                for p in event.data.payloads:
+                    text += f"{render_payload(p)}\n"
+                text += f"</{src} output>\n"
+
+            return _styled_str(text, style)
+
+        async for event in events:
+            if isinstance(event, LLMStreamEvent):
+                text = _make_stream_event_text(event)
+                if text:
+                    stream_colored_text(text)
+
+            elif isinstance(
+                event, SystemMessageEvent | UserMessageEvent | ToolOutputItemEvent
+            ):
+                stream_colored_text(_make_message_text(event))
+
+            elif (
+                isinstance(event, ProcPacketOutEvent | RunPacketOutEvent)
+                and not exclude_packet_events
+            ):
+                stream_colored_text(_make_packet_text(event))  # type: ignore[arg-type]
+
+            yield event
+
+
+async def print_events(
+    events: AsyncIterator[Event[Any]],
+    *,
     color_by: ColoringMode = "role",
-    trunc_len: int = 10000,
+    trunc_len: int = 20000,
     exclude_packet_events: bool = False,
 ) -> AsyncIterator[Event[Any]]:
-    def _make_stream_event_text(event: LLMStreamEvent) -> str:
-        se = event.data
-        style = get_style(
-            agent_name=event.source or "",
-            role="assistant",
-            color_by=color_by,
-        )
-        text = ""
+    """
+    Wrap an event stream with raw :class:`Printer` display, yielding events
+    through — the raw counterpart to :func:`grasp_agents.ui.render_events`::
 
-        if isinstance(se, ResponseCreated):
-            text += f"\n<{event.source}> [{event.exec_id}]\n"
+        async for event in print_events(agent.run_stream("hello")):
+            ...
 
-        elif isinstance(se, OutputItemAdded):
-            item = se.item
-            if isinstance(item, ReasoningItem):
-                text += "<thinking>\n"
-            elif isinstance(item, OutputMessageItem):
-                text += "<response>\n"
-            elif isinstance(item, FunctionToolCallItem):
-                text += f"<tool call> {item.name} [{item.call_id}]\n"
-
-        elif isinstance(se, OutputItemDone):
-            item = se.item
-            if isinstance(item, ReasoningItem):
-                text += "\n</thinking>\n"
-            elif isinstance(item, OutputMessageItem):
-                text += "\n</response>\n"
-            elif isinstance(item, FunctionToolCallItem):
-                text += "\n</tool call>\n"
-
-        elif isinstance(
-            se,
-            OutputMessageTextPartTextDelta
-            | ReasoningSummaryPartTextDelta
-            | ReasoningContentPartTextDelta
-            | FunctionCallArgumentsDelta,
-        ):
-            text += se.delta
-
-        return _styled_str(text, style)
-
-    def _make_message_text(
-        event: SystemMessageEvent | UserMessageEvent | ToolOutputItemEvent,
-    ) -> str:
-        data = event.data
-        text = f"\n<{event.source}> [{event.exec_id}]\n"
-
-        if isinstance(event, SystemMessageEvent):
-            assert isinstance(data, InputMessageItem)
-            content = _input_message_text(data)
-            content = truncate_content_str(content, trunc_len=trunc_len)
-            style = get_style(
-                agent_name=event.source or "",
-                role="system",
-                color_by=color_by,
-            )
-            text += f"<system>\n{content}\n</system>\n"
-
-        elif isinstance(event, UserMessageEvent):
-            assert isinstance(data, InputMessageItem)
-            content = _input_message_text(data)
-            content = truncate_content_str(content, trunc_len=trunc_len)
-            style = get_style(
-                agent_name=event.source or "",
-                role="user",
-                color_by=color_by,
-            )
-            text += f"<input>\n{content}\n</input>\n"
-
-        else:
-            assert isinstance(data, FunctionToolOutputItem)
-            content = data.output if isinstance(data.output, str) else ""
-            try:
-                content = json.dumps(json.loads(content), indent=2)
-            except Exception:
-                pass
-            content = truncate_content_str(content, trunc_len=trunc_len)
-            style = get_style(
-                agent_name=event.source or "",
-                role="tool",
-                color_by=color_by,
-            )
-            text += f"<tool result> [{data.call_id}]\n{content}\n</tool result>\n"
-
-        return _styled_str(text, style)
-
-    def _make_packet_text(
-        event: ProcPacketOutEvent | RunPacketOutEvent,
-    ) -> str:
-        src = "run" if isinstance(event, RunPacketOutEvent) else "processor"
-
-        style = get_style(
-            agent_name=event.source or "",
-            role="assistant",
-            color_by=color_by,
-        )
-        text = f"\n<{event.source}> [{event.exec_id}]\n"
-
-        if event.data.payloads:
-            text += f"<{src} output>\n"
-            for p in event.data.payloads:
-                if isinstance(p, BaseModel):
-                    p_str = p.model_dump_json(indent=2)
-                else:
-                    try:
-                        p_str = json.dumps(p, indent=2)
-                    except TypeError:
-                        p_str = str(p)
-                text += f"{p_str}\n"
-            text += f"</{src} output>\n"
-
-        return _styled_str(text, style)
-
-    # ------ Wrap event generator -------
-
-    async for event in event_generator:
-        if isinstance(event, LLMStreamEvent):
-            text = _make_stream_event_text(event)
-            if text:
-                stream_colored_text(text)
-
-        elif isinstance(
-            event, SystemMessageEvent | UserMessageEvent | ToolOutputItemEvent
-        ):
-            stream_colored_text(_make_message_text(event))
-
-        elif (
-            isinstance(event, ProcPacketOutEvent | RunPacketOutEvent)
-            and not exclude_packet_events
-        ):
-            stream_colored_text(_make_packet_text(event))  # type: ignore[arg-type]
-
+    Thin sugar over :meth:`Printer.stream`; use ``EventConsole`` /
+    ``render_events`` for readable (panelled, Markdown) output instead.
+    """
+    printer = Printer(color_by=color_by, msg_trunc_len=trunc_len)
+    async for event in printer.stream(
+        events, exclude_packet_events=exclude_packet_events
+    ):
         yield event

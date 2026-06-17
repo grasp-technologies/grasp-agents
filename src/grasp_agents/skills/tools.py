@@ -19,7 +19,7 @@ from grasp_agents.tools.function_tool import function_tool
 
 from .injection import LOAD_INSTRUCTION, render_available_skills_block
 from .loader import parse_skill_md
-from .registry import substitute_args
+from .registry import strip_arg_placeholders
 from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
@@ -72,7 +72,10 @@ async def load_skill(
     except Exception:
         body = skill.body
 
-    return substitute_args(body, None)
+    # A model-invoked load has no slash-command arguments — strip the
+    # placeholders so the body is a standalone procedure applied to the user's
+    # request in the conversation, not an empty inline slot.
+    return strip_arg_placeholders(body)
 
 
 @function_tool(name="list_skills", description=LIST_SKILLS_DESCRIPTION)

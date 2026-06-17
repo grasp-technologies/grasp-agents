@@ -3,7 +3,7 @@
 Two front-ends over one Textual-free renderer (`grasp_agents.ui._event_render`),
 both consuming the same typed `AsyncIterator[Event]`:
 
-- **`console`** — a light, linear ANSI stream (`EventConsole` / `stream_events`).
+- **`console`** — a light, linear ANSI stream (`EventConsole` / `render_events`).
   Needs only `rich` (a core dependency); works in any terminal, a pipe, or a
   notebook. Try `python -m grasp_agents.ui.demo`.
 - **`app`** — a full-screen **Textual** app (the rest of this doc): **one pane

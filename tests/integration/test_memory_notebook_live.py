@@ -22,7 +22,7 @@ from grasp_agents import (
     ProcPacketOutEvent,
     RunContext,
     SkillRegistry,
-    stream_events,
+    render_events,
 )
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.llm.resilience import RetryPolicy
@@ -52,7 +52,7 @@ async def _run_and_capture(
     agent: LLMAgent[Any, Any, Any], message: str
 ) -> Any:
     final: Any = None
-    async for event in stream_events(
+    async for event in render_events(
         agent.run_stream(message),
         show_input_messages=False,
         max_input_msg_lines=20,

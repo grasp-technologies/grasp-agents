@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
@@ -24,12 +25,13 @@ from grasp_agents.types.events import (
     LLMStreamEvent,
     LLMStreamingErrorData,
     LLMStreamingErrorEvent,
+    OutputMessageItemEvent,
     SystemMessageEvent,
     TurnInfo,
     TurnStartEvent,
     UserMessageEvent,
 )
-from grasp_agents.types.items import InputMessageItem
+from grasp_agents.types.items import InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_events import OutputMessageTextPartTextDelta
 from grasp_agents.ui.console import EventConsole
 from grasp_agents.ui.demo import console_demo_events
@@ -146,6 +148,21 @@ def _background_task_events() -> list[Event[Any]]:
                 sequence_number=1,
                 item_id="i1",
                 logprobs=[],
+            ),
+            source="agent",
+            exec_id="c1",
+        ),
+        # The message completes (its promoted event) — under the markdown=True
+        # default the finished text renders here, not the live delta above.
+        OutputMessageItemEvent(
+            data=OutputMessageItem(
+                id="i1",
+                content_parts=[
+                    OutputMessageText(
+                        text="Working on your request while the analysis runs..."
+                    )
+                ],
+                status="completed",
             ),
             source="agent",
             exec_id="c1",

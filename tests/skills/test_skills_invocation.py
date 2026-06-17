@@ -47,6 +47,24 @@ class TestRenderInvocation:
         text = reg.render_invocation("alpha", args="hello world")
         assert "Run with: hello world" in text
 
+    def test_placeholder_free_body_appends_user_input(self) -> None:
+        # A procedure with no placeholder: args are appended as a labelled
+        # block rather than spliced inline.
+        reg = SkillRegistry([_skill("alpha", body="Summarize the user's text.")])
+        text = reg.render_invocation("alpha", args="hello world", wrap=False)
+        assert text == "Summarize the user's text.\n\nUser input:\nhello world"
+
+    def test_placeholder_free_body_appends_mapping_args(self) -> None:
+        reg = SkillRegistry([_skill("alpha", body="Do the thing.")])
+        text = reg.render_invocation("alpha", args={"q": "x", "n": "5"}, wrap=False)
+        assert "User input:" in text
+        assert "q=x" in text
+        assert "n=5" in text
+
+    def test_placeholder_free_body_no_args_unchanged(self) -> None:
+        reg = SkillRegistry([_skill("alpha", body="Do the thing.")])
+        assert reg.render_invocation("alpha", wrap=False).strip() == "Do the thing."
+
     def test_arguments_substitution_with_mapping_includes_full_string(self) -> None:
         reg = SkillRegistry([_skill("alpha", body="Args: $ARGUMENTS")])
         text = reg.render_invocation("alpha", args={"q": "transformers", "n": "5"})

@@ -3,7 +3,7 @@ User-interface surfaces for grasp-agents event streams.
 
 Two front-ends over one renderer (:mod:`._event_render`, Textual-free):
 
-* :class:`.console.EventConsole` / :func:`.console.stream_events` — a light,
+* :class:`.console.EventConsole` / :func:`.console.render_events` — a light,
   linear ANSI stream that works in any terminal, a pipe, or a notebook. Needs
   only ``rich`` (a core dependency).
 * :mod:`.app` — a full-screen Textual app (monitor / interactive); :mod:`.notebook`
@@ -21,7 +21,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from .console import EventConsole, stream_events
+from .console import EventConsole, render_events
 
 if TYPE_CHECKING:
     from ._approval import TuiApprovalStore
@@ -33,11 +33,11 @@ __all__ = [
     "GraspAgentsApp",
     "TuiApprovalStore",
     "display_screenshot",
+    "render_events",
     "render_events_inline",
     "run_tui",
     "run_tui_interactive",
     "screenshot",
-    "stream_events",
 ]
 
 # Name → module it lives in; resolved on first access so the Textual modules

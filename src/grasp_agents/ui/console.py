@@ -14,7 +14,6 @@ tool's subagent chatter, background-task notification panels, cumulative cost,
 and the ``show_*`` toggles.
 """
 
-import json
 import textwrap
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -24,6 +23,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from grasp_agents.printer import render_payload
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
@@ -117,6 +117,7 @@ class EventConsole:
         show_system_messages: bool = False,
         show_packets: bool = False,
         show_background: bool = False,
+        markdown: bool = True,
         trunc_len: int = 10000,
         max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
         max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
@@ -129,6 +130,12 @@ class EventConsole:
         self.show_system_messages = show_system_messages
         self.show_packets = show_packets
         self.show_background = show_background
+        # Render the assistant's final message as Markdown (headings, lists,
+        # code, tables) instead of plain text — consistently in both modes.
+        # A linear stream can't format Markdown incrementally, so when on, the
+        # response is NOT streamed token-by-token: it's rendered once complete
+        # (thinking still streams live). Off by default — opt in for readability.
+        self.markdown = markdown
         self.trunc_len = trunc_len
         self.max_tool_output_lines = max_tool_output_lines
         self.max_input_msg_lines = max_input_msg_lines
@@ -137,9 +144,13 @@ class EventConsole:
         self._in_text = False
         self._in_thinking = False
         self._think_line_buf: str = ""
-        self._streamed_message = False
-        self._streamed_tool = False
-        self._streamed_reasoning = False
+        # Ids of output items whose content was rendered live during streaming
+        # (raw text / the thinking gutter). The promoted item event for the
+        # same id is then suppressed so it isn't shown twice. A set — not a
+        # per-type boolean — so multiple reasoning / message items in one
+        # generation (e.g. OpenAI web search interleaving reasoning between
+        # searches) are each tracked, not just the last. Reset per generation.
+        self._streamed_live_ids: set[str] = set()
         self._in_tool_block = False
         self._pending_tool_spacing = False
 
@@ -299,7 +310,6 @@ class EventConsole:
             item = se.item
             if isinstance(item, ReasoningItem):
                 self._end_text()
-                self._streamed_reasoning = True
                 # The "thinking" header is opened lazily on the first reasoning
                 # delta (see _write_thinking), so a reasoning item that streams
                 # no summary text shows nothing — matching the TUI, which only
@@ -307,14 +317,17 @@ class EventConsole:
             elif isinstance(item, FunctionToolCallItem):
                 self._end_text()
                 self._end_thinking()
-                self._streamed_tool = True
 
         elif isinstance(se, OutputMessageTextPartTextDelta):
-            self._streamed_message = True
             self._in_tool_block = False
             self._end_thinking()
+            if self.markdown:
+                # Defer to the promoted OutputMessageItemEvent, which renders
+                # the complete message as Markdown (can't format incrementally).
+                return
             self._in_text = True
             self._write(se.delta)
+            self._streamed_live_ids.add(se.item_id)
 
         elif isinstance(
             se,
@@ -322,6 +335,7 @@ class EventConsole:
         ):
             if self.show_thinking:
                 self._write_thinking(se.delta)
+                self._streamed_live_ids.add(se.item_id)
 
         elif isinstance(se, FunctionCallArgumentsDelta):
             pass  # Display complete args from ToolCallItemEvent
@@ -333,8 +347,9 @@ class EventConsole:
             self._end_text()
             self._end_thinking()
             self._print(render_retry_notice(se))
-            self._streamed_message = False
-            self._streamed_reasoning = False
+            # The superseded attempt's items are discarded upstream; drop their
+            # ids so the retry's promoted events aren't mistakenly suppressed.
+            self._streamed_live_ids.clear()
 
         elif isinstance(se, OutputItemDone):
             item = se.item
@@ -346,14 +361,20 @@ class EventConsole:
     # ── Promoted item events → shared renderer ──
 
     def _on_output_message(self, event: OutputMessageItemEvent) -> None:
-        if self._streamed_message:
-            self._streamed_message = False
+        if event.data.id in self._streamed_live_ids:
+            # Raw text already streamed live for this message (markdown off).
             return
         self._in_tool_block = False
-        self._print(render_event(event, inline_images=False))
+        if self.markdown:
+            self._print(render_event(event, inline_images=False))
+        else:
+            # markdown off and not streamed live (non-streaming run): show the
+            # response as plain text, consistent with the raw token stream.
+            text = event.data.text
+            if text:
+                self.console.print(Text(text))
 
     def _on_tool_call_item(self, event: ToolCallItemEvent) -> None:
-        self._streamed_tool = False
         self._end_text()
         self._end_thinking()
         self._in_tool_block = True
@@ -366,8 +387,7 @@ class EventConsole:
             self.console.print(f"[bold {color}]{escape(agent)} → {escape(tool)}[/]")
 
     def _on_reasoning_item(self, event: ReasoningItemEvent) -> None:
-        if self._streamed_reasoning:
-            self._streamed_reasoning = False
+        if event.data.id in self._streamed_live_ids:
             return
         if not self.show_thinking:
             return
@@ -410,6 +430,10 @@ class EventConsole:
         self._print(render_event(event, inline_images=False))
 
     def _on_generation_end(self, event: GenerationEndEvent) -> None:
+        # This generation's promoted item events have all fired by now; clear
+        # the streamed-id set so the next generation starts fresh (and ids
+        # don't accumulate across a long run).
+        self._streamed_live_ids.clear()
         if not self.show_usage:
             return
         usage = event.data.usage_with_cost
@@ -472,19 +496,11 @@ class EventConsole:
     def _on_packet(self, event: ProcPacketOutEvent | RunPacketOutEvent) -> None:
         self._end_text()
         self._in_tool_block = False
-        from pydantic import BaseModel as _BM  # noqa: PLC0415, N814
-
         color = PALETTE["muted"]
         src = event.source or "processor"
         self.console.print(f"[bold]{escape(src)}[/] output:")
         for p in event.data.payloads:
-            if isinstance(p, _BM):
-                text = p.model_dump_json(indent=2)
-            else:
-                try:
-                    text = json.dumps(p, indent=2)
-                except TypeError:
-                    text = str(p)
+            text = render_payload(p)
             self.console.print(f"[{color}]{escape(truncate(text, self.trunc_len))}[/]")
 
     # ── Error events ──
@@ -614,7 +630,7 @@ class EventConsole:
 # ── Convenience wrapper ──
 
 
-async def stream_events(
+async def render_events(
     events: AsyncIterator[Event[Any]],
     *,
     show_thinking: bool = False,
@@ -624,6 +640,7 @@ async def stream_events(
     show_system_messages: bool = False,
     show_packets: bool = False,
     show_background: bool = False,
+    markdown: bool = True,
     trunc_len: int = 10000,
     max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
     max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
@@ -632,13 +649,15 @@ async def stream_events(
     """
     Wrap an event stream with rich console display, yielding events through::
 
-        async for event in stream_events(agent.run_stream("hello", ctx=ctx)):
+        async for event in render_events(agent.run_stream("hello", ctx=ctx)):
             ...
 
     User (input) messages show by default (``show_input_messages``); system
     messages are opt-in (``show_system_messages``). ``show_background=True``
     prints background subagents' internal events inline (off by default — only
-    their launch/completion notices and results show).
+    their launch/completion notices and results show). ``markdown=True`` renders
+    the assistant's final answer as formatted Markdown (rendered once complete,
+    so it is not streamed token-by-token; thinking still streams live).
     """
     ec = EventConsole(
         console=console,
@@ -649,6 +668,7 @@ async def stream_events(
         show_system_messages=show_system_messages,
         show_packets=show_packets,
         show_background=show_background,
+        markdown=markdown,
         trunc_len=trunc_len,
         max_tool_output_lines=max_tool_output_lines,
         max_input_msg_lines=max_input_msg_lines,

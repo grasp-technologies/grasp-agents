@@ -888,7 +888,7 @@ class GraspAgentsApp(App[None]):
             pane = self._ga_panes[owner]
             await pane.mount(
                 SelectableStatic(
-                    Text("⊘ run interrupted", style="italic"), classes="ga-msg"
+                    Text("⊘ interrupted", style="italic"), classes="ga-msg"
                 )
             )
             pane.scroll_end(animate=False)

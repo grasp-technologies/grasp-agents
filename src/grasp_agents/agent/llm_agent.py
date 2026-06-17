@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -972,11 +973,24 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                 self._loop.final_answer, in_args=inp, exec_id=exec_id
             )
 
-        except GeneratorExit:
-            # Consumer stopped iterating — not a failed run; keep state as-is.
+        except (asyncio.CancelledError, GeneratorExit):
+            # Interrupted mid-turn (Esc / consumer abort). Prune the transcript
+            # exactly as session resume does: a dangling tool call (no result)
+            # drops the whole incomplete assistant turn back to the submitted
+            # message; a clean boundary (no dangling call) is left untouched.
+            # When that strips the turn, its context mutations (file-read ledger,
+            # shell cwd, …) go with it — restore the pre-turn snapshot so the
+            # state and transcript agree. Nothing stripped ⇒ keep state as-is.
+            resumed = prepare_messages_for_resume(self.transcript.messages)
+            self.transcript.messages = resumed.messages
+            if resumed.removed_count:
+                self._loop.agent_ctx.restore_state(saved_ctx_state)
+                self._log_dirty = True
             raise
 
         except BaseException:
+            # Genuine failure (LLM error, parser, …): revert the whole run so a
+            # retry or reused instance starts clean.
             self.transcript.messages = saved_messages
             self._loop.turn = saved_turn
             self._loop.agent_ctx.restore_state(saved_ctx_state)

@@ -275,17 +275,33 @@ class TestLoadSkillTool:
         assert "ALPHA BODY" in result
 
     @pytest.mark.asyncio
-    async def test_substitutes_arguments_placeholder(self, tmp_path: Path) -> None:
-        # A model-invoked load has no arguments, so `$ARGUMENTS` resolves to
-        # empty rather than leaking the literal placeholder into the body.
-        _write_skill(tmp_path, "alpha", "x", body="Proofread: $ARGUMENTS")
+    async def test_strips_argument_placeholder(self, tmp_path: Path) -> None:
+        # A model-invoked load has no slash-command args — the content is in the
+        # conversation, so a placeholder on its own line is dropped, not left as
+        # an empty inline slot.
+        _write_skill(
+            tmp_path, "alpha", "x", body="Proofread the user's text.\n\n$ARGUMENTS"
+        )
         ctx: RunContext[_State] = RunContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         result = await load_skill(name="alpha", ctx=ctx)
         assert isinstance(result, str)
         assert "$ARGUMENTS" not in result
-        assert result.strip() == "Proofread:"
+        assert result.strip() == "Proofread the user's text."
+
+    @pytest.mark.asyncio
+    async def test_strips_named_argument_placeholder(self, tmp_path: Path) -> None:
+        # Named placeholders ($ARG_NAME) are stripped too — they'd otherwise
+        # leak as literals on a model-invoked load.
+        _write_skill(tmp_path, "alpha", "x", body="Search the index.\n\n$QUERY")
+        ctx: RunContext[_State] = RunContext(
+            state=_State(), skills=SkillRegistry.from_path(tmp_path)
+        )
+        result = await load_skill(name="alpha", ctx=ctx)
+        assert isinstance(result, str)
+        assert "$QUERY" not in result
+        assert result.strip() == "Search the index."
 
     @pytest.mark.asyncio
     async def test_no_registry_errors(self) -> None:

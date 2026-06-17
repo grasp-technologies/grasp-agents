@@ -513,11 +513,11 @@ async def run_headless(
     goal: str | None,
 ) -> str | None:
     """Run one research session in the console; ``goal=None`` resumes."""
-    from grasp_agents import stream_events  # noqa: PLC0415
+    from grasp_agents import render_events  # noqa: PLC0415
 
     final: str | None = None
     async with researcher:
-        async for event in stream_events(
+        async for event in render_events(
             researcher.run_stream(goal), show_thinking=True
         ):
             if isinstance(event, ProcPacketOutEvent):

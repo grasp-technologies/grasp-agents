@@ -331,6 +331,7 @@ def console_demo_events() -> list[Event[Any]]:
     (token deltas, the thinking gutter, panels, cumulative cost).
     """
     text = OutputMessageItem(
+        id="i2",  # matches the streamed delta's item_id below, as real providers emit
         content_parts=[OutputMessageText(text="Let me research that for you.")],
         status="completed",
     )

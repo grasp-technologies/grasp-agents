@@ -21,7 +21,10 @@ tokens to your context. Load on the turn you intend to act.
 
 A skill body is the canonical procedure for the task it names. Once
 loaded, follow it rather than improvising — the steps were written for
-exactly this case, and reordering them is usually a regression.
+exactly this case, and reordering them is usually a regression. The body is
+the procedure only; apply it to the user's request already in the conversation
+(the message that led you to load the skill) — a model-loaded body carries no
+inline input of its own.
 
 If a skill lists `<allowed-tools>`, treat that as a strong hint about
 which tools it expects you to use, but not a hard ceiling — the actual
@@ -31,10 +34,11 @@ permission gate is enforced by the runtime, not by the skill.
 
 A user message wrapped in
 `<system-reminder note="user invoked skill <name>">…</system-reminder>` means the user
-ran that skill themselves (e.g. as a slash-command). The skill's full body —
-with any arguments already substituted — is inside the tags, so you do **not**
-need to `load_skill` it. Treat it as the user's explicit request to apply that
-skill on this turn, and follow the body inside the tags.
+ran that skill themselves (e.g. as a slash-command). The skill's full body is
+inside the tags — with the user's arguments included (substituted into the body,
+or appended as a `User input:` block) — so you do **not** need to `load_skill`
+it. Treat it as the user's explicit request to apply that skill on this turn,
+and follow the body inside the tags.
 
 ## Authoring skills
 
