@@ -47,6 +47,14 @@ from grasp_agents.ui._event_render import (
 )
 
 
+def _render_to_text(renderable: object, width: int = 80) -> str:
+    from rich.console import Console
+
+    console = Console(width=width, record=True)
+    console.print(renderable)
+    return console.export_text()
+
+
 def test_errored_tool_result_has_red_border() -> None:
     # A failed tool result (is_error, set by the loop for a ToolErrorInfo) gets
     # the red error border; a normal result keeps the neutral one.
@@ -69,6 +77,56 @@ def test_errored_tool_result_has_red_border() -> None:
     panel = render_event(ok)
     assert isinstance(panel, Panel)
     assert panel.border_style == PALETTE["border_tool_result"]
+
+
+def test_untrusted_tool_result_unwrapped_to_kv_panel() -> None:
+    # An <untrusted_content>-fenced JSON result renders as a key/value panel
+    # (not the raw boundary tags), with provenance moved to the title.
+    from grasp_agents.context.untrusted_content import wrap_untrusted
+
+    raw = FunctionToolOutputItem.from_tool_result(
+        call_id="1", output={"stdout": "line one\nline two", "returncode": 0}
+    ).output_parts
+    item = FunctionToolOutputItem(
+        call_id="1", output_parts=wrap_untrusted(raw, source="Bash")
+    )
+    ev = ToolOutputItemEvent(data=item, source="Bash", destination="analyst")
+    out = _render_to_text(render_event(ev, inline_images=False))
+
+    assert "analyst ← Bash" in out
+    assert "[untrusted]" in out
+    assert "untrusted_content" not in out  # the raw XML tags are stripped
+    assert "stdout" in out  # KV keys present
+    assert "returncode" in out
+    # stdout's "\n" is rendered as a real newline: two separate output lines
+    lines = out.splitlines()
+    assert any("line one" in ln and "line two" not in ln for ln in lines)
+    assert any("line two" in ln for ln in lines)
+
+
+def test_ansi_in_tool_result_keeps_border_aligned() -> None:
+    # Colorized tool output (e.g. `ls --color`) is parsed into Rich styles, so
+    # the panel border stays aligned. Raw escape bytes left in the string would
+    # inflate Rich's width measurement and shove the right border inward on the
+    # colored lines only (a ragged edge).
+    from grasp_agents.context.untrusted_content import wrap_untrusted
+
+    color, reset = "\x1b[01;34m", "\x1b[0m"
+    stdout = f"a.txt\n{color}subdir{reset}\nb.txt"  # one colored line among plain
+    raw = FunctionToolOutputItem.from_tool_result(
+        call_id="1", output={"stdout": stdout, "returncode": 0}
+    ).output_parts
+    item = FunctionToolOutputItem(
+        call_id="1", output_parts=wrap_untrusted(raw, source="Bash")
+    )
+    ev = ToolOutputItemEvent(data=item, source="Bash", destination="agent")
+    out = _render_to_text(render_event(ev, inline_images=False), width=60)
+
+    assert "subdir" in out
+    assert "[01;34m" not in out  # no leftover escape-code text in the cell
+    bordered = [ln for ln in out.splitlines() if ln.startswith("│")]
+    assert bordered
+    assert len({len(ln) for ln in bordered}) == 1  # every border line same width
 
 
 def test_notebook_edit_source_highlighting() -> None:
@@ -235,7 +293,9 @@ def test_prose_output_with_leading_brace_stays_markdown() -> None:
     assert isinstance(render_event(ev), Markdown)
 
 
-def test_reasoning_is_panel() -> None:
+def test_reasoning_is_gutter() -> None:
+    # Reasoning renders as a left-border gutter (not a box), matching the
+    # streaming console / TUI thinking style.
     ev = ReasoningItemEvent(
         data=ReasoningItem(
             summary_parts=[ReasoningSummary(text="thinking about it")],
@@ -243,7 +303,12 @@ def test_reasoning_is_panel() -> None:
         ),
         source="agent",
     )
-    assert isinstance(render_event(ev), Panel)
+    rend = render_event(ev)
+    assert not isinstance(rend, Panel)
+    out = _render_to_text(rend)
+    assert "┌ thinking" in out
+    assert "│ thinking about it" in out
+    assert "└" in out
 
 
 def test_empty_reasoning_item_not_rendered() -> None:

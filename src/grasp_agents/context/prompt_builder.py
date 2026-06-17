@@ -382,7 +382,13 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
                 return Content.from_formatted_prompt(self.in_prompt, **val_in_args_map)
             return Content.from_text(json.dumps(val_in_args_map, indent=2))
 
-        # 4. JSON fallback
+        # 4. Plain string payload → render verbatim. A JSON dump would wrap it
+        # in redundant quotes; this matches the chat_inputs path, so a string
+        # routed between processors reads the same as a top-level string input.
+        if isinstance(val_in_args, str):
+            return Content.from_text(val_in_args)
+
+        # 5. JSON fallback
         fmt_in_args = self._in_args_type_adapter.dump_json(
             val_in_args, indent=2, warnings="error"
         ).decode("utf-8")

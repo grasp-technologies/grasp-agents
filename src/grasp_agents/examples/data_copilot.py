@@ -13,7 +13,7 @@ TUI. Conversation memory persists across turns (the same analyst instance).
 Run (needs ``OPENAI_API_KEY`` in ``.env``; the sandbox kernel needs ``numpy`` +
 ``matplotlib``, present in the dev env)::
 
-    python -m grasp_agents.ui.examples.data_copilot
+    python -m grasp_agents.examples.data_copilot
 
 Requires the ``tui`` + ``notebook-exec`` extras and a local sandbox backend
 (the ``srt`` CLI, or macOS ``sandbox-exec`` for ``seatbelt``).
@@ -160,7 +160,7 @@ def build_copilot(
 def main() -> None:
     from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
 
-    analyst, _ctx = build_copilot(_WORKDIR)
+    analyst, _ = build_copilot(_WORKDIR)
     run_tui_interactive(analyst.run_stream, main_agent=analyst.name)
 
 

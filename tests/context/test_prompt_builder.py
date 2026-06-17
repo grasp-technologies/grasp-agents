@@ -250,15 +250,17 @@ class TestJSONFallback:
         assert '"hello"' in text
         assert '"context"' in text
 
-    def test_string_input_gives_json(self):
+    def test_string_input_rendered_verbatim(self):
+        # A string payload (e.g. routed between processors in a Runner) renders
+        # verbatim — not JSON-dumped, which would wrap it in redundant quotes.
+        # This matches the chat_inputs path, so a routed string reads the same as
+        # a top-level string input.
         builder = _make_builder(str)
 
-        content = builder.build_input_content(
-            in_args="raw string", exec_id="c1"
-        )
+        content = builder.build_input_content(in_args="raw string", exec_id="c1")
 
         text = content.parts[0].text  # type: ignore[union-attr]
-        assert "raw string" in text
+        assert text == "raw string"
 
     def test_int_input_gives_json(self):
         builder = _make_builder(int)

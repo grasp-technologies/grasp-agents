@@ -14,8 +14,10 @@ from grasp_agents.llm_providers.openai_responses.tool_converters import (
     to_api_tool_choice,
 )
 from grasp_agents.tools.base import NamedToolChoice
+from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
+    InputMessageItem,
     OpenPageAction,
     SearchAction,
     WebSearchCallItem,
@@ -223,3 +225,41 @@ class TestWebFetchRoundtrip:
         assert ws_items[0].status == "failed"
         assert isinstance(ws_items[0].action, OpenPageAction)
         assert ws_items[0].action.url == "https://unreachable.invalid"
+
+
+# ==== Message id is internal-only ====
+
+
+class TestMessageIdNotSent:
+    """
+    Every message item carries a synthetic ``msg_`` id for internal bookkeeping.
+    The Responses API reads a client-sent message ``id`` as a reference to a
+    stored item and 404s on it ("Item with id 'msg_...' not found") — latent for
+    text, fatal for a message with an image part — so it must never be echoed.
+    """
+
+    def test_text_message_id_stripped(self) -> None:
+        msg = InputMessageItem.from_text("hi", role="user")
+        assert msg.id.startswith("msg_")  # stamped internally
+
+        [param] = items_to_provider_inputs([msg])
+
+        assert param["type"] == "message"
+        assert param["role"] == "user"
+        assert "id" not in param
+
+    def test_multimodal_message_id_stripped(self) -> None:
+        msg = InputMessageItem(
+            role="user",
+            content_parts=[
+                InputText(text="what is this?"),
+                InputImage.from_url("https://example.com/x.jpg"),
+            ],
+        )
+        assert msg.id.startswith("msg_")
+
+        [param] = items_to_provider_inputs([msg])
+
+        assert "id" not in param
+        # the image content survives the id strip
+        assert "input_image" in [p["type"] for p in param["content"]]

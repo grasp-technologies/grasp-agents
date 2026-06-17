@@ -1,6 +1,7 @@
 import base64
 import mimetypes
 import re
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, runtime_checkable
@@ -57,6 +58,24 @@ class InputRenderable(Protocol):
     for multimodal content.
     """
 
+    def to_input_parts(self) -> "list[InputPart] | str": ...
+
+
+class InputRenderableModel(BaseModel, ABC):
+    """
+    Inheritable base for input models that render themselves as LLM input.
+
+    Subclass it and implement :meth:`to_input_parts` to control how the model
+    becomes an LLM input message (text plus images/files) instead of being
+    JSON-serialized. Equivalent to satisfying the :class:`InputRenderable`
+    protocol, but the abstract method gives editor/type-checker guidance, so you
+    don't have to recall the name or signature.
+
+    Return a plain string for text-only input, or a list of ``InputPart`` for
+    multimodal content.
+    """
+
+    @abstractmethod
     def to_input_parts(self) -> "list[InputPart] | str": ...
 
 

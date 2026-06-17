@@ -26,6 +26,7 @@ from .untrusted_content import (
     UNTRUSTED_CONTENT_SECTION_NAME,
     UNTRUSTED_CONTENT_TAG,
     make_untrusted_content_section,
+    unwrap_untrusted,
     wrap_untrusted,
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "make_current_time_attachment",
     "make_env_info_section",
     "make_untrusted_content_section",
+    "unwrap_untrusted",
     "wrap_untrusted",
 ]

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from grasp_agents.examples.data_copilot import build_copilot
 from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     ProcPacketOutEvent,
@@ -19,14 +20,13 @@ from grasp_agents.types.events import (
     ToolOutputItemEvent,
     UserMessageEvent,
 )
-from grasp_agents.ui.examples.data_copilot import build_copilot
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
 async def test_data_copilot_pipeline(tmp_path: Path) -> None:
-    analyst, _ctx = build_copilot(tmp_path, confinement="srt")
+    analyst, _ = build_copilot(tmp_path, confinement="srt")
     prompt = (
         "Generate a small synthetic dataset of 120 daily sales values, then "
         "plot the 7-day moving average over time."
@@ -148,7 +148,7 @@ async def test_interactive_data_copilot_end_to_end(tmp_path: Path) -> None:
 
     from grasp_agents.ui.app import GraspAgentsApp, _PromptArea
 
-    analyst, _ctx = build_copilot(tmp_path, confinement="srt")
+    analyst, _ = build_copilot(tmp_path, confinement="srt")
     app = GraspAgentsApp(on_submit=analyst.run_stream, main_agent=analyst.name)
 
     def titles(source: str) -> list[str]:

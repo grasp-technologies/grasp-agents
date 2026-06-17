@@ -371,8 +371,18 @@ class EventConsole:
             return
         if not self.show_thinking:
             return
+        parts = [
+            p.text for p in (event.data.summary_parts or []) if getattr(p, "text", "")
+        ]
+        # Render a finalized (non-streamed) reasoning item through the same gutter
+        # as the streaming path, so the console shows thinking one consistent way.
+        # No summary text → nothing to show (matches the streaming path, which
+        # opens the gutter lazily on the first delta).
+        if not parts:
+            return
         self._end_text()
-        self._print(render_event(event, inline_images=False))
+        self._write_thinking("\n".join(parts))
+        self._end_thinking()
 
     # ── Lifecycle events ──
 

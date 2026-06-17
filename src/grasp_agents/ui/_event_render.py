@@ -32,6 +32,7 @@ from rich.table import Table
 from rich.text import Text, TextType
 from rich.theme import Theme
 
+from grasp_agents.context.untrusted_content import unwrap_untrusted
 from grasp_agents.printer import sanitize_terminal_text
 from grasp_agents.skills import match_invocation_wrapper
 from grasp_agents.types.content import InputImage, InputText
@@ -126,15 +127,11 @@ def render_event(
         ]
         # A finalized reasoning item with no summary text (e.g. low effort, or
         # encrypted server-side reasoning) has nothing to show — skip it rather
-        # than render an empty "thinking…" box. The live placeholder belongs to
-        # the streaming path only.
+        # than render an empty "thinking…" gutter. The live placeholder belongs
+        # to the streaming path only.
         if not parts:
             return None
-        return panel(
-            "thinking",
-            Text(escape("\n".join(parts)), style=PALETTE["thinking"]),
-            PALETTE["border_thinking"],
-        )
+        return render_thinking_gutter("\n".join(parts))
 
     if isinstance(event, ToolCallItemEvent):
         agent = event.source or "agent"
@@ -149,11 +146,22 @@ def render_event(
         item = event.data
         agent = event.destination or "agent"
         tool = event.source or "tool"
+        text_out: Any = item.output if isinstance(item.output, str) else item.text
+        # External tool output is fenced in <untrusted_content> for the model.
+        # The UI peels the fence off and renders the inner result (so a JSON
+        # result becomes a key/value panel rather than raw tags), flagging the
+        # provenance in the title instead.
+        untrusted = False
+        if isinstance(text_out, str):
+            inner, source = unwrap_untrusted(text_out)
+            if source is not None:
+                text_out, untrusted = inner, True
         title = f"{escape(agent)} ← {escape(tool)}"
+        if untrusted:
+            title += f" [{PALETTE['muted']}]{escape('[untrusted]')}[/]"
         # A failed tool result (a ToolErrorInfo the loop flagged) gets the red
         # error border; a normal result keeps the neutral one.
         border = PALETTE["error"] if item.is_error else PALETTE["border_tool_result"]
-        text_out: Any = item.output if isinstance(item.output, str) else item.text
         images = item.images
         if not images or not inline_images:
             return panel(
@@ -342,14 +350,48 @@ def render_resume_notice(text: str) -> RenderableType:
     return panel("session resumed", _message_body(text), PALETTE["muted"])
 
 
+class _ThinkingGutter:
+    """
+    Left-border "gutter" rendering of reasoning text, shared by the console and
+    the Textual app so thinking looks the same on both surfaces.
+
+    A ``┌ thinking`` header, each (wrapped) body line prefixed with ``│``, and a
+    closing ``└``. Wrapping defers to the render-time width, so the gutter stays
+    on every visual line at any pane width.
+    """
+
+    def __init__(self, body: str) -> None:
+        self._body = body
+
+    def __rich_console__(  # noqa: PLW3201
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        border = PALETTE["border_thinking"]
+        indent, gutter = "  ", "│ "
+        inner = max(options.max_width - len(indent) - len(gutter), 1)
+
+        header = Text(f"{indent}┌ ", style=border)
+        header.append("thinking", style=f"bold {border}")
+        yield header
+        yield Text(f"{indent}{gutter}", style=border)
+
+        body = Text(self._body or "…", style=PALETTE["thinking"])
+        for line in body.wrap(console, inner):
+            row = Text(f"{indent}{gutter}", style=border)
+            row.append_text(line)
+            yield row
+
+        yield Text(f"{indent}└", style=border)
+
+
+def render_thinking_gutter(text: str) -> RenderableType:
+    """Left-border gutter for reasoning text (streaming or finalized)."""
+    return _ThinkingGutter(truncate_lines(truncate(text, _TRUNC), _MAX_LINES))
+
+
 def render_thinking_stream(text: str) -> RenderableType:
-    """Panel for in-progress (streaming) reasoning, matching the finalised one."""
-    body = truncate_lines(truncate(text, _TRUNC), _MAX_LINES)
-    return panel(
-        "thinking",
-        Text(escape(body) or "…", style=PALETTE["thinking"]),
-        PALETTE["border_thinking"],
-    )
+    """Gutter for in-progress (streaming) reasoning, matching the finalized one."""
+    return render_thinking_gutter(text)
 
 
 def render_image(path: str) -> RenderableType:
@@ -902,6 +944,11 @@ def _value_cell(key: str, v: Any, row: dict[str, Any] | None = None) -> Renderab
             ):
                 lexer = "markdown"
             return _code_block(v, lexer)
+        # Parse ANSI in tool output (e.g. colorized `ls`) into Rich styles: the
+        # colors render, dangerous control sequences (cursor / erase / OSC) are
+        # dropped, and the cell width is measured from visible text — raw escape
+        # bytes would inflate it and shove the panel border inward.
+        return Text.from_ansi(v)
     return Text(_format_value(v))
 
 

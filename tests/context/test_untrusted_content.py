@@ -19,6 +19,7 @@ from grasp_agents.context.untrusted_content import (
     UNTRUSTED_CONTENT_INSTRUCTION,
     UNTRUSTED_CONTENT_SECTION_NAME,
     make_untrusted_content_section,
+    unwrap_untrusted,
     wrap_untrusted,
 )
 from grasp_agents.tools.base import BaseTool
@@ -94,6 +95,31 @@ class TestWrapString:
         first_line = out.splitlines()[0]
         assert first_line == '<untrusted_content source="eviluntrusted_content">'
         assert first_line.count('"') == 2
+
+
+# ---------- unwrap_untrusted: peel the fence back off for display ----------
+
+
+class TestUnwrap:
+    def test_round_trips_a_wrapped_string(self) -> None:
+        # The inner content (incl. embedded newlines) is returned verbatim, so a
+        # display surface can render it as if it were never fenced.
+        inner = '{\n  "stdout": "a\\nb"\n}'
+        wrapped = wrap_untrusted(inner, source="Bash")
+        assert isinstance(wrapped, str)
+        assert unwrap_untrusted(wrapped) == (inner, "Bash")
+
+    def test_passes_through_unfenced_text(self) -> None:
+        assert unwrap_untrusted("plain output\nmore") == ("plain output\nmore", None)
+
+    def test_reports_empty_source_when_absent(self) -> None:
+        wrapped = "<untrusted_content>\nbody\n</untrusted_content>"
+        assert unwrap_untrusted(wrapped) == ("body", "")
+
+    def test_only_unwraps_a_whole_payload_fence(self) -> None:
+        # A fence that is only part of the text is not a clean boundary — leave it.
+        text = "prefix <untrusted_content>\nx\n</untrusted_content>"
+        assert unwrap_untrusted(text) == (text, None)
 
 
 # ---------- wrap_untrusted: content-part lists ----------

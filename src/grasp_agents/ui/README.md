@@ -52,7 +52,7 @@ agent · `ctrl+p` command palette (theme switch).
 
 ## Real demo: data-analysis copilot (LLM + sandbox)
 
-A non-trivial, runnable example (`grasp_agents.ui.examples.data_copilot`): an
+A non-trivial, runnable example (`grasp_agents.examples.data_copilot`): an
 *analyst* agent that delegates to two **sandboxed** specialists —
 `data_engineer` (generates/inspects data with numpy) and `viz_specialist`
 (computes stats and renders matplotlib charts shown inline) — each running
@@ -60,7 +60,7 @@ Python in a confined local sandbox, sharing one workspace.
 
 ```bash
 # needs OPENAI_API_KEY in .env, the `notebook-exec` extra, and the `srt` CLI
-python -m grasp_agents.ui.examples.data_copilot
+python -m grasp_agents.examples.data_copilot
 ```
 
 Type e.g. *"Generate 120 daily sales values and plot the 7-day moving

@@ -50,10 +50,11 @@ pytestmark = pytest.mark.asyncio
 
 _WS = "/home/user/workspace"
 _HAS_E2B = importlib.util.find_spec("e2b") is not None
-_E2B_KEY = os.getenv("E2B_API_KEY")
+# bool, not the key itself — a raw key in a module global can surface in logs.
+_HAS_E2B_KEY = bool(os.getenv("E2B_API_KEY"))
 _PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
 _live = pytest.mark.skipif(
-    not (_HAS_E2B and _E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
+    not (_HAS_E2B and _HAS_E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
 )
 
 

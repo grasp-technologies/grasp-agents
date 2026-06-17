@@ -694,9 +694,10 @@ async def test_factory_rejects_unsupported_network(net: NetworkPolicy) -> None:
 # E2B_API_KEY is picked up from .env via tests/conftest.py + the e2b SDK.
 
 _HAS_E2B = importlib.util.find_spec("e2b") is not None
-_E2B_KEY = os.getenv("E2B_API_KEY")
+# bool, not the key itself — a raw key in a module global can surface in logs.
+_HAS_E2B_KEY = bool(os.getenv("E2B_API_KEY"))
 _live = pytest.mark.skipif(
-    not (_HAS_E2B and _E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
+    not (_HAS_E2B and _HAS_E2B_KEY), reason="needs e2b installed + E2B_API_KEY"
 )
 
 

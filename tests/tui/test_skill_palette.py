@@ -226,7 +226,7 @@ async def test_no_palette_without_skills() -> None:
 
 
 def test_example_skills_load() -> None:
-    from grasp_agents.ui.examples.skills_copilot import _SKILLS_ROOT
+    from grasp_agents.examples.skills_copilot import _SKILLS_ROOT
 
     names = {s.name for s in SkillRegistry.from_path(_SKILLS_ROOT).all}
     assert {"proofread", "brainstorm", "explain-code"} <= names
@@ -236,7 +236,7 @@ def test_example_skills_load() -> None:
     not os.environ.get("OPENAI_API_KEY"), reason="needs OPENAI_API_KEY to construct"
 )
 def test_example_build_copilot_constructs() -> None:
-    from grasp_agents.ui.examples.skills_copilot import build_copilot
+    from grasp_agents.examples.skills_copilot import build_copilot
 
     agent, ctx = build_copilot()
     assert agent.name == "assistant"

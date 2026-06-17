@@ -134,6 +134,24 @@ def _make_llm(
     )
 
 
+async def _committed_messages(
+    store: InMemoryCheckpointStore, key: str
+) -> list[Any]:
+    """
+    Load an agent's committed transcript the way resume does.
+
+    The transcript is an out-of-band append-only message log, not embedded in
+    the head (``AgentCheckpoint.model_dump_json`` excludes ``messages``). Read
+    the log for the head's ``log_version`` and trust only up to its commit
+    watermark ``message_count`` — mirrors ``AgentCheckpointMixin.load``.
+    """
+    data = await store.load(key)
+    assert data is not None, f"checkpoint {key!r} should exist"
+    head = AgentCheckpoint.model_validate_json(data)
+    raw = await store.read_messages(key, version=head.log_version)
+    return raw[: head.message_count]
+
+
 # ---------- Tests ----------
 
 
@@ -169,8 +187,7 @@ class TestRunnerWithAgents:
 
         ctx: RunContext[None] = RunContext(state=None)
         runner = Runner[str, None](
-            ctx=ctx,
-            entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
+            ctx=ctx, entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
         )
 
         result = await runner.run(chat_inputs="Science")
@@ -202,9 +219,7 @@ class TestParallelProcessorWithAgents:
         ctx: RunContext[None] = RunContext(state=None)
         par.on_adopted(ctx=ctx)
 
-        result = await par.run(
-            in_args=["black holes", "photosynthesis", "jazz music"]
-        )
+        result = await par.run(in_args=["black holes", "photosynthesis", "jazz music"])
         payloads = list(result.payloads)
         assert len(payloads) == 3
         for p in payloads:
@@ -298,8 +313,7 @@ class TestRunnerDurability:
             state=None, checkpoint_store=store, session_key="int-1"
         )
         runner = Runner[str, None](
-            ctx=ctx,
-            entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
+            ctx=ctx, entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
         )
 
         result = await runner.run(chat_inputs="Mathematics")
@@ -349,8 +363,7 @@ class TestSequentialWorkflowInRunner:
 
         ctx: RunContext[None] = RunContext(state=None)
         runner = Runner[str, None](
-            ctx=ctx,
-            entry_proc=entry, procs=[entry, wf], name="wf_runner"
+            ctx=ctx, entry_proc=entry, procs=[entry, wf], name="wf_runner"
         )
 
         result = await runner.run(chat_inputs="The ocean at sunset")
@@ -434,7 +447,7 @@ class TestAgentCrashResume:
         add_tool = _FailingAddTool(fail_on_call=999)
         agent1 = LLMAgent[str, str, None](
             name="calculator",
-            llm=_make_llm(500),
+            llm=_make_llm(1000),
             sys_prompt=(
                 "You are a calculator. Use the add tool to compute 1 + 2. "
                 "Return the final number only."
@@ -449,8 +462,7 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="agent-crash-1"
         )
         runner1 = Runner[str, None](
-            ctx=ctx1,
-            entry_proc=entry1, procs=[entry1, agent1, crasher1], name="r"
+            ctx=ctx1, entry_proc=entry1, procs=[entry1, agent1, crasher1], name="r"
         )
 
         with pytest.raises(ExceptionGroup):
@@ -458,14 +470,10 @@ class TestAgentCrashResume:
 
         # Verify: agent checkpoint has tool call conversation
         agent_key = "agent-crash-1/agent/calculator"
-        agent_data = await store.load(agent_key)
-        assert agent_data is not None, "Agent checkpoint should exist"
-        agent_cp = AgentCheckpoint.model_validate_json(agent_data)
-        has_tool_call = any(
-            isinstance(m, FunctionToolCallItem) for m in agent_cp.messages
-        )
+        messages = await _committed_messages(store, agent_key)
+        has_tool_call = any(isinstance(m, FunctionToolCallItem) for m in messages)
         has_tool_result = any(
-            isinstance(m, FunctionToolOutputItem) for m in agent_cp.messages
+            isinstance(m, FunctionToolOutputItem) for m in messages
         )
         assert has_tool_call, "Checkpoint should contain a tool call"
         assert has_tool_result, "Checkpoint should contain a tool result"
@@ -481,7 +489,7 @@ class TestAgentCrashResume:
         add_tool2 = _FailingAddTool(fail_on_call=999)
         agent2 = LLMAgent[str, str, None](
             name="calculator",
-            llm=_make_llm(500),
+            llm=_make_llm(1000),
             sys_prompt="You are a calculator.",
             tools=[add_tool2],
             recipients=["crasher"],
@@ -494,8 +502,7 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="agent-crash-1"
         )
         runner2 = Runner[str, None](
-            ctx=ctx2,
-            entry_proc=entry2, procs=[entry2, agent2, crasher2], name="r"
+            ctx=ctx2, entry_proc=entry2, procs=[entry2, agent2, crasher2], name="r"
         )
 
         result = await runner2.run()
@@ -553,8 +560,7 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="mid-agent-1"
         )
         runner1 = Runner[str, None](
-            ctx=ctx1,
-            entry_proc=entry1, procs=[entry1, agent1], name="r"
+            ctx=ctx1, entry_proc=entry1, procs=[entry1, agent1], name="r"
         )
 
         with pytest.raises(Exception):
@@ -565,15 +571,9 @@ class TestAgentCrashResume:
 
         # Verify: agent checkpoint has the 1st tool call + result
         agent_key = "mid-agent-1/agent/calculator"
-        agent_data = await store.load(agent_key)
-        assert agent_data is not None
-        agent_cp = AgentCheckpoint.model_validate_json(agent_data)
-        tool_calls = [
-            m for m in agent_cp.messages if isinstance(m, FunctionToolCallItem)
-        ]
-        tool_results = [
-            m for m in agent_cp.messages if isinstance(m, FunctionToolOutputItem)
-        ]
+        messages = await _committed_messages(store, agent_key)
+        tool_calls = [m for m in messages if isinstance(m, FunctionToolCallItem)]
+        tool_results = [m for m in messages if isinstance(m, FunctionToolOutputItem)]
         assert len(tool_calls) >= 1
         assert len(tool_results) >= 1
 
@@ -604,8 +604,7 @@ class TestAgentCrashResume:
             state=None, checkpoint_store=store, session_key="mid-agent-1"
         )
         runner2 = Runner[str, None](
-            ctx=ctx2,
-            entry_proc=entry2, procs=[entry2, agent2], name="r"
+            ctx=ctx2, entry_proc=entry2, procs=[entry2, agent2], name="r"
         )
 
         result = await runner2.run()
@@ -667,8 +666,7 @@ class TestWorkflowCrashResume:
             state=None, checkpoint_store=store, session_key="wf-crash-1"
         )
         runner1 = Runner[str, None](
-            ctx=ctx1,
-            entry_proc=entry1, procs=[entry1, wf1], name="r"
+            ctx=ctx1, entry_proc=entry1, procs=[entry1, wf1], name="r"
         )
 
         with pytest.raises(Exception):
@@ -706,8 +704,7 @@ class TestWorkflowCrashResume:
             state=None, checkpoint_store=store, session_key="wf-crash-1"
         )
         runner2 = Runner[str, None](
-            ctx=ctx2,
-            entry_proc=entry2, procs=[entry2, wf2], name="r"
+            ctx=ctx2, entry_proc=entry2, procs=[entry2, wf2], name="r"
         )
 
         result = await runner2.run()

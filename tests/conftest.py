@@ -46,28 +46,46 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # ------------------------------------------------------------------ #
 
 
+class _SecretStr(str):  # noqa: FURB189  (must BE a str: passed to SDKs as api_key)
+    """
+    A ``str`` whose ``repr`` hides the value.
+
+    The value is still the real key everywhere it is used (e.g. passed to a
+    provider client as ``api_key``), but pytest renders a failing test's fixture
+    arguments and assertion operands via ``repr`` — so this keeps secrets out of
+    tracebacks and CI logs. ``str(key)`` is unchanged, so authentication works.
+
+    Every API-key fixture must return its key through :func:`_require_env_key`
+    so a leaked key can never reach a traceback.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "'***'"
+
+
+def _require_env_key(var: str) -> _SecretStr:
+    """Fetch a required secret from the environment, redacted for display."""
+    value = os.environ.get(var)
+    if not value:
+        pytest.skip(f"{var} not set")
+    return _SecretStr(value)
+
+
 @pytest.fixture
 def anthropic_api_key() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        pytest.skip("ANTHROPIC_API_KEY not set")
-    return key
+    return _require_env_key("ANTHROPIC_API_KEY")
 
 
 @pytest.fixture
 def google_api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        pytest.skip("GEMINI_API_KEY not set")
-    return key
+    return _require_env_key("GEMINI_API_KEY")
 
 
 @pytest.fixture
 def openai_api_key() -> str:
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        pytest.skip("OPENAI_API_KEY not set")
-    return key
+    return _require_env_key("OPENAI_API_KEY")
 
 
 # ------------------------------------------------------------------ #

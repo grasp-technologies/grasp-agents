@@ -43,12 +43,16 @@ def items_to_provider_inputs(
     for item in items:
         if isinstance(item, WebSearchCallItem):
             result.append(_web_search_item_to_param(item))
-        else:
-            result.append(
-                item.model_dump(  # type: ignore[arg-type]
-                    exclude=_GRASP_EXTENSION_FIELDS, exclude_none=True, mode="json"
-                )
-            )
+            continue
+        dumped = item.model_dump(  # type: ignore[arg-type]
+            exclude=_GRASP_EXTENSION_FIELDS, exclude_none=True, mode="json"
+        )
+        # The Responses API reads a client-sent message ``id`` as a reference to a
+        # stored item and 404s on it (fatally when the message carries an image);
+        # our ``msg_`` ids are internal bookkeeping, so don't echo them back.
+        if dumped.get("type") == "message":
+            dumped.pop("id", None)
+        result.append(dumped)  # type: ignore[arg-type]
     return result
 
 

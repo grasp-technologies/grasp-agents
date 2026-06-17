@@ -49,6 +49,17 @@ UNTRUSTED_CONTENT_INSTRUCTION = (
 # so a payload can't forge the boundary by embedding the literal tag.
 _TAG_RE = re.compile(r"<\s*/?\s*untrusted_content\b[^>]*>", re.IGNORECASE)
 
+# A whole payload that is exactly one fence (open tag → body → close tag), used to
+# peel the boundary back off for display. The leading/trailing newline that
+# ``wrap_untrusted`` adds around the body is absorbed so the inner content is
+# returned verbatim.
+_FENCE_RE = re.compile(
+    rf"\A\s*<{UNTRUSTED_CONTENT_TAG}((?:\s[^<>]*)?)>\n?(.*?)\n?"
+    rf"</{UNTRUSTED_CONTENT_TAG}\s*>\s*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_SOURCE_RE = re.compile(r'source\s*=\s*"([^"]*)"', re.IGNORECASE)
+
 
 def _neutralize(text: str) -> str:
     # Escape the angle brackets of any embedded ``<untrusted_content>`` /
@@ -91,6 +102,24 @@ def wrap_untrusted(
             fenced.append(part)
     fenced.append(InputText(text=close_tag))
     return fenced
+
+
+def unwrap_untrusted(text: str) -> tuple[str, str | None]:
+    """
+    Peel a single ``<untrusted_content>`` fence back off for display.
+
+    Returns ``(inner, source)`` when *text* is exactly one fence — ``source`` is
+    the provenance attribute (``""`` if absent) — else ``(text, None)``. UI
+    surfaces use this to render the inner result (e.g. a JSON tool result as a
+    key/value panel) and flag provenance in the frame instead of printing the
+    raw boundary tags. The model still receives the fenced form; this is
+    display-only.
+    """
+    m = _FENCE_RE.match(text)
+    if m is None:
+        return text, None
+    src = _SOURCE_RE.search(m.group(1))
+    return m.group(2), (src.group(1) if src else "")
 
 
 def make_untrusted_content_section(

@@ -38,7 +38,13 @@ from .tools.function_tool import FunctionTool, function_tool
 from .tools.processor_tool import ProcessorTool
 
 # --- Messages / content / responses ---
-from .types.content import CacheControl, Content, InputImage, InputRenderable
+from .types.content import (
+    CacheControl,
+    Content,
+    InputImage,
+    InputRenderable,
+    InputRenderableModel,
+)
 from .types.events import Event, ProcPacketOutEvent, RunPacketOutEvent, StopReason
 from .types.items import (
     AssistantMessage,
@@ -75,6 +81,7 @@ __all__ = [
     "InMemoryCheckpointStore",
     "InputImage",
     "InputRenderable",
+    "InputRenderableModel",
     "LLMAgent",
     "LLMSettings",
     "LoopedWorkflow",
