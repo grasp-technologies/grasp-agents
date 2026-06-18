@@ -1,0 +1,1571 @@
+"""Tests for EventConsole event display."""
+
+import re
+from io import StringIO
+from typing import Any
+
+import pytest
+from rich.console import Console
+
+from grasp_agents.types.content import (
+    InputImage,
+    InputText,
+    OutputMessageText,
+    ReasoningSummary,
+)
+from grasp_agents.types.events import (
+    BackgroundTaskCompletedEvent,
+    BackgroundTaskInfo,
+    BackgroundTaskLaunchedEvent,
+    Event,
+    GenerationEndEvent,
+    LLMStreamEvent,
+    LLMStreamingErrorData,
+    LLMStreamingErrorEvent,
+    OutputMessageItemEvent,
+    ProcPacketOutEvent,
+    ReasoningItemEvent,
+    SystemMessageEvent,
+    ToolCallItemEvent,
+    ToolErrorEvent,
+    ToolErrorInfo,
+    ToolOutputItemEvent,
+    TurnEndEvent,
+    TurnEndInfo,
+    TurnInfo,
+    TurnStartEvent,
+    UserMessageEvent,
+    WebSearchCallItemEvent,
+)
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    FunctionToolOutputItem,
+    InputMessageItem,
+    OutputMessageItem,
+    ReasoningItem,
+    SearchAction,
+    WebSearchCallItem,
+)
+from grasp_agents.types.llm_events import (
+    FunctionCallArgumentsDelta,
+    OutputItemAdded,
+    OutputItemDone,
+    OutputMessageTextPartTextDelta,
+    ReasoningSummaryPartTextDelta,
+    ResponseCompleted,
+)
+from grasp_agents.types.response import Response, ResponseUsage
+from grasp_agents.ui._event_render import (
+    _unescape_json_string,
+    extract_input_text,
+    truncate,
+    truncate_lines,
+)
+from grasp_agents.ui.console import EventConsole, render_events
+
+
+def _make_console() -> tuple[EventConsole, StringIO]:
+    """Create an EventConsole with captured output."""
+    buf = StringIO()
+    console = Console(file=buf, no_color=True, highlight=False, width=80)
+    ec = EventConsole(console=console)
+    return ec, buf
+
+
+def _make_console_with(**kwargs: Any) -> tuple[EventConsole, StringIO]:
+    buf = StringIO()
+    console = Console(file=buf, no_color=True, highlight=False, width=80)
+    ec = EventConsole(console=console, **kwargs)
+    return ec, buf
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+async def _collect(ec: EventConsole, events: list[Event[Any]]) -> list[Event[Any]]:
+    """Run events through console and collect yielded events."""
+
+    async def gen():
+        for e in events:
+            yield e
+
+    collected: list[Event[Any]] = []
+    async for event in ec.stream(gen()):
+        collected.append(event)
+    return collected
+
+
+# ── Helpers ──
+
+
+class TestHelpers:
+    def test_extract_input_text(self):
+        msg = InputMessageItem.from_text("Hello world", role="user")
+        assert extract_input_text(msg) == "Hello world"
+
+    def test_extract_input_text_with_image(self):
+        msg = InputMessageItem(
+            content_parts=[
+                InputText(text="Look at this"),
+                InputImage.from_url("https://example.com/pic.jpg"),
+            ],
+            role="user",
+        )
+        text = extract_input_text(msg)
+        assert "Look at this" in text
+        assert "https://example.com/pic.jpg" in text
+
+    def test_extract_input_text_base64_image(self):
+        msg = InputMessageItem(
+            content_parts=[InputImage.from_base64("abc123")],
+            role="user",
+        )
+        assert "[image]" in extract_input_text(msg)
+
+    def test_truncate_short(self):
+        assert truncate("short", 100) == "short"
+
+    def test_truncate_long(self):
+        result = truncate("a" * 200, 50)
+        assert len(result) == 51  # 50 + "…"
+        assert result.endswith("…")
+
+    def test_unescape_json_string(self):
+        assert _unescape_json_string('"hello\\nworld"') == "hello\nworld"
+        assert _unescape_json_string('{"a": 1}') == '{\n  "a": 1\n}'
+        assert _unescape_json_string("not json") == "not json"
+
+    def test_unescape_non_string_json(self):
+        result = _unescape_json_string('{"a": 1}')
+        assert '"a": 1' in result
+
+    def test_truncate_lines_short(self):
+        assert truncate_lines("a\nb\nc", 5) == "a\nb\nc"
+
+    def test_truncate_lines_exact(self):
+        assert truncate_lines("a\nb\nc", 3) == "a\nb\nc"
+
+    def test_truncate_lines_over(self):
+        result = truncate_lines("a\nb\nc\nd\ne", 3)
+        assert result == "a\nb\nc\n… 2 more lines"
+
+
+# ── Turn lifecycle ──
+
+
+class TestTurnEvents:
+    @pytest.mark.asyncio
+    async def test_turn_start(self):
+        ec, buf = _make_console()
+        # The turn header is deferred until the agent's first content of the
+        # turn, so a content event is needed to flush it.
+        events = [
+            TurnStartEvent(data=TurnInfo(turn=0), source="teacher"),
+            OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                ),
+                source="teacher",
+                exec_id="c",
+            ),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "teacher" in output
+        assert "turn 1" in output
+
+    @pytest.mark.asyncio
+    async def test_turn_end_final_answer(self):
+        """Final answer stop reason produces no extra output."""
+        ec, buf = _make_console()
+        events = [
+            TurnEndEvent(
+                data=TurnEndInfo(
+                    turn=0, had_tool_calls=False, stop_reason="final_answer"
+                ),  # type: ignore[arg-type]
+                source="agent",
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "stopped" not in output
+
+    @pytest.mark.asyncio
+    async def test_turn_end_max_turns(self):
+        ec, buf = _make_console()
+        events = [
+            TurnEndEvent(
+                data=TurnEndInfo(turn=2, had_tool_calls=True, stop_reason="max_turns"),  # type: ignore[arg-type]
+                source="agent",
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "stopped" in output
+        assert "max_turns" in output
+
+
+# ── Streaming mode (LLMStreamEvent) ──
+
+
+class TestStreamingText:
+    @pytest.mark.asyncio
+    async def test_text_deltas_stream(self):
+        # Live token streaming is the markdown=False path (markdown=True buffers
+        # and renders the finished message instead).
+        ec, buf = _make_console_with(markdown=False)
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="Hello ",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="world!",
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "Hello " in output
+        assert "world!" in output
+
+    @pytest.mark.asyncio
+    async def test_text_block_ends_with_newline(self):
+        ec, buf = _make_console_with(markdown=False)  # live raw streaming path
+        msg_item = OutputMessageItem(
+            content_parts=[OutputMessageText(text="Hello")],
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="Hello",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=OutputItemDone(item=msg_item, output_index=0, sequence_number=2),
+                source="agent",
+                exec_id="c1",
+            ),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "Hello\n" in output
+
+
+class TestStreamingToolCalls:
+    @pytest.mark.asyncio
+    async def test_tool_call_header_from_promoted_event(self):
+        """Tool name comes from ToolCallItemEvent, not OutputItemAdded."""
+        ec, buf = _make_console()
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"q": "test"}'
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
+                source="agent",
+                exec_id="c1",
+            ),
+            ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "search" in output
+        assert "╭" in output  # Panel with tool name as title
+
+    @pytest.mark.asyncio
+    async def test_tool_call_args_shown(self):
+        ec, buf = _make_console()
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"query": "test"}'
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
+                source="agent",
+                exec_id="c1",
+            ),
+            ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "query" in output
+        assert "test" in output
+        assert "╭" in output  # Panel border
+
+    @pytest.mark.asyncio
+    async def test_tool_call_args_hidden(self):
+        ec, buf = _make_console_with(show_tool_args=False)
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"query": "test"}'
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
+                source="agent",
+                exec_id="c1",
+            ),
+            ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "search" in output  # header still shown
+        assert "query" not in output  # args hidden
+
+
+class TestStreamingThinking:
+    @pytest.mark.asyncio
+    async def test_thinking_hidden_by_default(self):
+        ec, buf = _make_console()
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(
+                    item=ReasoningItem(), output_index=0, sequence_number=1
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=ReasoningSummaryPartTextDelta(
+                    delta="deep thought",
+                    summary_index=0,
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "deep thought" not in output
+        assert "thinking" not in output
+
+    @pytest.mark.asyncio
+    async def test_thinking_shown_when_enabled(self):
+        ec, buf = _make_console_with(show_thinking=True)
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(
+                    item=ReasoningItem(), output_index=0, sequence_number=1
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=ReasoningSummaryPartTextDelta(
+                    delta="deep thought",
+                    summary_index=0,
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=OutputItemDone(
+                    item=ReasoningItem(),
+                    output_index=0,
+                    sequence_number=3,
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "thinking" in output
+        assert "deep thought" in output
+
+    @pytest.mark.asyncio
+    async def test_streamed_reasoning_without_summary_shows_nothing(self):
+        # A reasoning item that streams no summary text prints no thinking
+        # header (the header is opened lazily on the first delta) — matching
+        # the TUI, which only creates its thinking widget on a delta.
+        ec, buf = _make_console_with(show_thinking=True)
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(
+                    item=ReasoningItem(), output_index=0, sequence_number=1
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=OutputItemDone(
+                    item=ReasoningItem(), output_index=0, sequence_number=2
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            ReasoningItemEvent(data=ReasoningItem(), source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        assert "thinking" not in buf.getvalue()
+
+
+# ── Non-streaming mode (promoted events) ──
+
+
+class TestNonStreamingMode:
+    @pytest.mark.asyncio
+    async def test_output_message_full_text(self):
+        """When no deltas seen, OutputMessageItemEvent prints full text."""
+        ec, buf = _make_console()
+        msg = OutputMessageItem(
+            content_parts=[OutputMessageText(text="Complete answer")],
+            status="completed",
+        )
+        events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "Complete answer" in output
+
+    @pytest.mark.asyncio
+    async def test_output_message_skipped_after_streaming(self):
+        """When deltas were seen, promoted OutputMessageItemEvent is skipped."""
+        ec, buf = _make_console()
+        # The promoted item carries the same id the deltas streamed under — as
+        # real providers emit (one item id for the deltas and the done item).
+        msg = OutputMessageItem(
+            id="i1",
+            content_parts=[OutputMessageText(text="Hello world")],
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="Hello world",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            OutputMessageItemEvent(data=msg, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        # "Hello world" should appear once (from delta), not twice
+        assert output.count("Hello world") == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_call_item_full(self):
+        """Non-streaming tool call shows name and args."""
+        ec, buf = _make_console()
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="web_search", arguments='{"q": "test"}'
+        )
+        events = [ToolCallItemEvent(data=item, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "web_search" in output
+        assert "q" in output
+        assert "test" in output
+        assert "╭" in output  # Panel with tool name as title
+
+    @pytest.mark.asyncio
+    async def test_tool_call_item_skipped_after_streaming(self):
+        ec, buf = _make_console()
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"q": "test"}'
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
+                source="agent",
+                exec_id="c1",
+            ),
+            ToolCallItemEvent(data=item, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        # Tool name appears once in panel title, not duplicated
+        assert output.count("search") == 1
+
+    @pytest.mark.asyncio
+    async def test_web_search_call_rendered(self):
+        # Server-side web_search_call items are surfaced (previously skipped).
+        ec, buf = _make_console()
+        ev = WebSearchCallItemEvent(
+            data=WebSearchCallItem(
+                action=SearchAction(queries=["internet history"]),
+                status="completed",
+            ),
+            source="searcher",
+            exec_id="c1",
+        )
+        await _collect(ec, [ev])
+        out = _strip_ansi(buf.getvalue())
+        assert "web_search" in out
+        assert "internet history" in out
+
+    @pytest.mark.asyncio
+    async def test_web_search_rendered_live_and_promoted_event_deduped(self):
+        # A search completes mid-stream (OutputItemDone) and is rendered right
+        # then, so it interleaves with the reasoning around it. The promoted item
+        # event that fires after the stream is then suppressed (rendered once).
+        ec, buf = _make_console()
+        item = WebSearchCallItem(
+            id="ws1",
+            action=SearchAction(queries=["internet history"]),
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputItemDone(item=item, output_index=0, sequence_number=1),
+                source="searcher",
+                exec_id="c1",
+            ),
+            # promoted event (fires post-write) for the same item id
+            WebSearchCallItemEvent(data=item, source="searcher", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert out.count("internet history") == 1  # rendered exactly once
+
+    @pytest.mark.asyncio
+    async def test_reasoning_item_non_streaming(self):
+        ec, buf = _make_console_with(show_thinking=True)
+        item = ReasoningItem(
+            summary_parts=[ReasoningSummary(text="planning the steps")],
+            status="completed",
+        )
+        events = [ReasoningItemEvent(data=item, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "thinking" in output
+        assert "planning the steps" in output
+
+    @pytest.mark.asyncio
+    async def test_empty_reasoning_item_not_rendered(self):
+        # No summary text → nothing to show; must not print a stray "thinking" box.
+        ec, buf = _make_console_with(show_thinking=True)
+        events = [
+            ReasoningItemEvent(data=ReasoningItem(), source="agent", exec_id="c1")
+        ]
+        await _collect(ec, events)
+        assert buf.getvalue().strip() == ""
+
+
+# ── Tool result and error events ──
+
+
+class TestToolEvents:
+    @pytest.mark.asyncio
+    async def test_tool_result(self):
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output="found 3 results"
+        )
+        events = [ToolOutputItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "found 3 results" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_result_json_unescaped(self):
+        """JSON-encoded string results are unescaped for readability."""
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output={"status": "ok"}
+        )
+        events = [ToolOutputItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "status" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_error_event_not_rendered(self):
+        # The raw ToolErrorEvent is the tool's terminal event; the failure is
+        # also committed as a ToolOutputItemEvent(is_error=True), which is what
+        # renders. The raw event must not duplicate it.
+        ec, buf = _make_console()
+        events = [
+            ToolErrorEvent(
+                data=ToolErrorInfo(tool_name="search", error="API down"),
+                source="agent",
+                exec_id="c1",
+            )
+        ]
+        await _collect(ec, events)
+        assert buf.getvalue().strip() == ""
+
+    @pytest.mark.asyncio
+    async def test_tool_failure_surfaces_via_output_item(self):
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="c1",
+            output=ToolErrorInfo(tool_name="search", error="API down"),
+            is_error=True,
+        )
+        events = [
+            ToolOutputItemEvent(
+                data=msg, source="search", destination="agent", exec_id="c1"
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "search" in output
+        assert "API down" in output
+
+
+# ── Message events ──
+
+
+class TestMessageEvents:
+    @pytest.mark.asyncio
+    async def test_user_message_shown_by_default(self):
+        # User (input) messages are on by default.
+        ec, buf = _make_console()
+        msg = InputMessageItem.from_text("Hello agent", role="user")
+        events = [UserMessageEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        assert "Hello agent" in buf.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_user_message_hidden_when_disabled(self):
+        ec, buf = _make_console_with(show_input_messages=False)
+        msg = InputMessageItem.from_text("Hello agent", role="user")
+        events = [UserMessageEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        assert "Hello agent" not in buf.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_system_message_hidden_by_default(self):
+        # System messages are opt-in.
+        ec, buf = _make_console()
+        msg = InputMessageItem.from_text("You are helpful.", role="system")
+        events = [SystemMessageEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        assert "You are helpful." not in buf.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_system_message_shown_when_enabled(self):
+        ec, buf = _make_console_with(show_system_messages=True)
+        msg = InputMessageItem.from_text("You are helpful.", role="system")
+        events = [SystemMessageEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "System" in output
+        assert "You are helpful." in output
+
+    @pytest.mark.asyncio
+    async def test_task_notification_shows_full_body(self):
+        # The whole notification the agent saw — every field, not just the
+        # error — under a "<tool> → <agent>" heading with a ✗ status line
+        # (symmetric with the ✓ a completed task's notification carries).
+        ec, buf = _make_console()
+        text = (
+            "<task_notification>\n<task_id>bg_1</task_id>\n"
+            "<tool_name>Bash</tool_name>\n<status>interrupted</status>\n"
+            "<ran_for>2s</ran_for>\n"
+            "<error>\nSession restarted before completion\n</error>\n"
+            "<output_file>\n.grasp/tasks/x.log\n</output_file>\n"
+            "</task_notification>"
+        )
+        msg = InputMessageItem.from_text(text, role="user")
+        await _collect(ec, [UserMessageEvent(data=msg, source="bg_agent", exec_id="c")])
+        out = buf.getvalue()
+        for field in (
+            "bg_1", "Bash", "interrupted", "2s",
+            "Session restarted before completion", ".grasp/tasks/x.log",
+        ):
+            assert field in out, field
+        assert "bg_agent" in out  # the owning agent, in the "<tool> → <agent>" title
+        assert "✗" in out  # interrupted/failed get a ✗ status line
+
+    @pytest.mark.asyncio
+    async def test_resume_framing_shown(self):
+        ec, buf = _make_console()
+        text = (
+            "<session_resumed>\nSession resumed from a checkpoint — state was "
+            "reconstructed.\n</session_resumed>"
+        )
+        msg = InputMessageItem.from_text(text, role="user")
+        await _collect(ec, [UserMessageEvent(data=msg, source="agent", exec_id="c")])
+        out = buf.getvalue()
+        assert "session resumed" in out.lower()
+        assert "Session resumed from a checkpoint" in out
+
+
+# ── Usage display ──
+
+
+class TestUsageDisplay:
+    @pytest.mark.asyncio
+    async def test_generation_end_with_usage(self):
+        ec, buf = _make_console()
+        resp = Response(
+            model="claude-sonnet-4-5",
+            output_items=[],
+            usage_with_cost=ResponseUsage(
+                input_tokens=100, output_tokens=50, total_tokens=150, cost=0.0015
+            ),
+        )
+        events = [GenerationEndEvent(data=resp, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "claude-sonnet-4-5" in output
+        assert "100" in output
+        assert "50" in output
+        assert "$0.0015" in output
+
+    @pytest.mark.asyncio
+    async def test_usage_hidden(self):
+        ec, buf = _make_console_with(show_usage=False)
+        resp = Response(
+            model="test-model",
+            output_items=[],
+            usage_with_cost=ResponseUsage(
+                input_tokens=100, output_tokens=50, total_tokens=150
+            ),
+        )
+        events = [GenerationEndEvent(data=resp, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "100" not in output
+
+    @pytest.mark.asyncio
+    async def test_cumulative_cost(self):
+        """After 2+ generations, cumulative total is shown."""
+        ec, buf = _make_console()
+        resp1 = Response(
+            model="test-model",
+            output_items=[],
+            usage_with_cost=ResponseUsage(
+                input_tokens=100, output_tokens=50, total_tokens=150, cost=0.005
+            ),
+        )
+        resp2 = Response(
+            model="test-model",
+            output_items=[],
+            usage_with_cost=ResponseUsage(
+                input_tokens=200, output_tokens=80, total_tokens=280, cost=0.008
+            ),
+        )
+        events = [
+            GenerationEndEvent(data=resp1, source="a", exec_id="c1"),
+            GenerationEndEvent(data=resp2, source="a", exec_id="c2"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "Σ" in _strip_ansi(output)
+        assert "$0.0130" in output
+
+    @pytest.mark.asyncio
+    async def test_cached_tokens_shown(self):
+        """Cached input tokens are displayed when present."""
+        from grasp_agents.types.response import InputTokensDetails
+
+        ec, buf = _make_console()
+        resp = Response(
+            model="test-model",
+            output_items=[],
+            usage_with_cost=ResponseUsage(
+                input_tokens=500,
+                input_tokens_details=InputTokensDetails(cached_tokens=300),
+                output_tokens=50,
+                total_tokens=550,
+                cost=0.001,
+            ),
+        )
+        events = [GenerationEndEvent(data=resp, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "500" in output
+        assert "300 cached" in output
+
+    @pytest.mark.asyncio
+    async def test_thinking_tokens_shown(self):
+        """Reasoning/thinking tokens are displayed when present."""
+        from grasp_agents.types.response import OutputTokensDetails
+
+        ec, buf = _make_console()
+        resp = Response(
+            model="test-model",
+            output_items=[],
+            usage_with_cost=ResponseUsage(
+                input_tokens=100,
+                output_tokens=200,
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=150),
+                total_tokens=300,
+                cost=0.002,
+            ),
+        )
+        events = [GenerationEndEvent(data=resp, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "200" in output
+        assert "150 thinking" in output
+
+
+# ── Tool panel tests ──
+
+
+class TestToolPanels:
+    @pytest.mark.asyncio
+    async def test_tool_args_nested_json(self):
+        """Nested dicts render in panel."""
+        ec, buf = _make_console()
+        item = FunctionToolCallItem(
+            call_id="tc_1",
+            name="api",
+            arguments='{"config": {"temp": 0.7, "max": 500}, "query": "hello"}',
+        )
+        events = [ToolCallItemEvent(data=item, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "config" in output
+        assert "temp" in output
+        assert "query" in output
+        assert "hello" in output
+        assert "╭" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_args_non_dict(self):
+        """Non-dict args handled gracefully."""
+        ec, buf = _make_console()
+        item = FunctionToolCallItem(
+            call_id="tc_1", name="simple", arguments='"just a string"'
+        )
+        events = [ToolCallItemEvent(data=item, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "just a string" in output
+        assert "╭" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_result_panel_has_border(self):
+        """Tool result rendered in a panel with borders."""
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output="result text"
+        )
+        events = [ToolOutputItemEvent(data=msg, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "──" in output  # HORIZONTALS box style
+        assert "result text" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_error_panel_has_border(self):
+        """A failed tool result (is_error) is rendered in a bordered panel."""
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="c1",
+            output=ToolErrorInfo(tool_name="broken", error="something failed"),
+            is_error=True,
+        )
+        events = [
+            ToolOutputItemEvent(
+                data=msg, source="broken", destination="a", exec_id="c1"
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "╭" in output
+        assert "╰" in output
+        assert "something failed" in output
+
+    @pytest.mark.asyncio
+    async def test_content_sanitization(self):
+        """Rich markup in tool output doesn't break rendering."""
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output="[bold red]injection attempt[/]"
+        )
+        events = [ToolOutputItemEvent(data=msg, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        # The raw markup should appear escaped, not interpreted
+        assert "injection attempt" in output
+
+
+# ── Error events ──
+
+
+class TestErrorEvents:
+    @pytest.mark.asyncio
+    async def test_llm_streaming_error(self):
+        ec, buf = _make_console()
+        events = [
+            LLMStreamingErrorEvent(
+                data=LLMStreamingErrorData(
+                    error=RuntimeError("connection lost"),
+                    model_name="test",
+                ),
+                source="agent",
+                exec_id="c1",
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "Error:" in output
+        assert "connection lost" in output
+
+
+# ── Background tasks ──
+
+
+class TestBackgroundTasks:
+    @pytest.mark.asyncio
+    async def test_bg_launched_silent(self):
+        """Launch event is silent — placeholder result panel covers it."""
+        ec, buf = _make_console()
+        events = [
+            BackgroundTaskLaunchedEvent(
+                data=BackgroundTaskInfo(
+                    task_id="t1", tool_name="web_search", tool_call_id="tc_1"
+                ),
+                source="agent",
+                exec_id="c1",
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert output.strip() == ""
+
+    @pytest.mark.asyncio
+    async def test_bg_completed(self):
+        ec, buf = _make_console()
+        events = [
+            BackgroundTaskCompletedEvent(
+                data=BackgroundTaskInfo(
+                    task_id="t1", tool_name="web_search", tool_call_id="tc_1"
+                ),
+                source="agent",
+                exec_id="c1",
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "web_search" in output
+        assert "completed" in output
+        assert "t1" in output
+
+
+# ── Packet events ──
+
+
+class TestPacketEvents:
+    @pytest.mark.asyncio
+    async def test_packets_hidden_by_default(self):
+        from grasp_agents.types.packet import Packet
+
+        ec, buf = _make_console()
+        packet = Packet(payloads=["result"], sender="agent")
+        events = [ProcPacketOutEvent(data=packet, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "result" not in output
+
+    @pytest.mark.asyncio
+    async def test_packets_shown_when_enabled(self):
+        from grasp_agents.types.packet import Packet
+
+        ec, buf = _make_console_with(show_packets=True)
+        packet = Packet(payloads=["hello"], sender="my_agent")
+        events = [ProcPacketOutEvent(data=packet, source="my_agent", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "my_agent" in output
+        assert "hello" in output
+
+    @pytest.mark.asyncio
+    async def test_string_payload_shown_without_quotes(self):
+        # A plain-string payload renders verbatim — no wrapping quotes, no
+        # \\uXXXX escaping of non-ASCII.
+        from grasp_agents.types.packet import Packet
+
+        ec, buf = _make_console_with(show_packets=True)
+        result = "**347 × 829 = 287,663**"  # noqa: RUF001
+        packet = Packet(payloads=[result], sender="calc")
+        events = [ProcPacketOutEvent(data=packet, source="calc", exec_id="c1")]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert result in out
+        assert '"**347' not in out  # not wrapped in quotes
+        assert "\\u" not in out  # multiplication sign not escaped
+
+
+# ── Event passthrough ──
+
+
+class TestPassthrough:
+    @pytest.mark.asyncio
+    async def test_all_events_yielded(self):
+        ec, _ = _make_console()
+        msg = InputMessageItem.from_text("Hi", role="user")
+        events: list[Event[Any]] = [
+            TurnStartEvent(data=TurnInfo(turn=0), source="a"),
+            UserMessageEvent(data=msg, source="a", exec_id="c1"),
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="Hi",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="i1",
+                    logprobs=[],
+                ),
+                source="a",
+                exec_id="c1",
+            ),
+        ]
+        collected = await _collect(ec, events)
+        assert len(collected) == 3
+        assert isinstance(collected[0], TurnStartEvent)
+        assert isinstance(collected[1], UserMessageEvent)
+        assert isinstance(collected[2], LLMStreamEvent)
+
+
+# ── render_events convenience function ──
+
+
+class TestRenderEventsFunction:
+    @pytest.mark.asyncio
+    async def test_render_events_wrapper(self):
+        """render_events() is a convenience wrapper like EventConsole.stream()."""
+        buf = StringIO()
+        console = Console(file=buf, no_color=True, highlight=False, width=80)
+
+        async def gen():
+            yield TurnStartEvent(data=TurnInfo(turn=0), source="agent")
+            # flushes the deferred turn header
+            yield OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                ),
+                source="agent",
+                exec_id="c",
+            )
+
+        collected = []
+        async for event in render_events(gen(), console=console):
+            collected.append(event)
+
+        assert len(collected) == 2
+        output = buf.getvalue()
+        assert "agent" in output
+        assert "turn 1" in output
+
+
+# ── Full turn sequence ──
+
+
+class TestFullSequence:
+    @pytest.mark.asyncio
+    async def test_streaming_turn_with_tool_call(self):
+        """Simulate a full streaming turn: text → tool call → tool result."""
+        ec, buf = _make_console()
+
+        text_item = OutputMessageItem(
+            id="i1",
+            content_parts=[OutputMessageText(text="Let me search.")],
+            status="completed",
+        )
+        tool_item = FunctionToolCallItem(
+            call_id="tc_1", name="search", arguments='{"q": "stats"}'
+        )
+        tool_result = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output="3 results found"
+        )
+        resp = Response(
+            model="test-model",
+            output_items=[text_item, tool_item],
+            usage_with_cost=ResponseUsage(
+                input_tokens=200, output_tokens=80, total_tokens=280
+            ),
+        )
+
+        events: list[Event[Any]] = [
+            TurnStartEvent(data=TurnInfo(turn=0), source="teacher"),
+            # Text streaming
+            LLMStreamEvent(
+                data=OutputItemAdded(item=text_item, output_index=0, sequence_number=1),
+                source="teacher",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="Let me search.",
+                    output_index=0,
+                    sequence_number=2,
+                    item_id="i1",
+                    logprobs=[],
+                ),
+                source="teacher",
+                exec_id="c1",
+            ),
+            # Promoted message (should be skipped — already streamed)
+            OutputMessageItemEvent(data=text_item, source="teacher", exec_id="c1"),
+            LLMStreamEvent(
+                data=OutputItemDone(item=text_item, output_index=0, sequence_number=3),
+                source="teacher",
+                exec_id="c1",
+            ),
+            # Tool call
+            LLMStreamEvent(
+                data=OutputItemAdded(item=tool_item, output_index=1, sequence_number=4),
+                source="teacher",
+                exec_id="c1",
+            ),
+            LLMStreamEvent(
+                data=FunctionCallArgumentsDelta(
+                    delta='{"q": "stats"}',
+                    output_index=1,
+                    sequence_number=5,
+                    item_id="i2",
+                ),
+                source="teacher",
+                exec_id="c1",
+            ),
+            ToolCallItemEvent(data=tool_item, source="teacher", exec_id="c1"),
+            LLMStreamEvent(
+                data=OutputItemDone(item=tool_item, output_index=1, sequence_number=6),
+                source="teacher",
+                exec_id="c1",
+            ),
+            # Generation complete
+            LLMStreamEvent(
+                data=ResponseCompleted(response=resp, sequence_number=7),
+                source="teacher",
+                exec_id="c1",
+            ),
+            GenerationEndEvent(data=resp, source="teacher", exec_id="c1"),
+            # Tool result
+            ToolOutputItemEvent(data=tool_result, source="teacher", exec_id="c1"),
+            # Turn end
+            TurnEndEvent(
+                data=TurnEndInfo(turn=0, had_tool_calls=True),
+                source="teacher",
+            ),
+        ]
+
+        collected = await _collect(ec, events)
+        output = buf.getvalue()
+
+        # All events yielded
+        assert len(collected) == len(events)
+
+        # Turn header
+        assert "teacher" in output
+        assert "turn 1" in output
+
+        # Text streamed (not duplicated)
+        assert output.count("Let me search.") == 1
+
+        # Tool call displayed in panel
+        assert "search" in output
+        assert "╭" in output
+
+        # Tool result displayed (indented)
+        assert "3 results found" in output
+
+        # Usage displayed
+        assert "200" in output
+        assert "80" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_content_indented(self):
+        """Tool args, usage, and result are indented under tool call."""
+        ec, buf = _make_console()
+        tool_item = FunctionToolCallItem(
+            call_id="tc_1", name="fetch", arguments='{"url": "example.com"}'
+        )
+        tool_result = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output="page content"
+        )
+        resp = Response(
+            model="test-model",
+            output_items=[tool_item],
+            usage_with_cost=ResponseUsage(
+                input_tokens=50, output_tokens=20, total_tokens=70, cost=0.001
+            ),
+        )
+        events: list[Event[Any]] = [
+            ToolCallItemEvent(data=tool_item, source="a", exec_id="c1"),
+            GenerationEndEvent(data=resp, source="a", exec_id="c1"),
+            ToolOutputItemEvent(data=tool_result, source="a", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+
+        # Tool args in panel
+        assert "url" in output
+        assert "example.com" in output
+        assert "╭" in output  # Panel borders
+        # Usage shown
+        assert "test-model" in output
+        # Tool result present
+        assert "page content" in output
+
+    @pytest.mark.asyncio
+    async def test_tool_result_filters_blank_lines(self):
+        """Blank lines in tool result content are filtered out."""
+        ec, buf = _make_console()
+        msg = FunctionToolOutputItem.from_tool_result(
+            call_id="tc_1", output="line 1\n\n\nline 2"
+        )
+        events = [ToolOutputItemEvent(data=msg, source="a", exec_id="c1")]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "line 1" in output
+        assert "line 2" in output
+        # No triple blank lines in output
+        assert "\n\n\n" not in output
+
+    @pytest.mark.asyncio
+    async def test_turn_header_format(self):
+        """Turn header shows agent name and turn number, before the content."""
+        ec, buf = _make_console()
+        events = [
+            TurnStartEvent(data=TurnInfo(turn=0), source="agent"),
+            OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                ),
+                source="agent",
+                exec_id="c",
+            ),
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "agent" in output
+        assert "turn 1" in output
+
+
+class TestBackgroundSuppression:
+    """
+    A tool's subagent chatter is suppressed only while a background task of
+    that tool is in flight; a later foreground run of the same tool renders.
+    """
+
+    @staticmethod
+    def _bg(tool: str) -> BackgroundTaskInfo:
+        return BackgroundTaskInfo(task_id="t", tool_name=tool, tool_call_id="c")
+
+    def test_suppression_lifted_after_completion(self) -> None:
+        ec, _ = _make_console()
+        worker_turn = TurnStartEvent(data=TurnInfo(turn=0), source="research")
+
+        ec._handle(
+            BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+        )
+        assert ec._is_bg_subagent(worker_turn) is True
+
+        ec._handle(
+            BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
+        )
+        assert ec._is_bg_subagent(worker_turn) is False
+
+    def test_concurrent_tasks_refcounted(self) -> None:
+        ec, _ = _make_console()
+        ev = TurnStartEvent(data=TurnInfo(turn=0), source="research")
+        for _ in range(2):
+            ec._handle(
+                BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+            )
+        ec._handle(
+            BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
+        )
+        # One of two still in flight → still suppressed.
+        assert ec._is_bg_subagent(ev) is True
+        ec._handle(
+            BackgroundTaskCompletedEvent(source="agent", data=self._bg("research"))
+        )
+        assert ec._is_bg_subagent(ev) is False
+
+    def test_default_suppresses_bg_subagent_turn(self) -> None:
+        ec, buf = _make_console()
+        ec._handle(
+            BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+        )
+        buf.truncate(0)
+        buf.seek(0)
+        ec._handle(TurnStartEvent(data=TurnInfo(turn=0), source="research"))
+        assert buf.getvalue().strip() == ""  # suppressed
+
+    def test_show_background_prints_bg_subagent_turn(self) -> None:
+        ec, buf = _make_console_with(show_background=True)
+        ec._handle(
+            BackgroundTaskLaunchedEvent(source="agent", data=self._bg("research"))
+        )
+        buf.truncate(0)
+        buf.seek(0)
+        # Still a bg subagent, but now rendered inline instead of dropped.
+        ev = TurnStartEvent(data=TurnInfo(turn=0), source="research")
+        assert ec._is_bg_subagent(ev) is True
+        ec._handle(ev)
+        # The turn header is deferred until the agent's first content; feeding a
+        # content event flushes it (header) followed by the content.
+        ec._handle(
+            OutputMessageItemEvent(
+                data=OutputMessageItem(
+                    content_parts=[OutputMessageText(text="found it")],
+                    status="completed",
+                ),
+                source="research",
+                exec_id="c",
+            )
+        )
+        out = buf.getvalue()
+        assert "research" in out and "turn" in out  # header rendered
+        assert "found it" in out  # ...followed by the content
+
+    @staticmethod
+    def _exec_stream() -> Any:
+        from grasp_agents.tools.bash_common import ExecStreamChunk, ExecStreamEvent
+
+        return ExecStreamEvent(
+            source="Bash", data=ExecStreamChunk(channel="stdout", text="item 1 of 5\n")
+        )
+
+    def test_default_suppresses_bg_tool_stdout(self) -> None:
+        # Progressive stdout from a backgrounded shell command is dropped...
+        ec, buf = _make_console()
+        ec._handle(BackgroundTaskLaunchedEvent(source="agent", data=self._bg("Bash")))
+        buf.truncate(0)
+        buf.seek(0)
+        ec._handle(self._exec_stream())
+        assert buf.getvalue().strip() == ""
+
+    def test_show_background_prints_bg_tool_stdout(self) -> None:
+        # ...but show_background streams the backgrounded command's live output.
+        ec, buf = _make_console_with(show_background=True)
+        ec._handle(BackgroundTaskLaunchedEvent(source="agent", data=self._bg("Bash")))
+        buf.truncate(0)
+        buf.seek(0)
+        ec._handle(self._exec_stream())
+        assert "item 1 of 5" in buf.getvalue()
+
+
+# ── Multiple reasoning items per generation (issue 5: web-search interleaving) ──
+
+
+def _reasoning_added(item_id: str, seq: int) -> LLMStreamEvent:
+    return LLMStreamEvent(
+        data=OutputItemAdded(
+            item=ReasoningItem(id=item_id), output_index=0, sequence_number=seq
+        ),
+        source="agent",
+        exec_id="c1",
+    )
+
+
+def _reasoning_delta(item_id: str, text: str, seq: int) -> LLMStreamEvent:
+    return LLMStreamEvent(
+        data=ReasoningSummaryPartTextDelta(
+            delta=text,
+            summary_index=0,
+            output_index=0,
+            sequence_number=seq,
+            item_id=item_id,
+        ),
+        source="agent",
+        exec_id="c1",
+    )
+
+
+def _reasoning_done(item_id: str, text: str, seq: int) -> LLMStreamEvent:
+    # The done event flushes the line-buffered gutter (parity with real streams,
+    # which always close a reasoning item before the next starts).
+    return LLMStreamEvent(
+        data=OutputItemDone(
+            item=ReasoningItem(
+                id=item_id, summary_parts=[ReasoningSummary(text=text)]
+            ),
+            output_index=0,
+            sequence_number=seq,
+        ),
+        source="agent",
+        exec_id="c1",
+    )
+
+
+class TestMultipleReasoningDedup:
+    """
+    With several reasoning items in one generation (OpenAI web search
+    interleaves reasoning between searches), each streamed thinking block must
+    show exactly once — the promoted ReasoningItemEvents that follow the stream
+    are suppressed per-item-id, not via a single one-shot flag.
+    """
+
+    @pytest.mark.asyncio
+    async def test_three_reasoning_blocks_not_duplicated(self):
+        ec, buf = _make_console_with(show_thinking=True)
+        blocks = [("rs1", "first thought"), ("rs2", "second thought"), ("rs3", "third")]
+        events: list[Event[Any]] = []
+        # Stream three reasoning items, each opened, streamed, and closed.
+        for i, (rid, text) in enumerate(blocks):
+            events.extend(
+                [
+                    _reasoning_added(rid, 3 * i + 1),
+                    _reasoning_delta(rid, text, 3 * i + 2),
+                    _reasoning_done(rid, text, 3 * i + 3),
+                ]
+            )
+        # Then the promoted item events the loop emits post-stream (same ids).
+        events += [
+            ReasoningItemEvent(
+                data=ReasoningItem(
+                    id=rid, summary_parts=[ReasoningSummary(text=text)]
+                ),
+                source="agent",
+                exec_id="c1",
+            )
+            for rid, text in blocks
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert out.count("first thought") == 1
+        assert out.count("second thought") == 1
+        assert out.count("third") == 1
+
+    @pytest.mark.asyncio
+    async def test_ids_reset_between_generations(self):
+        # A second generation reuses the dedup machinery cleanly: its reasoning
+        # is suppressed too, and nothing from the first generation lingers.
+        ec, buf = _make_console_with(show_thinking=True)
+        resp = Response(model="m", output_items=[], usage_with_cost=None)
+        events: list[Event[Any]] = [
+            _reasoning_added("rs1", 1),
+            _reasoning_delta("rs1", "gen one thought", 2),
+            _reasoning_done("rs1", "gen one thought", 3),
+            ReasoningItemEvent(
+                data=ReasoningItem(
+                    id="rs1", summary_parts=[ReasoningSummary(text="gen one thought")]
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            GenerationEndEvent(data=resp, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        assert _strip_ansi(buf.getvalue()).count("gen one thought") == 1
+        assert ec._streamed_live_ids == set()  # reset at generation end
+
+
+# ── Markdown rendering toggle (issue 4) ──
+
+
+class TestMarkdownToggle:
+    @pytest.mark.asyncio
+    async def test_streamed_response_raw_when_markdown_off(self):
+        # markdown=False: the response streams live as raw text, so markdown
+        # syntax is shown verbatim and not re-rendered.
+        ec, buf = _make_console_with(markdown=False)
+        msg = OutputMessageItem(
+            id="m1",
+            content_parts=[OutputMessageText(text="# Title\nbody")],
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="# Title\nbody",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="m1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            OutputMessageItemEvent(data=msg, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "# Title" in out  # raw markdown shown verbatim
+        assert out.count("body") == 1  # not duplicated by the promoted event
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_markdown_when_enabled(self):
+        # markdown=True: live deltas are withheld; the promoted item renders the
+        # message as formatted Markdown (heading marker consumed), shown once.
+        ec, buf = _make_console_with(markdown=True)
+        msg = OutputMessageItem(
+            id="m1",
+            content_parts=[OutputMessageText(text="# Title\nbody text")],
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputMessageTextPartTextDelta(
+                    content_index=0,
+                    delta="# Title\nbody text",
+                    output_index=0,
+                    sequence_number=1,
+                    item_id="m1",
+                    logprobs=[],
+                ),
+                source="agent",
+                exec_id="c1",
+            ),
+            OutputMessageItemEvent(data=msg, source="agent", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "Title" in out
+        assert "body text" in out
+        assert "# Title" not in out  # heading marker consumed by markdown render
+        assert out.count("body text") == 1  # rendered once, not also streamed raw
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_raw_when_markdown_off(self):
+        # markdown off + no deltas (non-streaming run): plain text, no formatting.
+        ec, buf = _make_console_with(markdown=False)
+        msg = OutputMessageItem(
+            content_parts=[OutputMessageText(text="## Heading\ntext")],
+            status="completed",
+        )
+        events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "## Heading" in out  # shown verbatim, not rendered
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_markdown_when_enabled(self):
+        ec, buf = _make_console_with(markdown=True)
+        msg = OutputMessageItem(
+            content_parts=[OutputMessageText(text="## Heading\ntext")],
+            status="completed",
+        )
+        events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert "Heading" in out
+        assert "## Heading" not in out  # rendered as markdown

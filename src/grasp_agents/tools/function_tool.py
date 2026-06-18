@@ -1,0 +1,220 @@
+"""
+Decorator to create a BaseTool from a plain function.
+
+Usage::
+
+    @function_tool
+    async def add(a: int, b: int) -> int:
+        \"\"\"Add two numbers.\"\"\"
+        return a + b
+
+    # With options:
+    @function_tool(name="calculator", timeout=10.0)
+    async def add(a: int, b: int) -> int:
+        \"\"\"Add two numbers.\"\"\"
+        return a + b
+
+    # With RunContext access:
+    @function_tool
+    async def greet(name: str, *, ctx: RunContext[MyState]) -> str:
+        \"\"\"Greet by name.\"\"\"
+        ctx.state.greeted = True
+        return f"Hello, {name}!"
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+from typing import TYPE_CHECKING, Any, overload
+
+from pydantic import BaseModel, create_model
+
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
+if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+
+# Parameters with these names are passed through from the executor,
+# not included in the tool's input schema.
+_SPECIAL_PARAMS = {"ctx", "exec_id", "agent_ctx"}
+
+
+def _build_input_model(
+    fn: Any,
+    hints: dict[str, Any],
+    sig: inspect.Signature,
+) -> type[BaseModel]:
+    """Build a Pydantic model from function parameters."""
+    field_definitions: dict[str, Any] = {}
+
+    for param_name, param in sig.parameters.items():
+        if param_name in _SPECIAL_PARAMS:
+            continue
+
+        annotation = hints.get(param_name, Any)
+
+        if param.default is not inspect.Parameter.empty:
+            field_definitions[param_name] = (annotation, param.default)
+        else:
+            field_definitions[param_name] = (annotation, ...)
+
+    model_name = f"{fn.__name__}_input"
+    # Resolve string annotations (the module uses ``from __future__ import
+    # annotations``) against the decorated function's own module, so a
+    # parameter typed ``Annotated[T, Field(description=...)]`` carries its
+    # description into the input schema.
+    return create_model(  # type: ignore[call-overload]
+        model_name, __module__=fn.__module__, **field_definitions
+    )
+
+
+def _has_special_param(sig: inspect.Signature, name: str) -> bool:
+    return name in sig.parameters
+
+
+class FunctionTool(BaseTool[BaseModel, Any, Any]):
+    """A tool created from a plain function via @function_tool."""
+
+    def __init__(
+        self,
+        *,
+        fn: Any,
+        name: str,
+        description: str,
+        input_model: type[BaseModel],
+        is_async: bool,
+        has_ctx: bool,
+        has_exec_id: bool,
+        has_agent_ctx: bool = False,
+        timeout: float | None = None,
+        auto_background_at: float | None = None,
+        blocks_final_answer: bool = True,
+        max_inline_result_chars: int | None = None,
+        untrusted_output: bool = False,
+    ) -> None:
+        super().__init__(
+            name=name,
+            description=description,
+            timeout=timeout,
+            auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
+            untrusted_output=untrusted_output,
+        )
+        self._fn = fn
+        self._resolved_in_type = input_model
+        # Override class-level _in_type (BaseModel) with the actual
+        # dynamic model so that llm_in_type (reads _in_type directly)
+        # returns the correct schema for LLM tool calls.
+        self._in_type = input_model  # type: ignore[assignment]
+        self._is_async = is_async
+        self._has_ctx = has_ctx
+        self._has_exec_id = has_exec_id
+        self._has_agent_ctx = has_agent_ctx
+
+    @property
+    def in_type(self) -> type[BaseModel]:
+        return self._resolved_in_type
+
+    async def _run(
+        self,
+        inp: BaseModel,
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
+    ) -> Any:
+        del progress_callback, path
+        kwargs = inp.model_dump()
+        if self._has_ctx:
+            kwargs["ctx"] = ctx
+        if self._has_exec_id:
+            kwargs["exec_id"] = exec_id
+        if self._has_agent_ctx:
+            kwargs["agent_ctx"] = agent_ctx
+
+        if self._is_async:
+            return await self._fn(**kwargs)
+        return await asyncio.to_thread(self._fn, **kwargs)
+
+
+@overload
+def function_tool(fn: Any, /) -> FunctionTool: ...
+
+
+@overload
+def function_tool(
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    timeout: float | None = None,
+    auto_background_at: float | None = None,
+    blocks_final_answer: bool = True,
+    max_inline_result_chars: int | None = None,
+    untrusted_output: bool = False,
+) -> Any: ...
+
+
+def function_tool(
+    fn: Any | None = None,
+    /,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    timeout: float | None = None,
+    auto_background_at: float | None = None,
+    blocks_final_answer: bool = True,
+    max_inline_result_chars: int | None = None,
+    untrusted_output: bool = False,
+) -> Any:
+    """
+    Create a BaseTool from a function.
+
+    Can be used as a bare decorator or with keyword arguments::
+
+        @function_tool
+        async def add(a: int, b: int) -> int: ...
+
+        @function_tool(name="calculator", timeout=5.0)
+        async def add(a: int, b: int) -> int: ...
+    """
+
+    def _wrap(f: Any) -> FunctionTool:
+        sig = inspect.signature(f)
+        hints = _get_type_hints_safe(f)
+        input_model = _build_input_model(f, hints, sig)
+
+        tool_name = name or f.__name__
+        tool_description = description or inspect.getdoc(f) or ""
+
+        return FunctionTool(
+            fn=f,
+            name=tool_name,
+            description=tool_description,
+            input_model=input_model,
+            is_async=inspect.iscoroutinefunction(f),
+            has_ctx=_has_special_param(sig, "ctx"),
+            has_exec_id=_has_special_param(sig, "exec_id"),
+            has_agent_ctx=_has_special_param(sig, "agent_ctx"),
+            timeout=timeout,
+            auto_background_at=auto_background_at,
+            blocks_final_answer=blocks_final_answer,
+            max_inline_result_chars=max_inline_result_chars,
+            untrusted_output=untrusted_output,
+        )
+
+    if fn is not None:
+        return _wrap(fn)
+    return _wrap
+
+
+def _get_type_hints_safe(fn: Any) -> dict[str, Any]:
+    """Get type hints, handling forward references gracefully."""
+    try:
+        return {k: v for k, v in fn.__annotations__.items() if k != "return"}
+    except Exception:
+        return {}

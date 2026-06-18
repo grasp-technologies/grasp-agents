@@ -29,6 +29,7 @@ CLOUD_PROVIDERS_NAMES = {"metadata.google.internal"}
 
 class NoopExporter(SpanExporter):
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        del spans
         return SpanExportResult.SUCCESS
 
 

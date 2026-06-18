@@ -1,0 +1,47 @@
+"""Map Anthropic SDK exceptions to LlmError types."""
+
+from __future__ import annotations
+
+import anthropic
+
+from grasp_agents.llm_providers._http_helpers import parse_retry_after
+from grasp_agents.types.llm_errors import (
+    LlmApiConnectionError,
+    LlmApiStatusError,
+    LlmApiTimeoutError,
+    LlmAuthenticationError,
+    LlmBadRequestError,
+    LlmContextWindowError,
+    LlmError,
+    LlmInternalServerError,
+    LlmNotFoundError,
+    LlmRateLimitError,
+)
+
+
+def map_api_error(err: Exception) -> LlmError | None:
+    if isinstance(err, anthropic.APITimeoutError):
+        return LlmApiTimeoutError(request=err.request)
+    if isinstance(err, anthropic.APIConnectionError):
+        return LlmApiConnectionError(message=str(err), request=err.request)
+    if not isinstance(err, anthropic.APIStatusError):
+        return None
+
+    msg = str(err)
+    code = err.status_code
+    resp, body = err.response, err.body
+    if code == 429:
+        return LlmRateLimitError(
+            msg, response=resp, body=body, retry_after=parse_retry_after(resp)
+        )
+    if code in {401, 403}:
+        return LlmAuthenticationError(msg, response=resp, body=body)
+    if code == 404:
+        return LlmNotFoundError(msg, response=resp, body=body)
+    if code == 413:
+        return LlmContextWindowError(msg, response=resp, body=body)
+    if code >= 500:
+        return LlmInternalServerError(msg, response=resp, body=body)
+    if code == 400:
+        return LlmBadRequestError(msg, response=resp, body=body)
+    return LlmApiStatusError(msg, response=resp, body=body)

@@ -3,23 +3,28 @@ from collections.abc import AsyncIterator, Sequence
 from itertools import pairwise
 from typing import Any, cast
 
-from ..errors import WorkflowConstructionError
-from ..packet import Packet
-from ..processors.processor import Processor
-from ..run_context import CtxT, RunContext
-from ..typing.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
-from ..typing.io import InT, OutT, ProcName
+from grasp_agents.processors.processor import Processor
+from grasp_agents.run_context import RunContext
+from grasp_agents.types.errors import WorkflowConstructionError
+from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
+from grasp_agents.types.io import ProcName
+from grasp_agents.types.packet import Packet
+
 from .workflow_processor import WorkflowProcessor
 
 logger = logging.getLogger(__name__)
 
 
-class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
+class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
     def __init__(
         self,
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, CtxT]],
+        *,
+        ctx: RunContext[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
+        path: list[str] | None = None,
+        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -28,7 +33,10 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
             start_proc=subprocs[0],
             end_proc=subprocs[-1],
             name=name,
+            ctx=ctx,
             recipients=recipients,
+            path=path,
+            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
@@ -41,63 +49,59 @@ class SequentialWorkflow(WorkflowProcessor[InT, OutT, CtxT]):
                     f" {proc.name}"
                 )
 
-    async def _process(
-        self,
-        chat_inputs: Any | None = None,
-        *,
-        in_args: list[InT] | None = None,
-        call_id: str,
-        ctx: RunContext[CtxT],
-    ) -> list[OutT]:
-        packet = Packet(sender=self.name, payloads=in_args) if in_args else None
-
-        for subproc in self.subprocs:
-            logger.info(f"\n[Running subprocessor {subproc.name}]\n")
-
-            packet = await subproc.run(
-                chat_inputs=chat_inputs,
-                in_packet=packet,
-                call_id=f"{call_id}/{subproc.name}",
-                ctx=ctx,
-            )
-            chat_inputs = None
-
-            logger.info(f"\n[Finished running subprocessor {subproc.name}]\n")
-
-        return list(cast("Packet[OutT]", packet).payloads)
-
     async def _process_stream(
         self,
         chat_inputs: Any | None = None,
         *,
         in_args: list[InT] | None = None,
-        call_id: str,
-        ctx: RunContext[CtxT],
+        exec_id: str,
+        step: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
+        start_step = 0
 
-        for subproc in self.subprocs:
+        checkpoint = await self.load_checkpoint()
+        if checkpoint is not None:
+            packet = checkpoint.packet
+            start_step = checkpoint.completed_step + 1
+            # The checkpointed packet supersedes re-delivered inputs — the
+            # first resumed subprocessor must not receive both.
+            chat_inputs = None
+
+            # All steps completed in a prior run — emit cached final output
+            if start_step >= len(self.subprocs):
+                out_packet = cast("Packet[OutT]", packet)
+                for p in out_packet.payloads:
+                    yield ProcPayloadOutEvent(data=p, source=self.name, exec_id=exec_id)
+                return
+
+        for idx, subproc in enumerate(self.subprocs):
+            if idx < start_step:
+                continue
+
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,
-                call_id=f"{call_id}/{subproc.name}",
-                ctx=ctx,
+                exec_id=f"{exec_id}/{subproc.name}",
+                step=0,  # each subproc is called exactly once
             ):
                 yield event
                 if (
                     isinstance(event, ProcPacketOutEvent)
-                    and event.src_name == subproc.name
+                    and event.source == subproc.name
                 ):
                     packet = event.data
+
+            await self.save_checkpoint(
+                completed_step=idx, packet=cast("Packet[Any]", packet)
+            )
 
             if subproc is self.end_proc:
                 out_packet = cast("Packet[OutT]", packet)
                 for p in out_packet.payloads:
-                    yield ProcPayloadOutEvent(
-                        data=p, src_name=self.name, call_id=call_id
-                    )
+                    yield ProcPayloadOutEvent(data=p, source=self.name, exec_id=exec_id)
 
             chat_inputs = None
 

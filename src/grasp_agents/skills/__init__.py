@@ -1,0 +1,80 @@
+"""
+Agent Skills — implementation of the `agentskills.io specification
+<https://agentskills.io/specification>`_.
+
+A *skill* is a folder containing a ``SKILL.md`` file with YAML frontmatter
+(``name`` + ``description`` required) and markdown instructions. Skills are
+catalog-injected into the system prompt as an ``<available_skills>`` block;
+the agent resolves a skill on demand via the ``load_skill`` tool. Slash-style
+user invocations are rendered via :meth:`SkillRegistry.render_invocation`.
+"""
+
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING, Any
+
+from .injection import (
+    make_skills_section,
+    render_available_skills_block,
+    render_skill_instructions,
+    skills_system_prompt_section,
+)
+from .loader import discover_skills, load_skill_md, parse_skill_md
+from .registry import SkillRegistry, match_invocation_wrapper
+from .slash import (
+    ParsedSlashCommand,
+    parse_named_args,
+    parse_slash_command,
+)
+from .types import (
+    Skill,
+    SkillError,
+    SkillFilter,
+    SkillFormatError,
+    SkillFrontmatter,
+    SkillNotFoundError,
+)
+
+if TYPE_CHECKING:
+    # Lazy-loaded — these depend on ``function_tool`` (which transitively
+    # imports ``RunContext``), and importing them at package load would
+    # short-circuit the run-context construction during ``grasp_agents``
+    # startup.
+    from .tools import list_skills, load_skill
+
+
+_LAZY_TOOLS = {"list_skills", "load_skill"}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_TOOLS:
+        module = importlib.import_module(".tools", __name__)
+        attr = getattr(module, name)
+        globals()[name] = attr
+        return attr
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "ParsedSlashCommand",
+    "Skill",
+    "SkillError",
+    "SkillFilter",
+    "SkillFormatError",
+    "SkillFrontmatter",
+    "SkillNotFoundError",
+    "SkillRegistry",
+    "discover_skills",
+    "list_skills",
+    "load_skill",
+    "load_skill_md",
+    "make_skills_section",
+    "match_invocation_wrapper",
+    "parse_named_args",
+    "parse_skill_md",
+    "parse_slash_command",
+    "render_available_skills_block",
+    "render_skill_instructions",
+    "skills_system_prompt_section",
+]

@@ -1,7 +1,4 @@
-from logging import getLogger
 from pathlib import Path
-
-logger = getLogger(__name__)
 
 
 def read_txt(file_path: str | Path, encoding: str = "utf-8") -> str:
@@ -12,13 +9,12 @@ def read_contents_from_file(
     file_path: str | Path,
     binary_mode: bool = False,
 ) -> str | bytes:
-    try:
-        if binary_mode:
-            return Path(file_path).read_bytes()
-        return Path(file_path).read_text()
-    except FileNotFoundError:
-        logger.exception(f"File {file_path} not found.")
-        return ""
+    # A missing file propagates: an explicitly-configured prompt path that
+    # doesn't exist is a configuration error — returning "" would silently
+    # run the agent with an empty system prompt.
+    if binary_mode:
+        return Path(file_path).read_bytes()
+    return Path(file_path).read_text()
 
 
 def get_prompt(prompt_text: str | None, prompt_path: str | Path | None) -> str | None:

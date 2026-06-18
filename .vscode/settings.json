@@ -13,7 +13,7 @@
     "python.languageServer": "Pylance",
     "jupyter.notebookFileRoot": "${workspaceFolder}",
     "cSpell.configFile": "${workspaceFolder}/cspell.json",
-    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.diagnosticMode": "openFilesOnly",
     "files.autoSave": "onFocusChange",
     "[python]": {
         "editor.formatOnSave": true,

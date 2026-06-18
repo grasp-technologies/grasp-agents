@@ -1,0 +1,12 @@
+╭─ tutor → agent ──────────────────────────────╮
+│                                              │
+│  Explain quantum computing in simple terms.  │
+│                                              │
+╰──────────────────────────────────────────────╯
+
+╭─ System → tutor ────────────────────────────────────────────────╮
+│                                                                 │
+│  You are a helpful tutor. Keep explanations under 3 sentences.  │
+│                                                                 │
+╰─────────────────────────────────────────────────────────────────╯
+
