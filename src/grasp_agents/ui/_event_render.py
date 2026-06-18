@@ -52,7 +52,9 @@ from grasp_agents.types.events import (
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
+    WebSearchCallItemEvent,
 )
+from grasp_agents.types.items import OpenPageAction, SearchAction, WebSearchCallItem
 from grasp_agents.types.llm_events import ResponseFallback, ResponseRetrying
 
 if TYPE_CHECKING:
@@ -89,7 +91,11 @@ _IMG_ROWS_MAX = 40  # chafa symbol-art height cap (cells)
 
 
 def render_event(
-    event: Event[Any], *, inline_images: bool = True
+    event: Event[Any],
+    *,
+    inline_images: bool = True,
+    hyperlinks: bool = True,
+    markdown: bool = True,
 ) -> RenderableType | None:
     """
     Build a Rich renderable for an event, or ``None`` if it has no display.
@@ -97,6 +103,16 @@ def render_event(
     With ``inline_images=False`` the result omits images; a surface that renders
     images as its own widgets (the TUI) pairs this with :func:`event_images`.
     The default inlines them as symbol-art cells (the light console).
+
+    ``hyperlinks`` controls whether links (markdown links, web-search sources)
+    render as OSC-8 terminal hyperlinks — clean and clickable in a real terminal
+    (Kitty, iTerm2, the TUI). Pass ``False`` for surfaces that can't render OSC-8
+    (notebooks render ANSI→HTML, pipes), where it would leak as escape-code
+    garbage; there links degrade to plain text the frontend can auto-linkify.
+
+    ``markdown=False`` renders Markdown-bearing content (the assistant message,
+    markdown tool reports) as plain text instead of formatted Markdown — for a
+    linear surface that can't repaint and so streams raw tokens.
     """
     if isinstance(event, TurnStartEvent):
         agent = event.source or "agent"
@@ -113,13 +129,20 @@ def render_event(
         text = event.data.text
         if not text:
             return None
+        if not markdown:
+            return Text(text)  # raw text, no Markdown formatting or JSON tabling
         # A pure-JSON answer (e.g. a structured ``llm_output_schema`` output)
         # renders like tool-call arguments — structured, not as prose.
         structured = _structured_output(text)
         if structured is not None:
             return structured
         theme = _active_code_theme()
-        return _Markdown(text, code_theme=theme, inline_code_theme=theme)
+        # With hyperlinks=False, Rich renders links as "text (url)" plain text
+        # instead of OSC-8 hyperlinks (which leak as escape-code garbage where
+        # the surface can't render them); the plain URL is then auto-linkified.
+        return _Markdown(
+            text, code_theme=theme, inline_code_theme=theme, hyperlinks=hyperlinks
+        )
 
     if isinstance(event, ReasoningItemEvent):
         parts = [
@@ -140,6 +163,11 @@ def render_event(
             f"{escape(agent)} → {escape(tool)}",
             _build_args_renderable(event.data.arguments),
             PALETTE["border_tool_call"],
+        )
+
+    if isinstance(event, WebSearchCallItemEvent):
+        return render_web_search(
+            event.data, event.source or "agent", hyperlinks=hyperlinks
         )
 
     if isinstance(event, ToolOutputItemEvent):
@@ -167,13 +195,24 @@ def render_event(
             return panel(
                 title,
                 _build_result_renderable(
-                    text_out, PALETTE["tool_result"], inline_images=inline_images
+                    text_out,
+                    PALETTE["tool_result"],
+                    inline_images=inline_images,
+                    hyperlinks=hyperlinks,
+                    markdown=markdown,
                 ),
                 border,
             )
         blocks: list[RenderableType] = []
         if isinstance(text_out, str) and text_out.strip():
-            blocks.append(_build_result_renderable(text_out, PALETTE["tool_result"]))
+            blocks.append(
+                _build_result_renderable(
+                    text_out,
+                    PALETTE["tool_result"],
+                    hyperlinks=hyperlinks,
+                    markdown=markdown,
+                )
+            )
         for img in images:
             if blocks:
                 blocks.append(Text(""))
@@ -813,6 +852,114 @@ def _build_args_renderable(args_json: str) -> RenderableType:
     return _kv_table(cast("dict[str, Any]", parsed), PALETTE["tool_call"])
 
 
+def _link_style(url: str) -> str:
+    """A Rich style rendering text as a clickable accent-colored OSC-8 hyperlink."""
+    return f"{PALETTE['accent']} link {url}" if url else PALETTE["muted"]
+
+
+def _source_url(url: str) -> str:
+    """
+    The URL to display for a search source as plain text, or ``""`` to omit it.
+
+    Gemini grounding sources carry ``vertexaisearch.cloud.google.com/grounding-
+    api-redirect/…`` URLs, not the real page — long, opaque, and identical bar a
+    token, so listing them is pure clutter. They're dropped; the title is the real
+    domain and identifies the source. Anthropic returns real URLs, which are kept.
+    Used in every path — a grounding redirect is never shown nor used as the
+    target of an OSC-8 link.
+    """
+    return "" if (not url or "grounding-api-redirect" in url) else url
+
+
+def _web_search_body(
+    item: WebSearchCallItem, *, hyperlinks: bool
+) -> tuple[RenderableType, str]:
+    """
+    Key/value renderable + status for a server-side ``web_search_call`` item.
+
+    Same kv-table style as tool-call args, but each query / source is its own
+    bulleted entry. Opaque grounding-redirect URLs (Gemini) are never used as a
+    link target nor shown (see ``_source_url``); such a source renders as just its
+    domain title. For a real URL: with ``hyperlinks`` (a real terminal / the TUI)
+    the title is a clickable OSC-8 link to it; without (notebooks/pipes, where
+    OSC-8 leaks as escape-code garbage) the URL is shown as plain text on its own
+    line for the frontend to auto-linkify.
+    """
+    table = Table(
+        show_header=False,
+        show_edge=False,
+        box=HORIZONTALS,
+        show_lines=True,
+        border_style=PALETTE["separator"],
+        pad_edge=False,
+        padding=(0, 2, 0, 0),
+    )
+    table.add_column("key", style=f"bold {PALETTE['arg_key']}", no_wrap=True)
+    table.add_column("value", ratio=1)
+
+    action = item.action
+    if isinstance(action, SearchAction):
+        if action.queries:
+            queries = Text()
+            for i, query in enumerate(action.queries):
+                if i:
+                    queries.append("\n")
+                queries.append("• ", PALETTE["accent"])
+                queries.append(truncate(query, 300), PALETTE["tool_call"])
+            table.add_row("queries", queries)
+        if action.sources:
+            sources = Text()
+            for i, src in enumerate(action.sources[:12]):
+                if i:
+                    sources.append("\n")
+                sources.append("• ", PALETTE["accent"])
+                # Real URL only — grounding redirects are never linked or shown.
+                url = _source_url(src.url)
+                if hyperlinks and url:
+                    # Clean label, clickable: OSC-8-link the title to the real URL
+                    # (the raw URL stays behind the link).
+                    sources.append(truncate(src.title or url, 200), _link_style(url))
+                else:
+                    # No OSC-8 (or no real URL): title, plus the real URL on its
+                    # own line (auto-linkified) when there is one.
+                    label = truncate(src.title or url or "(source)", 200)
+                    sources.append(label, PALETTE["tool_call"])
+                    if url and url != label:
+                        sources.append(f"\n   {truncate(url, 300)}", PALETTE["muted"])
+                if src.page_age:
+                    sources.append(
+                        f"\n   {truncate(src.page_age, 60)}", PALETTE["muted"]
+                    )
+            table.add_row("sources", sources)
+    elif isinstance(action, OpenPageAction):
+        url = action.url or ""
+        style = _link_style(url) if (hyperlinks and url) else PALETTE["accent"]
+        table.add_row("open page", Text(truncate(url, 400), style))
+    else:  # FindInPageAction
+        table.add_row(
+            "find in page",
+            Text(truncate(action.pattern or "", 200), PALETTE["tool_call"]),
+        )
+        if action.url:
+            style = _link_style(action.url) if hyperlinks else PALETTE["accent"]
+            table.add_row("page", Text(truncate(action.url, 400), style))
+
+    if table.row_count == 0:
+        table.add_row("web search", Text(""))
+    return table, item.status or ""
+
+
+def render_web_search(
+    item: WebSearchCallItem, agent: str = "agent", *, hyperlinks: bool = True
+) -> RenderableType:
+    """Panel for a server-side ``web_search_call`` item (queries / sources / URL)."""
+    body, status = _web_search_body(item, hyperlinks=hyperlinks)
+    title = f"{escape(agent)} → web_search"
+    if status and status != "completed":
+        title += f" [{PALETTE['muted']}]{escape(f'[{status}]')}[/]"
+    return panel(title, body, PALETTE["border_tool_call"])
+
+
 def _structured_output(text: str) -> RenderableType | None:
     """
     Renderable for a pure-JSON output message, else ``None`` (prose).
@@ -882,7 +1029,12 @@ def _message_body(text: str) -> RenderableType:
 
 
 def _build_result_renderable(
-    output: Any, text_color: str, *, inline_images: bool = True
+    output: Any,
+    text_color: str,
+    *,
+    inline_images: bool = True,
+    hyperlinks: bool = True,
+    markdown: bool = True,
 ) -> RenderableType:
     raw = _unwrap_json(output)
     if isinstance(raw, dict):
@@ -898,10 +1050,12 @@ def _build_result_renderable(
         return _kv_table(data, text_color)
     content = _unescape_json_string(str(output))
     content = truncate(content, _TRUNC)
-    if _looks_like_markdown(content):
+    if markdown and _looks_like_markdown(content):
         # agent tools often return markdown reports — render them formatted
         theme = _active_code_theme()
-        return _Markdown(content, code_theme=theme, inline_code_theme=theme)
+        return _Markdown(
+            content, code_theme=theme, inline_code_theme=theme, hyperlinks=hyperlinks
+        )
     if _looks_like_xml(content):
         # tagged payloads (e.g. background <task_notification>…) as highlighted XML
         return _code_block(content, "xml")
@@ -910,7 +1064,12 @@ def _build_result_renderable(
     return Text(truncate_lines(content.rstrip("\n"), _MAX_LINES), style=text_color)
 
 
-def _kv_table(data: dict[str, Any], text_color: str) -> Table:
+def _kv_table(data: dict[str, Any], text_color: str) -> RenderableType:
+    if not data:
+        # An empty table's flexible (ratio) value column measures to the full
+        # available width, stretching the enclosing panel edge-to-edge. With no
+        # rows to show, render nothing so the box hugs its title instead.
+        return Text("")
     table = Table(
         show_header=False,
         show_edge=False,

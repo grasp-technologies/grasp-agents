@@ -73,7 +73,7 @@ from grasp_agents.types.events import (
     UserMessageEvent,
 )
 from grasp_agents.types.io import LLMPrompt, ProcName
-from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
+from grasp_agents.types.items import FunctionToolCallItem, InputItem, InputMessageItem
 from grasp_agents.types.response import Response
 from grasp_agents.utils.callbacks import is_method_overridden
 from grasp_agents.utils.io import get_prompt
@@ -778,11 +778,11 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             self.transcript.reset(sys_prompt_parts)
             self._log_dirty = True
 
-        messages_to_expose: list[InputMessageItem] = []
+        messages_to_expose: list[InputItem] = []
         if fresh_init:
-            for msg in self.transcript.messages:
-                if isinstance(msg, InputMessageItem):
-                    messages_to_expose.append(msg)
+            # for msg in self.transcript.messages:
+            # if isinstance(msg, InputMessageItem):
+            messages_to_expose.extend(self.transcript.messages)
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs,

@@ -428,7 +428,15 @@ class OpenPageAction(BaseModel):
     url: str | None = None
 
 
-type WebSearchAction = SearchAction | OpenPageAction
+class FindInPageAction(BaseModel):
+    """A 'find in page' action: locate a pattern within an opened page."""
+
+    type: Literal["find_in_page"] = "find_in_page"
+    url: str | None = None
+    pattern: str | None = None
+
+
+type WebSearchAction = SearchAction | OpenPageAction | FindInPageAction
 
 
 class WebSearchCallItem(BaseModel):
@@ -443,6 +451,18 @@ class WebSearchCallItem(BaseModel):
     # (e.g. Anthropic per-URL encrypted content for web search results)
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
+
+    @property
+    def summary(self) -> str:
+        """One-line human description of the search / fetch action."""
+        action = self.action
+        if isinstance(action, SearchAction):
+            queries = ", ".join(action.queries or [])
+            return f"search: {queries}" if queries else "search"
+        if isinstance(action, OpenPageAction):
+            return f"open page: {action.url or ''}"
+        line = f"find in page: {action.pattern or ''}"
+        return f"{line} @ {action.url}" if action.url else line
 
 
 AssistantMessage = OutputMessageItem

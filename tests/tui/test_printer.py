@@ -29,6 +29,8 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
+    WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
@@ -212,6 +214,20 @@ class TestPrinterMessage:
         assert "Let me work through this." in output
         assert "</thinking>" in output
 
+    def test_print_web_search(self, capsys):
+        """WebSearchCallItem (server-side search) prints <web search> tags."""
+        printer = Printer(output_to="stdout")
+        item = WebSearchCallItem(
+            action=SearchAction(queries=["weather in paris"]), status="completed"
+        )
+
+        printer.print_message(item, agent_name="test", exec_id="c1")
+
+        output = capsys.readouterr().out
+        assert "<web search>" in output
+        assert "weather in paris" in output
+        assert "</web search>" in output
+
     def test_print_tool_call(self, capsys):
         """FunctionToolCallItem (a tool call) prints <tool call> tags + args."""
         printer = Printer(output_to="stdout")
@@ -354,6 +370,34 @@ class TestPrintEvents:
 
         output = capsys.readouterr().out
         assert "<response>" in output
+
+    @pytest.mark.asyncio
+    async def test_web_search_call_streamed(self, capsys):
+        """A web_search_call item streams <web search> tags with its summary."""
+        item = WebSearchCallItem(
+            action=SearchAction(queries=["history of the internet"]),
+            status="completed",
+        )
+
+        async def gen():
+            yield LLMStreamEvent(
+                data=OutputItemAdded(item=item, output_index=0, sequence_number=1),
+                source="agent",
+                exec_id="c1",
+            )
+            yield LLMStreamEvent(
+                data=OutputItemDone(item=item, output_index=0, sequence_number=2),
+                source="agent",
+                exec_id="c1",
+            )
+
+        async for _ in print_events(gen()):
+            pass
+
+        output = capsys.readouterr().out
+        assert "<web search>" in output
+        assert "history of the internet" in output
+        assert "</web search>" in output
 
     @pytest.mark.asyncio
     async def test_output_item_added_tool_call(self, capsys):

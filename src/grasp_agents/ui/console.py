@@ -14,6 +14,7 @@ tool's subagent chatter, background-task notification panels, cumulative cost,
 and the ``show_*`` toggles.
 """
 
+import sys
 import textwrap
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -44,11 +45,13 @@ from grasp_agents.types.events import (
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
+    WebSearchCallItemEvent,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
@@ -67,6 +70,7 @@ from ._event_render import (
     render_event,
     render_retry_notice,
     render_tool_stream,
+    render_web_search,
     truncate,
 )
 
@@ -74,6 +78,22 @@ from ._event_render import (
 # notifications; delegated rendering uses _event_render's own limits) ──
 _MAX_TOOL_OUTPUT_LINES = 12
 _MAX_INPUT_MSG_LINES = 8
+
+
+def _supports_hyperlinks() -> bool:
+    """
+    True when stdout renders OSC-8 hyperlinks (a real terminal: Kitty, iTerm2, …).
+
+    Notebooks render ANSI→HTML and drop OSC-8 (it leaks as escape-code garbage);
+    pipes don't render it either. There, links fall back to plain text, which
+    notebook frontends auto-linkify. Best-effort detection on ``sys.stdout``.
+    """
+    if "ipykernel" in sys.modules:  # Jupyter / notebook kernel
+        return False
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
 
 
 def _default_console() -> Console:
@@ -118,6 +138,7 @@ class EventConsole:
         show_packets: bool = False,
         show_background: bool = False,
         markdown: bool = True,
+        hyperlinks: bool | None = None,
         trunc_len: int = 10000,
         max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
         max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
@@ -131,11 +152,17 @@ class EventConsole:
         self.show_packets = show_packets
         self.show_background = show_background
         # Render the assistant's final message as Markdown (headings, lists,
-        # code, tables) instead of plain text — consistently in both modes.
-        # A linear stream can't format Markdown incrementally, so when on, the
-        # response is NOT streamed token-by-token: it's rendered once complete
-        # (thinking still streams live). Off by default — opt in for readability.
+        # code, tables). A linear stream can't format Markdown incrementally, so
+        # when on, the response is NOT streamed token-by-token: it's rendered once
+        # complete (thinking still streams live). When OFF, the raw response text
+        # streams verbatim — including any link markup — with no reformatting, so
+        # the terminal/notebook can auto-linkify URLs itself.
         self.markdown = markdown
+        # Emit OSC-8 hyperlinks for links only where the output renders them (a
+        # real terminal — Kitty, iTerm2). Notebooks/pipes can't, so there links
+        # fall back to plain text (auto-linkified by the frontend). Auto-detected
+        # from stdout unless set explicitly.
+        self._hyperlinks = _supports_hyperlinks() if hyperlinks is None else hyperlinks
         self.trunc_len = trunc_len
         self.max_tool_output_lines = max_tool_output_lines
         self.max_input_msg_lines = max_input_msg_lines
@@ -191,6 +218,15 @@ class EventConsole:
         if renderable is not None:
             self.console.print(renderable)
 
+    def _render(self, event: Event[Any]) -> Any:
+        """Build a renderable with this console's image/hyperlink/markdown settings."""
+        return render_event(
+            event,
+            inline_images=False,
+            hyperlinks=self._hyperlinks,
+            markdown=self.markdown,
+        )
+
     def _is_bg_subagent(self, event: Event[Any]) -> bool:
         """True if event comes from a background tool's subagent."""
         src = event.source or ""
@@ -211,7 +247,7 @@ class EventConsole:
 
         if isinstance(event, BackgroundTaskCompletedEvent):
             self._on_bg_completed(event)
-            self._print(render_event(event, inline_images=False))
+            self._print(self._render(event))
             return
 
         # Suppress internal events from background subagents (unless opted in),
@@ -243,6 +279,7 @@ class EventConsole:
                 OutputMessageItemEvent,
                 ToolCallItemEvent,
                 ReasoningItemEvent,
+                WebSearchCallItemEvent,
                 LLMStreamingErrorEvent,
                 ProcStreamingErrorEvent,
             ),
@@ -269,6 +306,9 @@ class EventConsole:
 
         elif isinstance(event, ReasoningItemEvent):
             self._on_reasoning_item(event)
+
+        elif isinstance(event, WebSearchCallItemEvent):
+            self._on_web_search(event)
 
         elif isinstance(event, ToolOutputItemEvent):
             self._on_tool_result(event)
@@ -357,6 +397,14 @@ class EventConsole:
                 self._end_text()
             elif isinstance(item, ReasoningItem) and self.show_thinking:
                 self._end_thinking()
+            elif isinstance(item, WebSearchCallItem):
+                # Render each search the moment it completes, so several searches
+                # interleave with the reasoning between them instead of batching
+                # at the end (the promoted item event fires only once the whole
+                # stream is written). The promoted event is suppressed by id in
+                # _on_web_search.
+                self._render_web_search(item, event.source)
+                self._streamed_live_ids.add(item.id)
 
     # ── Promoted item events → shared renderer ──
 
@@ -366,7 +414,7 @@ class EventConsole:
             return
         self._in_tool_block = False
         if self.markdown:
-            self._print(render_event(event, inline_images=False))
+            self._print(self._render(event))
         else:
             # markdown off and not streamed live (non-streaming run): show the
             # response as plain text, consistent with the raw token stream.
@@ -379,7 +427,7 @@ class EventConsole:
         self._end_thinking()
         self._in_tool_block = True
         if self.show_tool_args:
-            self._print(render_event(event, inline_images=False))
+            self._print(self._render(event))
         else:
             agent = event.source or "agent"
             tool = event.data.name or "tool"
@@ -404,6 +452,27 @@ class EventConsole:
         self._write_thinking("\n".join(parts))
         self._end_thinking()
 
+    def _on_web_search(self, event: WebSearchCallItemEvent) -> None:
+        if event.data.id in self._streamed_live_ids:
+            # Already rendered live, the moment the search completed.
+            return
+        self._render_web_search(event.data, event.source)
+
+    def _render_web_search(
+        self, item: WebSearchCallItem, source: str | None
+    ) -> None:
+        # A server-side web search/fetch call — show what the model searched
+        # (queries / opened URL / find-in-page pattern) in its own panel,
+        # followed by a blank line so it stands clear of the thinking or answer
+        # that follows; the preceding block supplies the leading separation.
+        self._end_text()
+        self._end_thinking()
+        self._in_tool_block = False
+        self._print(
+            render_web_search(item, source or "agent", hyperlinks=self._hyperlinks)
+        )
+        self.console.print()
+
     # ── Lifecycle events ──
 
     def _on_turn_start(self, event: TurnStartEvent) -> None:
@@ -420,14 +489,14 @@ class EventConsole:
         self._end_text()
         self._end_thinking()
         self._in_tool_block = False
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
         self.console.print()
 
     def _on_turn_end(self, event: TurnEndEvent) -> None:
         self._end_text()
         self._end_thinking()
         self._in_tool_block = False
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
 
     def _on_generation_end(self, event: GenerationEndEvent) -> None:
         # This generation's promoted item events have all fired by now; clear
@@ -472,24 +541,24 @@ class EventConsole:
     def _on_user_message(self, event: UserMessageEvent) -> None:
         self._end_text()
         self._in_tool_block = False
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
         self.console.print()
 
     def _on_system_message(self, event: SystemMessageEvent) -> None:
         self._end_text()
         self._in_tool_block = False
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
         self.console.print()
 
     # ── Tool events ──
 
     def _on_tool_result(self, event: ToolOutputItemEvent) -> None:
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
         self._pending_tool_spacing = True
 
     def _on_tool_error(self, event: ToolErrorEvent) -> None:
         self.console.print()  # breathing room after usage line
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
 
     # ── Packet events ──
 
@@ -511,7 +580,7 @@ class EventConsole:
     ) -> None:
         self._end_text()
         self._in_tool_block = False
-        self._print(render_event(event, inline_images=False))
+        self._print(self._render(event))
 
     # ── Background task events ──
 
@@ -641,6 +710,7 @@ async def render_events(
     show_packets: bool = False,
     show_background: bool = False,
     markdown: bool = True,
+    hyperlinks: bool | None = None,
     trunc_len: int = 10000,
     max_tool_output_lines: int = _MAX_TOOL_OUTPUT_LINES,
     max_input_msg_lines: int = _MAX_INPUT_MSG_LINES,
@@ -669,6 +739,7 @@ async def render_events(
         show_packets=show_packets,
         show_background=show_background,
         markdown=markdown,
+        hyperlinks=hyperlinks,
         trunc_len=trunc_len,
         max_tool_output_lines=max_tool_output_lines,
         max_input_msg_lines=max_input_msg_lines,

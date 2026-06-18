@@ -37,6 +37,7 @@ from grasp_agents.types.events import (
     TurnInfo,
     TurnStartEvent,
     UserMessageEvent,
+    WebSearchCallItemEvent,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -643,6 +644,13 @@ class AgentLoop[CtxT]:
                 )
             elif isinstance(item, OutputMessageItem):
                 yield OutputMessageItemEvent(
+                    source=self.agent_name, exec_id=exec_id, data=item
+                )
+            else:
+                # The only remaining OutputItem kind — a server-side web
+                # search/fetch call (web_search_call). Surface it so consoles
+                # show what the model searched, instead of dropping it.
+                yield WebSearchCallItemEvent(
                     source=self.agent_name, exec_id=exec_id, data=item
                 )
 

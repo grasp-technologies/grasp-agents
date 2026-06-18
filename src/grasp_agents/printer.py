@@ -26,6 +26,7 @@ from .types.items import (
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
 )
 from .types.llm_events import (
     FunctionCallArgumentsDelta,
@@ -235,6 +236,8 @@ class Printer:
                     f"<tool call> {message.name} [{message.call_id}]\n"
                     f"{args}\n</tool call>\n"
                 )
+            elif isinstance(message, WebSearchCallItem):
+                out += f"<web search>\n{message.summary}\n</web search>\n"
             else:
                 out += f"{message}\n"
 
@@ -285,6 +288,8 @@ class Printer:
                     text += "<response>\n"
                 elif isinstance(item, FunctionToolCallItem):
                     text += f"<tool call> {item.name} [{item.call_id}]\n"
+                else:  # WebSearchCallItem — server-side web search / fetch
+                    text += "<web search>\n"
 
             elif isinstance(se, OutputItemDone):
                 item = se.item
@@ -294,6 +299,8 @@ class Printer:
                     text += "\n</response>\n"
                 elif isinstance(item, FunctionToolCallItem):
                     text += "\n</tool call>\n"
+                else:  # WebSearchCallItem
+                    text += f"{item.summary}\n</web search>\n"
 
             elif isinstance(
                 se,

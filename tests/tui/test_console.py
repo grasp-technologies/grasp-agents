@@ -35,6 +35,7 @@ from grasp_agents.types.events import (
     TurnInfo,
     TurnStartEvent,
     UserMessageEvent,
+    WebSearchCallItemEvent,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -42,6 +43,8 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
+    WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
@@ -509,6 +512,47 @@ class TestNonStreamingMode:
         output = buf.getvalue()
         # Tool name appears once in panel title, not duplicated
         assert output.count("search") == 1
+
+    @pytest.mark.asyncio
+    async def test_web_search_call_rendered(self):
+        # Server-side web_search_call items are surfaced (previously skipped).
+        ec, buf = _make_console()
+        ev = WebSearchCallItemEvent(
+            data=WebSearchCallItem(
+                action=SearchAction(queries=["internet history"]),
+                status="completed",
+            ),
+            source="searcher",
+            exec_id="c1",
+        )
+        await _collect(ec, [ev])
+        out = _strip_ansi(buf.getvalue())
+        assert "web_search" in out
+        assert "internet history" in out
+
+    @pytest.mark.asyncio
+    async def test_web_search_rendered_live_and_promoted_event_deduped(self):
+        # A search completes mid-stream (OutputItemDone) and is rendered right
+        # then, so it interleaves with the reasoning around it. The promoted item
+        # event that fires after the stream is then suppressed (rendered once).
+        ec, buf = _make_console()
+        item = WebSearchCallItem(
+            id="ws1",
+            action=SearchAction(queries=["internet history"]),
+            status="completed",
+        )
+        events = [
+            LLMStreamEvent(
+                data=OutputItemDone(item=item, output_index=0, sequence_number=1),
+                source="searcher",
+                exec_id="c1",
+            ),
+            # promoted event (fires post-write) for the same item id
+            WebSearchCallItemEvent(data=item, source="searcher", exec_id="c1"),
+        ]
+        await _collect(ec, events)
+        out = _strip_ansi(buf.getvalue())
+        assert out.count("internet history") == 1  # rendered exactly once
 
     @pytest.mark.asyncio
     async def test_reasoning_item_non_streaming(self):

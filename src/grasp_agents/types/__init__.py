@@ -27,6 +27,7 @@ from .events import (
     ToolOutputItemEvent,
     TurnEndEvent,
     TurnStartEvent,
+    WebSearchCallItemEvent,
 )
 from .io import LLMPrompt, ProcName
 from .items import (
@@ -184,6 +185,7 @@ __all__ = [
     "WebSearchCallCompleted",
     "WebSearchCallInProgress",
     "WebSearchCallItem",
+    "WebSearchCallItemEvent",
     "WebSearchCallSearching",
     "classify_error",
     "is_retryable",

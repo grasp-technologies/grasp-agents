@@ -16,6 +16,7 @@ from grasp_agents.llm_providers.openai_responses.tool_converters import (
 from grasp_agents.tools.base import NamedToolChoice
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import (
+    FindInPageAction,
     FunctionToolOutputItem,
     InputMessageItem,
     OpenPageAction,
@@ -161,6 +162,55 @@ class TestWebFetchRoundtrip:
         search = ws_items[1]
         assert isinstance(search.action, SearchAction)
         assert "example query" in search.action.queries
+
+    def test_find_in_page_action_roundtrip(self) -> None:
+        # A 'find in page' web-search action must convert too. Before this was
+        # handled, the whole Response failed to validate, so the streaming
+        # converter silently dropped `response.completed` → no ResponseCompleted
+        # → the loop's `assert stream.response is not None` fired (intermittently,
+        # only on runs where the model used find-in-page).
+        oai_resp = OAIResponse.model_validate(
+            {
+                **_BASE_RESPONSE,
+                "id": "resp_test_find",
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "id": "ws_find_1",
+                        "status": "completed",
+                        "action": {
+                            "type": "find_in_page",
+                            "url": "https://example.com/page",
+                            "pattern": "needle",
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "id": "msg_find",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Found it.",
+                                "annotations": [],
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+        internal = InternalResponse.model_validate(
+            oai_resp.model_dump(warnings="none", by_alias=True)
+        )
+        ws = next(
+            i for i in internal.output_items if isinstance(i, WebSearchCallItem)
+        )
+        assert isinstance(ws.action, FindInPageAction)
+        assert ws.action.url == "https://example.com/page"
+        assert ws.action.pattern == "needle"
+        # the message survives too → response.completed would convert cleanly
+        assert internal.output_text == "Found it."
 
     def test_sanitize_strips_provider_fields(self) -> None:
         """items_to_provider_inputs removes provider_specific_fields from items."""

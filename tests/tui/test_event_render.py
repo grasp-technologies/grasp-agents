@@ -24,12 +24,18 @@ from grasp_agents.types.events import (
     TurnEndInfo,
     TurnInfo,
     TurnStartEvent,
+    WebSearchCallItemEvent,
 )
 from grasp_agents.types.items import (
+    FindInPageAction,
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    OpenPageAction,
     OutputMessageItem,
     ReasoningItem,
+    SearchAction,
+    SearchSource,
+    WebSearchCallItem,
 )
 from grasp_agents.types.response import (
     InputTokensDetails,
@@ -235,6 +241,11 @@ def test_tool_output_markdown_report_renders_as_markdown() -> None:
     assert isinstance(panel, Panel)
     assert isinstance(panel.renderable, Markdown)
 
+    # markdown=False disables it in panels too — the report renders as plain text.
+    panel_plain = render_event(ev, markdown=False)
+    assert isinstance(panel_plain, Panel)
+    assert not isinstance(panel_plain.renderable, Markdown)
+
 
 def test_tool_output_plain_text_stays_text() -> None:
     from rich.markdown import Markdown
@@ -262,6 +273,26 @@ def test_message_is_markdown() -> None:
         source="agent",
     )
     assert isinstance(render_event(ev), Markdown)
+
+
+def test_markdown_links_plain_without_hyperlinks_osc8_with() -> None:
+    # hyperlinks=False (notebooks/pipes): links render as "text (url)" plain text,
+    # NOT OSC-8 (which leaks as escape garbage there); the URL is shown for the
+    # frontend to auto-linkify. hyperlinks=True (a real terminal): clean OSC-8.
+    url = "https://www.techradar.com/pro/microsoft-forced-to-turn-to-aws"
+    ev = OutputMessageItemEvent(
+        data=OutputMessageItem(
+            content_parts=[OutputMessageText(text=f"AWS ([techradar.com]({url})).")],
+            status="completed",
+        ),
+        source="agent",
+    )
+    plain = _render_raw(render_event(ev, hyperlinks=False), width=200)
+    assert "]8;" not in plain  # no OSC-8 escape
+    assert url in _render_to_text(render_event(ev, hyperlinks=False), width=200)
+
+    linked = _render_raw(render_event(ev, hyperlinks=True), width=200)
+    assert "]8;" in linked  # OSC-8 hyperlink emitted for a real terminal
 
 
 def test_pure_json_output_renders_like_tool_args() -> None:
@@ -341,7 +372,7 @@ def test_skill_invocation_user_message_shows_raw_content() -> None:
     assert isinstance(panel, Panel)
     # distinct "skill" frame, carrying the skill name
     assert "skill" in str(panel.title)
-    assert "/proofread" in str(panel.title)
+    assert "<proofread>" in str(panel.title)
     # the body is the raw text the agent sees — wrapper tags included, verbatim
     console = Console(width=80, record=True)
     console.print(panel)
@@ -621,3 +652,119 @@ def test_tool_output_inputimage_parts_render() -> None:
     rendered = render_event(ev)
     assert isinstance(rendered, Panel)
     assert isinstance(rendered.renderable, Group)
+
+
+# ── Web search call items (server-side search/fetch) ──
+
+
+def _render_raw(renderable: object, width: int = 80) -> str:
+    """Render WITH ANSI/escape sequences kept (export_text() would strip them)."""
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, color_system="256", width=width).print(
+        renderable
+    )
+    return buf.getvalue()
+
+
+def test_web_search_search_action_rendered() -> None:
+    # Without hyperlinks (notebook): queries, source titles, real URLs as plain
+    # text, and page age are all surfaced.
+    ev = WebSearchCallItemEvent(
+        data=WebSearchCallItem(
+            action=SearchAction(
+                queries=["history of the internet"],
+                sources=[
+                    SearchSource(
+                        url="https://ex.com", title="Internet", page_age="2 days ago"
+                    )
+                ],
+            ),
+            status="completed",
+        ),
+        source="searcher",
+    )
+    panel = render_event(ev, hyperlinks=False)
+    assert isinstance(panel, Panel)
+    assert "web_search" in str(panel.title)
+    text = _render_to_text(panel)
+    assert "history of the internet" in text
+    assert "Internet" in text  # source title surfaced
+    assert "https://ex.com" in text  # real URL surfaced (plain text)
+    assert "2 days ago" in text  # page age surfaced
+
+
+def test_web_search_sources_osc8_only_with_hyperlinks() -> None:
+    # hyperlinks=False (notebooks/pipes): URLs are plain text, no OSC-8 (which
+    # would leak as escape garbage). hyperlinks=True (a real terminal): the title
+    # is a clickable OSC-8 link.
+    ev = WebSearchCallItemEvent(
+        data=WebSearchCallItem(
+            action=SearchAction(
+                queries=["q"],
+                sources=[SearchSource(url="https://ex.com/article", title="Title")],
+            ),
+            status="completed",
+        ),
+        source="searcher",
+    )
+    plain_ev = render_event(ev, hyperlinks=False)
+    assert "]8;" not in _render_raw(plain_ev)  # no OSC-8 sequence
+    assert "https://ex.com/article" in _render_to_text(plain_ev)  # plain URL
+
+    linked = _render_raw(render_event(ev, hyperlinks=True))
+    assert "]8;" in linked  # title rendered as a clickable OSC-8 link
+
+
+def test_web_search_hides_grounding_redirect_url() -> None:
+    # Gemini grounding sources carry vertexaisearch.cloud.google.com/grounding-api-
+    # redirect/... URLs, not the real page — long and opaque, pure clutter. They're
+    # dropped (the title is the real domain); the source itself is still listed.
+    redirect = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC123"
+    ev = WebSearchCallItemEvent(
+        data=WebSearchCallItem(
+            action=SearchAction(
+                queries=["q"],
+                sources=[SearchSource(url=redirect, title="taiwannews.com.tw")],
+            ),
+            status="completed",
+        ),
+        source="searcher",
+    )
+    # The redirect is never shown NOR used as a link target — in either mode.
+    text = _render_to_text(render_event(ev, hyperlinks=False), width=200)
+    assert "taiwannews.com.tw" in text  # domain/title shown
+    assert "vertexaisearch" not in text  # opaque redirect URL dropped
+    assert "grounding-api-redirect" not in text
+    # With hyperlinks on, the title must NOT become an OSC-8 link to the redirect.
+    raw_linked = _render_raw(render_event(ev, hyperlinks=True), width=200)
+    assert "vertexaisearch" not in raw_linked
+    assert "grounding-api-redirect" not in raw_linked
+
+
+def test_web_search_open_page_rendered() -> None:
+    ev = WebSearchCallItemEvent(
+        data=WebSearchCallItem(
+            action=OpenPageAction(url="https://example.com/page"), status="completed"
+        ),
+        source="a",
+    )
+    text = _render_to_text(render_event(ev))
+    assert "open page" in text
+    assert "https://example.com/page" in text
+
+
+def test_web_search_find_in_page_rendered() -> None:
+    ev = WebSearchCallItemEvent(
+        data=WebSearchCallItem(
+            action=FindInPageAction(url="https://example.com/page", pattern="needle"),
+            status="completed",
+        ),
+        source="a",
+    )
+    text = _render_to_text(render_event(ev))
+    assert "find in page" in text
+    assert "needle" in text

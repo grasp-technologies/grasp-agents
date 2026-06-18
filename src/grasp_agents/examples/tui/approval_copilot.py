@@ -58,10 +58,8 @@ GATED_TOOLS = {"delete_record", "update_record"}
 
 _SYS = """\
 You are an operations assistant managing a small records database. Use the tools \
-to read and modify records. `delete_record` and `update_record` are destructive \
-and require human approval — call them as needed; the user approves or denies \
-each one. If a call is denied, respect that and move on. Briefly confirm what \
-you did, citing record ids."""
+to read and modify records. Do not ask the user for any approvals explicitly, they \
+are handled at system level."""
 
 
 @function_tool

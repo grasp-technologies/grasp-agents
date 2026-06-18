@@ -94,20 +94,22 @@ class ApprovalScreen(ModalScreen[ApprovalDecision]):
     CSS = """
     ApprovalScreen { align: center middle; background: $background 70%; }
     ApprovalScreen #approval-box {
-        width: 70%; max-width: 92; height: auto; max-height: 80%;
+        width: 60%; max-width: 80; min-width: 48; height: auto; max-height: 80%;
         padding: 1 2; border: round $accent; background: $surface;
     }
     ApprovalScreen #approval-title { text-style: bold; color: $accent; width: 1fr; }
     ApprovalScreen #approval-tool { margin-top: 1; width: 1fr; }
     ApprovalScreen #approval-args {
-        margin-top: 1; max-height: 14; width: 1fr;
+        margin-top: 1; height: auto; max-height: 14; width: 1fr;
         border: round $panel; padding: 0 1;
     }
     ApprovalScreen #approval-hint { margin-top: 1; width: 1fr; color: $text-muted; }
     ApprovalScreen #approval-buttons {
-        margin-top: 1; height: auto; align-horizontal: right;
+        margin-top: 1; height: auto; align-horizontal: left;
     }
-    ApprovalScreen Button { margin-left: 1; }
+    ApprovalScreen #approval-buttons Button {
+        min-width: 13; height: 1; border: none; margin-right: 1;
+    }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [

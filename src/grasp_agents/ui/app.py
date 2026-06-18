@@ -61,8 +61,11 @@ from grasp_agents.types.events import (
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
+    WebSearchCallItemEvent,
 )
+from grasp_agents.types.items import WebSearchCallItem
 from grasp_agents.types.llm_events import (
+    OutputItemDone,
     OutputMessageTextPartTextDelta,
     ReasoningContentPartTextDelta,
     ReasoningSummaryPartTextDelta,
@@ -80,6 +83,7 @@ from ._event_render import (
     render_thinking_stream,
     render_tool_stream,
     render_turn_rule,
+    render_web_search,
     set_markup_theme,
     usage_line,
 )
@@ -119,6 +123,7 @@ _AGENT_EVENTS: tuple[type[Event[Any]], ...] = (
     ReasoningItemEvent,
     LLMStreamEvent,
     ToolCallItemEvent,
+    WebSearchCallItemEvent,
 )
 
 _GLYPH: dict[str, str] = {
@@ -235,6 +240,14 @@ class GraspAgentsApp(App[None]):
         self._ga_stream_msg_text: dict[str, str] = {}
         self._ga_stream_think: dict[str, SelectableStatic] = {}
         self._ga_stream_think_text: dict[str, str] = {}
+        # item id of each owner's in-flight reasoning, so the widget can be sealed
+        # (and its promoted event suppressed) when a web search interleaves.
+        self._ga_stream_think_id: dict[str, str] = {}
+        # ids of reasoning / web-search items already rendered live during the
+        # current generation (their widget was sealed when a search interleaved);
+        # the promoted item event for the same id is then suppressed. Reset per
+        # generation.
+        self._ga_streamed_ids: set[str] = set()
         self._ga_stream_tool: dict[str, SelectableStatic] = {}
         self._ga_stream_tool_text: dict[str, str] = {}
         # name of the tool currently owning each pane's live tool-output widget,
@@ -470,6 +483,7 @@ class GraspAgentsApp(App[None]):
                 OutputMessageItemEvent,
                 ToolCallItemEvent,
                 ReasoningItemEvent,
+                WebSearchCallItemEvent,
                 LLMStreamingErrorEvent,
                 ProcStreamingErrorEvent,
             ),
@@ -494,6 +508,13 @@ class GraspAgentsApp(App[None]):
         Returns ``True`` when the event was a stream delta or completed a widget
         that was being streamed — so the normal item render is skipped.
         """
+        if (
+            isinstance(event, (ReasoningItemEvent, WebSearchCallItemEvent))
+            and event.data.id in self._ga_streamed_ids
+        ):
+            # Already rendered live (sealed when a search interleaved) — drop the
+            # redundant promoted event.
+            return True
         if isinstance(event, LLMStreamEvent):
             data = event.data
             if isinstance(data, OutputMessageTextPartTextDelta) and data.delta:
@@ -505,12 +526,24 @@ class GraspAgentsApp(App[None]):
                 )
                 and data.delta
             ):
-                await self._stream_thinking(owner, pane, data.delta, at_bottom)
+                await self._stream_thinking(
+                    owner, pane, data.delta, data.item_id, at_bottom
+                )
+            elif isinstance(data, OutputItemDone) and isinstance(
+                data.item, WebSearchCallItem
+            ):
+                # Render each search as it completes, so several searches
+                # interleave with the reasoning between them instead of batching
+                # at the end (the promoted event fires only once the stream is
+                # written).
+                await self._render_web_search_live(owner, pane, data.item, at_bottom)
             elif isinstance(data, (ResponseRetrying, ResponseFallback)):
                 # Failed attempt / model fallback — drop the partial widgets and
                 # surface a notice so the cleared text isn't silently lost; the
                 # retry streams a fresh widget below it.
                 await self._discard_streamed_message(owner)
+                self._ga_streamed_ids.clear()
+                self._ga_stream_think_id.pop(owner, None)
                 await pane.mount(
                     SelectableStatic(render_retry_notice(data), classes="ga-notice")
                 )
@@ -551,8 +584,14 @@ class GraspAgentsApp(App[None]):
             pane.scroll_end(animate=False)
 
     async def _stream_thinking(
-        self, owner: str, pane: VerticalScroll, delta: str, at_bottom: bool
+        self,
+        owner: str,
+        pane: VerticalScroll,
+        delta: str,
+        item_id: str,
+        at_bottom: bool,
     ) -> None:
+        self._ga_stream_think_id[owner] = item_id
         text = self._ga_stream_think_text.get(owner, "") + delta
         self._ga_stream_think_text[owner] = text
         rend = render_thinking_stream(text)
@@ -564,6 +603,31 @@ class GraspAgentsApp(App[None]):
             await pane.mount(widget)
         else:
             widget.update(rend)
+        if at_bottom:
+            pane.scroll_end(animate=False)
+
+    async def _render_web_search_live(
+        self,
+        owner: str,
+        pane: VerticalScroll,
+        item: WebSearchCallItem,
+        at_bottom: bool,
+    ) -> None:
+        # Seal any open thinking widget so the search panel sits below it (and the
+        # next reasoning starts a fresh widget), and suppress that reasoning's now-
+        # redundant promoted event by id. The sealed streamed gutter is byte-for-
+        # byte what the promoted event would render, so nothing is lost.
+        if owner in self._ga_stream_think:
+            self._ga_stream_think.pop(owner, None)
+            self._ga_stream_think_text.pop(owner, None)
+            think_id = self._ga_stream_think_id.pop(owner, None)
+            if think_id:
+                self._ga_streamed_ids.add(think_id)
+        self._ga_streamed_ids.add(item.id)
+        self._ga_last_kind[owner] = "box"
+        await pane.mount(
+            SelectableStatic(render_web_search(item, owner), classes="ga-msg")
+        )
         if at_bottom:
             pane.scroll_end(animate=False)
 
@@ -720,6 +784,9 @@ class GraspAgentsApp(App[None]):
             self._ga_pending_turn[owner] = self._ga_turns[owner]
             return
         if isinstance(event, GenerationEndEvent):
+            # this generation's promoted item events have all been handled; reset
+            # the streamed-id set so the next generation starts fresh.
+            self._ga_streamed_ids.clear()
             text = self._usage_text(event)
         else:
             text = render_event(event, inline_images=False)

@@ -11,6 +11,7 @@ from .items import (
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
 )
 from .llm_events import LlmEvent
 from .packet import Packet
@@ -53,6 +54,10 @@ class ReasoningItemEvent(Event[ReasoningItem], frozen=True):
 
 class OutputMessageItemEvent(Event[OutputMessageItem], frozen=True):
     type: Literal["agent.message"] = "agent.message"
+
+
+class WebSearchCallItemEvent(Event[WebSearchCallItem], frozen=True):
+    type: Literal["agent.web_search_call"] = "agent.web_search_call"
 
 
 # ── Tool execution ──
