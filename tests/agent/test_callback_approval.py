@@ -101,10 +101,8 @@ def _make_executor(
         max_turns=max_turns,
         stream_llm=False,
     )
-    executor.final_answer_extractor = (
-        lambda *, exec_id, response=None, **kw: response.output_text
-        if response and not response.tool_call_items
-        else None
+    executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+        response.output_text if response and not response.tool_call_items else None
     )
     return executor, memory, llm
 
@@ -139,7 +137,7 @@ class TestAllowPath:
             calls_seen.append(call.name)
             return True
 
-        executor.before_tool_hook = build_callback_approval(approve)  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -168,7 +166,7 @@ class TestAllowPath:
             captured["ctx_state"] = ctx.state
             return True
 
-        executor.before_tool_hook = build_callback_approval(approve)  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
         stream = ResponseCapture(executor.execute_stream(exec_id="run-xyz"))
         async for _ in stream:
@@ -196,7 +194,7 @@ class TestDenyPath:
         async def approve(call, *, ctx, exec_id):
             return False
 
-        executor.before_tool_hook = build_callback_approval(approve)  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -228,10 +226,12 @@ class TestDenyPath:
         async def approve(call, *, ctx, exec_id):
             return False
 
-        executor.before_tool_hook = build_callback_approval(  # type: ignore[assignment]
-            approve,
-            deny_message="Blocked {name} with args {arguments}",
-        )
+        executor.before_tool_hooks = [  # type: ignore[assignment]
+            build_callback_approval(
+                approve,
+                deny_message="Blocked {name} with args {arguments}",
+            )
+        ]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -271,9 +271,9 @@ class TestToolNameFilter:
             names_seen.append(call.name)
             return False  # deny whatever gets through
 
-        executor.before_tool_hook = build_callback_approval(  # type: ignore[assignment]
-            approve, tool_names={"delete_file"}
-        )
+        executor.before_tool_hooks = [  # type: ignore[assignment]
+            build_callback_approval(approve, tool_names={"delete_file"})
+        ]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -306,7 +306,7 @@ class TestToolNameFilter:
             names_seen.append(call.name)
             return True
 
-        executor.before_tool_hook = build_callback_approval(approve)  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -385,7 +385,7 @@ class TestMixedBatch:
         async def approve(call, *, ctx, exec_id):
             return call.name == "echo"
 
-        executor.before_tool_hook = build_callback_approval(approve)  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)

@@ -97,10 +97,8 @@ class TestBeforeAfterLlmHooks:
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
 
         # Set a final answer checker that stops on text-only responses
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         before_calls: list[dict[str, Any]] = []
@@ -125,8 +123,8 @@ class TestBeforeAfterLlmHooks:
                 }
             )
 
-        executor.before_llm_hook = before_hook  # type: ignore[assignment]
-        executor.after_llm_hook = after_hook  # type: ignore[assignment]
+        executor.before_llm_hooks = [before_hook]  # type: ignore[assignment]
+        executor.after_llm_hooks = [after_hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -171,7 +169,7 @@ class TestBeforeAfterLlmHooks:
         async def inject_tool_choice(*, exec_id, turn, extra_llm_settings):
             extra_llm_settings["tool_choice"] = "required"
 
-        executor.before_llm_hook = inject_tool_choice  # type: ignore[assignment]
+        executor.before_llm_hooks = [inject_tool_choice]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -184,8 +182,8 @@ class TestBeforeAfterLlmHooks:
         responses = [_text_response("works")]
         executor, _, _ = _make_executor(responses)
 
-        assert executor.before_llm_hook is None
-        assert executor.after_llm_hook is None
+        assert executor.before_llm_hooks == []
+        assert executor.after_llm_hooks == []
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -206,10 +204,8 @@ class TestBeforeAfterToolHooks:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         before_data: dict[str, Any] = {}
@@ -229,8 +225,8 @@ class TestBeforeAfterToolHooks:
                 if isinstance(msg, FunctionToolOutputItem):
                     after_data["output"] = msg.output
 
-        executor.before_tool_hook = before_hook  # type: ignore[assignment]
-        executor.after_tool_hook = after_hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [before_hook]  # type: ignore[assignment]
+        executor.after_tool_hooks = [after_hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -258,10 +254,8 @@ class TestBeforeAfterToolHooks:
             _text_response("all done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         before_count = 0
@@ -275,8 +269,8 @@ class TestBeforeAfterToolHooks:
             nonlocal after_count
             after_count += 1
 
-        executor.before_tool_hook = before_hook  # type: ignore[assignment]
-        executor.after_tool_hook = after_hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [before_hook]  # type: ignore[assignment]
+        executor.after_tool_hooks = [after_hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -289,10 +283,8 @@ class TestBeforeAfterToolHooks:
         """Tool hooks should NOT fire when the LLM produces a text-only response."""
         responses = [_text_response("no tools")]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         called = False
@@ -301,8 +293,8 @@ class TestBeforeAfterToolHooks:
             nonlocal called
             called = True
 
-        executor.before_tool_hook = should_not_fire  # type: ignore[assignment]
-        executor.after_tool_hook = should_not_fire  # type: ignore[assignment]
+        executor.before_tool_hooks = [should_not_fire]  # type: ignore[assignment]
+        executor.after_tool_hooks = [should_not_fire]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -326,10 +318,8 @@ class TestHookOrdering:
             _text_response("final"),
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         trace: list[str] = []
@@ -346,10 +336,10 @@ class TestHookOrdering:
         async def atc(*, tool_calls, tool_messages, exec_id):
             trace.append("after_tool")
 
-        executor.before_llm_hook = bg  # type: ignore[assignment]
-        executor.after_llm_hook = ag  # type: ignore[assignment]
-        executor.before_tool_hook = btc  # type: ignore[assignment]
-        executor.after_tool_hook = atc  # type: ignore[assignment]
+        executor.before_llm_hooks = [bg]  # type: ignore[assignment]
+        executor.after_llm_hooks = [ag]  # type: ignore[assignment]
+        executor.before_tool_hooks = [btc]  # type: ignore[assignment]
+        executor.after_tool_hooks = [atc]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -382,7 +372,7 @@ class TestHookOrdering:
         async def bg(*, exec_id, turn, extra_llm_settings):
             gen_turns.append(turn)
 
-        executor.before_llm_hook = bg  # type: ignore[assignment]
+        executor.before_llm_hooks = [bg]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -424,10 +414,8 @@ class TestToolInputConverter:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[SearchTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         async def override_api_key(llm_args, *, exec_id):
@@ -460,10 +448,8 @@ class TestToolInputConverter:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[CapturingEchoTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         ctx = RunContext[None]()
@@ -509,10 +495,8 @@ class TestLlmInType:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[SearchTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         async def inject_api_key(llm_args, *, exec_id):
@@ -562,10 +546,8 @@ class TestLlmInType:
             _text_response("done"),
         ]
         executor, _, _ = _make_executor(responses, tools=[SearchTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         # Pydantic v2 ignores extra fields by default, so this should
@@ -588,10 +570,8 @@ class TestToolOutputConverter:
             _text_response("done"),
         ]
         executor, memory, _ = _make_executor(responses, tools=[EchoTool()])
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
         async def xml_converter(tool_output, *, exec_id):
@@ -607,3 +587,60 @@ class TestToolOutputConverter:
         ]
         assert len(tool_outputs) == 1
         assert "<result>echo: world</result>" in tool_outputs[0].text
+
+
+class TestStackedLoopHooks:
+    """Multiple hooks of the same kind run, in registration order (A1)."""
+
+    @pytest.mark.asyncio
+    async def test_before_and_after_llm_hooks_all_fire_in_order(self):
+        responses = [_text_response("ok")]
+        executor, _, _ = _make_executor(responses)
+
+        order: list[str] = []
+
+        async def before1(*, exec_id, turn, extra_llm_settings):
+            order.append("before1")
+
+        async def before2(*, exec_id, turn, extra_llm_settings):
+            order.append("before2")
+
+        async def after1(response, *, exec_id, turn):
+            order.append("after1")
+
+        async def after2(response, *, exec_id, turn):
+            order.append("after2")
+
+        executor.before_llm_hooks = [before1, before2]  # type: ignore[list-item]
+        executor.after_llm_hooks = [after1, after2]  # type: ignore[list-item]
+
+        ctx = RunContext[None]()
+        await _drain(executor, ctx)
+
+        assert order == ["before1", "before2", "after1", "after2"]
+
+    @pytest.mark.asyncio
+    async def test_after_tool_hooks_all_fire_in_order(self):
+        responses = [
+            _tool_call_response("echo", '{"text":"hi"}', "tc1"),
+            _text_response("done"),
+        ]
+        executor, _, _ = _make_executor(responses, tools=[EchoTool()])
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
+        )
+
+        order: list[str] = []
+
+        async def after1(*, tool_calls, tool_messages, exec_id):
+            order.append("after1")
+
+        async def after2(*, tool_calls, tool_messages, exec_id):
+            order.append("after2")
+
+        executor.after_tool_hooks = [after1, after2]  # type: ignore[list-item]
+
+        ctx = RunContext[None]()
+        await _drain(executor, ctx)
+
+        assert order == ["after1", "after2"]

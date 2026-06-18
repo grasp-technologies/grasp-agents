@@ -387,7 +387,11 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # the RunContext at call time.
         self._loop.checkpoint_callback = self.save_checkpoint
 
-        # Subclass hook points (set by decorators or subclass overrides)
+        # Subclass hook points (set by decorators or subclass overrides).
+        # Stacked builders accumulate here; a subclass ``*_impl`` override is
+        # registered first (below) so it runs before decorator-added builders.
+        self._transcript_builders: list[TranscriptBuilder[InT]] = []
+        self._state_builders: list[StateBuilder] = []
 
         self._register_overridden_implementations()
 
@@ -522,16 +526,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             agent_ctx=self._loop.agent_ctx,
         )
 
-    @property
-    def _has_build_transcript_impl(self) -> bool:
-        return is_method_overridden(
-            "build_transcript_impl", self, LLMAgent[Any, Any, Any]
-        )
-
-    @property
-    def _has_build_state_impl(self) -> bool:
-        return is_method_overridden("build_state_impl", self, LLMAgent[Any, Any, Any])
-
     # --- Session persistence ---
 
     def _propagate_to_children(self) -> None:
@@ -661,8 +655,8 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Rebuild business state from external sources (DB, etc.) after
         # conversation restoration is complete. Opt-in; fresh init uses
         # add_transcript_builder instead.
-        if self._has_build_state_impl:
-            await self.build_state_impl(checkpoint=checkpoint, exec_id=exec_id or "")
+        for build_state in self._state_builders:
+            await build_state(checkpoint=checkpoint, exec_id=exec_id or "")
 
         return checkpoint
 
@@ -759,17 +753,19 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
         fresh_init = self.reset_transcript_on_run or self.transcript.is_empty
-        if self._has_build_transcript_impl:
-            # The builder runs on EVERY step: it owns transcript preparation —
+        if self._transcript_builders:
+            # Builders run on EVERY step and own transcript preparation —
             # seeding a fresh history and/or processing the accumulated one
-            # between steps (pruning, truncation, context management). It may
-            # rewrite already-persisted messages, so the message-log is
-            # rewritten on the next checkpoint.
-            self.build_transcript_impl(
-                instructions=sys_prompt_parts,
-                in_args=in_args,
-                exec_id=exec_id,
-            )
+            # between steps (pruning, truncation, context management). Stacked
+            # builders run in registration order, each transforming what the
+            # previous left. Because they may rewrite already-persisted
+            # messages, the message-log is rewritten on the next checkpoint.
+            for build_transcript in self._transcript_builders:
+                build_transcript(
+                    instructions=sys_prompt_parts,
+                    in_args=in_args,
+                    exec_id=exec_id,
+                )
             self._log_dirty = True
         elif fresh_init:
             # A from-scratch transcript invalidates any persisted message-log;
@@ -1113,11 +1109,11 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
     def add_transcript_builder(
         self, func: TranscriptBuilder[InT]
     ) -> TranscriptBuilder[InT]:
-        self.build_transcript_impl = func
+        self._transcript_builders.append(func)
         return func
 
     def add_state_builder(self, func: StateBuilder) -> StateBuilder:
-        self.build_state_impl = func
+        self._state_builders.append(func)
         return func
 
     def add_system_prompt_builder(
@@ -1151,19 +1147,19 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         return func
 
     def add_before_llm_hook(self, func: BeforeLlmHook) -> BeforeLlmHook:
-        self._loop.before_llm_hook = func
+        self._loop.before_llm_hooks.append(func)
         return func
 
     def add_after_llm_hook(self, func: AfterLlmHook) -> AfterLlmHook:
-        self._loop.after_llm_hook = func
+        self._loop.after_llm_hooks.append(func)
         return func
 
     def add_before_tool_hook(self, func: BeforeToolHook[CtxT]) -> BeforeToolHook[CtxT]:
-        self._loop.before_tool_hook = func
+        self._loop.before_tool_hooks.append(func)
         return func
 
     def add_after_tool_hook(self, func: AfterToolHook) -> AfterToolHook:
-        self._loop.after_tool_hook = func
+        self._loop.after_tool_hooks.append(func)
         return func
 
     def add_tool_input_converter(self, tool_name: str) -> Any:
@@ -1195,17 +1191,24 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         if is_method_overridden("build_input_content_impl", self, base_cls):
             self._prompt_builder.input_content_builder = self.build_input_content_impl
 
-        # Agent loop
+        # Agent loop. ``final_answer_extractor`` is single-slot (replace); the
+        # observer / decision hooks and the transcript / state builders stack —
+        # a subclass ``*_impl`` override is appended first so it runs before any
+        # decorator-registered hook.
         if is_method_overridden("extract_final_answer_impl", self, base_cls):
             self._loop.final_answer_extractor = self.extract_final_answer_impl
         if is_method_overridden("on_before_llm_impl", self, base_cls):
-            self._loop.before_llm_hook = self.on_before_llm_impl
+            self._loop.before_llm_hooks.append(self.on_before_llm_impl)
         if is_method_overridden("on_after_llm_impl", self, base_cls):
-            self._loop.after_llm_hook = self.on_after_llm_impl
+            self._loop.after_llm_hooks.append(self.on_after_llm_impl)
         if is_method_overridden("on_before_tool_impl", self, base_cls):
-            self._loop.before_tool_hook = self.on_before_tool_impl
+            self._loop.before_tool_hooks.append(self.on_before_tool_impl)
         if is_method_overridden("on_after_tool_impl", self, base_cls):
-            self._loop.after_tool_hook = self.on_after_tool_impl
+            self._loop.after_tool_hooks.append(self.on_after_tool_impl)
+        if is_method_overridden("build_transcript_impl", self, base_cls):
+            self._transcript_builders.append(self.build_transcript_impl)
+        if is_method_overridden("build_state_impl", self, base_cls):
+            self._state_builders.append(self.build_state_impl)
 
     def copy(self) -> "LLMAgent[InT, OutT, CtxT]":
         # LLM sharing: handled by LLM.__deepcopy__ (returns self)

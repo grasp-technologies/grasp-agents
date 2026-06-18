@@ -105,10 +105,8 @@ def _make_executor(
         stream_llm=False,
     )
     # Final-answer extractor: stop on text-only responses.
-    executor.final_answer_extractor = (
-        lambda *, exec_id, response=None, **kw: response.output_text
-        if response and not response.tool_call_items
-        else None
+    executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+        response.output_text if response and not response.tool_call_items else None
     )
     return executor, memory, llm
 
@@ -141,7 +139,7 @@ class TestDefaultAllowBehavior:
         async def hook(*, tool_calls, ctx, exec_id):
             return None
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -160,7 +158,7 @@ class TestDefaultAllowBehavior:
         async def hook(*, tool_calls, ctx, exec_id):
             return {}
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -179,7 +177,7 @@ class TestDefaultAllowBehavior:
         async def hook(*, tool_calls, ctx, exec_id):
             return {"tc1": AllowTool()}
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -205,7 +203,7 @@ class TestRejectToolContent:
         async def hook(*, tool_calls, ctx, exec_id):
             return {"tc1": RejectToolContent(content="blocked by policy")}
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -244,8 +242,8 @@ class TestRejectToolContent:
             captured["num_messages"] = len(tool_messages)
             captured["first_text"] = tool_messages[0].text
 
-        executor.before_tool_hook = before  # type: ignore[assignment]
-        executor.after_tool_hook = after  # type: ignore[assignment]
+        executor.before_tool_hooks = [before]  # type: ignore[assignment]
+        executor.after_tool_hooks = [after]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -278,7 +276,7 @@ class TestRaiseToolException:
         async def hook(*, tool_calls, ctx, exec_id):
             return {"tc1": RaiseToolException(exception=PolicyBlock("halt"))}
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         with pytest.raises(PolicyBlock, match="halt"):
@@ -313,7 +311,7 @@ class TestRaiseToolException:
                 "tc2": RaiseToolException(exception=RuntimeError("boom")),
             }
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         with pytest.raises(RuntimeError, match="boom"):
@@ -343,7 +341,7 @@ class TestMixedDecisions:
         async def hook(*, tool_calls, ctx, exec_id):
             return {"tc2": RejectToolContent(content="shout disabled")}
 
-        executor.before_tool_hook = hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -381,7 +379,7 @@ class TestLegacyReturnShape:
             calls_seen.append(len(tool_calls))
             # No explicit return — implicit None
 
-        executor.before_tool_hook = legacy_hook  # type: ignore[assignment]
+        executor.before_tool_hooks = [legacy_hook]  # type: ignore[assignment]
 
         ctx = RunContext[None]()
         await _drain(executor, ctx)
@@ -426,3 +424,95 @@ def test_tool_decision_is_public_api():
     assert grasp_agents.agent.RejectToolContent is RejectToolContent
     assert grasp_agents.agent.RaiseToolException is RaiseToolException
     assert grasp_agents.agent.ToolCallDecision is ToolCallDecision
+
+
+class TestStackedBeforeToolHooks:
+    """Stacked before-tool hooks merge per call; the most restrictive wins."""
+
+    @pytest.mark.asyncio
+    async def test_reject_overrides_allow(self):
+        _invocations.clear()
+        responses = [
+            _tool_call_response([("echo", '{"text":"hi"}', "tc1")]),
+            _text_response("done"),
+        ]
+        executor, memory, _ = _make_executor(responses, tools=[EchoTool()])
+
+        async def allow_hook(*, tool_calls, ctx, exec_id):
+            return {"tc1": AllowTool()}
+
+        async def reject_hook(*, tool_calls, ctx, exec_id):
+            return {"tc1": RejectToolContent(content="blocked by policy")}
+
+        executor.before_tool_hooks = [allow_hook, reject_hook]  # type: ignore[assignment]
+
+        ctx = RunContext[None]()
+        await _drain(executor, ctx)
+
+        # reject wins over allow → the tool never ran
+        assert _invocations["echo"] == []
+        outs = [m for m in memory.messages if isinstance(m, FunctionToolOutputItem)]
+        assert "blocked by policy" in outs[0].text
+
+    @pytest.mark.asyncio
+    async def test_raise_overrides_reject_regardless_of_order(self):
+        _invocations.clear()
+        responses = [
+            _tool_call_response([("echo", '{"text":"hi"}', "tc1")]),
+            _text_response("never"),
+        ]
+        executor, _, _ = _make_executor(responses, tools=[EchoTool()])
+
+        class Halt(RuntimeError):
+            pass
+
+        async def raise_hook(*, tool_calls, ctx, exec_id):
+            return {"tc1": RaiseToolException(exception=Halt("halt"))}
+
+        async def reject_hook(*, tool_calls, ctx, exec_id):
+            return {"tc1": RejectToolContent(content="reject")}
+
+        # raise registered first, reject second — raise must still win
+        executor.before_tool_hooks = [raise_hook, reject_hook]  # type: ignore[assignment]
+
+        ctx = RunContext[None]()
+        with pytest.raises(Halt, match="halt"):
+            await _drain(executor, ctx)
+
+        assert _invocations["echo"] == []
+
+    @pytest.mark.asyncio
+    async def test_independent_rejections_union(self):
+        _invocations.clear()
+        responses = [
+            _tool_call_response(
+                [
+                    ("echo", '{"text":"a"}', "tc1"),
+                    ("shout", '{"text":"b"}', "tc2"),
+                ]
+            ),
+            _text_response("done"),
+        ]
+        executor, memory, _ = _make_executor(responses, tools=[EchoTool(), ShoutTool()])
+
+        async def reject_echo(*, tool_calls, ctx, exec_id):
+            return {"tc1": RejectToolContent(content="no echo")}
+
+        async def reject_shout(*, tool_calls, ctx, exec_id):
+            return {"tc2": RejectToolContent(content="no shout")}
+
+        executor.before_tool_hooks = [reject_echo, reject_shout]  # type: ignore[assignment]
+
+        ctx = RunContext[None]()
+        await _drain(executor, ctx)
+
+        # Each hook's rejection applies to its own call (disjoint keys union).
+        assert _invocations["echo"] == []
+        assert _invocations["shout"] == []
+        by_call = {
+            m.call_id: m.text
+            for m in memory.messages
+            if isinstance(m, FunctionToolOutputItem)
+        }
+        assert "no echo" in by_call["tc1"]
+        assert "no shout" in by_call["tc2"]

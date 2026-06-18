@@ -21,7 +21,7 @@ import pytest
 
 _NB = (
     Path(__file__).resolve().parents[2]
-    / "src/grasp_agents/examples/notebooks/code_interpreter_demo.ipynb"
+    / "src/grasp_agents/examples/notebooks/code_interpreter.ipynb"
 )
 
 

@@ -21,7 +21,7 @@ import pytest
 
 _NB = (
     Path(__file__).resolve().parents[2]
-    / "src/grasp_agents/examples/notebooks/orchestration_durability_demo.ipynb"
+    / "src/grasp_agents/examples/notebooks/orchestration_durability.ipynb"
 )
 
 

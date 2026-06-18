@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
-from grasp_agents.telemetry import SpanKind, traced
+from grasp_agents.telemetry import SpanKind, set_run_span_attributes, traced
 from grasp_agents.telemetry.decorators import (
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
@@ -644,3 +644,58 @@ class TestTracedGeneratorPassThrough:
             yield from range(5)
 
         assert list(gen()) == [0, 1, 2, 3, 4]
+
+
+# ========================================================================= #
+#  Caller-supplied run-span overrides (span_name / span_attributes)          #
+#  — the seam ``run`` / ``run_stream`` use to attach domain attributes.      #
+# ========================================================================= #
+
+
+class TestCallerSpanOverrides:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_span_attributes_attached(self) -> None:
+        @traced(name="run")
+        async def run(**kwargs: Any) -> str:
+            return "ok"
+
+        await run(span_attributes={"goal.id": "g1", "lesson.n": 3})
+
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert attrs["goal.id"] == "g1"
+        assert attrs["lesson.n"] == 3
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_span_name_override(self) -> None:
+        @traced(name="run")
+        async def run(**kwargs: Any) -> str:
+            return "ok"
+
+        await run(span_name="pathway_generation.pg-42")
+
+        assert _exporter.get_finished_spans()[0].name == "pathway_generation.pg-42"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_no_overrides_keeps_framework_defaults(self) -> None:
+        @traced(name="run")
+        async def run() -> str:
+            return "ok"
+
+        await run()
+
+        span = _exporter.get_finished_spans()[0]
+        assert span.name == "run.task"
+        assert "goal.id" not in (span.attributes or {})
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_set_run_span_attributes_mid_run(self) -> None:
+        @traced(name="run")
+        async def run() -> str:
+            set_run_span_attributes(discovered="mid-run", count=2)
+            return "ok"
+
+        await run()
+
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert attrs["discovered"] == "mid-run"
+        assert attrs["count"] == 2
