@@ -1,19 +1,12 @@
 {
     "typeCheckingMode": "strict",
+    "include": [
+        "src/grasp_agents",
+        "tests"
+    ],
     "exclude": [
-        ".bzr",
-        ".direnv",
-        ".eggs",
-        ".git",
-        ".hg",
-        ".mypy_cache",
-        ".nox",
-        ".pants.d",
-        ".pytype",
-        ".ruff_cache",
-        ".svn",
-        ".tox",
-        ".venv",
+        "**/__pycache__",
+        "**/.*",
         "__pypackages__",
         "_build",
         "buck-out",
@@ -21,12 +14,39 @@
         "dist",
         "node_modules",
         "venv",
+        "src/grasp_agents/examples",
+        "scripts"
     ],
     "extraPaths": [
         ".",
         "src",
     ],
-    "autoSearchPaths": false,
     "reportMissingTypeStubs": false,
-    "pythonVersion": "3.11"
+    "executionEnvironments": [
+        {
+            "root": "tests",
+            "extraPaths": [
+                ".",
+                "src"
+            ],
+            "reportPrivateUsage": "none",
+            "reportUnusedFunction": "none",
+            "reportUnusedVariable": "none",
+            "reportMissingParameterType": "none",
+            "reportUnknownArgumentType": "none",
+            "reportUnknownLambdaType": "none",
+            "reportUnknownMemberType": "none",
+            "reportUnknownParameterType": "none",
+            "reportUnknownVariableType": "none",
+            "reportTypedDictNotRequiredAccess": "none",
+            "reportIndexIssue": "none",
+            "reportArgumentType": "none",
+            "reportAttributeAccessIssue": "none",
+            "reportGeneralTypeIssues": "none",
+            "reportOperatorIssue": "none",
+            "reportOptionalOperand": "none",
+            "reportOptionalSubscript": "none",
+            "reportOptionalMemberAccess": "none"
+        }
+    ]
 }

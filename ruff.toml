@@ -19,6 +19,10 @@ exclude = [
   "dist",
   "node_modules",
   "venv",
+  # Demo projects + notebooks: not shipped (excluded from the wheel), not held
+  # to library lint standards. litellm_tests.ipynb also trips a ruff-notebook
+  # panic (astral-sh/ruff: "Transformed content out of bounds").
+  "src/grasp_agents/examples",
 ]
 
 line-length = 88
@@ -107,7 +111,8 @@ ignore = [
   "TD002",
   "TD003",
   "TD004",
-  "TID",     # flake8-tidy-imports
+  "TID251",  # flake8-tidy-imports: banned-api (inert; no bans configured)
+  "TID253",  # flake8-tidy-imports: banned-module-level (inert; none configured)
   "TRY003",  # verbose exception messages
   "TRY201",
   "TRY300",
@@ -117,6 +122,64 @@ ignore = [
 fixable = ["ALL"]
 unfixable = ["F401"]
 
+[lint.flake8-tidy-imports]
+# Convention: same-package imports use `from .sibling`; everything reaching
+# into another subpackage uses absolute `from grasp_agents.x`. TID252 bans the
+# parent-relative `from ..x` / `from ...x` forms that blur that boundary.
+ban-relative-imports = "parents"
+
 [lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "*.ipynb" = ["I"]
+# Tests may white-box internals — private-member access (SLF001) and private
+# imports (PLC2701) — where that is the clearest assertion. Test-idiomatic
+# patterns, suppressed suite-wide: fixture/hook params are often
+# required-but-unused (ARG001/ARG002/ARG005); Path methods in async test
+# bodies are fine on asyncio, not trio (ASYNC240); `pytestmark` precedes
+# imports (E402); imports local to a test are deliberate (PLC0415); explicit
+# `== ""` is clearer in assertions (PLC1901); driving dunders by hand (e.g.
+# context managers) is a legitimate test move (PLC2801); suites are uniformly
+# async under a module pytestmark even when a body never awaits (RUF029);
+# unpack-and-ignore of multi-returns (RUF059); fake credentials in fixtures
+# (S106); fake tools must mirror the BaseTool contract's `input` param (A002);
+# CamelCase locals holding dynamically-built types (N806); asserting that
+# *anything* raises is sometimes exactly the point (B017 / PT011).
+"tests/**/*.py" = [
+  "A002",
+  "ARG001",
+  "ARG002",
+  "ARG005",
+  "ASYNC240",
+  "B017",
+  "E402",
+  "N806",
+  "PLC0415",
+  "PLC1901",
+  "PLC2701",
+  "PLC2801",
+  "PT011",
+  "RUF029",
+  "RUF059",
+  "S106",
+  "SLF001",
+  "TC001",
+  "TC003",
+]
+# ad-hoc probe scripts: env loading precedes imports
+"scripts/**/*.py" = ["E402"]
+# sandbox tests: the Seatbelt tests shell out to sandbox-exec to validate
+# generated profiles (S404 / S603). ASYNC109: fake exec backends mirror the
+# ExecBackend `timeout` contract (same rationale as the sandbox module);
+# B903: simple test-double data holders.
+"tests/sandbox/**/*.py" = [
+  "ASYNC109",
+  "B903",
+  "S404",
+  "S603",
+]
+# sandbox: `timeout` is part of the cross-boundary ExecBackend contract
+# (enforced per-backend: asyncio.wait_for / docker exec / remote API), not an
+# asyncio.timeout reinvention — ASYNC109 is a false positive here. S603
+# (subprocess call) is the module's entire purpose — running commands under the
+# shared SandboxPolicy — so it is suppressed here rather than per-call.
+"src/grasp_agents/sandbox/**/*.py" = ["ASYNC109", "S603"]

@@ -1,60 +1,75 @@
 import logging
 from collections import defaultdict
 from collections.abc import Sequence
-from pathlib import Path
-from typing import Any, TypeAlias
 
-import yaml
+from litellm import cost_per_token
 from pydantic import BaseModel, Field
-from termcolor import colored
 
-from .typing.completion import Completion, Usage
+from .types.response import Response, ResponseUsage
 
 logger = logging.getLogger(__name__)
 
 
-COSTS_DICT_PATH: Path = Path(__file__).parent / "costs_dict.yaml"
+def add_cost_to_usage(
+    usage: ResponseUsage,
+    model_name: str,
+    litellm_provider: str | None,
+) -> None:
+    """Stamp ``usage.cost`` from litellm pricing data (no-op when unmapped)."""
+    # Prefixed names like "openai/gpt-4o" (OpenRouter-style): use the prefix
+    # as the provider hint only when none was given. With an explicit
+    # provider, the full (possibly prefixed) name is what litellm expects —
+    # e.g. provider "openrouter" + model "openai/gpt-4o".
+    if "/" in model_name and litellm_provider is None:
+        litellm_provider, model_name = model_name.split("/", 1)
 
-ModelCostsDict: TypeAlias = dict[str, float]
-CostsDict: TypeAlias = dict[str, ModelCostsDict]
+    try:
+        prompt_cost, completion_cost = cost_per_token(
+            model=model_name,
+            prompt_tokens=usage.input_tokens,
+            completion_tokens=usage.output_tokens,
+            cache_read_input_tokens=usage.input_tokens_details.cached_tokens,
+            cache_creation_input_tokens=usage.cache_creation_tokens,
+            custom_llm_provider=litellm_provider,
+        )
+        usage.cost = prompt_cost + completion_cost
+    except Exception:
+        logger.warning(
+            "No pricing data for model %s (provider %s); cost not tracked",
+            model_name,
+            litellm_provider,
+        )
 
 
 class UsageTracker(BaseModel):
-    costs_dict_path: str | Path = COSTS_DICT_PATH
-    costs_dict: CostsDict | None = None
-    usages: dict[str, Usage] = Field(default_factory=dict)
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.costs_dict = self.load_costs_dict()
+    usages: dict[str, ResponseUsage] = Field(default_factory=dict)
 
     def update(
         self,
         agent_name: str,
-        completions: Sequence[Completion],
+        responses: Sequence[Response],
         model_name: str | None = None,
+        litellm_provider: str | None = None,
     ) -> None:
-        if model_name is not None and self.costs_dict is not None:
-            model_costs_dict = self.costs_dict.get(model_name.split("/", 1)[-1])
-        else:
-            model_costs_dict = None
-
-        for completion in completions:
-            if completion.usage is not None:
-                if completion.usage.cost is None and model_costs_dict is not None:
+        for response in responses:
+            if response.usage_with_cost is not None:
+                usage = response.usage_with_cost
+                if usage.cost is None and model_name is not None:
                     self._add_cost_to_usage(
-                        usage=completion.usage, model_costs_dict=model_costs_dict
+                        usage=usage,
+                        model_name=model_name,
+                        litellm_provider=litellm_provider,
                     )
                 if agent_name not in self.usages:
-                    self.usages[agent_name] = Usage()
-                self.usages[agent_name] += completion.usage
+                    self.usages[agent_name] = ResponseUsage()
+                self.usages[agent_name] += response.usage_with_cost
 
     @property
-    def total_usage(self) -> Usage:
-        return sum((usage for usage in self.usages.values()), Usage())
+    def total_usage(self) -> ResponseUsage:
+        return sum((usage for usage in self.usages.values()), ResponseUsage())
 
     def reset(self) -> None:
-        self.usages = defaultdict(Usage)
+        self.usages = defaultdict(ResponseUsage)
 
     def print_usage(self) -> None:
         usage = self.total_usage
@@ -62,41 +77,25 @@ class UsageTracker(BaseModel):
         logger.debug("\n-------------------")
 
         token_usage_str = (
-            f"Total I/O/(R)/(C) tokens: {usage.input_tokens}/{usage.output_tokens}"
+            f"Total I/O/R/C tokens: {usage.input_tokens}/{usage.output_tokens}"
         )
-        if usage.reasoning_tokens is not None:
-            token_usage_str += f"/{usage.reasoning_tokens}"
-        if usage.cached_tokens is not None:
-            token_usage_str += f"/{usage.cached_tokens}"
-        logger.debug(colored(token_usage_str, "light_grey"))
+        token_usage_str += f"/{usage.output_tokens_details.reasoning_tokens}"
+        token_usage_str += f"/{usage.input_tokens_details.cached_tokens}"
+        logger.debug(token_usage_str, extra={"color": "bright_black"})
 
         if usage.cost is not None:
-            logger.debug(colored(f"Total cost: ${usage.cost:.4f}", "light_grey"))
-
-    def load_costs_dict(self) -> CostsDict | None:
-        try:
-            with Path(self.costs_dict_path).open() as f:
-                return yaml.safe_load(f)["costs"]
-        except Exception:
-            logger.info(f"Failed to load cost dictionary from {self.costs_dict_path}")
-            return None
+            logger.debug(
+                "Total cost: $%.4f",
+                usage.cost,
+                extra={"color": "bright_black"},
+            )
 
     def _add_cost_to_usage(
-        self, usage: Usage, model_costs_dict: ModelCostsDict
+        self,
+        usage: ResponseUsage,
+        model_name: str,
+        litellm_provider: str | None,
     ) -> None:
-        in_rate = model_costs_dict["input"]
-        out_rate = model_costs_dict["output"]
-        cached_discount = model_costs_dict.get("cached_discount")
-        input_cost = in_rate * usage.input_tokens
-        output_cost = out_rate * usage.output_tokens
-        reasoning_cost = (
-            out_rate * usage.reasoning_tokens
-            if usage.reasoning_tokens is not None
-            else 0.0
+        add_cost_to_usage(
+            usage, model_name=model_name, litellm_provider=litellm_provider
         )
-        cached_cost: float = (
-            cached_discount * in_rate * usage.cached_tokens
-            if (usage.cached_tokens is not None) and (cached_discount is not None)
-            else 0.0
-        )
-        usage.cost = (input_cost + output_cost + reasoning_cost + cached_cost) / 1e6

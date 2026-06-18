@@ -1,0 +1,49 @@
+{
+        "version": "0.2",
+        "language": "en",
+        "ignorePaths": [
+                ".github",
+                ".vscode",
+                "pyproject.toml",
+                "pyrightconfig.json",
+                "configs/**",
+                "venv/**",
+                "**/__pycache__/**",
+                "src/grasp_agents/examples/**",
+                "README.md"
+        ],
+        "dictionaries": [
+                "python",
+                "softwareTerms"
+        ],
+        "ignoreWords": [
+                "pytest",
+                "numpy",
+                "pandas",
+                "pylance"
+        ],
+        "words": [
+                "acompletion",
+                "AILLM",
+                "ANNOT",
+                "coro",
+                "evts",
+                "ipynb",
+                "litellm",
+                "llms",
+                "logp",
+                "mult",
+                "pbar",
+                "procs",
+                "redef",
+                "subprocs",
+                "templ"
+        ],
+        "patterns": [
+                {
+                        "name": "ignoreHex",
+                        "pattern": "0x[0-9a-fA-F]+"
+                }
+        ],
+        "allowCompoundWords": true
+}

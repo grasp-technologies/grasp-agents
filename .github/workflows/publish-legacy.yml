@@ -1,0 +1,51 @@
+name: Publish Grasp Agents Legacy
+
+on:
+  push:
+    tags:
+      # Publish the frozen legacy distribution on tags like legacy-v0.6.50
+      # (does not collide with the main package's `v*` trigger).
+      - legacy-v*
+
+jobs:
+  pypi:
+    name: Publish grasp_agents_legacy to PyPI
+    runs-on: ubuntu-latest
+    # Trusted publishing. Register a PyPI publisher for the `grasp-agents-legacy`
+    # project pointing at this workflow file (publish-legacy.yml) + the environment below.
+    environment:
+      # Create/reuse this environment under Settings -> Environments
+      name: grasp_pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      # Restrict who can publish via tag (same allowlist as the main package)
+      - name: Ensure authorized tag pusher
+        run: |
+          ALLOWED_USERS="edmtthws wolfflow oobidin sergekomarov shivakumarmahesh Iana-Kasimova-TR"
+          echo "Tag pushed by: ${{ github.actor }}"
+          if [[ ! " $ALLOWED_USERS " =~ " ${{ github.actor }} " ]]; then
+            echo "❌ Unauthorized tag pusher: ${{ github.actor }}"
+            echo "🧹 Deleting tag from remote..."
+            git push origin :refs/tags/${GITHUB_REF#refs/tags/}
+            exit 1
+          fi
+
+      # Build the legacy distribution from its own pyproject in legacy/
+      - name: Build
+        working-directory: legacy
+        run: uv build
+
+      # Smoke-test the freshly built wheel (via --find-links dist), NOT PyPI, so the
+      # first publish works and we verify the artifact ships an importable package.
+      - name: Test run
+        working-directory: legacy
+        run: uv run --no-project --find-links dist --with grasp_agents_legacy -- python -c "import grasp_agents_legacy"
+
+      - name: Finalize and publish
+        working-directory: legacy
+        run: uv publish --trusted-publishing always

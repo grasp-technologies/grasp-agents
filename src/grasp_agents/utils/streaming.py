@@ -2,80 +2,153 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import dataclass
 from logging import getLogger
-from typing import Any, Generic, TypeVar
+from typing import Any
 
-from grasp_agents.typing.events import Event
+from grasp_agents.types.events import Event
 
 logger = getLogger(__name__)
 
 
-_T = TypeVar("_T")
+@dataclass(frozen=True, slots=True)
+class PumpError:
+    """Records a failed pump in :class:`ConcurrentStream`."""
+
+    index: int
+    exception: BaseException
 
 
-async def stream_concurrent(
-    generators: list[AsyncIterator[_T]],
-) -> AsyncIterator[tuple[int, _T]]:
-    tasks: list[asyncio.Task[None]] = []
-    queue: asyncio.Queue[tuple[int, _T] | None] = asyncio.Queue()
-    pumps_left = len(generators)
+type _QueueItem[T] = tuple[int, T] | PumpError | None
 
-    async def pump(gen: AsyncIterator[_T], idx: int) -> None:
-        nonlocal pumps_left
-        try:
+
+class ConcurrentStream[T]:
+    """
+    Merges multiple async iterators, yielding ``(index, item)`` in arrival order.
+
+    After iteration completes, :attr:`errors` contains one :class:`PumpError`
+    per failed pump so callers can react (retry, inject error messages, etc.).
+    """
+
+    def __init__(
+        self,
+        generators: list[AsyncIterator[T]],
+        *,
+        max_concurrency: int | None = None,
+    ) -> None:
+        self._generators = generators
+        self._errors: list[PumpError] = []
+        self._max_concurrency = max_concurrency
+
+    @property
+    def errors(self) -> list[PumpError]:
+        return self._errors
+
+    @property
+    def failed_indices(self) -> list[int]:
+        return [e.index for e in self._errors]
+
+    async def __aiter__(self) -> AsyncIterator[tuple[int, T]]:
+        generators = self._generators
+        if not generators:
+            return
+
+        queue: asyncio.Queue[_QueueItem[T]] = asyncio.Queue()
+        pumps_left = len(generators)
+        errors = self._errors
+        # ``max_concurrency=1`` runs the generators serially — each fully drained
+        # before the next starts — so conflicting work can't interleave.
+        sem = (
+            asyncio.Semaphore(self._max_concurrency)
+            if self._max_concurrency is not None
+            else None
+        )
+
+        async def drain(gen: AsyncIterator[T], idx: int) -> None:
             async for item in gen:
                 await queue.put((idx, item))
 
-        except asyncio.CancelledError:
-            raise
+        async def pump(gen: AsyncIterator[T], idx: int) -> None:
+            nonlocal pumps_left
+            try:
+                if sem is not None:
+                    async with sem:
+                        await drain(gen, idx)
+                else:
+                    await drain(gen, idx)
 
-        except Exception as e:
-            logger.warning(
-                f"stream_concurrent pump {idx} failed:\n{e!r}", exc_info=True
-            )
+            except asyncio.CancelledError:
+                raise
 
-        finally:
-            pumps_left -= 1
-            if pumps_left == 0:
-                await queue.put(None)
+            except Exception as e:
+                logger.warning("stream_concurrent pump %d failed: %r", idx, e)
+                await queue.put(PumpError(idx, e))
 
-    async with asyncio.TaskGroup() as tg:
-        for idx, gen in enumerate(generators):
-            tasks.append(tg.create_task(pump(gen, idx)))
+            finally:
+                pumps_left -= 1
+                if pumps_left == 0:
+                    await queue.put(None)
 
-        while True:
-            msg = await queue.get()
-            if msg is None:
-                break
-            yield msg
+        async with asyncio.TaskGroup() as tg:
+            for idx, gen in enumerate(generators):
+                tg.create_task(pump(gen, idx))
+
+            while True:
+                msg = await queue.get()
+                if msg is None:
+                    break
+                if isinstance(msg, PumpError):
+                    errors.append(msg)
+                    continue
+                yield msg
 
 
-_F = TypeVar("_F")
+def stream_concurrent[T](
+    generators: list[AsyncIterator[T]],
+    *,
+    max_concurrency: int | None = None,
+) -> ConcurrentStream[T]:
+    """
+    Create a :class:`ConcurrentStream` that merges *generators*.
+
+    ``max_concurrency`` caps how many run at once; ``1`` runs them serially
+    (each fully drained before the next), e.g. to keep conflicting operations
+    from interleaving. ``None`` (default) runs them all concurrently.
+
+    Usage::
+
+        stream = stream_concurrent(generators)
+        async for idx, item in stream:
+            ...
+        for err in stream.errors:
+            handle(err.index, err.exception)
+    """
+    return ConcurrentStream(generators, max_concurrency=max_concurrency)
 
 
 class MissingFinalEventError(RuntimeError):
-    """Raised when the stream finishes without encountering the required final event type."""
+    """The stream finished without the required final event type."""
 
 
-class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
+class EventStream[F](AsyncIterator[Event[Any]]):
     def __init__(
-        self, source: AsyncIterable[Event[Any]], final_type: type[_F] = object
+        self, source: AsyncIterable[Event[Any]], final_type: type[F] = object
     ) -> None:
         self._aiter: AsyncIterator[Event[Any]] = source.__aiter__()
-        self._final_type: type[_F] = final_type
-        self._final_event: Event[_F]
+        self._final_type: type[F] = final_type
+        self._final_event: Event[F]
         self._final_event_set: bool = False
         self._events: list[Event[Any]] = []
 
     @property
-    def final_type(self) -> type[_F]:
+    def final_type(self) -> type[F]:
         return self._final_type
 
     @property
     def events(self) -> list[Event[Any]]:
         return self._events
 
-    def __aiter__(self) -> EventStream[_F]:
+    def __aiter__(self) -> EventStream[F]:
         return self
 
     async def __anext__(self) -> Event[Any]:
@@ -91,7 +164,7 @@ class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
             self._events.append(event)
         return self._events
 
-    async def final_event(self) -> Event[_F]:
+    async def final_event(self) -> Event[F]:
         async for _ in self:
             pass
         if not self._final_event_set:
@@ -100,5 +173,5 @@ class EventStream(AsyncIterator[Event[Any]], Generic[_F]):
             )
         return self._final_event
 
-    async def final_data(self) -> _F:
+    async def final_data(self) -> F:
         return (await self.final_event()).data
