@@ -124,6 +124,22 @@ class ResponseCapture:
             yield event
 
 
+def _decision_severity(decision: ToolCallDecision) -> int:
+    if isinstance(decision, RaiseToolException):
+        return 2
+    if isinstance(decision, RejectToolContent):
+        return 1
+    return 0  # AllowTool
+
+
+def _more_restrictive(
+    existing: ToolCallDecision | None, new: ToolCallDecision
+) -> ToolCallDecision:
+    if existing is None:
+        return new
+    return new if _decision_severity(new) >= _decision_severity(existing) else existing
+
+
 class AgentLoop[CtxT]:
     """
     The agentic execution loop: generate → check → tools → repeat.
@@ -149,12 +165,16 @@ class AgentLoop[CtxT]:
     turn: int  # current LLM cycle within a step
     path: list[str] | None
 
-    # Hook callback slots — set by LLMAgent, None = no-op
+    # Hook callback slots — set by LLMAgent. The observer / decision hooks are
+    # lists: registering more than one stacks them (invoked in registration
+    # order) instead of replacing. ``final_answer_extractor`` stays single-slot
+    # — there is exactly one final-answer decision, so a later registration
+    # replaces it.
     final_answer_extractor: FinalAnswerExtractor | None
-    before_llm_hook: BeforeLlmHook | None
-    after_llm_hook: AfterLlmHook | None
-    before_tool_hook: BeforeToolHook[CtxT] | None
-    after_tool_hook: AfterToolHook | None
+    before_llm_hooks: list[BeforeLlmHook]
+    after_llm_hooks: list[AfterLlmHook]
+    before_tool_hooks: list[BeforeToolHook[CtxT]]
+    after_tool_hooks: list[AfterToolHook]
     tool_output_converters: dict[str, ToolOutputConverter]
     tool_input_converters: dict[str, ToolInputConverter]
 
@@ -244,12 +264,12 @@ class AgentLoop[CtxT]:
         self._skip_call_ids: set[str] = set()
 
         self.final_answer_extractor = None
-        self.before_llm_hook = None
-        self.after_llm_hook = None
+        self.before_llm_hooks = []
+        self.after_llm_hooks = []
         self.tool_output_converters = {}
         self.tool_input_converters = {}
-        self.before_tool_hook = None
-        self.after_tool_hook = None
+        self.before_tool_hooks = []
+        self.after_tool_hooks = []
 
         self.checkpoint_callback = None
         self.path = path
@@ -331,11 +351,9 @@ class AgentLoop[CtxT]:
         turn: int,
         extra_llm_settings: dict[str, Any],
     ) -> None:
-        if self.before_llm_hook is not None:
-            await self.before_llm_hook(
-                exec_id=exec_id,
-                turn=turn,
-                extra_llm_settings=extra_llm_settings,
+        for hook in self.before_llm_hooks:
+            await hook(
+                exec_id=exec_id, turn=turn, extra_llm_settings=extra_llm_settings
             )
 
     async def on_after_llm(
@@ -345,24 +363,23 @@ class AgentLoop[CtxT]:
         exec_id: str,
         turn: int,
     ) -> None:
-        if self.after_llm_hook is not None:
-            await self.after_llm_hook(
-                response=response,
-                exec_id=exec_id,
-                turn=turn,
-            )
+        for hook in self.after_llm_hooks:
+            await hook(response=response, exec_id=exec_id, turn=turn)
 
     async def on_before_tool(
-        self,
-        *,
-        tool_calls: Sequence[FunctionToolCallItem],
-        exec_id: str,
+        self, *, tool_calls: Sequence[FunctionToolCallItem], exec_id: str
     ) -> Mapping[str, ToolCallDecision] | None:
-        if self.before_tool_hook is not None:
-            return await self.before_tool_hook(
+        # Stacked hooks each return per-call decisions; merge so the most
+        # restrictive wins (raise > reject > allow) — no hook can downgrade
+        # another's veto, and ties resolve to the later-registered hook.
+        merged: dict[str, ToolCallDecision] = {}
+        for hook in self.before_tool_hooks:
+            decisions = await hook(
                 tool_calls=tool_calls, ctx=self._ctx, exec_id=exec_id
             )
-        return None
+            for call_id, decision in (decisions or {}).items():
+                merged[call_id] = _more_restrictive(merged.get(call_id), decision)
+        return merged or None
 
     async def on_after_tool(
         self,
@@ -371,11 +388,9 @@ class AgentLoop[CtxT]:
         tool_messages: Sequence[FunctionToolOutputItem],
         exec_id: str,
     ) -> None:
-        if self.after_tool_hook is not None:
-            await self.after_tool_hook(
-                tool_calls=tool_calls,
-                tool_messages=tool_messages,
-                exec_id=exec_id,
+        for hook in self.after_tool_hooks:
+            await hook(
+                tool_calls=tool_calls, tool_messages=tool_messages, exec_id=exec_id
             )
 
     async def _convert_tool_output(

@@ -1,5 +1,5 @@
 import logging
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from copy import deepcopy
 from functools import wraps
 from typing import (
@@ -496,7 +496,12 @@ class Processor[InT, OutT, CtxT](
         in_args: InT | list[InT] | None = None,
         exec_id: str | None = None,
         step: int | None = None,
+        span_name: str | None = None,
+        span_attributes: Mapping[str, str | float | bool] | None = None,
     ) -> AsyncIterator[Event[Any]]:
+        # span_name / span_attributes enrich this run's span; the @traced
+        # decorator reads them off the call kwargs — unused in the body.
+        del span_name, span_attributes
         exec_id = self.generate_exec_id(exec_id)
 
         with grasp_logging.log_context(exec_id=exec_id, proc=self.name):
@@ -535,6 +540,8 @@ class Processor[InT, OutT, CtxT](
         in_args: InT | list[InT] | None = None,
         exec_id: str | None = None,
         step: int | None = None,
+        span_name: str | None = None,
+        span_attributes: Mapping[str, str | float | bool] | None = None,
     ) -> Packet[OutT]:
         result = None
 
@@ -544,6 +551,8 @@ class Processor[InT, OutT, CtxT](
             in_args=in_args,
             exec_id=exec_id,
             step=step,
+            span_name=span_name,
+            span_attributes=span_attributes,
         ):
             if result is not None:
                 continue

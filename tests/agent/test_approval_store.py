@@ -104,10 +104,8 @@ def _make_executor(
         max_turns=max_turns,
         stream_llm=False,
     )
-    executor.final_answer_extractor = (
-        lambda *, exec_id, response=None, **kw: response.output_text
-        if response and not response.tool_call_items
-        else None
+    executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+        response.output_text if response and not response.tool_call_items else None
     )
     return executor, memory, llm
 
@@ -398,7 +396,7 @@ class TestApprovalGate:
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
         store = LocalApprovalStore()
 
-        executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
         async def resolver() -> None:
             for _ in range(100):
@@ -421,7 +419,7 @@ class TestApprovalGate:
         ]
         executor, _, _ = _make_executor(responses, tools=[EchoTool()])
 
-        executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
         # ctx with no approval_store → tool runs normally
         ctx = RunContext[None]()
@@ -438,7 +436,7 @@ class TestApprovalGate:
         executor, memory, _ = _make_executor(responses, tools=[EchoTool()])
         store = LocalApprovalStore()
 
-        executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
         async def resolver() -> None:
             for _ in range(100):
@@ -467,7 +465,7 @@ class TestApprovalGate:
         store = LocalApprovalStore()
         await store.add_persistent("echo")
 
-        executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
         ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain(executor, ctx)
@@ -495,7 +493,7 @@ class TestApprovalGate:
             resolved_ids.append(p.call_id)
             return ApprovalAllow(scope=ApprovalScope.SESSION)
 
-        executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
+        executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
         ctx = RunContext[None](approval_store=store, session_key="s1")
         resolver = asyncio.create_task(
@@ -533,7 +531,7 @@ class TestApprovalGate:
                 ],
                 tools=[EchoTool()],
             )
-            executor.before_tool_hook = build_store_approval()  # type: ignore[assignment]
+            executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
             resolver = asyncio.create_task(
                 _auto_resolve(store, session, decide=decide, stop_event=stop)
             )
@@ -581,9 +579,9 @@ class TestApprovalGate:
             assert [p.tool_name for p in pending] == ["delete_file"]
             await store.resolve("s1", "tc2", ApprovalAllow())
 
-        executor.before_tool_hook = build_store_approval(  # type: ignore[assignment]
-            tool_names={"delete_file"}
-        )
+        executor.before_tool_hooks = [  # type: ignore[assignment]
+            build_store_approval(tool_names={"delete_file"})
+        ]
 
         ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
@@ -601,9 +599,9 @@ class TestApprovalGate:
         executor, memory, _ = _make_executor(responses, tools=[EchoTool()])
         store = LocalApprovalStore()
 
-        executor.before_tool_hook = build_store_approval(  # type: ignore[assignment]
-            timeout=0.05
-        )
+        executor.before_tool_hooks = [  # type: ignore[assignment]
+            build_store_approval(timeout=0.05)
+        ]
 
         ctx = RunContext[None](approval_store=store, session_key="s1")
         await _drain(executor, ctx)
@@ -634,9 +632,9 @@ class TestApprovalGate:
             resolved_ids.append(p.call_id)
             return ApprovalAllow(scope=ApprovalScope.SESSION)
 
-        executor.before_tool_hook = build_store_approval(  # type: ignore[assignment]
-            approval_key_fn=lambda c: f"{c.name}:{c.arguments}"
-        )
+        executor.before_tool_hooks = [  # type: ignore[assignment]
+            build_store_approval(approval_key_fn=lambda c: f"{c.name}:{c.arguments}")
+        ]
 
         ctx = RunContext[None](approval_store=store, session_key="s1")
         resolver = asyncio.create_task(

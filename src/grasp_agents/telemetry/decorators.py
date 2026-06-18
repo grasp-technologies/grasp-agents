@@ -159,6 +159,36 @@ def _set_span_attributes(
         span.set_attribute(ATTR_ENTITY_VERSION, version)
 
 
+def _apply_caller_span_overrides(span: trace.Span, kwargs: dict[str, Any]) -> None:
+    # ``run`` / ``run_stream`` accept ``span_name`` / ``span_attributes`` so a
+    # caller can rename the run span and attach domain attributes (e.g.
+    # ``goal.id``). Applied after the framework attributes so the caller wins.
+    # Absent on any other traced call → no-op.
+    if not span.is_recording():
+        return
+    name = kwargs.get("span_name")
+    if name:
+        span.update_name(name)
+    attributes = kwargs.get("span_attributes")
+    if attributes:
+        for key, value in attributes.items():
+            span.set_attribute(key, value)
+
+
+def set_run_span_attributes(**attributes: str | float | bool) -> None:
+    """
+    Attach attributes to the currently-active run span.
+
+    For attributes discovered mid-run (inside a hook or tool); attributes known
+    at call time are better passed to ``run`` / ``run_stream`` via
+    ``span_attributes=``. No-op when tracing is off or no span is recording.
+    """
+    span = trace.get_current_span()
+    if span.is_recording():
+        for key, value in attributes.items():
+            span.set_attribute(key, value)
+
+
 def _handle_span_input(
     span: trace.Span,
     args: tuple[Any, ...],
@@ -267,6 +297,7 @@ def _entity_method[F: Callable[..., Any]](
 
                     with tracer.start_as_current_span(span_name) as span:
                         _set_span_attributes(span, entity_name, resolved_kind, version)
+                        _apply_caller_span_overrides(span, kwargs)
                         _handle_span_input(span, input_args, kwargs, exclude_fields)
                         # Track only the LAST item — buffering every yielded
                         # event multiplies memory by the tracing nesting depth.
@@ -310,6 +341,7 @@ def _entity_method[F: Callable[..., Any]](
 
                 with tracer.start_as_current_span(span_name) as span:
                     _set_span_attributes(span, entity_name, resolved_kind, version)
+                    _apply_caller_span_overrides(span, kwargs)
                     _handle_span_input(span, input_args, kwargs, exclude_fields)
                     try:
                         res = await fn(*args, **kwargs)
@@ -347,6 +379,7 @@ def _entity_method[F: Callable[..., Any]](
 
                 with tracer.start_as_current_span(span_name) as span:
                     _set_span_attributes(span, entity_name, resolved_kind, version)
+                    _apply_caller_span_overrides(span, kwargs)
                     _handle_span_input(span, input_args, kwargs, exclude_fields)
                     # Track only the LAST item — see the async generator path.
                     last_item: Any = None
@@ -387,6 +420,7 @@ def _entity_method[F: Callable[..., Any]](
 
             with tracer.start_as_current_span(span_name) as span:
                 _set_span_attributes(span, entity_name, resolved_kind, version)
+                _apply_caller_span_overrides(span, kwargs)
                 _handle_span_input(span, input_args, kwargs, exclude_fields)
                 try:
                     res = fn(*args, **kwargs)

@@ -179,7 +179,7 @@ class TestForcedFinalAnswerHooks:
         async def after_hook(response: Response, *, exec_id: str, turn: int) -> None:
             seen.append(response.output_text or "<tool call>")
 
-        loop.after_llm_hook = after_hook  # type: ignore[assignment]
+        loop.after_llm_hooks = [after_hook]  # type: ignore[assignment]
 
         await _drain(loop)
 
@@ -212,7 +212,7 @@ class TestNoDuplicateToolResults:
         ) -> Mapping[str, Any]:
             return {c.call_id: RejectToolContent(content="denied") for c in tool_calls}
 
-        loop.before_tool_hook = reject_all  # type: ignore[assignment]
+        loop.before_tool_hooks = [reject_all]  # type: ignore[assignment]
 
         await _drain(loop)
 
@@ -275,9 +275,7 @@ class TestNoDuplicateToolResults:
 def _closure_output_events(
     events: list[Event[Any]],
 ) -> dict[str, ToolOutputItemEvent]:
-    return {
-        e.data.call_id: e for e in events if isinstance(e, ToolOutputItemEvent)
-    }
+    return {e.data.call_id: e for e in events if isinstance(e, ToolOutputItemEvent)}
 
 
 class TestClosureEventsStreamed:
@@ -361,7 +359,7 @@ class TestClosureEventsStreamed:
         ) -> None:
             received.extend(str(m.output_parts) for m in tool_messages)
 
-        loop.after_tool_hook = after_tool  # type: ignore[assignment]
+        loop.after_tool_hooks = [after_tool]  # type: ignore[assignment]
 
         events = await _drain(loop)
 
@@ -394,7 +392,7 @@ class TestAfterToolHookPairing:
         ) -> None:
             received.append(tool_messages)
 
-        loop.after_tool_hook = after_tool  # type: ignore[assignment]
+        loop.after_tool_hooks = [after_tool]  # type: ignore[assignment]
 
         await _drain(loop)
 

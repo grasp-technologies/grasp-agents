@@ -117,7 +117,7 @@ class TestRunDeadlineBoundsApprovalWait:
         async def park_forever(**kwargs: Any) -> None:
             await asyncio.Event().wait()
 
-        loop.before_tool_hook = park_forever  # type: ignore[assignment]
+        loop.before_tool_hooks = [park_forever]  # type: ignore[assignment]
 
         async def drain() -> None:
             async for _ in loop.execute_stream(exec_id="t"):
