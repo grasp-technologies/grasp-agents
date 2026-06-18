@@ -87,7 +87,7 @@ class LiteLLM(CloudLLM):
         if self.api_provider is None and not self.resolve_api_provider_by_litellm:
             raise ValueError(
                 "Provide either the `api_provider` or set"
-                " `apply_resolve_api_provider_by_litellm` to True"
+                " `resolve_api_provider_by_litellm` to True"
             )
 
         super().__post_init__()
@@ -112,7 +112,7 @@ class LiteLLM(CloudLLM):
                 "api_key"
             )
             self._lite_llm_completion_params["api_base"] = self.api_provider.get(
-                "api_base"
+                "base_url"
             )
         else:
             try:
@@ -147,7 +147,10 @@ class LiteLLM(CloudLLM):
         ) -> dict[str, Any]:
             if settings is not None:
                 return {"model": model_name, **settings}
-            if not self.resolve_api_provider_by_litellm and self.api_provider:
+            if (
+                not self.resolve_api_provider_by_litellm
+                and self.api_provider is not None
+            ):
                 return {
                     "model": model_name,
                     "api_key": self.api_provider.get("api_key"),
@@ -239,15 +242,11 @@ class LiteLLM(CloudLLM):
         )
         completion = cast("LiteLLMCompletion", completion)
 
-        if not self.resolve_api_provider_by_litellm and self.api_provider:
+        if not self.resolve_api_provider_by_litellm and self.api_provider is not None:
             completion._hidden_params["custom_llm_provider"] = self.api_provider.get(  # type: ignore[no-untyped-call]
                 "name"
             )
         # Should not be needed in litellm>=1.74
-        if not self.apply_resolve_api_provider_by_litellm and self.api_provider:
-            completion._hidden_params["custom_llm_provider"] = self.api_provider.get(  # type: ignore[no-untyped-call]
-                "name"
-            )
         completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]
             completion
         )
