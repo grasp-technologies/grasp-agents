@@ -33,16 +33,16 @@ if str(SRC) not in sys.path:
 
 from pydantic import BaseModel
 
-from grasp_agents_legacy.llm_agent_memory import LLMAgentMemory
-from grasp_agents_legacy.llm_policy_executor import LLMPolicyExecutor
-from grasp_agents_legacy.run_context import RunContext
-from grasp_agents_legacy.typing.events import (
+from grasp_agents.llm_agent_memory import LLMAgentMemory
+from grasp_agents.llm_policy_executor import LLMPolicyExecutor
+from grasp_agents.run_context import RunContext
+from grasp_agents.typing.events import (
     Event,
     GenMessageEvent,
     UserMessageEvent,
 )
-from grasp_agents_legacy.typing.message import AssistantMessage
-from grasp_agents_legacy.typing.tool import BaseTool, ToolChoice
+from grasp_agents.typing.message import AssistantMessage
+from grasp_agents.typing.tool import BaseTool, ToolChoice
 
 
 # ---------------------- Stubs ----------------------
