@@ -55,6 +55,7 @@ class CloudLLM(LLM):
     apply_response_schema_via_provider: bool = False
     apply_tool_call_schema_via_provider: bool = False
     http_client: httpx.AsyncClient | None = None
+    apply_resolve_api_provider_by_litellm: bool = True
 
     def __post_init__(self) -> None:
         if self.rate_limiter is not None:
