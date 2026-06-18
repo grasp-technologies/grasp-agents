@@ -306,6 +306,10 @@ class LiteLLM(CloudLLM):
             "LiteLLMCompletion",
             litellm.stream_chunk_builder(completion_chunks),  # type: ignore[no-untyped-call]
         )
+        if not self.resolve_api_provider_by_litellm and self.api_provider is not None:
+            combined_chunk._hidden_params["custom_llm_provider"] = (  # type: ignore[no-untyped-call]
+                self.api_provider.get("name")
+            )
         # Should not be needed in litellm>=1.74
         combined_chunk._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]
             combined_chunk
