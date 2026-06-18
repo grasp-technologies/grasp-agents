@@ -79,6 +79,17 @@ class LiteLLM(CloudLLM):
                 "`llm_group_settings` (per-model, must include `model_name` and "
                 "every fallback target as keys). Not both."
             )
+        if self.api_provider is not None and self.resolve_api_provider_by_litellm:
+            raise ValueError(
+                "Prohibited to use the custom api provider and resolving "
+                "api provider by litellm simultaneously"
+            )
+        if self.api_provider is None and not self.resolve_api_provider_by_litellm:
+            raise ValueError(
+                "Provide either the `api_provider` or set"
+                " `apply_resolve_api_provider_by_litellm` to True"
+            )
+
         super().__post_init__()
 
         self._lite_llm_completion_params.update(
@@ -95,23 +106,23 @@ class LiteLLM(CloudLLM):
             }
         )
 
-        _api_provider = self.api_provider
-        try:
-            _, provider_name, api_key, api_base = litellm.get_llm_provider(  # type: ignore[no-untyped-call]
-                self.model_name
+        if self.api_provider is not None and not self.resolve_api_provider_by_litellm:
+            _api_provider = self.api_provider
+            self._lite_llm_completion_params["api_key"] = self.api_provider.get(
+                "api_key"
             )
-            _api_provider = APIProvider(
-                name=provider_name, api_key=api_key, base_url=api_base
+            self._lite_llm_completion_params["api_base"] = self.api_provider.get(
+                "api_base"
             )
-        except Exception as exc:
-            if self.api_provider is not None:
-                self._lite_llm_completion_params["api_key"] = self.api_provider.get(
-                    "api_key"
+        else:
+            try:
+                _, provider_name, api_key, api_base = litellm.get_llm_provider(  # type: ignore[no-untyped-call]
+                    self.model_name
                 )
-                self._lite_llm_completion_params["api_base"] = self.api_provider.get(
-                    "api_base"
+                _api_provider = APIProvider(
+                    name=provider_name, api_key=api_key, base_url=api_base
                 )
-            else:
+            except Exception as exc:
                 raise ValueError(
                     f"Failed to retrieve a LiteLLM supported API provider for model "
                     f"'{self.model_name}' and no custom API provider was specified."
@@ -136,6 +147,12 @@ class LiteLLM(CloudLLM):
         ) -> dict[str, Any]:
             if settings is not None:
                 return {"model": model_name, **settings}
+            if not self.resolve_api_provider_by_litellm and self.api_provider:
+                return {
+                    "model": model_name,
+                    "api_key": self.api_provider.get("api_key"),
+                    "base_url": self.api_provider.get("base_url"),
+                }
             return {"model": model_name}
 
         routed_models = {self.model_name} | set(self.fallbacks)
@@ -222,6 +239,10 @@ class LiteLLM(CloudLLM):
         )
         completion = cast("LiteLLMCompletion", completion)
 
+        if not self.resolve_api_provider_by_litellm and self.api_provider:
+            completion._hidden_params["custom_llm_provider"] = self.api_provider.get(  # type: ignore[no-untyped-call]
+                "name"
+            )
         # Should not be needed in litellm>=1.74
         completion._hidden_params["response_cost"] = litellm.completion_cost(completion)  # type: ignore[no-untyped-call]
 
