@@ -4,6 +4,7 @@ from logging import getLogger
 
 from opentelemetry.sdk.resources import SERVICE_NAME
 from traceloop.sdk import Traceloop
+from traceloop.sdk.instruments import Instruments
 
 from .exporters import NoopExporter
 
@@ -26,7 +27,7 @@ def init_traceloop(project_name: str = "grasp-agents"):
             exporter=NoopExporter(),
             resource_attributes={project_name_key: project_name},
             # disable_batch=False,
-            # block_instruments={Instruments.OPENAI},
+            block_instruments={Instruments.REQUESTS, Instruments.URLLIB3},
         )
 
         _initialized = True
