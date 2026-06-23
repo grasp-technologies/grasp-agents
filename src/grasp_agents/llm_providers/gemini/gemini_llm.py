@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from google.genai import Client
 from google.genai.types import HttpOptions as GeminiHttpOptions
@@ -28,6 +28,14 @@ from .tool_converters import to_api_tool_config, to_api_tools
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
 
+    from google.genai.types import (
+        AutomaticFunctionCallingConfigDict,
+        GenerationConfigRoutingConfigDict,
+        MediaResolution,
+        ModelArmorConfigDict,
+        ModelSelectionConfigDict,
+        ServiceTier,
+    )
     from pydantic import BaseModel
 
     from grasp_agents.tools.base import BaseTool, ToolChoice
@@ -55,10 +63,22 @@ class GeminiLLMSettings(CloudLLMSettings, total=False):
     seed: int | None
     response_logprobs: bool
     logprobs: int
+
     thinking_config: GeminiThinkingConfigDict | dict[str, Any] | None
-    safety_settings: list[GeminiSafetySettingDict] | None
+
     google_search: GeminiGoogleSearchDict | None
+
     url_context: bool | None
+    safety_settings: list[GeminiSafetySettingDict] | None
+    media_resolution: MediaResolution
+    service_tier: ServiceTier
+    cached_content: str
+    labels: dict[str, str]
+    enable_enhanced_civic_answers: bool
+    routing_config: GenerationConfigRoutingConfigDict
+    model_selection_config: ModelSelectionConfigDict
+    model_armor_config: ModelArmorConfigDict
+    automatic_function_calling: AutomaticFunctionCallingConfigDict
 
 
 # Keys with no Gemini equivalent (silently dropped)
@@ -75,48 +95,76 @@ _CONFIG_KEYS = (
 )
 
 
+GeminiPlatform = Literal["gemini", "vertex"]
+
+
+class GeminiVertexClientConfig(TypedDict, total=False):
+    """
+    Client args for ``platform="vertex"``.
+
+    Unset values fall back to ADC and the SDK env vars (GOOGLE_CLOUD_PROJECT,
+    GOOGLE_CLOUD_LOCATION); ``location`` defaults to "us-central1".
+    """
+
+    project: str
+    location: str
+    credentials: Any
+
+
 @dataclass(frozen=True)
 class GeminiLLM(CloudLLM):
     litellm_provider: str | None = "vertex_ai"
     llm_settings: GeminiLLMSettings | None = None
-    vertexai: bool = False
-    project: str | None = None
-    location: str | None = None
-    # Per-request HTTP timeout in seconds (``None`` disables). Without one the
-    # SDK waits forever on a stalled request — the retry layer never engages
-    # and ``run_timeout`` (checked at turn boundaries) cannot interrupt it.
-    gemini_client_timeout: float | None = 120.0
+    # Per-request HTTP timeout in seconds (``None`` disables).
+    gemini_client_timeout: float | None = 600.0
+    # Escape hatch: forwarded verbatim to the ``google.genai.Client``
+    # constructor for SDK-specific args (e.g. ``debug_config``).
+    extra_gemini_client_params: dict[str, Any] | None = None
+
+    # "gemini" = Gemini Developer API (api_key); "vertex" = Google Vertex AI.
+    platform: GeminiPlatform = "gemini"
+    platform_config: GeminiVertexClientConfig | None = field(default=None, repr=False)
+
     client: Client = field(init=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
 
-        http_options: GeminiHttpOptions | None = None
-        if self.gemini_client_timeout is not None:
-            http_options = GeminiHttpOptions(
-                timeout=int(self.gemini_client_timeout * 1000)  # milliseconds
-            )
+        extra = dict(self.extra_gemini_client_params or {})
 
-        if self.vertexai:
-            _client = Client(
-                vertexai=True,
-                project=self.project,
-                location=self.location or "us-central1",
-                http_options=http_options,
+        if self.platform == "vertex":
+            _api_provider = self.api_provider or APIProvider(
+                name="vertex", base_url=None, api_key=None
             )
+            config = dict(self.platform_config or {})
+            kwargs = {"vertexai": True, **config, **extra}
+            kwargs.setdefault("location", "global")
         else:
             _api_provider = self.api_provider or APIProvider(
-                name="google",
+                name="gemini",
                 base_url=None,
                 api_key=os.getenv("GOOGLE_API_KEY"),
             )
-            _client = Client(
-                api_key=_api_provider.get("api_key"),
-                http_options=http_options,
-            )
-            object.__setattr__(self, "api_provider", _api_provider)
+            kwargs = {"api_key": _api_provider.get("api_key"), **extra}
 
+        kwargs.setdefault("http_options", self._http_options())
+        _client = Client(**kwargs)
+
+        object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
+
+    def _http_options(self) -> GeminiHttpOptions:
+        # Client args whose role is identical across providers (timeout,
+        # default headers, a shared httpx client) map onto the genai client's
+        # ``http_options``.
+        opts: dict[str, Any] = {}
+        if self.gemini_client_timeout is not None:
+            opts["timeout"] = int(self.gemini_client_timeout * 1000)  # ms
+        if self.default_headers is not None:
+            opts["headers"] = dict(self.default_headers)
+        if self.http_client is not None:
+            opts["httpx_async_client"] = self.http_client
+        return GeminiHttpOptions(**opts)
 
     # --- Input preparation ---
 
@@ -153,13 +201,17 @@ class GeminiLLM(CloudLLM):
         extra_body = merged.pop("extra_body", None)
         merged.pop("extra_query", None)  # no Gemini equivalent
         if extra_headers or extra_body:
-            # Request-level http_options replace the client-level ones, so
-            # the client timeout must be re-applied here.
+            # Request-level http_options replace the client-level ones, so the
+            # client timeout and default headers must be re-applied here.
             http_options: GeminiHttpOptionsDict = {}
             if self.gemini_client_timeout is not None:
                 http_options["timeout"] = int(self.gemini_client_timeout * 1000)
-            if extra_headers:
-                http_options["headers"] = extra_headers
+            merged_headers: dict[str, str] = {
+                **(self.default_headers or {}),
+                **(extra_headers or {}),
+            }
+            if merged_headers:
+                http_options["headers"] = merged_headers
             if extra_body:
                 http_options["extra_body"] = extra_body
             config_kwargs["http_options"] = http_options

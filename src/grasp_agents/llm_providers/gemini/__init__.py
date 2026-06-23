@@ -73,4 +73,9 @@ from google.genai.types import (
     ToolConfig as GeminiToolConfig,
 )
 
-from .gemini_llm import GeminiLLM, GeminiLLMSettings
+from .gemini_llm import (
+    GeminiLLM,
+    GeminiLLMSettings,
+    GeminiPlatform,
+    GeminiVertexClientConfig,
+)

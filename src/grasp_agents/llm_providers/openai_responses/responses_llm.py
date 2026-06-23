@@ -1,11 +1,11 @@
 import logging
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 from openai._types import omit  # noqa: PLC2701
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
@@ -13,8 +13,18 @@ from openai.lib.streaming.responses._responses import (
 from openai.types.responses import (
     ParsedResponse,
     Response,
+    ResponseIncludable,
     ResponseStreamEvent,
     ResponseTextConfigParam,
+)
+from openai.types.responses.response_create_params import (
+    ContextManagement as ResponsesContextManagement,
+)
+from openai.types.responses.response_create_params import (
+    Conversation as ResponsesConversation,
+)
+from openai.types.responses.response_create_params import (
+    Moderation as ResponsesModeration,
 )
 from openai.types.responses.response_create_params import (
     StreamOptions as ResponsesStreamOptionsParam,
@@ -30,6 +40,7 @@ from openai.types.responses.tool_param import (
 )
 from openai.types.responses.web_search_tool_param import WebSearchToolParam
 from openai.types.shared import Reasoning
+from openai.types.shared_params import Metadata
 from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.llm.cloud_llm import (
@@ -37,6 +48,9 @@ from grasp_agents.llm.cloud_llm import (
     APIProvider,
     CloudLLM,
     CloudLLMSettings,
+)
+from grasp_agents.llm_providers.openai_completions.completions_llm import (
+    AzureClientConfig,
 )
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
@@ -92,19 +106,46 @@ class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
     reasoning: Reasoning
     parallel_tool_calls: bool
     max_output_tokens: int
+    max_tool_calls: int | None
     top_logprobs: int | None
     web_search: WebSearchToolParam | None
 
+    truncation: Literal["auto", "disabled"] | None
+    service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None
+    include: list[ResponseIncludable] | None
+    context_management: Iterable[ResponsesContextManagement] | None
+    moderation: ResponsesModeration | None
+
+    prompt_cache_key: str
+    prompt_cache_retention: Literal["in_memory", "24h"] | None
+    safety_identifier: str
+
     text: ResponseTextConfigParam
     stream_options: ResponsesStreamOptionsParam | None
+    metadata: Metadata | None
     store: bool | None
     user: str
+
+
+class ResponsesApiCallParams(ApiCallParams, total=False):
+    # Per-call server-side-state pointers, threaded next to api_input/api_tools
+    # (not via the settings bag) — mutually exclusive at the API level.
+    previous_response_id: str | None
+    conversation: ResponsesConversation | None
 
 
 @dataclass(frozen=True)
 class OpenAIResponsesLLM(CloudLLM):
     litellm_provider: str | None = "openai"
     llm_settings: OpenAIResponsesLLMSettings | None = None
+    # "openai" routes to api.openai.com (or an OpenAI-compatible endpoint via
+    # ``api_provider``); "azure" builds an ``AsyncAzureOpenAI`` client. The
+    # Azure Responses API requires ``api_version`` >= "2025-03-01-preview"
+    # (or the version-less v1 surface).
+    platform: Literal["openai", "azure"] = "openai"
+    # Azure client args (see AzureClientConfig). ``model_name`` is the Azure
+    # *deployment* name. May carry secrets — kept out of repr.
+    platform_config: AzureClientConfig | None = field(default=None, repr=False)
     openai_client_timeout: float = 120.0
     # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
     # system, and a non-zero value here would multiply with it.
@@ -115,26 +156,51 @@ class OpenAIResponsesLLM(CloudLLM):
     def __post_init__(self):
         super().__post_init__()
 
+        if self.platform == "azure":
+            _client, _api_provider = self._build_azure_client()
+            object.__setattr__(self, "api_provider", _api_provider)
+            object.__setattr__(self, "client", _client)
+            # ``model_name`` is the Azure deployment name — left untouched.
+            if self.litellm_provider == "openai":
+                object.__setattr__(self, "litellm_provider", "azure")
+            return
+
         _api_provider = self.api_provider or APIProvider(
             name="openai",
             base_url="https://api.openai.com/v1",
             api_key=os.getenv("OPENAI_API_KEY"),
         )
 
-        _openai_client_params = deepcopy(self.extra_openai_client_params or {})
-        _openai_client_params["timeout"] = self.openai_client_timeout
-        _openai_client_params["max_retries"] = self.openai_client_max_retries
-        if self.http_client is not None:
-            _openai_client_params["http_client"] = self.http_client
-
         _client = AsyncOpenAI(
             base_url=_api_provider.get("base_url"),
             api_key=_api_provider.get("api_key"),
-            **_openai_client_params,
+            **self._client_params(),
         )
 
         object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
+
+    def _client_params(self) -> dict[str, Any]:
+        # Client args common to the OpenAI and Azure clients; provider-specific
+        # client args go through ``extra_openai_client_params``.
+        params = deepcopy(self.extra_openai_client_params or {})
+        params["timeout"] = self.openai_client_timeout
+        params["max_retries"] = self.openai_client_max_retries
+        if self.http_client is not None:
+            params["http_client"] = self.http_client
+        if self.default_headers is not None:
+            params.setdefault("default_headers", self.default_headers)
+        return params
+
+    def _build_azure_client(self) -> tuple[AsyncAzureOpenAI, APIProvider]:
+        config: dict[str, Any] = dict(self.platform_config or {})
+        # Anything not supplied here is read from the SDK's Azure env vars.
+        azure_kwargs: dict[str, Any] = {**self._client_params(), **config}
+        client = AsyncAzureOpenAI(**azure_kwargs)
+        api_provider = self.api_provider or APIProvider(
+            name="azure", base_url=config.get("azure_endpoint"), api_key=None
+        )
+        return client, api_provider
 
     # --- Input preparation ---
 
@@ -144,8 +210,10 @@ class OpenAIResponsesLLM(CloudLLM):
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
+        previous_response_id: str | None = None,
+        conversation: ResponsesConversation | None = None,
         **extra_llm_settings: Any,
-    ) -> ApiCallParams:
+    ) -> ResponsesApiCallParams:
         api_tools: list[ResponsesToolParam] | None = None
         if tools:
             strict = self.apply_tool_call_schema_via_provider
@@ -163,10 +231,15 @@ class OpenAIResponsesLLM(CloudLLM):
             api_tools = api_tools or []
             api_tools.append(web_search_tool_param)
 
-        api_kwargs: ApiCallParams = ApiCallParams(
+        # Server-side-state pointers are per-call request args, not settings:
+        # thread them as first-class params (next to input/tools), so they
+        # reach the API call directly rather than via the settings bag.
+        api_kwargs: ResponsesApiCallParams = ResponsesApiCallParams(
             api_input=items_to_provider_inputs(input),
             api_tools=api_tools,
             api_tool_choice=api_tool_choice,
+            previous_response_id=previous_response_id,
+            conversation=conversation,
         )
         if output_schema is not None:
             api_kwargs["api_output_schema"] = output_schema
@@ -189,15 +262,20 @@ class OpenAIResponsesLLM(CloudLLM):
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
         api_output_schema: type | None = None,
+        previous_response_id: str | None = None,
+        conversation: ResponsesConversation | None = None,
         **api_llm_settings: Any,
     ) -> ParsedResponse[Any] | Response:
         tools = api_tools or omit
         tool_choice = api_tool_choice or omit
         text_format = api_output_schema or omit
 
-        response_id = api_llm_settings.get("previous_response_id")
+        # With server-held prior turns (a previous response or a conversation),
+        # only the items postdating the model's last output may be sent.
         input_items = (
-            _items_after_last_response(api_input) if response_id else api_input
+            _items_after_last_response(api_input)
+            if (previous_response_id or conversation)
+            else api_input
         )
 
         if self.apply_output_schema_via_provider:
@@ -207,6 +285,8 @@ class OpenAIResponsesLLM(CloudLLM):
                 input=input_items,
                 tools=tools,
                 tool_choice=tool_choice,
+                previous_response_id=previous_response_id or omit,
+                conversation=conversation or omit,
                 **api_llm_settings,
             )
         return await self.client.responses.create(
@@ -215,6 +295,8 @@ class OpenAIResponsesLLM(CloudLLM):
             stream=False,
             tools=tools,
             tool_choice=tool_choice,
+            previous_response_id=previous_response_id or omit,
+            conversation=conversation or omit,
             **api_llm_settings,
         )
 
@@ -225,11 +307,16 @@ class OpenAIResponsesLLM(CloudLLM):
         api_tools: list[Any] | None = None,
         api_tool_choice: Any | None = None,
         api_output_schema: type | None = None,
+        previous_response_id: str | None = None,
+        conversation: ResponsesConversation | None = None,
         **api_llm_settings: Any,
     ) -> AsyncIterator[ResponseStreamEvent]:
-        response_id = api_llm_settings.get("previous_response_id")
+        # With server-held prior turns (a previous response or a conversation),
+        # only the items postdating the model's last output may be sent.
         input_items = (
-            _items_after_last_response(api_input) if response_id else api_input
+            _items_after_last_response(api_input)
+            if (previous_response_id or conversation)
+            else api_input
         )
 
         _api_llm_settings = dict(api_llm_settings)
@@ -246,6 +333,8 @@ class OpenAIResponsesLLM(CloudLLM):
                     tool_choice=api_tool_choice or omit,
                     tools=api_tools or omit,
                     text_format=api_output_schema or omit,
+                    previous_response_id=previous_response_id or omit,
+                    conversation=conversation or omit,
                     **_api_llm_settings,
                 )
             )

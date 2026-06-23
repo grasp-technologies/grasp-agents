@@ -91,4 +91,10 @@ from anthropic.types import (
     WebSearchToolResultBlock as AnthropicWebSearchToolResultBlock,
 )
 
-from .anthropic_llm import AnthropicLLM, AnthropicLLMSettings
+from .anthropic_llm import (
+    AnthropicLLM,
+    AnthropicLLMSettings,
+    AnthropicPlatform,
+    BedrockClientConfig,
+    VertexClientConfig,
+)
