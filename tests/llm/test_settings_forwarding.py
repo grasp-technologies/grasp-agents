@@ -74,8 +74,8 @@ def test_gemini_forwards_new_settings() -> None:
     llm = GeminiLLM(
         model_name="gemini-2.5-flash",
         api_provider=_GOOGLE,
-        llm_settings={"candidate_count": 2, "labels": {"team": "x"}},
+        llm_settings={"enable_enhanced_civic_answers": False, "labels": {"team": "x"}},
     )
     config = llm._make_api_input([])["extra_settings"]["config"]  # type: ignore[index]
-    assert config.candidate_count == 2
+    assert config.enable_enhanced_civic_answers is False
     assert config.labels == {"team": "x"}

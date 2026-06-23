@@ -130,14 +130,14 @@ class GeminiLLM(CloudLLM):
     def __post_init__(self) -> None:
         super().__post_init__()
 
-        extra = dict(self.extra_gemini_client_params or {})
+        extra: dict[str, Any] = dict(self.extra_gemini_client_params or {})
 
         if self.platform == "vertex":
             _api_provider = self.api_provider or APIProvider(
                 name="vertex", base_url=None, api_key=None
             )
-            config = dict(self.platform_config or {})
-            kwargs = {"vertexai": True, **config, **extra}
+            config: dict[str, Any] = dict(self.platform_config or {})
+            kwargs: dict[str, Any] = {"vertexai": True, **config, **extra}
             kwargs.setdefault("location", "global")
         else:
             _api_provider = self.api_provider or APIProvider(
