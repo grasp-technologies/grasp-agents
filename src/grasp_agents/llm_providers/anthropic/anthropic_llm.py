@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from anthropic import AsyncAnthropic
 from anthropic._types import omit  # type: ignore[import]  # noqa: PLC2701
@@ -32,6 +32,12 @@ from .tool_converters import to_api_tool, to_api_tool_choice
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
 
+    from anthropic import (
+        AsyncAnthropicBedrock,  # pyright: ignore[reportPrivateImportUsage]
+        AsyncAnthropicBedrockMantle,  # pyright: ignore[reportPrivateImportUsage]
+        AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]
+    )
+    from anthropic.types import MetadataParam, OutputConfigParam
     from pydantic import BaseModel
 
     from grasp_agents.tools.base import BaseTool, ToolChoice
@@ -58,14 +64,70 @@ DEFAULT_MAX_TOKENS = 32768
 WebSearchToolParam = WebSearchTool20260209Param | WebSearchTool20250305Param
 WebFetchToolParam = WebFetchTool20260209Param
 
+AnthropicPlatform = Literal["anthropic", "bedrock", "bedrock_mantle", "vertex"]
+
+_BEDROCK_INSTALL_HINT = (
+    "AWS Bedrock support is unavailable. Install it with "
+    "`pip install 'grasp_agents[bedrock]'` (and use a recent anthropic SDK for "
+    "the 'bedrock_mantle' endpoint)."
+)
+_VERTEX_INSTALL_HINT = (
+    "Google Vertex AI support is unavailable. Install it with "
+    "`pip install 'grasp_agents[vertex]'`."
+)
+
 
 class AnthropicLLMSettings(CloudLLMSettings, total=False):
     max_tokens: int
     thinking: ThinkingConfigParam | None
     stop_sequences: list[str] | None
     top_k: int | None
+
+    # Structured outputs sent directly (the manual escape hatch). When
+    # ``apply_output_schema_via_provider`` is set the schema travels via the
+    # separate ``output_schema`` channel (``messages.parse``) instead.
+    output_config: OutputConfigParam | None
+
     web_search: WebSearchToolParam | None
     web_fetch: WebFetchToolParam | None
+
+    metadata: MetadataParam | None
+    service_tier: Literal["auto", "standard_only"] | None
+    container: str | None
+    inference_geo: str | None
+
+
+class BedrockClientConfig(TypedDict, total=False):
+    """
+    Client args for ``platform="bedrock"`` / ``"bedrock_mantle"``.
+
+    Unset values fall back to the standard AWS credential/region chain (env
+    vars, shared config/credentials files, SSO, IMDS). ``api_key`` is a Bedrock
+    bearer token, mutually exclusive with the ``aws_*`` credential fields.
+    """
+
+    aws_region: str
+    aws_profile: str
+    aws_access_key: str
+    aws_secret_key: str
+    aws_session_token: str
+    api_key: str
+    base_url: str
+
+
+class VertexClientConfig(TypedDict, total=False):
+    """
+    Client args for ``platform="vertex"``.
+
+    Unset values fall back to Application Default Credentials and the SDK env
+    vars (``ANTHROPIC_VERTEX_PROJECT_ID`` / ``CLOUD_ML_REGION``).
+    """
+
+    project_id: str
+    region: str
+    access_token: str
+    credentials: Any
+    base_url: str
 
 
 @dataclass(frozen=True)
@@ -79,30 +141,114 @@ class AnthropicLLM(CloudLLM):
     # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
     # system, and a non-zero value here would multiply with it.
     anthropic_client_max_retries: int = 0
-    client: AsyncAnthropic = field(init=False)
+    # Escape hatch: forwarded verbatim to the underlying client constructor
+    # (direct / Bedrock / Vertex) for SDK-specific args not in platform_config.
+    extra_anthropic_client_params: dict[str, Any] | None = None
+
+    # Which Anthropic-hosting platform to call. The Messages API surface is
+    # identical across all four; only client construction differs.
+    platform: AnthropicPlatform = "anthropic"
+    # Platform-specific client args: a ``BedrockClientConfig`` for
+    # "bedrock"/"bedrock_mantle" or a ``VertexClientConfig`` for "vertex"
+    # (ignored for the direct API, which uses ``api_provider``). May carry
+    # secrets — kept out of repr.
+    platform_config: BedrockClientConfig | VertexClientConfig | None = field(
+        default=None, repr=False
+    )
+
+    client: (
+        AsyncAnthropic
+        | AsyncAnthropicBedrock
+        | AsyncAnthropicVertex
+        | AsyncAnthropicBedrockMantle
+    ) = field(init=False)
     _default_max_tokens: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
 
         _api_provider = self.api_provider or APIProvider(
-            name="anthropic",
+            name=self.platform,
             base_url=None,
-            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            api_key=(
+                os.getenv("ANTHROPIC_API_KEY") if self.platform == "anthropic" else None
+            ),
         )
 
-        _client = AsyncAnthropic(
-            base_url=_api_provider.get("base_url"),
-            api_key=_api_provider.get("api_key"),
-            timeout=self.anthropic_client_timeout,
-            max_retries=self.anthropic_client_max_retries,
-        )
+        _client = self._build_client(_api_provider)
 
-        cap = get_model_capabilities(self.model_name, "anthropic").max_output_tokens
+        # On a cloud platform the model IDs and cost tables differ from the
+        # direct API; resolve the pricing identity used for cost lookups
+        # unless the caller pinned ``litellm_provider`` explicitly.
+        litellm_provider = self.litellm_provider
+        if self.platform != "anthropic" and litellm_provider == "anthropic":
+            litellm_provider = "vertex_ai" if self.platform == "vertex" else "bedrock"
+            object.__setattr__(self, "litellm_provider", litellm_provider)
+
+        cap = get_model_capabilities(
+            self.model_name, litellm_provider
+        ).max_output_tokens
 
         object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
         object.__setattr__(self, "_default_max_tokens", cap or DEFAULT_MAX_TOKENS)
+
+    def _build_client(
+        self, api_provider: APIProvider
+    ) -> (
+        AsyncAnthropic
+        | AsyncAnthropicBedrock
+        | AsyncAnthropicVertex
+        | AsyncAnthropicBedrockMantle
+    ):
+        # Client args whose role is identical across the direct / Bedrock /
+        # Vertex clients (so nothing the caller configured is dropped).
+        common: dict[str, Any] = {
+            "timeout": self.anthropic_client_timeout,
+            "max_retries": self.anthropic_client_max_retries,
+        }
+        if api_provider.get("base_url"):
+            common["base_url"] = api_provider["base_url"]
+        if self.http_client is not None:
+            common["http_client"] = self.http_client
+        if self.default_headers is not None:
+            common["default_headers"] = self.default_headers
+
+        config: dict[str, Any] = dict(self.platform_config or {})
+        extra: dict[str, Any] = dict(self.extra_anthropic_client_params or {})
+
+        if self.platform == "anthropic":
+            anthropic_kwargs: dict[str, Any] = {
+                **common,
+                "api_key": api_provider.get("api_key"),
+                **extra,
+            }
+            return AsyncAnthropic(**anthropic_kwargs)
+
+        if self.platform in {"bedrock", "bedrock_mantle"}:
+            try:
+                from anthropic import (  # noqa: PLC0415
+                    AsyncAnthropicBedrock,  # pyright: ignore[reportPrivateImportUsage]
+                    AsyncAnthropicBedrockMantle,  # pyright: ignore[reportPrivateImportUsage]
+                )
+            except ImportError as err:
+                raise ImportError(_BEDROCK_INSTALL_HINT) from err
+
+            bedrock_cls = (
+                AsyncAnthropicBedrockMantle
+                if self.platform == "bedrock_mantle"
+                else AsyncAnthropicBedrock
+            )
+            return bedrock_cls(**{**common, **config, **extra})
+
+        try:
+            from anthropic import (  # noqa: PLC0415
+                AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]
+            )
+        except ImportError as err:
+            raise ImportError(_VERTEX_INSTALL_HINT) from err
+
+        return AsyncAnthropicVertex(**{**common, **config, **extra})
 
     # --- Input preparation ---
 

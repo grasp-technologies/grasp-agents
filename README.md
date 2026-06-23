@@ -148,7 +148,9 @@ uv add grasp_agents          # or: pip install grasp_agents
 | `grasp_agents` | Core: OpenAI + LiteLLM, file/shell/code tools, memory, skills, durability, console |
 | `grasp_agents[anthropic]` | Native Anthropic provider |
 | `grasp_agents[gemini]` | Native Gemini provider |
-| `grasp_agents[all-llm-providers]` | Anthropic + Gemini |
+| `grasp_agents[all-llm-providers]` | Anthropic + Gemini + Bedrock/Vertex auth deps |
+| `grasp_agents[bedrock]` | Claude on AWS Bedrock (adds `boto3` for SigV4) |
+| `grasp_agents[vertex]` | Claude + Gemini on Google Vertex AI (adds `google-auth`) |
 | `grasp_agents[mcp]` | MCP client |
 | `grasp_agents[notebook]` | Local Jupyter kernel for `RunPython` / `RunCell` |
 | `grasp_agents[notebook-edit]` | `NotebookRead` / `NotebookEdit` (no kernel) |
@@ -156,7 +158,9 @@ uv add grasp_agents          # or: pip install grasp_agents
 | `grasp_agents[tui]` | Textual terminal UI |
 | `grasp_agents[phoenix]` | Phoenix / OpenLLMetry tracing |
 
-API keys are read from the environment.
+API keys are read from the environment. The same models are also reachable
+through AWS Bedrock, Google Vertex AI, and Azure OpenAI — see
+[Cloud-hosted models](#cloud-hosted-models).
 
 ## Minimal example
 
@@ -209,6 +213,79 @@ uv run quickstart.py
 out = await agent.run("What's the weather in Paris?")
 print(out.payloads[0])
 ```
+
+## Cloud-hosted models
+
+The native providers reach the same models through the major cloud platforms,
+selected with a `platform=` argument; platform-specific client args go in a
+typed `platform_config`. The request/response surface is identical, so tools,
+streaming, structured outputs, and `FallbackLLM` all work unchanged.
+
+```python
+from grasp_agents.llm_providers.anthropic import AnthropicLLM
+from grasp_agents.llm_providers.openai_completions import OpenAILLM
+from grasp_agents.llm_providers.gemini import GeminiLLM
+
+# Claude on AWS Bedrock (AWS cred chain / profile / bearer token)
+bedrock = AnthropicLLM(
+    model_name="anthropic.claude-sonnet-4-5-20250929-v1:0",
+    platform="bedrock",                  # or "bedrock_mantle" for newest models
+    platform_config={"aws_region": "us-east-1"},
+)
+
+# Claude on Google Vertex AI
+claude_vertex = AnthropicLLM(
+    model_name="claude-sonnet-4-5@20250929",
+    platform="vertex",
+    platform_config={"project_id": "my-project", "region": "us-east5"},
+)
+
+# Azure OpenAI — model_name is the deployment name (key or Entra ID auth)
+azure = OpenAILLM(
+    model_name="my-gpt-deployment",
+    platform="azure",
+    platform_config={
+        "azure_endpoint": "https://my-resource.openai.azure.com",
+        "api_version": "2024-10-21",
+    },
+)
+
+# Gemini on Google Vertex AI
+gemini_vertex = GeminiLLM(
+    model_name="gemini-2.5-flash",
+    platform="vertex",
+    platform_config={"project": "my-project", "location": "us-central1"},
+)
+```
+
+Anything not set in `platform_config` falls back to each platform's own
+credential chain and environment variables. The shared `http_client` /
+`default_headers` args and a per-provider `extra_*_client_params` escape hatch
+are available on every provider.
+
+### Server-side conversation state (OpenAI Responses)
+
+By default the loop is stateless toward the provider: it sends the full
+transcript each turn. To instead chain turns server-side with the Responses API
+(`previous_response_id`), wire it with the LLM hooks — the framework leaves the
+strategy to you. `OpenAIResponsesLLM` slices the input to only the new items
+whenever `previous_response_id` (or `conversation`) is set.
+
+```python
+last: dict[str, str] = {}  # keyed by exec_id (one run); or use current_run_context().state
+
+@agent.add_after_llm_hook
+async def _capture(response, *, exec_id, turn):
+    last[exec_id] = response.id
+
+@agent.add_before_llm_hook
+async def _chain(*, exec_id, turn, extra_llm_settings):
+    if rid := last.get(exec_id):
+        extra_llm_settings["previous_response_id"] = rid
+```
+
+Pair it with `llm_settings={"store": True}` (the provider-side persistence
+toggle); `store=False` keeps responses unstored.
 
 ## More examples
 

@@ -65,6 +65,7 @@ class CloudLLM(LLM):
     apply_output_schema_via_provider: bool = False
     apply_tool_call_schema_via_provider: bool = False
     http_client: httpx.AsyncClient | None = None
+    default_headers: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.rate_limiter is not None:

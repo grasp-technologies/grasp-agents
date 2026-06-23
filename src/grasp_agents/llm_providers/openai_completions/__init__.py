@@ -65,6 +65,7 @@ from openai.types.chat.chat_completion_tool_param import (
 from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam as OpenAIUserMessageParam,
 )
+from openai.types.chat.completion_create_params import Moderation as OpenAIModeration
 from openai.types.chat.completion_create_params import (
     WebSearchOptions as OpenAIWebSearchOptions,
 )
@@ -75,19 +76,23 @@ from openai.types.shared_params import (
     ResponseFormatJSONObject as OpenAIResponseFormatJSONObject,
 )
 from openai.types.shared_params import (
+    ResponseFormatJSONSchema as OpenAIResponseFormatJSONSchema,
+)
+from openai.types.shared_params import (
     ResponseFormatText as OpenAIResponseFormatText,
 )
 from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
 
-from .completions_llm import OpenAILLM, OpenAILLMSettings
+from .completions_llm import AzureClientConfig, OpenAILLM, OpenAILLMSettings
 from .response_to_provider_inputs import (
     items_to_provider_inputs,
     response_to_provider_input,
 )
 
 __all__ = [
+    "AzureClientConfig",
     "OpenAILLM",
     "OpenAILLMSettings",
     "items_to_provider_inputs",
