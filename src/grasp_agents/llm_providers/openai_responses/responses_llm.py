@@ -24,9 +24,6 @@ from openai.types.responses.response_create_params import (
     Conversation as ResponsesConversation,
 )
 from openai.types.responses.response_create_params import (
-    Moderation as ResponsesModeration,
-)
-from openai.types.responses.response_create_params import (
     StreamOptions as ResponsesStreamOptionsParam,
 )
 from openai.types.responses.response_create_params import (
@@ -114,7 +111,6 @@ class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None
     include: list[ResponseIncludable] | None
     context_management: Iterable[ResponsesContextManagement] | None
-    moderation: ResponsesModeration | None
 
     prompt_cache_key: str
     prompt_cache_retention: Literal["in_memory", "24h"] | None
