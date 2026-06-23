@@ -65,7 +65,6 @@ from openai.types.chat.chat_completion_tool_param import (
 from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam as OpenAIUserMessageParam,
 )
-from openai.types.chat.completion_create_params import Moderation as OpenAIModeration
 from openai.types.chat.completion_create_params import (
     WebSearchOptions as OpenAIWebSearchOptions,
 )

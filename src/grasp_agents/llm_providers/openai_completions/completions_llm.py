@@ -28,7 +28,6 @@ from grasp_agents.types.response import Response
 from . import (
     OpenAICompletion,
     OpenAICompletionChunk,
-    OpenAIModeration,
     OpenAIParsedCompletion,
     OpenAIPredictionContentParam,
     OpenAIResponseFormatJSONObject,
@@ -110,7 +109,6 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     store: bool | None
     user: str
     prediction: OpenAIPredictionContentParam | None
-    moderation: OpenAIModeration | None
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None
     verbosity: Literal["low", "medium", "high"] | None
     prompt_cache_key: str
