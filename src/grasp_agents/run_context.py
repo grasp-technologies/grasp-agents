@@ -17,6 +17,14 @@ from .types.io import ProcName
 from .types.response import Response
 from .usage_tracker import UsageTracker
 
+DEFAULT_SESSION_KEY = "default"
+"""Sentinel ``session_key`` for an unnamed session.
+
+Session-scoped stores route lookups by ``session_key``; trace grouping treats
+this value as "no session" (each run is its own trace root). Set a real
+``session_key`` to opt a session into single-trace grouping across runs.
+"""
+
 
 class RunContext[CtxT](BaseModel):
     state: CtxT = None  # type: ignore
@@ -41,7 +49,15 @@ class RunContext[CtxT](BaseModel):
     # currently serving. Used by every session-scoped store attached
     # below (``approval_store``, ``file_backend``, etc.) to route
     # lookups.
-    session_key: str = Field(default="default", exclude=True)
+    session_key: str = Field(default=DEFAULT_SESSION_KEY, exclude=True)
+
+    # When True (default), every run sharing this ``session_key`` is parented
+    # to a common session root derived from the key, so all runs of the session
+    # form ONE OTel trace in any backend. Set False to make each run its own
+    # trace root — e.g. when the backend groups runs itself (Phoenix Sessions
+    # via a ``session.id`` span attribute, which expects one trace per turn).
+    # No effect while ``session_key`` is the default sentinel.
+    session_trace_grouping: bool = Field(default=True, exclude=True)
 
     # Set ``approval_store`` to enable the approval gate built via
     # ``build_store_approval``; it scopes its session allowlist by

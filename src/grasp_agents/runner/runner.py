@@ -11,7 +11,11 @@ from pydantic import ValidationError as PydanticValidationError
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind, RunnerCheckpoint
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext, current_run_context
+from grasp_agents.run_context import (
+    DEFAULT_SESSION_KEY,
+    RunContext,
+    current_run_context,
+)
 from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.types.errors import RunnerError
 from grasp_agents.types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
@@ -146,6 +150,20 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
     @property
     def ctx(self) -> RunContext[CtxT]:
         return self._ctx
+
+    def _trace_session_info(self) -> tuple[str, bool] | None:
+        """
+        Session identity for tracing: ``(session_id, group)`` or ``None``.
+
+        ``None`` for the default session; otherwise the session id (stamped as
+        the session attribute on the run's spans) and whether to group every run
+        into one trace (``ctx.session_trace_grouping``). See
+        :class:`grasp_agents.processors.processor.Processor`.
+        """
+        ctx = self._ctx
+        if ctx.session_key == DEFAULT_SESSION_KEY:
+            return None
+        return ctx.session_key, ctx.session_trace_grouping
 
     # --- Session persistence ---
 

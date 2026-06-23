@@ -10,18 +10,38 @@ from logging import getLogger
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     SimpleSpanProcessor,
     SpanExporter,
 )
+from opentelemetry.trace import Span
+
+from .decorators import stamp_session_attributes
 
 logger = getLogger(__name__)
 
 _init_lock = threading.Lock()
 _initialized = False
+
+
+class SessionSpanProcessor(SpanProcessor):
+    """
+    Stamp the active session id onto every span as configured attribute(s).
+
+    Reads the session id a run root placed on the OTel context and writes it to
+    each key in ``GRASP_SESSION_ID_ATTRIBUTES`` (default ``gen_ai.conversation.id``).
+    :func:`init_tracing` installs it automatically; add it to a hand-built
+    ``TracerProvider`` to propagate the session id to ALL spans — including
+    provider-instrumentation spans — for backends that group or filter by it per
+    span (Langfuse, Datadog, …). No-op when no session is active.
+    """
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        stamp_session_attributes(span, parent_context)
 
 
 def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
@@ -47,6 +67,8 @@ def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
                 }
             ),
         )
+        # Propagates the run's session id onto every span (see the processor).
+        provider.add_span_processor(SessionSpanProcessor())
         trace.set_tracer_provider(provider)
         _initialized = True
         logger.info("Initialized TracerProvider for %s", project_name)
