@@ -16,7 +16,15 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
-from grasp_agents.telemetry import SpanKind, set_run_span_attributes, traced
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.run_context import RunContext
+from grasp_agents.telemetry import (
+    SessionSpanProcessor,
+    SpanKind,
+    derive_session_span_context,
+    set_run_span_attributes,
+    traced,
+)
 from grasp_agents.telemetry.decorators import (
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
@@ -24,11 +32,14 @@ from grasp_agents.telemetry.decorators import (
     ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
     ATTR_WORKFLOW_NAME,
+    _resolve_run_span_context,
     _resolve_span_kind,
     _should_send_prompts,
     _to_plain,
     _truncate_if_needed,
 )
+from grasp_agents.tools.agent_tool import AgentTool
+from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,6 +73,7 @@ class MemoryExporter(SpanExporter):
 
 _exporter = MemoryExporter()
 _provider = TracerProvider()
+_provider.add_span_processor(SessionSpanProcessor())  # stamps session attrs
 _provider.add_span_processor(SimpleSpanProcessor(_exporter))
 
 # Reset the set-once guard so we can install our test provider.
@@ -507,10 +519,21 @@ class TestHelpers:
         result = _to_plain({"items": [{"a": 1}, {"b": 2}]})
         assert result == {"items": [{"a": 1}, {"b": 2}]}
 
-    def test_truncate_if_needed(self) -> None:
+    def test_truncate_tiny_limit_falls_back_to_head_clip(self) -> None:
+        # Limit too small to fit a head…tail marker → plain head clip.
         with patch.dict(os.environ, {"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT": "5"}):
             assert _truncate_if_needed("hello world") == "hello"
             assert _truncate_if_needed("hi") == "hi"
+
+    def test_truncate_keeps_head_and_tail(self) -> None:
+        with patch.dict(os.environ, {"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT": "60"}):
+            text = "H" * 40 + "X" * 200 + "T" * 40
+            out = _truncate_if_needed(text)
+            assert len(out) <= 60  # never exceeds the limit
+            assert out.startswith("H")  # head kept
+            assert out.endswith("T")  # tail kept
+            assert "chars]" in out  # head…tail marker present
+            assert "X" * 20 not in out  # middle dropped
 
     def test_truncate_no_limit(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
@@ -699,3 +722,207 @@ class TestCallerSpanOverrides:
         attrs = _exporter.get_finished_spans()[0].attributes or {}
         assert attrs["discovered"] == "mid-run"
         assert attrs["count"] == 2
+
+
+# ========================================================================= #
+#  Session trace grouping (deterministic, backend-agnostic)                  #
+# ========================================================================= #
+
+
+def _processor_spans() -> list[ReadableSpan]:
+    """Run-root spans (one per run_stream), selected by entity name."""
+    return [
+        s
+        for s in _exporter.get_finished_spans()
+        if (s.attributes or {}).get(ATTR_ENTITY_NAME) == "processor"
+    ]
+
+
+def _session_trace_id(session_key: str) -> int:
+    parent = derive_session_span_context(session_key)
+    return trace.get_current_span(parent).get_span_context().trace_id
+
+
+class TestSessionTraceDerivation:
+    def test_deterministic_and_distinct(self) -> None:
+        assert _session_trace_id("sess-A") == _session_trace_id("sess-A") != 0
+        assert _session_trace_id("sess-A") != _session_trace_id("sess-B")
+
+    def test_resolver_skips_default_and_missing_session(self) -> None:
+        class Named:
+            def _trace_session_info(self) -> tuple[str, bool] | None:
+                return ("sess-A", True)
+
+        class DefaultSession:
+            def _trace_session_info(self) -> tuple[str, bool] | None:
+                return None
+
+        assert _resolve_run_span_context(object()) is None  # no hook
+        assert _resolve_run_span_context(DefaultSession()) is None  # unnamed
+        assert _resolve_run_span_context(Named()) is not None  # at a run root
+
+    def test_resolver_skips_when_nested_under_recording_span(self) -> None:
+        class Named:
+            def _trace_session_info(self) -> tuple[str, bool] | None:
+                return ("sess-A", True)
+
+        # A live ancestor span means we are nested — inherit the enclosing run's
+        # context instead of starting a fresh session root.
+        with trace.get_tracer("test").start_as_current_span("outer"):
+            assert _resolve_run_span_context(Named()) is None
+
+
+class TestSessionTraceGrouping:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_named_session_runs_share_one_trace_without_a_store(self) -> None:
+        # No checkpoint_store wired — grouping is purely from the session_key.
+        with RunContext[None](session_key="sess-multi-turn"):
+            agent = LLMAgent[str, str, None](
+                name="chat",
+                llm=MockLLM(
+                    responses_queue=[_text_response("a1"), _text_response("a2")]
+                ),
+            )
+            await agent.run(chat_inputs="turn 1")
+            await agent.run(chat_inputs="turn 2")
+
+        roots = _processor_spans()
+        assert len(roots) == 2
+        assert {s.context.trace_id for s in roots} == {
+            _session_trace_id("sess-multi-turn")
+        }
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_opt_out_makes_named_session_runs_independent(self) -> None:
+        with RunContext[None](
+            session_key="sess-optout", session_trace_grouping=False
+        ):
+            agent = LLMAgent[str, str, None](
+                name="chat",
+                llm=MockLLM(
+                    responses_queue=[_text_response("a1"), _text_response("a2")]
+                ),
+            )
+            await agent.run(chat_inputs="turn 1")
+            await agent.run(chat_inputs="turn 2")
+
+        roots = _processor_spans()
+        assert len(roots) == 2
+        # Opted out → each run is its own trace root despite the session_key.
+        assert roots[0].context.trace_id != roots[1].context.trace_id
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_default_session_runs_are_independent_traces(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="chat",
+            llm=MockLLM(responses_queue=[_text_response("a1"), _text_response("a2")]),
+        )
+        await agent.run(chat_inputs="turn 1")
+        await agent.run(chat_inputs="turn 2")
+
+        roots = _processor_spans()
+        assert len(roots) == 2
+        # Unnamed session → each run is its own trace root (prior behavior).
+        assert roots[0].context.trace_id != roots[1].context.trace_id
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_nested_run_stays_in_parent_session_trace(self) -> None:
+        # Construct inside the block: the session binds at construction time.
+        with RunContext[None](session_key="sess-nested"):
+            child = AgentTool[None](
+                name="research",
+                description="Research a topic",
+                llm=MockLLM(responses_queue=[_text_response("child answer")]),
+            )
+            parent = LLMAgent[str, str, None](
+                name="parent",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("research", '{"prompt": "x"}', "tc1"),
+                        _text_response("done"),
+                    ]
+                ),
+                tools=[child],
+            )
+            await parent.run(chat_inputs="go")
+
+        roots = _processor_spans()
+        # Parent (run root) + spawned child both emit a processor span, and ALL
+        # live in the one session trace: the child nested under the parent's
+        # tool span instead of detaching to its own session root.
+        assert len(roots) >= 2
+        assert {s.context.trace_id for s in roots} == {_session_trace_id("sess-nested")}
+
+
+# ========================================================================= #
+#  Session attributes (SessionSpanProcessor — propagated to every span)      #
+# ========================================================================= #
+
+
+def _session_attr(span: ReadableSpan, key: str = "gen_ai.conversation.id") -> Any:
+    return (span.attributes or {}).get(key)
+
+
+async def _run_chat(session_key: str | None = None, **ctx_kwargs: Any) -> None:
+    llm = MockLLM(responses_queue=[_text_response("ok")])
+    if session_key is None:
+        agent = LLMAgent[str, str, None](name="chat", llm=llm)
+        await agent.run(chat_inputs="hi")
+        return
+    with RunContext[None](session_key=session_key, **ctx_kwargs):
+        agent = LLMAgent[str, str, None](name="chat", llm=llm)
+        await agent.run(chat_inputs="hi")
+
+
+class TestSessionAttributes:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_stamped_on_run_and_child_spans(self) -> None:
+        await _run_chat("sess-attr")
+        spans = _exporter.get_finished_spans()
+        by_entity = {(s.attributes or {}).get(ATTR_ENTITY_NAME): s for s in spans}
+        # The run root (processor) AND a child it created (generate) both carry
+        # the session id — the processor propagates it down the whole run tree.
+        assert "processor" in by_entity
+        assert "generate" in by_entity
+        assert _session_attr(by_entity["processor"]) == "sess-attr"
+        assert _session_attr(by_entity["generate"]) == "sess-attr"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_emitted_even_when_grouping_off(self) -> None:
+        # Session attributes are independent of headless trace grouping.
+        await _run_chat("sess-nogroup", session_trace_grouping=False)
+        spans = _exporter.get_finished_spans()
+        assert spans
+        assert all(_session_attr(s) == "sess-nogroup" for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_absent_for_default_session(self) -> None:
+        await _run_chat(session_key=None)
+        spans = _exporter.get_finished_spans()
+        assert spans
+        assert all(_session_attr(s) is None for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_keys_configurable_via_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_SESSION_ID_ATTRIBUTES", "session.id, custom.session")
+        await _run_chat("sess-cfg")
+        spans = _exporter.get_finished_spans()
+        root = next(
+            s for s in spans if _session_attr(s, ATTR_ENTITY_NAME) == "processor"
+        )
+        attrs = root.attributes or {}
+        assert attrs.get("session.id") == "sess-cfg"
+        assert attrs.get("custom.session") == "sess-cfg"
+        assert "gen_ai.conversation.id" not in attrs  # default replaced
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_opt_out_with_empty_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_SESSION_ID_ATTRIBUTES", "")
+        await _run_chat("sess-empty")
+        spans = _exporter.get_finished_spans()
+        assert spans
+        assert all(_session_attr(s) is None for s in spans)

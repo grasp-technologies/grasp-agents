@@ -20,7 +20,11 @@ from grasp_agents import grasp_logging
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.hooks import RecipientSelector
-from grasp_agents.run_context import RunContext, current_run_context
+from grasp_agents.run_context import (
+    DEFAULT_SESSION_KEY,
+    RunContext,
+    current_run_context,
+)
 from grasp_agents.telemetry import traced
 from grasp_agents.types.errors import (
     PacketRoutingError,
@@ -190,6 +194,21 @@ class Processor[InT, OutT, CtxT](
     def ctx(self) -> RunContext[CtxT]:
         """Session bound at construction. Immutable after init."""
         return self._ctx
+
+    def _trace_session_info(self) -> tuple[str, bool] | None:
+        """
+        Session identity for tracing: ``(session_id, group)`` or ``None``.
+
+        Read by the tracing layer (only when this run span would be a trace
+        root). ``None`` for the default (unnamed) session. Otherwise the session
+        id is stamped on the run's spans as the session attribute, and ``group``
+        (``ctx.session_trace_grouping``) decides whether every run of the session
+        is also parented into one shared trace.
+        """
+        ctx = self._ctx
+        if ctx.session_key == DEFAULT_SESSION_KEY:
+            return None
+        return ctx.session_key, ctx.session_trace_grouping
 
     # --- Session persistence ---
 

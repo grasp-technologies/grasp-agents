@@ -88,7 +88,7 @@ class TestGeminiVertex:
             platform="vertex",
             platform_config={"project": "p"},
         )
-        assert captured["location"] == "us-central1"
+        assert captured["location"] == "global"
 
 
 class TestGeminiRequestHeaders:

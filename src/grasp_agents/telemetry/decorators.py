@@ -5,18 +5,23 @@ Follows the OTel library instrumentation pattern: depends only on opentelemetry-
 If no TracerProvider is configured by the application, all spans are no-ops.
 """
 
+import hashlib
 import inspect
 import json
 import os
 import re
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from enum import StrEnum
 from functools import wraps
 from logging import getLogger
 from typing import Any, cast, overload
 
+from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.context import Context
+from opentelemetry.trace.propagation import set_span_in_context
 from pydantic import BaseModel
 
 logger = getLogger(__name__)
@@ -58,7 +63,7 @@ _GRASP_TO_OI_KIND: dict[str, str] = {
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "completions"}
+DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "responses"}
 _TRACER_NAME = "grasp_agents"
 
 # ---------------------------------------------------------------------------
@@ -89,14 +94,29 @@ def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
 
 def _truncate_if_needed(json_str: str) -> str:
     limit_str = os.getenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT")
-    if limit_str:
-        try:
-            limit = int(limit_str)
-            if limit > 0 and len(json_str) > limit:
-                return json_str[:limit]
-        except ValueError:
-            pass
-    return json_str
+    if not limit_str:
+        return json_str
+    try:
+        limit = int(limit_str)
+    except ValueError:
+        return json_str
+    if limit <= 0 or len(json_str) <= limit:
+        return json_str
+    # Keep the head AND tail, dropping the middle: the start and end of a
+    # prompt/response carry the most signal (the bulk is usually repetitive
+    # context). Fitted within `limit` so the SDK's own head-only cap never fires.
+    marker = f" …[{len(json_str) - limit} chars]… "
+    keep = limit - len(marker)
+    if keep <= 0:
+        # Limit too small to fit a head…tail marker — fall back to a head clip.
+        return json_str[:limit]
+    head, tail = keep // 2, keep - keep // 2
+    # Removing head+tail (not just the over-limit slice) raises the true omitted
+    # count; recompute the marker so the result still fits within `limit`.
+    marker = f" …[{len(json_str) - head - tail} chars]… "
+    keep = max(0, limit - len(marker))
+    head, tail = keep // 2, keep - keep // 2
+    return (json_str[:head] + marker + json_str[len(json_str) - tail :])[:limit]
 
 
 def _should_send_prompts() -> bool:
@@ -187,6 +207,152 @@ def set_run_span_attributes(**attributes: str | float | bool) -> None:
     if span.is_recording():
         for key, value in attributes.items():
             span.set_attribute(key, value)
+
+
+# ---------------------------------------------------------------------------
+# Session trace grouping + session attributes
+# ---------------------------------------------------------------------------
+
+
+def derive_session_span_context(session_key: str) -> Context:
+    """
+    Deterministic remote-parent context for a session.
+
+    Hashes ``session_key`` into a stable ``trace_id`` + root ``span_id`` so
+    every run of one session — across turns and across processes, with or
+    without a checkpoint store — lands in a single trace, parented to a common
+    session root. The root span itself is never emitted (it is a remote parent),
+    so the grouping is expressed purely in OTel primitives and renders in any
+    backend. Pass the result as a span's ``context=`` to correlate your own
+    work with a grasp-agents session.
+    """
+    digest = hashlib.sha256(session_key.encode("utf-8")).digest()
+    # trace_id is 128-bit, span_id 64-bit; both must be non-zero (OTel treats a
+    # zero id as invalid). A SHA-256 slice is non-zero in practice — guard anyway.
+    trace_id = int.from_bytes(digest[:16], "big") or 1
+    span_id = int.from_bytes(digest[16:24], "big") or 1
+    span_context = trace.SpanContext(
+        trace_id=trace_id,
+        span_id=span_id,
+        is_remote=True,
+        trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+    )
+    return set_span_in_context(trace.NonRecordingSpan(span_context))
+
+
+_DEFAULT_SESSION_ID_ATTRIBUTES = ("gen_ai.conversation.id",)
+
+
+def _session_id_attribute_keys() -> tuple[str, ...]:
+    """
+    Span-attribute keys to stamp with the session id.
+
+    Defaults to ``gen_ai.conversation.id`` (the OpenTelemetry GenAI convention).
+    Override via the ``GRASP_SESSION_ID_ATTRIBUTES`` env var — comma-separated,
+    e.g. ``gen_ai.conversation.id,session.id`` (set it empty to stamp none).
+    Which keys a backend reads is a deployment concern, so it is configured at
+    the deployment level (env) rather than per session.
+    """
+    raw = os.getenv("GRASP_SESSION_ID_ATTRIBUTES")
+    if raw is None:
+        return _DEFAULT_SESSION_ID_ATTRIBUTES
+    return tuple(k.strip() for k in raw.split(",") if k.strip())
+
+
+# Carries the active session id down the OTel context so SessionSpanProcessor
+# can stamp it onto every descendant span. A context value, NOT baggage: it
+# never rides outbound request headers, so a possibly-identifying session id is
+# not leaked to LLM providers / downstream services.
+_SESSION_ID_CTX_KEY = otel_context.create_key("grasp.session_id")
+
+
+def _resolve_run_span_context(instance: Any | None) -> Context | None:
+    """
+    Resolve the context for a run-ROOT span: session parent + session id.
+
+    A run root (``Processor`` / ``Runner``) exposes ``_trace_session_info`` — its
+    session id plus whether to group every run of the session into one trace.
+    Both apply only when this span would actually *be* a trace root (no span is
+    already recording); a nested run (a sub-agent under a runner, an
+    agent-as-tool, a generate/tool span) inherits the enclosing run's context
+    and is left untouched. The returned context carries:
+
+    * a derived session-root parent — so every run of the session shares one
+      trace — when grouping is on; otherwise no parent override;
+    * the session id as a context value, which :class:`SessionSpanProcessor`
+      reads to stamp the configured attribute(s) onto this span and every
+      descendant, attributing the whole run tree (incl. provider spans) to the
+      session.
+
+    ``None`` when nested or there is no named session. Telemetry must never fail
+    the call: any error falls back to ambient parenting.
+    """
+    if instance is None:
+        return None
+    get_info = getattr(instance, "_trace_session_info", None)
+    if get_info is None:
+        return None
+    try:
+        # Only the outermost run span adopts the session; a recording ancestor
+        # means we are nested and must inherit the enclosing run's context.
+        if trace.get_current_span().is_recording():
+            return None
+        info = get_info()
+        if info is None:
+            return None
+        session_id, group = info
+        ctx = derive_session_span_context(session_id) if group else None
+        return otel_context.set_value(_SESSION_ID_CTX_KEY, session_id, ctx)
+    except Exception:
+        logger.debug("session span resolution failed", exc_info=True)
+        return None
+
+
+def stamp_session_attributes(
+    span: trace.Span, parent_context: Context | None = None
+) -> None:
+    """
+    Stamp the active session id onto ``span`` as the configured attribute(s).
+
+    Reads the session id a run root placed on the OTel context (resolved from
+    ``parent_context``, else the current context) and writes it to each key in
+    ``GRASP_SESSION_ID_ATTRIBUTES`` (default ``gen_ai.conversation.id``). Called
+    by :class:`grasp_agents.telemetry.SessionSpanProcessor` for every span — so
+    the whole run tree, including provider-instrumentation spans, is attributed
+    to the session. No-op when no session is active or the span is not recording.
+    """
+    if not span.is_recording():
+        return
+    session_id = otel_context.get_value(_SESSION_ID_CTX_KEY, parent_context)
+    if not session_id:
+        return
+    for key in _session_id_attribute_keys():
+        span.set_attribute(key, str(session_id))
+
+
+@contextmanager
+def _run_span(
+    span_name: str, instance: Any | None
+) -> Generator[trace.Span, None, None]:
+    """
+    Open a span, attaching the run-root's session context for its duration.
+
+    At a run root the attached context carries the session parent + id, so the
+    span parents into the shared session trace (when grouping is on) and
+    :class:`SessionSpanProcessor` stamps the session attribute(s) on this span
+    AND every descendant — the attach (not just ``context=``) is what lets the
+    id reach child spans, since ``start_as_current_span`` re-bases the active
+    context on the current one. A nested span attaches nothing and inherits the
+    enclosing run's context.
+    """
+    parent_context = _resolve_run_span_context(instance)
+    token = otel_context.attach(parent_context) if parent_context is not None else None
+    try:
+        with trace.get_tracer(_TRACER_NAME).start_as_current_span(span_name) as span:
+            yield span
+    finally:
+        if token is not None:
+            otel_context.detach(token)
 
 
 def _handle_span_input(
@@ -293,9 +459,7 @@ def _entity_method[F: Callable[..., Any]](
                     span_name = _get_span_name(
                         entity_name, resolved_kind, instance=instance, kwargs=kwargs
                     )
-                    tracer = trace.get_tracer(_TRACER_NAME)
-
-                    with tracer.start_as_current_span(span_name) as span:
+                    with _run_span(span_name, instance) as span:
                         _set_span_attributes(span, entity_name, resolved_kind, version)
                         _apply_caller_span_overrides(span, kwargs)
                         _handle_span_input(span, input_args, kwargs, exclude_fields)
@@ -337,9 +501,7 @@ def _entity_method[F: Callable[..., Any]](
                 span_name = _get_span_name(
                     entity_name, resolved_kind, instance=instance, kwargs=kwargs
                 )
-                tracer = trace.get_tracer(_TRACER_NAME)
-
-                with tracer.start_as_current_span(span_name) as span:
+                with _run_span(span_name, instance) as span:
                     _set_span_attributes(span, entity_name, resolved_kind, version)
                     _apply_caller_span_overrides(span, kwargs)
                     _handle_span_input(span, input_args, kwargs, exclude_fields)
@@ -375,9 +537,7 @@ def _entity_method[F: Callable[..., Any]](
                 span_name = _get_span_name(
                     entity_name, resolved_kind, instance=instance, kwargs=kwargs
                 )
-                tracer = trace.get_tracer(_TRACER_NAME)
-
-                with tracer.start_as_current_span(span_name) as span:
+                with _run_span(span_name, instance) as span:
                     _set_span_attributes(span, entity_name, resolved_kind, version)
                     _apply_caller_span_overrides(span, kwargs)
                     _handle_span_input(span, input_args, kwargs, exclude_fields)
@@ -416,9 +576,7 @@ def _entity_method[F: Callable[..., Any]](
             span_name = _get_span_name(
                 entity_name, resolved_kind, instance=instance, kwargs=kwargs
             )
-            tracer = trace.get_tracer(_TRACER_NAME)
-
-            with tracer.start_as_current_span(span_name) as span:
+            with _run_span(span_name, instance) as span:
                 _set_span_attributes(span, entity_name, resolved_kind, version)
                 _apply_caller_span_overrides(span, kwargs)
                 _handle_span_input(span, input_args, kwargs, exclude_fields)
