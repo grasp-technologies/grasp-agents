@@ -1,3 +1,4 @@
+import importlib
 import os
 from logging import getLogger
 
@@ -8,6 +9,21 @@ from .exporters import CLOUD_PROVIDERS_NAMES, LLM_PROVIDER_NAMES, FilteringExpor
 from .setup import init_tracing
 
 logger = getLogger(__name__)
+
+
+def _instrument(tracer_provider: TracerProvider, module: str, cls_name: str) -> None:
+    """
+    Apply an OpenInference instrumentor if it (and the SDK it patches) is present.
+
+    Provider instrumentors and their SDKs are optional extras, so a provider the
+    app doesn't use is skipped rather than failing telemetry setup.
+    """
+    try:
+        instrumentor_cls = getattr(importlib.import_module(module), cls_name)
+        instrumentor_cls().instrument(tracer_provider=tracer_provider)
+        logger.debug("Phoenix: instrumented %s", cls_name)
+    except Exception:
+        logger.debug("Phoenix: skipped %s (not installed)", cls_name, exc_info=True)
 
 
 def init_phoenix(
@@ -59,16 +75,20 @@ def init_phoenix(
         span_processor = SimpleSpanProcessor(span_exporter=exporter)
     tracer_provider.add_span_processor(span_processor)
 
-    # Auto-instrument LLM providers with OpenInference instrumentors
+    # Auto-instrument the provider SDKs with OpenInference instrumentors — one
+    # per dedicated client (the openai one covers both the Responses and Chat
+    # Completions APIs). Each is applied only if installed, so providers the app
+    # doesn't use are skipped.
     if use_litellm_instr:
-        from openinference.instrumentation.litellm import (  # noqa: PLC0415
-            LiteLLMInstrumentor,
+        _instrument(
+            tracer_provider,
+            "openinference.instrumentation.litellm",
+            "LiteLLMInstrumentor",
         )
-
-        LiteLLMInstrumentor().instrument(tracer_provider=tracer_provider)
     if use_llm_provider_instr:
-        from openinference.instrumentation.openai import (  # noqa: PLC0415
-            OpenAIInstrumentor,
-        )
-
-        OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+        for module, cls_name in (
+            ("openinference.instrumentation.openai", "OpenAIInstrumentor"),
+            ("openinference.instrumentation.anthropic", "AnthropicInstrumentor"),
+            ("openinference.instrumentation.google_genai", "GoogleGenAIInstrumentor"),
+        ):
+            _instrument(tracer_provider, module, cls_name)

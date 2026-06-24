@@ -197,7 +197,7 @@ class LocalKernel(KernelSession):
             )
             raise KernelStartError(
                 f"Failed to start the local Jupyter kernel ({detail}). "
-                "Ensure ipykernel is installed (grasp-agents[notebook-exec]); "
+                "Ensure ipykernel is installed (grasp-agents[code-exec]); "
                 "under a confined backend, loopback networking must be permitted."
             ) from exc
         logger.info(
