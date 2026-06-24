@@ -171,8 +171,8 @@ def _nbformat() -> Any:
         import nbformat  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ValueError(
-            "Notebook tools require the 'nbformat' package. "
-            "Install it with `pip install grasp-agents[notebook]`."
+            "Notebook editing tools require the 'nbformat' package. "
+            "Install it with `pip install grasp-agents[notebook-edit]`."
         ) from exc
     return nbformat
 

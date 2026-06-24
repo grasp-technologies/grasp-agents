@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "1.0.4"
+version = "1.0.6"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
@@ -55,9 +55,9 @@ gemini = ["google-genai>=1.65,<2"]
 bedrock = ["anthropic[bedrock]>=0.84,<1"]
 # Vertex AI: Claude needs google-auth (anthropic's `vertex` extra) for ADC
 # token minting; google-genai (Gemini on Vertex) already bundles google-auth.
+vertex = ["anthropic[vertex]>=0.84,<1", "google-genai>=1.65,<2"]
 # Azure OpenAI needs no extra — AsyncAzureOpenAI ships in the base openai SDK
 # (use azure-identity yourself for Entra ID token providers).
-vertex = ["anthropic[vertex]>=0.84,<1", "google-genai>=1.65,<2"]
 all-llm-providers = [
     "anthropic[bedrock,vertex]>=0.84,<1",
     "google-genai>=1.65,<2",
@@ -65,17 +65,19 @@ all-llm-providers = [
 e2b = ["e2b>=2.0,<3", "e2b-code-interpreter>=2.7.0,<3"]
 mcp = ["mcp>=1.8,<2"]
 notebook-edit = ["nbformat>=5.10.4,<6"]
-notebook = [
-    "nbformat>=5.10.4,<6",
+code-exec = [
     "jupyter-client>=8.7.0,<9",
     "ipykernel>=6.19.1,<7",
     "ipython>=8.3.0,<9",
 ]
+notebook = ["grasp-agents[code-exec,notebook-edit]"]
 phoenix = [
     "arize-phoenix-otel>=0.13.1,<1",
     "openinference-instrumentation-openllmetry>=0.1.2,<1",
     "openinference-instrumentation-openai>=0.1.32,<1",
     "openinference-instrumentation-litellm>=0.1.25,<1",
+    "openinference-instrumentation-anthropic>=1,<2",
+    "openinference-instrumentation-google-genai>=1.1,<2",
 ]
 tui = [
     "textual>=8.0,<9",
@@ -84,6 +86,7 @@ tui = [
     "chafa.py>=1.2,<2",
     "catppuccin>=2.5.0,<3",
 ]
+all = ["grasp-agents[all-llm-providers,e2b,mcp,notebook,phoenix,tui]"]
 
 [project.urls]
 Homepage = "https://github.com/grasp-technologies/grasp-agents"

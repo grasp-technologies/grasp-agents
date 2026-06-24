@@ -1181,7 +1181,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "1.0.4"
+version = "1.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -1195,6 +1195,28 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "anthropic", extra = ["bedrock", "vertex"] },
+    { name = "arize-phoenix-otel" },
+    { name = "catppuccin" },
+    { name = "chafa-py" },
+    { name = "e2b" },
+    { name = "e2b-code-interpreter" },
+    { name = "google-genai" },
+    { name = "ipykernel" },
+    { name = "ipython" },
+    { name = "jupyter-client" },
+    { name = "mcp" },
+    { name = "nbformat" },
+    { name = "openinference-instrumentation-anthropic" },
+    { name = "openinference-instrumentation-google-genai" },
+    { name = "openinference-instrumentation-litellm" },
+    { name = "openinference-instrumentation-openai" },
+    { name = "openinference-instrumentation-openllmetry" },
+    { name = "rich-pixels" },
+    { name = "textual" },
+    { name = "textual-image" },
+]
 all-llm-providers = [
     { name = "anthropic", extra = ["bedrock", "vertex"] },
     { name = "google-genai" },
@@ -1204,6 +1226,11 @@ anthropic = [
 ]
 bedrock = [
     { name = "anthropic", extra = ["bedrock"] },
+]
+code-exec = [
+    { name = "ipykernel" },
+    { name = "ipython" },
+    { name = "jupyter-client" },
 ]
 e2b = [
     { name = "e2b" },
@@ -1226,6 +1253,8 @@ notebook-edit = [
 ]
 phoenix = [
     { name = "arize-phoenix-otel" },
+    { name = "openinference-instrumentation-anthropic" },
+    { name = "openinference-instrumentation-google-genai" },
     { name = "openinference-instrumentation-litellm" },
     { name = "openinference-instrumentation-openai" },
     { name = "openinference-instrumentation-openllmetry" },
@@ -1276,15 +1305,18 @@ requires-dist = [
     { name = "google-genai", marker = "extra == 'all-llm-providers'", specifier = ">=1.65,<2" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.65,<2" },
     { name = "google-genai", marker = "extra == 'vertex'", specifier = ">=1.65,<2" },
+    { name = "grasp-agents", extras = ["all-llm-providers", "e2b", "mcp", "notebook", "phoenix", "tui"], marker = "extra == 'all'" },
+    { name = "grasp-agents", extras = ["code-exec", "notebook-edit"], marker = "extra == 'notebook'" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
-    { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.19.1,<7" },
-    { name = "ipython", marker = "extra == 'notebook'", specifier = ">=8.3.0,<9" },
-    { name = "jupyter-client", marker = "extra == 'notebook'", specifier = ">=8.7.0,<9" },
+    { name = "ipykernel", marker = "extra == 'code-exec'", specifier = ">=6.19.1,<7" },
+    { name = "ipython", marker = "extra == 'code-exec'", specifier = ">=8.3.0,<9" },
+    { name = "jupyter-client", marker = "extra == 'code-exec'", specifier = ">=8.7.0,<9" },
     { name = "litellm", specifier = ">=1.82,<2" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.8,<2" },
-    { name = "nbformat", marker = "extra == 'notebook'", specifier = ">=5.10.4,<6" },
     { name = "nbformat", marker = "extra == 'notebook-edit'", specifier = ">=5.10.4,<6" },
     { name = "openai", specifier = ">=2.23,<3" },
+    { name = "openinference-instrumentation-anthropic", marker = "extra == 'phoenix'", specifier = ">=1,<2" },
+    { name = "openinference-instrumentation-google-genai", marker = "extra == 'phoenix'", specifier = ">=1.1,<2" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'phoenix'", specifier = ">=0.1.25,<1" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'phoenix'", specifier = ">=0.1.32,<1" },
     { name = "openinference-instrumentation-openllmetry", marker = "extra == 'phoenix'", specifier = ">=0.1.2,<1" },
@@ -1297,7 +1329,7 @@ requires-dist = [
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.0,<9" },
     { name = "textual-image", marker = "extra == 'tui'", specifier = ">=0.13,<1" },
 ]
-provides-extras = ["anthropic", "gemini", "bedrock", "vertex", "all-llm-providers", "e2b", "mcp", "notebook-edit", "notebook", "phoenix", "tui"]
+provides-extras = ["anthropic", "gemini", "bedrock", "vertex", "all-llm-providers", "e2b", "mcp", "notebook-edit", "code-exec", "notebook", "phoenix", "tui", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2689,6 +2721,41 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f9/b6/c0e7e047ae4962f2755a3bc9141fdd6272c75c74e47dfc6aa71978a9b78f/openinference_instrumentation-0.1.53.tar.gz", hash = "sha256:3c0c145cf6e13cfa630b29d0e3ca806f3821470ffca7922f1590e3970fadd4da", size = 33712, upload-time = "2026-06-02T16:37:21.771Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/bb/01262d9945c476e15aa21bb9ca05b18604e525d73d9761cadb677f485198/openinference_instrumentation-0.1.53-py3-none-any.whl", hash = "sha256:f43695080eded47b1e03ff1b19cb5c23ea4409459cfe16c5b5748d5656832eb1", size = 40958, upload-time = "2026-06-02T16:37:20.69Z" },
+]
+
+[[package]]
+name = "openinference-instrumentation-anthropic"
+version = "1.0.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/47/19/4dbfd34d997ab3a9fa02b985130282b7be1ca40a138b2520a5fb7fab8f3a/openinference_instrumentation_anthropic-1.0.6.tar.gz", hash = "sha256:da4cb6e8784d5b5f568f430ab2e81cbc61be2e7c87b97eacea34d9b3a3336bf6", size = 16031, upload-time = "2026-06-02T16:37:21.863Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/74/2263a8139b72760c88bad4af3f6f3c7e29dad2c93b977c6cb69a6b01f207/openinference_instrumentation_anthropic-1.0.6-py3-none-any.whl", hash = "sha256:e9834c0bf65523e541204168ec6f1c0a1ad49bfb20edda1f511e3d5a540f7d2f", size = 19307, upload-time = "2026-06-02T16:37:20.671Z" },
+]
+
+[[package]]
+name = "openinference-instrumentation-google-genai"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/c8/e383d3e8ea3bf29676d2fa5c592dffb55154469299754866d863982b62a6/openinference_instrumentation_google_genai-1.1.0.tar.gz", hash = "sha256:e1bcc6dbe62cdd2b904a56d541a776ef7ac75f4788f46d7b617e354d0ee1d000", size = 147397, upload-time = "2026-06-11T17:13:35.613Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/b6/d0e6e7f0a1217b919d77bea3132f151733a9448cfd8145baa010eca9ef2b/openinference_instrumentation_google_genai-1.1.0-py3-none-any.whl", hash = "sha256:367160d427c2b4463bf7ce702eebd34b4c329fb4fe14e8b76aa6b5ba89dc4325", size = 34658, upload-time = "2026-06-11T17:13:34.204Z" },
 ]
 
 [[package]]
