@@ -6,11 +6,13 @@ from .checkpoints import (
     CURRENT_SCHEMA_VERSION,
     SCHEMA_VERSION_SUMMARIES,
     AgentCheckpoint,
+    AgentContextState,
     CheckpointKind,
     CheckpointSchemaError,
     PersistedRecord,
     ProcessorCheckpoint,
     RunnerCheckpoint,
+    StepWatermark,
 )
 from .context_serialization import ContextKind, rehydrate_context, serialize_context
 from .file_checkpoint_store import FileCheckpointStore
@@ -41,6 +43,7 @@ __all__ = [
     "ProcessorCheckpoint",
     "ResumeState",
     "RunnerCheckpoint",
+    "StepWatermark",
     "TaskRecord",
     "TaskStatus",
     "make_store_key",

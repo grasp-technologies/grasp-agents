@@ -31,13 +31,11 @@ class CheckpointPersistMixin:
     # Append-only message-log bookkeeping. Only meaningful for the agent
     # checkpoint (the only message-bearing one); harmless defaults elsewhere.
     # ``_persisted_messages`` holds the exact message objects already on the
-    # log (strong refs, so identity comparison stays sound); ``_log_dirty`` is
-    # set when the transcript is rebuilt from scratch, so the next checkpoint
-    # rewrites the log instead of appending a stale delta.
-    # ``_log_version`` is the log file the current head points at —
-    # rewrites bump it (see :meth:`_serialize_agent_checkpoint`).
+    # log (strong refs, so identity comparison stays sound): a save appends the
+    # delta while they remain a leading prefix of the transcript, else rewrites
+    # the whole log. ``_log_version`` is the log file the current head points
+    # at — rewrites bump it (see :meth:`_serialize_agent_checkpoint`).
     _persisted_messages: tuple[Any, ...] = ()
-    _log_dirty: bool = False
     _log_version: int = 0
 
     def _checkpoint_store_key(self, ctx: RunContext[Any]) -> str | None:
@@ -110,12 +108,15 @@ class CheckpointPersistMixin:
         written before the head so the head's ``message_count`` only ever
         undercounts a crash — never points past what is on the log.
 
-        The whole log is rewritten instead when the transcript was rebuilt
-        from scratch (``_log_dirty``) or the already-persisted prefix changed
-        — e.g. a context-management hook pruned or replaced messages in place.
-        Divergence is detected by object identity, so hooks must replace
-        message objects rather than mutating their fields (in-place field
-        mutation of a persisted message is not detected).
+        The whole log is rewritten instead when the already-persisted messages
+        are no longer a leading prefix of the transcript — a resume tail-strip,
+        a failed-run revert, or a builder that reseeds / prunes history
+        (divergence detected by object identity + length). Per-turn context
+        management does NOT take this path: it shapes the transient model-facing
+        view (see ``ViewProjector``) and leaves this append-only log — and the
+        rollback boundaries indexing it — intact. A hook that mutates a
+        persisted message's fields in place is NOT detected (and so not
+        re-persisted); replace the object instead.
 
         A rewrite goes to a **new log version**, with the head re-pointed
         only after the rewrite lands: a crash in between leaves the old
@@ -135,7 +136,7 @@ class CheckpointPersistMixin:
         prefix_intact = len(messages) >= len(persisted) and all(
             m is p for m, p in zip(messages, persisted, strict=False)
         )
-        rewrite = self._log_dirty or not prefix_intact
+        rewrite = not prefix_intact
         # A new version is only needed when an existing head + log pair
         # would be superseded; the first save of a fresh session rewrites
         # its own (empty) version in place.
@@ -149,8 +150,8 @@ class CheckpointPersistMixin:
                 await store.append_messages(key, new_messages, version=log_version)
 
         checkpoint.checkpoint_number = self._checkpoint_number + 1
-        checkpoint.message_count = len(messages)
-        checkpoint.log_version = log_version
+        checkpoint.current.message_count = len(messages)
+        checkpoint.current.log_version = log_version
         head_blob = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
         await store.save(key, head_blob)
 
@@ -166,7 +167,6 @@ class CheckpointPersistMixin:
                 )
 
         self._log_version = log_version
-        self._log_dirty = False
         self._persisted_messages = tuple(messages)
         self._checkpoint_number += 1
         logger.debug(
@@ -202,8 +202,8 @@ class CheckpointPersistMixin:
         if head is None:
             return None
 
-        raw = await store.read_messages(key, version=head.log_version)
-        committed = raw[: head.message_count]
+        raw = await store.read_messages(key, version=head.current.log_version)
+        committed = raw[: head.current.message_count]
         head.messages = committed
         # Drop an uncommitted / torn tail (records past the head's watermark)
         # so later appends extend a clean file. Skip when the log is already
@@ -211,10 +211,12 @@ class CheckpointPersistMixin:
         # version: the content is a prefix of what is there, so a crash
         # mid-rewrite cannot invalidate the head's watermark.)
         if len(raw) != len(committed):
-            await store.rewrite_messages(key, committed, version=head.log_version)
+            await store.rewrite_messages(
+                key, committed, version=head.current.log_version
+            )
 
         self._checkpoint_number = head.checkpoint_number
-        self._log_version = head.log_version
+        self._log_version = head.current.log_version
         self._persisted_messages = tuple(committed)
         logger.info(
             "checkpoint resumed (#%d, %d msgs) in %.0fms",

@@ -168,8 +168,8 @@ class TestRewriteGenerations:
         )
         await holder._serialize_agent_checkpoint(ctx, cp1)
 
-        # Full-history rewrite whose head save crashes.
-        holder._log_dirty = True
+        # A diverging message set (not a prefix-extension of "a","b") forces a
+        # full-history rewrite to a new log version; its head save then crashes.
         cp2 = AgentCheckpoint(
             session_key="s1", processor_name="test_agent", messages=_msgs("x")
         )
@@ -198,7 +198,8 @@ class TestRewriteGenerations:
         )
         await holder._serialize_agent_checkpoint(ctx, cp1)
 
-        holder._log_dirty = True
+        # Diverging messages (not a prefix-extension) force a full-history
+        # rewrite to a new log version.
         cp2 = AgentCheckpoint(
             session_key="s1", processor_name="test_agent", messages=_msgs("x")
         )
@@ -207,7 +208,7 @@ class TestRewriteGenerations:
         fresh = _AgentHolder()
         head = await fresh._deserialize_agent_checkpoint(ctx)
         assert head is not None
-        assert head.log_version == 1
+        assert head.current.log_version == 1
         assert _texts(head.messages) == ["x"]
         # The superseded generation-0 file is gone.
         assert await store.read_messages(key, version=0) == []

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
+from grasp_agents.durability.checkpoints import AgentContextState
+
 if TYPE_CHECKING:
     from grasp_agents.run_context import RunContext
     from grasp_agents.skills.types import SkillFilter
@@ -35,54 +37,46 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class AgentContextState:
-    """
-    Snapshot of the agent-context state that is paired with the transcript.
-
-    Taken at run start so a failed run rolls back both together: the
-    file-read ledger and shell cwd describe what the *transcript* knows, and
-    a deferred task-record flip must not outlive its rolled-back completion
-    note (see :meth:`AgentContext.restore_state`).
-    """
-
-    read_file_state: dict[str, float]
-    dotfile_overrides: list[str]
-    shell_cwd: str | None
-    pending_delivered: dict[str, dict[str, Any]]
-
-
 @dataclass
 class AgentContext:
     """The agent-scope state one :class:`AgentLoop` exposes to its tools."""
 
     transcript: LLMAgentTranscript
+
     tools: dict[str, BaseTool[Any, Any, Any]]
     file_edit_state: FileEditSessionState
+
     bg_tasks: BackgroundTaskManager[Any]
+
     session_holder: BashSessionHolder
+
+    # Fresh-``Bash`` cwd carried across calls (``cd`` sticks between turns).
+    shell_state: ShellState
+
     # Persistent Jupyter kernel for ``RunCell`` (the notebook's kernel) — one per
     # loop, like the shell.
     nb_kernel_holder: KernelHolder
-    # Fresh-``Bash`` cwd carried across calls (``cd`` sticks between turns).
-    shell_state: ShellState
-    # The owning agent's name. ``BaseTool.run_stream`` stamps it as the
-    # ``destination`` on a tool's stream events, so a UI routes their (possibly
-    # backgrounded / bubbled) output to the right agent's pane.
-    agent_name: str = ""
+
+    # Separate persistent kernel for ``RunPython`` — its own Python session, not
+    # shared with the notebook kernel. ``None`` (the default) → each call opens a
+    # throwaway kernel; ``AgentLoop`` wires a persistent one per loop.
+    ipy_kernel_holder: KernelHolder | None = None
+
     # Names of the tools the owning agent was *explicitly* given (its ``tools=``
     # arg), as opposed to framework-auto-attached capability tools (skills /
     # memory / MCP / final-answer). A sub-agent (``AgentTool``) inherits only
     # these — capability tools come from the child's own feature flags.
     explicit_tool_names: frozenset[str] = frozenset()
-    # Separate persistent kernel for ``RunPython`` — its own Python session, not
-    # shared with the notebook kernel. ``None`` (the default) → each call opens a
-    # throwaway kernel; ``AgentLoop`` wires a persistent one per loop.
-    ipy_kernel_holder: KernelHolder | None = None
+
     # Per-agent view over the session-shared skill catalog (``ctx.skills``). The
     # skills prompt section and the ``load_skill`` / ``list_skills`` tools read it
     # so this agent sees only its allowed skills. ``None`` = the full catalog.
     skill_filter: SkillFilter | None = None
+
+    # The owning agent's name. ``BaseTool.run_stream`` stamps it as the
+    # ``destination`` on a tool's stream events, so a UI routes their (possibly
+    # backgrounded / bubbled) output to the right agent's pane.
+    agent_name: str = ""
 
     @classmethod
     def create(
@@ -151,35 +145,50 @@ class AgentContext:
             skill_filter=skill_filter,
         )
 
-    def snapshot_state(self) -> AgentContextState:
-        """Capture the transcript-paired state for a failed-run rollback."""
+    def snapshot(self) -> AgentContextState:
+        """Capture the transcript-paired agent-context state."""
         read_file_state, dotfile_overrides = self.file_edit_state.export_state()
         return AgentContextState(
             read_file_state=read_file_state,
             dotfile_overrides=dotfile_overrides,
             shell_cwd=self.shell_state.cwd,
             pending_delivered=self.bg_tasks.export_pending_delivered(),
+            ipy_exec_context_id=(
+                self.ipy_kernel_holder.context_id if self.ipy_kernel_holder else None
+            ),
+            nb_exec_context_id=self.nb_kernel_holder.context_id,
         )
 
-    def restore_state(self, state: AgentContextState) -> None:
+    def restore(
+        self, state: AgentContextState, *, rebind_kernels: bool = False
+    ) -> None:
         """
-        Restore a :meth:`snapshot_state` snapshot after a failed run.
+        Reapply a :meth:`snapshot` snapshot.
 
-        Keeps the context consistent with the rolled-back transcript: the
-        file-read ledger forgets Reads whose results were rolled back, the
-        fresh-``Bash`` cwd matches the history the model still sees, and the
-        failed run's deferred task-record flips are discarded (their
-        completion notes were rolled back, so the records must stay
-        COMPLETED for a later resume to re-inject). The process holders are
-        deliberately not part of the snapshot — live processes are
-        non-transactional (a failed run's kernel/shell side effects can't
-        be unwound), and the kernel-reset notice covers genuine restarts.
+        Always restores the transactional subset, keeping the context
+        consistent with the rolled-back transcript: the file-read ledger
+        forgets Reads whose results were rolled back, the fresh-``Bash`` cwd
+        matches the history the model still sees, and deferred task-record
+        flips are discarded (their completion notes were rolled back, so the
+        records stay COMPLETED for a later resume to re-inject).
+
+        ``rebind_kernels`` (step rollback paired with a restored filesystem
+        snapshot) additionally seeds the kernels' execution contexts so they
+        re-attach inside the restored sandbox — mirroring resume. A failed run
+        leaves the kernels alone (default): live processes are
+        non-transactional, their side effects can't be unwound, and the
+        kernel-reset notice covers genuine restarts.
         """
         self.file_edit_state.import_state(
             state.read_file_state, state.dotfile_overrides
         )
         self.shell_state.cwd = state.shell_cwd
         self.bg_tasks.restore_pending_delivered(state.pending_delivered)
+        if rebind_kernels:
+            if state.ipy_exec_context_id is not None and self.ipy_kernel_holder:
+                self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)
+            if state.nb_exec_context_id is not None:
+                self.nb_kernel_holder.rebind(state.nb_exec_context_id)
 
     async def close(self, *, ctx: RunContext[Any] | None = None) -> None:
         """

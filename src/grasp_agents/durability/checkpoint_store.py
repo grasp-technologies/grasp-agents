@@ -129,6 +129,28 @@ class CheckpointStore(ABC):
         self, key: str, messages: Sequence[InputItem], *, version: int = 0
     ) -> None: ...
 
+    async def truncate_messages(
+        self, key: str, *, message_count: int, version: int = 0
+    ) -> None:
+        """
+        Drop all but the first ``message_count`` records of a transcript log.
+
+        Used to rewind a session (see :meth:`LLMAgent.rollback_to_step`). The
+        default reads the log and rewrites the surviving prefix; a backend with
+        an ordered store should override to delete the tail directly (e.g.
+        ``DELETE WHERE seq >= message_count``) instead of re-writing every
+        surviving record. Truncating to ``0`` deletes the log.
+
+        The caller lowers the head's ``message_count`` watermark **before**
+        calling this (head-first), so a crash mid-truncation can only leave the
+        head pointing *within* the log — never past it — and resume re-trims
+        the leftover tail.
+        """
+        messages = await self.read_messages(key, version=version)
+        if message_count >= len(messages):
+            return
+        await self.rewrite_messages(key, messages[:message_count], version=version)
+
 
 class InMemoryCheckpointStore(CheckpointStore):
     """In-memory checkpoint store for testing and short-lived sessions."""

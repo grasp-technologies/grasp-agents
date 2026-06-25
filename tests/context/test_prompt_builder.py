@@ -293,9 +293,7 @@ class TestBuildInputMessage:
 
     def test_chat_inputs_string(self):
         builder = _make_builder(type(None))
-        msg = builder.build_input_message(
-            chat_inputs="Hello there", exec_id="c1"
-        )
+        msg = builder.build_input_message(chat_inputs="Hello there", exec_id="c1")
         assert msg is not None
         assert msg.role == "user"
 
@@ -334,25 +332,14 @@ class TestBuildInputMessage:
         assert msg.role == "user"
 
 
-class TestSystemPromptBuilder:
-    """Test system prompt hook."""
+class TestSystemPrompt:
+    """Test system prompt composition (sys_prompt + sections)."""
 
     @pytest.mark.asyncio
     async def test_default_returns_sys_prompt(self):
         builder = _make_builder(str, sys_prompt="Be helpful.")
         result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
         assert result == "Be helpful."
-
-    @pytest.mark.asyncio
-    async def test_hook_overrides_sys_prompt(self):
-        builder = _make_builder(str, sys_prompt="Original.")
-
-        def custom_sys(*, exec_id):
-            return "Dynamic prompt"
-
-        builder.system_prompt_builder = custom_sys  # type: ignore[assignment]
-        result = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
-        assert result == "Dynamic prompt"
 
     @pytest.mark.asyncio
     async def test_no_sys_prompt_returns_none(self):
@@ -386,27 +373,3 @@ class TestSystemPromptBuilder:
         assert parts[1].cache_control == CacheControl(ttl="1h")
         # No provider-specific field is set on either part.
         assert all(p.provider_specific_fields is None for p in parts)
-
-    @pytest.mark.asyncio
-    async def test_builder_can_return_parts(self):
-        """
-        ``system_prompt_builder`` may return a list of ``InputText`` so a
-        custom builder lays out its own cache-control checkpoints.
-        """
-        builder = _make_builder(str, sys_prompt="ignored")
-
-        def custom_sys(*, exec_id):
-            return [
-                InputText(text="Stable.", cache_control=CacheControl()),
-                InputText(text="Volatile."),
-            ]
-
-        builder.system_prompt_builder = custom_sys  # type: ignore[assignment]
-        parts = await builder.build_system_prompt_parts(ctx=_ctx(), exec_id="c1")
-        assert parts is not None
-        assert [p.text for p in parts] == ["Stable.", "Volatile."]
-        assert parts[0].cache_control == CacheControl()
-        assert parts[1].cache_control is None
-        # The string view joins them.
-        joined = await builder.build_system_prompt(ctx=_ctx(), exec_id="c1")
-        assert joined == "Stable.\n\nVolatile."

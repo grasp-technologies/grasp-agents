@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.hooks import InputContentBuilder, SystemPromptBuilder
+    from grasp_agents.hooks import InitialContextBuilder, InputContentBuilder
     from grasp_agents.run_context import RunContext
     from grasp_agents.types.io import LLMPrompt
     from grasp_agents.types.items import InputItem
@@ -143,8 +143,10 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         self._in_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
 
         # Hook callback slots — set by LLMAgent, None = use defaults
-        self.system_prompt_builder: SystemPromptBuilder | None = None
         self.input_content_builder: InputContentBuilder[InT] | None = None
+        # Transforms the ephemeral initial context (system message + sections);
+        # see ``build_initial_context``. None = use the default unchanged.
+        self.initial_context_builder: InitialContextBuilder | None = None
 
         # Sections appended to the system prompt at run time. Each section's
         # compute receives (ctx, exec_id) and may be sync or async. Order is
@@ -231,26 +233,19 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         Render the full system prompt as a list of :class:`InputText`
         parts — one per section, preceded by the base prompt (when set).
 
-        The base ``system_prompt_builder`` may itself return a sequence of
-        :class:`InputText` (not just a string), so a custom builder can lay
-        out its own :class:`CacheControl` checkpoints across several parts.
-        Each section's ``cache_control`` rides on its part; providers with
-        prompt caching honor it and the rest ignore it.
+        The static ``sys_prompt`` is the base. Each section's ``cache_control``
+        rides on its part; providers with prompt caching honor it and the rest
+        ignore it. For a dynamic prompt use a section (dynamic ``compute``) or an
+        :class:`InitialContextBuilder` returning a system message.
 
         Returns ``None`` when there's no base prompt and every section
         renders empty.
         """
-        if self.system_prompt_builder is not None:
-            base = self.system_prompt_builder(exec_id=exec_id)
-        else:
-            base = self.sys_prompt
+        base = self.sys_prompt
 
         parts: list[InputText] = []
         if base:
-            if isinstance(base, str):
-                parts.append(InputText(text=base))
-            else:
-                parts.extend(base)
+            parts.append(InputText(text=base))
 
         for section in self.system_prompt_sections:
             result = section.compute(ctx=ctx, exec_id=exec_id, agent_ctx=agent_ctx)
@@ -263,6 +258,38 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         if not parts:
             return None
         return parts
+
+    @final
+    async def build_initial_context(
+        self,
+        *,
+        ctx: RunContext[CtxT],
+        exec_id: str,
+        agent_ctx: AgentContext | None = None,
+    ) -> list[InputItem]:
+        """
+        Compose the ephemeral initial context for one step.
+
+        The default is the system-prompt message (``sys_prompt`` + sections,
+        carrying each section's :class:`CacheControl`). A registered
+        :class:`InitialContextBuilder` then transforms it — augment, replace, or
+        reorder. The loop prepends the result to the model-facing view each turn
+        and never stores it in the transcript log, so it reflects current state
+        and the log stays pure conversation. Empty when there is no
+        system prompt and no builder adds anything.
+        """
+        messages: list[InputItem] = []
+        parts = await self.build_system_prompt_parts(
+            ctx=ctx, exec_id=exec_id, agent_ctx=agent_ctx
+        )
+        if parts is not None:
+            content_parts: list[InputPart] = list(parts)
+            messages.append(
+                InputMessageItem(content_parts=content_parts, role="system")
+            )
+        if self.initial_context_builder is not None:
+            return list(await self.initial_context_builder(messages, exec_id=exec_id))
+        return messages
 
     @final
     async def apply_input_attachments(

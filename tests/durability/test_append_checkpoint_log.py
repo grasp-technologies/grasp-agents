@@ -18,6 +18,7 @@ from grasp_agents.durability import (
     CheckpointStore,
     FileCheckpointStore,
     InMemoryCheckpointStore,
+    StepWatermark,
 )
 from grasp_agents.types.items import InputItem, InputMessageItem
 from tests.durability.test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
@@ -114,7 +115,7 @@ async def test_head_blob_excludes_messages(store: CheckpointStore) -> None:
     assert head_blob is not None
     head_only = AgentCheckpoint.model_validate_json(head_blob)
     assert head_only.messages == []  # transcript lives in the log, not the head
-    assert head_only.message_count == 2  # …but the watermark is recorded
+    assert head_only.current.message_count == 2  # …but the watermark is recorded
 
 
 async def test_save_load_agent_checkpoint_roundtrip(store: CheckpointStore) -> None:
@@ -122,15 +123,15 @@ async def test_save_load_agent_checkpoint_roundtrip(store: CheckpointStore) -> N
         session_key="s1",
         processor_name="test_agent",
         messages=_msgs("hello", "there"),
-        turn=3,
+        current=StepWatermark(turn=3),
     )
     await save_agent_checkpoint(store, KEY, cp)
 
     loaded = await load_agent_checkpoint(store, KEY)
     assert loaded is not None
     assert _texts(loaded.messages) == ["hello", "there"]
-    assert loaded.message_count == 2
-    assert loaded.turn == 3
+    assert loaded.current.message_count == 2
+    assert loaded.current.turn == 3
 
 
 async def test_load_missing_checkpoint_is_none(store: CheckpointStore) -> None:

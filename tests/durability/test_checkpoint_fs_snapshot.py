@@ -165,8 +165,10 @@ async def test_ledger_round_trips_through_checkpoint(tmp_path: Path) -> None:
     await agent.run("hello")
 
     checkpoint = await _stored_checkpoint(store)
-    assert checkpoint.read_file_state == {str(target): 123.5}
-    assert checkpoint.dotfile_overrides == [str(tmp_path / ".env")]
+    assert checkpoint.current.agent_ctx_state.read_file_state == {str(target): 123.5}
+    assert checkpoint.current.agent_ctx_state.dotfile_overrides == [
+        str(tmp_path / ".env")
+    ]
 
     # Fresh process: same store, new agent — ledger comes back.
     resumed, _ = _make_agent([], store=store)
@@ -185,15 +187,7 @@ async def test_v1_checkpoint_rejected_by_version_floor() -> None:
         session_key="s1",
         processor_name="fs_agent",
         messages=[],
-    ).model_dump(
-        exclude={
-            "read_file_state",
-            "dotfile_overrides",
-            "fs_snapshot_ref",
-            "ipy_exec_context_id",
-            "nb_exec_context_id",
-        }
-    )
+    ).model_dump(exclude={"current", "step_watermarks"})
     payload["schema_version"] = 1
     with pytest.raises(CheckpointSchemaError, match="older than the oldest"):
         AgentCheckpoint.model_validate(payload)
@@ -210,7 +204,7 @@ async def test_fs_snapshot_off_by_default(tmp_path: Path) -> None:
     await agent.run("hello")
 
     assert env.snapshots == []
-    assert (await _stored_checkpoint(store)).fs_snapshot_ref is None
+    assert (await _stored_checkpoint(store)).current.fs_snapshot_ref is None
 
 
 async def test_fs_snapshot_final_snapshots_at_run_end(tmp_path: Path) -> None:
@@ -231,7 +225,7 @@ async def test_fs_snapshot_final_snapshots_at_run_end(tmp_path: Path) -> None:
 
     # Only the run-end boundary snapshots — not AFTER_INPUT / AFTER_TOOL_RESULT.
     assert env.snapshots == ["snap-1"]
-    assert (await _stored_checkpoint(store)).fs_snapshot_ref == "snap-1"
+    assert (await _stored_checkpoint(store)).current.fs_snapshot_ref == "snap-1"
 
 
 async def test_fs_snapshot_turn_snapshots_every_boundary(tmp_path: Path) -> None:
@@ -252,7 +246,8 @@ async def test_fs_snapshot_turn_snapshots_every_boundary(tmp_path: Path) -> None
 
     # AFTER_INPUT + AFTER_TOOL_RESULT + AFTER_FINAL_ANSWER.
     assert len(env.snapshots) >= 3
-    assert (await _stored_checkpoint(store)).fs_snapshot_ref == env.snapshots[-1]
+    stored = await _stored_checkpoint(store)
+    assert stored.current.fs_snapshot_ref == env.snapshots[-1]
 
 
 async def test_fs_snapshot_requires_capable_environment(tmp_path: Path) -> None:
@@ -324,7 +319,9 @@ async def test_ipy_exec_context_id_round_trips_through_checkpoint(
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).ipy_exec_context_id == "ctx-abc"
+    assert (
+        await _stored_checkpoint(store)
+    ).current.agent_ctx_state.ipy_exec_context_id == "ctx-abc"
 
     # Fresh process: resume re-seeds the new loop's holder with the same id, so
     # the next RunPython re-attaches instead of opening a fresh context.
@@ -351,7 +348,9 @@ async def test_nb_exec_context_id_round_trips_through_checkpoint(
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).nb_exec_context_id == "nb-ctx-xyz"
+    assert (
+        await _stored_checkpoint(store)
+    ).current.agent_ctx_state.nb_exec_context_id == "nb-ctx-xyz"
 
     fresh_env = _FakeSnapshotEnv(tmp_path)
     resumed, _ = _make_agent([], store=store, environment=fresh_env)
@@ -378,4 +377,6 @@ async def test_ipy_exec_context_id_not_captured_without_fs_snapshot(
 
     await agent.run("hello")
 
-    assert (await _stored_checkpoint(store)).ipy_exec_context_id is None
+    assert (
+        await _stored_checkpoint(store)
+    ).current.agent_ctx_state.ipy_exec_context_id is None

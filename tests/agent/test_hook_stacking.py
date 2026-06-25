@@ -76,23 +76,6 @@ class TestObserverHooksStack:
 
 
 class TestBuilderHooksStack:
-    def test_transcript_builders_append_in_order(self) -> None:
-        agent = _make_agent()
-        assert agent._transcript_builders == []
-
-        def b1(
-            *, instructions: Any = None, in_args: Any = None, exec_id: str
-        ) -> None: ...
-
-        def b2(
-            *, instructions: Any = None, in_args: Any = None, exec_id: str
-        ) -> None: ...
-
-        agent.add_transcript_builder(b1)
-        agent.add_transcript_builder(b2)
-
-        assert agent._transcript_builders == [b1, b2]
-
     def test_state_builders_append_in_order(self) -> None:
         agent = _make_agent()
         assert agent._state_builders == []
@@ -111,25 +94,23 @@ class TestBuilderHooksStack:
 
 
 class TestSubclassOverrideOrdering:
-    def test_subclass_transcript_impl_runs_first(self) -> None:
+    def test_subclass_state_impl_runs_first(self) -> None:
         class _Sub(LLMAgent[Any, Any, Any]):
-            def build_transcript_impl(
-                self, *, instructions: Any = None, in_args: Any = None, exec_id: str
+            async def build_state_impl(
+                self, *, checkpoint: Any, exec_id: str
             ) -> None: ...
 
         agent = _Sub(name="sub", llm=MockLLM(model_name="mock", responses_queue=[]))
 
         # The subclass override is appended during __init__…
-        assert len(agent._transcript_builders) == 1
-        assert agent._transcript_builders[0].__func__ is _Sub.build_transcript_impl  # type: ignore[attr-defined]
+        assert len(agent._state_builders) == 1
+        assert agent._state_builders[0].__func__ is _Sub.build_state_impl  # type: ignore[attr-defined]
 
         # …and a decorator-registered builder runs after it.
-        def later(
-            *, instructions: Any = None, in_args: Any = None, exec_id: str
-        ) -> None: ...
+        async def later(*, checkpoint: Any, exec_id: str) -> None: ...
 
-        agent.add_transcript_builder(later)
-        assert agent._transcript_builders[1] is later
+        agent.add_state_builder(later)
+        assert agent._state_builders[1] is later
 
 
 # ---------- Single-decision hooks still replace (last wins) ----------
@@ -163,3 +144,17 @@ class TestSingleSlotHooksReplace:
         agent.add_final_answer_extractor(f2)
 
         assert agent._loop.final_answer_extractor is f2
+
+    def test_initial_context_builder_replaces(self) -> None:
+        agent = _make_agent()
+
+        async def b1(messages: Any, *, exec_id: str) -> Any:
+            return messages
+
+        async def b2(messages: Any, *, exec_id: str) -> Any:
+            return messages
+
+        agent.add_initial_context_builder(b1)
+        agent.add_initial_context_builder(b2)
+
+        assert agent._prompt_builder.initial_context_builder is b2

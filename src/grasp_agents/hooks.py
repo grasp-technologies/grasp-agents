@@ -5,6 +5,7 @@ Hooks are registered on LLMAgent via decorators (@agent.add_*) or subclass
 overrides (*_impl methods). The Protocols here define the callable signatures.
 
 Agent Loop Hooks (registered on AgentLoop via LLMAgent):
+    ViewProjector  — derives the per-turn model-facing view from the log
     BeforeLlmHook  — fires before each LLM call
     AfterLlmHook   — fires after each LLM response
     FinalAnswerExtractor  — determines when the agent should stop
@@ -14,11 +15,10 @@ Agent Loop Hooks (registered on AgentLoop via LLMAgent):
     ToolInputConverter  — per-tool input preprocessing
 
 Prompt Hooks (registered on PromptBuilder via LLMAgent):
-    SystemPromptBuilder  — builds system prompt from context
     InputContentBuilder  — formats input arguments to Content
+    InitialContextBuilder — transforms the ephemeral initial context
 
 Agent Hooks (handled directly by LLMAgent):
-    TranscriptBuilder  — custom transcript initialization on fresh init
     StateBuilder   — rebuild CtxT / RunContext.state on resume-from-checkpoint
     OutputParser   — parses LLM text into typed output
 
@@ -36,11 +36,12 @@ from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.run_context import RunContext
 from grasp_agents.selector import Selector
-from grasp_agents.types.content import Content, InputText
-from grasp_agents.types.io import LLMPrompt, ProcName
+from grasp_agents.types.content import Content
+from grasp_agents.types.io import ProcName
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     ToolOutputPart,
 )
@@ -53,15 +54,15 @@ __all__ = [
     "BeforeLlmHook",
     "BeforeToolHook",
     "FinalAnswerExtractor",
+    "InitialContextBuilder",
     "InputContentBuilder",
     "OutputParser",
     "RecipientSelector",
     "Selector",
     "StateBuilder",
-    "SystemPromptBuilder",
     "ToolInputConverter",
     "ToolOutputConverter",
-    "TranscriptBuilder",
+    "ViewProjector",
     "WorkflowLoopTerminator",
 ]
 
@@ -139,46 +140,59 @@ class ToolInputConverter(Protocol):
     ) -> BaseModel: ...
 
 
+class ViewProjector(Protocol):
+    """
+    Derive the per-turn model-facing view from the transcript log.
+
+    The transcript is the immutable append-only log; the projector returns the
+    (possibly pruned / collapsed / summarized) message list the LLM should see
+    this turn, without mutating the log — so step rollback stays valid across
+    compaction. Multiple
+    projectors compose as a pipeline (registration order), each receiving the
+    previous one's output; with none registered the view is the log itself. The
+    returned view is repaired for ``tool_call``
+    / ``tool_result`` pairing (``context.projection.repair_tool_call_pairing``)
+    before the provider call, then discarded — it is never persisted, so a
+    projection must be deterministic enough to re-derive on the next turn and on
+    resume.
+    """
+
+    async def __call__(
+        self,
+        messages: list[InputItem],
+        *,
+        exec_id: str,
+    ) -> Sequence[InputItem]: ...
+
+
 # --- Prompt Hooks ---
-
-
-class SystemPromptBuilder(Protocol):
-    def __call__(self, *, exec_id: str) -> str | Sequence[InputText] | None: ...
 
 
 class InputContentBuilder[InT](Protocol):
     def __call__(self, in_args: InT, *, exec_id: str) -> Content: ...
 
 
+class InitialContextBuilder(Protocol):
+    """
+    Transform the ephemeral initial context prepended to the model-facing view.
+
+    Receives the default initial context — the system-prompt message composed
+    from ``sys_prompt`` + sections (carrying each section's ``cache_control``) —
+    and returns the final list. Augment it (``[*messages, reminder]``), replace
+    it (``[my_system_message]``), or reorder. The result is recomposed fresh
+    each step and prepended to the view; it is NOT stored in the transcript log,
+    so it always reflects current state and the log stays pure conversation.
+    With no builder the default is
+    used unchanged. For a dynamic system prompt, return a single system message;
+    for capability sections (skills / memory / env / MCP) keep ``messages``.
+    """
+
+    async def __call__(
+        self, messages: list[InputItem], *, exec_id: str
+    ) -> Sequence[InputItem]: ...
+
+
 # --- Agent Hooks ---
-
-
-class TranscriptBuilder[InT](Protocol):
-    """
-    Prepare the agent's transcript (conversation history) before each step.
-
-    Runs on EVERY step, not just the first: the hook owns transcript
-    preparation — seeding a fresh history (a custom system message, a primed
-    multi-turn transcript) and/or processing the accumulated one between
-    steps (pruning stale tool results, truncation, any context management).
-    Because it may rewrite history, the next checkpoint rewrites the
-    persisted message log.
-
-    Receives the freshly-built system prompt as ``instructions`` — the same
-    ``str | Sequence[InputText]`` that :meth:`LLMAgentTranscript.reset`
-    accepts, so forwarding it (``agent.transcript.reset(instructions)``)
-    preserves each part's :class:`CacheControl`. Distinct from cross-session
-    :class:`RunContext.memory`. On a resumed re-delivery of an interrupted
-    step this does NOT fire — use :class:`StateBuilder` there instead.
-    """
-
-    def __call__(
-        self,
-        *,
-        instructions: LLMPrompt | Sequence[InputText] | None = None,
-        in_args: InT | None = None,
-        exec_id: str,
-    ) -> None: ...
 
 
 class StateBuilder(Protocol):
@@ -188,8 +202,8 @@ class StateBuilder(Protocol):
 
     Fires exactly once per resume — i.e. when ``_load_checkpoint`` returned
     a non-``None`` checkpoint — after conversation messages have been
-    restored into memory and before the agent's next turn. Does not fire
-    on fresh init; use :class:`TranscriptBuilder` there instead.
+    restored into memory and before the agent's next turn. Does not fire on
+    fresh init (the prompt builders compose the initial context there).
     """
 
     async def __call__(

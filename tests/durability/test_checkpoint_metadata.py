@@ -63,22 +63,22 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v8: exec_context_id renamed to ipy_exec_context_id (RunPython), and
-        # nb_exec_context_id added (the RunCell notebook kernel's context) —
-        # both re-attached on resume.
-        assert CURRENT_SCHEMA_VERSION == 8
+        # v9: AgentCheckpoint subclasses StepWatermark (current position) and
+        # holds a list of per-step rewind watermarks for
+        # LLMAgent.rollback_to_step; agent-context fields nest in agent_ctx_state.
+        assert CURRENT_SCHEMA_VERSION == 9
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
         snap = AgentCheckpoint(session_key="s", processor_name="a", messages=[])
         assert snap.context_kind is None
         assert snap.context_data is None
-        assert snap.prompt_cache_key is None
-        assert snap.read_file_state == {}
-        assert snap.dotfile_overrides == []
-        assert snap.fs_snapshot_ref is None
-        assert snap.ipy_exec_context_id is None
-        assert snap.nb_exec_context_id is None
+        assert snap.current.prompt_cache_key is None
+        assert snap.current.fs_snapshot_ref is None
+        assert snap.current.agent_ctx_state.read_file_state == {}
+        assert snap.current.agent_ctx_state.dotfile_overrides == []
+        assert snap.current.agent_ctx_state.ipy_exec_context_id is None
+        assert snap.current.agent_ctx_state.nb_exec_context_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +151,6 @@ class TestContextRoundTrip:
 
 
 class TestSerializeStateOptIn:
-    """Default stance: state is rebuilt via state_builder, not the checkpoint."""
-
     @pytest.mark.asyncio
     async def test_state_not_persisted_by_default(self) -> None:
         store = InMemoryCheckpointStore()
@@ -191,7 +189,6 @@ class TestSerializeStateOptIn:
         await agent1.run("hello")
 
         # Fresh agent + baseline state; resume must leave state untouched
-        # (state_builder is responsible for rebuilding it).
         agent2 = LLMAgent[str, str, _MyState](
             name="test_agent",
             llm=MockLLM(responses_queue=[_text_response("follow")]),
@@ -239,7 +236,7 @@ class TestPromptCacheKey:
         snap = AgentCheckpoint.model_validate_json(
             await store.load("s/agent/test_agent") or b"{}"
         )
-        assert snap.prompt_cache_key is None
+        assert snap.current.prompt_cache_key is None
 
 
 # ---------------------------------------------------------------------------
