@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.context.prompt_builder import SystemPromptSection
 from grasp_agents.run_context import RunContext
 from grasp_agents.skills import (
     SkillRegistry,
@@ -191,15 +192,17 @@ class TestSystemPromptSection:
         assert "<available_skills>" in prompt
 
     @pytest.mark.asyncio
-    async def test_combines_with_dynamic_builder(self, tmp_path: Path) -> None:
+    async def test_combines_with_dynamic_section(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x")
         agent = _make_agent()
 
-        def dyn(*, exec_id: str) -> str:
-            del exec_id
+        def dyn(*, ctx: Any = None, exec_id: Any = None, **_: Any) -> str:
+            del ctx, exec_id
             return "Dynamic header."
 
-        agent.add_system_prompt_builder(dyn)
+        # Dynamic system-prompt content is a dynamic section (the
+        # system_prompt_builder hook was removed — sections subsume it).
+        agent.add_system_prompt_section(SystemPromptSection(name="dyn", compute=dyn))
 
         ctx: RunContext[_State] = RunContext(
             state=_State(),
@@ -207,7 +210,7 @@ class TestSystemPromptSection:
         )
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is not None
-        assert prompt.startswith("Dynamic header.")
+        assert "Dynamic header." in prompt
         assert "<available_skills>" in prompt
 
 

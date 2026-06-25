@@ -26,6 +26,7 @@ from grasp_agents.durability import (
     CheckpointStore,
     InMemoryCheckpointStore,
     InterruptionType,
+    StepWatermark,
     TaskRecord,
     TaskStatus,
     prepare_messages_for_resume,
@@ -100,6 +101,7 @@ def _make_agent(
     session_key: str | None = None,
     store: InMemoryCheckpointStore | None = None,
     reset_transcript_on_run: bool = False,
+    sys_prompt: str | None = None,
 ) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
     ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
     if session_key is not None:
@@ -111,6 +113,7 @@ def _make_agent(
         ctx=ctx,
         llm=llm,
         tools=tools,
+        sys_prompt=sys_prompt,
         reset_transcript_on_run=reset_transcript_on_run,
         stream_llm=True,
     )
@@ -208,7 +211,7 @@ class TestAgentCheckpoint:
             processor_name="agent",
             messages=messages,
             checkpoint_number=3,
-            step=0,
+            current=StepWatermark(step=0),
             session_metadata={"parent_id": "p1"},
         )
         json_bytes = snap.model_dump_json().encode()
@@ -556,9 +559,9 @@ async def save_agent_checkpoint(
     store: CheckpointStore, key: str, checkpoint: AgentCheckpoint
 ) -> None:
     """Plant a complete agent checkpoint (message-log + head) for tests."""
-    checkpoint.message_count = len(checkpoint.messages)
+    checkpoint.current.message_count = len(checkpoint.messages)
     await store.rewrite_messages(
-        key, checkpoint.messages, version=checkpoint.log_version
+        key, checkpoint.messages, version=checkpoint.current.log_version
     )
     head = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
     await store.save(key, head)
@@ -571,8 +574,8 @@ async def load_agent_checkpoint(
     head = await store.load_json(key, AgentCheckpoint, subject=f"checkpoint at {key}")
     if head is None:
         return None
-    raw = await store.read_messages(key, version=head.log_version)
-    head.messages = raw[: head.message_count]
+    raw = await store.read_messages(key, version=head.current.log_version)
+    head.messages = raw[: head.current.message_count]
     return head
 
 
@@ -585,7 +588,7 @@ def _interrupted_checkpoint(
         processor_name="test_agent",
         messages=messages,
         checkpoint_number=1,
-        step=step,
+        current=StepWatermark(step=step),
     )
 
 
@@ -598,7 +601,7 @@ def _completed_checkpoint(
         processor_name="test_agent",
         messages=messages,
         checkpoint_number=1,
-        step=step,
+        current=StepWatermark(step=step),
     )
 
 
@@ -1018,7 +1021,7 @@ class TestResumeIntegration:
                 InputMessageItem.from_text("start->A", role="user"),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "rs2/agent/agent", agent_cp)
 
@@ -1300,7 +1303,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
@@ -1360,7 +1363,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
@@ -1413,7 +1416,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
@@ -1477,7 +1480,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=2,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
@@ -1520,7 +1523,7 @@ class TestPendingTaskResume:
                 InputMessageItem.from_text("go", role="user"),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
@@ -1583,7 +1586,7 @@ class TestPendingTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(store, "s1/agent/test_agent", snapshot)
 
@@ -1711,7 +1714,7 @@ class TestChildTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(
             store, "parent_s1/agent/test_agent", parent_snapshot
@@ -1743,7 +1746,7 @@ class TestChildTaskResume:
                 InputMessageItem.from_text("work", role="user"),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(
             store, "parent_s1/agent/test_agent/tc_fc_1", child_snapshot
@@ -1806,7 +1809,7 @@ class TestChildTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(
             store, "parent_s1/agent/test_agent", parent_snapshot
@@ -1870,7 +1873,7 @@ class TestChildTaskResume:
                 ),
             ],
             checkpoint_number=1,
-            step=0,
+            current=StepWatermark(step=0),
         )
         await save_agent_checkpoint(
             store, "parent_s1/agent/test_agent", parent_snapshot
@@ -1901,7 +1904,7 @@ class TestChildTaskResume:
                     InputMessageItem.from_text(tid, role="user"),
                 ],
                 checkpoint_number=1,
-                step=0,
+                current=StepWatermark(step=0),
             )
             await save_agent_checkpoint(
                 store, f"parent_s1/agent/test_agent/tc_{cid}", snap

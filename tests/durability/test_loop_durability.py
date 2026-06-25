@@ -39,7 +39,6 @@ from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
-    InputMessageItem,
     OutputMessageItem,
 )
 from grasp_agents.types.packet import Packet
@@ -87,69 +86,6 @@ class _EchoTool(BaseTool[EchoInput, str, Any]):
 
     async def _run(self, inp: EchoInput, **kwargs: Any) -> str:
         return f"echo: {inp.text}"
-
-
-# ---------------------------------------------------------------------------
-# Transcript builder runs on every step (it owns transcript preparation)
-# ---------------------------------------------------------------------------
-
-
-class TestTranscriptBuilderRunsEveryStep:
-    @pytest.mark.asyncio
-    async def test_builder_runs_each_step_and_can_preserve_history(self) -> None:
-        agent, _ = _make_agent([_text_response("one"), _text_response("two")])
-        calls: list[str] = []
-
-        def prepare(*, instructions: Any = None, in_args: Any = None, exec_id: str):
-            del in_args, exec_id
-            calls.append("prepare")
-            # Seed only a fresh transcript; later steps could prune/truncate.
-            if agent.transcript.is_empty:
-                agent.transcript.reset(instructions)
-
-        agent.add_transcript_builder(prepare)
-
-        await agent.run("first")
-        n_after_turn_1 = len(agent.transcript.messages)
-        await agent.run("second")
-
-        assert calls == ["prepare", "prepare"]  # fires on every step
-        # This builder preserved history, so turn 2 appended to it.
-        assert len(agent.transcript.messages) > n_after_turn_1
-        texts = [str(m) for m in agent.transcript.messages]
-        assert any("first" in t for t in texts)
-        assert any("second" in t for t in texts)
-
-    @pytest.mark.asyncio
-    async def test_builder_mutation_rewrites_persisted_log(self) -> None:
-        # The builder may rewrite history between steps — the persisted
-        # message log must follow it, not keep the stale prefix.
-        store = InMemoryCheckpointStore()
-        agent, _ = _make_agent(
-            [_text_response("answer-alpha"), _text_response("answer-bravo")],
-            session_key="tb-1",
-            store=store,
-        )
-
-        def prepare(*, instructions: Any = None, in_args: Any = None, exec_id: str):
-            del in_args, exec_id
-            if agent.transcript.is_empty:
-                agent.transcript.reset(instructions)
-            else:
-                # Prune the previous turn (the documented context-management
-                # use of this hook).
-                agent.transcript.messages = [
-                    m for m in agent.transcript.messages if "alpha" not in str(m)
-                ]
-
-        agent.add_transcript_builder(prepare)
-
-        await agent.run("input-alpha")
-        await agent.run("input-bravo")
-
-        persisted = await _persisted_log(store, "tb-1/agent/test_agent")
-        assert len(persisted) == len(agent.transcript.messages)
-        assert not any("alpha" in str(m) for m in persisted)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +157,7 @@ class TestPureResume:
         # not turn 0 — the just-completed turn is not re-executed.
         head = await load_agent_checkpoint(store, "ot1/agent/test_agent")
         assert head is not None
-        assert head.turn == 1, head.turn
+        assert head.current.turn == 1, head.current.turn
 
         # Resume: the agent answers from the restored tool result without
         # re-calling echo.
@@ -424,43 +360,38 @@ class TestLenientArgsDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Append-log divergence detection
+# View projection leaves the durable log intact
 # ---------------------------------------------------------------------------
 
 
-class TestAppendLogPruneRewrite:
+class TestViewProjectionLeavesLogIntact:
     @pytest.mark.asyncio
-    async def test_pruned_transcript_rewrites_log(self) -> None:
+    async def test_compacting_projector_does_not_rewrite_log(self) -> None:
+        # E0: context management lives in the view projector, which compacts
+        # what the LLM sees without touching the durable log. The persisted
+        # conversation keeps full fidelity (no rewrite), so rollback / resume
+        # still see everything.
         store = InMemoryCheckpointStore()
-        # A sys_prompt seeds a surviving system message so the prune below leaves
-        # the transcript non-empty. An empty transcript at run start is the
-        # resume signal (``load_checkpoint`` reloads the persisted log), which
-        # would silently undo the prune — independent of the ``env_info`` default.
         agent, _ = _make_agent(
             [_text_response("answer-alpha"), _text_response("answer-bravo")],
             session_key="s1",
             store=store,
-            sys_prompt="You are a test agent.",
         )
+
+        @agent.add_view_projector
+        async def compact(messages: Any, *, exec_id: str) -> Any:
+            del exec_id
+            return messages[-1:]  # show the LLM only the latest message
+
         await agent.run("input-alpha")
-
-        # The documented context-management pattern: prune messages in place
-        # between turns (drop the first turn's user+assistant pair, keep the
-        # system prompt).
-        kept = [
-            m
-            for m in agent.transcript.messages
-            if "alpha" not in str(m)
-            or not isinstance(m, (InputMessageItem, OutputMessageItem))
-        ]
-        agent.transcript.messages = kept
-
         await agent.run("input-bravo")
 
+        # Compaction never rewrote the log; the full conversation is persisted.
+        assert agent._log_version == 0
         persisted = await _persisted_log(store, "s1/agent/test_agent")
         assert len(persisted) == len(agent.transcript.messages)
         texts = [str(m) for m in persisted]
-        assert not any("alpha" in t for t in texts)  # no stale prefix restored
+        assert any("answer-alpha" in t for t in texts)  # full history retained
         assert any("answer-bravo" in t for t in texts)
 
 
@@ -481,9 +412,7 @@ class _PointProc(Processor[_PointInput, str, None]):
 class TestValidateInputsCoercion:
     def test_packet_dict_payloads_coerced(self) -> None:
         proc = _PointProc(name="p")
-        packet: Packet[Any] = Packet(
-            payloads=[{"x": 1, "y": 2}], sender="other"
-        )
+        packet: Packet[Any] = Packet(payloads=[{"x": 1, "y": 2}], sender="other")
         result = proc.validate_inputs(exec_id="e", in_packet=packet)
         assert result is not None
         assert isinstance(result[0], _PointInput)
@@ -509,9 +438,7 @@ class TestApprovalCancellation:
         hook = build_store_approval()
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")
 
-        task = asyncio.create_task(
-            hook(tool_calls=[call], ctx=ctx, exec_id="e")
-        )
+        task = asyncio.create_task(hook(tool_calls=[call], ctx=ctx, exec_id="e"))
         await asyncio.sleep(0.05)  # let the hook park on the pending future
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -555,8 +482,7 @@ class TestDeadlineBackgroundedOutcomePersisted:
         keys = await store.list_keys("s1/task/")
         assert keys
         records = [
-            TaskRecord.model_validate_json(await store.load(k) or b"")
-            for k in keys
+            TaskRecord.model_validate_json(await store.load(k) or b"") for k in keys
         ]
         assert all(r.status == TaskStatus.COMPLETED for r in records)
         assert any(r.result and "slow: x" in r.result for r in records)

@@ -24,6 +24,7 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import (
     AgentCheckpoint,
     InMemoryCheckpointStore,
+    StepWatermark,
 )
 from grasp_agents.durability.checkpoints import ParallelCheckpoint
 from grasp_agents.processors.parallel_processor import ParallelProcessor
@@ -249,7 +250,7 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
             ),
             FunctionToolOutputItem.from_tool_result(call_id=call_id, output="echo: b"),
         ],
-        turn=1,
+        current=StepWatermark(turn=1),
     )
     await store.save(
         "par-ms/agent/worker_par/worker_1", r1_cp.model_dump_json().encode()

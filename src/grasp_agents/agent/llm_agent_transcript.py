@@ -60,6 +60,10 @@ class LLMAgentTranscript(BaseModel):
     def clear(self) -> None:
         self.messages = []
 
+    def truncate(self, message_count: int) -> None:
+        if 0 <= message_count < len(self.messages):
+            del self.messages[message_count:]
+
     def update(
         self,
         new_messages: Sequence[InputItem],

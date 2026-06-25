@@ -148,8 +148,8 @@ async def _committed_messages(
     data = await store.load(key)
     assert data is not None, f"checkpoint {key!r} should exist"
     head = AgentCheckpoint.model_validate_json(data)
-    raw = await store.read_messages(key, version=head.log_version)
-    return raw[: head.message_count]
+    raw = await store.read_messages(key, version=head.current.log_version)
+    return raw[: head.current.message_count]
 
 
 # ---------- Tests ----------

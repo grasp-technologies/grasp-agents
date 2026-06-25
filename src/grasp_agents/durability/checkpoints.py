@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from enum import Enum, StrEnum
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from grasp_agents.durability.context_serialization import ContextKind
 from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent
@@ -10,7 +10,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 8
+CURRENT_SCHEMA_VERSION: int = 9
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -19,7 +19,7 @@ changes in a way that older code could not load. Add an entry to
 ``SCHEMA_VERSION_SUMMARIES`` describing what changed.
 """
 
-MIN_SUPPORTED_SCHEMA_VERSION: int = 5
+MIN_SUPPORTED_SCHEMA_VERSION: int = 9
 """
 Oldest persisted schema version this code can still load.
 
@@ -74,6 +74,14 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "None); v7 code resuming a v8 session skips kernel re-attaches and falls "
         "back to fresh kernels (the .ipynb stays the notebook's recoverable artifact)."
     ),
+    9: (
+        "Step rollback. AgentCheckpoint splits the position into ``current`` (the "
+        "live StepWatermark — commit watermark + read-before-write ledger and "
+        "kernel-context ids in a nested AgentContextState) and ``step_watermarks`` "
+        "(a per-step list of rollback points, each the start of a delivery step). "
+        "Drives LLMAgent.rollback_to_step. This is the new minimum supported "
+        "version — v5-v8 flat-head records are rejected by the schema-version floor."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -97,12 +105,66 @@ class CheckpointSchemaError(Exception):
 
 
 class AgentCheckpointLocation(Enum):
-    """Where in the agent loop a checkpoint was saved."""
+    """How a checkpoint head came to be — its loop save-point, or a rollback."""
 
     AFTER_INPUT = "after_input"
     AFTER_TOOL_RESULT = "after_tool_result"
     AFTER_FINAL_ANSWER = "after_final_answer"
     AFTER_MAX_TURNS = "after_max_turns"
+    # Not a loop save-point: a synthetic head written by rollback_to_step,
+    # parked at the start of the rolled-back-to step.
+    ROLLED_BACK = "rolled_back"
+
+
+class AgentContextState(BaseModel):
+    """
+    Serializable snapshot of the agent-context state paired with a transcript.
+
+    Captured by :meth:`AgentContext.snapshot` and reapplied by
+    :meth:`AgentContext.restore` — the agent-context analogue of an
+    environment's snapshot/restore. Failed-run rollback reapplies the
+    transactional subset (read-before-write ledger, shell cwd, deferred
+    background-task flips); a step rollback also re-attaches the live kernels
+    (``rebind_kernels=True``) when it is paired with a restored filesystem
+    snapshot. Carried inside a :class:`StepWatermark` so a rollback restores
+    all of it in one move.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    read_file_state: dict[str, float] = Field(default_factory=dict[str, float])
+    dotfile_overrides: list[str] = Field(default_factory=list[str])
+    shell_cwd: str | None = None
+    pending_delivered: dict[str, dict[str, Any]] = Field(
+        default_factory=dict[str, dict[str, Any]]
+    )
+    # Kernel execution contexts, meaningful as a pair with ``fs_snapshot_ref``:
+    # the ids re-attach inside the *restored* sandbox (see ``rebind_kernels``).
+    ipy_exec_context_id: str | None = None
+    nb_exec_context_id: str | None = None
+
+
+class StepWatermark(BaseModel):
+    """
+    A restorable session position — the coordinates needed to rewind here.
+
+    The transcript length to truncate to (``message_count`` against
+    ``log_version``), the loop turn, the delivery step, the provider cache key,
+    the filesystem snapshot to restore, and the agent-context state to reapply.
+    :class:`AgentCheckpoint` holds one of these as its current position and a
+    list of them as the per-step rollback points. See
+    :meth:`LLMAgent.rollback_to_step`.
+    """
+
+    message_count: int = 0
+    log_version: int = 0
+    turn: int = 0
+    step: int | None = None
+    prompt_cache_key: str | None = None
+    # Filesystem ref (restored via the environment's SnapshotCapable seam); the
+    # rest of the session-resource state rides in ``agent_ctx_state``.
+    fs_snapshot_ref: str | None = None
+    agent_ctx_state: AgentContextState = Field(default_factory=AgentContextState)
 
 
 class PersistedRecord(BaseModel):
@@ -142,7 +204,20 @@ class ProcessorCheckpoint(PersistedRecord):
 
 
 class AgentCheckpoint(ProcessorCheckpoint):
-    """Lightweight checkpoint for an agent session."""
+    """
+    Checkpoint for an agent session.
+
+    ``current`` is where the session is *now* — any point in a step
+    (``current.message_count`` is the commit watermark). ``step_watermarks``
+    are the per-step rollback points: each marks the transcript position a
+    delivery step is (re)delivered from, so :meth:`LLMAgent.rollback_to_step`
+    rewinds to the *start* of a step (its input not yet present). Both kinds
+    carry the read-before-write ledger and kernel-context ids (in their
+    ``agent_ctx_state``). ``step_watermarks`` is empty for chat / untracked
+    deliveries. ``output`` and ``location`` describe the current head only —
+    the step's cached answer and where in the loop it was saved — so they live
+    here rather than on the rewind coordinate.
+    """
 
     # The transcript is persisted out-of-band as an append-only message log
     # (one ``InputItem`` per JSONL line), keyed alongside this head blob. It is
@@ -152,63 +227,30 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # head excludes it.
     messages: list[InputItem] = Field(default_factory=list[InputItem])
 
-    # Commit watermark: how many leading log records this head acknowledges.
-    # The log is appended before the head is saved, so a crash between the two
-    # can leave uncommitted trailing records; on resume only the first
-    # ``message_count`` are trusted (the rest are dropped).
-    message_count: int = 0
-
-    # Which log version this head describes. Full-history rewrites go to
-    # a fresh version, so a crash before the head lands leaves the old
-    # head + old log pair intact (the watermark is only meaningful against
-    # the log it was computed for).
-    log_version: int = 0
-
     usage: ResponseUsage | None = None
-    step: int | None = None  # caller's delivery step (None = chat / untracked)
-    turn: int = 0  # current agent turn within the step (resets to 0 on each new step)
-    output: str | None = None  # cached final answer (None = step incomplete)
+
+    # The live position. ``current.message_count`` is the commit watermark —
+    # how many leading log records this head acknowledges; the log is appended
+    # before the head is saved, so a crash between the two can leave uncommitted
+    # trailing records and on resume only the first ``message_count`` are
+    # trusted (the rest dropped).
+    current: StepWatermark = Field(default_factory=StepWatermark)
+
+    # Per-step rollback points (the start of each delivery step). One entry per
+    # delivery step, not per turn, so it stays small in the head blob.
+    step_watermarks: list[StepWatermark] = Field(
+        default_factory=list[StepWatermark]
+    )
+
+    # The current step's cached final answer — the re-delivery short-circuit
+    # reads it. ``None`` while a step is incomplete.
+    output: str | None = None
+
+    # Where in the agent loop this head was saved (diagnostics only).
     location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
 
-    # Optional opt-in auto-serialization of ``RunContext.state``. When
-    # ``kind == OMITTED`` (default) the framework does not persist state;
-    # ``@agent.add_state_builder`` rebuilds it from the app's own source
-    # of truth on resume. See ``context_serialization.py`` for the
-    # full contract.
     context_kind: ContextKind | None = None
     context_data: Any | None = None
-
-    # Provider-supplied cache key (OpenAI Responses, Anthropic prompt
-    # caching, etc.). Persisted so resume can reuse the same key and
-    # avoid invalidating the model-side cache. Providers that ignore
-    # this field leave it ``None``.
-    prompt_cache_key: str | None = None
-
-    # Read-before-write ledger (resolved path -> last-observed mtime) +
-    # session dotfile overrides. Restored on resume so the staleness
-    # guard keeps working instead of refusing every edit until a
-    # re-``Read``; files that changed while suspended still trip it.
-    read_file_state: dict[str, float] = Field(default_factory=dict)
-    dotfile_overrides: list[str] = Field(default_factory=list)
-
-    # Opaque filesystem-snapshot ref from a ``SnapshotCapable``
-    # environment (e.g. an E2B snapshot id, later a shadow-git sha).
-    # The bytes live with whoever owns the snapshot store — the
-    # checkpoint records only the ref. ``None`` = no snapshot taken.
-    fs_snapshot_ref: str | None = None
-
-    # The RunPython kernel's execution-context id, captured together with
-    # ``fs_snapshot_ref`` (only meaningful as a pair: the id re-attaches to a
-    # context inside the *restored* sandbox). On a backend that preserves
-    # running processes in its snapshot (E2B), resume re-binds to this
-    # context so in-memory state survives. ``None`` = no persistent context /
-    # a backend that can't persist it.
-    ipy_exec_context_id: str | None = None
-
-    # Same, for the RunCell notebook kernel (its own context, never shared
-    # with RunPython's). When the backend can't re-attach, resume falls back
-    # to a fresh kernel — the ``.ipynb`` remains the recoverable artifact.
-    nb_exec_context_id: str | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

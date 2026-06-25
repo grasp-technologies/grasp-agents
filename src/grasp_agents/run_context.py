@@ -30,10 +30,8 @@ class RunContext[CtxT](BaseModel):
     state: CtxT = None  # type: ignore
 
     # When True, the agent persists ``state`` into its checkpoints (via
-    # ``serialize_context``) and restores it on resume. Default False:
-    # business state is rebuilt on resume via ``@agent.add_state_builder``
-    # (the application's database is the source of truth), keeping the
-    # checkpoint small. Opt in for tests / simple workloads where ``state``
+    # ``serialize_context``) and restores it on resume.
+    # Opt in for tests / simple workloads where ``state``
     # is a plain serializable container (pydantic / dataclass / mapping).
     serialize_state: bool = Field(default=False, exclude=True)
 

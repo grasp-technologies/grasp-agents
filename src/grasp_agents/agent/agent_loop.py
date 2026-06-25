@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
+from grasp_agents.context.projection import repair_tool_call_pairing
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
@@ -42,6 +43,7 @@ from grasp_agents.types.events import (
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     OutputItem,
     OutputMessageItem,
@@ -81,6 +83,7 @@ if TYPE_CHECKING:
         FinalAnswerExtractor,
         ToolInputConverter,
         ToolOutputConverter,
+        ViewProjector,
     )
     from grasp_agents.llm.llm import LLM
     from grasp_agents.run_context import RunContext
@@ -164,6 +167,11 @@ class AgentLoop[CtxT]:
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
     path: list[str] | None
+    # The ephemeral initial context (system-prompt message + leading messages)
+    # for the current step. Composed by ``LLMAgent._prepare_transcript`` and
+    # prepended to the model-facing view each turn (see ``_project_view``);
+    # never stored in the transcript log.
+    initial_context: list[InputItem]
 
     # Hook callback slots — set by LLMAgent. The observer / decision hooks are
     # lists: registering more than one stacks them (invoked in registration
@@ -171,6 +179,10 @@ class AgentLoop[CtxT]:
     # — there is exactly one final-answer decision, so a later registration
     # replaces it.
     final_answer_extractor: FinalAnswerExtractor | None
+    # Stacked pipeline: the transcript is the immutable log, and each projector
+    # transforms the previous one's output to derive the per-turn view the LLM
+    # sees (the view is the log when none are registered). See ``_project_view``.
+    view_projectors: list[ViewProjector]
     before_llm_hooks: list[BeforeLlmHook]
     after_llm_hooks: list[AfterLlmHook]
     before_tool_hooks: list[BeforeToolHook[CtxT]]
@@ -264,6 +276,7 @@ class AgentLoop[CtxT]:
         self._skip_call_ids: set[str] = set()
 
         self.final_answer_extractor = None
+        self.view_projectors = []
         self.before_llm_hooks = []
         self.after_llm_hooks = []
         self.tool_output_converters = {}
@@ -273,6 +286,7 @@ class AgentLoop[CtxT]:
 
         self.checkpoint_callback = None
         self.path = path
+        self.initial_context = []
 
         # The single agent-scope state handed to each tool call. ``create``
         # fills the fresh session state (file-edit ledger, Bash session, the
@@ -474,6 +488,32 @@ class AgentLoop[CtxT]:
 
     # --- LLM generation ---
 
+    async def _project_view(self, *, exec_id: str) -> Sequence[InputItem]:
+        """
+        Build the transient model-facing view for this turn.
+
+        The ephemeral initial context (system-prompt message + leading messages,
+        composed per step by ``LLMAgent._prepare_transcript``) prepended to the
+        projected conversation log. The transcript is the immutable append-only
+        log; registered view projectors derive what the LLM sees (pruning,
+        collapsing tool outputs, summaries) from the conversation without
+        mutating the log, so step rollback stays valid across compaction. They
+        run as a pipeline in registration order, each transforming the previous
+        one's output; with none registered the conversation passes through
+        unchanged. A projection can orphan a ``tool_call`` / ``tool_result``
+        pair, so the final view is repaired once before the call. The view is
+        never written back to the transcript.
+        """
+        body: Sequence[InputItem] = self.transcript.messages
+        if not self.view_projectors:
+            # No compaction: the log is pairing-valid and the header adds no
+            # tool calls, so the prepended view needs no repair.
+            return [*self.initial_context, *body]
+        for project in self.view_projectors:
+            body = await project(list(body), exec_id=exec_id)
+
+        return repair_tool_call_pairing([*self.initial_context, *body])
+
     @traced(name="generate")
     async def query_llm(
         self,
@@ -482,12 +522,13 @@ class AgentLoop[CtxT]:
         exec_id: str,
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
-        # Enforce the tool_call → tool_result pairing invariant before every
-        # provider call (where a violation would otherwise 400).
+        # Enforce the tool_call → tool_result pairing invariant on the log before
+        # every provider call (where a violation would otherwise 400); the
+        # projected view is repaired separately in ``_project_view``.
         self.transcript.validate_tool_call_pairing()
 
         llm_params: dict[str, Any] = {
-            "input": self.transcript.messages,
+            "input": await self._project_view(exec_id=exec_id),
             "output_schema": self.llm_output_schema,
             "tools": self.tools or None,
             "tool_choice": tool_choice,

@@ -121,6 +121,7 @@ class TestBackgroundTasksAcrossRuns:
 class _FakeProcess:
     def __init__(self) -> None:
         self.closed = False
+        self.context_id: str | None = None  # mirrors the real kernel interface
 
     async def close(self) -> None:
         self.closed = True
