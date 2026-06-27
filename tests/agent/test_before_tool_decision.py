@@ -91,7 +91,7 @@ def _make_executor(
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
-    memory.reset(instructions="sys")
+    memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
     ctx = RunContext[None](state=None)

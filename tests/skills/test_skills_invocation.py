@@ -30,7 +30,7 @@ class TestRenderInvocation:
     def test_no_args_no_template(self) -> None:
         reg = SkillRegistry([_skill("alpha", body="Static body.")])
         text = reg.render_invocation("alpha")
-        assert '<system-reminder note="user invoked skill alpha">' in text
+        assert '<system-reminder subject="user invoked skill alpha">' in text
         assert text.rstrip().endswith("</system-reminder>")
         assert "Static body." in text
 
@@ -188,7 +188,7 @@ class TestSlashEndToEnd:
         parsed = parse_slash_command("/arxiv-search transformers")
         assert parsed is not None
         text = reg.render_invocation(parsed.name, args=parsed.args)
-        assert '<system-reminder note="user invoked skill arxiv-search">' in text
+        assert '<system-reminder subject="user invoked skill arxiv-search">' in text
         assert "Query: transformers" in text
 
     def test_typical_flow_named(self) -> None:
@@ -213,14 +213,15 @@ class TestMatchInvocationWrapper:
 
     def test_name_with_hyphen(self) -> None:
         text = (
-            '<system-reminder note="user invoked skill arxiv-search">'
+            '<system-reminder subject="user invoked skill arxiv-search">'
             "\nb\n</system-reminder>"
         )
         assert match_invocation_wrapper(text) == "arxiv-search"
 
     def test_tolerates_leading_whitespace(self) -> None:
         text = (
-            '\n  <system-reminder note="user invoked skill a">\nb\n</system-reminder>'
+            '\n  <system-reminder subject="user invoked skill a">\n'
+            "b\n</system-reminder>"
         )
         assert match_invocation_wrapper(text) == "a"
 
@@ -228,5 +229,5 @@ class TestMatchInvocationWrapper:
         assert match_invocation_wrapper("just a normal message") is None
 
     def test_marker_not_at_start_is_none(self) -> None:
-        text = 'hi <system-reminder note="user invoked skill a">'
+        text = 'hi <system-reminder subject="user invoked skill a">'
         assert match_invocation_wrapper(text) is None

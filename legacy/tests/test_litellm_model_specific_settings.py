@@ -1,4 +1,5 @@
-"""Tests for ``LiteLLM`` per-model settings.
+"""
+Tests for ``LiteLLM`` per-model settings.
 
 Pins the contract of the two mutually-exclusive ways to configure settings:
 
@@ -50,8 +51,10 @@ def _params_by_name(llm: LiteLLM) -> dict[str, dict[str, Any]]:
 
 
 class TestPlainConstruction(unittest.TestCase):
-    """No settings, no fallbacks: a single Router entry for the main model
-    with only ``{"model": name}`` in its ``litellm_params``."""
+    """
+    No settings, no fallbacks: a single Router entry for the main model
+    with only ``{"model": name}`` in its ``litellm_params``.
+    """
 
     def test_default_llm_settings_is_none(self):
         llm = _build_llm()
@@ -74,10 +77,12 @@ class TestPlainConstruction(unittest.TestCase):
 
 
 class TestLlmSettingsCommon(unittest.TestCase):
-    """``llm_settings`` is the common (completion-time) layer. It does not
+    """
+    ``llm_settings`` is the common (completion-time) layer. It does not
     appear in per-model ``litellm_params`` — it flows through the call path
     instead. The Router's ``model_list`` should contain only ``{"model": ...}``
-    for each entry."""
+    for each entry.
+    """
 
     def test_llm_settings_stored_on_instance(self):
         llm = _build_llm(llm_settings={"temperature": 0.42})
@@ -108,8 +113,10 @@ class TestLlmSettingsCommon(unittest.TestCase):
 
 
 class TestLlmGroupSettingsPerModel(unittest.TestCase):
-    """``llm_group_settings`` carries per-model settings into each entry's
-    ``litellm_params``. Settings on one model never bleed into another."""
+    """
+    ``llm_group_settings`` carries per-model settings into each entry's
+    ``litellm_params``. Settings on one model never bleed into another.
+    """
 
     def test_per_model_settings_reach_each_entry(self):
         llm = _build_llm(
@@ -172,8 +179,10 @@ class TestLlmGroupSettingsPerModel(unittest.TestCase):
 
 
 class TestStrictValidation(unittest.TestCase):
-    """Construction must reject configurations that would silently misbehave
-    or leave the Router with missing entries."""
+    """
+    Construction must reject configurations that would silently misbehave
+    or leave the Router with missing entries.
+    """
 
     def test_mutex_llm_settings_and_llm_group_settings(self):
         with self.assertRaises(ValueError) as ctx:
@@ -229,9 +238,11 @@ class TestStrictValidation(unittest.TestCase):
 
 
 class TestFallbacksWithoutGroupSettings(unittest.TestCase):
-    """When ``llm_group_settings`` is not provided, the else branch builds
+    """
+    When ``llm_group_settings`` is not provided, the else branch builds
     ``model_list`` from the union of the main model and every fallback
-    target. Each entry gets only ``{"model": name}`` (env-var auth path)."""
+    target. Each entry gets only ``{"model": name}`` (env-var auth path).
+    """
 
     def test_model_list_includes_main_and_all_fallback_targets(self):
         llm = _build_llm(
@@ -269,8 +280,10 @@ class TestFallbacksWithoutGroupSettings(unittest.TestCase):
 
 
 class TestRouterFallbacksWrapping(unittest.TestCase):
-    """The public ``fallbacks: list[str]`` is wrapped into litellm Router's
-    native ``[{main_name: [fb1, fb2]}]`` shape at the Router boundary."""
+    """
+    The public ``fallbacks: list[str]`` is wrapped into litellm Router's
+    native ``[{main_name: [fb1, fb2]}]`` shape at the Router boundary.
+    """
 
     def test_non_empty_fallbacks_wrapped_for_router(self):
         llm = _build_llm(fallbacks=["gpt-4o", "claude-sonnet-4-5"])

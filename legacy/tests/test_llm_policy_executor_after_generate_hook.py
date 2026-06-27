@@ -1,4 +1,5 @@
-"""Tests pinning when ``on_before_generate`` and ``on_after_generate`` fire
+"""
+Tests pinning when ``on_before_generate`` and ``on_after_generate`` fire
 during ``_force_generate_final_answer_stream`` and how those firings are
 observed end-to-end through ``execute_stream``.
 
@@ -31,8 +32,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from pydantic import BaseModel
-
 from grasp_agents.llm_agent_memory import LLMAgentMemory
 from grasp_agents.llm_policy_executor import LLMPolicyExecutor
 from grasp_agents.run_context import RunContext
@@ -43,14 +42,16 @@ from grasp_agents.typing.events import (
 )
 from grasp_agents.typing.message import AssistantMessage
 from grasp_agents.typing.tool import BaseTool, ToolChoice
-
+from pydantic import BaseModel
 
 # ---------------------- Stubs ----------------------
 
 
 class _StubLLM:
-    """Stand-in for the ``LLM`` argument. Never invoked because the test
-    subclass overrides ``generate_message_stream``."""
+    """
+    Stand-in for the ``LLM`` argument. Never invoked because the test
+    subclass overrides ``generate_message_stream``.
+    """
 
     model_name: str = "stub-model"
 
@@ -74,7 +75,8 @@ class _DummyTool(BaseTool[_DummyToolIn, None, Any]):
 
 
 class _StubExecutor(LLMPolicyExecutor[Any]):
-    """Bypasses the LLM by yielding canned ``GenMessageEvent``s. Also captures
+    """
+    Bypasses the LLM by yielding canned ``GenMessageEvent``s. Also captures
     the ``extra_llm_settings`` dict it was called with so the before-hook
     propagation test can verify mutations made by the hook reach the LLM call.
     """
@@ -133,7 +135,8 @@ def _msg(content: str) -> AssistantMessage:
 
 
 class _AfterHookRecorder:
-    """Records every invocation of ``on_after_generate_impl`` together with
+    """
+    Records every invocation of ``on_after_generate_impl`` together with
     the events delivered to the consumer at the moment the hook fired.
     The latter pins ordering — proving the hook fires AFTER its preceding
     events have been yielded.
@@ -162,7 +165,8 @@ class _AfterHookRecorder:
 
 
 class _BeforeHookRecorder:
-    """Records every invocation of ``on_before_generate_impl``. Captures both
+    """
+    Records every invocation of ``on_before_generate_impl``. Captures both
     a snapshot of ``extra_llm_settings`` (so later mutations don't bleed into
     the record) and the live reference (so the propagation test can verify
     the hook receives the same dict the LLM call will see).

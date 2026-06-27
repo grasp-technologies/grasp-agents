@@ -41,11 +41,13 @@ from textual.widgets import (
 )
 from textual.worker import Worker, WorkerState
 
+from grasp_agents.llm.model_info import get_context_window
 from grasp_agents.skills import parse_slash_command
 from grasp_agents.types.content import InputImage
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
+    CompactionEvent,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -75,6 +77,7 @@ from grasp_agents.types.llm_events import (
 
 from ._approval import ApprovalScreen, TuiApprovalStore
 from ._event_render import (
+    PALETTE,
     event_images,
     render_event,
     render_image,
@@ -97,18 +100,20 @@ from ._theme import (
 )
 from ._widgets import (
     PromptArea,
+    RollbackScreen,
     SelectableStatic,
     SkillPalette,
     ZoomableImage,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from rich.console import RenderableType
     from textual.theme import Theme
     from textual.widget import Widget
 
+    from grasp_agents.agent.llm_agent import LLMAgent
     from grasp_agents.run_context import RunContext
 
 # Events only an LLM-backed agent emits. A source that emits one of these owns
@@ -132,6 +137,10 @@ _GLYPH: dict[str, str] = {
     "error": "✗",
     "idle": "○",
 }
+
+# Reserved prompt command (interactive): opens the rollback picker instead of
+# being sent to the agent. Also bound to ctrl+r.
+_ROLLBACK_COMMAND = "/rollback"
 
 
 def _slug(source: str) -> str:
@@ -170,6 +179,7 @@ class GraspAgentsApp(App[None]):
     #prompt {
         width: 1fr; height: 1; max-height: 10; border: none; background: transparent;
     }
+    #context-meter { width: 1fr; height: auto; padding: 0 3; margin-top: 1; }
     #skill-palette {
         height: auto; max-height: 10; margin: 0 3; padding: 0 1;
         border: round $accent; background: $surface;
@@ -187,6 +197,7 @@ class GraspAgentsApp(App[None]):
         events: AsyncIterator[Event[Any]] | None = None,
         *,
         on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
+        on_rollback: Callable[[int], Awaitable[None]] | None = None,
         main_agent: str | None = None,
         ctx: RunContext[Any] | None = None,
     ) -> None:
@@ -194,6 +205,10 @@ class GraspAgentsApp(App[None]):
         prime_image_protocol()
         self._ga_events = events
         self._ga_on_submit = on_submit
+        # Rollback callback (interactive only): given the 0-based index of a prior
+        # user message, the host rewinds the agent to that point (it owns the
+        # step↔message mapping). Enables the /rollback command and ctrl+r.
+        self._ga_on_rollback = on_rollback
         self._ga_main = main_agent
         # Skill palette (interactive mode only): typing "/" opens a filtered
         # picker; selecting one unwraps the skill into a user-message turn. The
@@ -259,6 +274,25 @@ class GraspAgentsApp(App[None]):
         # written). Their streamed output is live progress mirrored to that log,
         # not a result the agent sees — rendered distinctly, headed by the log.
         self._ga_bg_tools: dict[str, str | None] = {}
+        # Context-token meter: the last reported input-token count + model per
+        # agent (the running context size), shown for the active pane's agent
+        # against its window. The window is inferred — learned from
+        # CompactionEvents (the agent's managed budget), else the model's window;
+        # ``run_tui_interactive`` seeds it from the agent up front.
+        self._ga_input_tokens: dict[str, int] = {}
+        self._ga_token_model: dict[str, str] = {}
+        self._ga_token_window: dict[str, int] = {}
+        self._ga_window_cache: dict[str, int | None] = {}
+        self._ga_active_source: str | None = None
+        # Rollback bookkeeping (interactive): one entry per user submission, in
+        # order — its label and the main pane's child count at the time (the
+        # rewind point, so a rollback can drop that turn's widgets and below).
+        self._ga_user_turns: list[str] = []
+        self._ga_turn_marks: list[int] = []
+        # the displayed monotonic turn count at each submission, so a rollback
+        # rewinds the counter to its value there (not the running maximum)
+        self._ga_turn_counts: list[int] = []
+        self._ga_rollback_open = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -266,6 +300,7 @@ class GraspAgentsApp(App[None]):
         if self._ga_on_submit is not None:
             if self._ga_palette is not None:
                 yield self._ga_palette
+            yield Static("", id="context-meter")
             with Horizontal(id="prompt-bar"):
                 yield Static("❯", id="prompt-arrow")  # noqa: RUF001
                 yield PromptArea(id="prompt")
@@ -286,6 +321,9 @@ class GraspAgentsApp(App[None]):
         if self._ga_events is not None:
             self._ga_worker = self._consume()
         if self._ga_on_submit is not None:
+            # Interactive only — bound here (not in class BINDINGS) so monitor
+            # mode shows no dead rollback key in the footer.
+            self.bind("ctrl+r", "rollback", description="Rollback")
             self.query_one("#prompt", PromptArea).focus()
         if self._ga_approval_store is not None:
             self._consume_approvals()
@@ -344,6 +382,13 @@ class GraspAgentsApp(App[None]):
         if not text or self._ga_on_submit is None:
             return
         self._hide_palette()
+        if text == _ROLLBACK_COMMAND:
+            prompt = self.query_one("#prompt", PromptArea)
+            prompt.text = ""
+            prompt.sync_height()
+            self._open_rollback()
+            return
+        self._record_turn(text)
         self._dispatch(self._unwrap_slash_command(text))
 
     # ── skill palette (slash commands) ──
@@ -496,6 +541,7 @@ class GraspAgentsApp(App[None]):
             await self._feed_item(event, owner, pane, at_bottom)
 
         self._update_status(event, owner)
+        self._track_context(event, owner)
         if self._ga_follow:
             self._activate(owner)
 
@@ -752,6 +798,80 @@ class GraspAgentsApp(App[None]):
             generation_count=self._ga_gen_count,
         )
 
+    # ── context-token meter ──
+
+    def _track_context(self, event: Event[Any], owner: str) -> None:
+        """Update an agent's running input-token count from its events."""
+        if isinstance(event, GenerationEndEvent):
+            usage = event.data.usage_with_cost
+            if not usage or not usage.input_tokens:
+                return
+            self._ga_input_tokens[owner] = usage.input_tokens
+            if event.data.model:
+                self._ga_token_model[owner] = event.data.model
+        elif isinstance(event, CompactionEvent):
+            # the post-fold view size — reflect the reduced context at once
+            self._ga_input_tokens[owner] = event.data.context_tokens
+            if event.data.context_window:
+                self._ga_token_window[owner] = event.data.context_window
+        else:
+            return
+        if owner == self._ga_active_source:
+            self._refresh_meter()
+
+    def _window_for(self, source: str) -> int | None:
+        """Window to meter ``source`` against: learned (budget/event) → model."""
+        learned = self._ga_token_window.get(source)
+        if learned is not None:
+            return learned
+        model = self._ga_token_model.get(source)
+        if model is None:
+            return None
+        if model not in self._ga_window_cache:
+            self._ga_window_cache[model] = get_context_window(model)
+        return self._ga_window_cache[model]
+
+    def seed_context_window(self, source: str, window: int) -> None:
+        """
+        Prime the token meter's window for ``source`` before its first event.
+
+        :func:`run_tui_interactive` calls this with the agent's managed context
+        window so the meter shows it from the start; afterwards the window is
+        learned from CompactionEvents / the model (see :meth:`_window_for`).
+        """
+        self._ga_token_window[source] = window
+
+    def _refresh_meter(self) -> None:
+        try:
+            meter = self.query_one("#context-meter", Static)
+        except NoMatches:
+            return
+        source = self._ga_active_source
+        tokens = self._ga_input_tokens.get(source, 0) if source else 0
+        if not tokens or source is None:
+            # Collapse the (margin-bearing) widget entirely so it leaves no gap
+            # above the prompt before the first generation.
+            meter.display = False
+            meter.update("")
+            return
+        meter.display = True
+        meter.update(self._meter_text(tokens, self._window_for(source)))
+
+    def _meter_text(self, tokens: int, window: int | None) -> Text:
+        if window and window > 0:
+            pct = min(100, round(tokens / window * 100))
+            if pct >= 85:
+                color = f"bold {PALETTE['error']}"
+            elif pct >= 65:
+                color = PALETTE["warn"]
+            else:
+                color = PALETTE["usage"]
+            body = f"context: {tokens:,} / {window:,} tokens ({pct}%)"
+        else:
+            color = PALETTE["usage"]
+            body = f"context: {tokens:,} tokens"
+        return Text(body, style=color, justify="right")
+
     async def _flush_turn(
         self, owner: str, pane: VerticalScroll, at_bottom: bool
     ) -> None:
@@ -813,9 +933,16 @@ class GraspAgentsApp(App[None]):
                 cls = "ga-msg"
             self._ga_last_kind[owner] = kind
             if isinstance(
-                event, (UserMessageEvent, SystemMessageEvent, ToolOutputItemEvent)
+                event,
+                (
+                    UserMessageEvent,
+                    SystemMessageEvent,
+                    ToolOutputItemEvent,
+                    CompactionEvent,
+                ),
             ):
-                # border to the right; the text inside the panel stays left
+                # incoming-message border to the right (the compaction summary is
+                # injected into the agent's context); text inside the panel stays left
                 text = Align.right(text)
             await pane.mount(SelectableStatic(text, classes=cls))
         for img in images:
@@ -875,8 +1002,12 @@ class GraspAgentsApp(App[None]):
         # add_content mounts the pane hidden; only the first becomes current and
         # visible. (Plain mount() leaves new panes displayed, so every spawned
         # subagent would stack on top of the active pane — the "split" bug.)
-        await switcher.add_content(pane, set_current=switcher.current is None)
+        first = switcher.current is None
+        await switcher.add_content(pane, set_current=first)
         self._ga_panes[source] = pane
+        if first:  # the first pane is the one shown — track it for the meter
+            self._ga_active_source = source
+            self._refresh_meter()
 
         tab_id = _tab_id(source)
         self._ga_tab_source[tab_id] = source
@@ -891,12 +1022,16 @@ class GraspAgentsApp(App[None]):
         if tabs.active != _tab_id(source):
             tabs.active = _tab_id(source)
         self.query_one("#panes", ContentSwitcher).current = _pane_id(source)
+        self._ga_active_source = source
+        self._refresh_meter()
 
     @on(Tabs.TabActivated)
     def _on_tab_activated(self, event: Tabs.TabActivated) -> None:
         source = self._ga_tab_source.get(event.tab.id or "")
         if source is not None:
             self.query_one("#panes", ContentSwitcher).current = _pane_id(source)
+            self._ga_active_source = source
+            self._refresh_meter()
 
     @on(ZoomableImage.Zoom)
     def _on_image_zoom(self, event: ZoomableImage.Zoom) -> None:
@@ -936,6 +1071,87 @@ class GraspAgentsApp(App[None]):
         self._ga_follow = not self._ga_follow
         self.notify(f"Follow latest: {'on' if self._ga_follow else 'off'}")
 
+    # ── rollback ──
+
+    def _record_turn(self, label: str) -> None:
+        """Remember a user submission + the main pane's rewind point for it."""
+        main = self._ga_main
+        pane = self._ga_panes.get(main) if main else None
+        self._ga_user_turns.append(label)
+        self._ga_turn_marks.append(len(pane.children) if pane is not None else 0)
+        self._ga_turn_counts.append(self._ga_turns.get(main, 0) if main else 0)
+
+    def action_rollback(self) -> None:
+        self._open_rollback()
+
+    @work
+    async def _open_rollback(self) -> None:
+        """Pop the rollback picker and rewind to the chosen message."""
+        if self._ga_on_rollback is None:
+            self.notify("Rollback isn't available in this session.")
+            return
+        if self._ga_running:
+            self.notify("Can't roll back while the agent is running.")
+            return
+        if not self._ga_user_turns:
+            self.notify("No messages to roll back to yet.")
+            return
+        if self._ga_rollback_open:
+            return
+        self._ga_rollback_open = True
+        try:
+            index = await self.push_screen_wait(
+                RollbackScreen(list(self._ga_user_turns))
+            )
+        finally:
+            self._ga_rollback_open = False
+        if index is not None:
+            await self._do_rollback(index)
+
+    async def _do_rollback(self, index: int) -> None:
+        callback = self._ga_on_rollback
+        if callback is None or not (0 <= index < len(self._ga_user_turns)):
+            return
+        message = self._ga_user_turns[index]  # capture before truncation drops it
+        try:
+            await callback(index)
+        except Exception as exc:
+            self.notify(f"Rollback failed: {exc}", severity="error")
+            return
+        await self._truncate_to_turn(index)
+        # Hand the rolled-back message back in the prompt, ready to edit + resend.
+        self._prefill_prompt(message)
+        self.notify(f"Rolled back to message #{index + 1}.")
+
+    def _prefill_prompt(self, text: str) -> None:
+        try:
+            prompt = self.query_one("#prompt", PromptArea)
+        except NoMatches:
+            return
+        prompt.text = text
+        prompt.sync_height()
+        prompt.move_cursor(prompt.document.end)
+        prompt.focus()
+
+    async def _truncate_to_turn(self, index: int) -> None:
+        """Drop the chosen turn's widgets (and everything after) + reset the meter."""
+        main = self._ga_main
+        pane = self._ga_panes.get(main) if main else None
+        if pane is not None and index < len(self._ga_turn_marks):
+            for child in list(pane.children)[self._ga_turn_marks[index] :]:
+                await child.remove()
+        if main is not None and index < len(self._ga_turn_counts):
+            # rewind the monotonic turn counter so the next run's turns continue
+            # from the rolled-back point instead of climbing from the old total
+            self._ga_turns[main] = self._ga_turn_counts[index]
+        self._ga_user_turns = self._ga_user_turns[:index]
+        self._ga_turn_marks = self._ga_turn_marks[:index]
+        self._ga_turn_counts = self._ga_turn_counts[:index]
+        if main is not None:
+            # the rolled-back generations no longer describe the live context size
+            self._ga_input_tokens.pop(main, None)
+            self._refresh_meter()
+
     async def action_interrupt(self) -> None:
         """
         Cancel the in-flight interactive turn (``esc``).
@@ -966,19 +1182,76 @@ def run_tui(events: AsyncIterator[Event[Any]]) -> None:
     GraspAgentsApp(events).run()
 
 
+class _AgentTurns:
+    """
+    Drives an agent from the interactive callbacks.
+
+    Each submitted message runs as its own step (``step=0, 1, 2, …``), recording
+    a rewind boundary, so the rollback picker can return to a previous message
+    via :meth:`LLMAgent.rollback_to_step`. ``on_rollback(i)`` rewinds to step
+    ``i`` and re-parks the counter there, so the next message re-delivers it —
+    matching the 0-based index the TUI assigns the i-th submission.
+    """
+
+    def __init__(self, agent: LLMAgent[Any, Any, Any]) -> None:
+        self._agent = agent
+        self._step = 0
+
+    async def on_submit(self, text: str) -> AsyncIterator[Event[Any]]:
+        step = self._step
+        self._step += 1
+        async for event in self._agent.run_stream(text, step=step):
+            yield event
+
+    async def on_rollback(self, index: int) -> None:
+        await self._agent.rollback_to_step(index)
+        self._step = index
+
+
 def run_tui_interactive(
-    on_submit: Callable[[str], AsyncIterator[Event[Any]]],
+    agent: LLMAgent[Any, Any, Any] | None = None,
     *,
+    on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
+    on_rollback: Callable[[int], Awaitable[None]] | None = None,
     main_agent: str | None = None,
     ctx: RunContext[Any] | None = None,
 ) -> None:
     """
     Interactive TUI: type a message, the agent runs, events stream into panes.
 
-    Pass the agent's session ``ctx`` to enable the slash-command palette when
-    ``ctx.skills`` is set: typing ``/`` opens a filtered picker of those skills;
-    selecting one unwraps it into a user turn. Using ``ctx`` (rather than a bare
-    registry) keeps the palette in lockstep with the skills the agent itself
-    sees — no second source of truth to drift.
+    Pass an :class:`~grasp_agents.agent.LLMAgent` (recommended) and everything is
+    inferred from it: each message runs as its own step so ``/rollback`` (or
+    ``ctrl+r``) can rewind to a previous message, the slash-command palette picks
+    up ``agent.ctx.skills``, and the token meter tracks the agent's context
+    window (its compaction budget).
+
+    For custom per-turn orchestration — a multi-agent ``Runner``, input
+    pre/post-processing, calling several agents — pass ``on_submit`` instead (a
+    coroutine ``(text) -> AsyncIterator[Event]``), with optional ``on_rollback``
+    (rewind to a message's 0-based index), ``main_agent``, and ``ctx``. Either
+    overrides the value inferred from ``agent`` when both are given.
     """
-    GraspAgentsApp(on_submit=on_submit, main_agent=main_agent, ctx=ctx).run()
+    window: int | None = None
+    if agent is not None:
+        turns = _AgentTurns(agent)
+        if on_submit is None:
+            on_submit = turns.on_submit
+        if on_rollback is None and hasattr(agent, "rollback_to_step"):
+            on_rollback = turns.on_rollback
+        if main_agent is None:
+            main_agent = agent.name
+        if ctx is None:
+            ctx = agent.ctx
+        window = getattr(agent, "context_window", None)
+    if on_submit is None:
+        raise ValueError(
+            "run_tui_interactive needs either an `agent` or an `on_submit` callback."
+        )
+    app = GraspAgentsApp(
+        on_submit=on_submit, on_rollback=on_rollback, main_agent=main_agent, ctx=ctx
+    )
+    if window and main_agent:
+        # Seed the meter against the agent's managed context window; later updates
+        # come from CompactionEvents / the model (see ``_window_for``).
+        app.seed_context_window(main_agent, window)
+    app.run()

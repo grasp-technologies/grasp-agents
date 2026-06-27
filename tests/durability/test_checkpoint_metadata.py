@@ -63,16 +63,16 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v9: AgentCheckpoint subclasses StepWatermark (current position) and
-        # holds a list of per-step rewind watermarks for
-        # LLMAgent.rollback_to_step; agent-context fields nest in agent_ctx_state.
-        assert CURRENT_SCHEMA_VERSION == 9
+        # v10: AgentCheckpoint gained ``folds`` (compaction summaries carried in
+        # the head) — additive over v9's step-rollback split.
+        assert CURRENT_SCHEMA_VERSION == 10
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
         snap = AgentCheckpoint(session_key="s", processor_name="a", messages=[])
         assert snap.context_kind is None
         assert snap.context_data is None
+        assert snap.folds == []
         assert snap.current.prompt_cache_key is None
         assert snap.current.fs_snapshot_ref is None
         assert snap.current.agent_ctx_state.read_file_state == {}

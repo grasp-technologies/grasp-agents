@@ -33,7 +33,7 @@ permission gate is enforced by the runtime, not by the skill.
 ## When the user invokes a skill
 
 A user message wrapped in
-`<system-reminder note="user invoked skill <name>">…</system-reminder>` means the user
+`<system-reminder subject="user invoked skill <name>">…</system-reminder>` means the user
 ran that skill themselves (e.g. as a slash-command). The skill's full body is
 inside the tags — with the user's arguments included (substituted into the body,
 or appended as a `User input:` block) — so you do **not** need to `load_skill`

@@ -359,7 +359,7 @@ def test_skill_invocation_user_message_shows_raw_content() -> None:
     from grasp_agents.types.items import InputMessageItem
 
     raw = (
-        '<system-reminder note="user invoked skill proofread">\n'
+        '<system-reminder subject="user invoked skill proofread">\n'
         "Proofread this sentence please.\n"
         "</system-reminder>"
     )
@@ -768,3 +768,40 @@ def test_web_search_find_in_page_rendered() -> None:
     text = _render_to_text(render_event(ev))
     assert "find in page" in text
     assert "needle" in text
+
+
+def test_renders_compaction_notice() -> None:
+    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+
+    ev = CompactionEvent(
+        source="a",
+        data=CompactionInfo(
+            folded_turns=7,
+            preserved_turns=3,
+            context_tokens=1850,
+            context_window=2000,
+            summary="Kept the goal and the key results discovered so far.",
+        ),
+    )
+    text = _render_to_text(render_event(ev))
+    assert "compacted" in text
+    assert "7 turns" in text
+    assert "3 recent turns kept" in text
+    assert "1,850" in text
+    assert "2,000" in text
+    assert "Kept the goal" in text  # the summary itself is shown
+    # shown raw — the exact wrapped message the agent receives (like a skill call)
+    assert "system-reminder" in text
+    assert "summarized" in text  # the injected subject is visible
+
+
+def test_compaction_notice_singular_turn() -> None:
+    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+
+    ev = CompactionEvent(
+        source="a",
+        data=CompactionInfo(folded_turns=1, preserved_turns=1, context_tokens=900),
+    )
+    text = _render_to_text(render_event(ev))
+    assert "folded 1 turn" in text
+    assert "1 turns" not in text

@@ -6,6 +6,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from grasp_agents.context.system_reminder import (
+    SYSTEM_REMINDER_TAG,
+    wrap_in_system_reminder,
+)
 from grasp_agents.selector import Selector
 
 from .loader import discover_skills
@@ -25,14 +29,16 @@ logger = logging.getLogger(__name__)
 type SkillSelector = Selector[Skill]
 """Relevance selector for the skills catalog. See :class:`Selector`."""
 
-# A user-invoked skill (slash-command) turn is wrapped so the agent — and any
-# UI — can tell it apart from a raw user message. The whole message is enclosed:
-#   <system-reminder note="user invoked skill <name>">\n<body>\n</system-reminder>
-INVOCATION_OPEN = '<system-reminder note="user invoked skill {name}">'
-INVOCATION_CLOSE = "</system-reminder>"
+# A user-invoked skill (slash-command) turn is wrapped in a <system-reminder> so
+# the agent — and any UI — can tell it apart from a raw user message. This subject
+# template is the single source of truth for both rendering the wrapper (via
+# ``wrap_in_system_reminder``) and matching it (``_INVOCATION_RE``).
+_SKILL_INVOCATION_SUBJECT = "user invoked skill {name}"
 
 _INVOCATION_RE = re.compile(
-    r'^<system-reminder note="user invoked skill (?P<name>[^"]+)">'
+    rf'^<{SYSTEM_REMINDER_TAG} subject="'
+    + _SKILL_INVOCATION_SUBJECT.format(name=r'(?P<name>[^"]+)')
+    + '">'
 )
 
 _NAMED_ARG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -222,14 +228,16 @@ class SkillRegistry:
         the user's args are substituted into them; otherwise the args are
         appended as a labelled ``User input:`` block, leaving the procedure
         untouched. When ``wrap`` is true (default), the whole message is enclosed
-        in ``<system-reminder note="user invoked skill <name>">…</system-reminder>``
+        in ``<system-reminder subject="user invoked skill <name>">…</system-reminder>``
         so the agent can tell a slash-command turn from a raw user message.
         """
         skill = self.get(name)
         body = apply_invocation_args(skill.body, args)
         if not wrap:
             return body
-        return f"{INVOCATION_OPEN.format(name=name)}\n{body}\n{INVOCATION_CLOSE}"
+        return wrap_in_system_reminder(
+            body, subject=_SKILL_INVOCATION_SUBJECT.format(name=name)
+        )
 
 
 def substitute_args(body: str, args: str | Mapping[str, str] | None) -> str:

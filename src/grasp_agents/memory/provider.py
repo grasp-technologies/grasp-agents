@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.selector import Selector
 
 from .types import DEFAULT_STALE_AFTER
@@ -516,9 +517,8 @@ def _freshness_warning(age_ms: int) -> str:
     else:
         age_hours = max(1, age_ms // 3_600_000)
         age_str = f"{age_hours} hours"
-    return (
-        f"<system-reminder>This memory is {age_str} old — verify before "
-        "acting.</system-reminder>"
+    return wrap_in_system_reminder(
+        f"This memory is {age_str} old — verify before acting."
     )
 
 

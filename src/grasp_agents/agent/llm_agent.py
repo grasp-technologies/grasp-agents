@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel
 
+from grasp_agents.context.compaction import Compaction
 from grasp_agents.context.env_section import (
     make_current_time_attachment,
     make_env_info_section,
@@ -49,6 +50,7 @@ from grasp_agents.hooks import (
     AfterToolHook,
     BeforeLlmHook,
     BeforeToolHook,
+    Compactor,
     FinalAnswerExtractor,
     InitialContextBuilder,
     InputContentBuilder,
@@ -86,6 +88,7 @@ from grasp_agents.utils.io import get_prompt
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 from .agent_loop import AgentLoop
+from .context_window import ContextWindowManager
 from .llm_agent_transcript import LLMAgentTranscript
 from .tool_decision import ToolCallDecision
 
@@ -367,11 +370,19 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             llm_output_schema = self.out_type
             self._used_default_llm_output_schema = True
 
+        # Context-window manager (view derivation, token budget, compaction);
+        # owned here and shared into the loop so the agent's context operations
+        # (checkpoint folds, rollback, hook registration) are single-hop rather
+        # than reached through the loop.
+        self._cw = ContextWindowManager(
+            transcript=self.transcript, model=llm.model_name, source=self.name
+        )
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             agent_name=self.name,
             llm=llm,
             tools=tools,
             transcript=self.transcript,
+            context_window=self._cw,
             ctx=self._ctx,
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
@@ -505,6 +516,16 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         return self._loop.max_turns
 
     @property
+    def context_window(self) -> int | None:
+        """
+        The input-token window context compaction targets, if configured — the
+        model window (or explicit limit) of a registered
+        :class:`~grasp_agents.context.ContextBudget`, else ``None``. The model's
+        own window is available via :func:`~grasp_agents.llm.get_context_window`.
+        """
+        return self._cw.context_window
+
+    @property
     def step(self) -> int | None:
         """Caller's ``step=`` for the current/last run; ``None`` if unstepped."""
         return self._step
@@ -614,6 +635,12 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.transcript.messages = resume_state.messages
+        # Lossy summary folds must be carried so resume doesn't re-summarize;
+        # deterministic projectors re-derive from the log for free.
+        self._cw.load_folds(checkpoint.folds)
+        # The transcript was just replaced (resume, possibly into a reused agent
+        # instance); recount the compaction budget rather than trust a prior one.
+        self._cw.reset_anchor()
         # A stripped incomplete trailing turn leaves the in-memory transcript a
         # prefix of the persisted log; the next checkpoint rewrites it rather
         # than appending a stale delta — the divergence is caught by the
@@ -740,6 +767,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             messages=list(self.transcript.messages),
             current=current,
             step_watermarks=list(self._step_watermarks),
+            folds=list(self._cw.folds),
             output=output,
             location=location,
             context_kind=context_kind,
@@ -766,6 +794,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self.transcript.messages = list(snapshot.messages)
         self._loop.turn = snapshot.turn
         self._loop.agent_ctx.restore(snapshot.ctx_state, rebind_kernels=rebind_kernels)
+        self._cw.reset_anchor()
 
     def _archive_step_boundary(self) -> None:
         """
@@ -883,6 +912,10 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         ]
         self._committed = boundary
 
+        # Folds index the log; drop any whose span extends past the rewind point
+        # (those messages are gone) so the view falls back to the originals.
+        self._cw.drop_folds_after(boundary.message_count)
+
         await self._persist_rollback(boundary, step=step)
         logger.info(
             "agent '%s' rolled back to step %d (messages=%d, turn=%d)",
@@ -938,6 +971,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             session_metadata=self._session_metadata,
             current=current,
             step_watermarks=list(self._step_watermarks),
+            folds=list(self._cw.folds),
             location=AgentCheckpointLocation.ROLLED_BACK,
         )
         head_blob = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
@@ -948,7 +982,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self._persisted_messages = tuple(messages)
         self._checkpoint_number += 1
 
-    async def _prepare_transcript(
+    async def _begin_step(
         self,
         *,
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
@@ -961,7 +995,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # model-facing view each turn (``AgentLoop._project_view``), so it
         # reflects current state (no stale system prompt on resume) and the
         # transcript log stays pure conversation.
-        self._loop.initial_context = await self._prompt_builder.build_initial_context(
+        self._cw.initial_context = await self._prompt_builder.build_initial_context(
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
 
@@ -970,6 +1004,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # Fresh conversation: the log starts empty (the system prompt lives
             # in the ephemeral header, not here).
             self.transcript.clear()
+            # Recount the compaction budget for the new conversation (matters for
+            # a reused agent instance carrying a prior session's anchor).
+            self._cw.reset_anchor()
 
         # Record this step's rollback point now — before the step's input — so
         # rewinding to a step lands on the prior steps' conversation with no
@@ -980,7 +1017,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         messages_to_expose: list[InputItem] = []
         if fresh_init:
             # Surface the freshly-composed header once, for UI / event parity.
-            messages_to_expose.extend(self._loop.initial_context)
+            messages_to_expose.extend(self._cw.initial_context)
 
         input_message = self._prompt_builder.build_input_message(
             chat_inputs=chat_inputs,
@@ -1135,7 +1172,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # loaded from checkpoint, skip memorization.
             if not is_redelivery:
                 self._loop.turn = 0
-                messages_to_expose = await self._prepare_transcript(
+                messages_to_expose = await self._begin_step(
                     chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
                 )
                 self._print_messages(messages_to_expose, exec_id=exec_id)
@@ -1289,7 +1326,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         raise NotImplementedError
 
     async def project_view_impl(
-        self, messages: list[InputItem], *, exec_id: str
+        self, messages: list[InputItem], *, exec_id: str, input_tokens: int
     ) -> Sequence[InputItem]:
         raise NotImplementedError
 
@@ -1346,8 +1383,32 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Stacks: registered projectors run as a pipeline in registration order,
         # each transforming the previous one's output (the view is the log when
         # none are registered). A subclass ``project_view_impl`` runs first.
-        self._loop.view_projectors.append(func)
+        self._cw.add_view_projector(func)
         return func
+
+    def add_compactor(self, func: Compactor) -> Compactor:
+        # Single-slot (replace): the turn-boundary compactor that records a
+        # summary fold under context-window pressure.
+        self._cw.set_compactor(func)
+        return func
+
+    def add_compaction(self, compaction: Compaction | None = None) -> Compaction:
+        """
+        Enable a :class:`~grasp_agents.context.Compaction` bundle: register its
+        recency-gated tool-output collapse projector and, when present, its
+        summarizing compactor.
+
+        With no argument, builds the default bundle from this agent's own model and
+        LLM (``Compaction(llm=self.llm)``) — the budget is derived from the model,
+        so ``agent.add_compaction()`` needs no configuration. Pass a custom
+        :class:`Compaction` to override (window, buffer, summarizer model, …).
+        """
+        if compaction is None:
+            compaction = Compaction(llm=self.llm)
+        self.add_view_projector(compaction.collapse)
+        if compaction.summarize is not None:
+            self.add_compactor(compaction.summarize)
+        return compaction
 
     def add_before_llm_hook(self, func: BeforeLlmHook) -> BeforeLlmHook:
         self._loop.before_llm_hooks.append(func)
@@ -1403,7 +1464,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         if is_method_overridden("extract_final_answer_impl", self, base_cls):
             self._loop.final_answer_extractor = self.extract_final_answer_impl
         if is_method_overridden("project_view_impl", self, base_cls):
-            self._loop.view_projectors.append(self.project_view_impl)
+            self._cw.add_view_projector(self.project_view_impl)
         if is_method_overridden("on_before_llm_impl", self, base_cls):
             self._loop.before_llm_hooks.append(self.on_before_llm_impl)
         if is_method_overridden("on_after_llm_impl", self, base_cls):

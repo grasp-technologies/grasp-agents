@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.context.projection import repair_tool_call_pairing
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
@@ -43,12 +42,12 @@ from grasp_agents.types.events import (
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
-    InputItem,
     InputMessageItem,
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
 )
+from grasp_agents.types.llm_errors import LlmContextWindowError
 from grasp_agents.types.llm_events import (
     OutputItemDone,
     ResponseCompleted,
@@ -57,6 +56,7 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.utils.streaming import stream_concurrent
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
+from .context_window import ContextWindowManager
 from .loop_state import (
     NextStep,
     NextStepContinue,
@@ -83,7 +83,6 @@ if TYPE_CHECKING:
         FinalAnswerExtractor,
         ToolInputConverter,
         ToolOutputConverter,
-        ViewProjector,
     )
     from grasp_agents.llm.llm import LLM
     from grasp_agents.run_context import RunContext
@@ -167,11 +166,9 @@ class AgentLoop[CtxT]:
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
     path: list[str] | None
-    # The ephemeral initial context (system-prompt message + leading messages)
-    # for the current step. Composed by ``LLMAgent._prepare_transcript`` and
-    # prepended to the model-facing view each turn (see ``_project_view``);
-    # never stored in the transcript log.
-    initial_context: list[InputItem]
+    # Context-window management — view derivation, token budget, and compaction —
+    # delegated to a dedicated manager so the loop stays focused on the cycle.
+    _cw: ContextWindowManager
 
     # Hook callback slots — set by LLMAgent. The observer / decision hooks are
     # lists: registering more than one stacks them (invoked in registration
@@ -179,10 +176,6 @@ class AgentLoop[CtxT]:
     # — there is exactly one final-answer decision, so a later registration
     # replaces it.
     final_answer_extractor: FinalAnswerExtractor | None
-    # Stacked pipeline: the transcript is the immutable log, and each projector
-    # transforms the previous one's output to derive the per-turn view the LLM
-    # sees (the view is the log when none are registered). See ``_project_view``.
-    view_projectors: list[ViewProjector]
     before_llm_hooks: list[BeforeLlmHook]
     after_llm_hooks: list[AfterLlmHook]
     before_tool_hooks: list[BeforeToolHook[CtxT]]
@@ -202,6 +195,7 @@ class AgentLoop[CtxT]:
         agent_name: str,
         llm: LLM,
         transcript: LLMAgentTranscript,
+        context_window: ContextWindowManager | None = None,
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
         ctx: RunContext[CtxT],
         llm_output_schema: Any | None = None,
@@ -276,7 +270,13 @@ class AgentLoop[CtxT]:
         self._skip_call_ids: set[str] = set()
 
         self.final_answer_extractor = None
-        self.view_projectors = []
+        # Context-window management (view derivation, token budget, compaction).
+        # Owned by the agent and shared in (so its context operations are single-
+        # hop); a standalone loop builds its own. The loop only decides when to
+        # project / compact via ``self._cw``.
+        self._cw = context_window or ContextWindowManager(
+            transcript=transcript, model=llm.model_name, source=agent_name
+        )
         self.before_llm_hooks = []
         self.after_llm_hooks = []
         self.tool_output_converters = {}
@@ -286,7 +286,6 @@ class AgentLoop[CtxT]:
 
         self.checkpoint_callback = None
         self.path = path
-        self.initial_context = []
 
         # The single agent-scope state handed to each tool call. ``create``
         # fills the fresh session state (file-edit ledger, Bash session, the
@@ -488,32 +487,6 @@ class AgentLoop[CtxT]:
 
     # --- LLM generation ---
 
-    async def _project_view(self, *, exec_id: str) -> Sequence[InputItem]:
-        """
-        Build the transient model-facing view for this turn.
-
-        The ephemeral initial context (system-prompt message + leading messages,
-        composed per step by ``LLMAgent._prepare_transcript``) prepended to the
-        projected conversation log. The transcript is the immutable append-only
-        log; registered view projectors derive what the LLM sees (pruning,
-        collapsing tool outputs, summaries) from the conversation without
-        mutating the log, so step rollback stays valid across compaction. They
-        run as a pipeline in registration order, each transforming the previous
-        one's output; with none registered the conversation passes through
-        unchanged. A projection can orphan a ``tool_call`` / ``tool_result``
-        pair, so the final view is repaired once before the call. The view is
-        never written back to the transcript.
-        """
-        body: Sequence[InputItem] = self.transcript.messages
-        if not self.view_projectors:
-            # No compaction: the log is pairing-valid and the header adds no
-            # tool calls, so the prepended view needs no repair.
-            return [*self.initial_context, *body]
-        for project in self.view_projectors:
-            body = await project(list(body), exec_id=exec_id)
-
-        return repair_tool_call_pairing([*self.initial_context, *body])
-
     @traced(name="generate")
     async def query_llm(
         self,
@@ -528,7 +501,7 @@ class AgentLoop[CtxT]:
         self.transcript.validate_tool_call_pairing()
 
         llm_params: dict[str, Any] = {
-            "input": await self._project_view(exec_id=exec_id),
+            "input": await self._cw.project_view(exec_id=exec_id),
             "output_schema": self.llm_output_schema,
             "tools": self.tools or None,
             "tool_choice": tool_choice,
@@ -576,7 +549,7 @@ class AgentLoop[CtxT]:
                 # call_ids via ``_skip_call_ids``.
                 response = exc.response
                 if pending:
-                    self.transcript.update(pending, ctx=self._ctx)
+                    self.transcript.update(pending)
                     for ev in self._item_events(pending, exec_id=exec_id):
                         yield ev
                 async for ev in self._synthesize_validation_tool_results(
@@ -593,18 +566,18 @@ class AgentLoop[CtxT]:
                 return
             # Clean completion → commit pending items, then surface their
             # item events (post-write, per the convention above).
-            self.transcript.update(pending, ctx=self._ctx)
+            self.transcript.update(pending)
             for ev in self._item_events(pending, exec_id=exec_id):
                 yield ev
 
         else:
             try:
                 response = await self.llm.generate_response(**llm_params)
-                self.transcript.update(response.output_items, ctx=self._ctx)
+                self.transcript.update(response.output_items)
             except LLMToolCallValidationError as exc:
                 response = exc.response
                 if response is not None:
-                    self.transcript.update(response.output_items, ctx=self._ctx)
+                    self.transcript.update(response.output_items)
                     for ev in self._item_events(response.output_items, exec_id=exec_id):
                         yield ev
                 async for ev in self._synthesize_validation_tool_results(
@@ -666,7 +639,7 @@ class AgentLoop[CtxT]:
             msg = FunctionToolOutputItem.from_tool_result(
                 call_id=item.call_id, output=err_info
             )
-            self.transcript.update([msg], ctx=self._ctx)
+            self.transcript.update([msg])
             self._skip_call_ids.add(item.call_id)
             yield ToolOutputItemEvent(
                 source=item.name,
@@ -857,7 +830,7 @@ class AgentLoop[CtxT]:
                 continue
             msg = await self._convert_tool_output(output, call, exec_id=exec_id)
             tool_messages.append(msg)
-            self.transcript.update([msg], ctx=self._ctx)
+            self.transcript.update([msg])
             yield ToolOutputItemEvent(
                 source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
@@ -1235,7 +1208,7 @@ class AgentLoop[CtxT]:
                 )
                 tool_msgs.append(msg)
                 rejection_msgs.append(msg)
-                self.transcript.update([msg], ctx=self._ctx)
+                self.transcript.update([msg])
                 yield ToolOutputItemEvent(
                     source=call.name,
                     destination=self.agent_name,
@@ -1399,21 +1372,49 @@ class AgentLoop[CtxT]:
             async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
                 yield event
 
+            # Compaction: fold an old span before generating if the view
+            # approaches the budget (no-op without a compactor / under budget).
+            fold = await self._cw.maybe_compact(exec_id=exec_id)
+            if fold is not None:
+                yield self._cw.compaction_event(fold, exec_id=exec_id)
+
             yield TurnStartEvent(
                 source=self.agent_name, exec_id=exec_id, data=TurnInfo(turn=self.turn)
             )
 
             # ── ACT: LLM generates response ──
 
-            act = ResponseCapture(
-                self._run_act_stream(
-                    exec_id=exec_id,
-                    extra_llm_settings=extra_llm_settings or {},
-                    had_tool_calls=had_tool_calls,
-                ),
-            )
-            async for event in act:
-                yield event
+            try:
+                act = ResponseCapture(
+                    self._run_act_stream(
+                        exec_id=exec_id,
+                        extra_llm_settings=extra_llm_settings or {},
+                        had_tool_calls=had_tool_calls,
+                    ),
+                )
+                async for event in act:
+                    yield event
+            except LlmContextWindowError:
+                # The view overflowed the window despite (or without) proactive
+                # compaction. Force a fold and retry once; if nothing can be
+                # folded, surface the error.
+                fold = await self._cw.maybe_compact(exec_id=exec_id, force=True)
+                if fold is None:
+                    raise
+                yield self._cw.compaction_event(fold, exec_id=exec_id)
+                logger.warning(
+                    "agent '%s' hit the context window; compacted and retrying",
+                    self.agent_name,
+                )
+                act = ResponseCapture(
+                    self._run_act_stream(
+                        exec_id=exec_id,
+                        extra_llm_settings=extra_llm_settings or {},
+                        had_tool_calls=had_tool_calls,
+                    ),
+                )
+                async for event in act:
+                    yield event
 
             assert act.response is not None
             response = act.response
@@ -1486,6 +1487,11 @@ class AgentLoop[CtxT]:
 
     def _process_response(self, response: Response, *, exec_id: str) -> None:
         self._ctx.record_response(self.agent_name, response)
+        usage = response.usage_with_cost
+        if usage is not None and usage.input_tokens:
+            # Anchor the compaction budget on the provider's exact reported count
+            # for the view just sent.
+            self._cw.note_response_usage(usage.input_tokens)
         self._ctx.usage_tracker.update(
             agent_name=self.agent_name,
             responses=[response],

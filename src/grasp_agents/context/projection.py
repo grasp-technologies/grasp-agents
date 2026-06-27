@@ -1,24 +1,31 @@
 """
-View-time provider-invariant repair for the model-facing transcript view.
+View-time mechanisms the loop applies when projecting the model-facing view.
 
-The transcript is the immutable append-only log; a :class:`ViewProjector`
-derives the per-turn view the LLM sees (pruning, collapsing tool outputs,
-summaries) without mutating the log, so step rollback stays valid across
-compaction. A projection can
-drop or reorder messages and orphan a ``tool_call`` / ``tool_result`` pair,
-which strict providers reject. This module repairs the projected view right
-before the provider call — the view-time companion to
-:meth:`LLMAgentTranscript.validate_tool_call_pairing`, which validates the log.
+The transcript is the immutable append-only log; the per-turn view is derived
+from it without mutating it, so step rollback stays valid across compaction. Two
+built-ins live here:
+
+* :func:`apply_folds` replaces summarized spans (persisted :class:`FoldSpec`s)
+  with their summary message, and
+* :func:`repair_tool_call_pairing` fixes a ``tool_call`` / ``tool_result`` pair a
+  projection may have orphaned — the view-time companion to
+  :meth:`LLMAgentTranscript.validate_tool_call_pairing`, which validates the log.
 """
 
+import logging
 from collections.abc import Sequence
 
+from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputItem,
     InputMessageItem,
 )
+
+from .system_reminder import wrap_in_system_reminder
+
+logger = logging.getLogger(__name__)
 
 # Stub result for a call whose own result a projection dropped. Phrased as data,
 # not an error, so the model treats the turn as resolved rather than retrying.
@@ -73,3 +80,58 @@ def repair_tool_call_pairing(messages: Sequence[InputItem]) -> list[InputItem]:
 
     _resolve_open()  # dangling calls at the tail
     return repaired
+
+
+SUMMARY_SUBJECT = "your previous conversation, summarized to compact the input context"
+
+
+def fold_summary_text(summary: str) -> str:
+    """The wrapped text a fold's summary is injected as — what the agent sees."""
+    return wrap_in_system_reminder(summary, subject=SUMMARY_SUBJECT)
+
+
+def _fold_summary_message(summary: str) -> InputMessageItem:
+    return InputMessageItem.from_text(fold_summary_text(summary), role="user")
+
+
+def apply_folds(
+    messages: Sequence[InputItem], folds: Sequence[FoldSpec]
+) -> list[InputItem]:
+    """
+    Replace each folded span of ``messages`` with its summary message.
+
+    ``folds`` index the log; each ``[start, end)`` span becomes a single summary
+    message. Folds are applied in order; one that is out of bounds or overlaps an
+    earlier fold is skipped (defensive — the producer keeps them disjoint and
+    in range, and rollback drops folds past a truncation). With no folds the
+    messages pass through unchanged.
+    """
+    if not folds:
+        return list(messages)
+    result: list[InputItem] = []
+    cursor = 0
+    for fold in sorted(folds, key=lambda f: f.start):
+        # A skip should not happen in normal operation (the compactor keeps folds
+        # disjoint and in range, and rollback drops invalidated ones), so it
+        # signals a diverged fold list — surface it rather than silently dropping.
+        if fold.end > len(messages):
+            logger.warning(
+                "Skipping out-of-bounds fold [%d, %d): log has %d messages",
+                fold.start,
+                fold.end,
+                len(messages),
+            )
+            continue
+        if fold.start < cursor:
+            logger.warning(
+                "Skipping overlapping fold [%d, %d): overlaps a fold ending at %d",
+                fold.start,
+                fold.end,
+                cursor,
+            )
+            continue
+        result.extend(messages[cursor : fold.start])
+        result.append(_fold_summary_message(fold.summary))
+        cursor = fold.end
+    result.extend(messages[cursor:])
+    return result

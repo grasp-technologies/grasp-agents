@@ -66,10 +66,10 @@ def build_copilot(
 def main() -> None:
     from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
 
-    agent, ctx = build_copilot()
-    # Pass the agent's own ctx so the slash-command palette reads ctx.skills —
-    # the same registry the agent uses.
-    run_tui_interactive(agent.run_stream, main_agent=agent.name, ctx=ctx)
+    agent, _ = build_copilot()
+    # The slash-command palette reads agent.ctx.skills automatically (the same
+    # registry the agent uses).
+    run_tui_interactive(agent)
 
 
 if __name__ == "__main__":

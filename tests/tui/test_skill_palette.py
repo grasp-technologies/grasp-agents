@@ -192,7 +192,7 @@ async def test_submit_unwraps_slash_command(tmp_path: Path) -> None:
 
         assert len(sink) == 1
         assert sink[0].startswith(
-            '<system-reminder note="user invoked skill proofread">'
+            '<system-reminder subject="user invoked skill proofread">'
         )
         assert sink[0].rstrip().endswith("</system-reminder>")
         assert "Do: fix this sentence" in sink[0]

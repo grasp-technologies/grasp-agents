@@ -101,7 +101,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
             from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
 
             if isinstance(proc, LLMAgent):
-                proc.transcript.reset()
+                proc.transcript.clear()
         return proc
 
     async def _run(

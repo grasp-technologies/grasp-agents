@@ -26,6 +26,8 @@ from grasp_agents.types.content import (
 from grasp_agents.types.errors import InputPromptBuilderError
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
+from .system_reminder import wrap_in_system_reminder
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
@@ -328,7 +330,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
             if isinstance(result, str):
                 text = result
                 if attachment.wrap_in_system_reminder:
-                    text = f"<system-reminder>\n{text}\n</system-reminder>"
+                    text = wrap_in_system_reminder(text)
                 extra_parts.append(InputText(text=text))
             else:
                 extra_parts.extend(result)

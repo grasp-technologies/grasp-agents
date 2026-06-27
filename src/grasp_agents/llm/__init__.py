@@ -8,6 +8,7 @@ from .model_info import (
     get_model_capabilities,
 )
 from .resilience import RetryPolicy
+from .token_counting import count_input_tokens
 
 __all__ = [
     "LLM",
@@ -16,6 +17,7 @@ __all__ = [
     "LLMSettings",
     "ModelCapabilities",
     "RetryPolicy",
+    "count_input_tokens",
     "count_tokens",
     "get_context_window",
     "get_model_capabilities",

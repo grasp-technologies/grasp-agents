@@ -6,11 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from grasp_agents.durability.context_serialization import ContextKind
 from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent
+from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 9
+CURRENT_SCHEMA_VERSION: int = 10
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -82,6 +83,13 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "Drives LLMAgent.rollback_to_step. This is the new minimum supported "
         "version — v5-v8 flat-head records are rejected by the schema-version floor."
     ),
+    10: (
+        "AgentCheckpoint gained ``folds``: summarized spans of the message log "
+        "(context compaction) carried in the head so a lossy summary survives "
+        "resume without re-running the LLM. Additive — v9 records load fine "
+        "(folds defaults empty); v9 code resuming a v10 session ignores the folds "
+        "and re-derives the view from the full log."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -138,8 +146,6 @@ class AgentContextState(BaseModel):
     pending_delivered: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
-    # Kernel execution contexts, meaningful as a pair with ``fs_snapshot_ref``:
-    # the ids re-attach inside the *restored* sandbox (see ``rebind_kernels``).
     ipy_exec_context_id: str | None = None
     nb_exec_context_id: str | None = None
 
@@ -238,9 +244,12 @@ class AgentCheckpoint(ProcessorCheckpoint):
 
     # Per-step rollback points (the start of each delivery step). One entry per
     # delivery step, not per turn, so it stays small in the head blob.
-    step_watermarks: list[StepWatermark] = Field(
-        default_factory=list[StepWatermark]
-    )
+    step_watermarks: list[StepWatermark] = Field(default_factory=list[StepWatermark])
+
+    # Compaction folds: summarized spans of the message log, applied to the
+    # model-facing view (never the log). Kept in the head — small, and a lossy
+    # summary must survive resume without re-running the LLM.
+    folds: list[FoldSpec] = Field(default_factory=list[FoldSpec])
 
     # The current step's cached final answer — the re-delivery short-circuit
     # reads it. ``None`` while a step is incomplete.

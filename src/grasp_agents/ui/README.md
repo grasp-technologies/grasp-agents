@@ -41,7 +41,7 @@ run_tui(agent.run_stream("your prompt", ctx=ctx))   # blocks until you quit
 ```python
 from grasp_agents.ui import run_tui_interactive
 
-run_tui_interactive(agent.run_stream, main_agent=agent.name)
+run_tui_interactive(agent)   # rollback, skills palette, and token meter inferred
 ```
 
 `run_tui*` start the app's own event loop, so call them at module top level (not
@@ -73,7 +73,7 @@ store = TuiApprovalStore(persist_path=Path(".grasp/approvals.json"))
 ctx = RunContext(approval_store=store, session_key="user-1")
 agent = LLMAgent(name="assistant", ctx=ctx, llm=llm, tools=[...])
 agent.add_before_tool_hook(build_store_approval(tool_names={"delete_record"}))
-run_tui_interactive(agent.run_stream, main_agent=agent.name, ctx=ctx)
+run_tui_interactive(agent)   # main_agent + ctx (with the approval store) inferred
 ```
 
 Runnable demo (`grasp_agents.examples.tui.approval_copilot`): an ops assistant

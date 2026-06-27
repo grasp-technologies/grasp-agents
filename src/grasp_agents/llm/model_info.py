@@ -5,12 +5,28 @@ Keeps the LiteLLM dependency contained — if LiteLLM changes its internals,
 only this module needs updating.
 """
 
+import logging
 from dataclasses import dataclass
+from typing import Any
 
 from litellm import get_model_info as _get_model_info
 from litellm import (
     token_counter as _token_counter,  # pyright: ignore[reportUnknownVariableType]
 )
+
+logger = logging.getLogger(__name__)
+
+_warned_unresolved: set[tuple[str, str]] = set()
+
+
+def _warn_unresolved(what: str, model: str) -> None:
+    """Warn (once per model) that litellm lacks metadata and a fallback is used."""
+    key = (what, model)
+    if key not in _warned_unresolved:
+        _warned_unresolved.add(key)
+        logger.warning(
+            "litellm could not resolve %s for model %r; falling back", what, model
+        )
 
 
 @dataclass(frozen=True)
@@ -53,6 +69,7 @@ def get_model_capabilities(
     try:
         info = _get_model_info(model, custom_llm_provider=provider)
     except Exception:
+        _warn_unresolved("model capabilities", model)
         return _PERMISSIVE_DEFAULTS
 
     return ModelCapabilities(
@@ -69,16 +86,27 @@ def get_model_capabilities(
 
 
 def count_tokens(
-    model: str, *, text: str | None = None, messages: list[dict[str, str]] | None = None
+    model: str,
+    *,
+    text: str | None = None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> int:
     """
     Count tokens for a model. Uses tiktoken for OpenAI, falls back for others.
 
-    Returns 0 on failure (unknown model, missing tokenizer).
+    ``messages`` may carry multimodal content (image parts); images are counted
+    with a default per-image cost, never fetched. Returns 0 on failure (unknown
+    model, missing tokenizer).
     """
     try:
-        return _token_counter(model=model, text=text, messages=messages)  # type: ignore[no-any-return]
+        return _token_counter(  # type: ignore[no-any-return]
+            model=model,
+            text=text,
+            messages=messages,
+            use_default_image_token_count=True,
+        )
     except Exception:
+        _warn_unresolved("a tokenizer", model)
         return 0
 
 
@@ -88,4 +116,5 @@ def get_context_window(model: str, provider: str | None = None) -> int | None:
         info = _get_model_info(model, custom_llm_provider=provider)
         return info.get("max_input_tokens")  # type: ignore[return-value]
     except Exception:
+        _warn_unresolved("the context window", model)
         return None
