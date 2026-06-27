@@ -161,7 +161,7 @@ def main() -> None:
     from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
 
     analyst, _ = build_copilot(_WORKDIR)
-    run_tui_interactive(analyst.run_stream, main_agent=analyst.name)
+    run_tui_interactive(analyst)
 
 
 if __name__ == "__main__":

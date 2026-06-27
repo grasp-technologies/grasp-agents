@@ -16,10 +16,13 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual import events, on
+from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.fuzzy import Matcher
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widgets import OptionList, Static, TextArea
 from textual.widgets.option_list import Option
@@ -267,3 +270,74 @@ class ZoomableImage(Static):
 
     def on_click(self) -> None:
         self.post_message(self.Zoom(self._src))
+
+
+def _rollback_row(number: int, label: str) -> RenderableType:
+    """One rollback-list row: a turn number on the left, the message on the right."""
+    text = " ".join(label.split())  # collapse newlines so each row is one line
+    row = Table.grid(expand=True, padding=(0, 1))
+    row.add_column(justify="right", no_wrap=True, width=4)
+    row.add_column(justify="left", ratio=1, no_wrap=True)
+    row.add_row(
+        Text(f"#{number}", style="dim"),
+        Text(text, overflow="ellipsis", no_wrap=True),
+    )
+    return row
+
+
+class RollbackScreen(ModalScreen[int | None]):
+    """
+    Modal listing previous user messages; selecting one returns its 0-based index.
+
+    The chosen message and everything after it are discarded (see
+    :meth:`.app.GraspAgentsApp._do_rollback`). ``esc`` cancels (returns ``None``).
+    """
+
+    CSS = """
+    RollbackScreen { align: center middle; background: $background 70%; }
+    RollbackScreen #rollback-box {
+        width: 70%; max-width: 96; min-width: 48; height: auto; max-height: 80%;
+        padding: 1 2; border: round $accent; background: $surface;
+    }
+    RollbackScreen #rollback-title { text-style: bold; color: $accent; width: 1fr; }
+    RollbackScreen #rollback-hint {
+        margin-bottom: 1; width: 1fr; color: $text-muted;
+    }
+    RollbackScreen #rollback-list {
+        height: auto; max-height: 16; border: none; background: transparent;
+    }
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, turns: list[str]) -> None:
+        super().__init__()
+        self._turns = turns
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rollback-box"):
+            yield Static("⟲ Roll back to a previous message", id="rollback-title")
+            yield Static(
+                "The selected message and everything after it are discarded.",
+                id="rollback-hint",
+            )
+            yield OptionList(
+                *(
+                    Option(_rollback_row(i + 1, label), id=str(i))
+                    for i, label in enumerate(self._turns)
+                ),
+                id="rollback-list",
+            )
+
+    def on_mount(self) -> None:
+        option_list = self.query_one("#rollback-list", OptionList)
+        option_list.focus()
+        if self._turns:  # default the highlight to the most recent message
+            option_list.highlighted = len(self._turns) - 1
+
+    @on(OptionList.OptionSelected, "#rollback-list")
+    def _on_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(int(event.option.id) if event.option.id is not None else None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

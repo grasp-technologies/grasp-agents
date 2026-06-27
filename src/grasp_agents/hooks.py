@@ -37,6 +37,7 @@ from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.run_context import RunContext
 from grasp_agents.selector import Selector
 from grasp_agents.types.content import Content
+from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.io import ProcName
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -53,6 +54,7 @@ __all__ = [
     "AfterToolHook",
     "BeforeLlmHook",
     "BeforeToolHook",
+    "Compactor",
     "FinalAnswerExtractor",
     "InitialContextBuilder",
     "InputContentBuilder",
@@ -154,7 +156,8 @@ class ViewProjector(Protocol):
     / ``tool_result`` pairing (``context.projection.repair_tool_call_pairing``)
     before the provider call, then discarded — it is never persisted, so a
     projection must be deterministic enough to re-derive on the next turn and on
-    resume.
+    resume. ``input_tokens`` is the provider-reported size of the last view (0
+    before the first response) — the budget signal for size-reactive projectors.
     """
 
     async def __call__(
@@ -162,7 +165,32 @@ class ViewProjector(Protocol):
         messages: list[InputItem],
         *,
         exec_id: str,
+        input_tokens: int,
     ) -> Sequence[InputItem]: ...
+
+
+class Compactor(Protocol):
+    """
+    Summarize an old span of the transcript log under context-window pressure.
+
+    Called once per turn with ``input_tokens`` (what the last view actually
+    cost) and the ``folds`` already recorded. Returns a new :class:`FoldSpec`
+    (a summarized span, applied to the view by ``apply_folds`` and persisted) or
+    ``None`` to leave the log as is. Single-slot (``@agent.add_compactor``).
+    Unlike a :class:`ViewProjector` it may call an LLM and produce persisted
+    state, so it runs at the turn boundary, not on every view. ``force`` is set
+    on the context-window-error recovery path: fold regardless of the budget.
+    """
+
+    async def __call__(
+        self,
+        messages: Sequence[InputItem],
+        *,
+        input_tokens: int,
+        folds: Sequence[FoldSpec],
+        exec_id: str,
+        force: bool = False,
+    ) -> FoldSpec | None: ...
 
 
 # --- Prompt Hooks ---

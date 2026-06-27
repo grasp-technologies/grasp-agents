@@ -163,4 +163,4 @@ def make_current_time_attachment(
         now = datetime.now().astimezone().isoformat(timespec=timespec)
         return f"Current time: {now}"
 
-    return InputAttachment(name=name, compute=compute)
+    return InputAttachment(name=name, compute=compute, wrap_in_system_reminder=True)

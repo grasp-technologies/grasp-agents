@@ -99,7 +99,7 @@ def _make_loop(
 ) -> tuple[AgentLoop[None], LLMAgentTranscript]:
     llm = MockLLM(responses_queue=responses, retry_policy=retry_policy)
     transcript = LLMAgentTranscript()
-    transcript.reset(instructions="sys")
+    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     transcript.update([InputMessageItem.from_text("go", role="user")])
 
     loop = AgentLoop[None](

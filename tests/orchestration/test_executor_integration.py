@@ -219,7 +219,7 @@ class TestExecutorTextResponse:
         response = _make_text_response("The answer is 42.")
         llm = MockLLM(model_name="mock", responses_queue=[response])
         memory = LLMAgentTranscript()
-        memory.reset(instructions="Be helpful.")
+        memory.messages = [InputMessageItem.from_text("Be helpful.", role="system")]
 
         executor = AgentLoop(
             agent_name="test_agent",
@@ -257,7 +257,7 @@ class TestExecutorTextResponse:
         response = _make_text_response("Hello!")
         llm = MockLLM(model_name="mock", responses_queue=[response])
         memory = LLMAgentTranscript()
-        memory.reset(instructions="sys")
+        memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
         executor = AgentLoop(
             agent_name="agent",
@@ -299,7 +299,9 @@ class TestExecutorToolCalling:
             responses_queue=[tool_response, final_response],
         )
         memory = LLMAgentTranscript()
-        memory.reset(instructions="You can add numbers.")
+        memory.messages = [
+            InputMessageItem.from_text("You can add numbers.", role="system")
+        ]
 
         tool = AddTool()
         executor = _with_final_answer_extractor(
@@ -368,7 +370,7 @@ class TestExecutorToolCalling:
 
         llm = MockLLM(model_name="mock", responses_queue=responses)
         memory = LLMAgentTranscript()
-        memory.reset(instructions="sys")
+        memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
         tool = AddTool()
         executor = AgentLoop(
@@ -407,7 +409,7 @@ class TestExecutorUsageTracking:
         response = _make_text_response("answer")
         llm = MockLLM(model_name="mock", responses_queue=[response])
         memory = LLMAgentTranscript()
-        memory.reset(instructions="sys")
+        memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
         executor = AgentLoop(
             agent_name="test_agent",
@@ -450,7 +452,7 @@ class TestExecutorMemoryIntegrity:
             responses_queue=[tool_response, final_response],
         )
         memory = LLMAgentTranscript()
-        memory.reset(instructions="calc")
+        memory.messages = [InputMessageItem.from_text("calc", role="system")]
 
         executor = _with_final_answer_extractor(
             AgentLoop(

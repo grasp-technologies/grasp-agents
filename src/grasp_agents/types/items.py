@@ -215,7 +215,7 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
     type: Literal["function_call_output"] = "function_call_output"
     id: str = Field(default_factory=lambda: prefixed_id("fco"))
     call_id: str
-    status: ItemStatus | None = None
+    status: ItemStatus | None = None  # type: ignore[assignment]
     output: str | list[ResponseToolOutputPart] = Field(
         default_factory=list[ResponseToolOutputPart]
     )

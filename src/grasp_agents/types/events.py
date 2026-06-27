@@ -154,6 +154,28 @@ class GenerationEndEvent(Event[Response], frozen=True):
     type: Literal["agent.generation_end"] = "agent.generation_end"
 
 
+# ── Context compaction ──
+
+
+class CompactionInfo(BaseModel):
+    # whole turns folded into a summary by this compaction
+    folded_turns: int
+    # recent turns kept verbatim after the fold
+    preserved_turns: int
+    # the model-facing view's token size right after the fold (the new context size)
+    context_tokens: int
+    # the model's context window in tokens, when known
+    context_window: int | None = None
+    # the summary the folded span was replaced with in the model-facing view
+    summary: str = ""
+
+
+class CompactionEvent(Event[CompactionInfo], frozen=True):
+    """Emitted when context-window pressure folds older messages into a summary."""
+
+    type: Literal["agent.compaction"] = "agent.compaction"
+
+
 # ── Messages ──
 
 

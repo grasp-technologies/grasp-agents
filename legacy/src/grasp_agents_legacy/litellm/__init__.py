@@ -9,7 +9,7 @@ from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 from litellm.types.utils import StreamingChoices as LiteLLMChunkChoice
 from litellm.types.utils import Usage as LiteLLMUsage
 from openai._streaming import (
-    AsyncStream as OpenAIAsyncStream,  # type: ignore[import] # noqa: PLC2701
+    AsyncStream as OpenAIAsyncStream,  # type: ignore[import]
 )
 from openai.types import CompletionUsage as OpenAIUsage
 from openai.types.chat.chat_completion import ChatCompletion as OpenAICompletion

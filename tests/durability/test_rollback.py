@@ -199,8 +199,8 @@ async def test_rollback_to_first_step_empties_log_keeps_ephemeral_prompt() -> No
     r0b = await agent.run("q0_edited", step=0)
     assert r0b.payloads[0] == "a0_new"
     assert agent.step == 0
-    assert isinstance(agent._loop.initial_context[0], InputMessageItem)
-    assert agent._loop.initial_context[0].role == "system"
+    assert isinstance(agent._cw.initial_context[0], InputMessageItem)
+    assert agent._cw.initial_context[0].role == "system"
 
 
 @pytest.mark.asyncio
@@ -227,7 +227,7 @@ async def test_rollback_survives_compaction() -> None:
     view_lengths: list[int] = []
 
     @agent.add_view_projector
-    async def _compact(messages, *, exec_id):
+    async def _compact(messages, *, exec_id, input_tokens):
         view_lengths.append(len(messages))
         return messages[-1:]  # show the LLM only the latest message
 

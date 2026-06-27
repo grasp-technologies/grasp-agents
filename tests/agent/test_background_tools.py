@@ -173,7 +173,7 @@ def _make_executor(
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
-    memory.reset(instructions="sys")
+    memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
     ctx = ctx if ctx is not None else RunContext[None](state=None)
@@ -263,7 +263,7 @@ class TestBackgroundToolLaunch:
         from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 
         transcript = LLMAgentTranscript()
-        transcript.reset(instructions="sys")
+        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
             agent_name="a", transcript=transcript, tools={}, path=[]
         )
@@ -790,7 +790,7 @@ class TestDurableTaskRecords:
         # A non-None path is required for a backgrounded call to be keyed +
         # persisted (``make_tool_call_path(None, ...)`` is ``None``).
         transcript = LLMAgentTranscript()
-        transcript.reset(instructions="sys")
+        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
             agent_name="t", transcript=transcript, tools={}, path=[]
         )
@@ -814,7 +814,7 @@ class TestDurableTaskRecords:
 
         # A fresh manager on the same session = a restart.
         t2 = LLMAgentTranscript()
-        t2.reset(instructions="sys")
+        t2.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr2 = BackgroundTaskManager[None](
             agent_name="t", transcript=t2, tools={}, path=[]
         )
@@ -840,7 +840,7 @@ class TestDurableTaskRecords:
         # record terminal, so a second resume surfaces nothing.
         await mgr2.flush_delivered(ctx=ctx)
         t3 = LLMAgentTranscript()
-        t3.reset(instructions="sys")
+        t3.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr3 = BackgroundTaskManager[None](
             agent_name="t", transcript=t3, tools={}, path=[]
         )
@@ -858,7 +858,7 @@ class TestDurableTaskRecords:
         store = InMemoryCheckpointStore()
         ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
         transcript = LLMAgentTranscript()
-        transcript.reset(instructions="sys")
+        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
             agent_name="t", transcript=transcript, tools={}, path=[]
         )
@@ -915,7 +915,7 @@ class TestDurableTaskRecords:
         )
 
         transcript = LLMAgentTranscript()
-        transcript.reset(instructions="sys")
+        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
             agent_name="coordinator",
             transcript=transcript,
@@ -986,7 +986,7 @@ class TestDurableTaskRecords:
             auto_background_at=0,
         )
         transcript = LLMAgentTranscript()
-        transcript.reset(instructions="sys")
+        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
             agent_name="coordinator",
             transcript=transcript,

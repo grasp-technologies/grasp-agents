@@ -39,6 +39,7 @@ from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputMessageItem,
     OutputMessageItem,
 )
 from grasp_agents.types.packet import Packet
@@ -379,8 +380,8 @@ class TestViewProjectionLeavesLogIntact:
         )
 
         @agent.add_view_projector
-        async def compact(messages: Any, *, exec_id: str) -> Any:
-            del exec_id
+        async def compact(messages: Any, *, exec_id: str, input_tokens: int) -> Any:
+            del exec_id, input_tokens
             return messages[-1:]  # show the LLM only the latest message
 
         await agent.run("input-alpha")
@@ -459,7 +460,7 @@ class TestDeadlineBackgroundedOutcomePersisted:
             state=None, checkpoint_store=store, session_key="s1"
         )
         transcript = LLMAgentTranscript()
-        transcript.reset(instructions="sys")
+        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
             agent_name="t", transcript=transcript, tools={}, path=[]
         )

@@ -32,6 +32,7 @@ from rich.table import Table
 from rich.text import Text, TextType
 from rich.theme import Theme
 
+from grasp_agents.context.projection import fold_summary_text
 from grasp_agents.context.untrusted_content import unwrap_untrusted
 from grasp_agents.printer import sanitize_terminal_text
 from grasp_agents.skills import match_invocation_wrapper
@@ -39,6 +40,8 @@ from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
+    CompactionEvent,
+    CompactionInfo,
     Event,
     GenerationEndEvent,
     LLMStreamingErrorEvent,
@@ -246,8 +249,8 @@ def render_event(
         if "<session_resumed>" in text:
             return render_resume_notice(text)
         # A user-invoked skill (slash-command) — show the message verbatim (the
-        # ``<system-reminder note="user invoked skill …">`` wrapper and the full body,
-        # exactly as the agent receives it) under a distinct "skill" frame.
+        # ``<system-reminder subject="user invoked skill …">`` wrapper and the
+        # full body, exactly as the agent receives it) under a distinct "skill" frame.
         skill = match_invocation_wrapper(text)
         if skill is not None:
             return panel(f"skill <{skill}>", _message_body(text), PALETTE["accent"])
@@ -260,6 +263,9 @@ def render_event(
 
     if isinstance(event, GenerationEndEvent):
         return usage_line(event)
+
+    if isinstance(event, CompactionEvent):
+        return render_compaction_notice(event.data)
 
     if isinstance(event, BackgroundTaskLaunchedEvent):
         i = event.data
@@ -303,6 +309,34 @@ def render_retry_notice(event: ResponseRetrying | ResponseFallback) -> Renderabl
     if detail:
         notice.append(f" — {truncate(detail, 200)}", style=PALETTE["muted"])
     return notice
+
+
+def render_compaction_notice(info: CompactionInfo) -> RenderableType:
+    """
+    Marks where context-window compaction folded older turns into a summary.
+
+    Shows the turns folded, the recent turns kept verbatim, and the resulting
+    context size, plus the summary the folded span was replaced with (a panel
+    when the summary is present, a thin separator rule otherwise).
+    """
+    folded = info.folded_turns
+    kept = info.preserved_turns
+    parts = [
+        f"folded {folded} turn{'' if folded == 1 else 's'}",
+        f"{kept} recent turn{'' if kept == 1 else 's'} kept",
+    ]
+    if info.context_window:
+        parts.append(f"{info.context_tokens:,} / {info.context_window:,} tokens")
+    elif info.context_tokens:
+        parts.append(f"~{info.context_tokens:,} tokens")
+    head = f"⊙ context compacted · {' · '.join(parts)}"
+    if info.summary:
+        # Show exactly what the agent receives — the wrapped <system-reminder>
+        # message, rendered raw (XML-highlighted), like a skill invocation.
+        return panel(
+            head, _message_body(fold_summary_text(info.summary)), PALETTE["accent"]
+        )
+    return Rule(f"[bold]{head}[/]", style=PALETTE["accent"])
 
 
 def render_turn_rule(agent: str, turn: int) -> RenderableType:

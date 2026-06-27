@@ -119,8 +119,8 @@ def build_copilot(
 def main() -> None:
     from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
 
-    agent, ctx = build_copilot()
-    run_tui_interactive(agent.run_stream, main_agent=agent.name, ctx=ctx)
+    agent, _ = build_copilot()
+    run_tui_interactive(agent)
 
 
 if __name__ == "__main__":

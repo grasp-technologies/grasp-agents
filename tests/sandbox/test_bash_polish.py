@@ -31,7 +31,7 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.bash import Bash, BashInput, bash_tools
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput
 from grasp_agents.types.events import BackgroundTaskLaunchedEvent, UserMessageEvent
-from grasp_agents.types.items import FunctionToolCallItem
+from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 
 pytestmark = pytest.mark.asyncio
 
@@ -74,7 +74,7 @@ def _loop(ctx: RunContext[None], *, path: list[str] | None = None) -> AgentLoop[
     is required for backgrounded tasks to get a persisted ``TaskRecord``.
     """
     transcript = LLMAgentTranscript()
-    transcript.reset(instructions="sys")
+    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     return AgentLoop[None](
         agent_name="t",
         llm=_StubLLM(),
@@ -579,7 +579,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
 
     from grasp_agents.tools.base import BaseTool as _BaseTool
     from grasp_agents.types.content import OutputMessageText
-    from grasp_agents.types.items import InputMessageItem, OutputMessageItem
+    from grasp_agents.types.items import OutputMessageItem
     from grasp_agents.types.response import Response, ResponseUsage
 
     usage = ResponseUsage(
@@ -625,7 +625,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
     ctx: RunContext[None] = RunContext(environment=env)
 
     transcript = LLMAgentTranscript()
-    transcript.reset(instructions="sys")
+    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     transcript.update([InputMessageItem.from_text("go", role="user")])
 
     # Turn 0: empty output → no tool call, no final answer → the loop
@@ -766,7 +766,7 @@ async def test_loop_dispatch_deadline_bash_yields_launched(tmp_path: Path) -> No
     """
     ctx = _ctx(tmp_path)
     transcript = LLMAgentTranscript()
-    transcript.reset(instructions="sys")
+    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     loop = AgentLoop[None](
         agent_name="t",
         llm=_StubLLM(),
@@ -843,7 +843,7 @@ async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
 
     # A later resume must NOT report a deliberately-killed task as interrupted.
     transcript = LLMAgentTranscript()
-    transcript.reset(instructions="sys")
+    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     mgr2 = BackgroundTaskManager(
         agent_name="t", transcript=transcript, tools={}, path=[]
     )
@@ -967,7 +967,7 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
             await pt.task
 
     transcript = LLMAgentTranscript()
-    transcript.reset(instructions="sys")
+    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     mgr2 = BackgroundTaskManager(
         agent_name="t", transcript=transcript, tools={}, path=[]
     )

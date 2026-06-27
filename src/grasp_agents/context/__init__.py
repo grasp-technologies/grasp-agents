@@ -8,6 +8,15 @@ section/attachment vocabulary (:class:`SystemPromptSection`,
 Future context-window management (compaction) lands here too.
 """
 
+from .compaction import (
+    CollapseToolOutputsProjector,
+    Compaction,
+    ContextBudget,
+    LLMSummarizer,
+    Summarizer,
+    SummarizingCompactor,
+    collapse_tool_outputs,
+)
 from .env_section import (
     CURRENT_TIME_ATTACHMENT_NAME,
     ENV_INFO_SECTION_NAME,
@@ -21,6 +30,7 @@ from .prompt_builder import (
     SectionCompute,
     SystemPromptSection,
 )
+from .system_reminder import SYSTEM_REMINDER_TAG, wrap_in_system_reminder
 from .untrusted_content import (
     UNTRUSTED_CONTENT_INSTRUCTION,
     UNTRUSTED_CONTENT_SECTION_NAME,
@@ -33,17 +43,26 @@ from .untrusted_content import (
 __all__ = [
     "CURRENT_TIME_ATTACHMENT_NAME",
     "ENV_INFO_SECTION_NAME",
+    "SYSTEM_REMINDER_TAG",
     "UNTRUSTED_CONTENT_INSTRUCTION",
     "UNTRUSTED_CONTENT_SECTION_NAME",
     "UNTRUSTED_CONTENT_TAG",
+    "CollapseToolOutputsProjector",
+    "Compaction",
+    "ContextBudget",
     "InputAttachment",
     "InputAttachmentCompute",
+    "LLMSummarizer",
     "PromptBuilder",
     "SectionCompute",
+    "Summarizer",
+    "SummarizingCompactor",
     "SystemPromptSection",
+    "collapse_tool_outputs",
     "make_current_time_attachment",
     "make_env_info_section",
     "make_untrusted_content_section",
     "unwrap_untrusted",
+    "wrap_in_system_reminder",
     "wrap_untrusted",
 ]

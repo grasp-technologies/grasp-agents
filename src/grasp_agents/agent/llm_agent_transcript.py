@@ -1,12 +1,8 @@
 from collections.abc import Sequence
-from typing import Any
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.run_context import RunContext
-from grasp_agents.types.content import InputPart, InputText
 from grasp_agents.types.errors import TranscriptInvariantError
-from grasp_agents.types.io import LLMPrompt
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -17,45 +13,16 @@ from grasp_agents.types.items import (
 
 class LLMAgentTranscript(BaseModel):
     """
-    Per-run message history for :class:`LLMAgent`.
+    Per-run message history for :class:`LLMAgent` — the pure conversation log.
 
     Owned by the agent (``agent.transcript``), persisted via the agent's
-    checkpoint, and rebuilt on resume. Distinct from cross-session memory
-    on :class:`RunContext.memory` (the memdir-backed knowledge store).
+    checkpoint, and rebuilt on resume. Distinct from cross-session memory on
+    :class:`RunContext.memory` (the memdir-backed knowledge store). The system
+    prompt is not stored here — it lives in the ephemeral header
+    (``initial_context``) the agent prepends to the model-facing view each turn.
     """
 
     messages: list[InputItem] = Field(default_factory=list[InputItem])
-
-    def reset(
-        self,
-        instructions: LLMPrompt | Sequence[InputText] | None = None,
-        ctx: RunContext[Any] | None = None,
-    ) -> None:
-        """
-        Replace the transcript with a fresh system message.
-
-        ``instructions`` may be:
-
-        * ``None`` — clear the transcript.
-        * a string — wrap in a single-part ``InputMessageItem``
-          (back-compat for users who hand-build prompts).
-        * a sequence of :class:`InputText` — use as the system message's
-          ``content_parts`` directly, preserving each part's
-          ``cache_control`` (e.g. Anthropic prompt caching) that
-          :meth:`PromptBuilder.build_system_prompt_parts` set.
-        """
-        del ctx
-        if instructions is None:
-            self.messages = []
-            return
-        if isinstance(instructions, str):
-            self.messages = [InputMessageItem.from_text(instructions, role="system")]
-            return
-        parts: list[InputPart] = list(instructions)
-        if not parts:
-            self.messages = []
-            return
-        self.messages = [InputMessageItem(content_parts=parts, role="system")]
 
     def clear(self) -> None:
         self.messages = []
@@ -64,13 +31,7 @@ class LLMAgentTranscript(BaseModel):
         if 0 <= message_count < len(self.messages):
             del self.messages[message_count:]
 
-    def update(
-        self,
-        new_messages: Sequence[InputItem],
-        *,
-        ctx: RunContext[Any] | None = None,
-    ) -> None:
-        del ctx
+    def update(self, new_messages: Sequence[InputItem]) -> None:
         self.messages.extend(new_messages)
 
     def validate_tool_call_pairing(self) -> None:
@@ -110,16 +71,6 @@ class LLMAgentTranscript(BaseModel):
     @property
     def is_empty(self) -> bool:
         return len(self.messages) == 0
-
-    @property
-    def instructions(self) -> LLMPrompt | None:
-        if (
-            not self.is_empty
-            and isinstance(self.messages[0], InputMessageItem)
-            and self.messages[0].role == "system"
-        ):
-            return self.messages[0].text or None
-        return None
 
     def __repr__(self) -> str:
         return f"LLMAgentTranscript(len={len(self.messages)})"

@@ -58,7 +58,7 @@ class TestEphemeralInitialContext:
             for m in agent.transcript.messages
         )
         # The system prompt lives in the ephemeral header (prepended to the view).
-        header = agent._loop.initial_context
+        header = agent._cw.initial_context
         assert len(header) == 1
         assert isinstance(header[0], InputMessageItem)
         assert header[0].role == "system"
@@ -109,7 +109,7 @@ class TestInitialContextBuilder:
 
         await agent.run("hi")
 
-        header = agent._loop.initial_context
+        header = agent._cw.initial_context
         assert len(header) == 2
         assert isinstance(header[0], InputMessageItem)
         assert header[0].role == "system"
@@ -138,7 +138,7 @@ class TestInitialContextBuilder:
         await agent.run("hi")
 
         assert seen == [1]
-        header = agent._loop.initial_context
+        header = agent._cw.initial_context
         assert len(header) == 1
         assert isinstance(header[0], InputMessageItem)
         assert header[0].text == "Custom system."

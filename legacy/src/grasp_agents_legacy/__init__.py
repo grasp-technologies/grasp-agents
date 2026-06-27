@@ -32,7 +32,6 @@ __all__ = [
     "Memory",
     "Messages",
     "Packet",
-    "Packet",
     "ParallelProcessor",
     "Printer",
     "ProcName",

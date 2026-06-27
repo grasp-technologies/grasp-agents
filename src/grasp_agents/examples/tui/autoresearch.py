@@ -561,7 +561,7 @@ def main() -> None:
 
     from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
 
-    run_tui_interactive(researcher.run_stream, main_agent=researcher.name)
+    run_tui_interactive(on_submit=researcher.run_stream, main_agent=researcher.name)
 
 
 if __name__ == "__main__":

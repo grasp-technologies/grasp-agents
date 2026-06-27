@@ -1,5 +1,9 @@
 """Tests for model_info facade: graceful fallback for unknown models."""
 
+import logging
+
+import pytest
+
 from grasp_agents.llm.model_info import (
     count_tokens,
     get_context_window,
@@ -26,3 +30,27 @@ class TestModelInfo:
         """Unknown model → None, not an exception."""
         result = get_context_window("totally-fake-model-xyz-999")
         assert result is None
+
+
+class TestUnresolvedWarnings:
+    """A litellm metadata miss warns (once per model) rather than failing quietly."""
+
+    def test_context_window_warns_once(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("grasp_agents.llm.model_info._warned_unresolved", set())
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.llm.model_info"):
+            get_context_window("unknown-warn-model")
+            get_context_window("unknown-warn-model")  # warn-once: no repeat
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "context window" in warnings[0].getMessage()
+        assert "unknown-warn-model" in warnings[0].getMessage()
+
+    def test_capabilities_miss_warns(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("grasp_agents.llm.model_info._warned_unresolved", set())
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.llm.model_info"):
+            get_model_capabilities("unknown-warn-model-2")
+        assert any("capabilities" in r.getMessage() for r in caplog.records)

@@ -243,4 +243,5 @@ async def _compute_relevant_memories(
 relevant_memories_attachment = InputAttachment(
     name=RELEVANT_MEMORIES_ATTACHMENT_NAME,
     compute=_compute_relevant_memories,
+    wrap_in_system_reminder=True,
 )

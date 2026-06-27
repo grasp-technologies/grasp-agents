@@ -13,62 +13,15 @@ from grasp_agents.types.items import (
 )
 
 
-class TestMemoryReset:
-    def test_reset_with_instructions(self):
-        """Reset creates a system InputMessageItem."""
-        mem = LLMAgentTranscript()
-        mem.reset(instructions="You are helpful.")
-
-        assert len(mem.messages) == 1
-        msg = mem.messages[0]
-        assert isinstance(msg, InputMessageItem)
-        assert msg.role == "system"
-        assert msg.texts == ["You are helpful."]
-
-    def test_reset_without_instructions(self):
-        """Reset with no instructions creates empty memory."""
-        mem = LLMAgentTranscript()
-        mem.reset(instructions="temp")
-        assert len(mem.messages) == 1
-
-        mem.reset()
-        assert len(mem.messages) == 0
-
-    def test_reset_clears_old_messages(self):
-        """Reset replaces any existing messages."""
-        mem = LLMAgentTranscript()
-        mem.update([InputMessageItem.from_text("old", role="user")])
-        assert len(mem.messages) == 1
-
-        mem.reset(instructions="new system")
-        assert len(mem.messages) == 1
-        assert mem.messages[0].role == "system"
-
-
-class TestMemoryInstructions:
-    def test_instructions_property_returns_text(self):
-        """Instructions property returns the first text from system message."""
-        mem = LLMAgentTranscript()
-        mem.reset(instructions="Be concise.")
-        assert mem.instructions == "Be concise."
-
-    def test_instructions_property_no_system(self):
-        """Instructions returns None when first message is not system."""
-        mem = LLMAgentTranscript()
-        mem.update([InputMessageItem.from_text("user msg", role="user")])
-        assert mem.instructions is None
-
-    def test_instructions_property_empty(self):
-        """Instructions returns None for empty memory."""
-        mem = LLMAgentTranscript()
-        assert mem.instructions is None
+def _sys(text: str) -> InputMessageItem:
+    return InputMessageItem.from_text(text, role="system")
 
 
 class TestMemoryUpdate:
     def test_update_appends_items(self):
         """update() extends the message list with new items."""
         mem = LLMAgentTranscript()
-        mem.reset(instructions="sys")
+        mem.update([_sys("sys")])
 
         user_msg = InputMessageItem.from_text("Hello", role="user")
         output_msg = OutputMessageItem(
@@ -120,24 +73,32 @@ class TestMemoryState:
         mem = LLMAgentTranscript()
         assert mem.is_empty
 
-        mem.reset(instructions="sys")
+        mem.update([_sys("sys")])
         assert not mem.is_empty
 
     def test_clear(self):
         """clear() clears all messages."""
         mem = LLMAgentTranscript()
-        mem.reset(instructions="sys")
-        mem.update([InputMessageItem.from_text("x", role="user")])
+        mem.update([_sys("sys"), InputMessageItem.from_text("x", role="user")])
 
         mem.clear()
         assert mem.is_empty
         assert len(mem.messages) == 0
 
+    def test_truncate(self):
+        """truncate() drops messages from an index onward; no-op out of range."""
+        mem = LLMAgentTranscript()
+        mem.update([InputMessageItem.from_text(str(i), role="user") for i in range(4)])
+
+        mem.truncate(2)
+        assert len(mem.messages) == 2
+        mem.truncate(5)  # past the end → unchanged
+        assert len(mem.messages) == 2
+
     def test_repr(self):
         """Repr shows message count."""
         mem = LLMAgentTranscript()
-        mem.reset(instructions="sys")
-        mem.update([InputMessageItem.from_text("x", role="user")])
+        mem.update([_sys("sys"), InputMessageItem.from_text("x", role="user")])
         assert "2" in repr(mem)
 
 
@@ -145,7 +106,7 @@ class TestMemoryFullConversation:
     def test_simulates_agentic_loop(self):
         """Simulate a full loop: system, user, assistant(+tools), tool, assistant."""
         mem = LLMAgentTranscript()
-        mem.reset(instructions="You are a calculator.")
+        mem.update([_sys("You are a calculator.")])
 
         # User turn
         mem.update([InputMessageItem.from_text("What is 2+2?", role="user")])
@@ -178,7 +139,6 @@ class TestMemoryFullConversation:
         mem.update(final_output)
 
         assert len(mem.messages) == 6
-        assert mem.instructions == "You are a calculator."
 
         # Verify types in order
         types = [type(m).__name__ for m in mem.messages]

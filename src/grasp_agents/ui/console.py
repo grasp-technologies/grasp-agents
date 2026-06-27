@@ -28,6 +28,7 @@ from grasp_agents.printer import render_payload
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
+    CompactionEvent,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -294,6 +295,9 @@ class EventConsole:
 
         elif isinstance(event, GenerationEndEvent):
             self._on_generation_end(event)
+
+        elif isinstance(event, CompactionEvent):
+            self._print(self._render(event))
 
         elif isinstance(event, LLMStreamEvent):
             self._on_llm_stream(event)
