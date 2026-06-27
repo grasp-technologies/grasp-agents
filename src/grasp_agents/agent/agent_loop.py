@@ -65,6 +65,7 @@ from .loop_state import (
     NextStepStop,
     decide_next_step,
 )
+from .task_progress import spill_if_large
 from .tool_decision import (
     AllowTool,
     RaiseToolException,
@@ -420,18 +421,20 @@ class AgentLoop[CtxT]:
         # can mark the result panel (e.g. a red border).
         is_error = isinstance(output, ToolErrorInfo)
 
-        # Common path: default serialization of trusted output.
-        if converter is None and not untrusted:
-            return FunctionToolOutputItem.from_tool_result(
-                call_id=call.call_id, output=output, is_error=is_error
-            )
-
         if converter is not None:
+            # A custom converter owns the output's shape, including any spilling.
             parts = await converter(output, exec_id=exec_id)
         else:
             parts = FunctionToolOutputItem.from_tool_result(
                 call_id=call.call_id, output=output
             ).output_parts
+            if not is_error and isinstance(parts, str):
+                parts = await spill_if_large(
+                    self._ctx.file_backend,
+                    name=call.call_id,
+                    text=parts,
+                    cap=tool.max_inline_result_chars if tool is not None else None,
+                )
 
         # Fence external content so the model reads it as data, not instructions
         # (paired with the ``untrusted_content`` system-prompt section).
