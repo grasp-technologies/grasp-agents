@@ -89,10 +89,11 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
             and can stop it early with ``KillTask`` (prefer :func:`bash_tools`,
             which wires the companion). Outside an agent loop the command always
             runs to completion in the foreground.
-        max_inline_result_chars: How much of a backgrounded command's output is
-            inlined into its completion notification. A larger result is
-            excerpted there, with the note pointing at the task's ``.grasp`` log
-            for the full output. ``None`` inlines the whole result.
+        max_inline_result_chars: How much of a command's output is inlined into
+            the agent's context. A larger result is excerpted, with a pointer to
+            an on-disk ``.grasp`` file holding the full output for ``Read`` /
+            ``Grep`` (a foreground call spills to a file; a backgrounded one
+            points at its task log). ``None`` inlines the whole result.
         block_leading_sleep: Reject commands whose first statement is a bare
             ``sleep`` — they block the loop and produce nothing.
         timeout: Standard per-tool timeout (outer asyncio ceiling).

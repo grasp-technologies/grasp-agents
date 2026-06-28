@@ -37,6 +37,7 @@ from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 from .llm_agent_transcript import LLMAgentTranscript
 from .task_progress import (
     append_task_log,
+    excerpt_for_inline,
     open_task_log,
     task_log_name,
     write_result_file,
@@ -248,28 +249,6 @@ def _serialize_result(result: Any) -> str:
     if isinstance(result, str):
         return result
     return json.dumps(to_jsonable_python(result), indent=2)
-
-
-def _excerpt_for_inline(
-    text: str, cap: int | None, *, output_file: str | None = None
-) -> tuple[str, bool]:
-    """
-    Fit a result into a completion note: ``(text, truncated)``.
-
-    Returns ``text`` unchanged when no cap applies or it already fits. Otherwise
-    keeps a head + tail of ``cap`` chars total with a middle marker; when an
-    ``output_file`` is known (the task's ``.grasp`` progress log), the marker
-    points there so the model can ``Read`` / ``Grep`` the full output on demand
-    rather than bloating the transcript with it.
-    """
-    if cap is None or len(text) <= cap:
-        return text, False
-    head = cap // 2
-    tail = cap - head
-    omitted = len(text) - cap
-    pointer = f" — full output in {output_file}" if output_file else ""
-    marker = f"\n... [{omitted} chars omitted{pointer}] ...\n"
-    return text[:head] + marker + text[-tail:], True
 
 
 class BackgroundTaskManager[CtxT]:
@@ -804,7 +783,7 @@ class BackgroundTaskManager[CtxT]:
         result, failed = _result_of(pt.events)
         # A head+tail excerpt of what it produced, so the model sees why it was
         # killed without bloating the transcript; the full output is in the log.
-        output, _ = _excerpt_for_inline(
+        output, _ = excerpt_for_inline(
             _stream_text(pt.events),
             pt.max_inline_result_chars or 8000,
             output_file=pt.log_path,
@@ -891,7 +870,7 @@ class BackgroundTaskManager[CtxT]:
                     ctx.file_backend, name=pt.tool_call_id or pt.task_id, text=full
                 )
 
-            body, _ = _excerpt_for_inline(
+            body, _ = excerpt_for_inline(
                 full, cap, output_file=result_file or pt.log_path
             )
             note_result = None if failed else body

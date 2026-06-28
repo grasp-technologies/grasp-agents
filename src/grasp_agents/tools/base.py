@@ -131,11 +131,14 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         # may finish first (e.g. a long shell command). Irrelevant when
         # ``auto_background_at is None`` (the call runs to completion inline).
         self.blocks_final_answer = blocks_final_answer
-        # Cap on how many characters of a backgrounded call's result are inlined
-        # into its completion notification. ``None`` (default): inline the whole
-        # result. When set and the result is larger, the notification carries a
-        # head+tail excerpt plus a pointer to the task's on-disk ``.grasp`` log,
-        # which holds the full output for ``Read`` / ``Grep``. Cap tools with
+        # Cap on how many characters of this tool's result are inlined into the
+        # agent's context. ``None`` (default): inline the whole result. When set
+        # and a call's result is larger, the agent sees a head+tail excerpt plus
+        # a pointer to an on-disk ``.grasp`` file holding the full output for
+        # ``Read`` / ``Grep`` — a foreground call spills to a ``.result`` file, a
+        # backgrounded one points at its task log. Spilling needs a
+        # ``file_backend``; with none, the result is inlined whole (truncating
+        # with no recovery path would hide output unrecoverably). Cap tools with
         # large mechanical output (shell logs); leave ``None`` where the result
         # *is* the answer (a sub-agent).
         self.max_inline_result_chars = max_inline_result_chars
