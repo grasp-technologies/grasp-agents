@@ -1,0 +1,99 @@
+"""The stateless ``SendMessage`` tool team members call to message a peer."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, Field
+
+from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
+from .message import USER_SENDER, TeamMessage
+from .transport import MessageTransport, default_transport
+
+if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
+    from grasp_agents.run_context import RunContext
+
+    from .agent_card import MemberCard
+
+SEND_MESSAGE_TOOL_NAME = "SendMessage"
+
+type TransportResolver = Callable[[RunContext[Any]], MessageTransport]
+
+
+class SendMessageInput(BaseModel):
+    to: str = Field(
+        description="Name of the teammate to message, or '*' to broadcast to all."
+    )
+    message: str = Field(description="The message body.")
+    reply_to: str | None = Field(
+        default=None, description="Optional id of a message this is a reply to."
+    )
+
+
+class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
+    """
+    Send a message to a teammate's mailbox and return immediately.
+
+    Asynchronous: the recipient receives the message at the start of its next
+    turn and the sender does not block for a reply (any reply arrives as a later
+    message). Stateless — the sender identity comes from the calling agent's
+    context and the transport from the run context — so one instance is shared
+    across every team member.
+    """
+
+    def __init__(
+        self,
+        cards: Sequence[MemberCard],
+        *,
+        transport_resolver: TransportResolver = default_transport,
+    ) -> None:
+        roster = "\n".join(f"- {c.render()}" for c in cards)
+        super().__init__(
+            name=SEND_MESSAGE_TOOL_NAME,
+            description=(
+                "Send a message to a teammate and keep working — delivery is "
+                "asynchronous, you will not block for a reply (any reply arrives "
+                "as a later message). Teammates you can message:\n" + roster
+            ),
+        )
+        self._recipients = {c.name for c in cards}
+        self._resolve_transport = transport_resolver
+
+    async def _run(
+        self,
+        inp: SendMessageInput,
+        *,
+        ctx: RunContext[Any] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: AgentContext | None = None,
+    ) -> str:
+        del exec_id, progress_callback, path
+        if ctx is None:
+            raise ValueError("SendMessage requires a RunContext.")
+        sender = agent_ctx.agent_name if agent_ctx is not None else USER_SENDER
+        if inp.to == "*":
+            recipients = sorted(self._recipients - {sender})
+            if not recipients:
+                return "No other teammates to broadcast to; message not sent."
+        elif inp.to in self._recipients:
+            recipients = [inp.to]
+        else:
+            valid = ", ".join(sorted(self._recipients)) or "(none)"
+            return (
+                f"No teammate named {inp.to!r}; message not sent. "
+                f"Valid teammates: {valid}."
+            )
+        message = TeamMessage.of_text(
+            sender=sender,
+            to=recipients,
+            text=inp.message,
+            reply_to=inp.reply_to,
+        )
+        await self._resolve_transport(ctx).send(message)
+        delivered = ", ".join(recipients)
+        return f"Message delivered to {delivered} (id={message.message_id})."

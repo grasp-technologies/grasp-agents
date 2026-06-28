@@ -16,6 +16,7 @@ from .checkpoints import (
 )
 from .context_serialization import ContextKind, rehydrate_context, serialize_context
 from .file_checkpoint_store import FileCheckpointStore
+from .message_record import MessageRecord
 from .resume import InterruptionType, ResumeState, prepare_messages_for_resume
 from .store_keys import (
     TOOL_CALL_PREFIX,
@@ -39,6 +40,7 @@ __all__ = [
     "FileCheckpointStore",
     "InMemoryCheckpointStore",
     "InterruptionType",
+    "MessageRecord",
     "PersistedRecord",
     "ProcessorCheckpoint",
     "ResumeState",

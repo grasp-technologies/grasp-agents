@@ -106,6 +106,7 @@ class CheckpointKind(StrEnum):
     PARALLEL = "parallel"
     RUNNER = "runner"
     TASK = "task"
+    MAILBOX = "mailbox"
 
 
 class CheckpointSchemaError(Exception):
