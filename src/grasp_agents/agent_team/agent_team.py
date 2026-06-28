@@ -12,16 +12,16 @@ when the ``max_hops`` budget is exhausted.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from grasp_agents.run_context import RunContext, current_run_context
-from grasp_agents.types.events import ProcPacketOutEvent
+from grasp_agents.runtime import ActorDriver
 
+from ._activation import is_llm_agent, stream_member
 from .agent_card import MemberCard
 from .events import (
     MessageDeliveredEvent,
@@ -30,38 +30,23 @@ from .events import (
     TeamStartedEvent,
     TeamStopReason,
 )
-from .message import USER_SENDER, TeamMessage, format_inbound
+from .message import USER_SENDER, TeamMessage
 from .tools import SEND_MESSAGE_TOOL_NAME, SendMessageTool
 from .transport import (
     CheckpointMailboxTransport,
     InMemoryMailboxTransport,
+    MailboxChannel,
     MessageTransport,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
-    from grasp_agents.agent.llm_agent import LLMAgent
     from grasp_agents.processors.processor import Processor
     from grasp_agents.tools.base import BaseTool
     from grasp_agents.types.events import Event
-    from grasp_agents.types.packet import Packet
 
 logger = logging.getLogger(__name__)
-
-# Sentinel pushed onto the event queue to close the stream.
-_STREAM_END = object()
-
-
-def _is_llm_agent(member: Any) -> TypeGuard[LLMAgent[Any, Any, Any]]:
-    """
-    An LLM agent (exposes a ``tools`` dict, fed a rendered user turn) vs a plain
-    processor (fed an input packet). This is the *activation* axis, orthogonal to
-    *routing*: an agent with no static recipients gets the ``SendMessage`` tool and
-    routes by messaging (a communicator), while a processor — or an agent that
-    declares recipients — hands its output off by name (a worker).
-    """
-    return isinstance(getattr(member, "tools", None), dict)
 
 
 class TeamRunResult(BaseModel):
@@ -154,7 +139,7 @@ class AgentTeam[CtxT]:
             # SendMessage tool and routes by messaging; a worker (a processor, or
             # an agent that declares recipients) hands its output off by name and
             # gets no tool.
-            if _is_llm_agent(member) and not member.recipients:
+            if is_llm_agent(member) and not member.recipients:
                 member.tools[SEND_MESSAGE_TOOL_NAME] = send_tool
             member.on_adopted(self)
 
@@ -231,233 +216,157 @@ class AgentTeam[CtxT]:
         *,
         to: str | None = None,
         daemon: bool = False,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.05,
         **run_kwargs: Any,
     ) -> AsyncIterator[Event[Any]]:
         """
         Seed the entry member with ``chat_inputs`` and stream every member's events.
 
-        By default the run ends at **quiescence** (no member running, no mail). With
-        ``daemon=True`` it never self-terminates: on quiescence it idle-polls every
-        ``poll_interval`` seconds for new mail (e.g. from an external source), and a
-        member failure is dead-lettered and logged rather than stopping the team —
-        so one member's crash never takes the team down. Stop a daemon by cancelling
-        the stream (break out of the iteration). Events carry
+        By default the run ends at **quiescence** (no member running, no mail) — or at
+        the ``max_hops`` budget, with mail still pending. With ``daemon=True`` it never
+        self-terminates: it keeps serving mail (e.g. from an external source), polling
+        every ``poll_interval`` seconds, and dead-letters a member failure rather than
+        stopping the team — so one member's crash never takes the team down. Stop a
+        daemon by cancelling the stream (break out of the iteration). Events carry
         ``source = <member name>``.
         """
-        transport = self._transport_for(self._ctx)
+        mailbox = self._transport_for(self._ctx)
         entry = to or self._entry_name
         if entry not in self._members_by_name:
             raise ValueError(f"Recipient {entry!r} is not a team member.")
 
-        if chat_inputs is not None:
-            await transport.send(
-                TeamMessage.of_text(
-                    sender=USER_SENDER, to=entry, text=str(chat_inputs)
-                )
-            )
-
-        out: asyncio.Queue[Event[Any] | object] = asyncio.Queue()
-        coordinator = asyncio.create_task(
-            self._coordinate(transport, out, run_kwargs, daemon, poll_interval)
+        driver: ActorDriver[TeamMessage] = ActorDriver(
+            MailboxChannel(mailbox, poll_interval=poll_interval),
+            termination="daemon" if daemon else "quiescence",
+            max_activations=None if daemon else self._max_hops,
         )
-        try:
-            while True:
-                item = await out.get()
-                if item is _STREAM_END:
-                    break
-                yield cast("Event[Any]", item)
-        finally:
-            if not coordinator.done():
-                coordinator.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await coordinator
-
-    async def _coordinate(
-        self,
-        transport: MessageTransport,
-        out: asyncio.Queue[Event[Any] | object],
-        run_kwargs: dict[str, Any],
-        daemon: bool = False,
-        poll_interval: float = 0.5,
-    ) -> None:
-        running: dict[str, asyncio.Task[str | None]] = {}
-        activations = 0
-        stop_reason = TeamStopReason.QUIESCED
-        await out.put(
-            TeamStartedEvent(source=self._name, data=TeamRunInfo(team=self._name))
+        # Members that raised while handling a message — a bounded run stops on this.
+        failed: list[str] = []
+        seed = (
+            TeamMessage.of_text(sender=USER_SENDER, to=entry, text=str(chat_inputs))
+            if chat_inputs is not None
+            else None
         )
+
+        yield TeamStartedEvent(source=self._name, data=TeamRunInfo(team=self._name))
+
         try:
-            activations, stop_reason = await self._drive(
-                transport, out, running, run_kwargs, daemon, poll_interval
-            )
+            async for event in self._drive(driver, seed, daemon, failed, run_kwargs):
+                yield event
         except asyncio.CancelledError:
-            stop_reason = TeamStopReason.CANCELLED
+            # A daemon stopped by the consumer — honor the cancellation; the
+            # consumer is gone, so no closing event is emitted.
             raise
         except Exception:
+            logger.exception("AgentTeam %s failed", self._name)
             stop_reason = TeamStopReason.ERROR
-            logger.exception("AgentTeam %s coordinator failed", self._name)
-        finally:
-            await self._shutdown(out, running, activations, stop_reason)
+        else:
+            stop_reason = await self._final_stop_reason(
+                failed, driver, mailbox, daemon=daemon
+            )
+
+        yield TeamEndedEvent(
+            source=self._name,
+            data=TeamRunInfo(
+                team=self._name,
+                activations=driver.activation_count,
+                stop_reason=stop_reason,
+            ),
+        )
 
     async def _drive(
         self,
-        transport: MessageTransport,
-        out: asyncio.Queue[Event[Any] | object],
-        running: dict[str, asyncio.Task[str | None]],
+        driver: ActorDriver[TeamMessage],
+        seed: TeamMessage | None,
+        daemon: bool,
+        failed: list[str],
         run_kwargs: dict[str, Any],
-        daemon: bool = False,
-        poll_interval: float = 0.5,
-    ) -> tuple[int, TeamStopReason]:
-        activations = 0
-        failed: list[str] = []
-        while True:
-            if daemon or activations < self._max_hops:
-                for member_name in self._members_by_name:
-                    if member_name in running:
-                        continue
-                    message = await transport.fetch_next(member_name)
-                    if message is None:
-                        continue
-                    activations += 1
-                    await self._announce(out, member_name, message)
-                    running[member_name] = asyncio.create_task(
-                        self._activate(
-                            member_name, message, transport, out, run_kwargs
-                        )
-                    )
-                    if not daemon and activations >= self._max_hops:
-                        break
-            if not running:
-                if daemon:
-                    # Idle: wait for new mail (e.g. from an external source) rather
-                    # than quiescing; cancelled when the consumer stops the stream.
-                    await asyncio.sleep(poll_interval)
-                    continue
-                break
-            done, _ = await asyncio.wait(
-                running.values(), return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                finished = next(n for n, t in running.items() if t is task)
-                del running[finished]
-                # A daemon dead-letters a failed member (its message was acked in
-                # _activate) and keeps serving; a bounded run records it to stop
-                # the run with MEMBER_ERROR.
-                if task.result() is not None and not daemon:
-                    failed.append(finished)
+    ) -> AsyncIterator[Event[Any]]:
+        async with driver:
+            for member in self._members:
+                driver.register_handler(
+                    member.name,
+                    self._make_handler(member, driver, daemon, failed, run_kwargs),
+                )
+            if seed is not None:
+                await driver.post(seed)
+            # Seed posted: an empty bounded run quiesces immediately rather than
+            # blocking forever on idle consumers.
+            await driver.settle()
+            async for event in driver.stream_events():
+                yield event
 
+    def _make_handler(
+        self,
+        member: Processor[Any, Any, CtxT],
+        driver: ActorDriver[TeamMessage],
+        daemon: bool,
+        failed: list[str],
+        run_kwargs: dict[str, Any],
+    ) -> Callable[[TeamMessage], Awaitable[None]]:
+        """
+        Build a member's activation: announce the delivery, run the member over the
+        one inbound message, bubble its events, and hand any routed output off
+        through the transport — the same mailbox path a ``SendMessage`` call takes.
+        """
+
+        async def handler(message: TeamMessage) -> None:
+            await driver.push_to_stream(
+                MessageDeliveredEvent(
+                    source=message.sender, destination=member.name, data=message
+                )
+            )
+            try:
+                out_packet = await stream_member(
+                    member, message, push=driver.push_to_stream, run_kwargs=run_kwargs
+                )
+                if out_packet is not None and out_packet.routing:
+                    await driver.post(TeamMessage.from_packet(out_packet))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The driver acks on return, dead-lettering the message rather than
+                # retrying it forever. A bounded run records the failure and stops
+                # with MEMBER_ERROR; a daemon logs and keeps serving.
+                logger.warning(
+                    "Team member %r failed handling a message",
+                    member.name,
+                    exc_info=True,
+                )
+                failed.append(member.name)
+                if not daemon:
+                    await driver.shutdown()
+
+        return handler
+
+    async def _final_stop_reason(
+        self,
+        failed: list[str],
+        driver: ActorDriver[TeamMessage],
+        mailbox: MessageTransport,
+        *,
+        daemon: bool,
+    ) -> TeamStopReason:
         if failed:
             logger.warning(
                 "AgentTeam %s: members failed: %s", self._name, ", ".join(failed)
             )
-            return activations, TeamStopReason.MEMBER_ERROR
-        if activations >= self._max_hops and await self._any_pending(transport):
+            return TeamStopReason.MEMBER_ERROR
+        if (
+            not daemon
+            and driver.activation_count >= self._max_hops
+            and await self._any_pending(mailbox)
+        ):
             logger.warning(
                 "AgentTeam %s reached max_hops=%d with mail still pending",
                 self._name,
                 self._max_hops,
             )
-            return activations, TeamStopReason.HOP_BUDGET_EXHAUSTED
-        return activations, TeamStopReason.QUIESCED
+            return TeamStopReason.HOP_BUDGET_EXHAUSTED
+        return TeamStopReason.QUIESCED
 
-    @staticmethod
-    async def _announce(
-        out: asyncio.Queue[Event[Any] | object],
-        member_name: str,
-        message: TeamMessage,
-    ) -> None:
-        await out.put(
-            MessageDeliveredEvent(
-                source=message.sender, destination=member_name, data=message
-            )
-        )
-
-    async def _shutdown(
-        self,
-        out: asyncio.Queue[Event[Any] | object],
-        running: dict[str, asyncio.Task[str | None]],
-        activations: int,
-        stop_reason: TeamStopReason,
-    ) -> None:
-        for task in running.values():
-            task.cancel()
-        for task in running.values():
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        with contextlib.suppress(Exception):
-            await out.put(
-                TeamEndedEvent(
-                    source=self._name,
-                    data=TeamRunInfo(
-                        team=self._name,
-                        activations=activations,
-                        stop_reason=stop_reason,
-                    ),
-                )
-            )
-            await out.put(_STREAM_END)
-
-    async def _activate(
-        self,
-        member_name: str,
-        message: TeamMessage,
-        transport: MessageTransport,
-        out: asyncio.Queue[Event[Any] | object],
-        run_kwargs: dict[str, Any],
-    ) -> str | None:
-        """Run one member over one inbound message; return its name on failure."""
-        failed: str | None = None
-        try:
-            out_packet = await self._run_member(member_name, message, out, run_kwargs)
-            # Hand the output off by name — the same mailbox path a SendMessage
-            # call takes, performed for a member that has no tool to call it. A
-            # communicator routes by sending mid-run and carries no routing here
-            # (no static recipients); a worker's output carries its routing.
-            if out_packet is not None and out_packet.routing:
-                await transport.send(TeamMessage.from_packet(out_packet))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "Team member %r failed handling a message", member_name, exc_info=True
-            )
-            failed = member_name
-        finally:
-            # Ack regardless of outcome: a failed message is dead-lettered to
-            # ``processed/`` rather than retried forever. The failure surfaces
-            # in the run's ``stop_reason``.
-            await transport.ack(member_name, [message.message_id])
-        return failed
-
-    async def _run_member(
-        self,
-        member_name: str,
-        message: TeamMessage,
-        out: asyncio.Queue[Event[Any] | object],
-        run_kwargs: dict[str, Any],
-    ) -> Packet[Any] | None:
-        """
-        Activate one member over one message, bubbling events; return its output
-        packet. An agent takes the message as a rendered user turn, a processor as
-        an input packet; both are Processors, so both yield a final output packet.
-        """
-        member = self._members_by_name[member_name]
-        if _is_llm_agent(member):
-            stream = member.run_stream(
-                chat_inputs=format_inbound(message), **run_kwargs
-            )
-        else:
-            stream = member.run_stream(in_packet=message.to_packet(), **run_kwargs)
-        out_packet: Packet[Any] | None = None
-        async for event in stream:
-            await out.put(event)
-            if isinstance(event, ProcPacketOutEvent) and event.source == member_name:
-                out_packet = event.data
-        return out_packet
-
-    async def _any_pending(self, transport: MessageTransport) -> bool:
+    async def _any_pending(self, mailbox: MessageTransport) -> bool:
         for member_name in self._members_by_name:
-            if await transport.has_mail(member_name):
+            if await mailbox.has_mail(member_name):
                 return True
         return False

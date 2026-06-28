@@ -6,13 +6,16 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from .message import format_inbound
+from grasp_agents.runtime import CLOSED, ActorDriver, Closed, Transport
+
+from ._activation import is_llm_agent, stream_member
+from .message import USER_SENDER, TeamMessage
 from .tools import SEND_MESSAGE_TOOL_NAME, SendMessageTool
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
-    from grasp_agents.agent.llm_agent import LLMAgent
+    from grasp_agents.processors.processor import Processor
     from grasp_agents.run_context import RunContext
     from grasp_agents.tools.base import BaseTool
     from grasp_agents.types.events import Event
@@ -23,47 +26,124 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class MemberDriver:
+class _PrioritizedInbox(Transport[TeamMessage]):
     """
-    Runs ONE team member as a single serial inbox: human input and incoming
-    mailbox messages feed one loop that runs the agent one turn at a time (human
-    input takes priority), so two turns never interleave into its transcript.
+    Human input and the member's mailbox as one runtime channel, human first.
 
-    The reusable core behind a per-process member UI — each member lives in its
-    own process, building its agent against a shared (file/remote) transport.
-    For a single-process team, use :class:`~.agent_team.AgentTeam` instead.
+    Human turns are queued in memory and jump ahead of mailbox mail; they are not
+    persisted and need no ack (they never entered the mailbox). Mailbox mail is
+    fetched non-consuming and acked by the driver after the turn — at-least-once,
+    like any team member.
     """
 
     def __init__(
         self,
-        agent: LLMAgent[Any, Any, Any],
+        mailbox: MessageTransport,
+        human_q: asyncio.Queue[str],
+        *,
+        poll_interval: float,
+    ) -> None:
+        self._mailbox = mailbox
+        self._human_q = human_q
+        self._poll_interval = poll_interval
+        self._closed = asyncio.Event()
+        self._human_ids: set[str] = set()
+
+    def register(self, recipient: str) -> None:
+        del recipient
+
+    async def post(self, envelope: TeamMessage) -> None:
+        await self._mailbox.send(envelope)
+
+    async def consume(self, recipient: str) -> TeamMessage | Closed:
+        while not self._closed.is_set():
+            human = self._take_human(recipient)
+            if human is not None:
+                return human
+            message = await self._mailbox.fetch_next(recipient)
+            if message is not None:
+                return message
+            # Idle: wake on human input, else time out to re-poll the mailbox.
+            try:
+                text = await asyncio.wait_for(
+                    self._human_q.get(), timeout=self._poll_interval
+                )
+                self._human_q.put_nowait(text)
+            except TimeoutError:
+                pass
+        return CLOSED
+
+    def _take_human(self, recipient: str) -> TeamMessage | None:
+        try:
+            text = self._human_q.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+        message = TeamMessage.of_text(sender=USER_SENDER, to=recipient, text=text)
+        self._human_ids.add(message.message_id)
+        return message
+
+    async def ack(self, recipient: str, envelope: TeamMessage) -> None:
+        if envelope.message_id in self._human_ids:
+            self._human_ids.discard(envelope.message_id)
+        else:
+            await self._mailbox.ack(recipient, [envelope.message_id])
+
+    async def has_pending(self, recipient: str) -> bool:
+        return not self._human_q.empty() or await self._mailbox.has_mail(recipient)
+
+    async def shutdown(self) -> None:
+        self._closed.set()
+
+
+class MemberDriver:
+    """
+    Runs ONE team member as a single serial inbox: human input and incoming mailbox
+    messages feed one loop that runs the member one turn at a time (human input takes
+    priority), so two turns never interleave into its transcript.
+
+    The reusable core behind a per-process member UI — each member lives in its own
+    process, built against a shared (durable) transport, all running on the same
+    actor runtime as an in-process :class:`~.agent_team.AgentTeam`. The member may be
+    an agent **or** a plain ``Processor``: a communicator agent (no static recipients)
+    gets a ``SendMessage`` tool and messages peers; a worker (a processor, or an agent
+    with recipients) reacts to inbound packets and hands its output off by name. Both
+    reach peers in other processes through the shared mailbox. For a single-process
+    team, use :class:`~.agent_team.AgentTeam` instead.
+    """
+
+    def __init__(
+        self,
+        member: Processor[Any, Any, Any],
         *,
         cards: Sequence[MemberCard],
         transport: MessageTransport,
         poll_interval: float = 0.5,
         run_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        self._agent = agent
-        self._transport = transport
+        self._member = member
+        self._mailbox = transport
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
         self._human_q: asyncio.Queue[str] = asyncio.Queue()
 
-        tool = cast(
-            "BaseTool[Any, Any, Any]",
-            SendMessageTool(cards, transport_resolver=lambda _ctx: transport),
-        )
-        agent.tools[SEND_MESSAGE_TOOL_NAME] = tool
-        tool.on_adopted(agent)
+        # A communicator (an agent with no static recipients) messages peers via
+        # SendMessage; a worker hands its output off by name and gets no tool.
+        if is_llm_agent(member) and not member.recipients:
+            tool = cast(
+                "BaseTool[Any, Any, Any]",
+                SendMessageTool(cards, transport_resolver=lambda _ctx: transport),
+            )
+            member.tools[SEND_MESSAGE_TOOL_NAME] = tool
+            tool.on_adopted(member)
 
     @property
     def name(self) -> str:
-        return self._agent.name
+        return self._member.name
 
     @property
     def ctx(self) -> RunContext[Any]:
-        """The member agent's run context (approval store, skills, etc.)."""
-        return self._agent.ctx
+        """The member's run context (approval store, skills, etc.)."""
+        return self._member.ctx
 
     def submit_human(self, text: str) -> None:
         """Queue human input as the member's next turn (same event loop)."""
@@ -73,51 +153,42 @@ class MemberDriver:
         self, *, stop_when_idle: bool = False
     ) -> AsyncIterator[Event[Any]]:
         """
-        Serial inbox loop: take the next human input (if any) else the next
-        mailbox message (one group per turn), run one agent turn, and yield its
-        events (acking the consumed message). Runs until cancelled, or returns
-        once idle when ``stop_when_idle`` (for batch / tests). A failing turn is
-        logged and its message dead-lettered; the loop keeps serving.
+        Stream the member's turns. Each activation takes the next human input (if
+        any) else the next mailbox message — one group per turn — runs one turn, and
+        hands any routed output off through the transport. Runs until cancelled, or
+        returns once idle when ``stop_when_idle`` (for batch / tests). A failing turn
+        is logged and its message dead-lettered; the loop keeps serving.
         """
-        name = self._agent.name
-        while True:
-            text = self._next_human()
-            message = None
-            if text is not None:
-                chat = text
-            else:
-                message = await self._transport.fetch_next(name)
-                chat = format_inbound(message) if message is not None else None
+        channel = _PrioritizedInbox(
+            self._mailbox, self._human_q, poll_interval=self._poll_interval
+        )
+        driver: ActorDriver[TeamMessage] = ActorDriver(
+            channel, termination="quiescence" if stop_when_idle else "daemon"
+        )
+        async with driver:
+            driver.register_handler(self._member.name, self._make_handler(driver))
+            await driver.settle()
+            async for event in driver.stream_events():
+                yield event
 
-            if chat is None:
-                if stop_when_idle:
-                    return
-                await self._idle_wait()
-                continue
+    def _make_handler(
+        self, driver: ActorDriver[TeamMessage]
+    ) -> Callable[[TeamMessage], Awaitable[None]]:
+        member = self._member
 
+        async def handler(message: TeamMessage) -> None:
             try:
-                async for event in self._agent.run_stream(
-                    chat_inputs=chat, **self._run_kwargs
-                ):
-                    yield event
+                out_packet = await stream_member(
+                    member,
+                    message,
+                    push=driver.push_to_stream,
+                    run_kwargs=self._run_kwargs,
+                )
+                if out_packet is not None and out_packet.routing:
+                    await driver.post(TeamMessage.from_packet(out_packet))
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.warning("Member %r turn failed", name, exc_info=True)
-            finally:
-                if message is not None:
-                    await self._transport.ack(name, [message.message_id])
+                logger.warning("Member %r turn failed", member.name, exc_info=True)
 
-    def _next_human(self) -> str | None:
-        try:
-            return self._human_q.get_nowait()
-        except asyncio.QueueEmpty:
-            return None
-
-    async def _idle_wait(self) -> None:
-        # Wake on human input, else time out to re-poll the mailbox.
-        try:
-            text = await asyncio.wait_for(
-                self._human_q.get(), timeout=self._poll_interval
-            )
-        except TimeoutError:
-            return
-        self._human_q.put_nowait(text)
+        return handler

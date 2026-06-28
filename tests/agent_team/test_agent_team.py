@@ -273,8 +273,10 @@ async def test_processor_member_routes_to_agent(tmp_path: Path) -> None:
     assert result.stop_reason == "quiesced"
     assert result.activations == 2  # router, then writer
     assert writer.llm.call_count == 1
+    # The processor must forward the real content, not a dropped [None] payload.
     assert any(
-        m.sender == "router" and m.recipient == "writer" for m in result.messages
+        m.sender == "router" and m.recipient == "writer" and m.text == "hello"
+        for m in result.messages
     )
 
 

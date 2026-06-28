@@ -17,6 +17,7 @@ tool are unchanged.
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,7 @@ from grasp_agents.durability.message_record import MessageRecord
 from grasp_agents.durability.store_keys import make_store_key
 from grasp_agents.durability.task_record import TaskStatus
 from grasp_agents.run_context import DEFAULT_SESSION_KEY
+from grasp_agents.runtime import CLOSED, Closed, Transport
 
 from .message import TeamMessage
 
@@ -183,6 +185,54 @@ class CheckpointMailboxTransport(MessageTransport):
 
     async def has_mail(self, recipient: str) -> bool:
         return bool(await self._store.list_keys(self._inbox_prefix(recipient)))
+
+
+class MailboxChannel(Transport[TeamMessage]):
+    """
+    Bridges a :class:`MessageTransport` (mailbox semantics) to the actor runtime's
+    routing interface, so :class:`~grasp_agents.runtime.ActorDriver` can drive a
+    team over any mailbox backend.
+
+    A mailbox has no arrival signal, so :meth:`consume` polls
+    :meth:`MessageTransport.fetch_next` every ``poll_interval`` seconds, waking
+    immediately on :meth:`shutdown`. Because ``fetch_next`` is non-consuming and the
+    driver only acks after a successful activation, delivery is at-least-once and an
+    activation that is gated off (e.g. by a hop budget) leaves its message pending.
+    """
+
+    def __init__(self, mailbox: MessageTransport, *, poll_interval: float = 0.05):
+        self._mailbox = mailbox
+        self._poll_interval = poll_interval
+        self._closed = asyncio.Event()
+
+    def register(self, recipient: str) -> None:
+        # A mailbox is created on first deposit; nothing to pre-allocate.
+        del recipient
+
+    async def post(self, envelope: TeamMessage) -> None:
+        await self._mailbox.send(envelope)
+
+    async def consume(self, recipient: str) -> TeamMessage | Closed:
+        while not self._closed.is_set():
+            message = await self._mailbox.fetch_next(recipient)
+            if message is not None:
+                return message
+            try:
+                await asyncio.wait_for(
+                    self._closed.wait(), timeout=self._poll_interval
+                )
+            except TimeoutError:
+                pass
+        return CLOSED
+
+    async def ack(self, recipient: str, envelope: TeamMessage) -> None:
+        await self._mailbox.ack(recipient, [envelope.message_id])
+
+    async def has_pending(self, recipient: str) -> bool:
+        return await self._mailbox.has_mail(recipient)
+
+    async def shutdown(self) -> None:
+        self._closed.set()
 
 
 def default_transport(ctx: RunContext[Any]) -> MessageTransport:
