@@ -2,10 +2,12 @@
 Asynchronous peer-messaging teams (experimental).
 
 A team of members — :class:`~grasp_agents.agent.LLMAgent`s and/or plain
-:class:`~grasp_agents.processors.processor.Processor`s — that communicate by
-sending each other messages via a pluggable :class:`MessageTransport` (in-memory
-for a single process, or durable over the session checkpoint store). See
-``docs/experimental/agent-team``.
+:class:`~grasp_agents.processors.processor.Processor`s — that communicate by posting
+messages to each other over a shared mailbox
+:class:`~grasp_agents.runtime.Transport`
+(:class:`~grasp_agents.mailbox.InMemoryMailboxTransport` for a single process, or
+:class:`~grasp_agents.mailbox.CheckpointMailboxTransport` for durable delivery over
+the session checkpoint store). See ``docs/experimental/agent-team``.
 """
 
 from __future__ import annotations
@@ -21,12 +23,16 @@ from .events import (
 )
 from .member import MemberDriver
 from .message import TeamMessage
-from .sources import run_interval_source
-from .tools import SendMessageInput, SendMessageTool
+from .sources import WakeupScheduler, run_interval_source
+from .tools import (
+    ScheduleWakeupInput,
+    ScheduleWakeupTool,
+    SendMessageInput,
+    SendMessageTool,
+)
 from .transport import (
     CheckpointMailboxTransport,
     InMemoryMailboxTransport,
-    MessageTransport,
     default_transport,
 )
 
@@ -37,7 +43,8 @@ __all__ = [
     "MemberCard",
     "MemberDriver",
     "MessageDeliveredEvent",
-    "MessageTransport",
+    "ScheduleWakeupInput",
+    "ScheduleWakeupTool",
     "SendMessageInput",
     "SendMessageTool",
     "TeamEndedEvent",
@@ -46,6 +53,7 @@ __all__ = [
     "TeamRunResult",
     "TeamStartedEvent",
     "TeamStopReason",
+    "WakeupScheduler",
     "default_transport",
     "run_interval_source",
 ]

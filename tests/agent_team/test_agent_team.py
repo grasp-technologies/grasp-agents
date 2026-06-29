@@ -1,6 +1,8 @@
 """
-End-to-end ``AgentTeam`` behavior with mocked LLMs: a two-member exchange runs
-to quiescence, and a hop budget stops a team with mail still pending.
+End-to-end ``AgentTeam`` behavior with mocked LLMs: communicators run resident
+(one loop, consuming their inbox between turns) and message each other to quiescence;
+a processor / agent-with-recipients runs triggered and hands off; a hop budget stops
+a team with mail pending; a daemon keeps serving past quiescence.
 """
 
 from __future__ import annotations
@@ -15,16 +17,15 @@ import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_team import AgentTeam
-from grasp_agents.agent_team.message import TeamMessage
+from grasp_agents.agent_team.events import MessageDeliveredEvent
 from grasp_agents.agent_team.sources import run_interval_source
-from grasp_agents.agent_team.transport import (
-    CheckpointMailboxTransport,
-    MessageTransport,
-)
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.file_backend.local import LocalFileBackend
+from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
+from grasp_agents.tools.function_tool import function_tool
+from grasp_agents.types.message import TeamMessage
 from grasp_agents.types.response import Response
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
@@ -44,6 +45,25 @@ class ForwardProcessor(Processor[Any, Any, None]):
         return list(in_args or [])
 
 
+class RecordingTransport(InMemoryMailboxTransport):
+    """An explicit transport that records that the team routed through it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.posted = False
+
+    async def post(self, envelope: TeamMessage) -> None:
+        self.posted = True
+        await super().post(envelope)
+
+
+class FailingLLM(MockLLM):
+    """An LLM whose generation always raises, to exercise member failure."""
+
+    async def _generate_response_once(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+
 def _ctx(tmp_path: Path) -> RunContext[None]:
     return RunContext[None](
         state=None, file_backend=LocalFileBackend(allowed_roots=[tmp_path])
@@ -60,33 +80,13 @@ def _send(to: str, message: str, call_id: str) -> Response:
     )
 
 
-class InMemoryTransport(MessageTransport):
-    """A non-file transport, to prove a custom transport is used end-to-end."""
-
-    def __init__(self) -> None:
-        self.boxes: dict[str, list[TeamMessage]] = {}
-
-    async def _deposit(self, message: TeamMessage) -> None:
-        self.boxes.setdefault(message.recipients[0], []).append(message)
-
-    async def fetch_next(self, recipient: str) -> TeamMessage | None:
-        box = self.boxes.get(recipient)
-        return box[0] if box else None
-
-    async def ack(self, recipient: str, message_ids: list[str]) -> None:
-        self.boxes[recipient] = [
-            m for m in self.boxes.get(recipient, []) if m.message_id not in message_ids
-        ]
-
-    async def has_mail(self, recipient: str) -> bool:
-        return bool(self.boxes.get(recipient))
-
-
-class FailingLLM(MockLLM):
-    """An LLM whose generation always raises, to exercise member failure."""
-
-    async def _generate_response_once(self, *args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("boom")
+async def _until(pred: Callable[[], bool]) -> None:
+    """Poll ``pred`` until true, bounded to ~3s so a test can't hang."""
+    for _ in range(300):
+        if pred():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met within timeout")
 
 
 @pytest.mark.asyncio
@@ -110,14 +110,16 @@ async def test_two_member_ping_pong_runs_to_quiescence(tmp_path: Path) -> None:
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
 
     result = await team.run("kick off")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
+    # Three deliveries consumed: kickoff→alice, ping→bob, pong→alice.
     assert result.activations == 3
     delivered = {(m.sender, m.recipient, m.text) for m in result.messages}
     assert ("user", "alice", "kick off") in delivered
     assert ("alice", "bob", "ping") in delivered
     assert ("bob", "alice", "pong") in delivered
-    # alice ran twice (2 turns + 1 turn), bob once (2 turns).
+    # alice generated 3 turns (ping, sent-ping, done), bob 2 (pong, sent-pong).
     assert alice.llm.call_count == 3
     assert bob.llm.call_count == 2
 
@@ -129,6 +131,7 @@ async def test_single_member_answers_and_quiesces(tmp_path: Path) -> None:
     team = AgentTeam([solo], ctx=ctx)
 
     result = await team.run("question?")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
     assert result.activations == 1
@@ -137,43 +140,17 @@ async def test_single_member_answers_and_quiesces(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multiple_pending_messages_deliver_one_per_turn(tmp_path: Path) -> None:
-    # Two unrelated messages waiting for one member must activate it TWICE (one
-    # group per turn), never merge into a single concatenated turn.
-    ctx = _ctx(tmp_path)
-    solo = _agent("solo", [_text_response("ack 1"), _text_response("ack 2")])
-    transport = InMemoryTransport()
-    team = AgentTeam([solo], ctx=ctx, transport=transport)
-
-    await transport.send(
-        TeamMessage.of_text(sender="user", to="solo", text="first")
-    )
-    await transport.send(
-        TeamMessage.of_text(sender="user", to="solo", text="second")
-    )
-
-    result = await team.run()  # no kickoff; drive the two pending messages
-
-    assert result.stop_reason == "quiesced"
-    assert result.activations == 2  # one per message, not one merged turn
-    assert solo.llm.call_count == 2
-    assert [m.text for m in result.messages if m.recipient == "solo"] == [
-        "first",
-        "second",
-    ]
-
-
-@pytest.mark.asyncio
 async def test_hop_budget_stops_with_pending_mail(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     alice = _agent(
         "alice", [_send("bob", "ping", "c1"), _text_response("alice done")]
     )
-    # bob would reply, but the budget stops the team before it is ever activated.
+    # bob would reply, but the budget refuses alice's send before bob is activated.
     bob = _agent("bob", [_send("alice", "pong", "c2"), _text_response("bob done")])
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx, max_hops=1)
 
     result = await team.run("go")
+    await team.aclose()
 
     assert result.stop_reason == "hop_budget_exhausted"
     assert result.activations == 1
@@ -190,22 +167,22 @@ async def test_duplicate_member_names_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_custom_transport_is_used_by_members() -> None:
-    transport = InMemoryTransport()
-    # No file_backend on ctx: if a member's SendMessage fell back to the file
-    # default, its send would fail and bob would never be activated. So bob
-    # running proves the custom transport reaches the members' tool, not just
-    # the coordinator.
+async def test_explicit_transport_is_used_by_members() -> None:
+    # No file_backend on ctx: the team routes every send through the explicit
+    # transport, so the recording flag being set proves it reached the members.
+    transport = RecordingTransport()
     ctx = RunContext[None](state=None)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
 
     result = await team.run("kick off")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
     assert result.activations == 2
     assert bob.llm.call_count == 1
+    assert transport.posted
     delivered = {(m.sender, m.recipient, m.text) for m in result.messages}
     assert ("alice", "bob", "ping") in delivered
 
@@ -217,6 +194,7 @@ async def test_member_failure_reports_member_error(tmp_path: Path) -> None:
     team = AgentTeam([solo], ctx=ctx)
 
     result = await team.run("do it")
+    await team.aclose()
 
     assert result.stop_reason == "member_error"
     assert result.activations == 1
@@ -232,6 +210,7 @@ async def test_team_without_file_backend_uses_in_memory() -> None:
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
 
     result = await team.run("go")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
     assert result.activations == 2
@@ -251,6 +230,7 @@ async def test_team_over_checkpoint_transport() -> None:
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
 
     result = await team.run("kick off")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
     assert result.activations == 2
@@ -261,17 +241,18 @@ async def test_team_over_checkpoint_transport() -> None:
 
 @pytest.mark.asyncio
 async def test_processor_member_routes_to_agent(tmp_path: Path) -> None:
-    # A non-agent Processor member consumes a message and hands its output off to
-    # an agent member by name (recipients / select_recipients routing).
+    # A non-agent Processor member (triggered) consumes a message and hands its
+    # output off to a resident agent member by name.
     ctx = _ctx(tmp_path)
     router = ForwardProcessor(name="router", recipients=["writer"])
     writer = _agent("writer", [_text_response("writer done")])
     team = AgentTeam([router, writer], entry="router", ctx=ctx)
 
     result = await team.run("hello")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
-    assert result.activations == 2  # router, then writer
+    assert result.activations == 2  # hello→router, then router→writer
     assert writer.llm.call_count == 1
     # The processor must forward the real content, not a dropped [None] payload.
     assert any(
@@ -282,8 +263,8 @@ async def test_processor_member_routes_to_agent(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_agent_worker_with_recipients_hands_off(tmp_path: Path) -> None:
-    # An LLMAgent given static recipients is a worker, not a communicator: it gets
-    # no SendMessage tool and hands its final answer off by name, like a processor.
+    # An LLMAgent given static recipients is a worker (triggered), not a
+    # communicator: it gets no SendMessage tool and hands its answer off by name.
     ctx = _ctx(tmp_path)
     worker = LLMAgent[Any, Any, None](
         name="worker", llm=MockLLM(responses_queue=[_text_response("did the work")])
@@ -293,6 +274,7 @@ async def test_agent_worker_with_recipients_hands_off(tmp_path: Path) -> None:
     team = AgentTeam([worker, sink], entry="worker", ctx=ctx)
 
     result = await team.run("go")
+    await team.aclose()
 
     assert result.stop_reason == "quiesced"
     assert result.activations == 2
@@ -303,6 +285,41 @@ async def test_agent_worker_with_recipients_hands_off(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_nonblocking_bg_task_does_not_block_quiescence(tmp_path: Path) -> None:
+    # A resident that backgrounds a non-answer-blocking task that never finishes must
+    # not wedge team quiescence — the loop never blocks its final answer on such a
+    # task, so neither should the team (else run() would hang forever).
+    release = asyncio.Event()
+
+    @function_tool(auto_background_at=0, blocks_final_answer=False)
+    async def slow_job(text: str) -> str:
+        """A backgrounded job that does not finish on its own."""
+        await release.wait()
+        return f"done: {text}"
+
+    ctx = _ctx(tmp_path)
+    worker = LLMAgent[Any, Any, None](
+        name="worker",
+        llm=MockLLM(
+            responses_queue=[
+                _tool_call_response("slow_job", '{"text": "x"}', "c1"),
+                _text_response("launched; idling"),
+            ]
+        ),
+        tools=[slow_job],
+    )
+    team = AgentTeam([worker], ctx=ctx)
+    try:
+        result = await asyncio.wait_for(team.run("go"), timeout=5.0)
+    finally:
+        release.set()  # let the bg task finish so aclose can drain/cancel it cleanly
+        await team.aclose()
+
+    assert result.stop_reason == "quiesced"
+    assert worker.llm.call_count == 2  # launched the task, then idled
+
+
 def test_member_unknown_recipient_rejected(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     router = ForwardProcessor(name="router", recipients=["ghost"])
@@ -311,57 +328,51 @@ def test_member_unknown_recipient_rejected(tmp_path: Path) -> None:
         AgentTeam([router, writer], entry="router", ctx=ctx)
 
 
-async def _until(pred: Callable[[], bool]) -> None:
-    """Poll ``pred`` until true, bounded to ~3s so a daemon test can't hang."""
-    for _ in range(300):
-        if pred():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition not met within timeout")
-
-
-async def _drain_daemon(team: AgentTeam[None]) -> None:
-    async for _ in team.run_stream(daemon=True, poll_interval=0.01):
-        pass
+async def _drain(team: AgentTeam[None], seed: str, sink: list[TeamMessage]) -> None:
+    async for ev in team.run_stream(seed, daemon=True, poll_interval=0.01):
+        if isinstance(ev, MessageDeliveredEvent):
+            sink.append(ev.data)
 
 
 @pytest.mark.asyncio
 async def test_daemon_keeps_running_past_quiescence(tmp_path: Path) -> None:
-    # A daemon run does not stop at quiescence: after the first message is handled
-    # (a bounded run would end here), a later-injected message is still picked up.
+    # A daemon run does not stop at quiescence: after the seeded message is handled
+    # (a bounded run would end here), a later-posted message is still picked up — and
+    # the two arrive as separate turns (one group per turn), never merged.
     ctx = _ctx(tmp_path)
     solo = _agent("solo", [_text_response("a1"), _text_response("a2")])
-    transport = InMemoryTransport()
-    team = AgentTeam([solo], ctx=ctx, transport=transport)
+    team = AgentTeam([solo], ctx=ctx)
+    delivered: list[TeamMessage] = []
 
-    consumer = asyncio.create_task(_drain_daemon(team))
+    consumer = asyncio.create_task(_drain(team, "first", delivered))
     try:
-        await transport.send(
-            TeamMessage.of_text(sender="user", to="solo", text="first")
-        )
-        await _until(lambda: solo.llm.call_count == 1)  # first handled; team idle
-        await transport.send(
-            TeamMessage.of_text(sender="user", to="solo", text="second")
-        )
+        await _until(lambda: solo.llm.call_count == 1)  # seed handled; team idle
+        await team.post(TeamMessage.of_text(sender="user", to="solo", text="second"))
         await _until(lambda: solo.llm.call_count == 2)  # daemon picked up the second
     finally:
         consumer.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await consumer
+    await team.aclose()
+
+    assert [m.text for m in delivered] == ["first", "second"]
 
 
 @pytest.mark.asyncio
 async def test_interval_source_feeds_daemon(tmp_path: Path) -> None:
-    # An external interval source wakes a daemon team with messages it then handles.
+    # An external interval source wakes a daemon team via the team router.
     ctx = _ctx(tmp_path)
     solo = _agent("solo", [_text_response("a1"), _text_response("a2")])
-    transport = InMemoryTransport()
-    team = AgentTeam([solo], ctx=ctx, transport=transport)
+    team = AgentTeam([solo], ctx=ctx)
 
-    consumer = asyncio.create_task(_drain_daemon(team))
+    async def _drain_only() -> None:
+        async for _ in team.run_stream(daemon=True, poll_interval=0.01):
+            pass
+
+    consumer = asyncio.create_task(_drain_only())
     source = asyncio.create_task(
         run_interval_source(
-            transport,
+            team,
             lambda: TeamMessage.of_text(sender="src", to="solo", text="tick"),
             interval=0.01,
             count=2,
@@ -374,3 +385,4 @@ async def test_interval_source_feeds_daemon(tmp_path: Path) -> None:
         consumer.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await consumer
+    await team.aclose()

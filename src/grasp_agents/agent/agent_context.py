@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from grasp_agents.durability.checkpoints import AgentContextState
 
 if TYPE_CHECKING:
+    from grasp_agents.inbox import AgentInbox
     from grasp_agents.run_context import RunContext
     from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.base import BaseTool
@@ -61,6 +62,13 @@ class AgentContext:
     # shared with the notebook kernel. ``None`` (the default) → each call opens a
     # throwaway kernel; ``AgentLoop`` wires a persistent one per loop.
     ipy_kernel_holder: KernelHolder | None = None
+
+    # The agent's peer-message inbox — the sibling delivery substrate to
+    # ``bg_tasks`` (a separate queue, never merged). ``None`` (the default) keeps
+    # the agent non-resident: ordinary single-answer runs. A multi-agent host
+    # attaches one to make the agent run resident — its loop then consumes peer
+    # messages from this inbox between turns and runs until cancelled.
+    inbox: AgentInbox | None = None
 
     # Names of the tools the owning agent was *explicitly* given (its ``tools=``
     # arg), as opposed to framework-auto-attached capability tools (skills /

@@ -41,17 +41,17 @@ async def test_driver_activates_sends_and_acks() -> None:
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     driver = MemberDriver(alice, cards=CARDS, transport=transport)
 
-    await transport.send(
+    await transport.post(
         TeamMessage.of_text(sender="user", to="alice", text="go")
     )
     events = await _drain(driver)
 
     assert events  # alice ran and produced events
     assert alice.llm.call_count == 2
-    to_bob = await transport.fetch_next("bob")
-    assert to_bob is not None
+    to_bob = await transport.consume("bob")
+    assert isinstance(to_bob, TeamMessage)
     assert (to_bob.sender, to_bob.recipient, to_bob.text) == ("alice", "bob", "ping")
-    assert await transport.has_mail("alice") is False
+    assert await transport.has_pending("alice") is False
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_two_drivers_converse_over_shared_transport() -> None:
     a = MemberDriver(alice, cards=CARDS, transport=transport)
     b = MemberDriver(bob, cards=CARDS, transport=transport)
 
-    await transport.send(
+    await transport.post(
         TeamMessage.of_text(sender="user", to="alice", text="go")
     )
     # Drive the causal chain: alice (→ping), bob (→pong), alice (consumes pong).
@@ -92,5 +92,5 @@ async def test_two_drivers_converse_over_shared_transport() -> None:
 
     assert alice.llm.call_count == 3
     assert bob.llm.call_count == 2
-    assert await transport.has_mail("alice") is False
-    assert await transport.has_mail("bob") is False
+    assert await transport.has_pending("alice") is False
+    assert await transport.has_pending("bob") is False

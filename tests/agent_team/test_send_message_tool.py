@@ -11,6 +11,7 @@ from grasp_agents.agent_team.tools import SendMessageInput, SendMessageTool
 from grasp_agents.agent_team.transport import CheckpointMailboxTransport
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.run_context import RunContext
+from grasp_agents.types.message import TeamMessage
 
 
 def _ctx() -> RunContext[None]:
@@ -30,8 +31,8 @@ async def test_send_delivers_with_sender_identity() -> None:
     assert "delivered to bob" in out
 
     transport = CheckpointMailboxTransport(ctx.checkpoint_store)  # type: ignore[arg-type]
-    msg = await transport.fetch_next("bob")
-    assert msg is not None
+    msg = await transport.consume("bob")
+    assert isinstance(msg, TeamMessage)
     assert msg.sender == "alice"
     assert msg.text == "hello"
 
@@ -47,7 +48,7 @@ async def test_unknown_recipient_is_not_sent() -> None:
     assert "No teammate named 'charlie'" in out
 
     transport = CheckpointMailboxTransport(ctx.checkpoint_store)  # type: ignore[arg-type]
-    assert await transport.has_mail("charlie") is False
+    assert await transport.has_pending("charlie") is False
 
 
 def test_roster_appears_in_tool_description() -> None:

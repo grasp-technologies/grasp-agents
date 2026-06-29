@@ -85,6 +85,7 @@ if TYPE_CHECKING:
         ToolInputConverter,
         ToolOutputConverter,
     )
+    from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
     from grasp_agents.run_context import RunContext
     from grasp_agents.skills.types import SkillFilter
@@ -270,6 +271,13 @@ class AgentLoop[CtxT]:
         # would just trigger pydantic validation again.
         self._skip_call_ids: set[str] = set()
 
+        # Resident operation. The inbox lives on the agent context (the sibling
+        # of ``bg_tasks``); when one is attached the loop consumes peer messages
+        # from it between turns and runs until its task is cancelled from outside,
+        # instead of terminating on a final answer. ``None`` (the default on the
+        # context) keeps the original single-answer behavior unchanged.
+        self._inbox_poll_interval: float = 0.05
+
         self.final_answer_extractor = None
         # Context-window management (view derivation, token budget, compaction).
         # Owned by the agent and shared in (so its context operations are single-
@@ -336,6 +344,22 @@ class AgentLoop[CtxT]:
     @property
     def bg_tasks(self) -> BackgroundTaskManager[CtxT]:
         return self._agent_ctx.bg_tasks
+
+    @property
+    def inbox(self) -> AgentInbox | None:
+        """
+        The attached resident inbox, or ``None`` for ordinary (single-answer) runs.
+
+        Held on the agent context (beside ``bg_tasks``). When set,
+        :meth:`execute_stream` runs resident: it consumes peer messages from this
+        inbox between turns and runs until its task is cancelled from outside,
+        rather than terminating on the first final answer.
+        """
+        return self._agent_ctx.inbox
+
+    @inbox.setter
+    def inbox(self, inbox: AgentInbox | None) -> None:
+        self._agent_ctx.inbox = inbox
 
     @property
     def file_edit_state(self) -> FileEditSessionState:
@@ -944,6 +968,7 @@ class AgentLoop[CtxT]:
             bg_tasks_pending=self.bg_tasks.has_pending,
             deadline_exceeded=self._deadline is not None
             and time.monotonic() >= self._deadline,
+            inbox_open=self.inbox is not None,
         )
 
     def _unanswered_tool_calls(self, response: Response) -> list[FunctionToolCallItem]:
@@ -1326,6 +1351,46 @@ class AgentLoop[CtxT]:
 
         yield GenerationEndEvent(source=self.agent_name, exec_id=exec_id, data=response)
 
+    # --- Resident PRE-ACT wait ---
+
+    async def _await_inbox(self) -> None:
+        """
+        Resident PRE-ACT wait — the inbox counterpart to
+        :meth:`BackgroundTaskManager.wait_idle`. Block until there is something to
+        deliver: a peer message queued in the inbox, or a pending background-task
+        completion (both surfaced by the drains below). Ended from outside by
+        cancelling the resident run's task.
+        """
+        inbox = self.inbox
+        assert inbox is not None
+        # Mark the inbox parked so a team supervisor can read this loop as idle
+        # while it blocks here (the per-actor quiescence signal).
+        with inbox.waiting():
+            while not (
+                await inbox.has_pending()
+                or self.bg_tasks.has_undelivered_completions
+            ):
+                await inbox.wait(timeout=self._inbox_poll_interval)
+
+    async def _drain_inbox(self, *, exec_id: str) -> AsyncIterator[Event[Any]]:
+        """
+        Deliver the next peer message as a user turn at the turn boundary — the
+        resident counterpart to :meth:`BackgroundTaskManager.drain`. One message
+        per turn (never merges); a no-op with no inbox attached (non-resident) or
+        none queued (the wait was woken by a background-task completion instead).
+        """
+        inbox = self.inbox
+        if inbox is None:
+            return
+        message = await inbox.poll()
+        if message is None:
+            return
+        item = message.to_input_message()
+        self.transcript.update([item])
+        yield UserMessageEvent(
+            data=item, source=None, destination=self.agent_name, exec_id=exec_id
+        )
+
     # --- Main execution loop ---
 
     async def execute_stream(
@@ -1348,15 +1413,26 @@ class AgentLoop[CtxT]:
                 location=AgentCheckpointLocation.AFTER_INPUT,
             )
 
-        while self.turn <= self.max_turns:
+        # A resident agent (inbox attached) loops until its task is cancelled from
+        # outside — it must NOT exit on the turn budget: ``inbox_open`` suppresses
+        # the force-final-answer step, so exiting here would hit the
+        # "final answer is not None" assert with no answer. A lone agent keeps the
+        # original bound. (A per-message turn budget is a separate, deliberate
+        # decision — a resident's ``turn`` is currently unbounded across messages.)
+        while self.inbox is not None or self.turn <= self.max_turns:
             # ── PRE-ACT: prepare for generation ──
 
-            # When the model has nothing to do but wait on background work,
-            # block on the next completion instead of spinning poll turns.
-            # (Only answer-blocking tasks delay a final answer; a
-            # backgrounded Bash command is waited on but never blocks it —
-            # see JUDGE / has_pending.)
-            if self.turn > 0 and not had_tool_calls:
+            # When the model has nothing to do but wait — a resident agent for its
+            # next inbox activation, or any agent for an outstanding background
+            # task — block instead of spinning poll turns. (Only answer-blocking
+            # tasks delay a final answer; a backgrounded Bash command is waited on
+            # but never blocks it — see JUDGE / has_pending.)
+            if not had_tool_calls and self.inbox is not None:
+                # Gated on ``not had_tool_calls`` so a turn that just issued tool
+                # calls proceeds straight to processing their results. Ended only
+                # when the run's task is cancelled.
+                await self._await_inbox()
+            elif self.turn > 0 and not had_tool_calls:
                 # Bound the idle wait by the remaining run-timeout budget so a
                 # non-blocking background task that never completes can't block
                 # past the deadline (the next JUDGE check then stops the run).
@@ -1367,11 +1443,11 @@ class AgentLoop[CtxT]:
                 )
                 await self.bg_tasks.wait_idle(timeout=idle_timeout)
 
-            # Drain backgrounded tasks at the turn boundary: bubble their new
-            # events as live progress, mirror stream output to the .grasp
-            # logs (so a crash leaves a recoverable trace and a completing
-            # task's note points at a current file), and deliver completion
-            # notes.
+            # Turn-boundary delivery: the next resident inbox message as a user
+            # turn, then any background-task completions (bubbling their events,
+            # mirroring stream output to the .grasp logs, etc.).
+            async for event in self._drain_inbox(exec_id=exec_id):
+                yield event
             async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
                 yield event
 

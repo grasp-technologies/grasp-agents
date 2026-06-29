@@ -69,6 +69,7 @@ def decide_next_step(
     max_turns: int,
     bg_tasks_pending: bool,
     deadline_exceeded: bool = False,
+    inbox_open: bool = False,
 ) -> NextStep:
     """
     Classify the next :class:`AgentLoop` step. Pure function — no I/O,
@@ -78,17 +79,21 @@ def decide_next_step(
     and the run deadline has not passed); force-generate when the wall-clock
     deadline is exceeded (``TIMEOUT``) or the turn budget is exhausted
     (``MAX_TURNS``); run tools if the response has any; otherwise continue.
+
+    ``inbox_open`` marks a resident actor: while its inbox is open it never stops
+    or force-finalizes on its own — a final answer falls through to ``Continue`` so
+    the loop keeps consuming activations until the run's task is cancelled.
     """
     # A blown deadline overrides waiting on background work — stop now.
     wait_for_bg = bg_tasks_pending and turn < max_turns and not deadline_exceeded
 
-    if final_answer is not None and not wait_for_bg:
+    if final_answer is not None and not wait_for_bg and not inbox_open:
         return NextStepStop(final_answer=final_answer)
 
-    if deadline_exceeded:
+    if deadline_exceeded and not inbox_open:
         return NextStepForceFinalAnswer(stop_reason=StopReason.TIMEOUT)
 
-    if turn >= max_turns:
+    if turn >= max_turns and not inbox_open:
         return NextStepForceFinalAnswer()
 
     if tool_calls:

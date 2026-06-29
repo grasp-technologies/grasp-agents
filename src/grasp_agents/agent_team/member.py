@@ -10,7 +10,13 @@ from grasp_agents.runtime import CLOSED, ActorDriver, Closed, Transport
 
 from ._activation import is_llm_agent, stream_member
 from .message import USER_SENDER, TeamMessage
-from .tools import SEND_MESSAGE_TOOL_NAME, SendMessageTool
+from .sources import WakeupScheduler
+from .tools import (
+    SCHEDULE_WAKEUP_TOOL_NAME,
+    SEND_MESSAGE_TOOL_NAME,
+    ScheduleWakeupTool,
+    SendMessageTool,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -21,7 +27,6 @@ if TYPE_CHECKING:
     from grasp_agents.types.events import Event
 
     from .agent_card import MemberCard
-    from .transport import MessageTransport
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +35,16 @@ class _PrioritizedInbox(Transport[TeamMessage]):
     """
     Human input and the member's mailbox as one runtime channel, human first.
 
-    Human turns are queued in memory and jump ahead of mailbox mail; they are not
-    persisted and need no ack (they never entered the mailbox). Mailbox mail is
-    fetched non-consuming and acked by the driver after the turn — at-least-once,
+    A genuine composite over the mailbox :class:`~grasp_agents.runtime.Transport`
+    (not an adapter): human turns are queued in memory and jump ahead of mailbox
+    mail; they are not persisted and need no ack (they never entered the mailbox).
+    Mailbox mail is consumed and acked by the driver after the turn — at-least-once,
     like any team member.
     """
 
     def __init__(
         self,
-        mailbox: MessageTransport,
+        mailbox: Transport[TeamMessage],
         human_q: asyncio.Queue[str],
         *,
         poll_interval: float,
@@ -50,19 +56,18 @@ class _PrioritizedInbox(Transport[TeamMessage]):
         self._human_ids: set[str] = set()
 
     def register(self, recipient: str) -> None:
-        del recipient
+        self._mailbox.register(recipient)
 
     async def post(self, envelope: TeamMessage) -> None:
-        await self._mailbox.send(envelope)
+        await self._mailbox.post(envelope)
 
     async def consume(self, recipient: str) -> TeamMessage | Closed:
         while not self._closed.is_set():
             human = self._take_human(recipient)
             if human is not None:
                 return human
-            message = await self._mailbox.fetch_next(recipient)
-            if message is not None:
-                return message
+            if await self._mailbox.has_pending(recipient):
+                return await self._mailbox.consume(recipient)
             # Idle: wake on human input, else time out to re-poll the mailbox.
             try:
                 text = await asyncio.wait_for(
@@ -86,10 +91,10 @@ class _PrioritizedInbox(Transport[TeamMessage]):
         if envelope.message_id in self._human_ids:
             self._human_ids.discard(envelope.message_id)
         else:
-            await self._mailbox.ack(recipient, [envelope.message_id])
+            await self._mailbox.ack(recipient, envelope)
 
     async def has_pending(self, recipient: str) -> bool:
-        return not self._human_q.empty() or await self._mailbox.has_mail(recipient)
+        return not self._human_q.empty() or await self._mailbox.has_pending(recipient)
 
     async def shutdown(self) -> None:
         self._closed.set()
@@ -116,7 +121,7 @@ class MemberDriver:
         member: Processor[Any, Any, Any],
         *,
         cards: Sequence[MemberCard],
-        transport: MessageTransport,
+        transport: Transport[TeamMessage],
         poll_interval: float = 0.5,
         run_kwargs: dict[str, Any] | None = None,
     ) -> None:
@@ -125,16 +130,25 @@ class MemberDriver:
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
         self._human_q: asyncio.Queue[str] = asyncio.Queue()
+        self._scheduler = WakeupScheduler(transport)
 
         # A communicator (an agent with no static recipients) messages peers via
-        # SendMessage; a worker hands its output off by name and gets no tool.
+        # SendMessage and schedules its own wakeups via ScheduleWakeup; a worker
+        # hands its output off by name and gets no tools.
         if is_llm_agent(member) and not member.recipients:
-            tool = cast(
+            send_tool = cast(
                 "BaseTool[Any, Any, Any]",
                 SendMessageTool(cards, transport_resolver=lambda _ctx: transport),
             )
-            member.tools[SEND_MESSAGE_TOOL_NAME] = tool
-            tool.on_adopted(member)
+            wakeup_tool = cast(
+                "BaseTool[Any, Any, Any]", ScheduleWakeupTool(self._scheduler)
+            )
+            for name, tool in (
+                (SEND_MESSAGE_TOOL_NAME, send_tool),
+                (SCHEDULE_WAKEUP_TOOL_NAME, wakeup_tool),
+            ):
+                member.tools[name] = tool
+                tool.on_adopted(member)
 
     @property
     def name(self) -> str:
@@ -165,11 +179,16 @@ class MemberDriver:
         driver: ActorDriver[TeamMessage] = ActorDriver(
             channel, termination="quiescence" if stop_when_idle else "daemon"
         )
-        async with driver:
-            driver.register_handler(self._member.name, self._make_handler(driver))
-            await driver.settle()
-            async for event in driver.stream_events():
-                yield event
+        try:
+            async with driver:
+                driver.register_handler(self._member.name, self._make_handler(driver))
+                await driver.settle()
+                async for event in driver.stream_events():
+                    yield event
+        finally:
+            # Drop any wakeup the member scheduled but that has not yet fired, so a
+            # stopped driver leaves no timer firing into a torn-down transport.
+            await self._scheduler.aclose()
 
     def _make_handler(
         self, driver: ActorDriver[TeamMessage]

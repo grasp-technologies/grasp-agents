@@ -326,6 +326,18 @@ class BackgroundTaskManager[CtxT]:
             pt.blocks_final_answer and not pt.announced for pt in self._tasks.values()
         )
 
+    @property
+    def has_undelivered_completions(self) -> bool:
+        """
+        True when a task has finished but :meth:`drain` has not yet delivered its
+        note — a completion is waiting to be surfaced at the next turn boundary.
+
+        A level-triggered readiness signal: a caller that lets the agent idle between
+        runs can read it to know a finished task's result is pending delivery, and run
+        another turn so :meth:`drain` surfaces it.
+        """
+        return not self._completions.empty()
+
     async def wait_idle(self, timeout: float | None = None) -> None:  # noqa: ASYNC109
         """
         Block until the next tracked task completes — the loop's idle wait.

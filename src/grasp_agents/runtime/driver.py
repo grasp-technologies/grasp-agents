@@ -82,6 +82,16 @@ class ActorDriver[E]:
     def activation_count(self) -> int:
         return self._activation_count
 
+    async def is_quiescent(self) -> bool:
+        """
+        Whether no actor is currently running and no mailbox has pending work.
+
+        A read-only check a frontend can fold into a larger quiescence decision (a
+        team that also supervises resident actors outside this driver); the driver's
+        own ``quiescence`` termination uses the same condition internally.
+        """
+        return self._active == 0 and not await self._any_pending()
+
     def register_handler(self, name: str, handler: Handler[E]) -> None:
         if self._stopping:
             return

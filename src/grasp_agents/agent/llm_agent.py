@@ -95,8 +95,11 @@ from .tool_decision import ToolCallDecision
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from grasp_agents.inbox import AgentInbox
     from grasp_agents.mcp.client import MCPClient
     from grasp_agents.mcp.spec import MCPClientSpec
+
+    from .background_tasks import BackgroundTaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +555,35 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         share it. Exposed for inspection and for pre-seeding read records.
         """
         return self._loop.file_edit_state
+
+    @property
+    def background_tasks(self) -> "BackgroundTaskManager[CtxT]":
+        """
+        This agent's session-scoped background-task manager.
+
+        Exposed so a driver can read its completion signals
+        (:attr:`~BackgroundTaskManager.has_live_tasks` /
+        :attr:`~BackgroundTaskManager.has_undelivered_completions`) — e.g. to wake
+        an idle agent when a backgrounded task finishes.
+        """
+        return self._loop.bg_tasks
+
+    @property
+    def inbox(self) -> "AgentInbox | None":
+        """
+        The resident inbox attached to this agent's loop, or ``None``.
+
+        Attaching an inbox makes a run **resident**: the loop consumes peer messages
+        from it between turns and runs until its task is cancelled from outside,
+        instead of terminating on a final answer (see :class:`AgentLoop`). A
+        multi-agent host attaches one keyed inbox per member; a lone agent never sets
+        it.
+        """
+        return self._loop.inbox
+
+    @inbox.setter
+    def inbox(self, inbox: "AgentInbox | None") -> None:
+        self._loop.inbox = inbox
 
     @property
     def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:

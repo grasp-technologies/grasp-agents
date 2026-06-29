@@ -1,52 +1,53 @@
-"""Mailbox transports: round-trip, ordering, isolation, parts, default resolution."""
+"""
+Mailbox transports as runtime ``Transport[TeamMessage]`` implementations: post /
+consume / ack round-trip, ordering, isolation, payloads, shutdown, and the default
+resolution. One transport seam — no separate mailbox type, no adapter.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from grasp_agents.agent_team.message import TeamMessage
-from grasp_agents.agent_team.transport import (
+from grasp_agents.agent_team.transport import default_transport
+from grasp_agents.durability import InMemoryCheckpointStore
+from grasp_agents.mailbox import (
     CheckpointMailboxTransport,
     InMemoryMailboxTransport,
-    MessageTransport,
-    default_transport,
 )
-from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.run_context import RunContext
+from grasp_agents.runtime import CLOSED, Transport
 from grasp_agents.types.content import InputText
+from grasp_agents.types.message import TeamMessage
 
 
 @pytest.fixture(params=["in_memory", "checkpoint"])
-def transport(request: pytest.FixtureRequest) -> MessageTransport:
+def transport(request: pytest.FixtureRequest) -> Transport[TeamMessage]:
     if request.param == "checkpoint":
         return CheckpointMailboxTransport(InMemoryCheckpointStore(), session_key="s")
     return InMemoryMailboxTransport()
 
 
 @pytest.mark.asyncio
-async def test_send_fetch_ack_roundtrip(transport: MessageTransport) -> None:
-    assert await transport.has_mail("bob") is False
+async def test_post_consume_ack_roundtrip(transport: Transport[TeamMessage]) -> None:
+    assert await transport.has_pending("bob") is False
 
-    await transport.send(
-        TeamMessage.of_text(sender="alice", to="bob", text="hi")
-    )
-    assert await transport.has_mail("bob") is True
+    await transport.post(TeamMessage.of_text(sender="alice", to="bob", text="hi"))
+    assert await transport.has_pending("bob") is True
 
-    msg = await transport.fetch_next("bob")
-    assert msg is not None
+    msg = await transport.consume("bob")
+    assert isinstance(msg, TeamMessage)
     assert msg.sender == "alice"
     assert msg.text == "hi"
-    assert await transport.has_mail("bob") is True  # fetch_next must not consume
+    assert await transport.has_pending("bob") is True  # consume must not remove it
 
-    await transport.ack("bob", [msg.message_id])
-    assert await transport.has_mail("bob") is False
-    assert await transport.fetch_next("bob") is None
+    await transport.ack("bob", msg)
+    assert await transport.has_pending("bob") is False
 
 
 @pytest.mark.asyncio
-async def test_fetch_next_orders_oldest_first(transport: MessageTransport) -> None:
+async def test_consume_orders_oldest_first(transport: Transport[TeamMessage]) -> None:
     for i in range(3):
-        await transport.send(
+        await transport.post(
             TeamMessage.of_text(
                 sender="a", to="bob", text=f"m{i}", message_id=f"{i:04d}-x"
             )
@@ -54,34 +55,39 @@ async def test_fetch_next_orders_oldest_first(transport: MessageTransport) -> No
     # One group per call, oldest first; ack to advance to the next.
     got: list[str] = []
     for _ in range(3):
-        msg = await transport.fetch_next("bob")
-        assert msg is not None
+        msg = await transport.consume("bob")
+        assert isinstance(msg, TeamMessage)
         got.append(msg.text)
-        await transport.ack("bob", [msg.message_id])
+        await transport.ack("bob", msg)
     assert got == ["m0", "m1", "m2"]
-    assert await transport.fetch_next("bob") is None
+    assert await transport.has_pending("bob") is False
 
 
 @pytest.mark.asyncio
 async def test_mailboxes_are_isolated_per_recipient(
-    transport: MessageTransport,
+    transport: Transport[TeamMessage],
 ) -> None:
-    await transport.send(
-        TeamMessage.of_text(sender="a", to="bob", text="for bob")
-    )
-    assert await transport.has_mail("bob") is True
-    assert await transport.has_mail("carol") is False
+    await transport.post(TeamMessage.of_text(sender="a", to="bob", text="for bob"))
+    assert await transport.has_pending("bob") is True
+    assert await transport.has_pending("carol") is False
 
 
 @pytest.mark.asyncio
-async def test_message_payloads_roundtrip(transport: MessageTransport) -> None:
-    await transport.send(
+async def test_message_payloads_roundtrip(transport: Transport[TeamMessage]) -> None:
+    await transport.post(
         TeamMessage(sender="a", routing=[["bob"]], payloads=[InputText(text="hi")])
     )
-    msg = await transport.fetch_next("bob")
-    assert msg is not None
+    msg = await transport.consume("bob")
+    assert isinstance(msg, TeamMessage)
     assert isinstance(msg.payloads[0], InputText)
     assert msg.text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_unblocks_consume(transport: Transport[TeamMessage]) -> None:
+    # An empty mailbox blocks consume; shutdown must release it with CLOSED.
+    await transport.shutdown()
+    assert await transport.consume("bob") is CLOSED
 
 
 def test_default_transport_requires_checkpoint_store() -> None:
