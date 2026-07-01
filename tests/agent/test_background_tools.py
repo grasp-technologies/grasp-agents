@@ -937,7 +937,7 @@ class TestDurableTaskRecords:
                 tool_name="researcher",
                 tool_call_arguments='{"prompt": "research the ocean"}',
                 status=TaskStatus.PENDING,
-                started_at=datetime.now(UTC),
+                created_at=datetime.now(UTC),
             )
             .model_dump_json()
             .encode(),
@@ -1007,7 +1007,7 @@ class TestDurableTaskRecords:
                     tool_name="researcher",
                     tool_call_arguments='{"prompt": "x"}',
                     status=TaskStatus.PENDING,
-                    started_at=datetime.now(UTC),
+                    created_at=datetime.now(UTC),
                 )
                 .model_dump_json()
                 .encode(),

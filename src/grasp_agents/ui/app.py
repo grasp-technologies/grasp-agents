@@ -1215,6 +1215,7 @@ def run_tui_interactive(
     on_rollback: Callable[[int], Awaitable[None]] | None = None,
     main_agent: str | None = None,
     ctx: RunContext[Any] | None = None,
+    events: AsyncIterator[Event[Any]] | None = None,
 ) -> None:
     """
     Interactive TUI: type a message, the agent runs, events stream into panes.
@@ -1230,6 +1231,10 @@ def run_tui_interactive(
     coroutine ``(text) -> AsyncIterator[Event]``), with optional ``on_rollback``
     (rewind to a message's 0-based index), ``main_agent``, and ``ctx``. Either
     overrides the value inferred from ``agent`` when both are given.
+
+    Pass ``events`` to also render a background event stream concurrently with
+    human turns — e.g. a team member reacting to its mailbox while you type. Its
+    events route to panes by ``source`` like any other.
     """
     window: int | None = None
     if agent is not None:
@@ -1248,7 +1253,11 @@ def run_tui_interactive(
             "run_tui_interactive needs either an `agent` or an `on_submit` callback."
         )
     app = GraspAgentsApp(
-        on_submit=on_submit, on_rollback=on_rollback, main_agent=main_agent, ctx=ctx
+        events=events,
+        on_submit=on_submit,
+        on_rollback=on_rollback,
+        main_agent=main_agent,
+        ctx=ctx,
     )
     if window and main_agent:
         # Seed the meter against the agent's managed context window; later updates

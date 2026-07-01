@@ -26,6 +26,7 @@ from .checkpoint_store import (
     decode_message_log,
     encode_messages,
 )
+from .store_keys import is_under
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -227,13 +228,21 @@ def _unlink_log_versions(base_path: Path) -> None:
 def _list_keys(root: Path, prefix: str) -> list[str]:
     if not root.exists():
         return []
+    dir_part = prefix.rpartition("/")[0]
+    start = root
+    if dir_part:
+        segments = dir_part.split("/")
+        if not any(seg in _INVALID_SEGMENTS for seg in segments):
+            start = root.joinpath(*segments)
+    if not start.is_dir():
+        return []
     keys: list[str] = []
-    for path in root.rglob("*.json"):
+    for path in start.rglob("*.json"):
         if not path.is_file():
             continue
         rel = path.relative_to(root)
         key_parts = (*rel.parent.parts, rel.stem)
         key = "/".join(key_parts)
-        if key.startswith(prefix):
+        if is_under(key, prefix):
             keys.append(key)
     return keys

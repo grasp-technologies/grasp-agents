@@ -95,8 +95,13 @@ from .tool_decision import ToolCallDecision
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from grasp_agents.inbox import AgentInbox
     from grasp_agents.mcp.client import MCPClient
     from grasp_agents.mcp.spec import MCPClientSpec
+    from grasp_agents.runtime import Transport
+    from grasp_agents.types.message import TeamMessage
+
+    from .background_tasks import BackgroundTaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +382,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self._cw = ContextWindowManager(
             transcript=self.transcript, model=llm.model_name, source=self.name
         )
+        self._skill_filter = SkillFilter.build(skill_include, skill_exclude)
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             agent_name=self.name,
             llm=llm,
@@ -395,12 +401,17 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             path=path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
             explicit_tool_names=explicit_tool_names,
-            skill_filter=SkillFilter.build(skill_include, skill_exclude),
+            skill_filter=self._skill_filter,
         )
 
         # Session persistence
 
         self._step: int | None = None  # caller's step= for the current/last run
+
+        # The sender of the current run's input packet (a peer/upstream proc name),
+        # captured in ``validate_inputs`` and read by ``_begin_step`` so an input
+        # attachment can attribute the turn. ``None`` for ``chat_inputs`` / no packet.
+        self._current_input_source: str | None = None
 
         # Per-step rollback points and the last-persisted state they're cut from.
         # ``_committed`` mirrors the most recent checkpoint head (set on save and
@@ -554,14 +565,69 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         return self._loop.file_edit_state
 
     @property
+    def background_tasks(self) -> "BackgroundTaskManager[CtxT]":
+        """
+        This agent's session-scoped background-task manager.
+
+        Exposed so a driver can read its completion signals
+        (:attr:`~BackgroundTaskManager.has_live_tasks` /
+        :attr:`~BackgroundTaskManager.has_undelivered_completions`) — e.g. to wake
+        an idle agent when a backgrounded task finishes.
+        """
+        return self._loop.bg_tasks
+
+    @property
+    def inbox(self) -> "AgentInbox | None":
+        """
+        The resident inbox attached to this agent's loop, or ``None``.
+
+        Attaching an inbox makes a run **resident**: the loop consumes peer messages
+        from it between turns and runs until its task is cancelled from outside,
+        instead of terminating on a final answer (see :class:`AgentLoop`). A
+        multi-agent host attaches one keyed inbox per member; a lone agent never sets
+        it.
+        """
+        return self._loop.inbox
+
+    @inbox.setter
+    def inbox(self, inbox: "AgentInbox | None") -> None:
+        self._loop.inbox = inbox
+
+    def attach_inbox(self, transport: "Transport[TeamMessage]") -> None:
+        """
+        Make this agent run **resident** over ``transport``: bind a per-agent
+        inbox view keyed to the agent's own name, so its loop consumes peer
+        messages between turns instead of terminating on a final answer.
+
+        Called by a multi-agent host that owns the shared transport — the agent is
+        built host-agnostic, and residency is a hosting role attached per run (and
+        released with :meth:`detach_inbox`), like the ``ctx`` / ``path`` cascade
+        rather than a constructor argument. The agent supplies its own mailbox
+        address (its name); the host supplies only the channel.
+        """
+        from grasp_agents.inbox import AgentInbox  # noqa: PLC0415
+
+        self.inbox = AgentInbox(transport=transport, recipient=self.name)
+
+    def detach_inbox(self) -> None:
+        """Drop the resident inbox, returning the agent to single-answer runs."""
+        self.inbox = None
+
+    @property
+    def skill_filter(self) -> SkillFilter | None:
+        """
+        The per-agent allow/deny filter applied to the run's skill catalog, or
+        ``None`` when the agent is not scoped to a subset of skills.
+        """
+        return self._skill_filter
+
+    @property
     def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:
         """Read-only view of registered system-prompt sections, in order."""
         return tuple(self._prompt_builder.system_prompt_sections)
 
     async def build_system_prompt(
-        self,
-        ctx: "RunContext[CtxT] | None" = None,
-        exec_id: str = "",
+        self, ctx: "RunContext[CtxT] | None" = None, exec_id: str = ""
     ) -> str | None:
         """
         Render the agent's full system prompt (base + every section).
@@ -718,6 +784,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         return location in {
             AgentCheckpointLocation.AFTER_FINAL_ANSWER,
             AgentCheckpointLocation.AFTER_MAX_TURNS,
+            # A resident's per-turn boundary is its answer boundary; snapshot so
+            # the restored filesystem matches the per-turn transcript checkpoint.
+            AgentCheckpointLocation.AFTER_RESIDENT_TURN,
         }
 
     async def save_checkpoint(
@@ -780,6 +849,12 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # delivered so far — only now is it safe to flip their durable records
         # to DELIVERED (see ``BackgroundTaskManager.flush_delivered``).
         await self._loop.bg_tasks.flush_delivered(ctx=self._ctx)
+        # The same persist covers any inbox message a resident drained into the
+        # transcript this turn: release it now (the inbox's at-least-once analog of
+        # the bg-task flush), so a crash before the persist re-delivers it instead
+        # of stranding it. No-op for a non-resident agent.
+        if self._loop.inbox is not None:
+            await self._loop.inbox.flush_acks()
 
     def _snapshot_session(self) -> _SessionSnapshot:
         return _SessionSnapshot(
@@ -988,6 +1063,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
         in_args: InT | None = None,
         exec_id: str,
+        with_input: bool = True,
     ) -> list[InputItem]:
         # Compose the ephemeral initial context (system-prompt message +
         # leading messages, per-section ``cache_control`` preserved) for this
@@ -1019,21 +1095,25 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # Surface the freshly-composed header once, for UI / event parity.
             messages_to_expose.extend(self._cw.initial_context)
 
-        input_message = self._prompt_builder.build_input_message(
-            chat_inputs=chat_inputs,
-            in_args=in_args,
-            exec_id=exec_id,
-        )
-        if input_message:
-            input_message = await self._prompt_builder.apply_input_attachments(
-                input_message,
-                ctx=self._ctx,
+        # A resident builds only the header (``with_input=False``): it has no seed
+        # input of its own — its turns arrive later from the inbox.
+        if with_input:
+            input_message = self._prompt_builder.build_input_message(
+                chat_inputs=chat_inputs,
+                in_args=in_args,
                 exec_id=exec_id,
-                messages=list(self.transcript.messages),
-                agent_ctx=self._loop.agent_ctx,
             )
-            self.transcript.update([input_message])
-            messages_to_expose.append(input_message)
+            if input_message:
+                input_message = await self._prompt_builder.apply_input_attachments(
+                    input_message,
+                    ctx=self._ctx,
+                    exec_id=exec_id,
+                    messages=list(self.transcript.messages),
+                    agent_ctx=self._loop.agent_ctx,
+                    source=self._current_input_source,
+                )
+                self.transcript.update([input_message])
+                messages_to_expose.append(input_message)
 
         return messages_to_expose
 
@@ -1069,9 +1149,16 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         in_packet: Any = None,
         in_args: Any = None,
     ) -> list[InT] | None:
-        # Allow no inputs when the bound ctx has a checkpoint store (resume case)
+        # Allow no inputs on resume (the bound ctx has a checkpoint store) or for a
+        # resident (an attached inbox): a resident starts parked and takes its first
+        # turn from the first inbox message, so it has no seed input of its own.
+        # Remember who sent this run's input so ``_begin_step`` can attribute the
+        # rendered turn (an input attachment reads it); a peer hand-off carries the
+        # sender on its packet, a human turn / direct run has none.
+        self._current_input_source = in_packet.sender if in_packet is not None else None
+
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and self.is_resumable:
+        if not has_input and (self.is_resumable or self.inbox is not None):
             return None
 
         # Fan-in: a multi-payload packet (e.g. a ParallelProcessor's output)
@@ -1132,7 +1219,10 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # the loop on the restored (or live) transcript instead of rendering
         # an input prompt from nothing.
         pure_resume = step is None and chat_inputs is None and inp is None
-        if pure_resume and self.transcript.is_empty:
+        if pure_resume and self.transcript.is_empty and self.inbox is None:
+            # A resident (inbox attached) legitimately starts here with an empty
+            # transcript and no input: it parks and takes its first turn from the
+            # first inbox message. A non-resident has nothing to do.
             raise ProcInputValidationError(
                 proc_name=self.name,
                 exec_id=exec_id,
@@ -1170,26 +1260,35 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             # New step (or no checkpoint): memorize inputs and reset turn.
             # Interrupted re-delivery (same step, no output): memory already
             # loaded from checkpoint, skip memorization.
+            messages_to_expose: list[InputItem] = []
             if not is_redelivery:
                 self._loop.turn = 0
                 messages_to_expose = await self._begin_step(
                     chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
                 )
-                self._print_messages(messages_to_expose, exec_id=exec_id)
-                for message in messages_to_expose:
-                    if isinstance(message, InputMessageItem):
-                        if message.role == "system":
-                            yield SystemMessageEvent(
-                                data=message, source=self.name, exec_id=exec_id
-                            )
-                        # TODO: set source
-                        elif message.role == "user":
-                            yield UserMessageEvent(
-                                data=message,
-                                source=None,
-                                destination=self.name,
-                                exec_id=exec_id,
-                            )
+            elif self.inbox is not None:
+                # Resident resume / fresh start: build the ephemeral header (system
+                # prompt) for the parked loop without resetting the resumed turn or
+                # memorizing an input — a resident's turns come from the inbox, so it
+                # has no seed input of its own.
+                messages_to_expose = await self._begin_step(
+                    exec_id=exec_id, with_input=False
+                )
+            self._print_messages(messages_to_expose, exec_id=exec_id)
+            for message in messages_to_expose:
+                if isinstance(message, InputMessageItem):
+                    if message.role == "system":
+                        yield SystemMessageEvent(
+                            data=message, source=self.name, exec_id=exec_id
+                        )
+                    # TODO: set source
+                    elif message.role == "user":
+                        yield UserMessageEvent(
+                            data=message,
+                            source=None,
+                            destination=self.name,
+                            exec_id=exec_id,
+                        )
 
             logger.info(
                 "agent '%s' run started (model=%s, max_turns=%s)",
@@ -1366,6 +1465,17 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         you register it twice; deduplicate on the caller side if needed.
         """
         self._prompt_builder.add_system_prompt_section(section)
+
+    def add_input_attachment(self, attachment: "InputAttachment") -> None:
+        """
+        Append an :class:`InputAttachment` to the agent's prompt builder.
+
+        Attachments run when a new user turn is built and append a (usually
+        ``<system-reminder>``-wrapped) block to it — per-turn relevance signals such
+        as memory topics, the current time, or the teammate a message came from.
+        Re-registering the same ``name`` replaces the prior one.
+        """
+        self._prompt_builder.add_input_attachment(attachment)
 
     def add_input_content_builder(
         self, func: InputContentBuilder[InT]

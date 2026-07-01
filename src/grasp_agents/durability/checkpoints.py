@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 10
+CURRENT_SCHEMA_VERSION: int = 11
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -90,6 +90,22 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "(folds defaults empty); v9 code resuming a v10 session ignores the folds "
         "and re-derives the view from the full log."
     ),
+    11: (
+        "Agent-team durability + record cleanup (folded — none of v11's pieces "
+        "shipped separately). Three changes over v10: (a) AgentCheckpointLocation "
+        "gained AFTER_RESIDENT_TURN, a resident agent's per-message turn boundary "
+        "(its analog of AFTER_FINAL_ANSWER, written only by resident runs); "
+        "(b) PersistedRecord carries one audit pair ``created_at`` + ``updated_at`` "
+        "(updated_at bumped on each status change), replacing the never-read "
+        "``saved_at`` and the duplicated ``TaskRecord.started_at`` (== created_at) / "
+        "``MessageRecord.created_at``; (c) MessageRecord nests the message directly "
+        "(``message: TeamMessage``) instead of an opaque ``body: str`` plus "
+        "redundant top-level ``message_id``/``sender``/``recipient``. v10 records "
+        "load fine (new fields default, dropped ones ignored) EXCEPT an in-flight "
+        "v10 mailbox inbox record (``body`` string) won't load under v11 — drain a "
+        "mailbox before upgrading; acked ``processed/`` records are unaffected "
+        "(dedup probes existence, not content)."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -105,7 +121,9 @@ class CheckpointKind(StrEnum):
     WORKFLOW = "workflow"
     PARALLEL = "parallel"
     RUNNER = "runner"
+    TEAM = "team"
     TASK = "task"
+    MAILBOX = "mailbox"
 
 
 class CheckpointSchemaError(Exception):
@@ -119,6 +137,12 @@ class AgentCheckpointLocation(Enum):
     AFTER_TOOL_RESULT = "after_tool_result"
     AFTER_FINAL_ANSWER = "after_final_answer"
     AFTER_MAX_TURNS = "after_max_turns"
+    # A resident agent's per-message turn boundary (it consumes a message inbox
+    # between turns and produces no terminal answer): the resident analog of
+    # AFTER_FINAL_ANSWER. Drives the per-turn checkpoint that persists the reply
+    # and releases the consumed inbox message, and (like AFTER_FINAL_ANSWER) an
+    # fs-snapshot so a restored transcript and filesystem stay in step.
+    AFTER_RESIDENT_TURN = "after_resident_turn"
     # Not a loop save-point: a synthetic head written by rollback_to_step,
     # parked at the start of the rolled-back-to step.
     ROLLED_BACK = "rolled_back"
@@ -178,7 +202,8 @@ class PersistedRecord(BaseModel):
 
     schema_version: int = Field(default=CURRENT_SCHEMA_VERSION)
     session_key: str
-    saved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
     def _check_schema_version(self) -> Self:
@@ -301,3 +326,20 @@ class RunnerCheckpoint(ProcessorCheckpoint):
     # The run's final (END-routed) result, set when the run completes — lets a
     # resume of a completed session return the result instead of failing.
     final_event: RunPacketOutEvent | None = None
+
+
+class TeamCheckpoint(ProcessorCheckpoint):
+    """
+    Checkpoint for AgentTeam — the coordinator scalars the team alone owns.
+
+    Deliberately tiny: the in-flight messages live in the durable mailbox
+    transport and each member persists its own transcript, so this holds only
+    what neither can express — the session-wide hop count. Its *existence* marks
+    the session as seeded, so a resume skips re-seeding the entry (mirroring how
+    a loaded ``RunnerCheckpoint`` suppresses the runner's start event). The
+    terminal stop reason is re-derived on resume from this count (``activations
+    >= max_hops``) and a fresh run, not frozen here — so a member error that
+    stopped the run is retried, not permanently recorded.
+    """
+
+    activations: int = 0

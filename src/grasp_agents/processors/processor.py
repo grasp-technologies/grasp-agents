@@ -134,6 +134,12 @@ class Processor[InT, OutT, CtxT](
 
         super().__init__()
 
+        if not name or name in {".", ".."} or any(c in name for c in "/\\\x00"):
+            raise ValueError(
+                f"Invalid processor name {name!r}: must be non-empty, not '.'/'..', "
+                "and free of '/', backslash, and null bytes — a processor name "
+                "becomes a store-key path segment (recipient / checkpoint path)."
+            )
         self.name = name
 
         self.max_retries = max_retries
@@ -326,22 +332,26 @@ class Processor[InT, OutT, CtxT](
 
         resolved_args: list[InT]
 
-        if self._is_single_in_arg(in_args):
-            # 2) Single in_args of correct type is provided
+        if in_packet is not None:
+            # 2) in_packet is provided -> its payloads are the arguments. Checked
+            # before in_args (the inputs are mutually exclusive) so that a None
+            # in_args — the unused parameter — is never mistaken for a single
+            # argument when InT admits None (e.g. Any / object).
+            resolved_args = list(in_packet.payloads)
+
+        elif self._is_single_in_arg(in_args):
+            # 3) Single in_args of the declared type is provided
             resolved_args = [cast("InT", in_args)]
 
         elif isinstance(in_args, list):
-            # 3) List of in_args is provided
+            # 4) List of in_args is provided
             resolved_args = cast("list[InT]", in_args)
 
-        elif in_args is not None:
-            # Not the declared type and not a list — let the validation below
-            # attempt coercion (e.g. a raw dict from a resumed checkpoint).
-            resolved_args = [cast("InT", in_args)]
-
         else:
-            # 4) in_packet is provided
-            resolved_args = list(cast("Packet[InT]", in_packet).payloads)
+            # 5) A single non-list arg (coerced below — e.g. a raw dict from a
+            # resumed checkpoint), or, for a None-typed processor with no input
+            # at all, a single None argument.
+            resolved_args = [cast("InT", in_args)]
 
         # Validate AND coerce: a resumed checkpoint round-trips payloads
         # through JSON, so they arrive as raw dicts — the coerced values

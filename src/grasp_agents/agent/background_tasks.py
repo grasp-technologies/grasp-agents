@@ -14,6 +14,7 @@ from pydantic_core import to_jsonable_python
 from grasp_agents.durability.checkpoint_store import CheckpointStore
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.durability.store_keys import (
+    is_direct_child,
     make_store_key,
     make_tool_call_path,
     task_prefix,
@@ -325,6 +326,18 @@ class BackgroundTaskManager[CtxT]:
         return any(
             pt.blocks_final_answer and not pt.announced for pt in self._tasks.values()
         )
+
+    @property
+    def has_undelivered_completions(self) -> bool:
+        """
+        True when a task has finished but :meth:`drain` has not yet delivered its
+        note — a completion is waiting to be surfaced at the next turn boundary.
+
+        A level-triggered readiness signal: a caller that lets the agent idle between
+        runs can read it to know a finished task's result is pending delivery, and run
+        another turn so :meth:`drain` surfaces it.
+        """
+        return not self._completions.empty()
 
     async def wait_idle(self, timeout: float | None = None) -> None:  # noqa: ASYNC109
         """
@@ -706,7 +719,6 @@ class BackgroundTaskManager[CtxT]:
             tool_name=call.name,
             tool_call_arguments=call.arguments,
             status=TaskStatus.PENDING,
-            started_at=datetime.now(UTC),
             output_path=output_path,
         )
         await store.save(task_key, record.model_dump_json().encode())
@@ -1014,7 +1026,7 @@ class BackgroundTaskManager[CtxT]:
         # tasks. Keep only direct ``tc_*`` children — a deeper segment belongs
         # to a nested sub-agent.
         prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self._path) + "/"
-        keys = [k for k in await store.list_keys(prefix) if "/" not in k[len(prefix) :]]
+        keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
 
         notifications: list[InputMessageItem] = []
         for key in keys:
@@ -1041,11 +1053,7 @@ class BackgroundTaskManager[CtxT]:
                 ):
                     continue
 
-                elapsed = (
-                    (record.updated_at - record.started_at).total_seconds()
-                    if record.started_at is not None
-                    else None
-                )
+                elapsed = (record.updated_at - record.created_at).total_seconds()
                 notification = InputMessageItem.from_text(
                     _task_notification(
                         task_id=record.task_id,

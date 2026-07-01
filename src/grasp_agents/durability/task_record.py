@@ -1,7 +1,4 @@
-from datetime import UTC, datetime
 from enum import StrEnum, auto
-
-from pydantic import Field
 
 from .checkpoints import PersistedRecord
 
@@ -39,6 +36,3 @@ class TaskRecord(PersistedRecord):
     # streamed output (the single source of truth for it; ``None`` when no file
     # backend is wired). On resume the interrupted notice points the agent here.
     output_path: str | None = None
-
-    started_at: datetime | None = None  # when the task was backgrounded
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

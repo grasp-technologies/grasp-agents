@@ -188,11 +188,12 @@ def _format_entry_heading(entry: MemoryEntry) -> str:
 
 async def _compute_relevant_memories(
     *,
-    user_message: InputMessageItem,
+    input_message: InputMessageItem,
     ctx: RunContext[Any] | None = None,
     exec_id: str | None = None,
     messages: Sequence[InputItem] | None = None,
     agent_ctx: AgentContext | None = None,
+    source: str | None = None,
 ) -> str | None:
     """
     Surface relevance-selected topic memories into the user message.
@@ -208,7 +209,7 @@ async def _compute_relevant_memories(
     or ``Read`` directly by the agent) are filtered out before selection, so
     the same body is not re-injected every turn.
     """
-    del user_message
+    del input_message, source
     if ctx is None or ctx.memory is None or ctx.memory.selector is None:
         return None
 

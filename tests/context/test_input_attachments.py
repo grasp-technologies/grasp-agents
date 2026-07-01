@@ -213,7 +213,7 @@ class TestMemoryRelevanceAttachment:
     async def test_no_provider_returns_none(self) -> None:
         ctx: RunContext[_State] = RunContext(state=_State())
         result = await relevant_memories_attachment.compute(
-            user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
+            input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is None
 
@@ -224,7 +224,7 @@ class TestMemoryRelevanceAttachment:
         )
         ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
         result = await relevant_memories_attachment.compute(
-            user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
+            input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is None
 
@@ -244,7 +244,7 @@ class TestMemoryRelevanceAttachment:
         provider.set_selector(keep_alpha)
         ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
         result = await relevant_memories_attachment.compute(
-            user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
+            input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is not None
         assert "## Relevant memories" in result
@@ -280,7 +280,7 @@ class TestMemoryRelevanceAttachment:
             memory = provider
 
         rendered = await _compute_relevant_memories(
-            user_message=InputMessageItem.from_text("q", role="user"),  # type: ignore[arg-type]
+            input_message=InputMessageItem.from_text("q", role="user"),  # type: ignore[arg-type]
             ctx=_Ctx(),  # type: ignore[arg-type]
             exec_id=None,
             messages=[InputMessageItem.from_text("q", role="user")],
@@ -302,7 +302,7 @@ class TestMemoryRelevanceAttachment:
         provider.set_selector(empty)
         ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
         result = await relevant_memories_attachment.compute(
-            user_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
+            input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
         assert result is None
 

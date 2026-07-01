@@ -72,5 +72,24 @@ class LLMAgentTranscript(BaseModel):
     def is_empty(self) -> bool:
         return len(self.messages) == 0
 
+    @property
+    def owes_response(self) -> bool:
+        """
+        Whether the log ends with input the model has not answered yet: a user
+        message (human / peer), a tool result awaiting a continuation, or a
+        dangling tool call. ``False`` when the tail is a completed assistant turn,
+        or the log is empty.
+
+        A resident loop generates whenever this holds and parks only when it does
+        not — so a message absorbed into a checkpointed log is always answered,
+        even across a crash and resume, with nothing tracked outside the log.
+        """
+        if not self.messages:
+            return False
+        return isinstance(
+            self.messages[-1],
+            (InputMessageItem, FunctionToolOutputItem, FunctionToolCallItem),
+        )
+
     def __repr__(self) -> str:
         return f"LLMAgentTranscript(len={len(self.messages)})"

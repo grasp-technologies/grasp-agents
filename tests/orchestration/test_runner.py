@@ -725,6 +725,19 @@ class ListProcessor(Processor[list[int], list[int], None]):
             yield ProcPayloadOutEvent(data=arg, source=self.name, exec_id=exec_id)
 
 
+class AnyProcessor(Processor[Any, Any, None]):
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[Any] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        for arg in in_args or []:
+            yield ProcPayloadOutEvent(data=arg, source=self.name, exec_id=exec_id)
+
+
 class TestParameterizedGenericInType:
     def test_single_list_arg_no_typeerror(self) -> None:
         proc = ListProcessor(name="p")
@@ -737,6 +750,16 @@ class TestParameterizedGenericInType:
         packet = Packet[Any](sender="x", payloads=[[1, 2], [3]])
         out = proc.validate_inputs(exec_id="e", in_packet=packet)
         assert out == [[1, 2], [3]]
+
+    def test_any_typed_in_packet_preserves_payloads(self) -> None:
+        # An ``Any``-typed processor (in_type resolves to ``object``) fed via
+        # in_packet must receive its real payloads. ``None`` is an instance of
+        # ``object``, so the single-arg check must not fire for the unused
+        # ``in_args`` parameter and replace the payloads with ``[None]``.
+        proc = AnyProcessor(name="p")
+        packet = Packet[Any](sender="x", payloads=["a", "b"])
+        out = proc.validate_inputs(exec_id="e", in_packet=packet)
+        assert out == ["a", "b"]
 
 
 # ---------- multi-payload fan-in to an LLMAgent ----------
