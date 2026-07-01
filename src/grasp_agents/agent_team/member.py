@@ -1,4 +1,4 @@
-"""Drive a single team member off its own mailbox + human input (one per process)."""
+"""Drive a single team member off the shared mailbox + human input (one per process)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from grasp_agents.runtime import CLOSED, ActorDriver, Closed, Transport
+from grasp_agents.runtime import ActorDriver, Transport
 
-from ._activation import is_llm_agent, stream_member
-from .message import USER_SENDER, TeamMessage
-from .sources import WakeupScheduler
+from ._roles import activate_member, is_llm_agent, is_resident, resident_idle
+from .message import CONTROL_PRIORITY, USER_SENDER, TeamMessage
+from .prompt import make_sender_attribution_attachment, make_team_section
 from .tools import (
     SCHEDULE_WAKEUP_TOOL_NAME,
     SEND_MESSAGE_TOOL_NAME,
@@ -21,99 +21,38 @@ from .tools import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
+    from grasp_agents.agent.llm_agent import LLMAgent
     from grasp_agents.processors.processor import Processor
     from grasp_agents.run_context import RunContext
     from grasp_agents.tools.base import BaseTool
+    from grasp_agents.types.content import InputImage
     from grasp_agents.types.events import Event
+    from grasp_agents.types.io import LLMPrompt
 
     from .agent_card import MemberCard
 
 logger = logging.getLogger(__name__)
 
-
-class _PrioritizedInbox(Transport[TeamMessage]):
-    """
-    Human input and the member's mailbox as one runtime channel, human first.
-
-    A genuine composite over the mailbox :class:`~grasp_agents.runtime.Transport`
-    (not an adapter): human turns are queued in memory and jump ahead of mailbox
-    mail; they are not persisted and need no ack (they never entered the mailbox).
-    Mailbox mail is consumed and acked by the driver after the turn — at-least-once,
-    like any team member.
-    """
-
-    def __init__(
-        self,
-        mailbox: Transport[TeamMessage],
-        human_q: asyncio.Queue[str],
-        *,
-        poll_interval: float,
-    ) -> None:
-        self._mailbox = mailbox
-        self._human_q = human_q
-        self._poll_interval = poll_interval
-        self._closed = asyncio.Event()
-        self._human_ids: set[str] = set()
-
-    def register(self, recipient: str) -> None:
-        self._mailbox.register(recipient)
-
-    async def post(self, envelope: TeamMessage) -> None:
-        await self._mailbox.post(envelope)
-
-    async def consume(self, recipient: str) -> TeamMessage | Closed:
-        while not self._closed.is_set():
-            human = self._take_human(recipient)
-            if human is not None:
-                return human
-            if await self._mailbox.has_pending(recipient):
-                return await self._mailbox.consume(recipient)
-            # Idle: wake on human input, else time out to re-poll the mailbox.
-            try:
-                text = await asyncio.wait_for(
-                    self._human_q.get(), timeout=self._poll_interval
-                )
-                self._human_q.put_nowait(text)
-            except TimeoutError:
-                pass
-        return CLOSED
-
-    def _take_human(self, recipient: str) -> TeamMessage | None:
-        try:
-            text = self._human_q.get_nowait()
-        except asyncio.QueueEmpty:
-            return None
-        message = TeamMessage.of_text(sender=USER_SENDER, to=recipient, text=text)
-        self._human_ids.add(message.message_id)
-        return message
-
-    async def ack(self, recipient: str, envelope: TeamMessage) -> None:
-        if envelope.message_id in self._human_ids:
-            self._human_ids.discard(envelope.message_id)
-        else:
-            await self._mailbox.ack(recipient, envelope)
-
-    async def has_pending(self, recipient: str) -> bool:
-        return not self._human_q.empty() or await self._mailbox.has_pending(recipient)
-
-    async def shutdown(self) -> None:
-        self._closed.set()
+# Sentinel marking the end of a resident member's event stream.
+_DONE = object()
 
 
 class MemberDriver:
     """
-    Runs ONE team member as a single serial inbox: human input and incoming mailbox
-    messages feed one loop that runs the member one turn at a time (human input takes
-    priority), so two turns never interleave into its transcript.
+    Runs ONE team member off the shared mailbox, one turn at a time so two turns
+    never interleave into its transcript.
 
     The reusable core behind a per-process member UI — each member lives in its own
     process, built against a shared (durable) transport, all running on the same
     actor runtime as an in-process :class:`~.agent_team.AgentTeam`. The member may be
-    an agent **or** a plain ``Processor``: a communicator agent (no static recipients)
-    gets a ``SendMessage`` tool and messages peers; a worker (a processor, or an agent
-    with recipients) reacts to inbound packets and hands its output off by name. Both
-    reach peers in other processes through the shared mailbox. For a single-process
-    team, use :class:`~.agent_team.AgentTeam` instead.
+    an agent **or** a plain ``Processor``, and runs on the *same* execution model the
+    in-process team uses: a resident (an agent with no static recipients) runs
+    **resident** — one long loop consuming its inbox between turns, so peer and human
+    messages enter mid-task; a worker (a processor, or an agent with recipients) is
+    **triggered** — one activation per inbound message, handing its output off by
+    name. Human input is posted to the same mailbox as control-plane mail (it drains
+    ahead of peer messages). For a single-process team, use
+    :class:`~.agent_team.AgentTeam` instead.
     """
 
     def __init__(
@@ -129,26 +68,38 @@ class MemberDriver:
         self._mailbox = transport
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
-        self._human_q: asyncio.Queue[str] = asyncio.Queue()
-        self._scheduler = WakeupScheduler(transport)
 
-        # A communicator (an agent with no static recipients) messages peers via
-        # SendMessage and schedules its own wakeups via ScheduleWakeup; a worker
-        # hands its output off by name and gets no tools.
-        if is_llm_agent(member) and not member.recipients:
-            send_tool = cast(
-                "BaseTool[Any, Any, Any]",
-                SendMessageTool(cards, transport_resolver=lambda _ctx: transport),
+        # This member's card (its per-member team config: accepted input + role).
+        card = next((c for c in cards if c.name == member.name), None)
+
+        # A resident runs a persistent loop; a worker is triggered. Hold the narrowed
+        # reference so the resident path can use the LLMAgent-only inbox API.
+        self._resident: LLMAgent[Any, Any, Any] | None = None
+
+        # A resident messages peers via SendMessage and schedules its own
+        # wakeups via ScheduleWakeup; a worker hands its output off by name and gets
+        # no tools.
+        if is_resident(member, card):
+            self._resident = cast("LLMAgent[Any, Any, Any]", member)
+            send_tool = SendMessageTool(
+                cards, transport_resolver=lambda _ctx: transport
             )
-            wakeup_tool = cast(
-                "BaseTool[Any, Any, Any]", ScheduleWakeupTool(self._scheduler)
-            )
+            wakeup_tool = ScheduleWakeupTool()
+
             for name, tool in (
                 (SEND_MESSAGE_TOOL_NAME, send_tool),
                 (SCHEDULE_WAKEUP_TOOL_NAME, wakeup_tool),
             ):
-                member.tools[name] = tool
+                self._resident.tools[name] = cast("BaseTool[Any, Any, Any]", tool)
                 tool.on_adopted(member)
+            self._resident.add_system_prompt_section(make_team_section(cards))
+
+        # A triggered member renders a peer hand-off through its own input pipeline,
+        # which has no sender fence; give every LLM member the attribution attachment
+        # so its turns name the teammate they came from (inert for a resident, which
+        # gets attribution from the fence on its drained messages).
+        if is_llm_agent(member):
+            member.add_input_attachment(make_sender_attribution_attachment())
 
     @property
     def name(self) -> str:
@@ -159,36 +110,114 @@ class MemberDriver:
         """The member's run context (approval store, skills, etc.)."""
         return self._member.ctx
 
-    def submit_human(self, text: str) -> None:
-        """Queue human input as the member's next turn (same event loop)."""
-        self._human_q.put_nowait(text)
+    async def submit_message(
+        self, chat_inputs: LLMPrompt | Sequence[str | InputImage]
+    ) -> None:
+        """
+        Deliver human input (text, or a mix of text and images) as this member's next
+        turn — the per-process counterpart to :meth:`AgentTeam.submit_message`. Posted
+        to the shared mailbox as control-plane mail (``CONTROL_PRIORITY``), so it
+        drains ahead of queued peer messages and — over a durable transport —
+        survives a restart, exactly like a message from any peer.
+        """
+        await self._mailbox.post(
+            TeamMessage.from_input(
+                sender=USER_SENDER,
+                to=self._member.name,
+                chat_inputs=chat_inputs,
+                priority=CONTROL_PRIORITY,
+            )
+        )
 
     async def events(
         self, *, stop_when_idle: bool = False
     ) -> AsyncIterator[Event[Any]]:
         """
-        Stream the member's turns. Each activation takes the next human input (if
-        any) else the next mailbox message — one group per turn — runs one turn, and
-        hands any routed output off through the transport. Runs until cancelled, or
-        returns once idle when ``stop_when_idle`` (for batch / tests). A failing turn
-        is logged and its message dead-lettered; the loop keeps serving.
+        Stream the member's turns until cancelled — or until idle when
+        ``stop_when_idle`` (for batch / tests). A resident runs a persistent loop
+        (consuming its inbox between turns); a worker is triggered once per inbound
+        message. A failing turn is logged and its message dead-lettered; the loop
+        keeps serving.
         """
-        channel = _PrioritizedInbox(
-            self._mailbox, self._human_q, poll_interval=self._poll_interval
-        )
-        driver: ActorDriver[TeamMessage] = ActorDriver(
-            channel, termination="quiescence" if stop_when_idle else "daemon"
+        if self._resident is not None:
+            stream = self._run_resident(stop_when_idle=stop_when_idle)
+        else:
+            stream = self._run_triggered(stop_when_idle=stop_when_idle)
+        async for event in stream:
+            yield event
+
+    # -- resident (persistent loop) --
+
+    async def _run_resident(self, *, stop_when_idle: bool) -> AsyncIterator[Event[Any]]:
+        member = self._resident
+        assert member is not None
+        member.attach_inbox(self._mailbox)
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+
+        async def run() -> None:
+            try:
+                async for event in member.run_stream(**self._run_kwargs):
+                    queue.put_nowait(event)
+            except Exception:
+                logger.warning("Resident member %r failed", member.name, exc_info=True)
+            finally:
+                # Sync put (unbounded queue) so it lands even while being cancelled.
+                queue.put_nowait(_DONE)
+
+        run_task = asyncio.create_task(run(), name=f"resident:{member.name}")
+        monitor = (
+            asyncio.create_task(
+                self._monitor_idle(run_task), name=f"{member.name}-monitor"
+            )
+            if stop_when_idle
+            else None
         )
         try:
-            async with driver:
-                driver.register_handler(self._member.name, self._make_handler(driver))
-                await driver.settle()
-                async for event in driver.stream_events():
-                    yield event
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                yield item
         finally:
-            # Drop any wakeup the member scheduled but that has not yet fired, so a
-            # stopped driver leaves no timer firing into a torn-down transport.
-            await self._scheduler.aclose()
+            run_task.cancel()
+            if monitor is not None:
+                monitor.cancel()
+            tasks = [run_task] + ([monitor] if monitor is not None else [])
+            await asyncio.gather(*tasks, return_exceptions=True)
+            member.detach_inbox()
+
+    async def _monitor_idle(self, run_task: asyncio.Task[None]) -> None:
+        """
+        End the resident once it is idle (parked on an empty inbox, no background
+        work), held across two consecutive polls so a delivery racing an idle
+        observation isn't dropped.
+        """
+        member = self._resident
+        assert member is not None
+        idle_once = False
+        while not run_task.done():
+            await asyncio.sleep(self._poll_interval)
+            if await resident_idle(member):
+                if idle_once:
+                    run_task.cancel()
+                    return
+                idle_once = True
+            else:
+                idle_once = False
+
+    # -- triggered (worker) --
+
+    async def _run_triggered(
+        self, *, stop_when_idle: bool
+    ) -> AsyncIterator[Event[Any]]:
+        driver: ActorDriver[TeamMessage] = ActorDriver(
+            self._mailbox, termination="quiescence" if stop_when_idle else "daemon"
+        )
+        async with driver:
+            driver.register_handler(self._member.name, self._make_handler(driver))
+            await driver.settle()
+            async for event in driver.stream_events():
+                yield event
 
     def _make_handler(
         self, driver: ActorDriver[TeamMessage]
@@ -197,17 +226,18 @@ class MemberDriver:
 
         async def handler(message: TeamMessage) -> None:
             try:
-                out_packet = await stream_member(
+                await activate_member(
                     member,
                     message,
-                    push=driver.push_to_stream,
+                    transport=self._mailbox,
                     run_kwargs=self._run_kwargs,
+                    push=driver.push_to_stream,
+                    post=driver.post,
                 )
-                if out_packet is not None and out_packet.routing:
-                    await driver.post(TeamMessage.from_packet(out_packet))
             except asyncio.CancelledError:
                 raise
             except Exception:
+                # Dead-letter the failure; the per-process driver keeps serving.
                 logger.warning("Member %r turn failed", member.name, exc_info=True)
 
         return handler

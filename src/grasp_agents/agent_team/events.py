@@ -17,6 +17,7 @@ class TeamStopReason(StrEnum):
 
     QUIESCED = "quiesced"  # no member running and no mail left
     HOP_BUDGET_EXHAUSTED = "hop_budget_exhausted"  # max_hops reached, mail pending
+    TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"  # max_tokens reached
     MEMBER_ERROR = "member_error"  # a member's run raised
     CANCELLED = "cancelled"  # the consumer stopped the stream
     ERROR = "error"  # the coordinator itself failed

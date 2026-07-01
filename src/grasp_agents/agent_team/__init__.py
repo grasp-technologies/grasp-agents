@@ -12,6 +12,11 @@ the session checkpoint store). See ``docs/experimental/agent-team``.
 
 from __future__ import annotations
 
+from grasp_agents.mailbox import (
+    CheckpointMailboxTransport,
+    InMemoryMailboxTransport,
+)
+
 from .agent_card import MemberCard
 from .agent_team import AgentTeam, TeamRunResult
 from .events import (
@@ -23,16 +28,11 @@ from .events import (
 )
 from .member import MemberDriver
 from .message import TeamMessage
-from .sources import WakeupScheduler, run_interval_source
 from .tools import (
     ScheduleWakeupInput,
     ScheduleWakeupTool,
     SendMessageInput,
     SendMessageTool,
-)
-from .transport import (
-    CheckpointMailboxTransport,
-    InMemoryMailboxTransport,
     default_transport,
 )
 
@@ -53,7 +53,5 @@ __all__ = [
     "TeamRunResult",
     "TeamStartedEvent",
     "TeamStopReason",
-    "WakeupScheduler",
     "default_transport",
-    "run_interval_source",
 ]

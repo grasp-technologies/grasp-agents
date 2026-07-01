@@ -29,8 +29,8 @@ Needs ``OPENAI_API_KEY`` in ``.env``; requires the ``tui`` extra. Three ways to 
        python -m grasp_agents.examples.tui.team_research writer
        python -m grasp_agents.examples.tui.team_research archivist
 
-3. **Single process** — the whole team in one window (panes per member, in-memory
-   mailbox), for a quick look::
+3. **Single process** — the whole team in one window (panes per member), over the
+   same durable file mailbox as the separate-process modes, for a quick look::
 
        python -m grasp_agents.examples.tui.team_research team
 
@@ -79,28 +79,20 @@ ROSTER = [
     ),
 ]
 
-_SHARED = (
-    "You are one member of a small team. Teammates collaborate by SENDING MESSAGES "
-    "via the SendMessage tool — there is no shared chat. A message you receive "
-    "arrives as a user turn prefixed with its sender. To reply, call SendMessage "
-    "addressed back to that sender. Keep messages short and purposeful."
-)
-
+# Only role-specific guidance here — the team framing (how to send / receive / wait)
+# is injected automatically as a system-prompt section on every resident member.
 _SYS = {
-    "lead": _SHARED + " "
-    "You are the team LEAD. Given the user's request, break it into parts and "
+    "lead": "You are the team LEAD. Given the user's request, break it into parts and "
     "delegate: ask `researcher` for any facts you need and `writer` to draft prose, "
     "one SendMessage at a time. When teammates reply with their parts, synthesize "
     "them into a single final answer. SendMessage that final answer to `archivist` "
     "to file it, then present it to the user (no further SendMessage needed).",
-    "researcher": _SHARED + " "
-    "You are the RESEARCHER. When a teammate asks a question, answer it concisely "
-    "and accurately from your knowledge, then SendMessage your findings back to the "
-    "sender. Do not write polished prose — just the facts.",
-    "writer": _SHARED + " "
-    "You are the WRITER. When a teammate asks you to draft something, write clear, "
-    "well-structured prose using the notes they provide, then SendMessage the draft "
-    "back to the sender.",
+    "researcher": "You are the RESEARCHER. When a teammate asks a question, answer it "
+    "concisely and accurately from your knowledge, then SendMessage your findings "
+    "back to the sender. Do not write polished prose — just the facts.",
+    "writer": "You are the WRITER. When a teammate asks you to draft something, write "
+    "clear, well-structured prose using the notes they provide, then SendMessage the "
+    "draft back to the sender.",
 }
 
 
@@ -176,21 +168,33 @@ def build_member(
 def build_team(
     *, model: str = DEFAULT_MODEL, mailbox_dir: Path = DEFAULT_DIR
 ) -> AgentTeam[None]:
-    """Build the whole team in one process (in-memory mailbox, no file wiring)."""
+    """
+    Build the whole team in one process over a durable mailbox (a
+    ``CheckpointMailboxTransport`` on a ``FileCheckpointStore`` under
+    ``mailbox_dir``), so in-flight mail, each member's transcript, and the team's
+    hop budget all persist to the same store.
+    """
     mailbox_dir.mkdir(parents=True, exist_ok=True)
-    ctx = RunContext[None](state=None)  # no file backend -> in-memory transport
+    store = FileCheckpointStore(root=mailbox_dir)
+    ctx = RunContext[None](state=None, checkpoint_store=store)
     members = [
         _make_member(c.name, ctx=ctx, model=model, notes_path=mailbox_dir / "notes.md")
         for c in ROSTER
     ]
-    return AgentTeam(members, entry="lead", cards=ROSTER, ctx=ctx)
+    return AgentTeam(
+        members,
+        entry="lead",
+        cards=ROSTER,
+        ctx=ctx,
+        transport=CheckpointMailboxTransport(store),
+    )
 
 
 def _human_handler(driver: MemberDriver) -> Any:
-    # Queue human input onto the member's serial inbox (so it serializes with
-    # mailbox turns); the turn's events render through ``driver.events()``.
-    async def on_submit(text: str) -> AsyncIterator[Event[Any]]:  # noqa: RUF029
-        driver.submit_human(text)
+    # Post human input to the member's mailbox as control-plane mail (it drains
+    # ahead of peer messages); the turn's events render through ``driver.events()``.
+    async def on_submit(text: str) -> AsyncIterator[Event[Any]]:
+        await driver.submit_message(text)
         return
         yield  # unreachable: makes this an async generator that yields nothing
 
@@ -211,18 +215,39 @@ def _launch_tmux(*, mailbox_dir: Path, model: str) -> None:
 
     def pane(name: str) -> str:
         argv = [
-            sys.executable, "-m", "grasp_agents.examples.tui.team_research",
-            name, "--dir", str(mailbox_dir), "--model", model,
+            sys.executable,
+            "-m",
+            "grasp_agents.examples.tui.team_research",
+            name,
+            "--dir",
+            str(mailbox_dir),
+            "--model",
+            model,
         ]
         return " ".join(argv)
 
     subprocess.run(  # noqa: S603
         [
-            tmux, "new-session", "-s", "team-demo", pane("lead"),
-            ";", "split-window", "-h", pane("researcher"),
-            ";", "split-window", "-v", pane("writer"),
-            ";", "split-window", "-v", pane("archivist"),
-            ";", "select-layout", "tiled",
+            tmux,
+            "new-session",
+            "-s",
+            "team-demo",
+            pane("lead"),
+            ";",
+            "split-window",
+            "-h",
+            pane("researcher"),
+            ";",
+            "split-window",
+            "-v",
+            pane("writer"),
+            ";",
+            "split-window",
+            "-v",
+            pane("archivist"),
+            ";",
+            "select-layout",
+            "tiled",
         ],
         check=False,
     )

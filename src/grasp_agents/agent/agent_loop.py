@@ -61,6 +61,8 @@ from .loop_state import (
     NextStep,
     NextStepContinue,
     NextStepForceFinalAnswer,
+    NextStepForceResidentReply,
+    NextStepResidentReply,
     NextStepRunTools,
     NextStepStop,
     decide_next_step,
@@ -168,9 +170,6 @@ class AgentLoop[CtxT]:
     final_answer: str | None  # extracted by _check_stop / _force_generate
     turn: int  # current LLM cycle within a step
     path: list[str] | None
-    # Context-window management — view derivation, token budget, and compaction —
-    # delegated to a dedicated manager so the loop stays focused on the cycle.
-    _cw: ContextWindowManager
 
     # Hook callback slots — set by LLMAgent. The observer / decision hooks are
     # lists: registering more than one stacks them (invoked in registration
@@ -190,6 +189,11 @@ class AgentLoop[CtxT]:
 
     _llm_output_schema: Any | None
     _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
+    _ctx: RunContext[CtxT]
+
+    # Context-window management — view derivation, token budget, and compaction —
+    # delegated to a dedicated manager so the loop stays focused on the cycle.
+    _cw: ContextWindowManager
 
     def __init__(
         self,
@@ -222,6 +226,11 @@ class AgentLoop[CtxT]:
 
         self.final_answer = None
         self.turn = 0
+        # The lifetime ``turn`` for a resident grows unbounded across inbox
+        # messages; this marks where the current message's handling began, so the
+        # per-message turn budget is ``turn - _message_start_turn`` (reset on each
+        # delivered message — see ``_drain_inbox``).
+        self._message_start_turn = 0
 
         self.agent_name = agent_name
         self.llm = llm
@@ -969,6 +978,7 @@ class AgentLoop[CtxT]:
             deadline_exceeded=self._deadline is not None
             and time.monotonic() >= self._deadline,
             inbox_open=self.inbox is not None,
+            turns_on_message=self.turn - self._message_start_turn,
         )
 
     def _unanswered_tool_calls(self, response: Response) -> list[FunctionToolCallItem]:
@@ -1305,6 +1315,77 @@ class AgentLoop[CtxT]:
             data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
         )
 
+    async def _handle_resident_reply(
+        self,
+        step: NextStepResidentReply,
+        *,
+        exec_id: str,
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        ``NextStepResidentReply``: a resident produced its reply to the current
+        message and the open inbox recycles the loop instead of stopping. Persist
+        the turn — a resident reply otherwise never checkpoints, so the answer
+        would be re-generated on resume — which also releases any message this turn
+        absorbed (the ack flush in :meth:`checkpoint`). Non-terminal: the loop
+        continues and parks for the next message (the tail is now an answer, so it
+        no longer owes a response).
+        """
+        del step
+
+        await self.checkpoint(
+            turn=self.turn + 1,
+            location=AgentCheckpointLocation.AFTER_RESIDENT_TURN,
+        )
+
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
+        )
+
+    async def _handle_force_resident_reply(
+        self,
+        response: Response,
+        *,
+        exec_id: str,
+        extra_llm_settings: dict[str, Any],
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        ``NextStepForceResidentReply``: a resident burned its per-message turn
+        budget without an answer it can return. The resident analog of
+        :meth:`_handle_force_final_answer`: close dangling tool calls, force-generate
+        a final answer for this message, persist it (``AFTER_RESIDENT_TURN``,
+        releasing the message), then park for the next — the run continues. Caps one
+        runaway message; background tasks are left running (same as the lone-agent
+        force path).
+        """
+        logger.warning(
+            "Resident '%s' hit its per-message turn budget (%s) — forcing a reply "
+            "and moving on to the next message.",
+            self.agent_name,
+            self.max_turns,
+        )
+        closures = self._close_dangling_tool_calls(response)
+        for closure_event in self._closure_events(closures, exec_id=exec_id):
+            yield closure_event
+
+        async for event in self._force_generate_final_answer_stream(
+            exec_id=exec_id,
+            extra_llm_settings=extra_llm_settings,
+        ):
+            yield event
+
+        await self.checkpoint(
+            turn=self.turn + 1,
+            location=AgentCheckpointLocation.AFTER_RESIDENT_TURN,
+        )
+
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
+        )
+
     # --- ACT phase ---
 
     async def _run_act_stream(
@@ -1367,28 +1448,35 @@ class AgentLoop[CtxT]:
         # while it blocks here (the per-actor quiescence signal).
         with inbox.waiting():
             while not (
-                await inbox.has_pending()
-                or self.bg_tasks.has_undelivered_completions
+                await inbox.has_pending() or self.bg_tasks.has_undelivered_completions
             ):
                 await inbox.wait(timeout=self._inbox_poll_interval)
 
     async def _drain_inbox(self, *, exec_id: str) -> AsyncIterator[Event[Any]]:
         """
-        Deliver the next peer message as a user turn at the turn boundary — the
-        resident counterpart to :meth:`BackgroundTaskManager.drain`. One message
-        per turn (never merges); a no-op with no inbox attached (non-resident) or
-        none queued (the wait was woken by a background-task completion instead).
+        Deliver the next peer / human message as a user turn at the turn boundary —
+        the resident counterpart to :meth:`BackgroundTaskManager.drain`. The inbox
+        leases the message (released on this turn's checkpoint), and holds the next
+        until then, so one message lands per turn yet new mail enters *between*
+        turns — the agent need not reach a final answer first. A no-op with no inbox
+        attached (non-resident) or none queued (the wait was woken by a
+        background-task completion instead).
         """
         inbox = self.inbox
         if inbox is None:
             return
-        message = await inbox.poll()
+        message = await inbox.take()
         if message is None:
             return
+        # A new message resets the per-message turn budget (see decide_next_step).
+        self._message_start_turn = self.turn
         item = message.to_input_message()
         self.transcript.update([item])
         yield UserMessageEvent(
-            data=item, source=None, destination=self.agent_name, exec_id=exec_id
+            data=item,
+            source=None,
+            destination=self.agent_name,
+            exec_id=exec_id,
         )
 
     # --- Main execution loop ---
@@ -1400,6 +1488,10 @@ class AgentLoop[CtxT]:
     ) -> AsyncIterator[Event[Any]]:
         had_tool_calls = False
         self.final_answer = None
+        # Start (or, on resume, restart) the current message's per-message turn
+        # budget from here — a resumed resident gets a fresh budget for whatever
+        # message it was mid-handling, which only ever loosens the cap.
+        self._message_start_turn = self.turn
         self._deadline = (
             time.monotonic() + self.run_timeout
             if self.run_timeout is not None
@@ -1414,28 +1506,33 @@ class AgentLoop[CtxT]:
             )
 
         # A resident agent (inbox attached) loops until its task is cancelled from
-        # outside — it must NOT exit on the turn budget: ``inbox_open`` suppresses
-        # the force-final-answer step, so exiting here would hit the
-        # "final answer is not None" assert with no answer. A lone agent keeps the
-        # original bound. (A per-message turn budget is a separate, deliberate
-        # decision — a resident's ``turn`` is currently unbounded across messages.)
+        # outside — it must NOT exit on the lifetime turn budget, which bounds a lone
+        # agent's whole run. A resident is instead bounded *per inbox message*
+        # (``turns_on_message`` in ``decide_next_step``): a runaway message force-
+        # finalizes and the loop moves on, but the run itself only ends on cancel.
         while self.inbox is not None or self.turn <= self.max_turns:
             # ── PRE-ACT: prepare for generation ──
 
             # When the model has nothing to do but wait — a resident agent for its
-            # next inbox activation, or any agent for an outstanding background
-            # task — block instead of spinning poll turns. (Only answer-blocking
-            # tasks delay a final answer; a backgrounded Bash command is waited on
-            # but never blocks it — see JUDGE / has_pending.)
-            if not had_tool_calls and self.inbox is not None:
-                # Gated on ``not had_tool_calls`` so a turn that just issued tool
-                # calls proceeds straight to processing their results. Ended only
-                # when the run's task is cancelled.
-                await self._await_inbox()
+            # next inbox message, or any agent for an outstanding background task —
+            # block instead of spinning poll turns. (Only answer-blocking tasks delay
+            # a final answer; a backgrounded Bash command is waited on but never
+            # blocks it — see JUDGE / has_pending.)
+            if self.inbox is not None:
+                # Resident: park for the next message only when the log does not
+                # already owe a response (tool results to continue from, or a resumed
+                # unanswered tail). Reading "owes" off the log — not an in-memory
+                # flag — is what lets a crash-and-resume mid-handling continue rather
+                # than park forever on its (indefinite) inbox wait. Ended only when
+                # the run's task is cancelled.
+                if not self.transcript.owes_response:
+                    await self._await_inbox()
             elif self.turn > 0 and not had_tool_calls:
-                # Bound the idle wait by the remaining run-timeout budget so a
-                # non-blocking background task that never completes can't block
-                # past the deadline (the next JUDGE check then stops the run).
+                # Lone agent: a bounded idle-wait for outstanding background work
+                # (returns at once when there is none, so it never strands a resumed
+                # tool-result tail). Capped by the remaining run-timeout budget so a
+                # non-blocking task that never completes can't block past the
+                # deadline (the next JUDGE check then stops the run).
                 idle_timeout = (
                     max(0.0, self._deadline - time.monotonic())
                     if self._deadline is not None
@@ -1534,8 +1631,20 @@ class AgentLoop[CtxT]:
             if isinstance(step, NextStepRunTools):
                 async for event in self._handle_run_tools(step, exec_id=exec_id):
                     yield event
-            else:
-                assert isinstance(step, NextStepContinue)
+
+            if isinstance(step, NextStepResidentReply):
+                async for event in self._handle_resident_reply(step, exec_id=exec_id):
+                    yield event
+
+            if isinstance(step, NextStepForceResidentReply):
+                async for event in self._handle_force_resident_reply(
+                    response,
+                    exec_id=exec_id,
+                    extra_llm_settings=deepcopy(extra_llm_settings or {}),
+                ):
+                    yield event
+
+            if isinstance(step, NextStepContinue):
                 async for event in self._handle_continue(exec_id=exec_id):
                     yield event
 

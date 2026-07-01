@@ -48,6 +48,13 @@ class AgentInbox:
         )
         self._recipient = recipient
         self._waiting = False
+        # Messages taken but not yet acked — released on the next checkpoint
+        # (:meth:`flush_acks`) once the turn that consumed them is durable, or
+        # dropped un-acked on a transcript rewind (:meth:`rollback`). In-memory and
+        # transient: a crash loses the leases, and the un-acked messages are simply
+        # re-delivered. The host attaches a fresh inbox per run, so leases never
+        # outlive a run.
+        self._leased: dict[str, TeamMessage] = {}
 
     @property
     def transport(self) -> Transport[TeamMessage]:
@@ -57,16 +64,66 @@ class AgentInbox:
         """Deliver ``message`` through the transport (routed by its recipients)."""
         await self._transport.post(message)
 
-    async def poll(self) -> TeamMessage | None:
-        """Consume this agent's oldest message (fetch + ack), or ``None``."""
-        if not await self._transport.has_pending(self._recipient):
-            return None
-        # ``has_pending`` is true and this agent is the sole consumer of its own
-        # mailbox, so ``consume`` returns at once rather than blocking.
-        message = await self._transport.consume(self._recipient)
-        if isinstance(message, Closed):
-            return None
+    async def take(self) -> TeamMessage | None:
+        """
+        Lease this agent's oldest **unprocessed** message *without* acking, or
+        ``None`` if nothing new is takeable.
+
+        The message stays in the mailbox (leased) until :meth:`flush_acks`
+        releases it on the next checkpoint — so a crash before then re-delivers it
+        rather than dropping it (at-least-once). One message is in flight at a
+        time: while a leased message is still the oldest in the mailbox, ``take``
+        returns ``None`` (``consume`` is non-removing, so it would otherwise keep
+        returning the same one). A message already marked processed — a redelivery
+        whose ack only partly landed before a crash — is acked and skipped, since
+        its effects are already durable.
+        """
+        while await self._transport.has_pending(self._recipient):
+            # ``has_pending`` is true and this agent is the sole consumer of its
+            # own mailbox, so ``consume`` returns at once rather than blocking.
+            message = await self._transport.consume(self._recipient)
+            if isinstance(message, Closed):
+                return None
+            if message.message_id in self._leased:
+                return None
+            if await self._transport.was_processed(self._recipient, message.message_id):
+                await self._transport.ack(self._recipient, message)
+                continue
+            self._leased[message.message_id] = message
+            return message
+        return None
+
+    async def ack(self, message: TeamMessage) -> None:
+        """Remove a leased message from the inbox, once its turn is durable."""
+        self._leased.pop(message.message_id, None)
         await self._transport.ack(self._recipient, message)
+
+    async def flush_acks(self) -> None:
+        """
+        Release every leased message — the inbox counterpart to
+        :meth:`BackgroundTaskManager.flush_delivered`. Called right after the
+        checkpoint that persisted the turn which consumed them: the messages are
+        now durably absorbed into the log, so removing them from the mailbox can no
+        longer strand them (resume re-derives the owed response from the log). A
+        crash before this re-delivers them; :meth:`take` dedupes the redelivery.
+        """
+        for message in list(self._leased.values()):
+            await self._transport.ack(self._recipient, message)
+            self._leased.pop(message.message_id, None)
+
+    def rollback(self) -> None:
+        """
+        Drop all leases without acking, so a transcript rewind (rollback /
+        failed-run revert) re-takes the still-unacked messages from the mailbox
+        rather than wedging on them. In-memory only — they were never removed.
+        """
+        self._leased.clear()
+
+    async def poll(self) -> TeamMessage | None:
+        """Consume + ack this agent's oldest message in one step, or ``None``."""
+        message = await self.take()
+        if message is not None:
+            await self.ack(message)
         return message
 
     async def has_pending(self) -> bool:

@@ -14,7 +14,7 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_card import MemberCard
 from grasp_agents.agent_team.member import MemberDriver
 from grasp_agents.agent_team.message import TeamMessage
-from grasp_agents.agent_team.transport import InMemoryMailboxTransport
+from grasp_agents.mailbox import InMemoryMailboxTransport
 from grasp_agents.types.response import Response
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
@@ -42,7 +42,7 @@ async def test_driver_activates_sends_and_acks() -> None:
     driver = MemberDriver(alice, cards=CARDS, transport=transport)
 
     await transport.post(
-        TeamMessage.of_text(sender="user", to="alice", text="go")
+        TeamMessage.from_text(sender="user", to="alice", text="go")
     )
     events = await _drain(driver)
 
@@ -60,7 +60,7 @@ async def test_human_input_runs_a_turn() -> None:
     solo = _agent("solo", [_text_response("the answer")])
     driver = MemberDriver(solo, cards=[MemberCard(name="solo")], transport=transport)
 
-    driver.submit_human("hello")
+    await driver.submit_message("hello")
     events = await _drain(driver)
 
     assert events
@@ -83,7 +83,7 @@ async def test_two_drivers_converse_over_shared_transport() -> None:
     b = MemberDriver(bob, cards=CARDS, transport=transport)
 
     await transport.post(
-        TeamMessage.of_text(sender="user", to="alice", text="go")
+        TeamMessage.from_text(sender="user", to="alice", text="go")
     )
     # Drive the causal chain: alice (→ping), bob (→pong), alice (consumes pong).
     await _drain(a)

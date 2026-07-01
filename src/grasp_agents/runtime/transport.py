@@ -115,6 +115,22 @@ class Transport[E](ABC):
     async def shutdown(self) -> None:
         """Unblock every parked :meth:`consume` so consumers can stop."""
 
+    async def was_processed(self, recipient: str, envelope_id: str) -> bool:
+        """
+        Whether ``envelope_id`` was already consumed **and** acked for
+        ``recipient`` — the at-most-once guard a frontend checks before
+        (re)running a redelivered envelope, so an at-least-once redelivery does
+        not re-execute work whose effects are already durable.
+
+        Defaults to ``False``: an ephemeral transport loses its state on a
+        process crash, so it never redelivers and has nothing to dedupe. A
+        durable transport overrides this (e.g. by probing its acked-message
+        store). Best-effort — it closes the redelivery window after the ack's
+        durable mark, not the window between a handler finishing and that mark.
+        """
+        del recipient, envelope_id
+        return False
+
 
 class InProcessTransport[E: HasDestination](Transport[E]):
     """

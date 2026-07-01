@@ -18,6 +18,7 @@ from pydantic import BaseModel, TypeAdapter
 from grasp_agents.types.content import (
     CacheControl,
     Content,
+    InputFile,
     InputImage,
     InputPart,
     InputRenderable,
@@ -102,11 +103,12 @@ class InputAttachmentCompute(Protocol):
     def __call__(
         self,
         *,
-        user_message: InputMessageItem,
+        input_message: InputMessageItem,
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
         agent_ctx: AgentContext | None = None,
+        source: str | None = None,
     ) -> (
         str | Sequence[InputPart] | Awaitable[str | Sequence[InputPart] | None] | None
     ): ...
@@ -157,7 +159,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         self.system_prompt_sections: list[SystemPromptSection] = []
 
         # Attachments appended to the user message at run time. Each
-        # attachment's compute receives the just-built user_message plus
+        # attachment's compute receives the just-built input_message plus
         # ``ctx``, ``exec_id``, and the pre-existing transcript
         # (``messages``), and may return text (wrapped in
         # ``<system-reminder>``) or extra content parts. Order is preserved;
@@ -296,32 +298,36 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
     @final
     async def apply_input_attachments(
         self,
-        user_message: InputMessageItem,
+        input_message: InputMessageItem,
         *,
         ctx: RunContext[CtxT],
         exec_id: str,
         messages: Sequence[InputItem] | None = None,
         agent_ctx: AgentContext | None = None,
+        source: str | None = None,
     ) -> InputMessageItem:
         """
         Run every registered :class:`InputAttachment` and append the
-        non-empty results as additional content parts on ``user_message``.
+        non-empty results as additional content parts on ``input_message``.
 
         Text returns are wrapped in ``<system-reminder>...</system-reminder>``
         unless ``wrap_in_system_reminder`` is false on the attachment.
-        :class:`InputPart` sequences are appended verbatim.
+        :class:`InputPart` sequences are appended verbatim. ``source`` is the
+        sender of the run's input packet (an upstream processor / teammate), passed
+        through so an attachment can attribute the turn.
         """
         if not self.input_attachments:
-            return user_message
+            return input_message
 
         extra_parts: list[InputPart] = []
         for attachment in self.input_attachments:
             result = attachment.compute(
-                user_message=user_message,
+                input_message=input_message,
                 ctx=ctx,
                 exec_id=exec_id,
                 messages=messages,
                 agent_ctx=agent_ctx,
+                source=source,
             )
             if inspect.isawaitable(result):
                 result = await result
@@ -336,11 +342,11 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
                 extra_parts.extend(result)
 
         if not extra_parts:
-            return user_message
+            return input_message
 
         return InputMessageItem(
-            content_parts=[*user_message.content_parts, *extra_parts],
-            role=user_message.role,
+            content_parts=[*input_message.content_parts, *extra_parts],
+            role=input_message.role,
         )
 
     @final
@@ -403,6 +409,12 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
             if isinstance(parts, str):
                 return Content.from_text(parts)
             return Content(parts=parts)
+
+        # 2b. A content part (text / image / file) renders as-is — a message routed
+        # as a typed packet may carry one (a peer's text / multimodal send); it is
+        # input content, not a value to JSON-dump.
+        if isinstance(val_in_args, (InputText, InputImage, InputFile)):
+            return Content(parts=[val_in_args])
 
         # 3. BaseModel with in_prompt template (text-only)
         if issubclass(self._in_type, BaseModel) and isinstance(val_in_args, BaseModel):

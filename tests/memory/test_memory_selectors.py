@@ -336,7 +336,7 @@ async def test_per_entry_staleness_warning_surfaced() -> None:
         memory = provider
 
     rendered = await _compute_relevant_memories(
-        user_message=InputMessageItem.from_text("q", role="user"),  # type: ignore[arg-type]
+        input_message=InputMessageItem.from_text("q", role="user"),  # type: ignore[arg-type]
         ctx=_Ctx(),  # type: ignore[arg-type]
         exec_id=None,
         messages=[InputMessageItem.from_text("q", role="user")],

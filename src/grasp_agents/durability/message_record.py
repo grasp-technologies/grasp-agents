@@ -1,6 +1,4 @@
-from datetime import UTC, datetime
-
-from pydantic import Field
+from grasp_agents.types.message import TeamMessage
 
 from .checkpoints import PersistedRecord
 from .task_record import TaskStatus
@@ -14,16 +12,10 @@ class MessageRecord(PersistedRecord):
     Shares the same checkpoint-store substrate: the store-key convention
     (``"<session_key>/mailbox/<recipient>/inbox|processed/<message_id>"``), the
     :class:`TaskStatus` lifecycle (``PENDING`` undelivered → ``DELIVERED``), and
-    schema versioning. ``body`` is the serialized message, kept opaque so the
-    durability layer stays agnostic of the messaging payload type.
+    schema versioning. The :class:`TeamMessage` is nested directly (it is fully
+    serializable) — sender / recipient / id all live on it, so the record adds
+    only the delivery status on top.
     """
 
-    message_id: str
-    sender: str
-    recipient: str
-    body: str  # the serialized message (e.g. a TeamMessage JSON)
-
+    message: TeamMessage
     status: TaskStatus = TaskStatus.PENDING
-
-    created_at: datetime | None = None
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

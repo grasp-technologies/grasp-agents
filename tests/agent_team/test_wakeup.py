@@ -1,6 +1,7 @@
 """
-The self-scheduled wakeup primitive: the :class:`WakeupScheduler` timer source and
-the ``ScheduleWakeup`` tool that lets a daemon member reactivate itself.
+The self-scheduled wakeup: ``ScheduleWakeup`` is a **background tool** — it sleeps
+the delay off-turn, then its completion reactivates the (idle) member with the note,
+reusing the durable background-task substrate (no separate timer / scheduler).
 """
 
 from __future__ import annotations
@@ -9,18 +10,13 @@ import asyncio
 import contextlib
 from collections.abc import Callable
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_team import AgentTeam
-from grasp_agents.agent_team.events import MessageDeliveredEvent
-from grasp_agents.agent_team.message import TeamMessage
-from grasp_agents.agent_team.sources import WakeupScheduler
 from grasp_agents.agent_team.tools import ScheduleWakeupInput, ScheduleWakeupTool
-from grasp_agents.agent_team.transport import InMemoryMailboxTransport
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.run_context import RunContext
 from grasp_agents.types.response import Response
@@ -52,92 +48,44 @@ async def _until(pred: Callable[[], bool]) -> None:
     raise AssertionError("condition not met within timeout")
 
 
+def test_schedule_wakeup_is_a_background_tool() -> None:
+    tool = ScheduleWakeupTool()
+    # Backgrounds immediately and never blocks the final answer, so the member parks
+    # (or keeps working) while the wakeup is pending, and its completion wakes it.
+    assert tool.auto_background_at == 0.0
+    assert tool.blocks_final_answer is False
+
+
 @pytest.mark.asyncio
-async def test_scheduler_delivers_after_delay() -> None:
-    transport = InMemoryMailboxTransport()
-    scheduler = WakeupScheduler(transport)
-    scheduler.schedule(
-        TeamMessage.of_text(sender="curator", to="curator", text="ping"), delay=0.02
+async def test_schedule_wakeup_sleeps_then_returns_note() -> None:
+    tool = ScheduleWakeupTool()
+    out = await tool._run(  # pyright: ignore[reportPrivateUsage]
+        ScheduleWakeupInput(delay_seconds=0.01, note="check the vault")
     )
-    assert scheduler.pending == 1
-
-    # The timer is removed once it has fired (after the post), so pending == 0
-    # implies the message has landed — no race with the has_pending check.
-    await _until(lambda: scheduler.pending == 0)
-    assert await transport.has_pending("curator")
-    got = await transport.consume("curator")
-    assert isinstance(got, TeamMessage)
-    assert got.text == "ping"
-
-
-@pytest.mark.asyncio
-async def test_scheduler_aclose_cancels_pending() -> None:
-    transport = InMemoryMailboxTransport()
-    scheduler = WakeupScheduler(transport)
-    scheduler.schedule(
-        TeamMessage.of_text(sender="c", to="c", text="late"), delay=100
-    )
-    assert scheduler.pending == 1
-
-    await scheduler.aclose()
-
-    assert scheduler.pending == 0
-    assert await transport.has_pending("c") is False
-
-
-@pytest.mark.asyncio
-async def test_schedule_wakeup_tool_self_addresses() -> None:
-    transport = InMemoryMailboxTransport()
-    scheduler = WakeupScheduler(transport)
-    tool = ScheduleWakeupTool(scheduler)
-
-    out = await tool._run(
-        ScheduleWakeupInput(delay_seconds=0.02, note="check the vault"),
-        agent_ctx=SimpleNamespace(agent_name="curator"),  # type: ignore[arg-type]
-    )
-    assert "Wake-up scheduled" in out
-
-    await _until(lambda: scheduler.pending == 0)
-    msg = await transport.consume("curator")
-    assert isinstance(msg, TeamMessage)
-    # Self-addressed: the scheduling member is both sender and recipient.
-    assert msg.sender == "curator"
-    assert msg.recipient == "curator"
-    assert "<scheduled_wakeup>" in msg.text
-    assert "check the vault" in msg.text
-
-
-@pytest.mark.asyncio
-async def test_schedule_wakeup_requires_agent_ctx() -> None:
-    tool = ScheduleWakeupTool(WakeupScheduler(InMemoryMailboxTransport()))
-    with pytest.raises(ValueError, match="team member"):
-        await tool._run(
-            ScheduleWakeupInput(delay_seconds=1, note="x"), agent_ctx=None
-        )
+    assert "<scheduled_wakeup>" in out
+    assert "check the vault" in out
 
 
 @pytest.mark.asyncio
 async def test_daemon_member_wakes_itself(tmp_path: Path) -> None:
     # A daemon member with no peer traffic reactivates itself: turn 1 schedules a
-    # wakeup and goes idle; the timer fires and delivers a self-addressed message
-    # that drives turn 2. This is initiative without a resident loop.
+    # wakeup (a background sleep) and goes idle; the wakeup's completion is drained as
+    # a task notification carrying the note, driving a later turn — initiative with no
+    # separate timer.
     ctx = _ctx(tmp_path)
     solo = _agent(
         "solo",
         [
-            _schedule(0.02, "revisit the goal", "c1"),  # turn 1: schedule
-            _text_response("scheduled; going idle"),  # turn 1: after tool result
-            _text_response("woke up and acted"),  # turn 2: driven by the wakeup
+            _schedule(0.02, "revisit the goal", "c1"),  # turn 1: schedule (bg)
+            _text_response("scheduled; going idle"),  # turn 2: park
+            _text_response("woke up and acted"),  # turn 3: driven by the wakeup
         ],
     )
     team = AgentTeam([solo], ctx=ctx)
 
-    delivered: list[TeamMessage] = []
-
     async def _drain() -> None:
-        async for ev in team.run_stream("start", daemon=True, poll_interval=0.01):
-            if isinstance(ev, MessageDeliveredEvent):
-                delivered.append(ev.data)
+        async for _ in team.run_stream("start", daemon=True, poll_interval=0.01):
+            pass
 
     consumer = asyncio.create_task(_drain())
     try:
@@ -148,7 +96,8 @@ async def test_daemon_member_wakes_itself(tmp_path: Path) -> None:
             await consumer
     await team.aclose()
 
-    wakeups = [m for m in delivered if m.sender == "solo" and m.recipient == "solo"]
-    assert wakeups, "member did not reactivate itself via a self-addressed wakeup"
-    assert any("revisit the goal" in m.text for m in wakeups)
-    assert any("<scheduled_wakeup>" in m.text for m in wakeups)
+    # The note arrived as a wakeup notification (a background-task completion), not a
+    # self-addressed mailbox message.
+    blob = str(solo.transcript.messages)
+    assert "revisit the goal" in blob
+    assert "<scheduled_wakeup>" in blob

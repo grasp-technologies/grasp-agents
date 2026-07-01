@@ -134,6 +134,12 @@ class Processor[InT, OutT, CtxT](
 
         super().__init__()
 
+        if not name or name in {".", ".."} or any(c in name for c in "/\\\x00"):
+            raise ValueError(
+                f"Invalid processor name {name!r}: must be non-empty, not '.'/'..', "
+                "and free of '/', backslash, and null bytes — a processor name "
+                "becomes a store-key path segment (recipient / checkpoint path)."
+            )
         self.name = name
 
         self.max_retries = max_retries

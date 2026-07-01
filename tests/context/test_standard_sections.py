@@ -145,7 +145,7 @@ class TestCurrentTimeAttachment:
         assert att.wrap_in_system_reminder is True
         msg = InputMessageItem.from_text("hi", role="user")
         out = att.compute(
-            user_message=msg, ctx=None, exec_id=None, messages=None, agent_ctx=None
+            input_message=msg, ctx=None, exec_id=None, messages=None, agent_ctx=None
         )
         assert isinstance(out, str)
         assert out.startswith("Current time: ")

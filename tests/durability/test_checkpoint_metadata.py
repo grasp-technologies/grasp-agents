@@ -63,9 +63,10 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v10: AgentCheckpoint gained ``folds`` (compaction summaries carried in
-        # the head) — additive over v9's step-rollback split.
-        assert CURRENT_SCHEMA_VERSION == 10
+        # v11: agent-team durability + record cleanup (AFTER_RESIDENT_TURN,
+        # created_at/updated_at audit pair, MessageRecord nests TeamMessage) —
+        # folded into one bump over the released v10 since none shipped separately.
+        assert CURRENT_SCHEMA_VERSION == 11
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:

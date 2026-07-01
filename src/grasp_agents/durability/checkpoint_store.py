@@ -7,6 +7,7 @@ from pydantic import BaseModel, TypeAdapter
 from grasp_agents.types.items import InputItem
 
 from .checkpoints import CheckpointSchemaError
+from .store_keys import is_under
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ class InMemoryCheckpointStore(CheckpointStore):
             self._logs.pop(log_key, None)
 
     async def list_keys(self, prefix: str) -> list[str]:
-        return [k for k in self._data if k.startswith(prefix)]
+        return [k for k in self._data if is_under(k, prefix)]
 
     async def append_messages(
         self, key: str, messages: Sequence[InputItem], *, version: int = 0

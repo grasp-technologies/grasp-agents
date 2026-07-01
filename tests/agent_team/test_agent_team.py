@@ -16,16 +16,17 @@ from typing import Any
 import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.agent_team.agent_card import MemberCard
 from grasp_agents.agent_team.agent_team import AgentTeam
 from grasp_agents.agent_team.events import MessageDeliveredEvent
-from grasp_agents.agent_team.sources import run_interval_source
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
 from grasp_agents.processors.processor import Processor
 from grasp_agents.run_context import RunContext
 from grasp_agents.tools.function_tool import function_tool
-from grasp_agents.types.message import TeamMessage
+from grasp_agents.types.content import InputRenderableModel
+from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
 from grasp_agents.types.response import Response
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
@@ -142,9 +143,7 @@ async def test_single_member_answers_and_quiesces(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_hop_budget_stops_with_pending_mail(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
-    alice = _agent(
-        "alice", [_send("bob", "ping", "c1"), _text_response("alice done")]
-    )
+    alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     # bob would reply, but the budget refuses alice's send before bob is activated.
     bob = _agent("bob", [_send("alice", "pong", "c2"), _text_response("bob done")])
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx, max_hops=1)
@@ -155,6 +154,36 @@ async def test_hop_budget_stops_with_pending_mail(tmp_path: Path) -> None:
     assert result.stop_reason == "hop_budget_exhausted"
     assert result.activations == 1
     assert bob.llm.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_token_budget_stops_with_pending_mail(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
+    bob = _agent("bob", [_send("alice", "pong", "c2"), _text_response("bob done")])
+    # Each MockLLM turn reports 15 tokens; a 10-token budget is spent after alice's
+    # first turn, so her send to bob is refused before bob is ever activated.
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx, max_tokens=10)
+
+    result = await team.run("go")
+    await team.aclose()
+
+    assert result.stop_reason == "token_budget_exhausted"
+    assert result.activations == 1
+    assert bob.llm.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_token_budget_generous_does_not_trip(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("the answer")])
+    team = AgentTeam([solo], ctx=ctx, max_tokens=10_000)
+
+    result = await team.run("question?")
+    await team.aclose()
+
+    assert result.stop_reason == "quiesced"
+    assert solo.llm.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -240,6 +269,85 @@ async def test_team_over_checkpoint_transport() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_does_not_reseed_or_reset_budget() -> None:
+    # The team checkpoint makes a re-run a resume, not a cold restart: its
+    # existence suppresses re-seeding the entry, and the persisted hop count is
+    # restored instead of reset to 0. A completed session therefore re-runs into
+    # immediate quiescence with no duplicate kickoff and no extra LLM calls.
+    store = InMemoryCheckpointStore()
+
+    def build() -> tuple[AgentTeam[None], LLMAgent[Any, Any, None]]:
+        alice = _agent(
+            "alice", [_send("bob", "ping", "c1"), _text_response("alice done")]
+        )
+        bob = _agent("bob", [_text_response("bob got it")])
+        ctx = RunContext[None](state=None, checkpoint_store=store)
+        return AgentTeam([alice, bob], entry="alice", ctx=ctx), bob
+
+    team1, _ = build()
+    result1 = await team1.run("kick off")
+    await team1.aclose()
+    assert result1.stop_reason == "quiesced"
+    assert result1.activations == 2
+
+    # Reconstruct on the same store (a fresh process) and re-run with the same
+    # input. The checkpoint exists, so the entry is NOT re-seeded.
+    team2, bob2 = build()
+    result2 = await team2.run("kick off")
+    await team2.aclose()
+    assert result2.activations == 2  # restored, not reset to 0 then re-seeded
+    assert result2.messages == []  # no duplicate kickoff delivered
+    assert bob2.llm.call_count == 0  # nothing re-run
+
+
+@pytest.mark.asyncio
+async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
+    # The team saves its hop checkpoint BEFORE depositing on the transport. A
+    # crash in that window for the entry seed must not strand the kickoff: the
+    # deterministic seed id makes the resume re-post idempotent, so the seed is
+    # delivered (exactly once) — not suppressed by a "seeded" flag that the
+    # checkpoint's mere existence would otherwise imply.
+    store = InMemoryCheckpointStore()
+
+    class _DropFirstPost(CheckpointMailboxTransport):
+        def __init__(self) -> None:
+            super().__init__(store, session_key="s")
+            self.drop_next = True
+
+        async def post(self, envelope: TeamMessage) -> None:
+            if self.drop_next:
+                self.drop_next = False
+                raise RuntimeError("crash before deposit")
+            await super().post(envelope)
+
+    # RUN 1: the seed's checkpoint is saved, then its deposit crashes.
+    entry1 = _agent("entry", [_text_response("hi")])
+    team1 = AgentTeam(
+        [entry1],
+        ctx=RunContext[None](state=None, checkpoint_store=store),
+        transport=_DropFirstPost(),
+    )
+    result1 = await team1.run("kick off")
+    await team1.aclose()
+    assert result1.stop_reason == "error"
+    assert entry1.llm.call_count == 0  # the seed never reached the entry
+
+    # RUN 2 (resume) over the same store with a working transport: the seed was
+    # never processed, so it is re-delivered and the entry finally runs.
+    entry2 = _agent("entry", [_text_response("hi")])
+    team2 = AgentTeam(
+        [entry2],
+        ctx=RunContext[None](state=None, checkpoint_store=store),
+        transport=CheckpointMailboxTransport(store, session_key="s"),
+    )
+    result2 = await team2.run("kick off")
+    await team2.aclose()
+    assert entry2.llm.call_count == 1  # seed re-delivered, not stranded
+    delivered = {(m.sender, m.recipient, m.text) for m in result2.messages}
+    assert ("user", "entry", "kick off") in delivered
+
+
+@pytest.mark.asyncio
 async def test_processor_member_routes_to_agent(tmp_path: Path) -> None:
     # A non-agent Processor member (triggered) consumes a message and hands its
     # output off to a resident agent member by name.
@@ -280,9 +388,7 @@ async def test_agent_worker_with_recipients_hands_off(tmp_path: Path) -> None:
     assert result.activations == 2
     assert sink.llm.call_count == 1
     assert "SendMessage" not in worker.tools  # worker is hand-off, not messaging
-    assert any(
-        m.sender == "worker" and m.recipient == "sink" for m in result.messages
-    )
+    assert any(m.sender == "worker" and m.recipient == "sink" for m in result.messages)
 
 
 @pytest.mark.asyncio
@@ -347,7 +453,7 @@ async def test_daemon_keeps_running_past_quiescence(tmp_path: Path) -> None:
     consumer = asyncio.create_task(_drain(team, "first", delivered))
     try:
         await _until(lambda: solo.llm.call_count == 1)  # seed handled; team idle
-        await team.post(TeamMessage.of_text(sender="user", to="solo", text="second"))
+        await team.post(TeamMessage.from_text(sender="user", to="solo", text="second"))
         await _until(lambda: solo.llm.call_count == 2)  # daemon picked up the second
     finally:
         consumer.cancel()
@@ -358,31 +464,90 @@ async def test_daemon_keeps_running_past_quiescence(tmp_path: Path) -> None:
     assert [m.text for m in delivered] == ["first", "second"]
 
 
-@pytest.mark.asyncio
-async def test_interval_source_feeds_daemon(tmp_path: Path) -> None:
-    # An external interval source wakes a daemon team via the team router.
-    ctx = _ctx(tmp_path)
-    solo = _agent("solo", [_text_response("a1"), _text_response("a2")])
-    team = AgentTeam([solo], ctx=ctx)
+class _Ticket(InputRenderableModel):
+    title: str
+    points: int
 
-    async def _drain_only() -> None:
+    def to_input_parts(self) -> str:
+        return f"TICKET[{self.title} / {self.points}pts]"
+
+
+@pytest.mark.asyncio
+async def test_typed_structured_handoff_renders_via_input_renderable(
+    tmp_path: Path,
+) -> None:
+    # A typed peer hand-off to a triggered worker: a structured body addressed to a
+    # member whose ``InT`` is a model is validated to that model on receipt (so it
+    # survives the dict round-trip a durable transport produces) and rendered through
+    # the worker's input pipeline by the model's own ``InputRenderable.to_input_parts``
+    # — not flattened to JSON text.
+    ctx = _ctx(tmp_path)
+    planner = LLMAgent[_Ticket, Any, None](
+        name="planner", llm=MockLLM(responses_queue=[_text_response("planned")])
+    )
+    team = AgentTeam(
+        [planner],
+        # ``resident=False`` runs it triggered: each peer message activates a fresh
+        # run whose ``in_packet`` flows through the worker's input pipeline.
+        cards=[MemberCard(name="planner", input_type=_Ticket, resident=False)],
+        ctx=ctx,
+    )
+
+    async def _run_daemon() -> None:
         async for _ in team.run_stream(daemon=True, poll_interval=0.01):
             pass
 
-    consumer = asyncio.create_task(_drain_only())
-    source = asyncio.create_task(
-        run_interval_source(
-            team,
-            lambda: TeamMessage.of_text(sender="src", to="solo", text="tick"),
-            interval=0.01,
-            count=2,
-        )
-    )
+    consumer = asyncio.create_task(_run_daemon())
     try:
-        await source  # sends its two ticks
-        await _until(lambda: solo.llm.call_count == 2)  # daemon handled both
+        await _until(lambda: team._driver is not None)  # pyright: ignore[reportPrivateUsage]
+        # A *peer* sends a *dict* payload (what a durable transport delivers back),
+        # not a _Ticket instance.
+        await team.post(
+            TeamMessage(
+                sender="scout",
+                routing=[["planner"]],
+                payloads=[{"title": "Fix the bug", "points": 3}],
+            )
+        )
+        await _until(lambda: planner.llm.call_count == 1)
     finally:
         consumer.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await consumer
     await team.aclose()
+
+    blob = str(planner.transcript.messages)
+    # The dict was validated to _Ticket and rendered by its to_input_parts —
+    # proving typed (not JSON) delivery.
+    assert "TICKET[Fix the bug / 3pts]" in blob
+    # The triggered path has no sender fence, so the attribution attachment names
+    # the teammate the typed body came from.
+    assert "scout" in blob
+
+
+@pytest.mark.asyncio
+async def test_submit_message_delivers_human_input_to_member(tmp_path: Path) -> None:
+    # Single-process human input: submit_message routes to a resident member's inbox
+    # as control-plane mail and is handled like any peer message — the same-process
+    # counterpart to MemberDriver.submit_message.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("a1"), _text_response("a2")])
+    team = AgentTeam([solo], ctx=ctx)
+    delivered: list[TeamMessage] = []
+
+    consumer = asyncio.create_task(_drain(team, "first", delivered))
+    try:
+        await _until(lambda: solo.llm.call_count == 1)  # seed handled
+        await team.submit_message("solo", "hello from a human")
+        await _until(lambda: solo.llm.call_count == 2)  # human input handled
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+    await team.aclose()
+
+    human = next((m for m in delivered if m.text == "hello from a human"), None)
+    assert human is not None
+    # Stamped as control-plane: from the human, priority-preempting peer mail.
+    assert human.sender == "user"
+    assert human.priority == CONTROL_PRIORITY

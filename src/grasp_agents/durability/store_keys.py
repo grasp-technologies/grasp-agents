@@ -49,3 +49,28 @@ def session_prefix(session_key: str) -> str:
 def task_prefix(session_key: str) -> str:
     """Prefix for :meth:`CheckpointStore.list_keys` to scan task records."""
     return f"{session_key}/{CheckpointKind.TASK}/"
+
+
+def key_leaf(key: str) -> str:
+    """The final segment of a store key — the record id under its prefix."""
+    return key.rsplit("/", 1)[-1]
+
+
+def is_under(key: str, prefix: str) -> bool:
+    """
+    Whether ``key`` lies under ``prefix``.
+
+    A plain string-prefix test: store keys are a logical ``/``-joined namespace, not
+    filesystem paths, so there is no path normalization (``//`` / ``.`` / ``..`` /
+    trailing-slash) — matching must be exact.
+    """
+    return key.startswith(prefix)
+
+
+def is_direct_child(key: str, prefix: str) -> bool:
+    """
+    Whether ``key`` is an *immediate* child of ``prefix`` — under it, with no further
+    ``/`` beyond it. Selects the top-level records of a kind, excluding nested ones
+    (e.g. a task record but not its per-tool-call children).
+    """
+    return key.startswith(prefix) and "/" not in key[len(prefix) :]

@@ -192,6 +192,12 @@ class AgentContext:
         )
         self.shell_state.cwd = state.shell_cwd
         self.bg_tasks.restore_pending_delivered(state.pending_delivered)
+        # A rewind discards any leased inbox message's partial handling; it is still
+        # un-acked in the mailbox, so the resident loop re-takes it rather than
+        # wedging on a stale pointer. Leases are transient (never snapshotted), so
+        # they are dropped here, not reapplied from ``state``.
+        if self.inbox is not None:
+            self.inbox.rollback()
         if rebind_kernels:
             if state.ipy_exec_context_id is not None and self.ipy_kernel_holder:
                 self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)

@@ -153,13 +153,14 @@ def make_current_time_attachment(
 
     def compute(
         *,
-        user_message: InputMessageItem,
+        input_message: InputMessageItem,
         ctx: RunContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
         agent_ctx: AgentContext | None = None,
+        source: str | None = None,
     ) -> str:
-        del user_message, ctx, exec_id, messages, agent_ctx
+        del input_message, ctx, exec_id, messages, agent_ctx, source
         now = datetime.now().astimezone().isoformat(timespec=timespec)
         return f"Current time: {now}"
 

@@ -14,6 +14,7 @@ from pydantic_core import to_jsonable_python
 from grasp_agents.durability.checkpoint_store import CheckpointStore
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.durability.store_keys import (
+    is_direct_child,
     make_store_key,
     make_tool_call_path,
     task_prefix,
@@ -718,7 +719,6 @@ class BackgroundTaskManager[CtxT]:
             tool_name=call.name,
             tool_call_arguments=call.arguments,
             status=TaskStatus.PENDING,
-            started_at=datetime.now(UTC),
             output_path=output_path,
         )
         await store.save(task_key, record.model_dump_json().encode())
@@ -1026,7 +1026,7 @@ class BackgroundTaskManager[CtxT]:
         # tasks. Keep only direct ``tc_*`` children — a deeper segment belongs
         # to a nested sub-agent.
         prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self._path) + "/"
-        keys = [k for k in await store.list_keys(prefix) if "/" not in k[len(prefix) :]]
+        keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
 
         notifications: list[InputMessageItem] = []
         for key in keys:
@@ -1053,11 +1053,7 @@ class BackgroundTaskManager[CtxT]:
                 ):
                     continue
 
-                elapsed = (
-                    (record.updated_at - record.started_at).total_seconds()
-                    if record.started_at is not None
-                    else None
-                )
+                elapsed = (record.updated_at - record.created_at).total_seconds()
                 notification = InputMessageItem.from_text(
                     _task_notification(
                         task_id=record.task_id,
