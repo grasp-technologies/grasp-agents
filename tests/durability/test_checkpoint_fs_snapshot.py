@@ -258,7 +258,10 @@ async def test_session_ref_cleared_at_snapshotless_boundary(tmp_path: Path) -> N
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
+        [_text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
     )
     await agent.run("hello")
     record = await _session_record(store)
@@ -313,7 +316,10 @@ async def test_session_load_restores_snapshot_ref(tmp_path: Path) -> None:
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
+        [_text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
     )
     await agent.run("hello")
     assert env.snapshots == ["snap-1"]
@@ -337,7 +343,10 @@ async def test_session_load_with_ref_but_incapable_environment_raises(
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
+        [_text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
     )
     await agent.run("hello")
 
@@ -360,7 +369,10 @@ async def test_ipy_exec_context_id_round_trips_through_checkpoint(
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
+        [_text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
     )
     # Stand in for "a RunPython kernel was opened" (no real kernel offline).
     holder = agent._loop.agent_ctx.ipy_kernel_holder
@@ -394,7 +406,10 @@ async def test_nb_exec_context_id_round_trips_through_checkpoint(
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
+        [_text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
     )
     # Stand in for "a RunCell kernel was opened" (no real kernel offline).
     agent._loop.agent_ctx.nb_kernel_holder.rebind("nb-ctx-xyz")
