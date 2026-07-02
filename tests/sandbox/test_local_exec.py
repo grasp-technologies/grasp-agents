@@ -4,7 +4,7 @@ Unit tests for backend #1 (pure local): :class:`ProcessSupervisor`,
 ``Bash`` tool.
 
 These spawn real ``/bin/sh`` subprocesses (no network) and exercise the
-supervisor's timeout / output-cap / kill paths plus the ``RunContext``
+supervisor's timeout / output-cap / kill paths plus the ``SessionContext``
 co-location guarantee (exec only via an environment).
 """
 
@@ -17,7 +17,6 @@ from typing import Any
 import pytest
 
 from grasp_agents.file_backend import LocalFileBackend, PathAccessError
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     ExecChunk,
     ExecResult,
@@ -30,6 +29,7 @@ from grasp_agents.sandbox import (
 )
 from grasp_agents.sandbox.local.exec import LocalExecBackend
 from grasp_agents.sandbox.local.supervisor import ExecSpec
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.bash import Bash, BashInput, BashResult
 from grasp_agents.types.events import ToolErrorInfo
 
@@ -71,13 +71,13 @@ async def test_local_environment_co_location(tmp_path: Path) -> None:
 
 async def test_environment_sources_file_backend(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     assert ctx.file_backend is env.file_backend
     assert ctx.exec_backend is env.exec_backend
 
 
 async def test_file_only_ctx_has_no_exec(tmp_path: Path) -> None:
-    ctx: RunContext[Any] = RunContext(
+    ctx: SessionContext[Any] = SessionContext(
         file_backend=LocalFileBackend(allowed_roots=[tmp_path])
     )
     assert ctx.exec_backend is None
@@ -86,7 +86,7 @@ async def test_file_only_ctx_has_no_exec(tmp_path: Path) -> None:
 async def test_divergent_file_backend_and_environment_raises(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
     with pytest.raises(ValueError, match="divergent standalone file_backend"):
-        RunContext(
+        SessionContext(
             environment=env,
             file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
         )
@@ -214,9 +214,7 @@ async def test_overall_timeout_kills(tmp_path: Path) -> None:
 
 
 async def test_idle_timeout(tmp_path: Path) -> None:
-    sup = ProcessSupervisor(
-        SupervisorLimits(overall_timeout=5.0, idle_timeout=0.3)
-    )
+    sup = ProcessSupervisor(SupervisorLimits(overall_timeout=5.0, idle_timeout=0.3))
     backend = LocalExecBackend(
         policy=SandboxPolicy(allowed_roots=(tmp_path,)), supervisor=sup
     )
@@ -362,7 +360,7 @@ async def test_spawn_error(tmp_path: Path) -> None:
 
 async def test_bash_tool_happy_path(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     result = await Bash().run(BashInput(command="echo hi"), ctx=ctx)
     assert isinstance(result, BashResult)
     assert result.stdout.strip() == "hi"
@@ -372,7 +370,7 @@ async def test_bash_tool_happy_path(tmp_path: Path) -> None:
 
 
 async def test_bash_tool_requires_exec_backend() -> None:
-    ctx: RunContext[Any] = RunContext()
+    ctx: SessionContext[Any] = SessionContext()
     result = await Bash().run(BashInput(command="echo hi"), ctx=ctx)
     assert isinstance(result, ToolErrorInfo)
     assert "exec_backend" in result.error
@@ -380,7 +378,7 @@ async def test_bash_tool_requires_exec_backend() -> None:
 
 async def test_bash_tool_timeout_clamped(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     # `echo` first: a leading `sleep` is rejected by the blocked-pattern guard.
     result = await Bash(max_timeout=0.3).run(
         BashInput(command="echo go && sleep 5", timeout=100.0), ctx=ctx

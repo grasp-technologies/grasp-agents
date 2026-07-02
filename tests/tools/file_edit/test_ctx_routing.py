@@ -18,7 +18,7 @@ from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools import FileToolkit
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
@@ -64,7 +64,7 @@ def _agent_ctx(state: FileEditSessionState) -> AgentContext:
 async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
     """Read + Write under the same ``AgentContext`` compose."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
@@ -85,7 +85,7 @@ async def test_tools_share_state_within_activation(tmp_path: Path) -> None:
 async def test_separate_activations_are_isolated(tmp_path: Path) -> None:
     """A Read under one ``AgentContext`` does not satisfy a Write under another."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
@@ -111,7 +111,7 @@ async def test_separate_activations_are_isolated(tmp_path: Path) -> None:
 async def test_shared_state_mimics_one_agent_two_toolkits(tmp_path: Path) -> None:
     """Two toolkit instances sharing one ``AgentContext`` compose Read → Write."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     tk_a = FileToolkit(redactor=NullRedactor())
     tk_b = FileToolkit(redactor=NullRedactor())
 
@@ -131,7 +131,7 @@ async def test_shared_state_mimics_one_agent_two_toolkits(tmp_path: Path) -> Non
 async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
     """A fresh ``AgentContext`` is a new agent — earlier reads don't carry over."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"
@@ -153,7 +153,7 @@ async def test_fresh_state_starts_clean(tmp_path: Path) -> None:
 async def test_standalone_tool_use_without_state(tmp_path: Path) -> None:
     """With no ``AgentContext``, tools still work but skip read-before-write."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     tk = FileToolkit(redactor=NullRedactor())
 
     f = tmp_path / "a.txt"

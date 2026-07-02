@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from dotenv import load_dotenv
 
-from grasp_agents.run_context import reset_default_run_context
+from grasp_agents.session_context import reset_default_session_context
 from grasp_agents.tools.base import BaseTool
 
 from ._helpers import AddTool, MultiplyTool
@@ -18,18 +18,18 @@ load_dotenv()
 
 
 @pytest.fixture(autouse=True)
-def _fresh_default_run_context() -> Any:
+def _fresh_default_session_context() -> Any:
     """
-    Give every test a fresh process-default ``RunContext``.
+    Give every test a fresh process-default ``SessionContext``.
 
     Bare-constructed agents now share one process-wide default (so uncomposed
     agents stay in one session); without this reset that default would
     accumulate state / responses / usage across unrelated tests. Tests that
     pass an explicit ``ctx`` are unaffected.
     """
-    reset_default_run_context()
+    reset_default_session_context()
     yield
-    reset_default_run_context()
+    reset_default_session_context()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

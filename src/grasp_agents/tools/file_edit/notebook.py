@@ -45,7 +45,7 @@ from grasp_agents.types.content import InputImage, InputText
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
     from .redact import SecretRedactor
 
@@ -454,7 +454,7 @@ class NotebookReadTool(
     Returns a structured :class:`NotebookReadResult` for a text overview, or — when
     images are requested — content parts (the text view + the cells' stored
     figures as viewable images). Stateless: backend + read-state bookkeeping live
-    on :attr:`RunContext.file_backend` and the call's :class:`AgentContext`.
+    on :attr:`SessionContext.file_backend` and the call's :class:`AgentContext`.
     """
 
     name = "NotebookRead"
@@ -494,7 +494,7 @@ class NotebookReadTool(
         self,
         inp: NotebookReadInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -505,7 +505,7 @@ class NotebookReadTool(
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "NotebookRead requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         backend = ctx.file_backend
@@ -576,7 +576,7 @@ class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
     Replace / insert / delete a single cell in a Jupyter notebook.
 
     Stateless: backend + read-state bookkeeping live on
-    :attr:`RunContext.file_backend` and the call's :class:`AgentContext`.
+    :attr:`SessionContext.file_backend` and the call's :class:`AgentContext`.
     """
 
     name = "NotebookEdit"
@@ -606,7 +606,7 @@ class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
         self,
         inp: NotebookEditInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -617,7 +617,7 @@ class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "NotebookEdit requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         backend = ctx.file_backend

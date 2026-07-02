@@ -29,8 +29,8 @@ from grasp_agents.durability.checkpoints import CheckpointKind, CheckpointSchema
 from grasp_agents.durability.message_record import MessageRecord
 from grasp_agents.durability.store_keys import key_leaf, make_store_key
 from grasp_agents.durability.task_record import TaskStatus
-from grasp_agents.run_context import DEFAULT_SESSION_KEY
 from grasp_agents.runtime import CLOSED, Closed, Transport
+from grasp_agents.session_context import DEFAULT_SESSION_KEY
 from grasp_agents.types.message import TeamMessage
 
 if TYPE_CHECKING:

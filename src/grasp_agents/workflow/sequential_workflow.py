@@ -4,7 +4,7 @@ from itertools import pairwise
 from typing import Any, cast
 
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import WorkflowConstructionError
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from grasp_agents.types.io import ProcName
@@ -21,7 +21,7 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         name: ProcName,
         subprocs: Sequence[Processor[Any, Any, CtxT]],
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
         path: list[str] | None = None,
         tracing_enabled: bool = True,

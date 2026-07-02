@@ -4,7 +4,7 @@ from itertools import chain
 from typing import Any, cast
 
 from grasp_agents.durability.checkpoints import CheckpointKind, ParallelCheckpoint
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import ProcInputValidationError, ProcRunError
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from grasp_agents.types.io import ProcName
@@ -24,7 +24,7 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self,
         subproc: Processor[InT, OutT, CtxT],
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         drop_failed: bool = False,
         path: list[str] | None = None,
     ) -> None:
@@ -189,7 +189,7 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                 rep.name = f"{self._subproc.name}_{i}"
                 # ``on_adopted`` re-derives path from ``self.path`` + new
                 # ``rep.name`` and refreshes ctx (already shared via
-                # ``RunContext.__deepcopy__``, but kept for symmetry).
+                # ``SessionContext.__deepcopy__``, but kept for symmetry).
                 rep.on_adopted(self)
                 replicas[i] = rep
 

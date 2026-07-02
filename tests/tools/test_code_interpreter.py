@@ -20,8 +20,8 @@ from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput, _human_size
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
@@ -91,7 +91,7 @@ def test_human_size() -> None:
 @pytest.mark.asyncio
 async def test_run_python_requires_exec_backend(tmp_path: Path) -> None:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     result = await RunPython().run(
         RunPythonInput(code="x = 1"), ctx=ctx, agent_ctx=_agent_ctx()
     )
@@ -106,7 +106,7 @@ async def test_run_python_requires_exec_backend(tmp_path: Path) -> None:
 
 async def _collect(tmp_path: Path, paths: list[str], **tool_kwargs: Any) -> list[str]:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     return await RunPython(**tool_kwargs)._collect_artifacts(ctx, _agent_ctx(), paths)
 
 
@@ -153,7 +153,7 @@ async def test_collect_artifacts_missing(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_collect_artifacts_no_file_backend() -> None:
-    ctx: RunContext[Any] = RunContext(session_key="s")
+    ctx: SessionContext[Any] = SessionContext(session_key="s")
     lines = await RunPython()._collect_artifacts(ctx, _agent_ctx(), ["x.png"])
     assert any("no file_backend" in line for line in lines)
 
@@ -163,13 +163,13 @@ async def test_collect_artifacts_no_file_backend() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _srt_ctx(tmp_path: Path) -> RunContext[Any]:
+def _srt_ctx(tmp_path: Path) -> SessionContext[Any]:
     env = local_environment(allowed_roots=[tmp_path], confinement="srt")
-    return RunContext(environment=env)
+    return SessionContext(environment=env)
 
 
 async def _run(
-    ctx: RunContext[Any], agent_ctx: AgentContext, inp: RunPythonInput
+    ctx: SessionContext[Any], agent_ctx: AgentContext, inp: RunPythonInput
 ) -> list[InputText | InputImage]:
     result = await RunPython().run(inp, ctx=ctx, agent_ctx=agent_ctx)
     assert not isinstance(result, ToolErrorInfo), result

@@ -23,7 +23,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from grasp_agents.context.prompt_builder import PromptBuilder, SystemPromptSection
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import (
     CacheControl,
     Content,
@@ -95,8 +95,8 @@ def _make_builder(
     )
 
 
-def _ctx() -> RunContext[None]:
-    return RunContext[None]()
+def _ctx() -> SessionContext[None]:
+    return SessionContext[None]()
 
 
 # ---------- Tests ----------

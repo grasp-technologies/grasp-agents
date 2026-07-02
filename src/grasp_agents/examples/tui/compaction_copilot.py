@@ -31,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from grasp_agents import LLMAgent, RunContext
+from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.context import ContextBudget, LLMSummarizer, SummarizingCompactor
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.llm_providers.openai_responses import (
@@ -76,7 +76,7 @@ def recall_notes(topic: str) -> str:
 
 def build_copilot(
     *, model: str = DEFAULT_MODEL
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     """Build the assistant with a tiny compaction budget and its context."""
     llm = OpenAIResponsesLLM(
         model_name=model,
@@ -85,7 +85,7 @@ def build_copilot(
             {"reasoning": {"effort": "low", "summary": "detailed"}},
         ),
     )
-    ctx = RunContext[None](
+    ctx = SessionContext[None](
         state=None,
         checkpoint_store=FileCheckpointStore(_CHECKPOINTS),
         session_key="compaction-demo",

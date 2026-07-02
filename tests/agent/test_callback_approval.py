@@ -26,7 +26,7 @@ from grasp_agents.agent.approval_callback import (
     build_callback_approval,
 )
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -84,14 +84,14 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
-    ctx: RunContext[Any] | None = None,
+    ctx: SessionContext[Any] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
     memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
-    ctx = ctx if ctx is not None else RunContext[None](state=None)
+    ctx = ctx if ctx is not None else SessionContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
@@ -107,7 +107,7 @@ def _make_executor(
     return executor, memory, llm
 
 
-async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
+async def _drain(executor: AgentLoop[None], ctx: SessionContext[None]) -> Response:
     executor._ctx = ctx
     stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
@@ -139,7 +139,7 @@ class TestAllowPath:
 
         executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert _invocations["echo"] == ["hi"]
@@ -153,7 +153,7 @@ class TestAllowPath:
             _tool_call_response([("echo", '{"text":"x"}', "tc-abc")]),
             _text_response("done"),
         ]
-        ctx = RunContext[str](state="sentinel")
+        ctx = SessionContext[str](state="sentinel")
         executor, _, _ = _make_executor(responses, tools=[EchoTool()], ctx=ctx)
 
         captured: dict[str, Any] = {}
@@ -196,7 +196,7 @@ class TestDenyPath:
 
         executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # Tool did not run
@@ -233,7 +233,7 @@ class TestDenyPath:
             )
         ]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         outs = [m for m in memory.messages if isinstance(m, FunctionToolOutputItem)]
@@ -275,7 +275,7 @@ class TestToolNameFilter:
             build_callback_approval(approve, tool_names={"delete_file"})
         ]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # Only delete_file was gated
@@ -308,7 +308,7 @@ class TestToolNameFilter:
 
         executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert sorted(names_seen) == ["delete_file", "echo"]
@@ -330,7 +330,7 @@ class TestFastPath:
         ]
 
         result = await hook(
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             tool_calls=calls,
             exec_id="t",
         )
@@ -351,7 +351,7 @@ class TestFastPath:
         ]
 
         result = await hook(
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             tool_calls=calls,
             exec_id="t",
         )
@@ -387,7 +387,7 @@ class TestMixedBatch:
 
         executor.before_tool_hooks = [build_callback_approval(approve)]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert _invocations["echo"] == ["good"]

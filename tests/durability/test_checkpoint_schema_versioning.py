@@ -25,7 +25,7 @@ from grasp_agents.durability import (
 )
 from grasp_agents.durability.checkpoints import ProcessorCheckpoint, WorkflowCheckpoint
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.events import Event, ProcPayloadOutEvent
 from grasp_agents.types.io import ProcName
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
@@ -34,9 +34,7 @@ from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 class _Appender(Processor[str, str, None]):
     """Minimal processor used only for exercising workflow checkpoint I/O."""
 
-    def __init__(
-        self, name: str, *, recipients: list[ProcName] | None = None
-    ) -> None:
+    def __init__(self, name: str, *, recipients: list[ProcName] | None = None) -> None:
         super().__init__(name=name, recipients=recipients)
 
     async def _process_stream(
@@ -179,7 +177,7 @@ class TestDeserializePropagation:
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[_Appender("A"), _Appender("B")]
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s-future"
         )
 
@@ -208,7 +206,7 @@ class TestDeserializePropagation:
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[_Appender("A"), _Appender("B")]
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s-corrupt"
         )
 

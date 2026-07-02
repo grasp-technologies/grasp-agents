@@ -111,7 +111,7 @@ First-class integrations.
 
 - **Embedding LLM features in a product.** Typed agents and pipelines as the
   orchestration layer behind an application's AI features. State flows through
-  `RunContext`; the application stays the source of truth and rebuilds context
+  `SessionContext`; the application stays the source of truth and rebuilds context
   on resume.
 
   Orchestration/durability example: [`orchestration_durability_demo.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/orchestration_durability_demo.ipynb)
@@ -272,7 +272,7 @@ strategy to you. `OpenAIResponsesLLM` slices the input to only the new items
 whenever `previous_response_id` (or `conversation`) is set.
 
 ```python
-last: dict[str, str] = {}  # keyed by exec_id (one run); or use current_run_context().state
+last: dict[str, str] = {}  # keyed by exec_id (one run); or use current_session_context().state
 
 @agent.add_after_llm_hook
 async def _capture(response, *, exec_id, turn):
@@ -328,7 +328,7 @@ src/grasp_agents/
   types/            pure data: content, events, items, response, packet, errors
   telemetry/        @traced + Phoenix / OpenLLMetry exporters
   ui/               EventConsole (Rich) + Textual app ([tui] extra)
-  run_context.py    RunContext[CtxT]
+  session_context.py    SessionContext[CtxT]
   hooks.py          hook Protocols
 ```
 

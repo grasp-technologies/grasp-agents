@@ -3,10 +3,10 @@
 memory, and any other catalog-style section.
 
 This Protocol lives in its own module so it can be imported from
-``run_context`` (via ``memory.provider``) without dragging the rest of
-``types.hooks`` (which itself imports ``run_context``) into the cycle.
+``session_context`` (via ``memory.provider``) without dragging the rest of
+``types.hooks`` (which itself imports ``session_context``) into the cycle.
 Annotations use ``from __future__ import annotations`` so the
-``RunContext`` reference is deferred.
+``SessionContext`` reference is deferred.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
 
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.items import InputItem
 
 
@@ -42,7 +42,7 @@ class Selector[T](Protocol):
         self,
         *,
         entries: Sequence[T],
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
     ) -> Sequence[T] | Awaitable[Sequence[T]]: ...

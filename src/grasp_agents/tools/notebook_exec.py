@@ -44,8 +44,8 @@ from .file_edit.notebook import (
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
     from grasp_agents.sandbox.kernel import KernelSession
+    from grasp_agents.session_context import SessionContext
 
 DEFAULT_CELL_TIMEOUT = 120.0
 
@@ -189,7 +189,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
 
     Stateless: the kernel comes from the call's :class:`AgentContext`
     (``nb_kernel_holder``); the notebook is read/written via
-    :attr:`RunContext.file_backend`.
+    :attr:`SessionContext.file_backend`.
     """
 
     name = "RunCell"
@@ -229,7 +229,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         self,
         inp: RunCellInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -240,14 +240,14 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "RunCell requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
         backend = ctx.file_backend
         exec_backend = ctx.exec_backend
         if exec_backend is None:
             raise ValueError(
                 "RunCell requires ctx.exec_backend. Wire an ExecBackend on "
-                "RunContext (e.g. via local_environment(...)) before running."
+                "SessionContext (e.g. via local_environment(...)) before running."
             )
         kernel_backend = (
             exec_backend if isinstance(exec_backend, KernelCapable) else None

@@ -20,7 +20,7 @@ from grasp_agents.types.content import CacheControl
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
     from .client import MCPClient
 
@@ -49,7 +49,7 @@ def make_mcp_instructions_section(
 
     async def compute(  # noqa: RUF029
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         **_: Any,
     ) -> str | None:

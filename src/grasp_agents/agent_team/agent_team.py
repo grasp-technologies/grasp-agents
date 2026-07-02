@@ -28,8 +28,8 @@ from pydantic import BaseModel, Field
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind, TeamCheckpoint
 from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
-from grasp_agents.run_context import RunContext, current_run_context
 from grasp_agents.runtime import ActorDriver
+from grasp_agents.session_context import SessionContext, current_session_context
 
 from ._roles import activate_member, is_llm_agent, is_resident, resident_idle
 from .agent_card import MemberCard
@@ -106,7 +106,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         *,
         entry: Processor[Any, Any, CtxT] | str | None = None,
         cards: Sequence[MemberCard] | None = None,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         transport: Transport[TeamMessage] | None = None,
         name: str | None = None,
         path: list[str] | None = None,
@@ -153,8 +153,8 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._cards_by_name = {c.name: c for c in self._cards}
 
         # Bind the session: explicit ctx, else the ambient / process-default one.
-        self._ctx: RunContext[CtxT] = (
-            ctx if ctx is not None else current_run_context()  # type: ignore[assignment]
+        self._ctx: SessionContext[CtxT] = (
+            ctx if ctx is not None else current_session_context()  # type: ignore[assignment]
         )
 
         # The one shared mailbox Transport every member views — residents
@@ -234,7 +234,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         return self._name
 
     @property
-    def ctx(self) -> RunContext[CtxT]:
+    def ctx(self) -> SessionContext[CtxT]:
         return self._ctx
 
     @property

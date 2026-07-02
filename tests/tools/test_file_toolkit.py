@@ -3,7 +3,7 @@ Tests for :class:`FileToolkit` — the unified file toolkit bundling the
 edit tools (Read/Write/Edit/Delete) and the search tools (Glob/Grep).
 
 The toolkit is **stateless**: backend + allowed_roots live on the
-:class:`FileBackend` wired onto :attr:`RunContext.file_backend`, and
+:class:`FileBackend` wired onto :attr:`SessionContext.file_backend`, and
 read-before-write bookkeeping lives on the active :class:`AgentLoop`
 via :class:`FileEditSessionState`. These tests cover what the toolkit
 owns (tool selection + per-tool configuration) and the end-to-end
@@ -20,7 +20,7 @@ from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools import FileToolkit
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
@@ -102,7 +102,9 @@ def test_glob_hidden_flag_propagates(include_hidden: bool) -> None:
 async def test_read_then_write_composes(tmp_path: Path) -> None:
     """End-to-end: ctx-wired backend + the agent's AgentContext."""
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="default")
+    ctx: SessionContext[Any] = SessionContext(
+        file_backend=backend, session_key="default"
+    )
     tk = FileToolkit(redactor=NullRedactor())
     f = tmp_path / "a.txt"
     f.write_text("original")

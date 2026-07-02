@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.skills import (
     Skill,
     SkillFrontmatter,
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 async def _run_section(
-    section: SystemPromptSection, ctx: RunContext[Any]
+    section: SystemPromptSection, ctx: SessionContext[Any]
 ) -> str | None:
     """Invoke a section's compute and resolve any awaitable return."""
     result = section.compute(ctx=ctx, exec_id="test")
@@ -210,10 +210,10 @@ class TestRenderSkillInstructions:
 
 
 class TestMakeSkillsSection:
-    def _ctx(self, skills: list[Skill] | None = None) -> RunContext[Any]:
+    def _ctx(self, skills: list[Skill] | None = None) -> SessionContext[Any]:
         registry: SkillRegistry | None
         registry = None if skills is None else SkillRegistry(skills)
-        return RunContext[Any](skills=registry)
+        return SessionContext[Any](skills=registry)
 
     @pytest.mark.asyncio
     async def test_no_skills_attr_returns_none(self) -> None:

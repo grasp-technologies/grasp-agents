@@ -19,9 +19,9 @@ from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
 from grasp_agents.sandbox.kernel import CellOutput
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.cell_output import (
@@ -243,7 +243,7 @@ def test_cell_output_to_nbformat_shapes() -> None:
 async def test_run_cell_requires_exec_backend(tmp_path: Path) -> None:
     # File backend only, no exec backend → no kernel.
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(file_backend=backend, session_key="s")
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
     p = tmp_path / "nb.ipynb"
     _write_code_nb(p, "x = 1")
     result = await RunCell().run(
@@ -257,7 +257,7 @@ async def test_run_cell_requires_exec_backend(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_cell_rejects_markdown(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()
 
     nb = v4.new_notebook()
@@ -280,7 +280,7 @@ async def test_run_cell_rejects_markdown(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_cell_unknown_cell(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()
     p = tmp_path / "nb.ipynb"
     _write_code_nb(p, "x = 1")
@@ -301,7 +301,7 @@ async def test_run_cell_unknown_cell(tmp_path: Path) -> None:
 
 
 async def _run_cell(
-    ctx: RunContext[Any], agent_ctx: AgentContext, path: Path, cell_id: str
+    ctx: SessionContext[Any], agent_ctx: AgentContext, path: Path, cell_id: str
 ) -> list[InputText | InputImage]:
     result = await RunCell().run(
         RunCellInput(notebook_path=str(path), cell_id=cell_id),
@@ -313,7 +313,7 @@ async def _run_cell(
 
 
 async def _first_cell_id(
-    ctx: RunContext[Any], agent_ctx: AgentContext, path: Path
+    ctx: SessionContext[Any], agent_ctx: AgentContext, path: Path
 ) -> str:
     read = await NotebookReadTool().run(
         NotebookReadInput(path=str(path)), ctx=ctx, agent_ctx=agent_ctx
@@ -326,7 +326,7 @@ async def _first_cell_id(
 @pytest.mark.asyncio
 async def test_run_cell_executes_and_writes_back(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()
     p = tmp_path / "nb.ipynb"
     _write_code_nb(p, "print('hi'); 40 + 2")
@@ -350,7 +350,7 @@ async def test_run_cell_executes_and_writes_back(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_cell_image_part(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()
     p = tmp_path / "nb.ipynb"
     _write_code_nb(
@@ -376,7 +376,7 @@ async def test_run_cell_image_part(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_cell_state_persists_across_calls(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()  # one nb_kernel_holder → one persistent kernel
     p = tmp_path / "nb.ipynb"
     _write_code_nb(p, "value = 5", "value * 2")
@@ -397,7 +397,7 @@ async def test_run_cell_state_persists_across_calls(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_cell_error_written_back(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()
     p = tmp_path / "nb.ipynb"
     _write_code_nb(p, "1 / 0")
@@ -418,7 +418,7 @@ async def test_run_cell_error_written_back(tmp_path: Path) -> None:
 async def test_run_cell_sanitizes_executable_output(tmp_path: Path) -> None:
     """A cell emitting JS/script HTML is sanitized before write-back."""
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[Any] = RunContext(environment=env)
+    ctx: SessionContext[Any] = SessionContext(environment=env)
     agent_ctx = _agent_ctx()
     p = tmp_path / "nb.ipynb"
     _write_code_nb(

@@ -25,7 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from grasp_agents import LLMAgent, RunContext
+from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.llm_providers.openai_responses import (
     OpenAIResponsesLLM,
     OpenAIResponsesLLMSettings,
@@ -41,7 +41,7 @@ _SYS = "You are a concise, friendly writing-and-coding assistant."
 
 def build_copilot(
     *, model: str = DEFAULT_MODEL
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     """Build the assistant agent (skills enabled) and its session context."""
     llm = OpenAIResponsesLLM(
         model_name=model,
@@ -51,7 +51,7 @@ def build_copilot(
         ),
     )
     skills = SkillRegistry.from_path(_SKILLS_ROOT)
-    ctx = RunContext[None](state=None, skills=skills)
+    ctx = SessionContext[None](state=None, skills=skills)
     agent = LLMAgent[str, str, None](
         name="assistant",
         ctx=ctx,

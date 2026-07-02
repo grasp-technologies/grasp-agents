@@ -16,7 +16,7 @@ import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import ReadImageInput, ReadImageTool
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
@@ -41,9 +41,9 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend, session_key="test")
+    return SessionContext[Any](file_backend=backend, session_key="test")
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def read_image() -> ReadImageTool:
 
 
 async def test_reads_png_as_image(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     f = tmp_path / "pixel.png"
     f.write_bytes(_PNG_BYTES)
@@ -74,7 +74,7 @@ async def test_reads_png_as_image(
 
 
 async def test_detail_is_passed_through(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     f = tmp_path / "pixel.png"
     f.write_bytes(_PNG_BYTES)
@@ -89,7 +89,7 @@ async def test_detail_is_passed_through(
 
 
 async def test_jpeg_extension_maps_to_jpeg_mime(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     # mime is keyed off the extension; content bytes aren't validated here.
     f = tmp_path / "photo.jpeg"
@@ -105,7 +105,7 @@ async def test_jpeg_extension_maps_to_jpeg_mime(
 
 
 async def test_non_image_extension_refused(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     f = tmp_path / "notes.txt"
     f.write_text("hello")
@@ -118,7 +118,7 @@ async def test_non_image_extension_refused(
 
 
 async def test_oversized_image_refused(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     f = tmp_path / "big.png"
     f.write_bytes(_PNG_BYTES)
@@ -130,7 +130,7 @@ async def test_oversized_image_refused(
 
 
 async def test_missing_file_refused(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     result = await ReadImageTool().run(
         ReadImageInput(path=str(tmp_path / "nope.png")), ctx=ctx, agent_ctx=agent_ctx

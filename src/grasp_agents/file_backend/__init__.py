@@ -4,14 +4,14 @@ File-I/O substrate for the file tools.
 The :class:`FileBackend` contract (``base``) plus its standalone implementations
 (:class:`LocalFileBackend`, :class:`MCPFileBackend`), path policy (``paths``),
 and atomic writes (``atomic_write``). This is the layer the file *tools*
-(:mod:`..file_edit` / :mod:`..file_search`) and ``RunContext`` build on; it does
+(:mod:`..file_edit` / :mod:`..file_search`) and ``SessionContext`` build on; it does
 not depend on the tools themselves.
 
 (The E2B file backend lives in :mod:`grasp_agents.sandbox.e2b` instead — it is
 inseparable from the live E2B sandbox handle, so it ships with the exec
 environment rather than here.)
 
-Imports are lazy (PEP 562) so importing this package — which ``RunContext`` does
+Imports are lazy (PEP 562) so importing this package — which ``SessionContext`` does
 at construction — does not pull in the MCP client (an optional extra) via
 :class:`MCPFileBackend`.
 """

@@ -27,7 +27,7 @@ from grasp_agents.context.compaction import (
     collapse_tool_outputs,
 )
 from grasp_agents.llm import count_input_tokens
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import (
@@ -291,7 +291,7 @@ async def test_collapsed_view_reaches_llm_while_log_keeps_full_output() -> None:
             _text_response("done"),
         ]
     )
-    ctx: RunContext[None] = RunContext()
+    ctx: SessionContext[None] = SessionContext()
     agent = LLMAgent[str, str, None](
         name="collapse_agent", ctx=ctx, llm=llm, tools=[_BigTool()]
     )

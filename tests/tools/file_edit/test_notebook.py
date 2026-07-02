@@ -21,7 +21,7 @@ import pytest
 from nbformat import v4
 
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools import FileToolkit
 from grasp_agents.tools.file_edit import (
     EditInput,
@@ -103,9 +103,9 @@ def _write_legacy_nb(path: Path, cells: list[tuple[str, str]]) -> None:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
+    return SessionContext[Any](file_backend=backend, session_key=TEST_KEY)
 
 
 @pytest.fixture
@@ -121,7 +121,7 @@ def nb_edit() -> NotebookEditTool:
 async def _read_cells(
     nb_read: NotebookReadTool,
     path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
 ) -> NotebookReadResult:
     result = await nb_read.run(
@@ -138,7 +138,7 @@ async def _read_cells(
 
 async def test_read_modern_notebook(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -154,7 +154,7 @@ async def test_read_modern_notebook(
 
 async def test_read_output_preview_and_has_output(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -195,7 +195,7 @@ async def test_read_output_preview_and_has_output(
 
 async def test_read_single_cell_by_id(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -218,7 +218,7 @@ async def test_read_single_cell_by_id(
 
 async def test_read_single_cell_missing_id(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -232,7 +232,7 @@ async def test_read_single_cell_missing_id(
 
 async def test_legacy_ids_stable_across_reads(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -275,7 +275,7 @@ def _nb_with_image(image_mime: str) -> dict[str, Any]:
 
 async def test_read_single_cell_surfaces_image_parts(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -297,7 +297,7 @@ async def test_read_single_cell_surfaces_image_parts(
 
 async def test_read_surfaces_non_png_formats(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -314,7 +314,7 @@ async def test_read_surfaces_non_png_formats(
 
 async def test_read_whole_notebook_omits_images_by_default(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -332,7 +332,7 @@ async def test_read_whole_notebook_omits_images_by_default(
 
 async def test_read_whole_notebook_with_include_images(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
 ) -> None:
@@ -355,7 +355,7 @@ async def test_read_whole_notebook_with_include_images(
 
 async def test_edit_replace_clears_code_outputs(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -397,7 +397,7 @@ async def test_edit_replace_clears_code_outputs(
 
 async def test_edit_replace_markdown_keeps_type(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -421,7 +421,7 @@ async def test_edit_replace_markdown_keeps_type(
 
 async def test_edit_replace_unknown_cell_id(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -440,7 +440,7 @@ async def test_edit_replace_unknown_cell_id(
 
 async def test_edit_replace_requires_cell_id(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -463,7 +463,7 @@ async def test_edit_replace_requires_cell_id(
 
 async def test_edit_insert_after_cell(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -494,7 +494,7 @@ async def test_edit_insert_after_cell(
 
 async def test_edit_insert_at_start_without_cell_id(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -520,7 +520,7 @@ async def test_edit_insert_at_start_without_cell_id(
 
 async def test_edit_insert_requires_cell_type(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -543,7 +543,7 @@ async def test_edit_insert_requires_cell_type(
 
 async def test_edit_delete(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -571,7 +571,7 @@ async def test_edit_delete(
 
 async def test_edit_refuses_without_prior_read(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_edit: NotebookEditTool,
 ) -> None:
@@ -590,7 +590,7 @@ async def test_edit_refuses_without_prior_read(
 
 async def test_edit_refuses_on_stale_mtime(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -614,7 +614,7 @@ async def test_edit_refuses_on_stale_mtime(
 
 async def test_consecutive_edits_do_not_trip_staleness(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_read: NotebookReadTool,
     nb_edit: NotebookEditTool,
@@ -644,7 +644,7 @@ async def test_consecutive_edits_do_not_trip_staleness(
 
 async def test_edit_refuses_missing_file(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_edit: NotebookEditTool,
 ) -> None:
@@ -665,7 +665,7 @@ async def test_edit_refuses_missing_file(
 
 async def test_generic_read_renders_cell_view(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
 ) -> None:
     p = tmp_path / "nb.ipynb"
@@ -683,7 +683,7 @@ async def test_generic_read_renders_cell_view(
 
 async def test_generic_read_then_notebook_edit(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     nb_edit: NotebookEditTool,
 ) -> None:
@@ -704,7 +704,7 @@ async def test_generic_read_then_notebook_edit(
 
 
 async def test_generic_write_refuses_ipynb(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     p = tmp_path / "nb.ipynb"
     _write_modern_nb(p, [("code", "x")])
@@ -719,7 +719,7 @@ async def test_generic_write_refuses_ipynb(
 
 
 async def test_generic_edit_refuses_ipynb(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     p = tmp_path / "nb.ipynb"
     _write_modern_nb(p, [("code", "x")])

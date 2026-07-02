@@ -9,7 +9,7 @@ The lightweight protocols + value types are imported eagerly (they are leaf
 modules — no cross-package imports). The concrete backends + factory
 (:class:`LocalExecBackend`, :class:`LocalEnvironment`, :func:`local_environment`,
 :class:`ProcessSupervisor`) are lazy (PEP 562) so importing this package — which
-``RunContext`` does at construction — does not eagerly pull in the file-tool
+``SessionContext`` does at construction — does not eagerly pull in the file-tool
 stack.
 """
 

@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import FunctionTool, function_tool
 from grasp_agents.types.events import ToolErrorInfo
@@ -142,7 +142,7 @@ class TestFunctionToolContext:
     @pytest.mark.asyncio
     async def test_ctx_passthrough(self) -> None:
         @function_tool
-        async def check_ctx(x: int, *, ctx: RunContext[Any] | None = None) -> str:
+        async def check_ctx(x: int, *, ctx: SessionContext[Any] | None = None) -> str:
             """Check context."""
             return "has_ctx" if ctx is not None else "no_ctx"
 
@@ -169,7 +169,10 @@ class TestFunctionToolContext:
     async def test_ctx_and_exec_id_both(self) -> None:
         @function_tool
         async def both(
-            x: int, *, ctx: RunContext[Any] | None = None, exec_id: str | None = None
+            x: int,
+            *,
+            ctx: SessionContext[Any] | None = None,
+            exec_id: str | None = None,
         ) -> str:
             """Both special params."""
             parts = []

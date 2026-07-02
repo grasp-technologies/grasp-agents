@@ -25,7 +25,7 @@ from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.agent_tool import (
     AgentTool,
     AgentToolInput,
@@ -225,7 +225,7 @@ class TestAgentToolBasics:
             description="A subagent",
             llm=_make_child_llm("hello world"),
         )
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         result = await tool.run(
             AgentToolInput(prompt="say hello"),
             ctx=ctx,
@@ -240,7 +240,7 @@ class TestAgentToolBasics:
             description="A subagent",
             llm=_make_child_llm("streamed result"),
         )
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events: list[Event[Any]] = []
         async for event in tool.run_stream(
             AgentToolInput(prompt="stream this"),
@@ -263,7 +263,7 @@ class TestAgentToolBasics:
             description="A subagent",
             llm=llm,
         )
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
 
         r1 = await tool.run(
             AgentToolInput(prompt="call 1"),
@@ -478,7 +478,7 @@ class TestAgentToolPromptBuilders:
         child_llm = _make_child_llm("ok")
 
         def build_sys(
-            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: SessionContext[None]
         ) -> str:
             return f"Dynamic: {prompt}"
 
@@ -490,7 +490,7 @@ class TestAgentToolPromptBuilders:
             sys_prompt_builder=build_sys,
         )
 
-        ctx: RunContext[None] = RunContext()
+        ctx: SessionContext[None] = SessionContext()
         result = await agent_tool._run(
             AgentToolInput(prompt="hello"),
             ctx=ctx,
@@ -524,7 +524,7 @@ class TestAgentToolPromptBuilders:
                 return _text_response("done")
 
         def build_input(
-            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: SessionContext[None]
         ) -> str:
             return f"[enriched] {prompt}"
 
@@ -535,7 +535,7 @@ class TestAgentToolPromptBuilders:
             in_prompt_builder=build_input,
         )
 
-        ctx: RunContext[None] = RunContext()
+        ctx: SessionContext[None] = SessionContext()
         await agent_tool._run(
             AgentToolInput(prompt="raw task"),
             ctx=ctx,
@@ -549,7 +549,7 @@ class TestAgentToolPromptBuilders:
         received_memory: list[LLMAgentTranscript | None] = []
 
         def build_sys(
-            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: SessionContext[None]
         ) -> str:
             received_memory.append(memory)
             return "sys"
@@ -568,7 +568,7 @@ class TestAgentToolPromptBuilders:
 
         parent_mem.update([InputMessageItem.from_text("user said hi", role="user")])
 
-        ctx: RunContext[None] = RunContext()
+        ctx: SessionContext[None] = SessionContext()
         await agent_tool._run(
             AgentToolInput(prompt="go"),
             ctx=ctx,
@@ -585,7 +585,7 @@ class TestAgentToolPromptBuilders:
         child_llm = _make_child_llm("ok")
 
         async def async_build(
-            prompt: str, memory: LLMAgentTranscript, ctx: RunContext[None]
+            prompt: str, memory: LLMAgentTranscript, ctx: SessionContext[None]
         ) -> str:
             return f"async: {prompt}"
 
@@ -596,7 +596,7 @@ class TestAgentToolPromptBuilders:
             sys_prompt_builder=async_build,
         )
 
-        ctx: RunContext[None] = RunContext()
+        ctx: SessionContext[None] = SessionContext()
         agent, _ = await agent_tool._prepare_child(
             AgentToolInput(prompt="test"), ctx=ctx, exec_id="x"
         )
@@ -614,7 +614,7 @@ class TestAgentToolPromptBuilders:
             sys_prompt="static",
         )
 
-        ctx: RunContext[None] = RunContext()
+        ctx: SessionContext[None] = SessionContext()
         agent, user_msg = await agent_tool._prepare_child(
             AgentToolInput(prompt="raw"), ctx=ctx, exec_id="x"
         )
@@ -634,7 +634,7 @@ class TestAgentToolPromptBuilders:
             max_retries=2,
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext()
+        ctx: SessionContext[None] = SessionContext()
         agent, _ = await agent_tool._prepare_child(
             AgentToolInput(prompt="raw"), ctx=ctx, exec_id="x"
         )
@@ -709,9 +709,7 @@ class TestToolCopy:
         class BadTool(BaseTool[BaseModel, str, None]):
             description = "no name"
 
-            async def _run(
-                self, inp: BaseModel | None = None, **kwargs: Any
-            ) -> str:  # type: ignore[override]
+            async def _run(self, inp: BaseModel | None = None, **kwargs: Any) -> str:  # type: ignore[override]
                 return "ok"
 
         with pytest.raises(ValueError, match="non-empty name"):
@@ -736,7 +734,7 @@ class _StubMCPClient:
 
 
 @function_tool(name="mcp_echo", description="Echo the text back.")
-async def _mcp_echo(text: str, *, ctx: RunContext[Any] | None = None) -> str:
+async def _mcp_echo(text: str, *, ctx: SessionContext[Any] | None = None) -> str:
     del ctx
     return text
 
@@ -756,7 +754,7 @@ class TestAgentToolMcp:
         )
         agent, _ = await tool._prepare_child(
             AgentToolInput(prompt="hi"),
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             exec_id="e",
             agent_ctx=None,
         )
@@ -776,7 +774,7 @@ class TestAgentToolMcp:
         )
         agent, _ = await tool._prepare_child(
             AgentToolInput(prompt="hi"),
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             exec_id="e",
             agent_ctx=None,
         )
@@ -803,7 +801,7 @@ class TestAgentToolMcp:
         parent_ctx = _agent_ctx(tools=[_mcp_echo], explicit_tool_names=frozenset())
         agent, _ = await tool._prepare_child(
             AgentToolInput(prompt="hi"),
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             exec_id="e",
             agent_ctx=parent_ctx,
         )
@@ -825,7 +823,7 @@ class TestAgentToolMcp:
         parent_ctx = _agent_ctx(tools=[_mcp_echo])  # default: mcp_echo is explicit
         agent, _ = await tool._prepare_child(
             AgentToolInput(prompt="hi"),
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             exec_id="e",
             agent_ctx=parent_ctx,
         )

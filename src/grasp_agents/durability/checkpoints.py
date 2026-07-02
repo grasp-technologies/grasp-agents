@@ -109,7 +109,7 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
     12: (
         "Session-scoped state moved out of per-processor checkpoints into one "
         "SessionCheckpoint per session_key (kind ``session``): the serialized "
-        "``RunContext.state`` (``context_kind``/``context_data``), the shared "
+        "``SessionContext.state`` (``context_kind``/``context_data``), the shared "
         "filesystem's ``fs_snapshot_ref``, and ``session_metadata``. "
         "AgentCheckpoint dropped ``context_kind``/``context_data`` (per-step "
         "watermark refs remain for rollback); ProcessorCheckpoint dropped "
@@ -243,11 +243,11 @@ class PersistedRecord(BaseModel):
 class SessionCheckpoint(PersistedRecord):
     """
     The session-scoped half of a persisted session — state shared by every
-    processor bound to one :class:`~grasp_agents.run_context.RunContext`.
+    processor bound to one :class:`~grasp_agents.session_context.SessionContext`.
 
     Exactly one per ``session_key`` (kind ``session``, no processor path):
-    the optionally serialized ``RunContext.state`` and the latest filesystem
-    snapshot of the shared ``ctx.environment``. Owned by ``RunContext``
+    the optionally serialized ``SessionContext.state`` and the latest filesystem
+    snapshot of the shared ``ctx.environment``. Owned by ``SessionContext``
     (``save_checkpoint`` / ``load_checkpoint``) — never by an individual
     processor, whose checkpoints carry only their own working state.
     """
@@ -261,7 +261,7 @@ class SessionCheckpoint(PersistedRecord):
     # a ref that no longer describes the transcript.
     fs_snapshot_ref: str | None = None
 
-    # Operator-facing session labels (``RunContext.session_metadata``).
+    # Operator-facing session labels (``SessionContext.session_metadata``).
     # Write-only: persisted for external inspection, never restored.
     session_metadata: dict[str, Any] = Field(default_factory=dict)
 

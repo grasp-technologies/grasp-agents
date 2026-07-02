@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_card import MemberCard
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from tests._helpers import MockLLM
 
 
@@ -91,12 +91,12 @@ def test_processor_rejects_slash_in_name() -> None:
     # A name becomes a store-key path segment (recipient / checkpoint path); a
     # slash would silently nest directories and break mailbox key scoping.
     with pytest.raises(ValueError, match="store-key path segment"):
-        _Forward(name="a/b", ctx=RunContext[None](state=None))
+        _Forward(name="a/b", ctx=SessionContext[None](state=None))
 
 
 def test_from_processor_works_on_plain_processor() -> None:
     # Not agent-specific: a plain processor yields a card too (no skills, typed input).
-    proc = _Forward(name="filer", ctx=RunContext[None](state=None))
+    proc = _Forward(name="filer", ctx=SessionContext[None](state=None))
     card = MemberCard.from_processor(proc)
     assert card.name == "filer"
     assert card.input_type is _Ticket

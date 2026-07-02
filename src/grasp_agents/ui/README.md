@@ -65,12 +65,12 @@ in-memory).
 ```python
 from pathlib import Path
 
-from grasp_agents import RunContext
+from grasp_agents import SessionContext
 from grasp_agents.agent.approval_store import build_store_approval
 from grasp_agents.ui import TuiApprovalStore, run_tui_interactive
 
 store = TuiApprovalStore(persist_path=Path(".grasp/approvals.json"))
-ctx = RunContext(approval_store=store, session_key="user-1")
+ctx = SessionContext(approval_store=store, session_key="user-1")
 agent = LLMAgent(name="assistant", ctx=ctx, llm=llm, tools=[...])
 agent.add_before_tool_hook(build_store_approval(tool_names={"delete_record"}))
 run_tui_interactive(agent)   # main_agent + ctx (with the approval store) inferred

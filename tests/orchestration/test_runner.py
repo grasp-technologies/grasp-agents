@@ -20,9 +20,9 @@ from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import RunnerCheckpoint
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
 from grasp_agents.runner.event_bus import MAX_QUEUE_SIZE, EventBus
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import ProcInputValidationError, RunnerError
 from grasp_agents.types.events import (
     Event,
@@ -197,7 +197,7 @@ class TestRunnerBasicExecution:
         """A → B → END."""
         a = AppendProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
 
         result = await run_runner(runner, chat_inputs="s")
@@ -209,7 +209,7 @@ class TestRunnerBasicExecution:
         a = AppendProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=["C"])
         c = AppendProcessor("C", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](entry_proc=a, procs=[a, b, c], ctx=ctx, name="r")
 
         result = await run_runner(runner, chat_inputs="s")
@@ -222,7 +222,7 @@ class TestRunnerBasicExecution:
         b = CountingProcessor("B", recipients=["D"])
         c = CountingProcessor("C", recipients=["D"])
         d = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](entry_proc=a, procs=[a, b, c, d], ctx=ctx, name="r")
 
         # D is the END proc and gets invoked twice (once from B, once from C).
@@ -240,7 +240,7 @@ class TestRunnerBasicExecution:
             route_map={":x": "B", ":y": "C"},
         )
         fan = FanOutProcessor("fan", recipients=["router"])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
 
         # fan produces ["s:x", "s:y"], router routes :x→B, :y→C
         # Both B and C have END recipient — Runner requires exactly one.
@@ -268,7 +268,7 @@ class TestRunnerBasicExecution:
         splitter.recipients = [par.name]
         par.recipients = ["collector"]
 
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](
             entry_proc=splitter,
             procs=[splitter, par, collector],
@@ -292,7 +292,7 @@ class TestRunnerCheckpoint:
         store = InMemoryCheckpointStore()
         a = AppendProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-1"
         )
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
@@ -311,7 +311,7 @@ class TestRunnerCheckpoint:
         store = InMemoryCheckpointStore()
         a = AppendProcessor("A", recipients=["B"])
         b = FailOnCallProcessor("B", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-2"
         )
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
@@ -335,7 +335,7 @@ class TestRunnerCheckpoint:
         par.recipients = [END_PROC_NAME]
         splitter = FanOutProcessor("splitter", recipients=[par.name])
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-3"
         )
         runner = Runner[str, None](
@@ -363,7 +363,7 @@ class TestRunnerResume:
 
         a1 = CountingProcessor("A", recipients=["B"])
         b1 = FailOnCallProcessor("B", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-r1"
         )
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1, b1], ctx=ctx1, name="r")
@@ -376,7 +376,7 @@ class TestRunnerResume:
         # Resume
         a2 = CountingProcessor("A", recipients=["B"])
         b2 = CountingProcessor("B", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-r1"
         )
         runner2 = Runner[str, None](entry_proc=a2, procs=[a2, b2], ctx=ctx2, name="r")
@@ -394,7 +394,7 @@ class TestRunnerResume:
         a1 = CountingProcessor("A", recipients=["B"])
         b1 = CountingProcessor("B", recipients=["C"])
         c1 = FailOnCallProcessor("C", fail_on_call=1, recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-r2"
         )
         runner1 = Runner[str, None](
@@ -407,7 +407,7 @@ class TestRunnerResume:
         a2 = CountingProcessor("A", recipients=["B"])
         b2 = CountingProcessor("B", recipients=["C"])
         c2 = CountingProcessor("C", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-r2"
         )
         runner2 = Runner[str, None](
@@ -429,7 +429,7 @@ class TestRunnerResume:
         b1 = CountingProcessor("B", recipients=["D"])
         c1 = FailOnCallProcessor("C", fail_on_call=1, recipients=["D"])
         d1 = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-fan"
         )
         runner1 = Runner[str, None](
@@ -444,7 +444,7 @@ class TestRunnerResume:
         b2 = CountingProcessor("B", recipients=["D"])
         c2 = CountingProcessor("C", recipients=["D"])
         d2 = AppendProcessor("D", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-fan"
         )
         runner2 = Runner[str, None](
@@ -463,7 +463,7 @@ class TestRunnerResume:
 
         a1 = AppendProcessor("A", recipients=["B"])
         b1 = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-noop"
         )
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1, b1], ctx=ctx1, name="r")
@@ -492,7 +492,7 @@ class TestRunnerComposableCheckpointing:
         splitter.recipients = [par.name]
         par.recipients = ["collector"]
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="run-comp"
         )
         runner = Runner[str, None](
@@ -528,7 +528,7 @@ class TestRunnerValidation:
         """Referencing a non-existent processor as recipient should fail at init."""
         a = AppendProcessor("A", recipients=["NONEXISTENT"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         with pytest.raises(RunnerError, match="unknown recipient"):
             Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
 
@@ -536,7 +536,7 @@ class TestRunnerValidation:
         """Valid recipient names (including END) should not raise."""
         a = AppendProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         # Should not raise
         Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
 
@@ -553,7 +553,7 @@ class TestRunnerCorruptCheckpoint:
         await store.save("sess-corrupt/runner", b"not valid json at all")
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="sess-corrupt"
         )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
@@ -576,12 +576,10 @@ class TestRunnerCorruptCheckpoint:
             processor_name="r",
             pending_events=[],
         )
-        await store.save(
-            "sess-done/runner", cp.model_dump_json().encode("utf-8")
-        )
+        await store.save("sess-done/runner", cp.model_dump_json().encode("utf-8"))
 
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="sess-done"
         )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
@@ -658,7 +656,7 @@ class TestRoutingAndResume:
         """run() on a completed session returns the persisted final packet."""
         store = InMemoryCheckpointStore()
         a1 = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="done-1"
         )
         runner1 = Runner[str, None](entry_proc=a1, procs=[a1], ctx=ctx1, name="r")
@@ -666,7 +664,7 @@ class TestRoutingAndResume:
         assert list(out1.payloads) == ["s->A"]
 
         a2 = CountingProcessor("A", recipients=[END_PROC_NAME])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="done-1"
         )
         runner2 = Runner[str, None](entry_proc=a2, procs=[a2], ctx=ctx2, name="r")
@@ -681,7 +679,7 @@ class TestRoutingAndResume:
         store = InMemoryCheckpointStore()
         a = EmptyRoutingProcessor("A", recipients=["B"])
         b = AppendProcessor("B", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="er-1"
         )
         runner = Runner[str, None](entry_proc=a, procs=[a, b], ctx=ctx, name="r")
@@ -783,9 +781,7 @@ class TestLLMAgentFanIn:
             env_info=False,
         )
         packet = Packet[Any](sender="par", payloads=["a", "b"])
-        with pytest.raises(
-            ProcInputValidationError, match=r"list\[\.\.\.\] to fan in"
-        ):
+        with pytest.raises(ProcInputValidationError, match=r"list\[\.\.\.\] to fan in"):
             agent.validate_inputs(exec_id="e", in_packet=packet)
 
 
@@ -871,7 +867,7 @@ class TestRunnerOutTypeValidation:
     @pytest.mark.asyncio
     async def test_mismatched_final_payload_raises(self) -> None:
         p = IntProducer("P")
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](entry_proc=p, procs=[p], ctx=ctx, name="r")
 
         with pytest.raises(Exception) as excinfo:
@@ -883,7 +879,7 @@ class TestRunnerOutTypeValidation:
     @pytest.mark.asyncio
     async def test_matching_final_payload_passes(self) -> None:
         a = AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
 
         result = await run_runner(runner, chat_inputs="s")
@@ -892,7 +888,7 @@ class TestRunnerOutTypeValidation:
     @pytest.mark.asyncio
     async def test_unsubscripted_runner_skips_validation(self) -> None:
         p = IntProducer("P")
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner(entry_proc=p, procs=[p], ctx=ctx, name="r")
 
         payloads: list[Any] = []
@@ -913,10 +909,7 @@ class TestSequentialResumeChatInputs:
         async def drain(wf: SequentialWorkflow[str, str, None]) -> list[str]:
             payloads: list[str] = []
             async for event in wf.run_stream(chat_inputs="start", exec_id="t"):
-                if (
-                    isinstance(event, ProcPacketOutEvent)
-                    and event.source == wf.name
-                ):
+                if isinstance(event, ProcPacketOutEvent) and event.source == wf.name:
                     payloads = list(event.data.payloads)
             return payloads
 
@@ -926,7 +919,7 @@ class TestSequentialResumeChatInputs:
         c1 = AppendProcessor("C")
         wf1 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a1, b1, c1])
         wf1.on_adopted(
-            ctx=RunContext[None](
+            ctx=SessionContext[None](
                 state=None, checkpoint_store=store, session_key="seq-ci"
             )
         )
@@ -940,7 +933,7 @@ class TestSequentialResumeChatInputs:
         c2 = AppendProcessor("C")
         wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a2, b2, c2])
         wf2.on_adopted(
-            ctx=RunContext[None](
+            ctx=SessionContext[None](
                 state=None, checkpoint_store=store, session_key="seq-ci"
             )
         )

@@ -37,7 +37,7 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
     from .redact import SecretRedactor
 
@@ -142,7 +142,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
     Read a text file with pagination via ``ctx.file_backend``.
 
     Stateless: backend, allowed_roots, and read-state bookkeeping all
-    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
+    live on the :class:`FileBackend` wired onto :attr:`SessionContext.file_backend`.
     """
 
     name = "Read"
@@ -179,7 +179,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         self,
         inp: ReadInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -190,7 +190,7 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "Read requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         if has_binary_extension(inp.path):

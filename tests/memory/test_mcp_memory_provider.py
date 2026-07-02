@@ -26,7 +26,7 @@ pytest.importorskip("mcp")
 
 from grasp_agents.file_backend.mcp import MCPFileBackend
 from grasp_agents.memory import MemoryProvider
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 
 MEMDIR = "/memdir"
 
@@ -76,9 +76,7 @@ class _FakeSession:
         self.read_calls: list[str] = []
         self.tool_calls: list[tuple[str, Mapping[str, Any]]] = []
 
-    async def list_resources(
-        self, *, params: Any = None
-    ) -> _FakeListResourcesResult:
+    async def list_resources(self, *, params: Any = None) -> _FakeListResourcesResult:
         del params
         self.list_calls += 1
         return _FakeListResourcesResult(resources=list(self._resources))
@@ -93,9 +91,7 @@ class _FakeSession:
 
         return _FakeReadResult(
             contents=[
-                TextResourceContents(
-                    uri=uri, mimeType="text/markdown", text=text
-                )
+                TextResourceContents(uri=uri, mimeType="text/markdown", text=text)
             ]
         )
 
@@ -115,19 +111,16 @@ class _FakeClient:
 
 
 def _topic_text(name: str, *, body: str = "Body text.") -> str:
-    return (
-        f"---\nname: {name}\ndescription: {name.title()} memory\n---\n"
-        f"{body}\n"
-    )
+    return f"---\nname: {name}\ndescription: {name.title()} memory\n---\n{body}\n"
 
 
-def _make_ctx(session: _FakeSession) -> RunContext[Any]:
-    """Build a RunContext wired to ``MemoryProvider`` over ``MCPFileBackend``."""
+def _make_ctx(session: _FakeSession) -> SessionContext[Any]:
+    """Build a SessionContext wired to ``MemoryProvider`` over ``MCPFileBackend``."""
     backend = MCPFileBackend(
         client=_FakeClient(session=session),  # type: ignore[arg-type]
         allowed_roots=[Path(MEMDIR)],
     )
-    return RunContext[Any](
+    return SessionContext[Any](
         file_backend=backend,
         memory=MemoryProvider(root=MEMDIR),
     )

@@ -34,7 +34,7 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 # Permissions applied to newly-created files. Existing files preserve
 # their current mode (e.g. an executable script stays executable).
@@ -66,7 +66,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
     Create or overwrite a file atomically via ``ctx.file_backend``.
 
     Stateless: backend, allowed_roots, and read-state bookkeeping all
-    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
+    live on the :class:`FileBackend` wired onto :attr:`SessionContext.file_backend`.
     """
 
     name = "Write"
@@ -101,7 +101,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         self,
         inp: WriteInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -112,7 +112,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "Write requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         if Path(inp.path).suffix == ".ipynb":

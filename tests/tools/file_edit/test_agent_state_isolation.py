@@ -18,7 +18,7 @@ def _make_loop():
 
     from grasp_agents.agent.agent_loop import AgentLoop
     from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
     class _StubLLM:
         model_name = "stub"
@@ -29,7 +29,7 @@ def _make_loop():
         llm=_StubLLM(),  # type: ignore[arg-type]
         transcript=LLMAgentTranscript(),
         tools=None,
-        ctx=RunContext[BaseModel](),  # type: ignore[call-arg]
+        ctx=SessionContext[BaseModel](),  # type: ignore[call-arg]
         max_turns=1,
     )
 

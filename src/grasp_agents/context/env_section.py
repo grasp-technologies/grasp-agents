@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.content import CacheControl
     from grasp_agents.types.items import InputItem, InputMessageItem
 
@@ -64,7 +64,7 @@ def _render_default_field(
     return None
 
 
-def _effective_cwd(ctx: RunContext[Any] | None) -> str:
+def _effective_cwd(ctx: SessionContext[Any] | None) -> str:
     env = getattr(ctx, "environment", None)
     policy = getattr(env, "policy", None)
     roots = getattr(policy, "allowed_roots", None)
@@ -101,7 +101,7 @@ def make_env_info_section(
 
     def compute(
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         **_: Any,
     ) -> str | None:
@@ -154,7 +154,7 @@ def make_current_time_attachment(
     def compute(
         *,
         input_message: InputMessageItem,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
         agent_ctx: AgentContext | None = None,

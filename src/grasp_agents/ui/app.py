@@ -114,7 +114,7 @@ if TYPE_CHECKING:
     from textual.widget import Widget
 
     from grasp_agents.agent.llm_agent import LLMAgent
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 # Events only an LLM-backed agent emits. A source that emits one of these owns
 # an agent pane; tools (RunPython, Bash, …) emit only tool/exec output, so they
@@ -199,7 +199,7 @@ class GraspAgentsApp(App[None]):
         on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
         on_rollback: Callable[[int], Awaitable[None]] | None = None,
         main_agent: str | None = None,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
     ) -> None:
         super().__init__()
         prime_image_protocol()
@@ -1214,7 +1214,7 @@ def run_tui_interactive(
     on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
     on_rollback: Callable[[int], Awaitable[None]] | None = None,
     main_agent: str | None = None,
-    ctx: RunContext[Any] | None = None,
+    ctx: SessionContext[Any] | None = None,
     events: AsyncIterator[Event[Any]] | None = None,
 ) -> None:
     """

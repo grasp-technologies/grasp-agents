@@ -24,7 +24,7 @@ from grasp_agents.agent.tool_decision import (
     RejectToolContent,
     ToolCallDecision,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -94,7 +94,7 @@ def _make_executor(
     memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
@@ -111,7 +111,7 @@ def _make_executor(
     return executor, memory, llm
 
 
-async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
+async def _drain(executor: AgentLoop[None], ctx: SessionContext[None]) -> Response:
     executor._ctx = ctx
     stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
@@ -141,7 +141,7 @@ class TestDefaultAllowBehavior:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
         assert _invocations["echo"] == ["hi"]
 
@@ -160,7 +160,7 @@ class TestDefaultAllowBehavior:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
         assert _invocations["echo"] == ["ok"]
 
@@ -179,7 +179,7 @@ class TestDefaultAllowBehavior:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
         assert _invocations["echo"] == ["hi"]
 
@@ -205,7 +205,7 @@ class TestRejectToolContent:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # Real tool never ran
@@ -245,7 +245,7 @@ class TestRejectToolContent:
         executor.before_tool_hooks = [before]  # type: ignore[assignment]
         executor.after_tool_hooks = [after]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert captured["num_messages"] == 1
@@ -278,7 +278,7 @@ class TestRaiseToolException:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         with pytest.raises(PolicyBlock, match="halt"):
             await _drain(executor, ctx)
 
@@ -313,7 +313,7 @@ class TestRaiseToolException:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         with pytest.raises(RuntimeError, match="boom"):
             await _drain(executor, ctx)
 
@@ -343,7 +343,7 @@ class TestMixedDecisions:
 
         executor.before_tool_hooks = [hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # Allowed tool ran, rejected tool did not
@@ -381,7 +381,7 @@ class TestLegacyReturnShape:
 
         executor.before_tool_hooks = [legacy_hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert calls_seen == [1]
@@ -446,7 +446,7 @@ class TestStackedBeforeToolHooks:
 
         executor.before_tool_hooks = [allow_hook, reject_hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # reject wins over allow → the tool never ran
@@ -475,7 +475,7 @@ class TestStackedBeforeToolHooks:
         # raise registered first, reject second — raise must still win
         executor.before_tool_hooks = [raise_hook, reject_hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         with pytest.raises(Halt, match="halt"):
             await _drain(executor, ctx)
 
@@ -503,7 +503,7 @@ class TestStackedBeforeToolHooks:
 
         executor.before_tool_hooks = [reject_echo, reject_shout]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # Each hook's rejection applies to its own call (disjoint keys union).

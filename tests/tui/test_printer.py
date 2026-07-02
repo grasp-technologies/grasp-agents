@@ -255,10 +255,10 @@ class TestPrinterShowsGeneratedOutput:
         output (response / thinking / tool calls), not just inputs + tool
         results — the raw printer is a full debug view of the conversation.
         """
-        from grasp_agents import LLMAgent, RunContext
+        from grasp_agents import LLMAgent, SessionContext
         from tests._helpers import MockLLM, _text_response
 
-        ctx = RunContext[None](printer=Printer(output_to="stdout"))
+        ctx = SessionContext[None](printer=Printer(output_to="stdout"))
         agent = LLMAgent[None, str, None](
             name="dbg",
             ctx=ctx,

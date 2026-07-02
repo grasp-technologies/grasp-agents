@@ -16,7 +16,7 @@ import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.processors.parallel_processor import ParallelProcessor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.tools.processor_tool import ProcessorTool
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
@@ -39,7 +39,7 @@ def _make_agent(
 ) -> LLMAgent[str, str, None]:
     return LLMAgent[str, str, None](
         name="test_agent",
-        ctx=RunContext[None](),
+        ctx=SessionContext[None](),
         llm=MockLLM(responses_queue=responses),
         tools=tools,
         max_turns=max_turns,
@@ -163,14 +163,12 @@ class TestEphemeralCloneTeardown:
         _CloseSpyAgent.closed_names = []
         template = _CloseSpyAgent(
             name="worker",
-            ctx=RunContext[None](),
-            llm=MockLLM(
-                responses_queue=[_text_response("a"), _text_response("b")]
-            ),
+            ctx=SessionContext[None](),
+            llm=MockLLM(responses_queue=[_text_response("a"), _text_response("b")]),
             env_info=False,
         )
         par = ParallelProcessor[str, str, None](subproc=template)
-        par.on_adopted(ctx=RunContext[None]())
+        par.on_adopted(ctx=SessionContext[None]())
 
         result = await par.run(in_args=["x", "y"], exec_id="e")
         assert sorted(result.payloads) == ["a", "b"]
@@ -181,7 +179,7 @@ class TestEphemeralCloneTeardown:
         _CloseSpyAgent.closed_names = []
         template = _CloseSpyAgent(
             name="sub",
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             llm=MockLLM(responses_queue=[_text_response("sub answer")]),
             env_info=False,
         )
@@ -189,7 +187,7 @@ class TestEphemeralCloneTeardown:
             processor=template, name="sub", description="d"
         )
 
-        out = await tool._run("hi", ctx=RunContext[None]())
+        out = await tool._run("hi", ctx=SessionContext[None]())
         assert out == "sub answer"
         assert _CloseSpyAgent.closed_names == ["sub"]
 
@@ -200,7 +198,7 @@ class TestEphemeralCloneTeardown:
 class TestCompositeAclose:
     async def test_workflow_aclose_cascades(self) -> None:
         _CloseSpyAgent.closed_names = []
-        shared_ctx = RunContext[None]()
+        shared_ctx = SessionContext[None]()
         a = _CloseSpyAgent(
             name="a",
             ctx=shared_ctx,
@@ -221,7 +219,7 @@ class TestCompositeAclose:
         _CloseSpyAgent.closed_names = []
         inner = _CloseSpyAgent(
             name="inner",
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             llm=MockLLM(responses_queue=[]),
             env_info=False,
         )
@@ -230,7 +228,7 @@ class TestCompositeAclose:
         )
         outer = LLMAgent[str, str, None](
             name="outer",
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             llm=MockLLM(responses_queue=[]),
             tools=[tool],
             env_info=False,

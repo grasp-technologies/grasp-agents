@@ -15,8 +15,8 @@ from .message import USER_SENDER, TeamMessage
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
     from grasp_agents.runtime import Transport
+    from grasp_agents.session_context import SessionContext
 
     from .agent_card import MemberCard
 
@@ -38,10 +38,10 @@ class MessageSink(Protocol):
 
 # Resolves the destination a SendMessage call delivers into for the active run —
 # the team itself (which routes per recipient), or a bare transport.
-type TransportResolver = Callable[[RunContext[Any]], MessageSink]
+type TransportResolver = Callable[[SessionContext[Any]], MessageSink]
 
 
-def default_transport(ctx: RunContext[Any]) -> Transport[TeamMessage]:
+def default_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage]:
     """
     A durable transport over ``ctx.checkpoint_store``. Raises if no checkpoint
     store is wired — a single-process team uses
@@ -108,7 +108,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         self,
         inp: SendMessageInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -116,7 +116,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
     ) -> str:
         del exec_id, progress_callback, path
         if ctx is None:
-            raise ValueError("SendMessage requires a RunContext.")
+            raise ValueError("SendMessage requires a SessionContext.")
         sender = agent_ctx.agent_name if agent_ctx is not None else USER_SENDER
         if inp.to == "*":
             recipients = sorted(self._recipients - {sender})
@@ -212,7 +212,7 @@ class ScheduleWakeupTool(BaseTool[ScheduleWakeupInput, str, Any]):
         self,
         inp: ScheduleWakeupInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,

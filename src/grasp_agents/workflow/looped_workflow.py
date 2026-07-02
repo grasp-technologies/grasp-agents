@@ -5,7 +5,7 @@ from typing import Any, cast, final
 
 from grasp_agents.hooks import WorkflowLoopTerminator
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import WorkflowConstructionError
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutEvent
 from grasp_agents.types.io import ProcName
@@ -24,7 +24,7 @@ class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         subprocs: Sequence[Processor[Any, Any, CtxT]],
         exit_proc: Processor[Any, OutT, CtxT],
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
         max_iterations: int = 10,
         path: list[str] | None = None,

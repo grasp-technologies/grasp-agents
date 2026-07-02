@@ -18,7 +18,7 @@ each :class:`AgentLoop` carries its own :class:`FileEditSessionState`
 and tools consult the active state via :mod:`.agent_state` before
 deciding whether a write is allowed.
 
-Hosts wire one backend instance onto :attr:`RunContext.file_backend`
+Hosts wire one backend instance onto :attr:`SessionContext.file_backend`
 and the tools route every call through it. There is no static
 ``allowed_roots`` plumbing on the tools or toolkits.
 
@@ -115,7 +115,7 @@ class FileBackend(ABC):
         Widen the backend's address space to include ``root``.
 
         Idempotent — a no-op when ``root`` is already an allowed root or
-        nested under one. Called by the :class:`RunContext` validator to
+        nested under one. Called by the :class:`SessionContext` validator to
         admit a configured memory directory automatically, so memory
         authoring through the file tools works without the host repeating
         the memdir in ``allowed_roots``.

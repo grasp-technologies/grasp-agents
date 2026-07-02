@@ -14,7 +14,7 @@ import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import (
     DeleteInput,
     DeleteResult,
@@ -42,9 +42,9 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
+    return SessionContext[Any](file_backend=backend, session_key=TEST_KEY)
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def delete_tool() -> DeleteTool:
 
 
 async def test_delete_succeeds_after_read(
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     delete_tool: DeleteTool,
@@ -78,7 +78,7 @@ async def test_delete_succeeds_after_read(
 
 
 async def test_delete_refuses_without_prior_read(
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     delete_tool: DeleteTool,
     tmp_path: Path,
@@ -95,7 +95,7 @@ async def test_delete_refuses_without_prior_read(
 
 
 async def test_delete_refuses_on_mtime_drift(
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     delete_tool: DeleteTool,
@@ -118,7 +118,7 @@ async def test_delete_refuses_on_mtime_drift(
 
 
 async def test_delete_refuses_directory(
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     delete_tool: DeleteTool,
     tmp_path: Path,
@@ -138,7 +138,7 @@ async def test_delete_refuses_directory(
 
 
 async def test_delete_clears_read_state(
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     delete_tool: DeleteTool,
@@ -157,7 +157,7 @@ async def test_delete_clears_read_state(
 
 
 async def test_delete_outside_root_refused(
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     delete_tool: DeleteTool,
     tmp_path: Path,

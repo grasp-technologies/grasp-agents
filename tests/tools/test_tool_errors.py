@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.types.events import ToolErrorEvent, ToolErrorInfo
 
@@ -26,7 +26,7 @@ class SucceedingTool(BaseTool[AddInput, int, Any]):
         self,
         inp: AddInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -43,7 +43,7 @@ class FailingTool(BaseTool[AddInput, int, Any]):
         self,
         inp: AddInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -61,7 +61,7 @@ class SlowTool(BaseTool[AddInput, int, Any]):
         self,
         inp: AddInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -81,7 +81,7 @@ class CustomErrorTool(BaseTool[AddInput, str, Any]):
         self,
         inp: AddInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -105,7 +105,7 @@ class ReraisingTool(BaseTool[AddInput, int, Any]):
         self,
         inp: AddInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,

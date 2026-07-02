@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     )
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.bash_common import ShellState
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
@@ -189,7 +189,7 @@ class AgentLoop[CtxT]:
 
     _llm_output_schema: Any | None
     _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
-    _ctx: RunContext[CtxT]
+    _ctx: SessionContext[CtxT]
 
     # Context-window management — view derivation, token budget, and compaction —
     # delegated to a dedicated manager so the loop stays focused on the cycle.
@@ -203,7 +203,7 @@ class AgentLoop[CtxT]:
         transcript: LLMAgentTranscript,
         context_window: ContextWindowManager | None = None,
         tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         llm_output_schema: Any | None = None,
         max_turns: int,
         run_timeout: float | None = None,
@@ -222,7 +222,7 @@ class AgentLoop[CtxT]:
     ) -> None:
         super().__init__()
 
-        self._ctx: RunContext[CtxT] = ctx
+        self._ctx: SessionContext[CtxT] = ctx
 
         self.final_answer = None
         self.turn = 0
@@ -333,7 +333,7 @@ class AgentLoop[CtxT]:
         self._llm_output_schema = value
 
     @property
-    def ctx(self) -> RunContext[CtxT]:
+    def ctx(self) -> SessionContext[CtxT]:
         return self._ctx
 
     @property
@@ -1663,7 +1663,7 @@ class AgentLoop[CtxT]:
                 self,
                 inp: BaseModel,
                 *,
-                ctx: RunContext[Any] | None = None,
+                ctx: SessionContext[Any] | None = None,
                 exec_id: str | None = None,
                 progress_callback: Any = None,
                 path: Sequence[str] | None = None,

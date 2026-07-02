@@ -22,8 +22,8 @@ from grasp_agents.durability.checkpoints import (
 )
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.items import FunctionToolCallItem, FunctionToolOutputItem
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
@@ -134,9 +134,7 @@ def _make_llm(
     )
 
 
-async def _committed_messages(
-    store: InMemoryCheckpointStore, key: str
-) -> list[Any]:
+async def _committed_messages(store: InMemoryCheckpointStore, key: str) -> list[Any]:
     """
     Load an agent's committed transcript the way resume does.
 
@@ -185,7 +183,7 @@ class TestRunnerWithAgents:
             recipients=[END_PROC_NAME],
         )
 
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](
             ctx=ctx, entry_proc=agent_a, procs=[agent_a, agent_b], name="r"
         )
@@ -216,7 +214,7 @@ class TestParallelProcessorWithAgents:
             ),
         )
         par = ParallelProcessor[str, str, None](subproc=writer)
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         par.on_adopted(ctx=ctx)
 
         result = await par.run(in_args=["black holes", "photosynthesis", "jazz music"])
@@ -267,7 +265,7 @@ class TestRunnerParallelFanout:
         splitter.recipients = [par.name]
         par.recipients = ["collector"]
 
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](
             ctx=ctx,
             entry_proc=splitter,
@@ -309,7 +307,7 @@ class TestRunnerDurability:
             recipients=[END_PROC_NAME],
         )
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="int-1"
         )
         runner = Runner[str, None](
@@ -361,7 +359,7 @@ class TestSequentialWorkflowInRunner:
 
         entry = Passthrough(name="entry", recipients=["draft_refine"])
 
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         runner = Runner[str, None](
             ctx=ctx, entry_proc=entry, procs=[entry, wf], name="wf_runner"
         )
@@ -458,7 +456,7 @@ class TestAgentCrashResume:
         crasher1 = _FailingProcessor("crasher", recipients=[END_PROC_NAME])
 
         entry1 = Passthrough(name="entry", recipients=["calculator"])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="agent-crash-1"
         )
         runner1 = Runner[str, None](
@@ -472,9 +470,7 @@ class TestAgentCrashResume:
         agent_key = "agent-crash-1/agent/calculator"
         messages = await _committed_messages(store, agent_key)
         has_tool_call = any(isinstance(m, FunctionToolCallItem) for m in messages)
-        has_tool_result = any(
-            isinstance(m, FunctionToolOutputItem) for m in messages
-        )
+        has_tool_result = any(isinstance(m, FunctionToolOutputItem) for m in messages)
         assert has_tool_call, "Checkpoint should contain a tool call"
         assert has_tool_result, "Checkpoint should contain a tool result"
 
@@ -498,7 +494,7 @@ class TestAgentCrashResume:
         crasher2.call_count = 1  # skip the failure
 
         entry2 = Passthrough(name="entry", recipients=["calculator"])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="agent-crash-1"
         )
         runner2 = Runner[str, None](
@@ -556,7 +552,7 @@ class TestAgentCrashResume:
                 raise RuntimeError("Deliberate crash on turn 2")
 
         entry1 = Passthrough(name="entry", recipients=["calculator"])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="mid-agent-1"
         )
         runner1 = Runner[str, None](
@@ -600,7 +596,7 @@ class TestAgentCrashResume:
         # No crash hook on agent2
 
         entry2 = Passthrough(name="entry", recipients=["calculator"])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="mid-agent-1"
         )
         runner2 = Runner[str, None](
@@ -662,7 +658,7 @@ class TestWorkflowCrashResume:
         )
 
         entry1 = Passthrough(name="entry", recipients=["draft_refine"])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="wf-crash-1"
         )
         runner1 = Runner[str, None](
@@ -700,7 +696,7 @@ class TestWorkflowCrashResume:
         )
 
         entry2 = Passthrough(name="entry", recipients=["draft_refine"])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="wf-crash-1"
         )
         runner2 = Runner[str, None](

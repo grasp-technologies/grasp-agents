@@ -31,8 +31,8 @@ from grasp_agents.durability.store_keys import (
     task_prefix,
 )
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import ProcRunError, RunnerError
 from grasp_agents.types.events import (
     ProcPayloadOutEvent,
@@ -121,7 +121,7 @@ class TestFailingStoreCoverage:
             llm=MockLLM(responses_queue=[_text_response("ok")]),
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="agent-fail"
         )
         agent.on_adopted(ctx=ctx)
@@ -134,7 +134,7 @@ class TestFailingStoreCoverage:
         """A Runner whose checkpoint save fails must propagate the error."""
         store = _FailingStore(fail_after=0)
         a = _AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="run-fail", state=None
         )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
@@ -160,7 +160,7 @@ class TestFailingStoreCoverage:
             tools=[SlowTool(delay=0.01)],
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="task-fail"
         )
         agent.on_adopted(ctx=ctx)
@@ -190,7 +190,7 @@ class TestCorruptCheckpointTolerance:
             llm=MockLLM(responses_queue=[_text_response("fresh")]),
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="corrupt-a"
         )
         agent.on_adopted(ctx=ctx)
@@ -210,7 +210,7 @@ class TestCorruptCheckpointTolerance:
         await store.save("corrupt-r/runner", b"garbage")
 
         a = _AppendProcessor("A", recipients=[END_PROC_NAME])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="corrupt-r", state=None
         )
         runner = Runner[str, None](entry_proc=a, procs=[a], ctx=ctx, name="r")
@@ -267,7 +267,7 @@ class TestPruneDelivered:
         await store.save(old_key, old.model_dump_json().encode())
         await store.save(fresh_key, fresh.model_dump_json().encode())
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="s", state=None
         )
         pruned = await BackgroundTaskManager.prune_delivered(
@@ -296,7 +296,7 @@ class TestPruneDelivered:
         await store.save(pending_key, pending.model_dump_json().encode())
         await store.save(failed_key, failed.model_dump_json().encode())
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="s", state=None
         )
         pruned = await BackgroundTaskManager.prune_delivered(
@@ -307,7 +307,7 @@ class TestPruneDelivered:
         assert await store.load(failed_key) is not None
 
     async def test_returns_zero_without_store(self) -> None:
-        ctx: RunContext[None] = RunContext(session_key="s", state=None)
+        ctx: SessionContext[None] = SessionContext(session_key="s", state=None)
         assert (
             await BackgroundTaskManager.prune_delivered(
                 ctx, older_than=timedelta(seconds=1)
@@ -334,7 +334,7 @@ class TestPruneDelivered:
         await store.save(ours_key, ours.model_dump_json().encode())
         await store.save(theirs_key, theirs.model_dump_json().encode())
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="sA", state=None
         )
         pruned = await BackgroundTaskManager.prune_delivered(
@@ -350,7 +350,7 @@ class TestPruneDelivered:
         corrupt_key = _agent_task_key("s", "agent", "corrupt")
         await store.save(corrupt_key, b"not-json")
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store, session_key="s", state=None
         )
         pruned = await BackgroundTaskManager.prune_delivered(
@@ -385,7 +385,9 @@ class TestEndToEndGC:
             tools=[SlowTool(delay=0.01, resumable=True)],
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="e2e")
+        ctx: SessionContext[None] = SessionContext(
+            checkpoint_store=store, session_key="e2e"
+        )
         agent.on_adopted(ctx=ctx)
         await agent.run("go")
 

@@ -16,8 +16,8 @@ from grasp_agents.mailbox import (
     CheckpointMailboxTransport,
     InMemoryMailboxTransport,
 )
-from grasp_agents.run_context import RunContext
 from grasp_agents.runtime import CLOSED, Transport
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import InputText
 from grasp_agents.types.message import TeamMessage
 
@@ -187,19 +187,27 @@ async def test_prune_processed_reaps_stale_corrupt() -> None:
     await transport.post(msg)
     inbox = await store.list_keys("s/mailbox/bob/inbox/")
     await store.save(inbox[0], b"{ not json")
-    assert await transport._fetch_next("bob") is None  # dead-letters the bad record  # pyright: ignore[reportPrivateUsage]
-    assert any(k.endswith("0000-bad") for k in await store.list_keys(
-        "s/mailbox/bob/corrupt/"
-    ))
+    assert (
+        await transport._fetch_next("bob") is None
+    )  # dead-letters the bad record  # pyright: ignore[reportPrivateUsage]
+    assert any(
+        k.endswith("0000-bad") for k in await store.list_keys("s/mailbox/bob/corrupt/")
+    )
 
     # Within the corrupt window: kept.
-    assert await transport.prune_processed(
-        older_than=timedelta(hours=1), corrupt_older_than=timedelta(hours=1)
-    ) == 0
+    assert (
+        await transport.prune_processed(
+            older_than=timedelta(hours=1), corrupt_older_than=timedelta(hours=1)
+        )
+        == 0
+    )
     # Past it: reaped.
-    assert await transport.prune_processed(
-        older_than=timedelta(hours=1), corrupt_older_than=timedelta(seconds=-1)
-    ) == 1
+    assert (
+        await transport.prune_processed(
+            older_than=timedelta(hours=1), corrupt_older_than=timedelta(seconds=-1)
+        )
+        == 1
+    )
     assert not await store.list_keys("s/mailbox/bob/corrupt/")
 
 
@@ -225,9 +233,10 @@ async def test_corrupt_inbox_record_is_dead_lettered_not_wedged() -> None:
     assert msg.message_id == good.message_id
 
     # The corrupt record is gone from inbox/ (unwedged) and preserved under corrupt/.
-    assert all(not k.endswith(bad.message_id) for k in await store.list_keys(
-        "s/mailbox/bob/inbox/"
-    ))
+    assert all(
+        not k.endswith(bad.message_id)
+        for k in await store.list_keys("s/mailbox/bob/inbox/")
+    )
     corrupt = await store.list_keys("s/mailbox/bob/corrupt/")
     assert any(k.endswith(bad.message_id) for k in corrupt)
 
@@ -265,9 +274,9 @@ async def test_shutdown_unblocks_consume(transport: Transport[TeamMessage]) -> N
 
 def test_default_transport_requires_checkpoint_store() -> None:
     with pytest.raises(ValueError, match="checkpoint_store"):
-        default_transport(RunContext[None](state=None))
+        default_transport(SessionContext[None](state=None))
 
 
 def test_default_transport_uses_checkpoint_store() -> None:
-    ctx = RunContext[None](state=None, checkpoint_store=InMemoryCheckpointStore())
+    ctx = SessionContext[None](state=None, checkpoint_store=InMemoryCheckpointStore())
     assert isinstance(default_transport(ctx), CheckpointMailboxTransport)

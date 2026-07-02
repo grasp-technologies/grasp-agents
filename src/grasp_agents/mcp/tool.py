@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import ToolOutputPart
@@ -83,7 +83,7 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
         self,
         inp: BaseModel,
         *,
-        ctx: RunContext[None] | None = None,
+        ctx: SessionContext[None] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         meta: dict[str, Any] | None = None,

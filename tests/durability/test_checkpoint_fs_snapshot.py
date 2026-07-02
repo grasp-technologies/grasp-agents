@@ -4,7 +4,7 @@ Tests for the filesystem half of agent checkpoints:
 - the read-before-write ledger (``read_file_state`` + ``dotfile_overrides``)
   round-trips through ``AgentCheckpoint`` so a resumed agent keeps its
   staleness guard instead of refusing every edit until a re-``Read``;
-- ``RunContext.fs_snapshot_policy``: a ``SnapshotCapable``
+- ``SessionContext.fs_snapshot_policy``: a ``SnapshotCapable``
   environment is snapshotted at the configured checkpoint boundaries, only
   the opaque ref is persisted — into the per-session record (current state)
   and the agent's step watermarks (rollback) — and ``ctx.load_checkpoint()``
@@ -32,9 +32,9 @@ from grasp_agents.durability import (
 )
 from grasp_agents.durability.checkpoints import CheckpointSchemaError
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from grasp_agents.sandbox.policy import SandboxPolicy
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.response import Response
 from tests._helpers import MockLLM, _text_response, _tool_call_response
@@ -135,8 +135,8 @@ def _make_agent(
     environment: ExecutionEnvironment | None = None,
     fs_snapshot_policy: Literal["off", "final", "turn"] = "off",
     tools: list[BaseTool[Any, Any, Any]] | None = None,
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
-    ctx: RunContext[None] = RunContext(
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
+    ctx: SessionContext[None] = SessionContext(
         checkpoint_store=store,
         session_key="s1",
         environment=environment,

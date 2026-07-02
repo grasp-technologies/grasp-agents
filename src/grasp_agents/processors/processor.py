@@ -20,10 +20,10 @@ from grasp_agents import grasp_logging
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.hooks import RecipientSelector
-from grasp_agents.run_context import (
+from grasp_agents.session_context import (
     DEFAULT_SESSION_KEY,
-    RunContext,
-    current_run_context,
+    SessionContext,
+    current_session_context,
 )
 from grasp_agents.telemetry import traced
 from grasp_agents.types.errors import (
@@ -121,7 +121,7 @@ class Processor[InT, OutT, CtxT](
         self,
         name: ProcName,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         max_retries: int = 0,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
@@ -147,8 +147,8 @@ class Processor[InT, OutT, CtxT](
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
         self._checkpoint_number: int = 0
-        self._ctx: RunContext[CtxT] = (
-            ctx if ctx is not None else current_run_context()  # type: ignore
+        self._ctx: SessionContext[CtxT] = (
+            ctx if ctx is not None else current_session_context()  # type: ignore
         )
         self._path: list[str] = [self.name] if path is None else list(path)
         self._propagate_to_children()
@@ -195,7 +195,7 @@ class Processor[InT, OutT, CtxT](
         return self._checkpoint_kind
 
     @property
-    def ctx(self) -> RunContext[CtxT]:
+    def ctx(self) -> SessionContext[CtxT]:
         """Session bound at construction. Immutable after init."""
         return self._ctx
 
@@ -225,7 +225,7 @@ class Processor[InT, OutT, CtxT](
         self,
         parent: Any = None,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         path: Sequence[str] | None = None,
     ) -> None:
         """

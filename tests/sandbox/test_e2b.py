@@ -33,7 +33,6 @@ from e2b import AsyncSandbox, CommandExitException, TimeoutException
 
 from grasp_agents.file_backend.base import FileBackend
 from grasp_agents.file_backend.paths import PathAccessError
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     E2BEnvironment,
     ExecBackend,
@@ -47,6 +46,7 @@ from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
+from grasp_agents.session_context import SessionContext
 
 from ._bg_harness import (
     background,
@@ -1068,7 +1068,7 @@ async def test_e2b_live_persistent_session() -> None:
 @_live
 async def test_e2b_live_background_poll_and_complete() -> None:
     async with e2b_environment(allowed_roots=[_WS]) as env:
-        ctx: RunContext[None] = RunContext(environment=env)
+        ctx: SessionContext[None] = SessionContext(environment=env)
         agent_ctx, mgr = make_stack()
 
         note, task_id = await background(
@@ -1100,7 +1100,7 @@ async def test_e2b_live_background_kill_terminates_remote_command() -> None:
     # KillTask cancels the manager task → the E2B backend kills the remote
     # command (handle.kill) → the marker file stops growing in the sandbox.
     async with e2b_environment(allowed_roots=[_WS]) as env:
-        ctx: RunContext[None] = RunContext(environment=env)
+        ctx: SessionContext[None] = SessionContext(environment=env)
         agent_ctx, mgr = make_stack()
 
         marker = f"{_WS}/ticks.txt"
@@ -1133,7 +1133,7 @@ async def test_e2b_live_background_small_result_inlined() -> None:
     # A finished background command's output is delivered inline in its
     # completion note and the task is dropped.
     async with e2b_environment(allowed_roots=[_WS]) as env:
-        ctx: RunContext[None] = RunContext(environment=env)
+        ctx: SessionContext[None] = SessionContext(environment=env)
         agent_ctx, mgr = make_stack()
 
         _note, task_id = await background(
@@ -1157,7 +1157,7 @@ async def test_e2b_live_background_large_result_excerpted() -> None:
     # excerpted in the completion note, which points at the task's .grasp log
     # (in the remote FS) holding the full output.
     async with e2b_environment(allowed_roots=[_WS]) as env:
-        ctx: RunContext[None] = RunContext(environment=env)
+        ctx: SessionContext[None] = SessionContext(environment=env)
         agent_ctx, mgr = make_stack()
 
         _note, task_id = await background(
@@ -1198,7 +1198,7 @@ async def test_e2b_live_background_writes_greppable_log() -> None:
 
     async with e2b_environment(allowed_roots=[_WS]) as env:
         store = InMemoryCheckpointStore()
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             environment=env, checkpoint_store=store, session_key="s1"
         )
         agent_ctx, mgr = make_stack()

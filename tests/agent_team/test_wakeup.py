@@ -18,13 +18,13 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_team import AgentTeam
 from grasp_agents.agent_team.tools import ScheduleWakeupInput, ScheduleWakeupTool
 from grasp_agents.file_backend.local import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.response import Response
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 
-def _ctx(tmp_path: Path) -> RunContext[None]:
-    return RunContext[None](
+def _ctx(tmp_path: Path) -> SessionContext[None]:
+    return SessionContext[None](
         state=None, file_backend=LocalFileBackend(allowed_roots=[tmp_path])
     )
 

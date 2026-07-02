@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_search import GlobInput, GlobResult, GlobTool
 from grasp_agents.types.events import ToolErrorInfo
 
@@ -30,9 +30,9 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend)
+    return SessionContext[Any](file_backend=backend)
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def glob_tool() -> GlobTool:
 
 
 async def test_top_level_glob(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     (tmp_path / "a.py").write_text("")
     (tmp_path / "b.py").write_text("")
@@ -61,7 +61,7 @@ async def test_top_level_glob(
 
 
 async def test_recursive_glob(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     (tmp_path / "a.py").write_text("")
     sub = tmp_path / "sub" / "deeper"
@@ -75,7 +75,7 @@ async def test_recursive_glob(
 
 
 async def test_results_sorted_by_mtime_desc(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     older = tmp_path / "older.py"
     newer = tmp_path / "newer.py"
@@ -92,7 +92,7 @@ async def test_results_sorted_by_mtime_desc(
 
 
 async def test_skips_hidden_by_default(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     (tmp_path / "visible.py").write_text("")
     hidden_dir = tmp_path / ".hidden"
@@ -109,7 +109,7 @@ async def test_skips_hidden_by_default(
 
 
 async def test_include_hidden_traverses_dotdirs(
-    tmp_path: Path, ctx: RunContext[Any]
+    tmp_path: Path, ctx: SessionContext[Any]
 ) -> None:
     tool = GlobTool(include_hidden=True)
     (tmp_path / "visible.py").write_text("")
@@ -125,7 +125,7 @@ async def test_include_hidden_traverses_dotdirs(
 
 
 async def test_skips_cache_dirs(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     (tmp_path / "visible.py").write_text("")
     cache = tmp_path / "__pycache__"
@@ -138,7 +138,7 @@ async def test_skips_cache_dirs(
     assert names == ["visible.py"]
 
 
-async def test_truncation_flag(tmp_path: Path, ctx: RunContext[Any]) -> None:
+async def test_truncation_flag(tmp_path: Path, ctx: SessionContext[Any]) -> None:
     tool = GlobTool(head_limit=3)
     for i in range(10):
         (tmp_path / f"f{i}.py").write_text("")
@@ -149,16 +149,14 @@ async def test_truncation_flag(tmp_path: Path, ctx: RunContext[Any]) -> None:
 
 
 async def test_explicit_path_subdir(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     sub = tmp_path / "only-here"
     sub.mkdir()
     (tmp_path / "outside.py").write_text("")
     (sub / "inside.py").write_text("")
 
-    result = await glob_tool.run(
-        GlobInput(pattern="*.py", path=str(sub)), ctx=ctx
-    )
+    result = await glob_tool.run(GlobInput(pattern="*.py", path=str(sub)), ctx=ctx)
     assert isinstance(result, GlobResult)
     names = [Path(p).name for p in result.files]
     assert names == ["inside.py"]
@@ -170,7 +168,7 @@ async def test_explicit_path_subdir(
 
 
 async def test_path_outside_root_refused(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     outside = tmp_path.parent / "escape_glob_dir"
     outside.mkdir(exist_ok=True)
@@ -187,18 +185,16 @@ async def test_path_outside_root_refused(
 
 
 async def test_path_must_be_directory(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     f = tmp_path / "file.txt"
     f.write_text("")
-    result = await glob_tool.run(
-        GlobInput(pattern="*.py", path=str(f)), ctx=ctx
-    )
+    result = await glob_tool.run(GlobInput(pattern="*.py", path=str(f)), ctx=ctx)
     assert "must be a directory" in _error_message(result)
 
 
 async def test_nonexistent_path_refused(
-    tmp_path: Path, ctx: RunContext[Any], glob_tool: GlobTool
+    tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:
     result = await glob_tool.run(
         GlobInput(pattern="*.py", path=str(tmp_path / "nope")), ctx=ctx

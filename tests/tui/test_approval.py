@@ -29,7 +29,7 @@ from grasp_agents.agent.approval_store import (
     ApprovalScope,
     PendingApproval,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import Event, OutputMessageItemEvent
 from grasp_agents.types.items import OutputMessageItem
@@ -82,7 +82,7 @@ def _make_app(
     persist_path: Path | None = None,
 ) -> GraspAgentsApp:
     store = TuiApprovalStore(persist_path=persist_path)
-    ctx = RunContext(state=None, approval_store=store, session_key=_SESSION)
+    ctx = SessionContext(state=None, approval_store=store, session_key=_SESSION)
     return GraspAgentsApp(
         on_submit=_gating_agent(store, sink, calls=calls), main_agent="ops", ctx=ctx
     )
@@ -177,7 +177,7 @@ async def test_no_consumer_without_tui_store() -> None:
     app = GraspAgentsApp(
         on_submit=_gating_agent(TuiApprovalStore(), [], calls=0),
         main_agent="ops",
-        ctx=RunContext(state=None),
+        ctx=SessionContext(state=None),
     )
     async with app.run_test() as pilot:
         await pilot.pause()

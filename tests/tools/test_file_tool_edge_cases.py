@@ -15,7 +15,7 @@ import pytest
 from nbformat import v4
 
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import _keys_overlap, batch_has_concurrency_conflict
 from grasp_agents.tools.bash import Bash
 from grasp_agents.tools.bash_session import BashSession
@@ -49,18 +49,14 @@ class TestCrlfPreserved:
     def test_multiline_old_string_with_lf(self) -> None:
         content = "a\r\nb\r\nc\r\n"
         # The model types LF in old_string; line-trimmed strategy matches.
-        new_content, count, _, error = fuzzy_find_and_replace(
-            content, "a\nb", "x\ny"
-        )
+        new_content, count, _, error = fuzzy_find_and_replace(content, "a\nb", "x\ny")
         assert error is None
         assert count == 1
         assert new_content == "x\r\ny\r\nc\r\n"
 
     def test_lf_file_untouched(self) -> None:
         content = "one\ntwo\nthree\n"
-        new_content, _, _, error = fuzzy_find_and_replace(
-            content, "two", "2a\n2b"
-        )
+        new_content, _, _, error = fuzzy_find_and_replace(content, "two", "2a\n2b")
         assert error is None
         assert new_content == "one\n2a\n2b\nthree\n"
 
@@ -107,7 +103,7 @@ class TestNotebookReadRedaction:
         nb_path = tmp_path / "x.ipynb"
         nb_path.write_text(nbformat.writes(nb))
 
-        ctx: RunContext[Any] = RunContext(
+        ctx: SessionContext[Any] = SessionContext(
             file_backend=LocalFileBackend(allowed_roots=[tmp_path])
         )
         result = await NotebookReadTool()._run(

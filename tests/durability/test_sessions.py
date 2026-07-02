@@ -49,7 +49,7 @@ def _agent_task_key(session_key: str, parent_name: str, call_id: str) -> str:
 
 
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.errors import ProcRunError
@@ -103,11 +103,11 @@ def _make_agent(
     store: InMemoryCheckpointStore | None = None,
     reset_transcript_on_run: bool = False,
     sys_prompt: str | None = None,
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
     if session_key is not None:
         ctx_kwargs["session_key"] = session_key
-    ctx: RunContext[None] = RunContext(**ctx_kwargs)
+    ctx: SessionContext[None] = SessionContext(**ctx_kwargs)
     llm = MockLLM(responses_queue=responses)
     agent = LLMAgent[str, str, None](
         name="test_agent",
@@ -492,7 +492,7 @@ class TestAgentSessionPersistence:
             llm=MockLLM(responses_queue=[_text_response("ok")]),
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store,
             session_key="s1",
             session_metadata={"pathway_id": "pw_123"},
@@ -870,7 +870,9 @@ class TestResumeIntegration:
             subprocs=[a1, agent1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
+        ctx1: SessionContext[None] = SessionContext(
+            checkpoint_store=store, session_key="wf1"
+        )
         wf1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
@@ -898,7 +900,9 @@ class TestResumeIntegration:
             name="wf",
             subprocs=[a2, agent2],
         )
-        ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf1")
+        ctx2: SessionContext[None] = SessionContext(
+            checkpoint_store=store, session_key="wf1"
+        )
         wf2.on_adopted(ctx=ctx2)
 
         async for _ in wf2.run_stream(exec_id="e2", step=0):
@@ -937,7 +941,9 @@ class TestResumeIntegration:
             subprocs=[agent1, b1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
+        ctx1: SessionContext[None] = SessionContext(
+            checkpoint_store=store, session_key="wf2"
+        )
         wf1.on_adopted(ctx=ctx1)
 
         with pytest.raises(ProcRunError):
@@ -961,7 +967,9 @@ class TestResumeIntegration:
             name="wf",
             subprocs=[agent2, b2],
         )
-        ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="wf2")
+        ctx2: SessionContext[None] = SessionContext(
+            checkpoint_store=store, session_key="wf2"
+        )
         wf2.on_adopted(ctx=ctx2)
 
         payloads: list[str] = []
@@ -1035,7 +1043,7 @@ class TestResumeIntegration:
             stream_llm=True,
             recipients=[END_PROC_NAME],
         )
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="rs2"
         )
         runner2 = Runner[str, None](
@@ -1234,7 +1242,9 @@ class TestTaskRecordPersistence:
             max_turns=1,
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
+        ctx: SessionContext[None] = SessionContext(
+            checkpoint_store=store, session_key="s1"
+        )
         agent.on_adopted(ctx=ctx)
 
         await agent.run("go")

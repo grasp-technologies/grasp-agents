@@ -47,7 +47,7 @@ class TuiApprovalStore(LocalApprovalStore):
 
         store = TuiApprovalStore()
         agent.add_before_tool_hook(build_store_approval(tool_names={"delete"}))
-        ctx = RunContext(approval_store=store, session_key="user-1")
+        ctx = SessionContext(approval_store=store, session_key="user-1")
         run_tui_interactive(on_submit=agent.run_stream, ctx=ctx)
     """
 

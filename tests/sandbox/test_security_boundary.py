@@ -29,9 +29,7 @@ from grasp_agents.sandbox.policy import DEFAULT_ENV_SCRUB, SandboxPolicy
 
 class TestEnvScrubConfigDefault:
     def test_omitted_env_scrub_keeps_denylist(self) -> None:
-        config = EnvironmentConfig.model_validate(
-            {"exec": {"inherit_host_env": True}}
-        )
+        config = EnvironmentConfig.model_validate({"exec": {"inherit_host_env": True}})
         env = config.build()
         backend = env.exec_backend
         assert backend is not None
@@ -45,9 +43,7 @@ class TestEnvScrubConfigDefault:
         assert backend.policy.env_scrub == ()
 
     def test_explicit_list_overrides(self) -> None:
-        config = EnvironmentConfig.model_validate(
-            {"exec": {"env_scrub": ["MY_*"]}}
-        )
+        config = EnvironmentConfig.model_validate({"exec": {"env_scrub": ["MY_*"]}})
         env = config.build()
         backend = env.exec_backend
         assert backend is not None
@@ -81,9 +77,7 @@ class TestE2BPathNormalization:
         assert normalize_posix("/workspace/../etc/passwd") == PurePosixPath(
             "/etc/passwd"
         )
-        assert normalize_posix("/workspace/./a/../b") == PurePosixPath(
-            "/workspace/b"
-        )
+        assert normalize_posix("/workspace/./a/../b") == PurePosixPath("/workspace/b")
 
     @pytest.mark.asyncio
     async def test_dotdot_escape_rejected(self) -> None:
@@ -111,7 +105,7 @@ class TestGrepRedaction:
     @pytest.mark.asyncio
     async def test_content_mode_redacts_secrets(self, tmp_path: Path) -> None:
         from grasp_agents.file_backend.local import LocalFileBackend
-        from grasp_agents.run_context import RunContext
+        from grasp_agents.session_context import SessionContext
         from grasp_agents.tools.file_search.grep import GrepTool, rg_available
 
         if not rg_available():
@@ -120,7 +114,7 @@ class TestGrepRedaction:
         secret = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
         (tmp_path / "config.py").write_text(f'OPENAI_KEY = "{secret}"\n')
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             file_backend=LocalFileBackend(allowed_roots=[tmp_path])
         )
         tool = GrepTool()

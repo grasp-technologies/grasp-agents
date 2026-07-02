@@ -27,8 +27,8 @@ from .llm import LLM, FallbackLLM, LLMSettings, RetryPolicy
 from .memory import MemoryEntry, MemoryProvider
 from .printer import Printer, print_events
 from .processors import ParallelProcessor, Processor
-from .run_context import RunContext
 from .runner import Runner
+from .session_context import RunContext, SessionContext
 from .skills import SkillRegistry
 
 # --- Tools ---
@@ -102,6 +102,7 @@ __all__ = [
     "RunPacketOutEvent",
     "Runner",
     "SequentialWorkflow",
+    "SessionContext",
     "SkillRegistry",
     "StopReason",
     "SystemMessage",

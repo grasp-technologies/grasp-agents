@@ -5,11 +5,11 @@ File-edit tool package: ``Read`` / ``Write`` / ``Edit`` / ``Delete`` +
 
 These operate over a :class:`~grasp_agents.file_backend.FileBackend`
 (the I/O substrate, now in the sibling :mod:`..file_backend` package) wired onto
-:attr:`RunContext.file_backend`. To bundle them with the search tools (``Glob``
+:attr:`SessionContext.file_backend`. To bundle them with the search tools (``Glob``
 / ``Grep``), use :class:`grasp_agents.tools.FileToolkit`.
 
 Imports are lazy (PEP 562) to avoid pulling :mod:`tools.base` into
-:class:`RunContext` construction.
+:class:`SessionContext` construction.
 """
 
 from __future__ import annotations

@@ -77,7 +77,7 @@ async def test_data_copilot_pipeline(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_runpython_displays_inline_image(tmp_path: Path) -> None:
     """Mechanism check (no LLM): plt.show() in the sandbox yields an InputImage."""
-    from grasp_agents import RunContext
+    from grasp_agents import SessionContext
     from grasp_agents.sandbox import local_environment
     from grasp_agents.tools.code_interpreter import (
         RunPython,
@@ -90,7 +90,7 @@ async def test_runpython_displays_inline_image(tmp_path: Path) -> None:
         confinement="srt",
         env={"MPLCONFIGDIR": str(tmp_path / ".mpl")},
     )
-    ctx = RunContext[None](state=None, environment=env)
+    ctx = SessionContext[None](state=None, environment=env)
     code = (
         "import matplotlib.pyplot as plt\n"
         "fig, ax = plt.subplots()\n"
@@ -109,7 +109,7 @@ async def test_runpython_inside_textual_event_loop(tmp_path: Path) -> None:
     from textual import work
     from textual.app import App
 
-    from grasp_agents import RunContext
+    from grasp_agents import SessionContext
     from grasp_agents.sandbox import local_environment
     from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput
 
@@ -118,7 +118,7 @@ async def test_runpython_inside_textual_event_loop(tmp_path: Path) -> None:
         confinement="srt",
         env={"MPLCONFIGDIR": str(tmp_path / ".mpl")},
     )
-    ctx = RunContext[None](state=None, environment=env)
+    ctx = SessionContext[None](state=None, environment=env)
     captured: dict[str, object] = {}
 
     class _Probe(App[None]):
@@ -163,9 +163,9 @@ async def test_interactive_data_copilot_end_to_end(tmp_path: Path) -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one("#prompt", PromptArea).text = (
-            "Generate 60 random sales values and plot a histogram."
-        )
+        app.query_one(
+            "#prompt", PromptArea
+        ).text = "Generate 60 random sales values and plot a histogram."
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()

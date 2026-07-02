@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.skills import (
     Skill,
     SkillFilter,
@@ -78,7 +78,7 @@ def _make_agent(
 
 
 async def _prompt(
-    agent: LLMAgent[str, str, _State], ctx: RunContext[_State]
+    agent: LLMAgent[str, str, _State], ctx: SessionContext[_State]
 ) -> str | None:
     agent.on_adopted(ctx=ctx)
     return await agent.build_system_prompt(exec_id="e1")
@@ -148,7 +148,7 @@ class TestFunctionToolAgentCtx:
 class TestSectionRespectsFilter:
     @pytest.mark.asyncio
     async def test_no_filter_sees_all(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         prompt = await _prompt(_make_agent(), ctx)
         assert prompt is not None
         assert "<name>alpha</name>" in prompt
@@ -156,7 +156,7 @@ class TestSectionRespectsFilter:
 
     @pytest.mark.asyncio
     async def test_include_scopes_catalog(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         prompt = await _prompt(_make_agent(skill_include=["alpha"]), ctx)
         assert prompt is not None
         assert "<name>alpha</name>" in prompt
@@ -164,7 +164,7 @@ class TestSectionRespectsFilter:
 
     @pytest.mark.asyncio
     async def test_exclude_scopes_catalog(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         prompt = await _prompt(_make_agent(skill_exclude=["alpha"]), ctx)
         assert prompt is not None
         assert "<name>alpha</name>" not in prompt
@@ -173,7 +173,7 @@ class TestSectionRespectsFilter:
     @pytest.mark.asyncio
     async def test_two_agents_share_one_registry_with_different_views(self) -> None:
         # The headline case: one session-shared catalog, per-agent views.
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         a = _make_agent(name="agent_a", skill_include=["alpha"])
         b = _make_agent(name="agent_b", skill_include=["beta"])
         pa = await _prompt(a, ctx)
@@ -192,7 +192,7 @@ class TestSectionRespectsFilter:
 class TestToolsRespectFilter:
     @pytest.mark.asyncio
     async def test_load_skill_rejects_out_of_filter(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         actx = _agent_ctx(SkillFilter.build(include=["alpha"]))
         result = await load_skill.run(
             load_skill.in_type(name="beta"), ctx=ctx, agent_ctx=actx
@@ -204,7 +204,7 @@ class TestToolsRespectFilter:
     async def test_load_skill_allows_in_filter(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha desc", body="ALPHA BODY")
         _write_skill(tmp_path, "beta", "Beta desc", body="BETA BODY")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         actx = _agent_ctx(SkillFilter.build(include=["alpha"]))
@@ -220,7 +220,7 @@ class TestToolsRespectFilter:
 
     @pytest.mark.asyncio
     async def test_list_skills_applies_filter(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         actx = _agent_ctx(SkillFilter.build(include=["alpha"]))
         result = await list_skills.run(list_skills.in_type(), ctx=ctx, agent_ctx=actx)
         assert isinstance(result, str)
@@ -229,7 +229,7 @@ class TestToolsRespectFilter:
 
     @pytest.mark.asyncio
     async def test_list_skills_without_filter_shows_all(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=_registry())
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=_registry())
         actx = _agent_ctx(None)
         result = await list_skills.run(list_skills.in_type(), ctx=ctx, agent_ctx=actx)
         assert isinstance(result, str)
