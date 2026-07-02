@@ -195,6 +195,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             resident.tools[SEND_MESSAGE_TOOL_NAME] = send_tool
             resident.tools[SCHEDULE_WAKEUP_TOOL_NAME] = wakeup_tool
             resident.add_system_prompt_section(team_section)
+
         # A triggered member renders a peer hand-off through its own input pipeline,
         # which has no sender fence; give every LLM member the attribution attachment
         # so its turns name the teammate they came from (inert for a resident, which
@@ -211,17 +212,20 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._checkpoint_lock = asyncio.Lock()
 
         # Per-run state (reset in run_stream).
+
         self._driver: ActorDriver[TeamMessage] | None = None
+        self._resident_tasks: list[asyncio.Task[None]] = []
+
         self._activations = 0
         self._failed: list[str] = []
+
         self._hop_exhausted = False
         self._token_exhausted = False
-        # Session token count at run start; the per-run budget is the delta from it.
         self._tokens_at_start = 0
+
         self._stop_requested = False
         self._daemon = False
         self._poll_interval = 0.05
-        self._resident_tasks: list[asyncio.Task[None]] = []
 
     # -- properties read by Processor.on_adopted's duck-typing (mirror Runner) --
 
@@ -260,12 +264,19 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
     def _resolve_cards(self, cards: Sequence[MemberCard] | None) -> list[MemberCard]:
         if cards is None:
             return [MemberCard(name=n) for n in self._members_by_name]
+
         unknown = sorted({c.name for c in cards} - set(self._members_by_name))
         if unknown:
             raise ValueError(f"Cards reference non-members {unknown}.")
+
         provided = {c.name: c for c in cards}
-        # Fill any unspecified member with a name-only card so the roster is whole.
+
         return [provided.get(n, MemberCard(name=n)) for n in self._members_by_name]
+
+    async def _push(self, event: Event[Any]) -> None:
+        driver = self._driver
+        if driver is not None:
+            await driver.push_to_stream(event)
 
     # -- routing (the team is the MessageSink every send goes through) --
 
@@ -310,25 +321,23 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                     self._hop_exhausted = True
                     self._stop_requested = True
                     return
+
                 if not self._daemon and self._over_token_budget():
                     # Token ceiling reached: stop spawning new activations (those
                     # already in flight finish). A daemon opts out, like max_hops.
                     self._token_exhausted = True
                     self._stop_requested = True
                     return
+
                 self._activations += 1
                 await self._save_checkpoint()
+
             await self._push(
                 MessageDeliveredEvent(
                     source=single.sender, destination=recipient, data=single
                 )
             )
             await self._transport.post(single)
-
-    async def _push(self, event: Event[Any]) -> None:
-        driver = self._driver
-        if driver is not None:
-            await driver.push_to_stream(event)
 
     async def submit_message(self, to: str, text: str) -> None:
         """
@@ -371,6 +380,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         messages: list[TeamMessage] = []
         activations = 0
         stop_reason = TeamStopReason.QUIESCED
+
         async for event in self.run_stream(chat_inputs, to=to, **run_kwargs):
             if isinstance(event, MessageDeliveredEvent):
                 messages.append(event.data)
@@ -410,17 +420,25 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._poll_interval = poll_interval
         self._activations = 0
         self._failed = []
-        self._hop_exhausted = False
-        self._token_exhausted = False
+
         # Baseline the per-run token budget here; on resume this rebases (the budget
         # bounds this run's own spend, generous across restarts — like max_hops).
         self._tokens_at_start = self._ctx.usage_tracker.total_usage.total_tokens
+        self._token_exhausted = False
+        self._hop_exhausted = False
+
         self._stop_requested = False
-        self._resident_tasks = []
+
         # Cleared until the new driver is wired (a few lines down), so a source /
         # wakeup racing the run start is dropped by ``post`` rather than landing on a
         # stale driver from a prior run.
         self._driver = None
+
+        self._resident_tasks = []
+
+        # Session-scoped restore (ctx.state + shared filesystem) before any
+        # member runs; idempotent, so member runs below no-op on it.
+        await self._ctx.load_checkpoint()
 
         # Resume: restore the session-wide hop count from a prior checkpoint. The
         # entry is re-seeded idempotently in ``_drive`` (deterministic id +
@@ -434,31 +452,35 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         yield TeamStartedEvent(source=self._name, data=TeamRunInfo(team=self._name))
 
         stop_reason = TeamStopReason.QUIESCED
+
         # Daemon mode: the team owns quiescence + the hop budget, so the driver never
         # self-terminates — it just runs the triggered transforms and merges events.
         driver: ActorDriver[TeamMessage] = ActorDriver(
             self._transport, termination="daemon"
         )
         self._driver = driver
+
         try:
             async for event in self._drive(driver, entry, chat_inputs, run_kwargs):
                 yield event
+
         except asyncio.CancelledError:
             self._driver = None
             raise
+
         except Exception:
             logger.exception("AgentTeam %s failed", self._name)
             stop_reason = TeamStopReason.ERROR
+
         else:
             stop_reason = self._final_stop_reason()
+
         self._driver = None
 
         yield TeamEndedEvent(
             source=self._name,
             data=TeamRunInfo(
-                team=self._name,
-                activations=self._activations,
-                stop_reason=stop_reason,
+                team=self._name, activations=self._activations, stop_reason=stop_reason
             ),
         )
 
@@ -476,6 +498,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 driver.register_handler(
                     member.name, self._make_transform_handler(member, run_kwargs)
                 )
+
             for member_name, resident in self._residents.items():
                 resident.attach_inbox(self._transport)
                 self._resident_tasks.append(
@@ -484,9 +507,11 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                         name=f"resident:{member_name}",
                     )
                 )
+
             monitor = asyncio.create_task(
                 self._monitor(driver), name=f"{self._name}-monitor"
             )
+
             try:
                 # Seed the entry idempotently. Unlike a peer send (re-issued when
                 # its sender's turn re-runs on resume), the seed has no retry
@@ -504,8 +529,10 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                     )
                     if not await self._transport.was_processed(entry, seed.message_id):
                         await self.post(seed)
+
                 async for event in driver.stream_events():
                     yield event
+
             finally:
                 monitor.cancel()
                 for task in self._resident_tasks:
@@ -513,9 +540,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 await asyncio.gather(
                     monitor, *self._resident_tasks, return_exceptions=True
                 )
-                # Pending self-wakeups are now background tasks owned by each
-                # resident's task manager, torn down with the member — no team-level
-                # timer to cancel here.
+
                 for resident in self._residents.values():
                     resident.detach_inbox()
 
@@ -531,8 +556,10 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         try:
             async for event in resident.run_stream(**run_kwargs):
                 await self._push(event)
+
         except asyncio.CancelledError:
             raise
+
         except Exception:
             logger.warning("Resident member %r failed", resident.name, exc_info=True)
             self._failed.append(resident.name)
@@ -557,8 +584,10 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                     push=self._push,
                     post=self.post,
                 )
+
             except asyncio.CancelledError:
                 raise
+
             except Exception:
                 # Dead-letter a member failure rather than tearing down the team;
                 # a non-daemon run stops once this activation unwinds.
@@ -584,25 +613,32 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         """
         last_idle_activations: int | None = None
         last_gc = time.monotonic()
+
         while True:
             await asyncio.sleep(self._poll_interval)
             now = time.monotonic()
             if now - last_gc >= _MAILBOX_GC_INTERVAL_S:
                 last_gc = now
                 await self._gc_mailbox()
+
             if self._stop_requested:
                 break
+
             if self._daemon:
                 continue
+
             if not await self._is_quiescent(driver):
                 last_idle_activations = None
                 continue
+
             if last_idle_activations == self._activations:
                 break
+
             last_idle_activations = self._activations
 
         for task in self._resident_tasks:
             task.cancel()
+
         await driver.shutdown()
 
     async def _gc_mailbox(self) -> None:
@@ -648,6 +684,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 ", ".join(self._failed),
             )
             return TeamStopReason.MEMBER_ERROR
+
         if self._hop_exhausted:
             logger.warning(
                 "AgentTeam %s reached max_hops=%d with mail still pending",
@@ -655,6 +692,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 self._max_hops,
             )
             return TeamStopReason.HOP_BUDGET_EXHAUSTED
+
         if self._token_exhausted:
             logger.warning(
                 "AgentTeam %s reached max_tokens=%s with mail still pending",
@@ -662,4 +700,5 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 self._max_tokens,
             )
             return TeamStopReason.TOKEN_BUDGET_EXHAUSTED
+
         return TeamStopReason.QUIESCED

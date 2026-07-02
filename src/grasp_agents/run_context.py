@@ -1,21 +1,32 @@
+import asyncio
 import contextvars
+import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from .agent.approval_store import ApprovalStore
 from .durability.checkpoint_store import CheckpointStore
+from .durability.checkpoints import CheckpointKind, SessionCheckpoint
+from .durability.context_serialization import (
+    ContextKind,
+    rehydrate_context,
+    serialize_context,
+)
+from .durability.store_keys import make_store_key
 from .file_backend.base import FileBackend
 from .memory.provider import MemoryProvider
 from .printer import Printer
-from .sandbox.environment import ExecutionEnvironment
+from .sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from .sandbox.exec_backend import ExecBackend
 from .skills.registry import SkillRegistry
 from .types.io import ProcName
 from .types.response import Response
 from .usage_tracker import UsageTracker
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SESSION_KEY = "default"
 """Sentinel ``session_key`` for an unnamed session.
@@ -29,11 +40,26 @@ this value as "no session" (each run is its own trace root). Set a real
 class RunContext[CtxT](BaseModel):
     state: CtxT = None  # type: ignore
 
-    # When True, the agent persists ``state`` into its checkpoints (via
-    # ``serialize_context``) and restores it on resume.
-    # Opt in for tests / simple workloads where ``state``
-    # is a plain serializable container (pydantic / dataclass / mapping).
+    # When True, ``state`` is persisted into the per-session
+    # :class:`SessionCheckpoint` at every checkpoint boundary and restored
+    # by :meth:`load_checkpoint` on a cold start. Opt in for tests / simple
+    # workloads where ``state`` is a plain serializable container (pydantic /
+    # dataclass / mapping); otherwise rebuild state yourself (e.g. from your
+    # DB) and pass it at construction.
     serialize_state: bool = Field(default=False, exclude=True)
+
+    # Filesystem-snapshot policy for checkpoints — session-scoped, like the
+    # filesystem it snapshots. Requires :attr:`environment` to be
+    # ``SnapshotCapable`` (e.g. E2B). ``"off"`` (default): never snapshot.
+    # ``"final"``: snapshot at run-end boundaries (final answer / max turns /
+    # resident turn). ``"turn"``: snapshot at every checkpoint boundary,
+    # including after each tool batch — strongest rewind granularity, but
+    # each snapshot costs a provider round-trip. Only the opaque ref is
+    # stored (in the session checkpoint and per-step watermarks); the bytes
+    # live with the snapshot owner.
+    fs_snapshot_policy: Literal["off", "final", "turn"] = Field(
+        default="off", exclude=True
+    )
 
     responses: defaultdict[ProcName, list[Response]] = Field(
         default_factory=lambda: defaultdict(list)
@@ -48,6 +74,12 @@ class RunContext[CtxT](BaseModel):
     # below (``approval_store``, ``file_backend``, etc.) to route
     # lookups.
     session_key: str = Field(default=DEFAULT_SESSION_KEY, exclude=True)
+
+    # Operator-facing labels for this session (user / tenant / task ids,
+    # titles, …), persisted into the session checkpoint for external
+    # inspection. Write-only: never restored — the caller sets it fresh
+    # each construction, like ``state``.
+    session_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     # When True (default), every run sharing this ``session_key`` is parented
     # to a common session root derived from the key, so all runs of the session
@@ -94,6 +126,10 @@ class RunContext[CtxT](BaseModel):
     _ambient_tokens: list[contextvars.Token[Any]] = PrivateAttr(
         default_factory=list["contextvars.Token[Any]"]
     )
+
+    _session_restored: bool = PrivateAttr(default=False)
+    _session_fs_restored: bool = PrivateAttr(default=False)
+    _session_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 
     def __enter__(self) -> "RunContext[CtxT]":
         """
@@ -144,6 +180,118 @@ class RunContext[CtxT](BaseModel):
         checkpoints / usage tracking / file_backend bindings.
         """
         return self
+
+    # --- Session persistence (the session-scoped half of durability) ---
+    #
+    # Processor checkpoints persist each processor's own working state
+    # (transcripts, ledgers, watermarks). The state shared by every processor
+    # bound to this ctx — ``state`` and the environment filesystem — is
+    # persisted here instead, in one ``SessionCheckpoint`` per ``session_key``
+    # (:meth:`save_checkpoint` / :meth:`load_checkpoint`, the same pair every
+    # resumable processor exposes), so a multi-processor session restores it
+    # exactly once.
+
+    def _session_store_key(self) -> str | None:
+        if self.checkpoint_store is None:
+            return None
+        return make_store_key(self.session_key, CheckpointKind.SESSION)
+
+    @property
+    def session_fs_restored(self) -> bool:
+        """
+        Whether this process rewound the shared filesystem to a snapshot.
+
+        Set by :meth:`load_checkpoint`; kernel re-attach is only meaningful
+        inside a restored filesystem, so consumers gate on this.
+        """
+        return self._session_fs_restored
+
+    async def load_checkpoint(self) -> SessionCheckpoint | None:
+        """
+        Restore session-scoped state from the checkpoint store — once per ctx.
+
+        Idempotent: called at the start of every processor run, but only the
+        first call on this ctx does the work — containers, team members, and
+        sub-agents sharing the session no-op, so nothing an earlier participant
+        restored (or mutated live) is clobbered by a later one. Rehydrates
+        ``state`` when it was persisted (see ``serialize_state``) and rewinds
+        the shared environment filesystem to the last snapshotted checkpoint
+        boundary. A record carrying a snapshot ref without a
+        ``SnapshotCapable`` :attr:`environment` crashes rather than resuming
+        with divergent files.
+        """
+        async with self._session_lock:
+            if self._session_restored:
+                return None
+            key = self._session_store_key()
+            if self.checkpoint_store is None or key is None:
+                self._session_restored = True
+                return None
+            record = await self.checkpoint_store.load_json(
+                key, SessionCheckpoint, subject=f"session checkpoint at {key}"
+            )
+            if record is None:
+                self._session_restored = True
+                return None
+
+            if record.fs_snapshot_ref is not None:
+                if not isinstance(self.environment, SnapshotCapable):
+                    raise RuntimeError(
+                        "Session checkpoint carries fs_snapshot_ref="
+                        f"{record.fs_snapshot_ref!r} but ctx.environment "
+                        f"({type(self.environment).__name__}) is not "
+                        "SnapshotCapable; wire the same kind of environment "
+                        "the session was saved with."
+                    )
+                await self.environment.restore(record.fs_snapshot_ref)
+                self._session_fs_restored = True
+
+            self.state = rehydrate_context(
+                record.context_kind, record.context_data, self.state
+            )
+            self._session_restored = True
+            logger.info(
+                "Restored session %s (state=%s, fs_snapshot_ref=%s)",
+                key,
+                (record.context_kind or ContextKind.OMITTED).value,
+                record.fs_snapshot_ref or "none",
+            )
+            return record
+
+    async def save_checkpoint(self, *, fs_snapshot_ref: str | None = None) -> None:
+        """
+        Persist session-scoped state as of the current checkpoint boundary.
+
+        Called by agents alongside their own checkpoints; no-ops unless a
+        session-scoped feature is on (``serialize_state`` / ``fs_snapshot_policy``
+        / ``session_metadata``). ``fs_snapshot_ref`` is recorded exactly as
+        given: ``None`` means no snapshot describes the session as of this
+        boundary, so a cold resume keeps the live filesystem instead of
+        rewinding to a stale ref.
+        """
+        key = self._session_store_key()
+        if self.checkpoint_store is None or key is None:
+            return
+        if (
+            not self.serialize_state
+            and self.fs_snapshot_policy == "off"
+            and not self.session_metadata
+        ):
+            return
+        context_kind: ContextKind | None = None
+        context_data: Any | None = None
+        if self.serialize_state:
+            context_kind, context_data = serialize_context(self.state)
+        record = SessionCheckpoint(
+            session_key=self.session_key,
+            context_kind=context_kind,
+            context_data=context_data,
+            fs_snapshot_ref=fs_snapshot_ref,
+            session_metadata=self.session_metadata,
+        )
+        await self.checkpoint_store.save(
+            key, record.model_dump_json().encode("utf-8")
+        )
 
     def record_response(self, agent_name: ProcName, response: Response) -> None:
         """

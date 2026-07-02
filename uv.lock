@@ -1181,7 +1181,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "1.0.10"
+version = "1.0.11"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

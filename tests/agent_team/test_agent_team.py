@@ -529,7 +529,7 @@ async def test_typed_structured_handoff_renders_via_input_renderable(
 async def test_submit_message_delivers_human_input_to_member(tmp_path: Path) -> None:
     # Single-process human input: submit_message routes to a resident member's inbox
     # as control-plane mail and is handled like any peer message — the same-process
-    # counterpart to MemberDriver.submit_message.
+    # counterpart to MemberHost.submit_message.
     ctx = _ctx(tmp_path)
     solo = _agent("solo", [_text_response("a1"), _text_response("a2")])
     team = AgentTeam([solo], ctx=ctx)

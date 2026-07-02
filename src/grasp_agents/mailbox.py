@@ -114,7 +114,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
     (load → save ``processed/`` → delete ``inbox/``) and the store takes no
     cross-process lock, so two processes draining the *same* recipient could
     double-deliver or race the ack. The runtime enforces a single drainer per
-    actor in-process; a separate-process ``MemberDriver`` deployment must give each
+    actor in-process; a separate-process ``MemberHost`` deployment must give each
     member its own process (its own recipient). An advisory lease would be needed
     only if that constraint is ever relaxed.
     """

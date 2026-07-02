@@ -27,7 +27,6 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         drop_failed: bool = False,
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         # Need to set _subproc before __init__ because it
         # executes _propagate_to_children which calls subproc.on_adopted
@@ -39,7 +38,6 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             recipients=subproc.recipients,
             max_retries=0,
             path=path,
-            session_metadata=session_metadata,
             tracing_enabled=subproc.tracing_enabled,
             tracing_exclude_input_fields=subproc.tracing_exclude_input_fields,
         )
@@ -74,7 +72,6 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         checkpoint = ParallelCheckpoint(
             session_key=self._ctx.session_key,
             processor_name=self.name,
-            session_metadata=self._session_metadata,
             input_packet=input_packet,
             completed=completed,
         )

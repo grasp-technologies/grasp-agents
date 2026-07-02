@@ -19,7 +19,6 @@ Prompt Hooks (registered on PromptBuilder via LLMAgent):
     InitialContextBuilder — transforms the ephemeral initial context
 
 Agent Hooks (handled directly by LLMAgent):
-    StateBuilder   — rebuild CtxT / RunContext.state on resume-from-checkpoint
     OutputParser   — parses LLM text into typed output
 
 Processor Hooks:
@@ -33,7 +32,6 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from grasp_agents.agent.tool_decision import ToolCallDecision
-from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.run_context import RunContext
 from grasp_agents.selector import Selector
 from grasp_agents.types.content import Content
@@ -61,7 +59,6 @@ __all__ = [
     "OutputParser",
     "RecipientSelector",
     "Selector",
-    "StateBuilder",
     "ToolInputConverter",
     "ToolOutputConverter",
     "ViewProjector",
@@ -221,25 +218,6 @@ class InitialContextBuilder(Protocol):
 
 
 # --- Agent Hooks ---
-
-
-class StateBuilder(Protocol):
-    """
-    Rebuild business state (typically ``ctx.state``) from external sources
-    after loading a checkpoint.
-
-    Fires exactly once per resume — i.e. when ``_load_checkpoint`` returned
-    a non-``None`` checkpoint — after conversation messages have been
-    restored into memory and before the agent's next turn. Does not fire on
-    fresh init (the prompt builders compose the initial context there).
-    """
-
-    async def __call__(
-        self,
-        *,
-        checkpoint: AgentCheckpoint,
-        exec_id: str,
-    ) -> None: ...
 
 
 class OutputParser[InT, OutT](Protocol):

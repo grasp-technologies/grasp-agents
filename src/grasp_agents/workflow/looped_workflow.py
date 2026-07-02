@@ -28,7 +28,6 @@ class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         recipients: list[ProcName] | None = None,
         max_iterations: int = 10,
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -40,7 +39,6 @@ class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
             ctx=ctx,
             recipients=recipients,
             path=path,
-            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )

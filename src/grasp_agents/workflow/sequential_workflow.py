@@ -24,7 +24,6 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         ctx: RunContext[CtxT] | None = None,
         recipients: list[ProcName] | None = None,
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -36,7 +35,6 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
             ctx=ctx,
             recipients=recipients,
             path=path,
-            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
