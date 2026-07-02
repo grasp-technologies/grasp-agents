@@ -26,7 +26,7 @@ from grasp_agents.context.compaction import (
 from grasp_agents.context.projection import apply_folds
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpoint
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
 from grasp_agents.types.events import CompactionEvent
@@ -237,7 +237,7 @@ async def test_compaction_gate_measures_post_projection_view() -> None:
     # the POST-projection (collapsed) view, not the raw log — else it would fold
     # (an LLM call) when free collapse alone fits. Exercises the recount fallback.
     agent = LLMAgent[str, str, None](
-        name="a", ctx=RunContext(), llm=MockLLM(responses_queue=[])
+        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
     cw = agent._cw
     cw.initial_context = []
@@ -279,7 +279,7 @@ def test_compaction_without_llm_has_no_summarizer() -> None:
 
 def test_add_compaction_no_arg_auto_configures_from_agent() -> None:
     agent = LLMAgent[str, str, None](
-        name="a", ctx=RunContext(), llm=MockLLM(responses_queue=[])
+        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
     compaction = agent.add_compaction()  # no budget, no model name passed
     assert compaction.collapse in agent._cw.view_projectors
@@ -292,7 +292,7 @@ def test_add_compaction_no_arg_auto_configures_from_agent() -> None:
 
 def test_manager_injects_budget_into_budgetless_projector() -> None:
     agent = LLMAgent[str, str, None](
-        name="a", ctx=RunContext(), llm=MockLLM(responses_queue=[])
+        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
     proj = CollapseToolOutputsProjector(keep_recent_turns=1)
     assert proj.budget is None
@@ -374,7 +374,7 @@ async def test_summary_fold_reaches_view_log_keeps_originals() -> None:
     agent_llm = _RecordingLLM(
         responses_queue=[_tool_call_response("big", "{}", "c1"), _text_response("done")]
     )
-    ctx: RunContext[None] = RunContext()
+    ctx: SessionContext[None] = SessionContext()
     agent = LLMAgent[str, str, None](
         name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
     )
@@ -408,7 +408,7 @@ async def test_run_stream_emits_compaction_event() -> None:
     agent_llm = MockLLM(
         responses_queue=[_tool_call_response("big", "{}", "c1"), _text_response("done")]
     )
-    ctx: RunContext[None] = RunContext()
+    ctx: SessionContext[None] = SessionContext()
     agent = LLMAgent[str, str, None](
         name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
     )
@@ -488,7 +488,7 @@ async def test_folds_restored_on_resume_without_resummarizing() -> None:
     agent_llm = MockLLM(
         responses_queue=[_tool_call_response("big", "{}", "c1"), _text_response("done")]
     )
-    ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
+    ctx: SessionContext[None] = SessionContext(checkpoint_store=store, session_key="s1")
     agent = LLMAgent[str, str, None](
         name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
     )
@@ -505,7 +505,9 @@ async def test_folds_restored_on_resume_without_resummarizing() -> None:
 
     # Fresh instance, same store → resume restores folds. The summarizer's LLM
     # has an empty queue, so a re-summarization would raise — proving it doesn't.
-    ctx2: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
+    ctx2: SessionContext[None] = SessionContext(
+        checkpoint_store=store, session_key="s1"
+    )
     agent2 = LLMAgent[str, str, None](
         name="a", ctx=ctx2, llm=MockLLM(responses_queue=[_text_response("after")])
     )
@@ -561,7 +563,7 @@ async def test_context_window_error_compacts_and_retries() -> None:
             _text_response("recovered"),
         ]
     )
-    ctx: RunContext[None] = RunContext()
+    ctx: SessionContext[None] = SessionContext()
     agent = LLMAgent[str, str, None](
         name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
     )

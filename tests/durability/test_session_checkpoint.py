@@ -1,5 +1,5 @@
 """
-Tests for the per-session ``SessionCheckpoint`` owned by ``RunContext``:
+Tests for the per-session ``SessionCheckpoint`` owned by ``SessionContext``:
 
 - ``ctx.save_checkpoint()`` persists session-scoped state (serialized ``state``,
   ``session_metadata``) into one ``<session_key>/session`` record, written
@@ -22,7 +22,7 @@ from grasp_agents.durability import (
     InMemoryCheckpointStore,
     SessionCheckpoint,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from tests._helpers import MockLLM, _text_response
 
 pytestmark = pytest.mark.asyncio
@@ -40,8 +40,8 @@ def _make_agent(
     store: InMemoryCheckpointStore,
     serialize_state: bool = True,
     session_metadata: dict[str, Any] | None = None,
-) -> tuple[LLMAgent[str, str, _AppState], RunContext[_AppState]]:
-    ctx: RunContext[_AppState] = RunContext(
+) -> tuple[LLMAgent[str, str, _AppState], SessionContext[_AppState]]:
+    ctx: SessionContext[_AppState] = SessionContext(
         checkpoint_store=store,
         session_key=session_key,
         state=_AppState(),
@@ -177,7 +177,7 @@ async def test_state_not_restored_when_serialization_off() -> None:
 
 
 async def test_load_without_store_is_noop() -> None:
-    ctx: RunContext[_AppState] = RunContext(state=_AppState())
+    ctx: SessionContext[_AppState] = SessionContext(state=_AppState())
     assert await ctx.load_checkpoint() is None
 
 

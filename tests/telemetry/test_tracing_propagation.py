@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.llm.llm import LLM
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.agent_tool import AgentTool, AgentToolInput
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.tools.processor_tool import ProcessorTool
@@ -113,7 +113,7 @@ async def test_agent_tool_inherits_and_threads_to_spawned_child() -> None:
 
     # The fresh child agent spawned per invocation inherits it too.
     child, _ = await sub._prepare_child(
-        AgentToolInput(prompt="hi"), ctx=RunContext[None](), exec_id="e", path=None
+        AgentToolInput(prompt="hi"), ctx=SessionContext[None](), exec_id="e", path=None
     )
     assert child.tracing_exclude_input_fields == {"secret"}
 
@@ -194,7 +194,7 @@ def test_enabled_is_noop_for_parent_without_the_flag() -> None:
     # A Runner-like parent has ctx + path but no ``tracing_enabled`` attribute,
     # so it imposes no tracing restriction.
     class _RunnerLike:
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         path: ClassVar[list[str]] = ["runner"]
 
     agent.on_adopted(_RunnerLike())
@@ -215,6 +215,6 @@ async def test_agent_tool_threads_disabled_tracing_to_spawned_child() -> None:
 
     # ...and threads it (via on_adopted) onto the freshly-spawned child.
     child, _ = await sub._prepare_child(
-        AgentToolInput(prompt="hi"), ctx=RunContext[None](), exec_id="e", path=None
+        AgentToolInput(prompt="hi"), ctx=SessionContext[None](), exec_id="e", path=None
     )
     assert child.tracing_enabled is False

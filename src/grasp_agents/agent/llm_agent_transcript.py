@@ -17,7 +17,7 @@ class LLMAgentTranscript(BaseModel):
 
     Owned by the agent (``agent.transcript``), persisted via the agent's
     checkpoint, and rebuilt on resume. Distinct from cross-session memory on
-    :class:`RunContext.memory` (the memdir-backed knowledge store). The system
+    :class:`SessionContext.memory` (the memdir-backed knowledge store). The system
     prompt is not stored here — it lives in the ephemeral header
     (``initial_context``) the agent prepends to the model-facing view each turn.
     """

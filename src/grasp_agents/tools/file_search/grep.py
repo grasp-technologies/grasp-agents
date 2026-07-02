@@ -42,7 +42,7 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.tools.file_edit.redact import SecretRedactor
 
 DEFAULT_HEAD_LIMIT = 250
@@ -430,7 +430,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
     Regex search via ``ctx.file_backend``.
 
     Stateless: backend + allowed_roots live on
-    :attr:`RunContext.file_backend`.
+    :attr:`SessionContext.file_backend`.
     """
 
     name = "Grep"
@@ -470,7 +470,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         self,
         inp: GrepInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -481,7 +481,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "Grep requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         backend = ctx.file_backend

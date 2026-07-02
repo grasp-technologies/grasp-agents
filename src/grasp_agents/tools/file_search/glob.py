@@ -31,7 +31,7 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.file_backend.base import FileStat
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 
 def _is_directory(stat: FileStat) -> bool:
@@ -91,7 +91,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
     Match file paths against a glob pattern, sorted by mtime.
 
     Stateless: backend + allowed_roots live on
-    :attr:`RunContext.file_backend`.
+    :attr:`SessionContext.file_backend`.
     """
 
     name = "Glob"
@@ -124,7 +124,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
         self,
         inp: GlobInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -135,7 +135,7 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "Glob requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         backend = ctx.file_backend

@@ -22,7 +22,7 @@ from grasp_agents.types.content import ImageDetail, InputImage, InputText
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 # Raster formats every major vision provider (OpenAI / Anthropic / Gemini)
 # accepts. Other image types (bmp, tiff, svg, …) are refused with a clear note.
@@ -64,7 +64,7 @@ class ReadImageTool(BaseTool[ReadImageInput, list[InputText | InputImage], Any])
     Read an image file as visual content via ``ctx.file_backend``.
 
     Stateless: the backend (and its allowed-roots / sandbox policy) lives on
-    :attr:`RunContext.file_backend`. Returns an :class:`InputImage` the model
+    :attr:`SessionContext.file_backend`. Returns an :class:`InputImage` the model
     can see, preceded by a short text note naming the file.
     """
 
@@ -90,7 +90,7 @@ class ReadImageTool(BaseTool[ReadImageInput, list[InputText | InputImage], Any])
         self,
         inp: ReadImageInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -101,7 +101,7 @@ class ReadImageTool(BaseTool[ReadImageInput, list[InputText | InputImage], Any])
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "ReadImage requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         mime = _EXT_TO_MIME.get(Path(inp.path).suffix.lower())

@@ -19,7 +19,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from grasp_agents import grasp_logging
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.types.events import (
     Event,
@@ -59,7 +59,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
     **Tools are stateless and shareable.** A single tool instance may be
     attached to several agents at once (manager/worker graphs, LRU-cached
     agents) and invoked concurrently. A tool must therefore never store
-    run-scoped or session-scoped state — a :class:`RunContext`, a bound child
+    run-scoped or session-scoped state — a :class:`SessionContext`, a bound child
     processor, a live shell/kernel — on ``self``. Everything a call needs is
     passed to :meth:`_run` / :meth:`_run_stream`: the run-scoped ``ctx`` and
     the calling loop's agent-scoped ``agent_ctx`` (transcript, sibling tools,
@@ -199,7 +199,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -211,7 +211,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -289,7 +289,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -334,7 +334,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -365,7 +365,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
     async def __call__(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         agent_ctx: "AgentContext | None" = None,
@@ -385,7 +385,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -405,7 +405,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -477,7 +477,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
     async def resume_stream(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
@@ -495,7 +495,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         yield  # type: ignore[unreachable]  # makes this an async generator
 
     async def _should_cold_start(
-        self, child: Any, ctx: RunContext[CtxT] | None
+        self, child: Any, ctx: SessionContext[CtxT] | None
     ) -> bool:
         """
         Whether a re-spawned child must cold-start rather than resume.

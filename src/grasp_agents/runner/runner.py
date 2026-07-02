@@ -11,10 +11,10 @@ from pydantic import ValidationError as PydanticValidationError
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind, RunnerCheckpoint
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import (
+from grasp_agents.session_context import (
     DEFAULT_SESSION_KEY,
-    RunContext,
-    current_run_context,
+    SessionContext,
+    current_session_context,
 )
 from grasp_agents.telemetry import SpanKind, traced
 from grasp_agents.types.errors import RunnerError
@@ -41,7 +41,7 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
         self,
         entry_proc: Processor[Any, Any, CtxT],
         procs: Sequence[Processor[Any, Any, CtxT]],
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         name: str | None = None,
         path: list[str] | None = None,
     ) -> None:
@@ -97,7 +97,7 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
 
         self._event_bus = EventBus()
 
-        self._ctx = ctx if ctx is not None else current_run_context()  # type: ignore
+        self._ctx = ctx if ctx is not None else current_session_context()  # type: ignore
 
         self._path = path or []
         for proc in procs:
@@ -145,7 +145,7 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
         return self._checkpoint_number
 
     @property
-    def ctx(self) -> RunContext[CtxT]:
+    def ctx(self) -> SessionContext[CtxT]:
         return self._ctx
 
     def _trace_session_info(self) -> tuple[str, bool] | None:

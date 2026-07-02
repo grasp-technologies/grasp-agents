@@ -6,14 +6,14 @@
 These belong together: an agent doing file-shaped work — memory authoring
 especially — both *searches* the tree (Glob/Grep) and *reads/edits* files,
 and ``Read`` is shared by both flows. All tools are stateless wrappers —
-they consume :attr:`RunContext.file_backend` at run time and the active
+they consume :attr:`SessionContext.file_backend` at run time and the active
 :class:`FileEditSessionState` from the agent loop's :class:`AgentContext`.
 The toolkit just bundles their per-tool configuration.
 
 Usage::
 
     backend = LocalFileBackend(allowed_roots=[Path.cwd()])
-    ctx = RunContext(state=..., file_backend=backend)
+    ctx = SessionContext(state=..., file_backend=backend)
     agent = LLMAgent(..., tools=FileToolkit().tools())
 
 For an agent that may explore but not mutate, use :meth:`read_only_tools`

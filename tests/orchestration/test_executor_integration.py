@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
@@ -117,7 +117,7 @@ class AddTool(BaseTool[AddInput, Any, Any]):
         super().__init__(name="add", description="Add two numbers", **kwargs)
 
     async def _run(
-        self, inp: AddInput, ctx: RunContext[Any] | None = None, **kwargs: Any
+        self, inp: AddInput, ctx: SessionContext[Any] | None = None, **kwargs: Any
     ) -> int:
         return inp.a + inp.b
 
@@ -225,13 +225,13 @@ class TestExecutorTextResponse:
             agent_name="test_agent",
             llm=llm,
             transcript=memory,
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             tools=None,
             max_turns=3,
             stream_llm=False,
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         executor._ctx = ctx
         memory.update([InputMessageItem.from_text("What is 42?", role="user")])
 
@@ -263,13 +263,13 @@ class TestExecutorTextResponse:
             agent_name="agent",
             llm=llm,
             transcript=memory,
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             tools=None,
             max_turns=1,
             stream_llm=True,
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         executor._ctx = ctx
         memory.update([InputMessageItem.from_text("Hi", role="user")])
         events, last_response = await _collect_events(executor, ctx)
@@ -309,14 +309,14 @@ class TestExecutorToolCalling:
                 agent_name="calc",
                 llm=llm,
                 transcript=memory,
-                ctx=RunContext[None](),
+                ctx=SessionContext[None](),
                 tools=[tool],
                 max_turns=3,
                 stream_llm=False,
             )
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         memory.update([InputMessageItem.from_text("Add 2 and 3", role="user")])
 
         events, last_response = await _collect_events(executor, ctx)
@@ -377,13 +377,13 @@ class TestExecutorToolCalling:
             agent_name="agent",
             llm=llm,
             transcript=memory,
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             tools=[tool],
             max_turns=2,
             stream_llm=False,
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         executor._ctx = ctx
         memory.update([InputMessageItem.from_text("loop", role="user")])
         events, last_response = await _collect_events(executor, ctx)
@@ -405,7 +405,7 @@ class TestExecutorUsageTracking:
 
     @pytest.mark.asyncio
     async def test_usage_tracked_in_context(self):
-        """Response usage is tracked in RunContext.usage_tracker."""
+        """Response usage is tracked in SessionContext.usage_tracker."""
         response = _make_text_response("answer")
         llm = MockLLM(model_name="mock", responses_queue=[response])
         memory = LLMAgentTranscript()
@@ -415,13 +415,13 @@ class TestExecutorUsageTracking:
             agent_name="test_agent",
             llm=llm,
             transcript=memory,
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             tools=None,
             max_turns=1,
             stream_llm=False,
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         executor._ctx = ctx
         memory.update([InputMessageItem.from_text("q", role="user")])
         await _collect_events(executor, ctx)
@@ -459,14 +459,14 @@ class TestExecutorMemoryIntegrity:
                 agent_name="agent",
                 llm=llm,
                 transcript=memory,
-                ctx=RunContext[None](),
+                ctx=SessionContext[None](),
                 tools=[AddTool()],
                 max_turns=3,
                 stream_llm=False,
             )
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         memory.update([InputMessageItem.from_text("1+2", role="user")])
         await _collect_events(executor, ctx)
 

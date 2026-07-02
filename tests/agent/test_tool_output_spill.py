@@ -19,8 +19,8 @@ import pytest
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.agent.task_progress import excerpt_for_inline, spill_if_large
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.events import ToolErrorInfo
@@ -47,7 +47,7 @@ async def capped_untrusted(n: int = 0) -> str:
 
 
 def _loop(
-    tools: list[BaseTool[Any, Any, Any]], *, ctx: RunContext[None]
+    tools: list[BaseTool[Any, Any, Any]], *, ctx: SessionContext[None]
 ) -> AgentLoop[None]:
     transcript = LLMAgentTranscript()
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
@@ -62,8 +62,8 @@ def _loop(
     )
 
 
-def _backed_ctx(tmp_path: Path) -> RunContext[None]:
-    return RunContext[None](environment=local_environment(allowed_roots=[tmp_path]))
+def _backed_ctx(tmp_path: Path) -> SessionContext[None]:
+    return SessionContext[None](environment=local_environment(allowed_roots=[tmp_path]))
 
 
 # ---------- excerpt_for_inline (pure) ----------
@@ -183,7 +183,7 @@ class TestConvertToolOutputSpill:
     async def test_no_file_backend_inlines_whole(self) -> None:
         # No place to spill → keep the full text rather than hide it with no
         # recovery path.
-        ctx = RunContext[None](state=None)
+        ctx = SessionContext[None](state=None)
         assert ctx.file_backend is None
         loop = _loop([capped], ctx=ctx)
         call = FunctionToolCallItem(call_id="c1", name="capped", arguments="{}")

@@ -20,7 +20,7 @@ from grasp_agents import (
     MemoryEntry,
     MemoryProvider,
     ProcPacketOutEvent,
-    RunContext,
+    SessionContext,
     SkillRegistry,
     render_events,
 )
@@ -48,9 +48,7 @@ def _make_llm() -> OpenAILLM:
     )
 
 
-async def _run_and_capture(
-    agent: LLMAgent[Any, Any, Any], message: str
-) -> Any:
+async def _run_and_capture(agent: LLMAgent[Any, Any, Any], message: str) -> Any:
     final: Any = None
     async for event in render_events(
         agent.run_stream(message),
@@ -121,7 +119,7 @@ async def test_full_notebook_flow(memdir: Path, skills_root: Path) -> None:
     # ---- Step 1: Read existing memory ----
     print("\n\n========== STEP 1: READ ==========")
     provider1 = MemoryProvider(memdir)
-    ctx1: RunContext[None] = RunContext(
+    ctx1: SessionContext[None] = SessionContext(
         state=None, memory=provider1, file_backend=backend
     )
     agent1 = LLMAgent[str, str, None](
@@ -141,14 +139,13 @@ async def test_full_notebook_flow(memdir: Path, skills_root: Path) -> None:
     print(f"step 1 final: {final1}")
     assert final1, "step 1 produced no final answer"
     assert "bullet" in str(final1).lower(), (
-        "step 1 should mention bullet-points preference from "
-        "user_preferences.md"
+        "step 1 should mention bullet-points preference from user_preferences.md"
     )
 
     # ---- Step 2: Author + maintain index ----
     print("\n========== STEP 2: AUTHOR ==========")
     provider2 = MemoryProvider(memdir)
-    ctx2 = RunContext(state=None, memory=provider2, file_backend=backend)
+    ctx2 = SessionContext(state=None, memory=provider2, file_backend=backend)
     agent2 = LLMAgent[str, str, None](
         name="demo",
         ctx=ctx2,
@@ -181,14 +178,15 @@ async def test_full_notebook_flow(memdir: Path, skills_root: Path) -> None:
     )
     assert "bullet points" in prefs, "user_preferences.md was clobbered"
     new_topics = [
-        p for p in memdir.glob("*.md")
+        p
+        for p in memdir.glob("*.md")
         if p.name not in {"MEMORY.md", "user_preferences.md"}
     ]
     assert new_topics, "Agent didn't write any new topic file"
 
     # ---- Step 3: Skill load ----
     print("\n========== STEP 3: SKILL ==========")
-    ctx3 = RunContext(
+    ctx3 = SessionContext(
         state=None,
         memory=MemoryProvider(memdir),
         file_backend=backend,
@@ -222,8 +220,7 @@ async def test_full_notebook_flow(memdir: Path, skills_root: Path) -> None:
     assert final3, "step 3 produced no final answer"
     # Skill says exactly 3 bullets — count bullet markers
     bullet_lines = [
-        ln for ln in str(final3).splitlines()
-        if ln.strip().startswith(("-", "*", "•"))
+        ln for ln in str(final3).splitlines() if ln.strip().startswith(("-", "*", "•"))
     ]
     assert len(bullet_lines) >= 2, (
         f"step 3 should produce 3 bullets, got: {bullet_lines!r}"
@@ -239,7 +236,7 @@ async def test_full_notebook_flow(memdir: Path, skills_root: Path) -> None:
         return [e for e in entries if e.memory_type == "user"]
 
     provider4.set_selector(keep_user_type)
-    ctx4 = RunContext(state=None, memory=provider4, file_backend=backend)
+    ctx4 = SessionContext(state=None, memory=provider4, file_backend=backend)
     agent4 = LLMAgent[str, str, None](
         name="demo",
         ctx=ctx4,

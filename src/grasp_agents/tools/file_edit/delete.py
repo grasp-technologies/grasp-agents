@@ -32,7 +32,7 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 
 class DeleteInput(BaseModel):
@@ -58,7 +58,7 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
     Delete a file via ``ctx.file_backend``.
 
     Stateless: backend, allowed_roots, and read-state bookkeeping all
-    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
+    live on the :class:`FileBackend` wired onto :attr:`SessionContext.file_backend`.
     """
 
     name = "Delete"
@@ -86,7 +86,7 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
         self,
         inp: DeleteInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -97,7 +97,7 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "Delete requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         backend = ctx.file_backend

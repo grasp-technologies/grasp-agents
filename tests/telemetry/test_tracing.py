@@ -17,7 +17,7 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import (
     SessionSpanProcessor,
     SpanKind,
@@ -776,7 +776,7 @@ class TestSessionTraceGrouping:
     @pytest.mark.asyncio(loop_scope="function")
     async def test_named_session_runs_share_one_trace_without_a_store(self) -> None:
         # No checkpoint_store wired — grouping is purely from the session_key.
-        with RunContext[None](session_key="sess-multi-turn"):
+        with SessionContext[None](session_key="sess-multi-turn"):
             agent = LLMAgent[str, str, None](
                 name="chat",
                 llm=MockLLM(
@@ -794,7 +794,7 @@ class TestSessionTraceGrouping:
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_opt_out_makes_named_session_runs_independent(self) -> None:
-        with RunContext[None](
+        with SessionContext[None](
             session_key="sess-optout", session_trace_grouping=False
         ):
             agent = LLMAgent[str, str, None](
@@ -828,7 +828,7 @@ class TestSessionTraceGrouping:
     @pytest.mark.asyncio(loop_scope="function")
     async def test_nested_run_stays_in_parent_session_trace(self) -> None:
         # Construct inside the block: the session binds at construction time.
-        with RunContext[None](session_key="sess-nested"):
+        with SessionContext[None](session_key="sess-nested"):
             child = AgentTool[None](
                 name="research",
                 description="Research a topic",
@@ -869,7 +869,7 @@ async def _run_chat(session_key: str | None = None, **ctx_kwargs: Any) -> None:
         agent = LLMAgent[str, str, None](name="chat", llm=llm)
         await agent.run(chat_inputs="hi")
         return
-    with RunContext[None](session_key=session_key, **ctx_kwargs):
+    with SessionContext[None](session_key=session_key, **ctx_kwargs):
         agent = LLMAgent[str, str, None](name="chat", llm=llm)
         await agent.run(chat_inputs="hi")
 

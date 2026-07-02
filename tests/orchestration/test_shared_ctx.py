@@ -1,6 +1,6 @@
 """
 ctx is a top-down session concern: set it at the top (a container, a
-standalone processor, or a ``with RunContext(...)`` block) and it cascades
+standalone processor, or a ``with SessionContext(...)`` block) and it cascades
 onto every subprocessor via ``on_adopted``. A subprocessor never carries its
 own session — a container that adopts it overrides whatever ctx it was built
 with (one session per composition tree). A bare container resolves the
@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING
 
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import (
-    RunContext,
-    current_run_context,
-    reset_default_run_context,
-)
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.session_context import (
+    SessionContext,
+    current_session_context,
+    reset_default_session_context,
+)
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ class _Pass(Processor[str, str, None]):
 
 def _proc(
     name: str,
-    ctx: RunContext[None] | None = None,
+    ctx: SessionContext[None] | None = None,
     recipients: list[ProcName] | None = None,
 ) -> _Pass:
     return _Pass(name=name, ctx=ctx, recipients=recipients)
@@ -45,7 +45,7 @@ class TestContainersShareOneCtx:
         assert b.ctx is wf.ctx
 
     def test_explicit_container_ctx_cascades_to_subprocs(self) -> None:
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         a, b = _proc("a"), _proc("b")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b], ctx=ctx)
         assert wf.ctx is ctx
@@ -56,8 +56,8 @@ class TestContainersShareOneCtx:
         # ctx flows top-down: a subprocessor's own ctx is just its standalone
         # default; the container's wins (same as ProcessorTool's per-call
         # rebind). No bottom-up inheritance, no conflict error.
-        child_ctx: RunContext[None] = RunContext(state=None)
-        container_ctx: RunContext[None] = RunContext(state=None)
+        child_ctx: SessionContext[None] = SessionContext(state=None)
+        container_ctx: SessionContext[None] = SessionContext(state=None)
         a, b = _proc("a", child_ctx), _proc("b", child_ctx)
         wf = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[a, b], ctx=container_ctx
@@ -69,8 +69,8 @@ class TestContainersShareOneCtx:
     def test_divergent_subproc_ctxs_unify_to_container(self) -> None:
         # Two subprocs built with different ctxs no longer raise — the
         # container's ctx silently wins for both.
-        a = _proc("a", RunContext(state=None))
-        b = _proc("b", RunContext(state=None))
+        a = _proc("a", SessionContext(state=None))
+        b = _proc("b", SessionContext(state=None))
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
         assert a.ctx is wf.ctx
         assert b.ctx is wf.ctx
@@ -86,7 +86,7 @@ class TestContainersShareOneCtx:
         assert a.ctx is runner.ctx
 
     def test_runner_explicit_ctx_cascades(self) -> None:
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         a = _proc("a", recipients=[END_PROC_NAME])
         runner: Runner[str, None] = Runner(entry_proc=a, procs=[a], ctx=ctx)
         assert runner.ctx is ctx
@@ -99,7 +99,7 @@ class TestSessionCascade:
     def test_adopt_ctx_cascades_ctx_and_keeps_path_lineage(self) -> None:
         a, b = _proc("a"), _proc("b")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         wf.on_adopted(ctx=ctx)
         # ctx axis cascaded to every child...
         assert wf.ctx is ctx
@@ -110,7 +110,7 @@ class TestSessionCascade:
         assert b.path == ["wf", "b"]
 
     def test_adopt_path_cascades_path_and_keeps_ctx(self) -> None:
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         a, b = _proc("a", ctx), _proc("b", ctx)
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b], ctx=ctx)
         wf.on_adopted(path=["root", "wf"])
@@ -128,15 +128,15 @@ class TestDefaultAndAmbientCtx:
         # still belong to one session.
         a, b = _proc("a"), _proc("b")
         assert a.ctx is b.ctx
-        assert a.ctx is current_run_context()
+        assert a.ctx is current_session_context()
 
     def test_reset_default_gives_a_fresh_one(self) -> None:
         first = _proc("a").ctx
-        reset_default_run_context()
+        reset_default_session_context()
         assert _proc("b").ctx is not first
 
     def test_with_block_binds_bare_agents_to_that_ctx(self) -> None:
-        with RunContext[None](state=None) as ctx:
+        with SessionContext[None](state=None) as ctx:
             a, b = _proc("a"), _proc("b")
             assert a.ctx is ctx
             assert b.ctx is ctx
@@ -144,16 +144,16 @@ class TestDefaultAndAmbientCtx:
         assert _proc("c").ctx is not ctx
 
     def test_with_block_restores_outer_ambient(self) -> None:
-        with RunContext[None](state=None) as outer:
+        with SessionContext[None](state=None) as outer:
             assert _proc("a").ctx is outer
-            with RunContext[None](state=None) as inner:
+            with SessionContext[None](state=None) as inner:
                 assert _proc("b").ctx is inner
             # Inner exit restores the outer ambient ctx.
             assert _proc("c").ctx is outer
 
     def test_explicit_ctx_wins_over_ambient(self) -> None:
-        explicit: RunContext[None] = RunContext(state=None)
-        with RunContext[None](state=None) as ambient:
+        explicit: SessionContext[None] = SessionContext(state=None)
+        with SessionContext[None](state=None) as ambient:
             p = _proc("a", explicit)
             assert p.ctx is explicit
             assert p.ctx is not ambient

@@ -20,7 +20,7 @@ from grasp_agents import (
     LLMAgent,
     MemoryProvider,
     ProcPacketOutEvent,
-    RunContext,
+    SessionContext,
     render_events,
 )
 from grasp_agents.llm.resilience import RetryPolicy
@@ -110,7 +110,7 @@ async def test_mcp_memory_flow(memdir: Path) -> None:
         backend = MCPFileBackend(client=client, allowed_roots=[memdir])
         provider = MemoryProvider(memdir)
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, memory=provider, file_backend=backend
         )
 

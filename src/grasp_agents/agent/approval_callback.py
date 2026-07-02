@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Container, Mapping, Sequence
 
     from grasp_agents.hooks import BeforeToolHook
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.items import FunctionToolCallItem
 
 
@@ -55,7 +55,7 @@ class ApprovalCallback[CtxT](Protocol):
         self,
         call: FunctionToolCallItem,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
     ) -> bool: ...
 
@@ -86,7 +86,7 @@ def build_callback_approval[CtxT](
     async def hook(
         *,
         tool_calls: Sequence[FunctionToolCallItem],
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
     ) -> Mapping[str, ToolCallDecision] | None:
         decisions: dict[str, ToolCallDecision] = {}

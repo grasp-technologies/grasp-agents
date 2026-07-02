@@ -1,4 +1,4 @@
-"""Tests: memory section auto-attaches on LLMAgent + reads RunContext.memory."""
+"""Tests: memory section auto-attaches on LLMAgent + reads SessionContext.memory."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from grasp_agents.memory import (
     InMemoryMemoryProvider,
     MemoryEntry,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from tests.durability.test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
     MockLLM,
 )
@@ -67,7 +67,8 @@ class TestEnableMemory:
         assert "memory" not in names
         # And no relevant_memories attachment either.
         attachment_names = [
-            a.name for a in agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
+            a.name
+            for a in agent._prompt_builder.input_attachments  # pyright: ignore[reportPrivateUsage]
         ]
         assert "relevant_memories" not in attachment_names
 
@@ -100,7 +101,7 @@ class TestSystemPromptIntegration:
     @pytest.mark.asyncio
     async def test_no_provider_no_memory_block(self) -> None:
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State())
+        ctx: SessionContext[_State] = SessionContext(state=_State())
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")
         # No ctx.memory → the memory block drops. (enable_memory still attaches
         # the file toolkit, so other sections — e.g. untrusted-content — may be
@@ -110,7 +111,7 @@ class TestSystemPromptIntegration:
     @pytest.mark.asyncio
     async def test_provider_renders_memory_block(self) -> None:
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             memory=InMemoryMemoryProvider(index="# index body\n"),
         )
@@ -122,7 +123,7 @@ class TestSystemPromptIntegration:
     @pytest.mark.asyncio
     async def test_combines_with_user_sys_prompt(self) -> None:
         agent = _make_agent(sys_prompt="You are a helper.")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             memory=InMemoryMemoryProvider(index="# idx\n"),
         )
@@ -134,7 +135,7 @@ class TestSystemPromptIntegration:
     @pytest.mark.asyncio
     async def test_empty_provider_emits_instructions_only(self) -> None:
         agent = _make_agent(sys_prompt="head.")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             memory=InMemoryMemoryProvider(),
         )
@@ -152,9 +153,7 @@ class TestSystemPromptIntegration:
 class TestUserOverride:
     def test_add_section_with_same_name_replaces(self) -> None:
         agent = _make_agent()
-        before = sum(
-            1 for s in agent.system_prompt_sections if s.name == "memory"
-        )
+        before = sum(1 for s in agent.system_prompt_sections if s.name == "memory")
         assert before == 1
 
         def _override(**_: Any) -> str:
@@ -175,7 +174,7 @@ class TestAutoMemoryInstructions:
         # MEMORY.md format + edit loop). The prompt is cache-stable
         # across runs with different tool sets.
         agent = _make_agent()  # no explicit tools
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             memory=InMemoryMemoryProvider(index="# idx body\n"),
         )
@@ -193,7 +192,7 @@ class TestAutoMemoryInstructions:
     @pytest.mark.asyncio
     async def test_instructions_do_not_enumerate_tools(self) -> None:
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             memory=InMemoryMemoryProvider(index="# idx\n"),
         )
@@ -218,7 +217,7 @@ class TestAutoMemoryInstructions:
         provider.set_selector(keep_all)
 
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
+        ctx: SessionContext[_State] = SessionContext(state=_State(), memory=provider)
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")
         assert prompt is not None
         assert "surfaced into each turn" in prompt
@@ -226,7 +225,7 @@ class TestAutoMemoryInstructions:
     @pytest.mark.asyncio
     async def test_no_memory_provider_no_section(self) -> None:
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State())
+        ctx: SessionContext[_State] = SessionContext(state=_State())
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")
         # No ctx.memory → the memory section drops. (enable_memory still attaches
         # the file toolkit, so the prompt may carry other sections; only the
@@ -236,7 +235,7 @@ class TestAutoMemoryInstructions:
     @pytest.mark.asyncio
     async def test_empty_provider_emits_instructions_only(self) -> None:
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), memory=InMemoryMemoryProvider()
         )
         prompt = await agent.build_system_prompt(ctx, exec_id="e1")

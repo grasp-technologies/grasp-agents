@@ -30,7 +30,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from grasp_agents import LLMAgent, RunContext
+from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.agent.approval_store import build_store_approval
 from grasp_agents.llm_providers.openai_responses import (
     OpenAIResponsesLLM,
@@ -88,7 +88,7 @@ def update_record(record_id: int, field: str, value: str) -> str:
 
 def build_copilot(
     *, model: str = DEFAULT_MODEL, persist_path: Path | None = APPROVALS_PATH
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     """Build the ops assistant (gated tools) and its approval-enabled context."""
     llm = OpenAIResponsesLLM(
         model_name=model,
@@ -101,7 +101,7 @@ def build_copilot(
     # gated call; session_key scopes "allow for session" decisions, and
     # persist_path makes "allow always" decisions survive restarts.
     store = TuiApprovalStore(persist_path=persist_path)
-    ctx = RunContext[None](state=None, approval_store=store, session_key="ops-demo")
+    ctx = SessionContext[None](state=None, approval_store=store, session_key="ops-demo")
     agent = LLMAgent[str, str, None](
         name="ops_assistant",
         ctx=ctx,

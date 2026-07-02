@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from grasp_agents.agent.llm_agent import LLMAgent
     from grasp_agents.processors.processor import Processor
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.tools.base import BaseTool
     from grasp_agents.types.content import InputImage
     from grasp_agents.types.events import Event
@@ -106,7 +106,7 @@ class MemberHost:
         return self._member.name
 
     @property
-    def ctx(self) -> RunContext[Any]:
+    def ctx(self) -> SessionContext[Any]:
         """The member's run context (approval store, skills, etc.)."""
         return self._member.ctx
 

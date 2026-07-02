@@ -17,7 +17,7 @@ pytest.importorskip("textual")
 
 from collections.abc import AsyncIterator
 
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.skills import SkillRegistry
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
@@ -77,7 +77,7 @@ async def test_palette_opens_on_slash(tmp_path: Path) -> None:
     app = GraspAgentsApp(
         on_submit=_recording_agent([]),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -95,7 +95,7 @@ async def test_palette_filters_by_name(tmp_path: Path) -> None:
     app = GraspAgentsApp(
         on_submit=_recording_agent([]),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -113,7 +113,7 @@ async def test_non_command_text_keeps_palette_hidden(tmp_path: Path) -> None:
     app = GraspAgentsApp(
         on_submit=_recording_agent([]),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -133,7 +133,7 @@ async def test_palette_enter_inserts_command_without_submitting(
     app = GraspAgentsApp(
         on_submit=_recording_agent(sink),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -155,7 +155,7 @@ async def test_palette_hides_once_typing_args(tmp_path: Path) -> None:
     app = GraspAgentsApp(
         on_submit=_recording_agent([]),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -178,7 +178,7 @@ async def test_submit_unwraps_slash_command(tmp_path: Path) -> None:
     app = GraspAgentsApp(
         on_submit=_recording_agent(sink),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -205,7 +205,7 @@ async def test_escape_closes_palette(tmp_path: Path) -> None:
     app = GraspAgentsApp(
         on_submit=_recording_agent([]),
         main_agent="assistant",
-        ctx=RunContext(state=None, skills=skills),
+        ctx=SessionContext(state=None, skills=skills),
     )
     async with app.run_test() as pilot:
         await pilot.pause()

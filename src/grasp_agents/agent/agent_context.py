@@ -1,7 +1,7 @@
 """
 Per-:class:`AgentLoop` agent-scope state, passed explicitly to tools.
 
-Where :class:`~grasp_agents.run_context.RunContext` is the *run*-scoped DI
+Where :class:`~grasp_agents.session_context.SessionContext` is the *run*-scoped DI
 container shared by every processor in a run, :class:`AgentContext` is the
 *agent*-scoped counterpart: one per :class:`AgentLoop`, carrying the mutable
 state a single agent's tools operate against — the file-edit ledger, the
@@ -24,7 +24,7 @@ from grasp_agents.durability.checkpoints import AgentContextState
 
 if TYPE_CHECKING:
     from grasp_agents.inbox import AgentInbox
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.base import BaseTool
     from grasp_agents.tools.bash_common import ShellState
@@ -204,7 +204,7 @@ class AgentContext:
             if state.nb_exec_context_id is not None:
                 self.nb_kernel_holder.rebind(state.nb_exec_context_id)
 
-    async def close(self, *, ctx: RunContext[Any] | None = None) -> None:
+    async def close(self, *, ctx: SessionContext[Any] | None = None) -> None:
         """
         Release everything this agent-scope context owns: cancel background
         tasks, close the process holders (shell + both kernels), and cascade

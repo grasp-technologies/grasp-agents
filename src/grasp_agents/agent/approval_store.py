@@ -27,7 +27,7 @@ Usage::
         build_store_approval(tool_names={"delete_file", "send_email"})
     )
 
-    ctx = RunContext(
+    ctx = SessionContext(
         approval_store=store,
         session_key="user-42",
     )
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from grasp_agents.hooks import BeforeToolHook
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.items import FunctionToolCallItem
 
 
@@ -333,7 +333,7 @@ def build_store_approval(
     """
     Build a :class:`BeforeToolHook` that consults the
     :class:`ApprovalStore` on the active
-    :class:`~grasp_agents.run_context.RunContext`.
+    :class:`~grasp_agents.session_context.SessionContext`.
 
     Set ``ctx.approval_store`` to enable the gate; if it is ``None``
     the hook is a no-op and all calls run. ``ctx.session_key`` scopes
@@ -358,7 +358,7 @@ def build_store_approval(
     async def hook(
         *,
         tool_calls: Sequence[FunctionToolCallItem],
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
         exec_id: str,  # noqa: ARG001 — BeforeToolHook protocol signature
     ) -> Mapping[str, ToolCallDecision] | None:
         store = ctx.approval_store

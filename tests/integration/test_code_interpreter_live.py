@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents import LLMAgent, ProcPacketOutEvent, RunContext
+from grasp_agents import LLMAgent, ProcPacketOutEvent, SessionContext
 from grasp_agents.llm_providers.openai_responses.responses_llm import (
     OpenAIResponsesLLM,
 )
@@ -67,7 +67,7 @@ async def test_freeform_agent_produces_plot_via_srt(
         confinement="srt",
         env={"MPLCONFIGDIR": str(tmp_path / ".mpl")},
     )
-    ctx: RunContext[None] = RunContext(state=None, environment=env)
+    ctx: SessionContext[None] = SessionContext(state=None, environment=env)
     agent = LLMAgent[str, str, None](
         name="plotter",
         ctx=ctx,

@@ -15,8 +15,8 @@ import pytest
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.bash_common import BashInput, ShellState
 from grasp_agents.tools.bash_session import BashSession, BashSessionHolder
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
@@ -28,9 +28,9 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 
-def _ctx(tmp_path: Path) -> RunContext[None]:
+def _ctx(tmp_path: Path) -> SessionContext[None]:
     env = local_environment(allowed_roots=[tmp_path])
-    return RunContext(environment=env)
+    return SessionContext(environment=env)
 
 
 def _agent_ctx(holder: BashSessionHolder) -> AgentContext:

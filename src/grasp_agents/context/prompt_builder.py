@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.hooks import InitialContextBuilder, InputContentBuilder
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.io import LLMPrompt
     from grasp_agents.types.items import InputItem
 from grasp_agents.types.items import InputMessageItem
@@ -62,7 +62,7 @@ class SectionCompute(Protocol):
     def __call__(
         self,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         agent_ctx: AgentContext | None = None,
     ) -> str | Awaitable[str | None] | None: ...
@@ -104,7 +104,7 @@ class InputAttachmentCompute(Protocol):
         self,
         *,
         input_message: InputMessageItem,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
         agent_ctx: AgentContext | None = None,
@@ -206,7 +206,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
     async def build_system_prompt(
         self,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
         agent_ctx: AgentContext | None = None,
     ) -> str | None:
@@ -229,7 +229,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
     async def build_system_prompt_parts(
         self,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
         agent_ctx: AgentContext | None = None,
     ) -> list[InputText] | None:
@@ -267,7 +267,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
     async def build_initial_context(
         self,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
         agent_ctx: AgentContext | None = None,
     ) -> list[InputItem]:
@@ -300,7 +300,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         self,
         input_message: InputMessageItem,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
         messages: Sequence[InputItem] | None = None,
         agent_ctx: AgentContext | None = None,

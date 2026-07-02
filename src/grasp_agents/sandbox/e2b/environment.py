@@ -76,7 +76,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
     sandbox create (``__aenter__`` — where the optional ``e2b`` import happens)
     and teardown (``__aexit__`` — kill, or pause when ``pause_on_exit``). The
     ``file_backend`` / ``exec_backend`` objects exist before entry (so a
-    ``RunContext`` can source them), but their I/O raises until the context is
+    ``SessionContext`` can source them), but their I/O raises until the context is
     entered and the sandbox is live.
     """
 

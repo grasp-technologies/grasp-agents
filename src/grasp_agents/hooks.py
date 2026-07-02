@@ -32,8 +32,8 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from grasp_agents.agent.tool_decision import ToolCallDecision
-from grasp_agents.run_context import RunContext
 from grasp_agents.selector import Selector
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import Content
 from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.io import ProcName
@@ -106,7 +106,7 @@ class BeforeToolHook[CtxT](Protocol):
         self,
         *,
         tool_calls: Sequence[FunctionToolCallItem],
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
     ) -> Mapping[str, ToolCallDecision] | None: ...
 
@@ -247,6 +247,6 @@ class WorkflowLoopTerminator[OutT](Protocol):
 
 # --- Catalog Selectors ---
 # ``Selector`` lives in ``types.selector`` to avoid a circular import:
-# ``run_context`` imports ``memory/provider`` which references ``Selector``;
-# this module imports ``run_context`` itself, so the Protocol can't live
+# ``session_context`` imports ``memory/provider`` which references ``Selector``;
+# this module imports ``session_context`` itself, so the Protocol can't live
 # here. Re-exported above.

@@ -20,7 +20,7 @@ from grasp_agents.memory import (
     MemoryFrontmatter,
     relevant_memories_attachment,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit.session_state import FileEditSessionState
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.items import InputMessageItem
@@ -59,7 +59,7 @@ class TestApplyInputAttachments:
         b = _builder()
         msg = InputMessageItem.from_text("hello")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert out is msg
 
@@ -73,7 +73,7 @@ class TestApplyInputAttachments:
         b.add_input_attachment(InputAttachment(name="x", compute=attach))
         msg = InputMessageItem.from_text("hello")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert out is not msg
         assert len(out.content_parts) == 2
@@ -91,7 +91,7 @@ class TestApplyInputAttachments:
         b.add_input_attachment(make_current_time_attachment())
         msg = InputMessageItem.from_text("hello")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         attached = out.content_parts[1]
         assert isinstance(attached, InputText)
@@ -110,7 +110,7 @@ class TestApplyInputAttachments:
         )
         msg = InputMessageItem.from_text("hi")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert isinstance(out.content_parts[1], InputText)
         assert out.content_parts[1].text == "raw text"
@@ -125,7 +125,7 @@ class TestApplyInputAttachments:
         b.add_input_attachment(InputAttachment(name="x", compute=attach))
         msg = InputMessageItem.from_text("hello")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert out is msg
 
@@ -142,7 +142,7 @@ class TestApplyInputAttachments:
         b.add_input_attachment(InputAttachment(name="x", compute=attach))
         msg = InputMessageItem.from_text("hello")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         # 1 original text part + 2 attached.
         assert len(out.content_parts) == 3
@@ -170,7 +170,7 @@ class TestApplyInputAttachments:
         )
         msg = InputMessageItem.from_text("u")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert len(out.content_parts) == 3
         assert isinstance(out.content_parts[1], InputText)
@@ -190,7 +190,7 @@ class TestApplyInputAttachments:
         )
         msg = InputMessageItem.from_text("hi")
         out = await b.apply_input_attachments(
-            msg, ctx=RunContext(state=_State()), exec_id="e"
+            msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert isinstance(out.content_parts[1], InputText)
         assert out.content_parts[1].text == "async note"
@@ -211,7 +211,7 @@ class TestApplyInputAttachments:
 class TestMemoryRelevanceAttachment:
     @pytest.mark.asyncio
     async def test_no_provider_returns_none(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State())
+        ctx: SessionContext[_State] = SessionContext(state=_State())
         result = await relevant_memories_attachment.compute(
             input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
@@ -222,7 +222,7 @@ class TestMemoryRelevanceAttachment:
         provider = InMemoryMemoryProvider(
             entries=[_entry("alpha", "Alpha", "body", tmp_path / "alpha.md")]
         )
-        ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
+        ctx: SessionContext[_State] = SessionContext(state=_State(), memory=provider)
         result = await relevant_memories_attachment.compute(
             input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
@@ -242,7 +242,7 @@ class TestMemoryRelevanceAttachment:
             return [e for e in entries if e.name == "alpha"]
 
         provider.set_selector(keep_alpha)
-        ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
+        ctx: SessionContext[_State] = SessionContext(state=_State(), memory=provider)
         result = await relevant_memories_attachment.compute(
             input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )
@@ -300,7 +300,7 @@ class TestMemoryRelevanceAttachment:
             return []
 
         provider.set_selector(empty)
-        ctx: RunContext[_State] = RunContext(state=_State(), memory=provider)
+        ctx: SessionContext[_State] = SessionContext(state=_State(), memory=provider)
         result = await relevant_memories_attachment.compute(
             input_message=InputMessageItem.from_text("q"), ctx=ctx, exec_id="e"
         )

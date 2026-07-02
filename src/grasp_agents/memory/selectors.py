@@ -32,7 +32,7 @@ Usage::
 
     backend = LocalFileBackend(allowed_roots=[memory.root])
     agent = LLMAgent(...)
-    ctx = RunContext(state=..., file_backend=backend, memory=memory)
+    ctx = SessionContext(state=..., file_backend=backend, memory=memory)
     await agent.run(..., ctx=ctx)
 """
 
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from grasp_agents.llm.llm import LLM
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.items import InputItem
 
     from .provider import MemorySelector
@@ -167,7 +167,7 @@ def make_llm_relevance_selector(
     async def select(
         *,
         entries: Sequence[MemoryEntry],
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
     ) -> tuple[MemoryEntry, ...]:

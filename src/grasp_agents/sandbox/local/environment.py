@@ -6,7 +6,7 @@ The factory is the co-location guarantee: it unpacks a single policy into a
 :class:`~grasp_agents.file_backend.local.LocalFileBackend` and an
 exec backend that address the *same* host filesystem, so a host cannot
 accidentally point the two surfaces at different locations. Wire the result onto
-:attr:`RunContext.environment`; the ``RunContext`` validator sources
+:attr:`SessionContext.environment`; the ``SessionContext`` validator sources
 ``file_backend`` from it, and ``ctx.exec_backend`` is the read-only property off
 it (the environment is the sole grantor of an exec surface).
 

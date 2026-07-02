@@ -40,7 +40,7 @@ from .fuzzy_match import apply_replacements, fuzzy_find, preserve_quote_style
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 
 class EditInput(BaseModel):
@@ -86,7 +86,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
     Find-and-replace a string inside an existing file via ``ctx.file_backend``.
 
     Stateless: backend, allowed_roots, and read-state bookkeeping all
-    live on the :class:`FileBackend` wired onto :attr:`RunContext.file_backend`.
+    live on the :class:`FileBackend` wired onto :attr:`SessionContext.file_backend`.
     """
 
     name = "Edit"
@@ -122,7 +122,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         self,
         inp: EditInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -133,7 +133,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         if ctx is None or ctx.file_backend is None:
             raise ValueError(
                 "Edit requires ctx.file_backend. Wire a FileBackend on "
-                "RunContext before running the agent."
+                "SessionContext before running the agent."
             )
 
         if Path(inp.path).suffix == ".ipynb":

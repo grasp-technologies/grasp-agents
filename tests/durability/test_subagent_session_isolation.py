@@ -28,7 +28,7 @@ from grasp_agents.durability import (
 )
 from grasp_agents.durability.checkpoints import ParallelCheckpoint
 from grasp_agents.processors.parallel_processor import ParallelProcessor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.agent_tool import AgentTool
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
@@ -67,7 +67,7 @@ def _make_child_tool(responses: list[Any]) -> AgentTool[None]:
 def _make_parent_agent(
     parent_llm: LLM,
     child_tool: AgentTool[None],
-    ctx: RunContext[None] | None = None,
+    ctx: SessionContext[None] | None = None,
 ) -> LLMAgent[str, str, None]:
     return LLMAgent[str, str, None](
         name="parent",
@@ -92,7 +92,7 @@ async def test_parent_and_child_keys_dont_collide() -> None:
         ]
     )
     child_tool = _make_child_tool([_text_response("child final")])
-    ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
+    ctx: SessionContext[None] = SessionContext(checkpoint_store=store, session_key="s1")
     parent = _make_parent_agent(parent_llm, child_tool, ctx=ctx)
     await parent.run("start")
 
@@ -131,7 +131,7 @@ async def test_sibling_child_calls_dont_collide() -> None:
     child_tool = _make_child_tool(
         [_text_response("child one"), _text_response("child two")]
     )
-    ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s2")
+    ctx: SessionContext[None] = SessionContext(checkpoint_store=store, session_key="s2")
     parent = _make_parent_agent(parent_llm, child_tool, ctx=ctx)
     await parent.run("start")
 
@@ -148,7 +148,7 @@ async def test_parallel_processor_replicas_dont_collide() -> None:
     fix, all N copies would overwrite each other at the same key.
     """
     store = InMemoryCheckpointStore()
-    ctx: RunContext[None] = RunContext(
+    ctx: SessionContext[None] = SessionContext(
         checkpoint_store=store, session_key="par-s", state=None
     )
     subproc = LLMAgent[str, str, None](
@@ -258,7 +258,7 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
 
     # Resume: fresh subproc; its LLM only needs the final answer for
     # replica 1 (indices 0 and 2 are redelivered from the parallel cp).
-    ctx: RunContext[None] = RunContext(
+    ctx: SessionContext[None] = SessionContext(
         checkpoint_store=store, session_key="par-ms", state=None
     )
     subproc = LLMAgent[str, str, None](

@@ -20,7 +20,7 @@ from grasp_agents.durability.store_keys import (
     task_prefix,
 )
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -368,7 +368,7 @@ class BackgroundTaskManager[CtxT]:
         tool: BaseTool[BaseModel, Any, CtxT],
         inp: BaseModel,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
         agent_ctx: "AgentContext | None" = None,
     ) -> tuple[Any, BackgroundTaskLaunchedEvent | None]:
@@ -643,7 +643,7 @@ class BackgroundTaskManager[CtxT]:
         name: str,
         tool: BaseTool[BaseModel, Any, CtxT],
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
     ) -> str | None:
         """
         Resolve a backgrounded task's ``.grasp`` log path, or ``None``.
@@ -686,7 +686,7 @@ class BackgroundTaskManager[CtxT]:
 
     # --- TaskRecord persistence ---
 
-    def _task_store_key(self, ctx: RunContext[CtxT], call_id: str) -> str | None:
+    def _task_store_key(self, ctx: SessionContext[CtxT], call_id: str) -> str | None:
         """Store key for a backgrounded call's ``TaskRecord`` (``None`` if none)."""
         child_path = make_tool_call_path(self._path, call_id)
         if ctx.checkpoint_store is None or child_path is None:
@@ -699,7 +699,7 @@ class BackgroundTaskManager[CtxT]:
         call: FunctionToolCallItem,
         task_id: str,
         *,
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         output_path: str | None = None,
     ) -> None:
         """
@@ -727,7 +727,7 @@ class BackgroundTaskManager[CtxT]:
         self,
         task_key: str | None,
         *,
-        ctx: RunContext[CtxT] | None,
+        ctx: SessionContext[CtxT] | None,
         **updates: Any,
     ) -> None:
         """Load → update → save a ``TaskRecord`` (no-op if no store / key / record)."""
@@ -779,7 +779,7 @@ class BackgroundTaskManager[CtxT]:
     # --- Stop (KillTask) ---
 
     async def kill_task(
-        self, task_id: str, *, ctx: RunContext[CtxT] | None = None
+        self, task_id: str, *, ctx: SessionContext[CtxT] | None = None
     ) -> KillTaskResult:
         """Cancel a task (its stream closes → process group killed) and read it."""
         pt = self.get(task_id)
@@ -827,7 +827,7 @@ class BackgroundTaskManager[CtxT]:
     # --- Turn-boundary drain ---
 
     async def drain(
-        self, *, exec_id: str, ctx: RunContext[CtxT]
+        self, *, exec_id: str, ctx: SessionContext[CtxT]
     ) -> AsyncIterator[Event[Any]]:
         """
         The turn-boundary pass over every tracked task: in one sweep re-emit
@@ -959,7 +959,7 @@ class BackgroundTaskManager[CtxT]:
 
     # --- Cancel ---
 
-    async def cancel_all(self, ctx: RunContext[CtxT] | None = None) -> None:
+    async def cancel_all(self, ctx: SessionContext[CtxT] | None = None) -> None:
         """
         Cancel all background tasks and wait for cleanup.
 
@@ -1000,7 +1000,7 @@ class BackgroundTaskManager[CtxT]:
     async def resume_durable(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> list[InputMessageItem]:
@@ -1137,7 +1137,7 @@ class BackgroundTaskManager[CtxT]:
         """
         self._pending_delivered = dict(pending)
 
-    async def flush_delivered(self, *, ctx: RunContext[CtxT]) -> None:
+    async def flush_delivered(self, *, ctx: SessionContext[CtxT]) -> None:
         """
         Apply deferred terminal record updates (→ ``DELIVERED``).
 
@@ -1167,7 +1167,7 @@ class BackgroundTaskManager[CtxT]:
 
     @staticmethod
     async def prune_delivered(
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
         *,
         older_than: timedelta,
     ) -> int:
@@ -1206,7 +1206,7 @@ class BackgroundTaskManager[CtxT]:
         record: TaskRecord,
         *,
         task_key: str,
-        ctx: RunContext[CtxT] | None,
+        ctx: SessionContext[CtxT] | None,
         exec_id: str | None,
         agent_ctx: "AgentContext | None" = None,
     ) -> bool:

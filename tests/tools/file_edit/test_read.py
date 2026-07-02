@@ -14,7 +14,7 @@ import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import (
     DefaultSecretRedactor,
     FileEditSessionState,
@@ -42,9 +42,9 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
+    return SessionContext[Any](file_backend=backend, session_key=TEST_KEY)
 
 
 @pytest.fixture
@@ -58,7 +58,10 @@ def read_tool() -> ReadTool:
 
 
 async def test_read_returns_line_numbered_content(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    read_tool: ReadTool,
 ) -> None:
     f = tmp_path / "a.py"
     f.write_text("line one\nline two\nline three\n")
@@ -73,7 +76,10 @@ async def test_read_returns_line_numbered_content(
 
 
 async def test_read_respects_offset_and_limit(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    read_tool: ReadTool,
 ) -> None:
     f = tmp_path / "a.txt"
     f.write_text("\n".join(f"line {i}" for i in range(1, 11)) + "\n")
@@ -92,7 +98,7 @@ async def test_read_respects_offset_and_limit(
 
 async def test_read_records_state_for_read_before_write(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     state: FileEditSessionState,
     read_tool: ReadTool,
@@ -108,7 +114,10 @@ async def test_read_records_state_for_read_before_write(
 
 
 async def test_repeat_read_returns_fresh_content(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    read_tool: ReadTool,
 ) -> None:
     """
     Re-reading the same region returns the content again — no dedup
@@ -131,7 +140,7 @@ async def test_repeat_read_returns_fresh_content(
 
 
 async def test_device_path_refused(
-    ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    ctx: SessionContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
 ) -> None:
     result = await read_tool.run(
         ReadInput(path="/dev/stdin"), ctx=ctx, agent_ctx=agent_ctx
@@ -140,7 +149,10 @@ async def test_device_path_refused(
 
 
 async def test_binary_extension_refused(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    read_tool: ReadTool,
 ) -> None:
     f = tmp_path / "image.png"
     f.write_bytes(b"\x89PNG\r\n\x1a\n\x00")
@@ -149,7 +161,10 @@ async def test_binary_extension_refused(
 
 
 async def test_path_outside_root_refused(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    read_tool: ReadTool,
 ) -> None:
     outside = tmp_path.parent / "escape.txt"
     outside.write_text("secret")
@@ -163,7 +178,10 @@ async def test_path_outside_root_refused(
 
 
 async def test_nonexistent_file_refused(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, read_tool: ReadTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    read_tool: ReadTool,
 ) -> None:
     result = await read_tool.run(
         ReadInput(path=str(tmp_path / "nope.txt")), ctx=ctx, agent_ctx=agent_ctx
@@ -172,7 +190,7 @@ async def test_nonexistent_file_refused(
 
 
 async def test_char_cap_truncates_oversized_read(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     """A window past the char cap is truncated with a notice, not refused."""
     tool = ReadTool(
@@ -192,7 +210,7 @@ async def test_char_cap_truncates_oversized_read(
 
 
 async def test_size_gate_refuses_huge_file(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     """A file past ``max_file_bytes`` is refused outright (too large to open)."""
     tool = ReadTool(redactor=NullRedactor(), max_file_bytes=100)
@@ -215,7 +233,7 @@ async def test_read_without_ctx_refused() -> None:
 
 
 async def test_default_redactor_masks_aws_key(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     tool = ReadTool(redactor=DefaultSecretRedactor())
     f = tmp_path / "secret.py"

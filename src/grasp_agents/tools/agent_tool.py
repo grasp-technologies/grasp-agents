@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from grasp_agents.llm.llm import LLM
     from grasp_agents.mcp.client import MCPClient
     from grasp_agents.mcp.spec import MCPClientSpec
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 
 @runtime_checkable
@@ -31,14 +31,14 @@ class AgentToolPromptBuilder(Protocol):
 
     Receives the task prompt from ``AgentToolInput.prompt``, the
     parent agent's :class:`LLMAgentTranscript`, and the current
-    :class:`RunContext`.
+    :class:`SessionContext`.
 
     May be sync or async — the framework awaits when the return value
     is awaitable.
     """
 
     def __call__(
-        self, prompt: str, transcript: LLMAgentTranscript, ctx: RunContext[Any]
+        self, prompt: str, transcript: LLMAgentTranscript, ctx: SessionContext[Any]
     ) -> str | Awaitable[str]: ...
 
 
@@ -46,7 +46,7 @@ async def _resolve_builder(
     builder: AgentToolPromptBuilder,
     prompt: str,
     transcript: LLMAgentTranscript,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
 ) -> str:
     result = builder(prompt, transcript, ctx)
     if asyncio.iscoroutine(result) or asyncio.isfuture(result):
@@ -68,7 +68,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
 
     Optional ``sys_prompt_builder`` / ``in_prompt_builder`` callables
     allow dynamic prompt construction from the task prompt, parent
-    message history, and :class:`RunContext`.  When provided,
+    message history, and :class:`SessionContext`.  When provided,
     ``sys_prompt_builder`` overrides the static ``sys_prompt`` and
     ``in_prompt_builder`` transforms the raw prompt into the child's
     user message.
@@ -176,7 +176,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
     async def _build_prompts(
         self,
         prompt: str,
-        ctx: RunContext[Any] | None,
+        ctx: SessionContext[Any] | None,
         parent_transcript: LLMAgentTranscript | None,
     ) -> tuple[str | None, str]:
         """Resolve sys_prompt and user message via builders or defaults."""
@@ -201,7 +201,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         self,
         inp: AgentToolInput | None,
         *,
-        ctx: RunContext[CtxT] | None,
+        ctx: SessionContext[CtxT] | None,
         exec_id: str | None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,
@@ -256,7 +256,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         self,
         inp: AgentToolInput,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -278,7 +278,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         self,
         inp: AgentToolInput,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -296,7 +296,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
     async def resume_stream(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,

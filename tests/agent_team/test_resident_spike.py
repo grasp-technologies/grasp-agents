@@ -22,7 +22,7 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.inbox import AgentInbox
 from grasp_agents.mailbox import CheckpointMailboxTransport
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.items import InputMessageItem
 from grasp_agents.types.message import TeamMessage
@@ -46,7 +46,7 @@ async def test_resident_consumes_multiple_messages_in_one_run() -> None:
         llm=MockLLM(
             responses_queue=[_text_response("reply 1"), _text_response("reply 2")]
         ),
-        ctx=RunContext[None](),
+        ctx=SessionContext[None](),
     )
     # Attaching an inbox makes the agent resident: the seedless run_stream then
     # drives the loop off this inbox instead of terminating on a final answer.
@@ -95,7 +95,7 @@ async def test_resident_survives_past_max_turns() -> None:
         name="curator",
         llm=MockLLM(responses_queue=[_text_response(f"reply {i}") for i in range(4)]),
         max_turns=2,
-        ctx=RunContext[None](),
+        ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
     agent.inbox = inbox
@@ -141,7 +141,7 @@ async def test_resident_force_finalizes_runaway_message_and_continues() -> None:
         ),
         tools=[spin],
         max_turns=2,
-        ctx=RunContext[None](),
+        ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
     agent.inbox = inbox
@@ -188,14 +188,16 @@ async def test_bg_completion_while_idle_wakes_resident_loop() -> None:
             ]
         ),
         tools=[slow_job],
-        ctx=RunContext[None](),
+        ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
     agent.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(
-        TeamMessage.from_text(sender="user", to="curator", text="stash this in the vault")
+        TeamMessage.from_text(
+            sender="user", to="curator", text="stash this in the vault"
+        )
     )
     try:
         # Round 1: tool call (call 1) then "started; idling" (call 2). The loop is
@@ -230,7 +232,7 @@ async def test_resident_reply_durable_and_message_released() -> None:
     agent = LLMAgent[Any, Any, None](
         name="curator",
         llm=MockLLM(responses_queue=[_text_response("reply one")]),
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
     agent.inbox = AgentInbox(transport=transport, recipient="curator")
 
@@ -255,7 +257,7 @@ async def test_resident_reply_durable_and_message_released() -> None:
     resumed = LLMAgent[Any, Any, None](
         name="curator",
         llm=MockLLM(responses_queue=[]),
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
     checkpoint = await resumed.load_checkpoint()
     assert checkpoint is not None
@@ -297,7 +299,7 @@ async def test_resident_message_released_on_absorption_not_at_reply() -> None:
             ]
         ),
         tools=[step1, step2],
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
     agent.inbox = AgentInbox(transport=transport, recipient="curator")
 
@@ -360,7 +362,7 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
             ]
         ),
         tools=[work, block_reply],
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
     agent1.inbox = AgentInbox(transport=transport, recipient="curator")
 
@@ -387,7 +389,7 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
         name="curator",
         llm=MockLLM(responses_queue=[_text_response("final reply")]),
         tools=[work, block_reply],
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
     agent2.inbox = AgentInbox(transport=transport, recipient="curator")
 
@@ -416,7 +418,7 @@ async def test_rewind_unleases_inbox_message() -> None:
     agent = LLMAgent[Any, Any, None](
         name="curator",
         llm=MockLLM(responses_queue=[]),
-        ctx=RunContext[None](state=None),
+        ctx=SessionContext[None](state=None),
     )
     inbox = AgentInbox(recipient="curator")
     agent.inbox = inbox

@@ -112,7 +112,7 @@ class SkillFilter:
     """
     Per-agent allowlist/blocklist over the session-shared skill catalog.
 
-    The ``SkillRegistry`` on ``RunContext`` is one shared catalog per session;
+    The ``SkillRegistry`` on ``SessionContext`` is one shared catalog per session;
     a ``SkillFilter`` narrows it to a *view* for one agent, so different agents
     in the same run expose different skills. Mirrors
     :class:`~grasp_agents.mcp.spec.MCPClientSpec`'s ``include`` / ``exclude``:

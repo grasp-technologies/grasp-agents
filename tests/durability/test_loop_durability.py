@@ -33,7 +33,7 @@ from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.items import (
@@ -66,11 +66,11 @@ def _make_agent(
     session_key: str | None = None,
     store: InMemoryCheckpointStore | None = None,
     **agent_kwargs: Any,
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
     if session_key is not None:
         ctx_kwargs["session_key"] = session_key
-    ctx: RunContext[None] = RunContext(**ctx_kwargs)
+    ctx: SessionContext[None] = SessionContext(**ctx_kwargs)
     agent = LLMAgent[str, str, None](
         name="test_agent",
         ctx=ctx,
@@ -217,7 +217,7 @@ class _Answer(BaseModel):
 def _make_answer_agent(
     responses: list[Any], **agent_kwargs: Any
 ) -> LLMAgent[str, _Answer, None]:
-    ctx: RunContext[None] = RunContext()
+    ctx: SessionContext[None] = SessionContext()
     return LLMAgent[str, _Answer, None](
         name="test_agent",
         ctx=ctx,
@@ -435,7 +435,7 @@ class TestValidateInputsCoercion:
 class TestApprovalCancellation:
     @pytest.mark.asyncio
     async def test_cancelled_run_propagates_at_approval_gate(self) -> None:
-        ctx: RunContext[None] = RunContext(approval_store=LocalApprovalStore())
+        ctx: SessionContext[None] = SessionContext(approval_store=LocalApprovalStore())
         hook = build_store_approval()
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")
 
@@ -456,7 +456,7 @@ class TestDeadlineBackgroundedOutcomePersisted:
     @pytest.mark.asyncio
     async def test_sidelined_task_record_reaches_completed(self) -> None:
         store = InMemoryCheckpointStore()
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s1"
         )
         transcript = LLMAgentTranscript()

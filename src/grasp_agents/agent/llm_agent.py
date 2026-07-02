@@ -59,8 +59,8 @@ from grasp_agents.memory.injection import (
     relevant_memories_attachment,
 )
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox.environment import SnapshotCapable
+from grasp_agents.session_context import SessionContext
 from grasp_agents.skills.injection import make_skills_section
 from grasp_agents.skills.types import SkillFilter
 from grasp_agents.telemetry import SpanKind
@@ -107,7 +107,7 @@ class _SessionSnapshot:
     The transcript, the loop turn, and the agent-context state that is paired
     with the transcript (read-before-write ledger, shell cwd, deferred task
     flips, kernel contexts). Deliberately excludes the filesystem: that lives
-    on the run-shared ``RunContext.environment``, not the agent, and is
+    on the run-shared ``SessionContext.environment``, not the agent, and is
     restored separately (and only by its owner).
     """
 
@@ -134,7 +134,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Session context — bound at construction. The agent reads/writes
         # state on this ``ctx`` for its lifetime; passing a different ``ctx``
         # at ``.run()`` time is not supported.
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         # LLM
         llm: LLM,
         # Tools
@@ -160,7 +160,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         force_react_mode: bool = False,
         final_answer_as_tool_call: bool = False,
         # Per-run message history (the LLM agent's transcript). Cross-session
-        # knowledge memory is separate and lives on ``RunContext.memory``.
+        # knowledge memory is separate and lives on ``SessionContext.memory``.
         transcript: LLMAgentTranscript | None = None,
         reset_transcript_on_run: bool = False,
         # Agent run retries
@@ -240,7 +240,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # authoring (read/edit topic files) and discovery (grep/glob
         # the memdir) both route through it via ``ctx.file_backend``.
         # The toolkit is stateless: backend / allowed_roots / read-state
-        # all live on the backend the host wires onto ``RunContext``.
+        # all live on the backend the host wires onto ``SessionContext``.
         if enable_memory:
             from grasp_agents.tools import FileToolkit  # noqa: PLC0415
 
@@ -416,7 +416,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         # Wire the loop's checkpoint callback unconditionally. The
         # callback itself short-circuits when no store is attached to
-        # the RunContext at call time.
+        # the SessionContext at call time.
         self._loop.checkpoint_callback = self.save_checkpoint
 
         self._register_overridden_implementations()
@@ -601,7 +601,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         return tuple(self._prompt_builder.system_prompt_sections)
 
     async def build_system_prompt(
-        self, ctx: "RunContext[CtxT] | None" = None, exec_id: str = ""
+        self, ctx: "SessionContext[CtxT] | None" = None, exec_id: str = ""
     ) -> str | None:
         """
         Render the agent's full system prompt (base + every section).
@@ -655,7 +655,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         Only this agent's own working state is restored here. Session-scoped
         state — ``ctx.state`` and the shared environment filesystem — is
-        restored once per session by ``RunContext.load_checkpoint`` (already
+        restored once per session by ``SessionContext.load_checkpoint`` (already
         run by the time this loads).
 
         Context-management note: per-turn pruning / compaction belongs in the
@@ -1147,7 +1147,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         in_args: list[InT] | None = None,
         exec_id: str,
         step: int | None = None,
-        ctx: RunContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
+        ctx: SessionContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
     ) -> AsyncIterator[Event[Any]]:
         self._step = step
 
@@ -1469,7 +1469,7 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         self,
         *,
         tool_calls: Sequence[FunctionToolCallItem],
-        ctx: RunContext[CtxT],
+        ctx: SessionContext[CtxT],
         exec_id: str,
     ) -> Mapping[str, ToolCallDecision] | None:
         raise NotImplementedError

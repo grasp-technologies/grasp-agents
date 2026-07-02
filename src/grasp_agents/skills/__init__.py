@@ -38,7 +38,7 @@ from .types import (
 
 if TYPE_CHECKING:
     # Lazy-loaded — these depend on ``function_tool`` (which transitively
-    # imports ``RunContext``), and importing them at package load would
+    # imports ``SessionContext``), and importing them at package load would
     # short-circuit the run-context construction during ``grasp_agents``
     # startup.
     from .tools import list_skills, load_skill

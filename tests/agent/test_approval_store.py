@@ -26,7 +26,7 @@ from grasp_agents.agent.approval_store import (
     build_store_approval,
 )
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -94,7 +94,7 @@ def _make_executor(
     memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
@@ -110,7 +110,7 @@ def _make_executor(
     return executor, memory, llm
 
 
-async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
+async def _drain(executor: AgentLoop[None], ctx: SessionContext[None]) -> Response:
     executor._ctx = ctx
     stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
@@ -121,7 +121,7 @@ async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
 
 async def _drain_with_resolver(
     executor: AgentLoop[None],
-    ctx: RunContext[None],
+    ctx: SessionContext[None],
     resolver: Any,
 ) -> Response:
     """Run the executor and the resolver coroutine concurrently."""
@@ -384,7 +384,7 @@ async def _auto_resolve(
 
 
 class TestApprovalGate:
-    """`build_store_approval` end-to-end, with the store on RunContext."""
+    """`build_store_approval` end-to-end, with the store on SessionContext."""
 
     @pytest.mark.asyncio
     async def test_allow_runs_tool(self):
@@ -405,7 +405,7 @@ class TestApprovalGate:
                 await asyncio.sleep(0.005)
             await store.resolve("s1", "tc1", ApprovalAllow())
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
         assert _invocations["echo"] == ["hi"]
 
@@ -422,7 +422,7 @@ class TestApprovalGate:
         executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
         # ctx with no approval_store → tool runs normally
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
         assert _invocations["echo"] == ["hi"]
 
@@ -445,7 +445,7 @@ class TestApprovalGate:
                 await asyncio.sleep(0.005)
             await store.resolve("s1", "tc1", ApprovalDeny(reason="policy block"))
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
 
         assert _invocations["echo"] == []
@@ -467,7 +467,7 @@ class TestApprovalGate:
 
         executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         await _drain(executor, ctx)
 
         assert _invocations["echo"] == ["ok"]
@@ -495,7 +495,7 @@ class TestApprovalGate:
 
         executor.before_tool_hooks = [build_store_approval()]  # type: ignore[assignment]
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         resolver = asyncio.create_task(
             _auto_resolve(store, "s1", decide=decide, stop_event=stop)
         )
@@ -538,7 +538,7 @@ class TestApprovalGate:
             try:
                 await _drain(
                     executor,
-                    RunContext[None](approval_store=store, session_key=session),
+                    SessionContext[None](approval_store=store, session_key=session),
                 )
             finally:
                 # Leave the resolver running across runs — we only stop at the end.
@@ -583,7 +583,7 @@ class TestApprovalGate:
             build_store_approval(tool_names={"delete_file"})
         ]
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         await _drain_with_resolver(executor, ctx, resolver())
 
         assert _invocations["echo"] == ["safe"]
@@ -603,7 +603,7 @@ class TestApprovalGate:
             build_store_approval(timeout=0.05)
         ]
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         await _drain(executor, ctx)
 
         assert _invocations["echo"] == []
@@ -636,7 +636,7 @@ class TestApprovalGate:
             build_store_approval(approval_key_fn=lambda c: f"{c.name}:{c.arguments}")
         ]
 
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         resolver = asyncio.create_task(
             _auto_resolve(store, "s1", decide=decide, stop_event=stop)
         )

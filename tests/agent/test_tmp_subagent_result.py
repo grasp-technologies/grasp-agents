@@ -24,7 +24,7 @@ import pytest
 from pydantic import BaseModel
 from rich.table import Table
 
-from grasp_agents import AgentTool, LLMAgent, RunContext
+from grasp_agents import AgentTool, LLMAgent, SessionContext
 from grasp_agents.llm.llm import LLM
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
@@ -157,7 +157,7 @@ async def _run_parent(child_responses: list[Response]) -> FunctionToolOutputItem
         max_turns=1,  # turn 0 runs a tool, turn 1 trips the force step
         stream_llm=True,
     )
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     parent = LLMAgent[str, str, None](
         name="analyst",
         ctx=ctx,
@@ -279,7 +279,7 @@ async def test_inner_tool_sharing_agent_name_does_not_leak() -> None:
         max_turns=1,
         stream_llm=True,
     )
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     parent = LLMAgent[str, str, None](
         name="analyst",
         ctx=ctx,

@@ -23,7 +23,7 @@ import pytest
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.durability.store_keys import task_prefix
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.agent_tool import AgentTool
 from grasp_agents.tools.function_tool import function_tool
 
@@ -65,7 +65,7 @@ def _subagent(name: str, topic: str) -> AgentTool[None]:
     )
 
 
-def _build_manager(ctx: RunContext[None]) -> Any:
+def _build_manager(ctx: SessionContext[None]) -> Any:
     from grasp_agents.agent.llm_agent import LLMAgent
 
     return LLMAgent[str, str, None](
@@ -93,7 +93,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     store = FileCheckpointStore(tmp_path / "ckpt")
 
     # --- First run: crash after both sub-agents have been launched ---
-    ctx1: RunContext[None] = RunContext(
+    ctx1: SessionContext[None] = SessionContext(
         state=None, checkpoint_store=store, session_key="subagents"
     )
     manager1 = _build_manager(ctx1)
@@ -126,7 +126,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     )
 
     # --- Resume: a fresh manager over the same session re-spawns the tasks ---
-    ctx2: RunContext[None] = RunContext(
+    ctx2: SessionContext[None] = SessionContext(
         state=None, checkpoint_store=store, session_key="subagents"
     )
     manager2 = _build_manager(ctx2)
@@ -162,8 +162,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
         if not r.result:
             continue
         assert not r.result.startswith("probe complete for"), (
-            f"{r.tool_name} delivered raw tool output, not a final answer: "
-            f"{r.result!r}"
+            f"{r.tool_name} delivered raw tool output, not a final answer: {r.result!r}"
         )
 
     assert final, "manager produced no final answer on resume"

@@ -16,7 +16,7 @@ Example::
     }
 
     env = load_environment_config("sandbox.json").build()
-    ctx = RunContext(environment=env)
+    ctx = SessionContext(environment=env)
 """
 
 from __future__ import annotations

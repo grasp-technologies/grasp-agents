@@ -10,7 +10,7 @@ from .checkpoints import AgentCheckpoint, CheckpointKind, ProcessorCheckpoint
 from .store_keys import make_store_key
 
 if TYPE_CHECKING:
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +38,12 @@ class CheckpointPersistMixin:
     _persisted_messages: tuple[Any, ...] = ()
     _log_version: int = 0
 
-    def _checkpoint_store_key(self, ctx: RunContext[Any]) -> str | None:
+    def _checkpoint_store_key(self, ctx: SessionContext[Any]) -> str | None:
         if ctx.checkpoint_store is None or self._checkpoint_kind is None:
             return None
         return make_store_key(ctx.session_key, self._checkpoint_kind, self._path)
 
-    async def has_checkpoint(self, ctx: RunContext[Any]) -> bool:
+    async def has_checkpoint(self, ctx: SessionContext[Any]) -> bool:
         """
         True if a checkpoint head exists in the store for this object's key.
 
@@ -58,7 +58,7 @@ class CheckpointPersistMixin:
 
     async def _deserialize_checkpoint[CpT: ProcessorCheckpoint](
         self,
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
         checkpoint_type: type[CpT],
     ) -> CpT | None:
         store = ctx.checkpoint_store
@@ -77,7 +77,7 @@ class CheckpointPersistMixin:
 
     async def _serialize_checkpoint(
         self,
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
         checkpoint: ProcessorCheckpoint,
     ) -> None:
         store = ctx.checkpoint_store
@@ -97,7 +97,7 @@ class CheckpointPersistMixin:
 
     async def _serialize_agent_checkpoint(
         self,
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
         checkpoint: AgentCheckpoint,
     ) -> None:
         """
@@ -179,7 +179,7 @@ class CheckpointPersistMixin:
 
     async def _deserialize_agent_checkpoint(
         self,
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
     ) -> AgentCheckpoint | None:
         """
         Reconstruct an :class:`AgentCheckpoint` from head + message-log.

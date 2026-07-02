@@ -1,11 +1,11 @@
 """
-Optional machine-rehydration of ``RunContext.state`` across session
+Optional machine-rehydration of ``SessionContext.state`` across session
 checkpoint round-trips.
 
 The framework's default stance is that application state is rebuilt by the
-caller and passed at ``RunContext`` construction — the persistent source of
+caller and passed at ``SessionContext`` construction — the persistent source of
 truth is the app's own database, not the checkpoint. Serialization is
-therefore **opt-in**: set ``RunContext(serialize_state=True)`` for tests,
+therefore **opt-in**: set ``SessionContext(serialize_state=True)`` for tests,
 notebooks, and simple workloads where state is a plain container and
 round-tripping it through the session checkpoint is convenient.
 
@@ -25,7 +25,7 @@ restore path knows what to do with it:
   the type; we rehydrate via ``type(current_state)(**data)``.
 
 The kind is auto-detected at save time by inspection; only the opt-in
-toggle (``RunContext.serialize_state``) is configured.
+toggle (``SessionContext.serialize_state``) is configured.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """
 Unified :class:`MemoryProvider` — frontmatter-aware view of a memdir
-routed through :attr:`RunContext.file_backend`.
+routed through :attr:`SessionContext.file_backend`.
 
 The provider knows the memdir layout (``MEMORY.md`` as index, ``.md``
 topic files with YAML frontmatter, freshness from mtime); the
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from grasp_agents.file_backend.base import FileBackend
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.items import InputItem
 
@@ -86,7 +86,7 @@ class MemorySnapshot:
 
 class MemoryProvider:
     """
-    Cross-session memory loader over :attr:`RunContext.file_backend`.
+    Cross-session memory loader over :attr:`SessionContext.file_backend`.
 
     The provider is **read-shaped** — it surfaces the memdir snapshot to
     the system-prompt section and per-turn relevance attachment, but does
@@ -140,7 +140,7 @@ class MemoryProvider:
     def bind_backend(self, backend: FileBackend) -> None:
         """
         Bind a :class:`FileBackend` after construction. Called by the
-        :class:`RunContext` validator so users don't have to thread the
+        :class:`SessionContext` validator so users don't have to thread the
         backend explicitly into the provider's ctor.
         """
         self._backend = backend
@@ -152,7 +152,7 @@ class MemoryProvider:
         Return a frozen memdir snapshot. Cached after the first call.
 
         Requires a :class:`FileBackend` to be bound (via ctor or
-        :meth:`bind_backend`). The :class:`RunContext` validator binds
+        :meth:`bind_backend`). The :class:`SessionContext` validator binds
         the backend automatically when the memory provider is wired onto
         a context.
 
@@ -166,8 +166,8 @@ class MemoryProvider:
         if self._backend is None:
             raise ValueError(
                 "MemoryProvider.load requires a FileBackend. Bind one via "
-                "the ctor or attach the provider to a RunContext with "
-                "file_backend wired — the RunContext validator binds the "
+                "the ctor or attach the provider to a SessionContext with "
+                "file_backend wired — the SessionContext validator binds the "
                 "backend onto the provider automatically."
             )
         async with self._lock:
@@ -252,7 +252,7 @@ class MemoryProvider:
         self,
         snapshot: MemorySnapshot,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
         seen_paths: Collection[Path] | None = None,

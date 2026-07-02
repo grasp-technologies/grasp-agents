@@ -14,9 +14,9 @@ Usage::
         \"\"\"Add two numbers.\"\"\"
         return a + b
 
-    # With RunContext access:
+    # With SessionContext access:
     @function_tool
-    async def greet(name: str, *, ctx: RunContext[MyState]) -> str:
+    async def greet(name: str, *, ctx: SessionContext[MyState]) -> str:
         \"\"\"Greet by name.\"\"\"
         ctx.state.greeted = True
         return f"Hello, {name}!"
@@ -34,7 +34,7 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 # Parameters with these names are passed through from the executor,
 # not included in the tool's input schema.
@@ -122,7 +122,7 @@ class FunctionTool(BaseTool[BaseModel, Any, Any]):
         self,
         inp: BaseModel,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,

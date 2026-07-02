@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.durability.checkpoints import CheckpointKind
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.types.events import Event, ProcPacketOutEvent, ToolOutputEvent
 
@@ -80,7 +80,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
     def _resolve_processor(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         path: list[str] | None = None,
     ) -> Processor[InT, OutT, CtxT]:
         """
@@ -108,7 +108,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -128,7 +128,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         self,
         inp: InT,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -144,7 +144,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
     async def resume_stream(
         self,
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         path: list[str] | None = None,
         agent_ctx: AgentContext | None = None,

@@ -26,8 +26,8 @@ from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import local_environment
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.bash import Bash, BashInput, bash_tools
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput
 from grasp_agents.types.events import BackgroundTaskLaunchedEvent, UserMessageEvent
@@ -66,7 +66,9 @@ class _StubLLM(LLM):
         yield  # makes this an async generator
 
 
-def _loop(ctx: RunContext[None], *, path: list[str] | None = None) -> AgentLoop[None]:
+def _loop(
+    ctx: SessionContext[None], *, path: list[str] | None = None
+) -> AgentLoop[None]:
     """
     A minimal AgentLoop whose ``bg_tasks`` the companions read.
 
@@ -112,12 +114,14 @@ async def _bg(
     return result, (next(iter(new)) if new else None)
 
 
-def _ctx(tmp_path: Path) -> RunContext[None]:
+def _ctx(tmp_path: Path) -> SessionContext[None]:
     env = local_environment(allowed_roots=[tmp_path])
-    return RunContext(environment=env)
+    return SessionContext(environment=env)
 
 
-async def _flush(manager: BackgroundTaskManager[None], ctx: RunContext[None]) -> None:
+async def _flush(
+    manager: BackgroundTaskManager[None], ctx: SessionContext[None]
+) -> None:
     """
     Drive one ``drain`` pass for its log-mirroring side effect, discarding the
     bubbled events — ``drain`` owns flushing (there is no ``flush_progress``).
@@ -127,7 +131,7 @@ async def _flush(manager: BackgroundTaskManager[None], ctx: RunContext[None]) ->
 
 
 async def _drain_notes(
-    manager: BackgroundTaskManager[None], ctx: RunContext[None]
+    manager: BackgroundTaskManager[None], ctx: SessionContext[None]
 ) -> list[str]:
     """
     The completion notes a single turn-boundary ``drain`` injects. ``drain``
@@ -622,7 +626,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
             yield  # stream path unused (stream_llm=False)
 
     env = local_environment(allowed_roots=[tmp_path])
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
 
     transcript = LLMAgentTranscript()
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
@@ -796,9 +800,11 @@ async def test_companions_require_a_manager_in_scope() -> None:
 
 def _ctx_with_store(
     tmp_path: Path, store: Any, session_key: str = "s1"
-) -> RunContext[None]:
+) -> SessionContext[None]:
     env = local_environment(allowed_roots=[tmp_path])
-    return RunContext(environment=env, checkpoint_store=store, session_key=session_key)
+    return SessionContext(
+        environment=env, checkpoint_store=store, session_key=session_key
+    )
 
 
 async def test_backgrounded_bash_persists_pending_record(tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.processor_tool import ProcessorTool
 
 
@@ -42,8 +42,8 @@ def _tool() -> ProcessorTool[_Msg, _Msg, None]:
 
 def test_resolve_binds_each_call_to_its_own_ctx() -> None:
     tool = _tool()
-    ctx_a: RunContext[None] = RunContext(state=None)
-    ctx_b: RunContext[None] = RunContext(state=None)
+    ctx_a: SessionContext[None] = SessionContext(state=None)
+    ctx_b: SessionContext[None] = SessionContext(state=None)
 
     # The same tool instance is attached to two different hosts.
     tool.on_adopted(_Host())
@@ -67,8 +67,8 @@ def test_call_ctx_overrides_adoption_ctx() -> None:
     ctx, a dispatch with a different ctx resolves to the *call* ctx.
     """
     tool = _tool()
-    adopt_ctx: RunContext[None] = RunContext(state=None)
-    call_ctx: RunContext[None] = RunContext(state=None)
+    adopt_ctx: SessionContext[None] = SessionContext(state=None)
+    call_ctx: SessionContext[None] = SessionContext(state=None)
 
     class _HostWithCtx:
         tracing_enabled = True

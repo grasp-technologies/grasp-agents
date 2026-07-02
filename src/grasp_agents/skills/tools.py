@@ -24,7 +24,7 @@ from .types import SkillNotFoundError
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 LOAD_SKILL_DESCRIPTION = (
     "Load the full body (markdown instructions) of an available skill by name. "
@@ -47,7 +47,7 @@ async def load_skill(
         str, Field(description="Exact skill name from the <available_skills> catalog.")
     ],
     *,
-    ctx: RunContext[Any] | None = None,
+    ctx: SessionContext[Any] | None = None,
     agent_ctx: AgentContext | None = None,
 ) -> str:
     if ctx is None or ctx.skills is None:
@@ -88,7 +88,7 @@ async def list_skills(
         ),
     ] = False,
     *,
-    ctx: RunContext[Any] | None = None,
+    ctx: SessionContext[Any] | None = None,
     agent_ctx: AgentContext | None = None,
 ) -> str:
     if ctx is None or ctx.skills is None:

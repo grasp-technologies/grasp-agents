@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.agent_loop import AgentLoop, ResponseCapture
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
@@ -46,14 +46,14 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
-    ctx: RunContext[None] | None = None,
+    ctx: SessionContext[None] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
     memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
-    ctx = ctx if ctx is not None else RunContext[None](state=None)
+    ctx = ctx if ctx is not None else SessionContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
@@ -66,7 +66,7 @@ def _make_executor(
     return executor, memory, llm
 
 
-async def _drain(executor: AgentLoop[None], ctx: RunContext[None]) -> Response:
+async def _drain(executor: AgentLoop[None], ctx: SessionContext[None]) -> Response:
     # The bound ctx on the executor is what's used internally; the ctx
     # arg here is kept in the test signature to mark intent and so the
     # bound ctx can be reused via the executor if needed.
@@ -126,7 +126,7 @@ class TestBeforeAfterLlmHooks:
         executor.before_llm_hooks = [before_hook]  # type: ignore[assignment]
         executor.after_llm_hooks = [after_hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert len(before_calls) == 2
@@ -171,7 +171,7 @@ class TestBeforeAfterLlmHooks:
 
         executor.before_llm_hooks = [inject_tool_choice]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert injected_tool_choice == "required"
@@ -185,7 +185,7 @@ class TestBeforeAfterLlmHooks:
         assert executor.before_llm_hooks == []
         assert executor.after_llm_hooks == []
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
         assert executor.final_answer == "works"
 
@@ -228,7 +228,7 @@ class TestBeforeAfterToolHooks:
         executor.before_tool_hooks = [before_hook]  # type: ignore[assignment]
         executor.after_tool_hooks = [after_hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # before_tool assertions
@@ -272,7 +272,7 @@ class TestBeforeAfterToolHooks:
         executor.before_tool_hooks = [before_hook]  # type: ignore[assignment]
         executor.after_tool_hooks = [after_hook]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert before_count == 2
@@ -296,7 +296,7 @@ class TestBeforeAfterToolHooks:
         executor.before_tool_hooks = [should_not_fire]  # type: ignore[assignment]
         executor.after_tool_hooks = [should_not_fire]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert called is False
@@ -341,7 +341,7 @@ class TestHookOrdering:
         executor.before_tool_hooks = [btc]  # type: ignore[assignment]
         executor.after_tool_hooks = [atc]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert trace == [
@@ -374,7 +374,7 @@ class TestHookOrdering:
 
         executor.before_llm_hooks = [bg]  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         # Turn 0's regular ACT call, then the forced final-answer call.
@@ -423,7 +423,7 @@ class TestToolInputConverter:
 
         executor.tool_input_converters["search"] = override_api_key  # type: ignore[assignment]
 
-        ctx = RunContext[str](state="unused")
+        ctx = SessionContext[str](state="unused")
         await _drain(executor, ctx)
 
         assert len(received_inputs) == 1
@@ -452,7 +452,7 @@ class TestToolInputConverter:
             response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert len(received_inputs) == 1
@@ -504,7 +504,7 @@ class TestLlmInType:
 
         executor.tool_input_converters["search"] = inject_api_key  # type: ignore[assignment]
 
-        ctx = RunContext[str](state="unused")
+        ctx = SessionContext[str](state="unused")
         await _drain(executor, ctx)
 
         assert len(received_inputs) == 1
@@ -552,7 +552,7 @@ class TestLlmInType:
 
         # Pydantic v2 ignores extra fields by default, so this should
         # succeed — the extra api_key is silently dropped.
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
 
@@ -579,7 +579,7 @@ class TestToolOutputConverter:
 
         executor.tool_output_converters["echo"] = xml_converter  # type: ignore[assignment]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         tool_outputs = [
@@ -614,7 +614,7 @@ class TestStackedLoopHooks:
         executor.before_llm_hooks = [before1, before2]  # type: ignore[list-item]
         executor.after_llm_hooks = [after1, after2]  # type: ignore[list-item]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert order == ["before1", "before2", "after1", "after2"]
@@ -640,7 +640,7 @@ class TestStackedLoopHooks:
 
         executor.after_tool_hooks = [after1, after2]  # type: ignore[list-item]
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _drain(executor, ctx)
 
         assert order == ["after1", "after2"]

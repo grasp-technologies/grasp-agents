@@ -21,7 +21,7 @@ from grasp_agents.durability.checkpoints import (
 )
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.events import (
     Event,
@@ -126,16 +126,14 @@ class InputFailProcessor(Processor[str, str, None]):
 
 async def run_workflow(
     wf: SequentialWorkflow[str, str, None] | LoopedWorkflow[str, str, None],
-    ctx: RunContext[None],
+    ctx: SessionContext[None],
     in_args: str | None = None,
     step: int | None = None,
 ) -> list[str]:
     """Run a workflow via run_stream and collect final payloads."""
     wf.on_adopted(ctx=ctx)
     payloads: list[str] = []
-    async for event in wf.run_stream(
-        in_args=in_args, exec_id="test", step=step
-    ):
+    async for event in wf.run_stream(in_args=in_args, exec_id="test", step=step):
         if isinstance(event, ProcPacketOutEvent) and event.source == wf.name:
             payloads = list(event.data.payloads)
     return payloads
@@ -143,16 +141,14 @@ async def run_workflow(
 
 async def run_parallel(
     par: ParallelProcessor[str, str, None],
-    ctx: RunContext[None],
+    ctx: SessionContext[None],
     in_args: list[str] | None = None,
     step: int | None = None,
 ) -> list[str]:
     """Run a ParallelProcessor and collect final payloads."""
     par.on_adopted(ctx=ctx)
     payloads: list[str] = []
-    async for event in par.run_stream(
-        in_args=in_args, exec_id="test", step=step
-    ):
+    async for event in par.run_stream(in_args=in_args, exec_id="test", step=step):
         if isinstance(event, ProcPacketOutEvent) and event.source == par.name:
             payloads = list(event.data.payloads)
     return payloads
@@ -169,7 +165,7 @@ class TestSequentialWorkflowCheckpoint:
         b = AppendProcessor("B")
         c = AppendProcessor("C")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b, c])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         wf.on_adopted(ctx=ctx)
 
         result = await run_workflow(wf, ctx, in_args="start")
@@ -183,7 +179,7 @@ class TestSequentialWorkflowCheckpoint:
         b = AppendProcessor("B")
         c = AppendProcessor("C")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b, c])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="seq-1"
         )
         wf.on_adopted(ctx=ctx)
@@ -207,7 +203,7 @@ class TestSequentialWorkflowCheckpoint:
         b1 = FailOnCallProcessor("B", fail_on_call=1)
         c1 = CountingProcessor("C")
         wf1 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a1, b1, c1])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="seq-2"
         )
         wf1.on_adopted(ctx=ctx1)
@@ -226,7 +222,7 @@ class TestSequentialWorkflowCheckpoint:
         b2 = CountingProcessor("B")
         c2 = CountingProcessor("C")
         wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a2, b2, c2])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="seq-2"
         )
         wf2.on_adopted(ctx=ctx2)
@@ -264,7 +260,7 @@ class TestSequentialWorkflowCheckpoint:
         fan = FanOutProcessor(name="fan")
         fail_b = FailOnCallProcessor("B", fail_on_call=1)
         wf1 = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan, fail_b])
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="seq-multi"
         )
         wf1.on_adopted(ctx=ctx1)
@@ -276,7 +272,7 @@ class TestSequentialWorkflowCheckpoint:
         fan2 = CountingProcessor("fan")
         b2 = AppendProcessor("B")
         wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan2, b2])
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="seq-multi"
         )
         wf2.on_adopted(ctx=ctx2)
@@ -298,14 +294,12 @@ class TestLoopedWorkflowCheckpoint:
             name="loop", subprocs=[a, b], exit_proc=b, max_iterations=3
         )
 
-        def _always_terminate(
-            out_packet: Packet[str], **kwargs: Any
-        ) -> bool:
+        def _always_terminate(out_packet: Packet[str], **kwargs: Any) -> bool:
             return True
 
         wf.terminate_workflow_loop_impl = _always_terminate
 
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         result = await run_workflow(wf, ctx, in_args="start")
         assert result == ["start->A->B"]
 
@@ -320,16 +314,14 @@ class TestLoopedWorkflowCheckpoint:
 
         iteration_count = 0
 
-        def count_terminate(
-            out_packet: Packet[str], **kwargs: Any
-        ) -> bool:
+        def count_terminate(out_packet: Packet[str], **kwargs: Any) -> bool:
             nonlocal iteration_count
             iteration_count += 1
             return iteration_count >= 2
 
         wf.add_workflow_loop_terminator(count_terminate)
 
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="loop-1"
         )
 
@@ -352,7 +344,7 @@ class TestLoopedWorkflowCheckpoint:
         wf1 = LoopedWorkflow[str, str, None](
             name="loop", subprocs=[a1, b1], exit_proc=b1, max_iterations=2
         )
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="loop-2"
         )
         wf1.on_adopted(ctx=ctx1)
@@ -373,13 +365,11 @@ class TestLoopedWorkflowCheckpoint:
             name="loop", subprocs=[a2, b2], exit_proc=b2, max_iterations=2
         )
 
-        def _always_terminate2(
-            out_packet: Packet[str], **kwargs: Any
-        ) -> bool:
+        def _always_terminate2(out_packet: Packet[str], **kwargs: Any) -> bool:
             return True
 
         wf2.terminate_workflow_loop_impl = _always_terminate2
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="loop-2"
         )
 
@@ -404,7 +394,7 @@ class TestLoopedWorkflowCheckpoint:
         wf = LoopedWorkflow[str, str, None](
             name="loop", subprocs=[a, b, c], exit_proc=b, max_iterations=2
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="loop-midexit"
         )
         first = await run_workflow(wf, ctx, in_args="s")
@@ -418,7 +408,7 @@ class TestLoopedWorkflowCheckpoint:
         wf2 = LoopedWorkflow[str, str, None](
             name="loop", subprocs=[a2, b2, c2], exit_proc=b2, max_iterations=2
         )
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="loop-midexit"
         )
         resumed = await run_workflow(wf2, ctx2)
@@ -435,7 +425,7 @@ class TestParallelProcessorCheckpoint:
     async def test_basic_parallel_without_session(self) -> None:
         subproc = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         par.on_adopted(ctx=ctx)
 
         result = await run_parallel(par, ctx, in_args=["a", "b", "c"])
@@ -446,7 +436,7 @@ class TestParallelProcessorCheckpoint:
         store = InMemoryCheckpointStore()
         subproc = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="par-1"
         )
         par.on_adopted(ctx=ctx)
@@ -471,7 +461,7 @@ class TestParallelProcessorCheckpoint:
         # "a" succeeds, "FAIL" crashes (InputFailProcessor survives deepcopy)
         subproc1 = InputFailProcessor("worker", fail_input="FAIL")
         par1 = ParallelProcessor[str, str, None](subproc=subproc1)
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="par-2"
         )
         par1.on_adopted(ctx=ctx1)
@@ -490,7 +480,7 @@ class TestParallelProcessorCheckpoint:
         # Resume with a non-failing processor
         subproc2 = AppendProcessor("worker")
         par2 = ParallelProcessor[str, str, None](subproc=subproc2)
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="par-2"
         )
         par2.on_adopted(ctx=ctx2)
@@ -506,7 +496,7 @@ class TestParallelProcessorCheckpoint:
         store = InMemoryCheckpointStore()
         subproc = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="par-3"
         )
         par.on_adopted(ctx=ctx)
@@ -516,7 +506,7 @@ class TestParallelProcessorCheckpoint:
         # Resume
         subproc2 = CountingProcessor("worker")
         par2 = ParallelProcessor[str, str, None](subproc=subproc2)
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="par-3"
         )
         par2.on_adopted(ctx=ctx2)
@@ -530,7 +520,7 @@ class TestParallelProcessorCheckpoint:
         """drop_failed=True drops failures — no ``None`` payloads downstream."""
         subproc = InputFailProcessor("worker", fail_input="FAIL")
         par = ParallelProcessor[str, str, None](subproc=subproc, drop_failed=True)
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
 
         result = await run_parallel(par, ctx, in_args=["ok", "FAIL"])
 
@@ -544,7 +534,7 @@ class TestParallelProcessorCheckpoint:
         subproc = InputFailProcessor("worker", fail_input="FAIL")
         # drop_failed: the failed copy is dropped instead of failing the run.
         par = ParallelProcessor[str, str, None](subproc=subproc, drop_failed=True)
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="par-rt"
         )
         par.on_adopted(ctx=ctx)
@@ -581,9 +571,7 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
     ) -> None:
         if completed_step == self._crash_after_step:
             raise RuntimeError(f"Simulated crash after step {completed_step}")
-        await super().save_checkpoint(
-            completed_step=completed_step, packet=packet
-        )
+        await super().save_checkpoint(completed_step=completed_step, packet=packet)
 
 
 class TestCrashAfterCompletion:
@@ -605,10 +593,8 @@ class TestCrashAfterCompletion:
 
         a1 = AppendProcessor("A")
         b1 = AppendProcessor("B")
-        wf1 = CrashAfterStepWorkflow(
-            name="wf", subprocs=[a1, b1], crash_after_step=1
-        )
-        ctx1: RunContext[None] = RunContext(
+        wf1 = CrashAfterStepWorkflow(name="wf", subprocs=[a1, b1], crash_after_step=1)
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="crash1"
         )
 
@@ -624,10 +610,8 @@ class TestCrashAfterCompletion:
         # Resume: A skipped, B re-delivered (step=1 matches its checkpoint)
         a2 = CountingProcessor("A")
         b2 = CountingProcessor("B")
-        wf2 = SequentialWorkflow[str, str, None](
-            name="wf", subprocs=[a2, b2]
-        )
-        ctx2: RunContext[None] = RunContext(
+        wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[a2, b2])
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="crash1"
         )
         wf2.on_adopted(ctx=ctx2)
@@ -669,7 +653,7 @@ class TestCrashAfterCompletion:
         wf1 = CrashAfterStepWorkflow(
             name="wf", subprocs=[fan1, par1], crash_after_step=1
         )
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="crash2"
         )
         par1.on_adopted(ctx=ctx1)
@@ -688,10 +672,8 @@ class TestCrashAfterCompletion:
         fan2 = CountingProcessor("fan")
         worker2 = CountingProcessor("worker")
         par2 = ParallelProcessor[str, str, None](subproc=worker2)
-        wf2 = SequentialWorkflow[str, str, None](
-            name="wf", subprocs=[fan2, par2]
-        )
-        ctx2: RunContext[None] = RunContext(
+        wf2 = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan2, par2])
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="crash2"
         )
         wf2.on_adopted(ctx=ctx2)
@@ -730,7 +712,7 @@ class TestStoreFailurePropagation:
         a = AppendProcessor("A")
         b = AppendProcessor("B")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="fail-wf"
         )
         wf.on_adopted(ctx=ctx)
@@ -744,7 +726,7 @@ class TestStoreFailurePropagation:
         store = FailingStore(fail_after=0)
         subproc = AppendProcessor("worker")
         par = ParallelProcessor[str, str, None](subproc=subproc)
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="fail-par"
         )
         par.on_adopted(ctx=ctx)
@@ -761,7 +743,7 @@ class TestStoreFailurePropagation:
         a = AppendProcessor("A")
         b = AppendProcessor("B")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[a, b])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="corrupt-wf"
         )
         wf.on_adopted(ctx=ctx)

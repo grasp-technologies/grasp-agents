@@ -23,7 +23,7 @@ from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import InputRenderableModel
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
@@ -65,8 +65,8 @@ class FailingLLM(MockLLM):
         raise RuntimeError("boom")
 
 
-def _ctx(tmp_path: Path) -> RunContext[None]:
-    return RunContext[None](
+def _ctx(tmp_path: Path) -> SessionContext[None]:
+    return SessionContext[None](
         state=None, file_backend=LocalFileBackend(allowed_roots=[tmp_path])
     )
 
@@ -200,7 +200,7 @@ async def test_explicit_transport_is_used_by_members() -> None:
     # No file_backend on ctx: the team routes every send through the explicit
     # transport, so the recording flag being set proves it reached the members.
     transport = RecordingTransport()
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
@@ -233,7 +233,7 @@ async def test_member_failure_reports_member_error(tmp_path: Path) -> None:
 async def test_team_without_file_backend_uses_in_memory() -> None:
     # No file_backend and no explicit transport: the team provisions one shared
     # in-memory transport, so a single-process team needs zero file wiring.
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     alice = _agent("alice", [_send("bob", "hi", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
@@ -253,7 +253,7 @@ async def test_team_over_checkpoint_transport() -> None:
     transport = CheckpointMailboxTransport(
         InMemoryCheckpointStore(), session_key="team"
     )
-    ctx = RunContext[None](state=None)
+    ctx = SessionContext[None](state=None)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
     team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
@@ -281,7 +281,7 @@ async def test_resume_does_not_reseed_or_reset_budget() -> None:
             "alice", [_send("bob", "ping", "c1"), _text_response("alice done")]
         )
         bob = _agent("bob", [_text_response("bob got it")])
-        ctx = RunContext[None](state=None, checkpoint_store=store)
+        ctx = SessionContext[None](state=None, checkpoint_store=store)
         return AgentTeam([alice, bob], entry="alice", ctx=ctx), bob
 
     team1, _ = build()
@@ -324,7 +324,7 @@ async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
     entry1 = _agent("entry", [_text_response("hi")])
     team1 = AgentTeam(
         [entry1],
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
         transport=_DropFirstPost(),
     )
     result1 = await team1.run("kick off")
@@ -337,7 +337,7 @@ async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
     entry2 = _agent("entry", [_text_response("hi")])
     team2 = AgentTeam(
         [entry2],
-        ctx=RunContext[None](state=None, checkpoint_store=store),
+        ctx=SessionContext[None](state=None, checkpoint_store=store),
         transport=CheckpointMailboxTransport(store, session_key="s"),
     )
     result2 = await team2.run("kick off")

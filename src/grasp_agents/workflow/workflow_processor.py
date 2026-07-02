@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from grasp_agents.durability.checkpoints import CheckpointKind, WorkflowCheckpoint
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import SpanKind
 from grasp_agents.types.errors import WorkflowConstructionError
 from grasp_agents.types.io import ProcName
@@ -26,7 +26,7 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
         start_proc: Processor[InT, Any, CtxT],
         end_proc: Processor[Any, OutT, CtxT],
         *,
-        ctx: RunContext[CtxT] | None = None,
+        ctx: SessionContext[CtxT] | None = None,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
         tracing_enabled: bool = True,

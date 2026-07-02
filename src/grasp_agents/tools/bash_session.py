@@ -40,8 +40,8 @@ from .bash_common import (
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.run_context import RunContext
     from grasp_agents.sandbox.exec_backend import ExecSession
+    from grasp_agents.session_context import SessionContext
 
 
 class BashSessionHolder:
@@ -165,7 +165,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         self,
         inp: BashInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -177,7 +177,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
         if backend is None:
             raise ValueError(
                 "BashSession requires ctx.exec_backend. Wire an ExecBackend on "
-                "RunContext (e.g. via local_environment(...)) before running "
+                "SessionContext (e.g. via local_environment(...)) before running "
                 "the agent."
             )
         session_backend = backend if isinstance(backend, SessionCapable) else None

@@ -2,7 +2,7 @@
 ``Bash`` — run a shell command via ``ctx.exec_backend``.
 
 Opt-in and stateless between calls: the tool consumes the :class:`ExecBackend`
-wired onto :attr:`RunContext.exec_backend` (set it via :func:`local_environment`
+wired onto :attr:`SessionContext.exec_backend` (set it via :func:`local_environment`
 or by constructing a backend directly). Without an exec backend the tool refuses
 to run — an agent gets no shell access by default.
 
@@ -54,8 +54,8 @@ if TYPE_CHECKING:
 
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.agent.background_tasks import BackgroundTaskManager
-    from grasp_agents.run_context import RunContext
     from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.events import Event
 
 DEFAULT_AUTO_BACKGROUND_AT = 120.0
@@ -164,7 +164,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
     def _prepare(
         self,
         inp: BashInput,
-        ctx: RunContext[Any] | None,
+        ctx: SessionContext[Any] | None,
         shell_state: ShellState | None,
     ) -> tuple[AsyncIterator[ExecChunk | ExecResult], float, Path | None]:
         """
@@ -178,7 +178,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         if ctx is None or ctx.exec_backend is None:
             raise ValueError(
                 "Bash requires ctx.exec_backend. Wire an ExecBackend on "
-                "RunContext (e.g. via local_environment(...)) before running "
+                "SessionContext (e.g. via local_environment(...)) before running "
                 "the agent."
             )
         if self._block_leading_sleep and LEADING_SLEEP.match(inp.command):
@@ -226,7 +226,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         self,
         inp: BashInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -250,7 +250,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
         self,
         inp: BashInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -277,7 +277,7 @@ class Bash(BaseTool[BashInput, BashResult, Any]):
 
     @staticmethod
     async def _persist_cwd(
-        ctx: RunContext[Any], shell_state: ShellState, state_file: Path
+        ctx: SessionContext[Any], shell_state: ShellState, state_file: Path
     ) -> None:
         """Read the command's recorded final directory into ``shell_state``."""
         backend = ctx.file_backend

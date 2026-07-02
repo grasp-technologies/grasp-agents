@@ -11,7 +11,7 @@ from grasp_agents.agent_team.agent_card import MemberCard
 from grasp_agents.agent_team.tools import SendMessageInput, SendMessageTool
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.mailbox import CheckpointMailboxTransport
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.message import TeamMessage
 
 
@@ -20,8 +20,8 @@ class _Ticket(BaseModel):
     points: int
 
 
-def _ctx() -> RunContext[None]:
-    return RunContext[None](state=None, checkpoint_store=InMemoryCheckpointStore())
+def _ctx() -> SessionContext[None]:
+    return SessionContext[None](state=None, checkpoint_store=InMemoryCheckpointStore())
 
 
 @pytest.mark.asyncio

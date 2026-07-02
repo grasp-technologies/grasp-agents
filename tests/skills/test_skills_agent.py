@@ -1,4 +1,4 @@
-"""Tests: skills section auto-attaches on LLMAgent + reads RunContext.skills."""
+"""Tests: skills section auto-attaches on LLMAgent + reads SessionContext.skills."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.context.prompt_builder import SystemPromptSection
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.skills import (
     SkillRegistry,
     list_skills,
@@ -60,7 +60,7 @@ def _make_agent(
     env_info: bool = False,
     with_skill_tools: bool = False,
     enable_skills: bool = True,
-    ctx: RunContext[_State] | None = None,
+    ctx: SessionContext[_State] | None = None,
 ) -> LLMAgent[str, str, _State]:
     return LLMAgent[str, str, _State](
         name="skills_test_agent",
@@ -74,7 +74,7 @@ def _make_agent(
 
 
 async def _build_system_prompt(
-    agent: LLMAgent[str, str, _State], ctx: RunContext[_State]
+    agent: LLMAgent[str, str, _State], ctx: SessionContext[_State]
 ) -> str | None:
     agent.on_adopted(ctx=ctx)
     return await agent.build_system_prompt(exec_id="e1")
@@ -152,7 +152,7 @@ class TestSystemPromptSection:
     async def test_empty_registry_no_block(self, tmp_path: Path) -> None:
         del tmp_path
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State())
+        ctx: SessionContext[_State] = SessionContext(state=_State())
         # No ctx.skills set
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is None
@@ -161,7 +161,7 @@ class TestSystemPromptSection:
     async def test_section_renders_catalog(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill description.")
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             skills=SkillRegistry.from_path(tmp_path),
         )
@@ -182,7 +182,7 @@ class TestSystemPromptSection:
             env_info=False,
             enable_skills=True,
         )
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             skills=SkillRegistry.from_path(tmp_path),
         )
@@ -204,7 +204,7 @@ class TestSystemPromptSection:
         # system_prompt_builder hook was removed — sections subsume it).
         agent.add_system_prompt_section(SystemPromptSection(name="dyn", compute=dyn))
 
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(),
             skills=SkillRegistry.from_path(tmp_path),
         )
@@ -255,7 +255,7 @@ class TestCatalogSelectorHelper:
         registry.set_selector(keep_alpha)
 
         agent = _make_agent()
-        ctx: RunContext[_State] = RunContext(state=_State(), skills=registry)
+        ctx: SessionContext[_State] = SessionContext(state=_State(), skills=registry)
         prompt = await _build_system_prompt(agent, ctx)
         assert prompt is not None
         # Both skills still in the catalog — selector is NOT applied.
@@ -270,7 +270,7 @@ class TestLoadSkillTool:
     @pytest.mark.asyncio
     async def test_returns_body(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x", body="ALPHA BODY")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         result = await load_skill(name="alpha", ctx=ctx)
@@ -285,7 +285,7 @@ class TestLoadSkillTool:
         _write_skill(
             tmp_path, "alpha", "x", body="Proofread the user's text.\n\n$ARGUMENTS"
         )
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         result = await load_skill(name="alpha", ctx=ctx)
@@ -298,7 +298,7 @@ class TestLoadSkillTool:
         # Named placeholders ($ARG_NAME) are stripped too — they'd otherwise
         # leak as literals on a model-invoked load.
         _write_skill(tmp_path, "alpha", "x", body="Search the index.\n\n$QUERY")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         result = await load_skill(name="alpha", ctx=ctx)
@@ -308,7 +308,7 @@ class TestLoadSkillTool:
 
     @pytest.mark.asyncio
     async def test_no_registry_errors(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State())
+        ctx: SessionContext[_State] = SessionContext(state=_State())
         result = await load_skill(name="nope", ctx=ctx)
         assert isinstance(result, ToolErrorInfo)
         assert "no skills" in result.error.lower()
@@ -316,7 +316,7 @@ class TestLoadSkillTool:
     @pytest.mark.asyncio
     async def test_unknown_skill_errors(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "x")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         result = await load_skill(name="nonexistent", ctx=ctx)
@@ -326,7 +326,7 @@ class TestLoadSkillTool:
     @pytest.mark.asyncio
     async def test_mid_session_edit_visible(self, tmp_path: Path) -> None:
         skill_md = _write_skill(tmp_path, "alpha", "x", body="ORIGINAL BODY")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
 
@@ -348,7 +348,7 @@ class TestLoadSkillTool:
 class TestListSkillsTool:
     @pytest.mark.asyncio
     async def test_no_registry(self) -> None:
-        ctx: RunContext[_State] = RunContext(state=_State())
+        ctx: SessionContext[_State] = SessionContext(state=_State())
         result = await list_skills(ctx=ctx)
         assert isinstance(result, str)
         assert "no skills" in result.lower()
@@ -356,7 +356,7 @@ class TestListSkillsTool:
     @pytest.mark.asyncio
     async def test_returns_catalog(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill.")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
         result = await list_skills(ctx=ctx)
@@ -367,7 +367,7 @@ class TestListSkillsTool:
     @pytest.mark.asyncio
     async def test_refresh_picks_up_new_skill(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha", "Alpha skill.")
-        ctx: RunContext[_State] = RunContext(
+        ctx: SessionContext[_State] = SessionContext(
             state=_State(), skills=SkillRegistry.from_path(tmp_path)
         )
 

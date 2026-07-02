@@ -19,7 +19,7 @@ from grasp_agents.memory import (
     default_memdir_path,
 )
 from grasp_agents.memory.default_path import GRASP_MEMORY_ENV
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,10 +40,10 @@ def _aged_entry(name: str, age_seconds: float, tmp_path: Path) -> MemoryEntry:
     return MemoryEntry(frontmatter=fm, body="B", path=f, mtime_ms=int(old * 1000))
 
 
-def _make_ctx(memdir: Path) -> RunContext[Any]:
+def _make_ctx(memdir: Path) -> SessionContext[Any]:
     """Build a ctx wired to LocalFileBackend + MemoryProvider over memdir."""
     backend = LocalFileBackend(allowed_roots=[memdir])
-    return RunContext[Any](file_backend=backend, memory=MemoryProvider(memdir))
+    return SessionContext[Any](file_backend=backend, memory=MemoryProvider(memdir))
 
 
 # ---------- InMemoryMemoryProvider ----------
@@ -120,7 +120,7 @@ class TestMemoryProviderLocal:
         # nested-missing path; with auto-create off the provider returns an
         # empty snapshot rather than bootstrapping an index.
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(missing, auto_create_index=False),
         )
@@ -133,7 +133,7 @@ class TestMemoryProviderLocal:
         """Default auto-create bootstraps MEMORY.md (and the dir) when absent."""
         memdir = tmp_path / "mem"
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](file_backend=backend, memory=MemoryProvider(memdir))
+        ctx = SessionContext[Any](file_backend=backend, memory=MemoryProvider(memdir))
         assert ctx.memory is not None
         snap = await ctx.memory.load()
         assert (memdir / "MEMORY.md").is_file()
@@ -147,7 +147,7 @@ class TestMemoryProviderLocal:
         memdir = tmp_path / "mem2"
         memdir.mkdir()
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(memdir, auto_create_index=False),
         )
@@ -163,7 +163,7 @@ class TestMemoryProviderLocal:
 
     @pytest.mark.asyncio
     async def test_load_requires_file_backend(self, tmp_path: Path) -> None:
-        # Validator catches missing backend at RunContext construction,
+        # Validator catches missing backend at SessionContext construction,
         # but call ``load`` directly with a hand-rolled namespace to
         # exercise the runtime guard too.
         p = MemoryProvider(tmp_path)
@@ -172,33 +172,28 @@ class TestMemoryProviderLocal:
 
 
 class TestMemdirAdmission:
-    """The RunContext validator admits the memdir into the backend roots."""
+    """The SessionContext validator admits the memdir into the backend roots."""
 
-    def test_memdir_outside_allowed_roots_is_auto_added(
-        self, tmp_path: Path
-    ) -> None:
+    def test_memdir_outside_allowed_roots_is_auto_added(self, tmp_path: Path) -> None:
         # Backend rooted at a sibling dir that does NOT contain the memdir.
         work = tmp_path / "work"
         work.mkdir()
         memdir = tmp_path / "mem"
         backend = LocalFileBackend(allowed_roots=[work])
         # No raise — the memdir is admitted into allowed_roots instead.
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(memdir, auto_create_index=False),
         )
         assert ctx.file_backend is not None
         assert any(
-            memdir == r or r in memdir.parents
-            for r in ctx.file_backend.allowed_roots
+            memdir == r or r in memdir.parents for r in ctx.file_backend.allowed_roots
         )
 
-    def test_admission_is_idempotent_when_already_covered(
-        self, tmp_path: Path
-    ) -> None:
+    def test_admission_is_idempotent_when_already_covered(self, tmp_path: Path) -> None:
         backend = LocalFileBackend(allowed_roots=[tmp_path])
         before = len(backend.allowed_roots)
-        RunContext[Any](
+        SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(tmp_path / "mem", auto_create_index=False),
         )
@@ -217,7 +212,7 @@ class TestFreshness:
         old = time.time() - 30 * 86400  # 30 days
         os.utime(idx, (old, old))
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(tmp_path, stale_after=timedelta(days=7)),
         )
@@ -231,7 +226,7 @@ class TestFreshness:
     async def test_fresh_index_no_warning(self, tmp_path: Path) -> None:
         (tmp_path / "MEMORY.md").write_text("# idx\n", encoding="utf-8")
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(tmp_path, stale_after=timedelta(days=7)),
         )
@@ -245,7 +240,7 @@ class TestFreshness:
         old = time.time() - 100 * 86400
         os.utime(f, (old, old))
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(tmp_path, stale_after=timedelta(days=30)),
         )
@@ -259,7 +254,7 @@ class TestFreshness:
         idx.write_text("# idx\n", encoding="utf-8")
         old = time.time() - 2 * 3600  # 2 hours
         os.utime(idx, (old, old))
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
             memory=MemoryProvider(tmp_path, stale_after=timedelta(hours=1)),
         )
@@ -274,7 +269,7 @@ class TestFreshness:
         idx.write_text("# idx\n", encoding="utf-8")
         old = time.time() - 30 * 60  # 30 minutes
         os.utime(idx, (old, old))
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
             memory=MemoryProvider(tmp_path, stale_after=timedelta(hours=1)),
         )
@@ -288,7 +283,7 @@ class TestFreshness:
         idx.write_text("# idx\n", encoding="utf-8")
         old = time.time() - 2.5 * 86400  # 2.5 days vs a 2-day threshold
         os.utime(idx, (old, old))
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=LocalFileBackend(allowed_roots=[tmp_path]),
             memory=MemoryProvider(tmp_path, stale_after=timedelta(days=2)),
         )
@@ -304,7 +299,7 @@ class TestFreshness:
         old = time.time() - 30 * 86400
         os.utime(idx, (old, old))
         backend = LocalFileBackend(allowed_roots=[tmp_path])
-        ctx = RunContext[Any](
+        ctx = SessionContext[Any](
             file_backend=backend,
             memory=MemoryProvider(tmp_path, stale_after=timedelta()),
         )

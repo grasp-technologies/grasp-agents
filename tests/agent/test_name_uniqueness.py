@@ -23,8 +23,8 @@ from pydantic import BaseModel
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.llm.llm import LLM
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import RunnerError, WorkflowConstructionError
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
@@ -101,7 +101,7 @@ class _Tool(BaseTool[_ToolInput, str, Any]):
 def _agent(name: str, tool_names: list[str]) -> LLMAgent[str, str, None]:
     return LLMAgent[str, str, None](
         name=name,
-        ctx=RunContext[None](state=None),
+        ctx=SessionContext[None](state=None),
         llm=_StubLLM(),
         tools=[_Tool(t) for t in tool_names],
     )
@@ -144,7 +144,7 @@ def test_runner_rejects_tool_name_colliding_with_a_node_name() -> None:
     # node "A" has a tool named "B", and "B" is also a node → collision
     a = LLMAgent[str, str, None](
         name="A",
-        ctx=RunContext[None](state=None),
+        ctx=SessionContext[None](state=None),
         llm=_StubLLM(),
         tools=[_Tool("B")],
         recipients=[END_PROC_NAME],

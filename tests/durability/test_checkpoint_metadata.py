@@ -22,7 +22,7 @@ from grasp_agents.durability import (
     SessionCheckpoint,
 )
 from grasp_agents.durability.checkpoints import SCHEMA_VERSION_SUMMARIES
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from tests.durability.test_sessions import (  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
     MockLLM,
     _text_response,
@@ -41,13 +41,13 @@ def _make_agent(
     session_key: str,
     store: InMemoryCheckpointStore,
     state_type: type[_MyState] = _MyState,
-) -> tuple[LLMAgent[str, str, _MyState], RunContext[_MyState]]:
+) -> tuple[LLMAgent[str, str, _MyState], SessionContext[_MyState]]:
     agent = LLMAgent[str, str, _MyState](
         name="test_agent",
         llm=MockLLM(responses_queue=responses),
         stream_llm=True,
     )
-    ctx: RunContext[_MyState] = RunContext(
+    ctx: SessionContext[_MyState] = SessionContext(
         checkpoint_store=store,
         session_key=session_key,
         state=state_type(),
@@ -136,7 +136,7 @@ class TestContextRoundTrip:
             llm=MockLLM(responses_queue=[_text_response("hi")]),
             stream_llm=True,
         )
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             checkpoint_store=store,
             session_key="s2",
             state=None,
@@ -167,7 +167,7 @@ class TestSerializeStateOptIn:
             stream_llm=True,
         )
         # No serialize_state -> defaults to False.
-        ctx: RunContext[_MyState] = RunContext(
+        ctx: SessionContext[_MyState] = SessionContext(
             checkpoint_store=store, session_key="s-off", state=_MyState()
         )
         ctx.state.pathway_id = "p-1"
@@ -185,7 +185,7 @@ class TestSerializeStateOptIn:
             llm=MockLLM(responses_queue=[_text_response("hi")]),
             stream_llm=True,
         )
-        ctx1: RunContext[_MyState] = RunContext(
+        ctx1: SessionContext[_MyState] = SessionContext(
             checkpoint_store=store, session_key="s-off2", state=_MyState()
         )
         ctx1.state.pathway_id = "p-99"
@@ -198,7 +198,7 @@ class TestSerializeStateOptIn:
             llm=MockLLM(responses_queue=[_text_response("follow")]),
             stream_llm=True,
         )
-        ctx2: RunContext[_MyState] = RunContext(
+        ctx2: SessionContext[_MyState] = SessionContext(
             checkpoint_store=store, session_key="s-off2", state=_MyState()
         )
         agent2.on_adopted(ctx=ctx2)
@@ -281,7 +281,7 @@ class TestPrePersistInput:
             llm=_CheckingLLM(responses_queue=[_text_response("hi")]),
             stream_llm=True,
         )
-        ctx: RunContext[_MyState] = RunContext(
+        ctx: SessionContext[_MyState] = SessionContext(
             checkpoint_store=store,
             session_key="s-pp",
             state=_MyState(),

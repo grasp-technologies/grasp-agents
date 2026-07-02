@@ -32,7 +32,6 @@ from typing import Any
 
 import pytest
 
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     NetworkPolicy,
     SandboxPolicy,
@@ -42,6 +41,7 @@ from grasp_agents.sandbox import (
     seatbelt_argv,
 )
 from grasp_agents.sandbox.local import seatbelt as seatbelt_mod
+from grasp_agents.session_context import SessionContext
 
 from ._bg_harness import (
     background,
@@ -350,7 +350,7 @@ async def test_seatbelt_network_all_allows_live(tmp_path: Path) -> None:
 @pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
 async def test_seatbelt_background_poll_and_complete(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
     agent_ctx, mgr = make_stack()
 
     note, task_id = await background(
@@ -370,7 +370,7 @@ async def test_seatbelt_background_poll_and_complete(tmp_path: Path) -> None:
 @pytest.mark.skipif(not _CAN_APPLY, reason="sandbox-exec cannot apply here")
 async def test_seatbelt_background_kill_terminates(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
     agent_ctx, mgr = make_stack()
 
     marker = tmp_path / "ticks.txt"
@@ -402,7 +402,7 @@ async def test_seatbelt_background_small_result_inlined(tmp_path: Path) -> None:
     # Under confinement too, a finished command's output is delivered inline in
     # its completion note and the task is dropped.
     env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
     agent_ctx, mgr = make_stack()
 
     _note, task_id = await background(
@@ -424,7 +424,7 @@ async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> Non
     # Cap-and-defer under Seatbelt: a large result is excerpted in the note,
     # which points at the task's .grasp log holding the full output.
     env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
     agent_ctx, mgr = make_stack()
 
     _note, task_id = await background(
@@ -461,7 +461,7 @@ async def test_seatbelt_background_writes_greppable_log(tmp_path: Path) -> None:
 
     env = local_environment(allowed_roots=[tmp_path], confinement="seatbelt")
     store = InMemoryCheckpointStore()
-    ctx: RunContext[None] = RunContext(
+    ctx: SessionContext[None] = SessionContext(
         environment=env, checkpoint_store=store, session_key="s1"
     )
     agent_ctx, mgr = make_stack()

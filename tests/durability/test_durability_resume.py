@@ -32,7 +32,7 @@ from grasp_agents.durability.context_serialization import (
     rehydrate_context,
     serialize_context,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.items import InputItem, InputMessageItem
 from tests.durability.test_sessions import (  # type: ignore[attr-defined]
     MockLLM,
@@ -77,7 +77,7 @@ class TestWithRetryTranscript:
     async def test_retry_does_not_duplicate_input(self) -> None:
         agent = LLMAgent[str, str, None](
             name="t",
-            ctx=RunContext[None](),
+            ctx=SessionContext[None](),
             llm=_FlakyLLM(responses_queue=[_text_response("ok")], fail_times=1),
             max_retries=1,
             env_info=False,
@@ -160,7 +160,7 @@ class TestRewriteGenerations:
         self, tmp_path: Path
     ) -> None:
         store = _CrashBeforeHeadStore(tmp_path)
-        ctx = RunContext[None](checkpoint_store=store, session_key="s1")
+        ctx = SessionContext[None](checkpoint_store=store, session_key="s1")
 
         holder = _AgentHolder()
         cp1 = AgentCheckpoint(
@@ -189,7 +189,7 @@ class TestRewriteGenerations:
         self, tmp_path: Path
     ) -> None:
         store = FileCheckpointStore(tmp_path)
-        ctx = RunContext[None](checkpoint_store=store, session_key="s1")
+        ctx = SessionContext[None](checkpoint_store=store, session_key="s1")
         key = "s1/agent/test_agent"
 
         holder = _AgentHolder()
@@ -285,7 +285,7 @@ class TestResumeLogLine:
         store = InMemoryCheckpointStore()
         agent1 = LLMAgent[str, str, None](
             name="t",
-            ctx=RunContext[None](checkpoint_store=store, session_key="s1"),
+            ctx=SessionContext[None](checkpoint_store=store, session_key="s1"),
             llm=MockLLM(responses_queue=[_text_response("one")]),
             env_info=False,
         )
@@ -293,7 +293,7 @@ class TestResumeLogLine:
 
         agent2 = LLMAgent[str, str, None](
             name="t",
-            ctx=RunContext[None](checkpoint_store=store, session_key="s1"),
+            ctx=SessionContext[None](checkpoint_store=store, session_key="s1"),
             llm=MockLLM(responses_queue=[]),
             env_info=False,
         )

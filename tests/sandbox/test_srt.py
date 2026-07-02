@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import (
     NetworkPolicy,
     SandboxPolicy,
@@ -27,6 +26,7 @@ from grasp_agents.sandbox import (
     local_environment,
     srt_argv,
 )
+from grasp_agents.session_context import SessionContext
 
 from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
 
@@ -189,7 +189,7 @@ async def test_factory_srt_backend(tmp_path: Path) -> None:
 @pytest.mark.skipif(not _SRT_CAN_RUN, reason="srt cannot apply/run here")
 async def test_srt_background_poll_and_complete(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path], confinement="srt")
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
     agent_ctx, mgr = make_stack()
 
     note, task_id = await background(
@@ -209,7 +209,7 @@ async def test_srt_background_poll_and_complete(tmp_path: Path) -> None:
 @pytest.mark.skipif(not _SRT_CAN_RUN, reason="srt cannot apply/run here")
 async def test_srt_background_kill_terminates(tmp_path: Path) -> None:
     env = local_environment(allowed_roots=[tmp_path], confinement="srt")
-    ctx: RunContext[None] = RunContext(environment=env)
+    ctx: SessionContext[None] = SessionContext(environment=env)
     agent_ctx, mgr = make_stack()
 
     marker = tmp_path / "ticks.txt"

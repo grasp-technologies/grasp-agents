@@ -23,7 +23,7 @@ from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.agent.tool_decision import RejectToolContent
 from grasp_agents.context.prompt_builder import PromptBuilder
 from grasp_agents.context.untrusted_content import UNTRUSTED_CONTENT_SECTION_NAME
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.events import (
     Event,
@@ -107,7 +107,7 @@ def _make_loop(
         llm=llm,
         transcript=transcript,
         tools=tools,
-        ctx=RunContext[None](state=None),
+        ctx=SessionContext[None](state=None),
         max_turns=max_turns,
         final_answer_as_tool_call=final_answer_as_tool_call,
         final_answer_type=final_answer_type,
@@ -410,7 +410,7 @@ class TestApprovalPendingCleanup:
     async def test_timeout_clears_pending_and_late_resolve_fails(self) -> None:
         store = LocalApprovalStore()
         hook = build_store_approval(timeout=0.05)
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")
 
         decisions = await hook(tool_calls=[call], ctx=ctx, exec_id="e")
@@ -425,7 +425,7 @@ class TestApprovalPendingCleanup:
     async def test_cancellation_clears_pending(self) -> None:
         store = LocalApprovalStore()
         hook = build_store_approval(timeout=None)
-        ctx = RunContext[None](approval_store=store, session_key="s1")
+        ctx = SessionContext[None](approval_store=store, session_key="s1")
         call = FunctionToolCallItem(call_id="c1", name="t", arguments="{}")
 
         task = asyncio.create_task(hook(tool_calls=[call], ctx=ctx, exec_id="e"))

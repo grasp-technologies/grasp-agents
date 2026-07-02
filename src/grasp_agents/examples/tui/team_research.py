@@ -47,7 +47,7 @@ import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from grasp_agents import LLMAgent, RunContext
+from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.agent_team import (
     AgentTeam,
     CheckpointMailboxTransport,
@@ -106,7 +106,7 @@ class Archivist(Processor[Any, str, None]):
     needs to participate, in-process or in its own process.
     """
 
-    def __init__(self, name: str, *, ctx: RunContext[None], notes_path: Path) -> None:
+    def __init__(self, name: str, *, ctx: SessionContext[None], notes_path: Path) -> None:
         super().__init__(name=name, ctx=ctx)  # no recipients -> a sink
         self._notes_path = notes_path
 
@@ -137,7 +137,7 @@ def _make_llm(model: str) -> OpenAIResponsesLLM:
 
 
 def _make_member(
-    name: str, *, ctx: RunContext[None], model: str, notes_path: Path
+    name: str, *, ctx: SessionContext[None], model: str, notes_path: Path
 ) -> Processor[Any, Any, None]:
     """Build member ``name`` — the archivist is a processor, the rest are agents."""
     if name == "archivist":
@@ -156,7 +156,7 @@ def build_member(
     """
     mailbox_dir.mkdir(parents=True, exist_ok=True)
     store = FileCheckpointStore(root=mailbox_dir)
-    ctx = RunContext[None](state=None, checkpoint_store=store)
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
     member = _make_member(
         name, ctx=ctx, model=model, notes_path=mailbox_dir / "notes.md"
     )
@@ -176,7 +176,7 @@ def build_team(
     """
     mailbox_dir.mkdir(parents=True, exist_ok=True)
     store = FileCheckpointStore(root=mailbox_dir)
-    ctx = RunContext[None](state=None, checkpoint_store=store)
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
     members = [
         _make_member(c.name, ctx=ctx, model=model, notes_path=mailbox_dir / "notes.md")
         for c in ROSTER

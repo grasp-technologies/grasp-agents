@@ -17,7 +17,7 @@ import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
     NullRedactor,
@@ -46,9 +46,9 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
+    return SessionContext[Any](file_backend=backend, session_key=TEST_KEY)
 
 
 @pytest.fixture
@@ -67,7 +67,10 @@ def write_tool() -> WriteTool:
 
 
 async def test_write_new_file(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "new.txt"
     result = await write_tool.run(
@@ -81,7 +84,7 @@ async def test_write_new_file(
 
 async def test_write_registers_post_write_mtime(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     state: FileEditSessionState,
     write_tool: WriteTool,
@@ -96,7 +99,10 @@ async def test_write_registers_post_write_mtime(
 
 
 async def test_write_refuses_when_parent_missing(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "missing" / "sub" / "f.txt"
     result = await write_tool.run(
@@ -112,7 +118,10 @@ async def test_write_refuses_when_parent_missing(
 
 
 async def test_write_refuses_existing_without_prior_read(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    write_tool: WriteTool,
 ) -> None:
     target = tmp_path / "existing.txt"
     target.write_text("original")
@@ -129,7 +138,7 @@ async def test_write_refuses_existing_without_prior_read(
 
 async def test_write_allowed_after_prior_read(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     write_tool: WriteTool,
@@ -155,7 +164,7 @@ async def test_write_allowed_after_prior_read(
 
 async def test_write_refuses_on_stale_mtime(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     write_tool: WriteTool,
@@ -180,7 +189,7 @@ async def test_write_refuses_on_stale_mtime(
 
 async def test_consecutive_writes_do_not_trip_staleness(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     write_tool: WriteTool,
@@ -211,7 +220,10 @@ async def test_consecutive_writes_do_not_trip_staleness(
 
 
 async def test_write_refuses_dotfile_by_default(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, write_tool: WriteTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    write_tool: WriteTool,
 ) -> None:
     # Create ~/.ssh-like layout under the tmp root.
     ssh_dir = tmp_path / ".ssh"
@@ -228,7 +240,7 @@ async def test_write_refuses_dotfile_by_default(
 
 async def test_write_dotfile_allowed_after_explicit_override(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     state: FileEditSessionState,
     write_tool: WriteTool,
@@ -256,7 +268,7 @@ async def test_write_refuses_dotfile_when_include_dotfiles_false(
     """
     del state  # activated by the ``state`` fixture's ContextVar set
     lenient_backend = LocalFileBackend(allowed_roots=[tmp_path], include_dotfiles=False)
-    ctx: RunContext[Any] = RunContext(
+    ctx: SessionContext[Any] = SessionContext(
         file_backend=lenient_backend, session_key=TEST_KEY
     )
     target = tmp_path / ".env"
@@ -275,7 +287,7 @@ async def test_write_refuses_dotfile_when_include_dotfiles_false(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 async def test_write_preserves_existing_executable_bit(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     write_tool: WriteTool,
@@ -297,7 +309,7 @@ async def test_write_preserves_existing_executable_bit(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 async def test_new_file_uses_default_mode(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext
+    tmp_path: Path, ctx: SessionContext[Any], agent_ctx: AgentContext
 ) -> None:
     tool = WriteTool(new_file_mode=0o640)
     target = tmp_path / "new.txt"

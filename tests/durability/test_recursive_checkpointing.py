@@ -23,8 +23,8 @@ from grasp_agents.durability.checkpoints import (
 )
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
-from grasp_agents.run_context import RunContext
 from grasp_agents.runner.runner import END_PROC_NAME, Runner
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.events import (
     Event,
@@ -150,17 +150,11 @@ class CrashAfterStepWorkflow(SequentialWorkflow[str, str, None]):
         packet: Packet[Any],
     ) -> None:
         if completed_step == self._crash_after_step:
-            raise RuntimeError(
-                f"Simulated crash before saving step {completed_step}"
-            )
-        await super().save_checkpoint(
-            completed_step=completed_step, packet=packet
-        )
+            raise RuntimeError(f"Simulated crash before saving step {completed_step}")
+        await super().save_checkpoint(completed_step=completed_step, packet=packet)
 
 
-def _resolve_inputs(
-    chat_inputs: Any | None, in_args: list[str] | None
-) -> list[str]:
+def _resolve_inputs(chat_inputs: Any | None, in_args: list[str] | None) -> list[str]:
     if in_args is not None:
         return in_args
     if chat_inputs is not None:
@@ -215,16 +209,14 @@ async def collect_payloads(
     proc: Processor[str, str, None]
     | SequentialWorkflow[str, str, None]
     | CrashAfterStepWorkflow,
-    ctx: RunContext[None],
+    ctx: SessionContext[None],
     in_args: str | list[str] | None = None,
     step: int | None = None,
 ) -> list[str]:
     """Run a processor via run_stream and collect final payloads."""
     proc.on_adopted(ctx=ctx)
     payloads: list[str] = []
-    async for event in proc.run_stream(
-        in_args=in_args, exec_id="test", step=step
-    ):
+    async for event in proc.run_stream(in_args=in_args, exec_id="test", step=step):
         if isinstance(event, ProcPacketOutEvent) and event.source == proc.name:
             payloads = list(event.data.payloads)
     return payloads
@@ -307,14 +299,14 @@ class TestRecursiveSessionPropagation:
         assert not worker_default.is_resumable
 
         # Ctx with no checkpoint_store -> not resumable
-        ctx_empty: RunContext[None] = RunContext(state=None)
+        ctx_empty: SessionContext[None] = SessionContext(state=None)
         worker_empty = AppendProcessor("worker")
         worker_empty.on_adopted(ctx=ctx_empty)
         assert not worker_empty.is_resumable
 
         # Ctx with checkpoint_store -> resumable
         store = InMemoryCheckpointStore()
-        ctx_with_store: RunContext[None] = RunContext(
+        ctx_with_store: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store
         )
         worker_with_store = AppendProcessor("worker")
@@ -331,11 +323,9 @@ class TestRecursiveSessionPropagation:
         )
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
-        ctx: RunContext[None] = RunContext(state=None)
+        ctx: SessionContext[None] = SessionContext(state=None)
         wf.on_adopted(ctx=ctx)
-        Runner[str, None](
-            entry_proc=entry, procs=[entry, wf], name="r"
-        )
+        Runner[str, None](entry_proc=entry, procs=[entry, wf], name="r")
 
         # Runner adopts each top-level proc at empty parent path, so
         # direct children get single-entry paths and descendants get
@@ -359,10 +349,8 @@ class TestRecursiveCheckpointStorage:
         par = ParallelProcessor[str, str, None](subproc=worker)
         fan = FanOutProcessor("fan")
         collect = AppendProcessor("collect")
-        wf = SequentialWorkflow[str, str, None](
-            name="wf", subprocs=[fan, par, collect]
-        )
-        ctx: RunContext[None] = RunContext(
+        wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan, par, collect])
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s1"
         )
         wf.on_adopted(ctx=ctx)
@@ -396,7 +384,7 @@ class TestRecursiveCheckpointStorage:
 
         a = AppendProcessor("A")
         outer = SequentialWorkflow[str, str, None](name="outer", subprocs=[a, inner])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s2"
         )
         outer.on_adopted(ctx=ctx)
@@ -419,7 +407,7 @@ class TestRecursiveCheckpointStorage:
         par = ParallelProcessor[str, str, None](subproc=worker)
         fan = FanOutProcessor("fan")
         wf = SequentialWorkflow[str, str, None](name="wf", subprocs=[fan, par])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="deep"
         )
         wf.on_adopted(ctx=ctx)
@@ -456,7 +444,7 @@ class TestRecursiveResume:
             subprocs=[fan1, par1, collect1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r1"
         )
         par1.on_adopted(ctx=ctx1)
@@ -482,7 +470,7 @@ class TestRecursiveResume:
         wf2 = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[fan2, par2, collect2]
         )
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r1"
         )
         wf2.on_adopted(ctx=ctx2)
@@ -516,7 +504,7 @@ class TestRecursiveResume:
             subprocs=[fan1, par1, collect1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r2"
         )
         par1.on_adopted(ctx=ctx1)
@@ -540,7 +528,7 @@ class TestRecursiveResume:
         wf2 = SequentialWorkflow[str, str, None](
             name="wf", subprocs=[fan2, par2, collect2]
         )
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r2"
         )
         wf2.on_adopted(ctx=ctx2)
@@ -575,7 +563,7 @@ class TestRecursiveResume:
             subprocs=[a1, inner1],
             crash_after_step=1,
         )
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r3"
         )
         inner1.on_adopted(ctx=ctx1)
@@ -594,10 +582,8 @@ class TestRecursiveResume:
         y2 = CountingProcessor("Y")
         inner2 = SequentialWorkflow[str, str, None](name="inner", subprocs=[x2, y2])
         a2 = CountingProcessor("A")
-        outer2 = SequentialWorkflow[str, str, None](
-            name="outer", subprocs=[a2, inner2]
-        )
-        ctx2: RunContext[None] = RunContext(
+        outer2 = SequentialWorkflow[str, str, None](name="outer", subprocs=[a2, inner2])
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r3"
         )
         outer2.on_adopted(ctx=ctx2)
@@ -638,7 +624,7 @@ class TestRecursiveResume:
         outer1 = SequentialWorkflow[str, str, None](
             name="outer", subprocs=[fan1, inner1]
         )
-        ctx1: RunContext[None] = RunContext(
+        ctx1: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r4"
         )
         outer1.on_adopted(ctx=ctx1)
@@ -674,7 +660,7 @@ class TestRecursiveResume:
         outer2 = SequentialWorkflow[str, str, None](
             name="outer", subprocs=[fan2, inner2]
         )
-        ctx2: RunContext[None] = RunContext(
+        ctx2: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="r4"
         )
         outer2.on_adopted(ctx=ctx2)
@@ -705,12 +691,11 @@ class TestRecursiveResume:
         )
 
         entry = ChatAppendProcessor("entry", recipients=["wf"])
-        ctx: RunContext[None] = RunContext(
+        ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="rs"
         )
         runner = Runner[str, None](
-            ctx=ctx,
-            entry_proc=entry, procs=[entry, wf], name="r"
+            ctx=ctx, entry_proc=entry, procs=[entry, wf], name="r"
         )
 
         result = await collect_runner_payloads(runner, chat_inputs="start")

@@ -43,7 +43,7 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from grasp_agents import LLMAgent, ProcPacketOutEvent, RunContext, function_tool
+from grasp_agents import LLMAgent, ProcPacketOutEvent, SessionContext, function_tool
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.sandbox import NetworkPolicy, local_environment
 from grasp_agents.tools.bash import bash_tools
@@ -212,7 +212,7 @@ def make_research_tools(workdir: Path) -> list[Any]:
         holdout_fraction: float = 0.2,
         seed: int = 42,
         *,
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> str:
         """
         Split the downloaded dataset into a labeled ``data/train.csv`` and an
@@ -258,7 +258,7 @@ def make_research_tools(workdir: Path) -> list[Any]:
         cv_accuracy: float,
         notes: str = "",
         *,
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> str:
         """
         Log an experiment and its cross-validation accuracy on train.csv.
@@ -288,7 +288,7 @@ def make_research_tools(workdir: Path) -> list[Any]:
         csv_path: str,
         experiment_name: str,
         *,
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> str:
         """
         Score a predictions CSV (columns: PassengerId, Survived) against the
@@ -344,7 +344,7 @@ def make_research_tools(workdir: Path) -> list[Any]:
         )
 
     @function_tool
-    def research_status(*, ctx: RunContext[ResearchState]) -> str:
+    def research_status(*, ctx: SessionContext[ResearchState]) -> str:
         """
         See the current session's state: the experiment log and the submission budget.
         """
@@ -437,7 +437,7 @@ def build_researcher(
     confinement: Literal["none", "seatbelt", "srt"] = "srt",
     max_turns: int = 100,
     session_key: str = "autores",
-) -> tuple[LLMAgent[str, str, ResearchState], RunContext[ResearchState]]:
+) -> tuple[LLMAgent[str, str, ResearchState], SessionContext[ResearchState]]:
     """Build the researcher agent bound to a durable, sandboxed session."""
     workdir = workdir.resolve()
     prepare_workspace(workdir)
@@ -453,7 +453,7 @@ def build_researcher(
         provision=True,
         env={"MPLCONFIGDIR": str(workdir / ".mpl")},
     )
-    ctx = RunContext[ResearchState](
+    ctx = SessionContext[ResearchState](
         state=ResearchState(),
         serialize_state=True,
         checkpoint_store=FileCheckpointStore(workdir / ".grasp" / "checkpoints"),

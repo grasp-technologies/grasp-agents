@@ -29,8 +29,8 @@ from grasp_agents.types.events import ToolErrorEvent, ToolOutputEvent, ToolStrea
 from grasp_agents.types.items import FunctionToolCallItem
 
 if TYPE_CHECKING:
-    from grasp_agents.run_context import RunContext
     from grasp_agents.sandbox.environment import ExecutionEnvironment
+    from grasp_agents.session_context import SessionContext
 
 
 def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
@@ -58,7 +58,7 @@ def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
 
 async def background(
     mgr: BackgroundTaskManager[Any],
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     command: str,
     *,
@@ -137,7 +137,7 @@ async def kill(mgr: BackgroundTaskManager[Any], task_id: str) -> KillTaskResult:
     return await KillTask(mgr)._run(TaskIdInput(task_id=task_id))
 
 
-async def flush(mgr: BackgroundTaskManager[Any], ctx: RunContext[Any]) -> None:
+async def flush(mgr: BackgroundTaskManager[Any], ctx: SessionContext[Any]) -> None:
     """
     Drive one ``drain`` pass for its log-mirroring side effect, discarding the
     bubbled events. ``drain`` now owns flushing (there is no standalone
@@ -149,7 +149,7 @@ async def flush(mgr: BackgroundTaskManager[Any], ctx: RunContext[Any]) -> None:
 
 
 async def drain_notes(
-    mgr: BackgroundTaskManager[Any], ctx: RunContext[Any]
+    mgr: BackgroundTaskManager[Any], ctx: SessionContext[Any]
 ) -> list[str]:
     """
     The completion notes a single turn-boundary ``drain`` injects. ``drain``

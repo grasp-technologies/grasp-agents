@@ -24,7 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from grasp_agents import AgentTool, LLMAgent, RunContext
+from grasp_agents import AgentTool, LLMAgent, SessionContext
 from grasp_agents.llm_providers.openai_responses import (
     OpenAIResponsesLLM,
     OpenAIResponsesLLMSettings,
@@ -90,7 +90,7 @@ def build_copilot(
     *,
     model: str = DEFAULT_MODEL,
     confinement: Literal["none", "seatbelt", "bwrap", "srt", "auto"] = "srt",
-) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
+) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     """Build the analyst agent (with two sandboxed subagents) and its context."""
     workdir.mkdir(parents=True, exist_ok=True)
     llm = OpenAIResponsesLLM(
@@ -113,7 +113,7 @@ def build_copilot(
     # The sandbox environment supplies a file backend rooted at the workspace;
     # the engineer's backgrounded Bash job mirrors its output to
     # `<workdir>/.grasp/tasks/*.log` (a crash-recoverable, Grep-able trace).
-    ctx = RunContext[None](state=None, environment=env)
+    ctx = SessionContext[None](state=None, environment=env)
 
     def specialist(
         name: str, description: str, sys_prompt: str, tools: list[Any]

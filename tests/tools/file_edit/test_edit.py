@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import (
     EditInput,
     EditResult,
@@ -54,9 +54,9 @@ def _error_message(result: Any) -> str:
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> RunContext[Any]:
+def ctx(tmp_path: Path) -> SessionContext[Any]:
     backend = LocalFileBackend(allowed_roots=[tmp_path])
-    return RunContext[Any](file_backend=backend, session_key=TEST_KEY)
+    return SessionContext[Any](file_backend=backend, session_key=TEST_KEY)
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def edit_tool() -> EditTool:
 
 async def test_edit_exact_match(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -98,7 +98,7 @@ async def test_edit_exact_match(
 
 async def test_edit_refuses_when_old_equals_new(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -131,7 +131,7 @@ async def test_edit_empty_old_string_rejected_by_schema() -> None:
 
 async def test_edit_falls_through_to_line_trimmed(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -162,7 +162,7 @@ async def test_edit_falls_through_to_line_trimmed(
 
 async def test_edit_refuses_ambiguous_match(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -183,7 +183,7 @@ async def test_edit_refuses_ambiguous_match(
 
 async def test_edit_replace_all(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -206,7 +206,7 @@ async def test_edit_replace_all(
 
 async def test_edit_no_match(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -229,7 +229,10 @@ async def test_edit_no_match(
 
 
 async def test_edit_refuses_without_prior_read(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, edit_tool: EditTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    edit_tool: EditTool,
 ) -> None:
     target = tmp_path / "f.txt"
     target.write_text("hello\n")
@@ -246,7 +249,7 @@ async def test_edit_refuses_without_prior_read(
 
 async def test_edit_refuses_on_stale_mtime(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -271,7 +274,7 @@ async def test_edit_refuses_on_stale_mtime(
 
 async def test_consecutive_edits_do_not_trip_staleness(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -299,7 +302,10 @@ async def test_consecutive_edits_do_not_trip_staleness(
 
 
 async def test_edit_refuses_missing_file(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, edit_tool: EditTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    edit_tool: EditTool,
 ) -> None:
     target = tmp_path / "does-not-exist.txt"
     result = await edit_tool.run(
@@ -318,7 +324,10 @@ async def test_edit_refuses_missing_file(
 
 
 async def test_edit_refuses_dotfile_by_default(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, edit_tool: EditTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    edit_tool: EditTool,
 ) -> None:
     target = tmp_path / ".env"
     target.write_text("SECRET=x\n")
@@ -334,7 +343,7 @@ async def test_edit_refuses_dotfile_by_default(
 
 async def test_edit_dotfile_allowed_after_override(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     state: FileEditSessionState,
     read_tool: ReadTool,
@@ -361,7 +370,7 @@ async def test_edit_dotfile_allowed_after_override(
 
 async def test_edit_preserves_curly_quote_convention(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -394,7 +403,7 @@ async def test_edit_preserves_curly_quote_convention(
 
 async def test_edit_unicode_em_dash_match(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -425,7 +434,7 @@ async def test_edit_unicode_em_dash_match(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 async def test_edit_preserves_executable_bit(
     tmp_path: Path,
-    ctx: RunContext[Any],
+    ctx: SessionContext[Any],
     agent_ctx: AgentContext,
     read_tool: ReadTool,
     edit_tool: EditTool,
@@ -452,7 +461,10 @@ async def test_edit_preserves_executable_bit(
 
 
 async def test_edit_refuses_binary_extension(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, edit_tool: EditTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    edit_tool: EditTool,
 ) -> None:
     # Even with a prior Read we couldn't have performed (binary guard on Read
     # too), Edit's own binary guard refuses up-front.
@@ -468,7 +480,10 @@ async def test_edit_refuses_binary_extension(
 
 
 async def test_edit_refuses_device_path(
-    tmp_path: Path, ctx: RunContext[Any], agent_ctx: AgentContext, edit_tool: EditTool
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    edit_tool: EditTool,
 ) -> None:
     # Device guard runs via validate_path against the literal path, before
     # resolve_safe — doesn't matter that /dev/stdin isn't under tmp_path.

@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.file_backend.base import FileBackend, FileStat
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
 
 DEFAULT_CODE_TIMEOUT = 120.0
 # Cap on files surfaced from ``artifacts`` in one call (bounds a directory
@@ -159,7 +159,7 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
 
     Stateless: the kernel comes from the call's :class:`AgentContext`
     (``ipy_kernel_holder`` — its own, not the notebook's); files named in
-    ``artifacts`` are read via :attr:`RunContext.file_backend`.
+    ``artifacts`` are read via :attr:`SessionContext.file_backend`.
     """
 
     name = "RunPython"
@@ -209,7 +209,7 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
         self,
         inp: RunPythonInput,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         progress_callback: ToolProgressCallback | None = None,
         path: list[str] | None = None,
@@ -220,7 +220,7 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
         if ctx is None or ctx.exec_backend is None:
             raise ValueError(
                 "RunPython requires ctx.exec_backend. Wire an ExecBackend on "
-                "RunContext (e.g. via local_environment(...)) before running."
+                "SessionContext (e.g. via local_environment(...)) before running."
             )
         exec_backend = ctx.exec_backend
         if not isinstance(exec_backend, KernelCapable):
@@ -282,14 +282,14 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
 
     async def _collect_artifacts(
         self,
-        ctx: RunContext[Any],
+        ctx: SessionContext[Any],
         agent_ctx: AgentContext | None,
         raw_paths: Sequence[str],
     ) -> list[str]:
         """Resolve ``artifacts`` to ``- path — mime, size`` reference lines."""
         backend = ctx.file_backend
         if backend is None:
-            return ["(cannot surface artifacts: no file_backend on RunContext)"]
+            return ["(cannot surface artifacts: no file_backend on SessionContext)"]
 
         exec_backend = ctx.exec_backend
         roots: Sequence[Path] = (

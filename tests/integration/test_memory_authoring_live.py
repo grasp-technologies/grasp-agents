@@ -19,7 +19,7 @@ from grasp_agents import (
     LLMAgent,
     MemoryProvider,
     ProcPacketOutEvent,
-    RunContext,
+    SessionContext,
     render_events,
 )
 from grasp_agents.file_backend import LocalFileBackend
@@ -79,7 +79,7 @@ async def test_memory_authoring_does_not_clobber(memdir: Path) -> None:
     provider = MemoryProvider(memdir)
     backend = LocalFileBackend(allowed_roots=[memdir])
 
-    ctx: RunContext[None] = RunContext(
+    ctx: SessionContext[None] = SessionContext(
         state=None, memory=provider, file_backend=backend
     )
     agent = LLMAgent[str, str, None](
@@ -128,8 +128,7 @@ async def test_memory_authoring_does_not_clobber(memdir: Path) -> None:
         "pointer lines instead of editing in place."
     )
     assert (
-        "user_preferences.md) — how the user likes their answers formatted"
-        in mem_index
+        "user_preferences.md) — how the user likes their answers formatted" in mem_index
     ), "Original user_preferences pointer line lost from MEMORY.md."
 
     # Original user_preferences.md content must survive (location/role
@@ -142,9 +141,11 @@ async def test_memory_authoring_does_not_clobber(memdir: Path) -> None:
 
     # Something new must have landed (either a new topic file or a new
     # index line)
-    other_md = [p for p in memdir.glob("*.md") if p.name not in {
-        "MEMORY.md", "user_preferences.md"
-    }]
+    other_md = [
+        p
+        for p in memdir.glob("*.md")
+        if p.name not in {"MEMORY.md", "user_preferences.md"}
+    ]
     new_index_line = any(
         kw in mem_index.lower()
         for kw in ("berlin", "location", "role", "work", "ml", "research", "timezone")

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.events import (
@@ -169,14 +169,14 @@ def _make_executor(
     *,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     max_turns: int = 10,
-    ctx: RunContext[None] | None = None,
+    ctx: SessionContext[None] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
     memory = LLMAgentTranscript()
     memory.messages = [InputMessageItem.from_text("sys", role="system")]
     memory.update([InputMessageItem.from_text("go", role="user")])
 
-    ctx = ctx if ctx is not None else RunContext[None](state=None)
+    ctx = ctx if ctx is not None else SessionContext[None](state=None)
     executor = AgentLoop[None](
         agent_name="test",
         llm=llm,
@@ -191,7 +191,7 @@ def _make_executor(
 
 async def _collect_events(
     executor: AgentLoop[None],
-    ctx: RunContext[None],
+    ctx: SessionContext[None],
 ) -> list[Event[Any]]:
     events: list[Event[Any]] = []
     async for event in executor.execute_stream(exec_id="t"):
@@ -222,13 +222,11 @@ class TestBackgroundToolLaunch:
             responses,
             tools=[SlowTool(delay=0.1)],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         # Should have launched event
@@ -319,13 +317,11 @@ class TestMixedImmediateAndBackground:
             responses,
             tools=[EchoTool(), SlowTool(delay=0.05)],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         launched = [e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)]
@@ -354,13 +350,11 @@ class TestFinalAnswerSuppression:
             responses,
             tools=[SlowTool(delay=0.05)],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         await _collect_events(executor, ctx)
 
         # LLM was called 3 times (tool call + suppressed + final)
@@ -385,13 +379,11 @@ class TestBackgroundTaskFailure:
             responses,
             tools=[FailingBgTool()],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         # Should have completed event even on failure
@@ -434,13 +426,11 @@ class TestMultipleBackgroundTasks:
                 SlowTool(delay=0.05, name="slow_b"),
             ],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         launched = [e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)]
@@ -479,13 +469,11 @@ class TestMultipleBackgroundTasks:
                 SlowTool(delay=0.05, name="slow_b"),
             ],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         launched = [e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)]
@@ -555,7 +543,7 @@ class TestMaxTurnsKeepsBackgroundTasks:
             max_turns=1,
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         # Task should have been launched but not completed
@@ -609,13 +597,11 @@ class TestNoBackgroundToolsNoop:
             responses,
             tools=[EchoTool()],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        ctx = RunContext[None]()
+        ctx = SessionContext[None]()
         events = await _collect_events(executor, ctx)
 
         # No background events
@@ -675,13 +661,11 @@ class TestFireAndForgetSpawn:
             responses,
             tools=[FireAndForgetTool(delay=10.0)],
         )
-        executor.final_answer_extractor = (
-            lambda *, exec_id, response=None, **kw: response.output_text
-            if response and not response.tool_call_items
-            else None
+        executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
+            response.output_text if response and not response.tool_call_items else None
         )
 
-        await _collect_events(executor, RunContext[None]())
+        await _collect_events(executor, SessionContext[None]())
 
         # Only 2 LLM calls (tool call + final answer): no suppression turn,
         # because the non-blocking task never registers as pending.
@@ -737,7 +721,7 @@ class TestCapAndDeferDelivery:
         from grasp_agents.sandbox import local_environment
 
         env = local_environment(allowed_roots=[tmp_path])
-        ctx = RunContext[None](environment=env)
+        ctx = SessionContext[None](environment=env)
         tool = BigOutputTool(size=1000, cap=100)
         executor, _, _ = _make_executor([], tools=[tool], ctx=ctx)
         mgr = executor.bg_tasks
@@ -785,7 +769,7 @@ class TestDurableTaskRecords:
         from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 
         store = InMemoryCheckpointStore()
-        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
 
         # A non-None path is required for a backgrounded call to be keyed +
         # persisted (``make_tool_call_path(None, ...)`` is ``None``).
@@ -829,7 +813,7 @@ class TestDurableTaskRecords:
         # (LLMAgent._process_stream) can stream them — no transcript message
         # stays hidden from the event stream.
         assert injected
-        assert t2.messages[-len(injected):] == injected
+        assert t2.messages[-len(injected) :] == injected
 
         # The record stays PENDING until a checkpoint persists the notice —
         # a crash before that must re-surface it on the next resume.
@@ -856,7 +840,7 @@ class TestDurableTaskRecords:
         from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 
         store = InMemoryCheckpointStore()
-        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
         transcript = LLMAgentTranscript()
         transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
@@ -899,7 +883,7 @@ class TestDurableTaskRecords:
         from grasp_agents.tools.agent_tool import AgentTool
 
         store = InMemoryCheckpointStore()
-        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
 
         # A resumable sub-agent whose child answers in one LLM turn (no tools).
         child_llm = MockLLM(
@@ -976,7 +960,7 @@ class TestDurableTaskRecords:
         from grasp_agents.tools.agent_tool import AgentTool
 
         store = InMemoryCheckpointStore()
-        ctx = RunContext[None](state=None, checkpoint_store=store, session_key="s1")
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
 
         researcher = AgentTool[None](
             name="researcher",

@@ -27,8 +27,8 @@ from nbformat import v4
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
-from grasp_agents.run_context import RunContext
 from grasp_agents.sandbox import e2b_environment
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.bash_common import ShellState
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import (
@@ -107,7 +107,7 @@ async def _kernel_stdout(kernel: Any, code: str) -> str:
 async def test_notebook_read_edit_on_e2b() -> None:
     """NotebookRead/NotebookEdit operate on a notebook in the E2B sandbox FS."""
     async with e2b_environment(allowed_roots=[_WS]) as env:
-        ctx: RunContext[Any] = RunContext(environment=env)
+        ctx: SessionContext[Any] = SessionContext(environment=env)
         agent_ctx = _agent_ctx()
         path = Path(f"{_WS}/demo.ipynb")
         await _write_notebook(env.file_backend, path, "x = 1")
@@ -136,7 +136,7 @@ async def test_notebook_read_edit_on_e2b() -> None:
 async def test_run_cell_refuses_without_code_interpreter() -> None:
     """On a non-code-interpreter E2B sandbox, RunCell refuses clearly."""
     async with e2b_environment(allowed_roots=[_WS]) as env:
-        ctx: RunContext[Any] = RunContext(environment=env)
+        ctx: SessionContext[Any] = SessionContext(environment=env)
         agent_ctx = _agent_ctx()
         path = Path(f"{_WS}/demo.ipynb")
         await _write_notebook(env.file_backend, path, "x = 1")
@@ -162,7 +162,7 @@ async def test_run_cell_on_e2b_code_interpreter() -> None:
     from grasp_agents.types.content import InputImage, InputText
 
     async with e2b_environment(allowed_roots=[_WS], code_interpreter=True) as env:
-        ctx: RunContext[Any] = RunContext(environment=env)
+        ctx: SessionContext[Any] = SessionContext(environment=env)
         agent_ctx = _agent_ctx()
         path = Path(f"{_WS}/demo.ipynb")
 
@@ -226,7 +226,7 @@ async def test_run_python_on_e2b_code_interpreter() -> None:
     from grasp_agents.types.content import InputImage, InputText
 
     async with e2b_environment(allowed_roots=[_WS], code_interpreter=True) as env:
-        ctx: RunContext[Any] = RunContext(environment=env)
+        ctx: SessionContext[Any] = SessionContext(environment=env)
         agent_ctx = _agent_ctx()
         try:
             # State persists across RunPython calls (its own code kernel).

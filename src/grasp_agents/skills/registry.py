@@ -18,7 +18,7 @@ from .types import SkillNotFoundError
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
 
-    from grasp_agents.run_context import RunContext
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.types.items import InputItem
 
     from .types import Skill
@@ -196,7 +196,7 @@ class SkillRegistry:
     async def select_relevant(
         self,
         *,
-        ctx: RunContext[Any] | None = None,
+        ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,
         messages: Sequence[InputItem] | None = None,
     ) -> list[Skill]:
@@ -293,9 +293,7 @@ def apply_invocation_args(body: str, args: str | Mapping[str, str] | None) -> st
     if args is None:
         return body
     full = (
-        args
-        if isinstance(args, str)
-        else " ".join(f"{k}={v}" for k, v in args.items())
+        args if isinstance(args, str) else " ".join(f"{k}={v}" for k, v in args.items())
     )
     if not full.strip():
         return body

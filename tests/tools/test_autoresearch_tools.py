@@ -23,7 +23,7 @@ from grasp_agents.examples.tui.autoresearch import (
     read_csv_rows,
     stratified_split,
 )
-from grasp_agents.run_context import RunContext
+from grasp_agents.session_context import SessionContext
 from grasp_agents.types.events import ToolErrorInfo
 
 if TYPE_CHECKING:
@@ -71,8 +71,8 @@ def tools(workdir: Path) -> dict[str, FunctionTool]:
 
 
 @pytest.fixture
-def ctx() -> RunContext[ResearchState]:
-    return RunContext[ResearchState](state=ResearchState())
+def ctx() -> SessionContext[ResearchState]:
+    return SessionContext[ResearchState](state=ResearchState())
 
 
 # ---------- Pure helpers ----------
@@ -152,7 +152,7 @@ class TestSplitDataset:
         self,
         workdir: Path,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         out = await tools["split_dataset"](ctx=ctx)
         assert "data/train.csv" in str(out)
@@ -174,7 +174,7 @@ class TestSplitDataset:
     async def test_resplit_blocked_after_submission(
         self,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         await tools["split_dataset"](ctx=ctx)
         ctx.state.submissions_used = 1
@@ -185,7 +185,7 @@ class TestSplitDataset:
     async def test_path_escape_rejected(
         self,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         result = await tools["split_dataset"](csv_path="../outside.csv", ctx=ctx)
         assert isinstance(result, ToolErrorInfo)
@@ -194,7 +194,7 @@ class TestSplitDataset:
     async def test_missing_dataset_reported(
         self,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         result = await tools["split_dataset"](csv_path="data/nope.csv", ctx=ctx)
         assert isinstance(result, ToolErrorInfo)
@@ -225,7 +225,7 @@ class TestSubmitPredictions:
         self,
         workdir: Path,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         await tools["split_dataset"](ctx=ctx)
         n = len(ctx.state.holdout_labels)
@@ -247,7 +247,7 @@ class TestSubmitPredictions:
         self,
         workdir: Path,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         rel = _write_predictions(workdir, {"1": 1})
         result = await tools["submit_predictions"](
@@ -260,7 +260,7 @@ class TestSubmitPredictions:
         self,
         workdir: Path,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         await tools["split_dataset"](ctx=ctx)
         rel = _write_predictions(workdir, ctx.state.holdout_labels)
@@ -275,7 +275,7 @@ class TestSubmitPredictions:
         self,
         workdir: Path,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         await tools["split_dataset"](ctx=ctx)
         partial = dict(list(ctx.state.holdout_labels.items())[:-1])
@@ -297,7 +297,7 @@ class TestExperimentLog:
     async def test_record_and_update(
         self,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         out = await tools["record_experiment"](
             name="baseline", cv_accuracy=0.78, notes="logreg", ctx=ctx
@@ -312,7 +312,7 @@ class TestExperimentLog:
     async def test_status_reports_log_and_budget(
         self,
         tools: dict[str, FunctionTool],
-        ctx: RunContext[ResearchState],
+        ctx: SessionContext[ResearchState],
     ) -> None:
         ctx.state.experiments.append(
             ExperimentRecord(name="rf", cv_accuracy=0.83, holdout_accuracy=0.81)
