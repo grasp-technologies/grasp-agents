@@ -29,7 +29,6 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
         ctx: RunContext[CtxT] | None = None,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -71,7 +70,6 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
             recipients=(recipients or end_proc.recipients),
             max_retries=0,
             path=path,
-            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
@@ -120,7 +118,6 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
         checkpoint = WorkflowCheckpoint(
             session_key=self._ctx.session_key,
             processor_name=self.name,
-            session_metadata=self._session_metadata,
             completed_step=completed_step,
             packet=packet,
         )

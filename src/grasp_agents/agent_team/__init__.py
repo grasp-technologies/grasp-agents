@@ -26,7 +26,7 @@ from .events import (
     TeamStartedEvent,
     TeamStopReason,
 )
-from .member import MemberDriver
+from .member import MemberHost
 from .message import TeamMessage
 from .tools import (
     ScheduleWakeupInput,
@@ -41,7 +41,7 @@ __all__ = [
     "CheckpointMailboxTransport",
     "InMemoryMailboxTransport",
     "MemberCard",
-    "MemberDriver",
+    "MemberHost",
     "MessageDeliveredEvent",
     "ScheduleWakeupInput",
     "ScheduleWakeupTool",

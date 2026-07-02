@@ -4,11 +4,14 @@ Tests for the filesystem half of agent checkpoints:
 - the read-before-write ledger (``read_file_state`` + ``dotfile_overrides``)
   round-trips through ``AgentCheckpoint`` so a resumed agent keeps its
   staleness guard instead of refusing every edit until a re-``Read``;
-- ``fs_snapshot`` policy: a ``SnapshotCapable`` environment is snapshotted
-  at the configured checkpoint boundaries, only the opaque ref is persisted,
-  and resume restores it before anything touches the filesystem;
+- ``RunContext.fs_snapshot_policy``: a ``SnapshotCapable``
+  environment is snapshotted at the configured checkpoint boundaries, only
+  the opaque ref is persisted — into the per-session record (current state)
+  and the agent's step watermarks (rollback) — and ``ctx.load_checkpoint()``
+  restores it before anything touches the filesystem;
 - failure semantics: a configured-but-incapable environment crashes the
-  save; a ref without a capable environment crashes the resume.
+  save; a session record with a ref but no capable environment crashes the
+  resume.
 """
 
 from __future__ import annotations
@@ -22,7 +25,11 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.durability import AgentCheckpoint, InMemoryCheckpointStore
+from grasp_agents.durability import (
+    AgentCheckpoint,
+    InMemoryCheckpointStore,
+    SessionCheckpoint,
+)
 from grasp_agents.durability.checkpoints import CheckpointSchemaError
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.run_context import RunContext
@@ -126,20 +133,20 @@ def _make_agent(
     *,
     store: InMemoryCheckpointStore,
     environment: ExecutionEnvironment | None = None,
-    fs_snapshot: Literal["off", "final", "turn"] = "off",
+    fs_snapshot_policy: Literal["off", "final", "turn"] = "off",
     tools: list[BaseTool[Any, Any, Any]] | None = None,
 ) -> tuple[LLMAgent[str, str, None], RunContext[None]]:
     ctx: RunContext[None] = RunContext(
         checkpoint_store=store,
         session_key="s1",
         environment=environment,
+        fs_snapshot_policy=fs_snapshot_policy,
     )
     agent = LLMAgent[str, str, None](
         name="fs_agent",
         ctx=ctx,
         llm=MockLLM(responses_queue=responses),
         tools=tools,
-        fs_snapshot=fs_snapshot,
         stream_llm=True,
     )
     return agent, ctx
@@ -149,6 +156,13 @@ async def _stored_checkpoint(store: InMemoryCheckpointStore) -> AgentCheckpoint:
     raw = await store.load("s1/agent/fs_agent")
     assert raw is not None
     return AgentCheckpoint.model_validate_json(raw)
+
+
+async def _session_record(store: InMemoryCheckpointStore) -> SessionCheckpoint | None:
+    raw = await store.load("s1/session")
+    if raw is None:
+        return None
+    return SessionCheckpoint.model_validate_json(raw)
 
 
 # ---------- Read-before-write ledger round-trip ----------
@@ -205,6 +219,8 @@ async def test_fs_snapshot_off_by_default(tmp_path: Path) -> None:
 
     assert env.snapshots == []
     assert (await _stored_checkpoint(store)).current.fs_snapshot_ref is None
+    # Mode off + no serialized state / metadata: no session record at all.
+    assert await _session_record(store) is None
 
 
 async def test_fs_snapshot_final_snapshots_at_run_end(tmp_path: Path) -> None:
@@ -217,7 +233,7 @@ async def test_fs_snapshot_final_snapshots_at_run_end(tmp_path: Path) -> None:
         ],
         store=store,
         environment=env,
-        fs_snapshot="final",
+        fs_snapshot_policy="final",
         tools=[EchoTool()],
     )
 
@@ -226,6 +242,34 @@ async def test_fs_snapshot_final_snapshots_at_run_end(tmp_path: Path) -> None:
     # Only the run-end boundary snapshots — not AFTER_INPUT / AFTER_TOOL_RESULT.
     assert env.snapshots == ["snap-1"]
     assert (await _stored_checkpoint(store)).current.fs_snapshot_ref == "snap-1"
+    # The session record pairs the same ref with this boundary.
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-1"
+
+
+async def test_session_ref_cleared_at_snapshotless_boundary(tmp_path: Path) -> None:
+    """
+    The session record pairs its ref with the *latest* checkpoint boundary:
+    a later boundary that takes no snapshot records ``None`` (a cold resume
+    then keeps the live filesystem) rather than leaving a stale ref that no
+    longer describes the transcript.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
+    )
+    await agent.run("hello")
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-1"
+
+    # A non-final boundary (AFTER_INPUT default) takes no snapshot.
+    await agent.save_checkpoint()
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref is None
 
 
 async def test_fs_snapshot_turn_snapshots_every_boundary(tmp_path: Path) -> None:
@@ -238,7 +282,7 @@ async def test_fs_snapshot_turn_snapshots_every_boundary(tmp_path: Path) -> None
         ],
         store=store,
         environment=env,
-        fs_snapshot="turn",
+        fs_snapshot_policy="turn",
         tools=[EchoTool()],
     )
 
@@ -256,44 +300,50 @@ async def test_fs_snapshot_requires_capable_environment(tmp_path: Path) -> None:
         [_text_response("done")],
         store=store,
         environment=_PlainEnv(tmp_path),
-        fs_snapshot="final",
+        fs_snapshot_policy="final",
     )
     with pytest.raises(TypeError, match="SnapshotCapable"):
         await agent.save_checkpoint()
 
 
-# ---------- Resume restores the filesystem ----------
+# ---------- Resume restores the filesystem (ctx.load_checkpoint) ----------
 
 
-async def test_resume_restores_snapshot_ref(tmp_path: Path) -> None:
+async def test_session_load_restores_snapshot_ref(tmp_path: Path) -> None:
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot="final"
+        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
     )
     await agent.run("hello")
     assert env.snapshots == ["snap-1"]
 
+    # Fresh process: the ctx (not any one agent) restores the shared fs.
     fresh_env = _FakeSnapshotEnv(tmp_path)
-    resumed, _ = _make_agent([], store=store, environment=fresh_env)
-    loaded = await resumed.load_checkpoint()
-    assert loaded is not None
+    _, rctx = _make_agent([], store=store, environment=fresh_env)
+    record = await rctx.load_checkpoint()
+    assert record is not None
+    assert fresh_env.restored == ["snap-1"]
+    assert rctx.session_fs_restored
+
+    # Idempotent: a second participant's run start restores nothing again.
+    assert await rctx.load_checkpoint() is None
     assert fresh_env.restored == ["snap-1"]
 
 
-async def test_resume_with_ref_but_incapable_environment_raises(
+async def test_session_load_with_ref_but_incapable_environment_raises(
     tmp_path: Path,
 ) -> None:
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot="final"
+        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
     )
     await agent.run("hello")
 
-    resumed, _ = _make_agent([], store=store, environment=_PlainEnv(tmp_path))
+    _, rctx = _make_agent([], store=store, environment=_PlainEnv(tmp_path))
     with pytest.raises(RuntimeError, match="not SnapshotCapable"):
-        await resumed.load_checkpoint()
+        await rctx.load_checkpoint()
 
 
 # ---------- Resume re-attaches the RunPython kernel ----------
@@ -310,7 +360,7 @@ async def test_ipy_exec_context_id_round_trips_through_checkpoint(
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot="final"
+        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
     )
     # Stand in for "a RunPython kernel was opened" (no real kernel offline).
     holder = agent._loop.agent_ctx.ipy_kernel_holder
@@ -324,9 +374,12 @@ async def test_ipy_exec_context_id_round_trips_through_checkpoint(
     ).current.agent_ctx_state.ipy_exec_context_id == "ctx-abc"
 
     # Fresh process: resume re-seeds the new loop's holder with the same id, so
-    # the next RunPython re-attaches instead of opening a fresh context.
+    # the next RunPython re-attaches instead of opening a fresh context. The
+    # kernel re-attach is gated on the ctx having actually restored the fs
+    # (run order: ctx.load_checkpoint, then the agent's own load).
     fresh_env = _FakeSnapshotEnv(tmp_path)
-    resumed, _ = _make_agent([], store=store, environment=fresh_env)
+    resumed, rctx = _make_agent([], store=store, environment=fresh_env)
+    await rctx.load_checkpoint()
     loaded = await resumed.load_checkpoint()
     assert loaded is not None
     resumed_holder = resumed._loop.agent_ctx.ipy_kernel_holder
@@ -341,7 +394,7 @@ async def test_nb_exec_context_id_round_trips_through_checkpoint(
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot="final"
+        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="final"
     )
     # Stand in for "a RunCell kernel was opened" (no real kernel offline).
     agent._loop.agent_ctx.nb_kernel_holder.rebind("nb-ctx-xyz")
@@ -353,7 +406,8 @@ async def test_nb_exec_context_id_round_trips_through_checkpoint(
     ).current.agent_ctx_state.nb_exec_context_id == "nb-ctx-xyz"
 
     fresh_env = _FakeSnapshotEnv(tmp_path)
-    resumed, _ = _make_agent([], store=store, environment=fresh_env)
+    resumed, rctx = _make_agent([], store=store, environment=fresh_env)
+    await rctx.load_checkpoint()
     loaded = await resumed.load_checkpoint()
     assert loaded is not None
     assert resumed._loop.agent_ctx.nb_kernel_holder.context_id == "nb-ctx-xyz"
@@ -369,7 +423,7 @@ async def test_ipy_exec_context_id_not_captured_without_fs_snapshot(
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
     agent, _ = _make_agent(
-        [_text_response("done")], store=store, environment=env, fs_snapshot="off"
+        [_text_response("done")], store=store, environment=env, fs_snapshot_policy="off"
     )
     holder = agent._loop.agent_ctx.ipy_kernel_holder
     assert holder is not None

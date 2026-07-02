@@ -52,7 +52,7 @@ from grasp_agents.agent_team import (
     AgentTeam,
     CheckpointMailboxTransport,
     MemberCard,
-    MemberDriver,
+    MemberHost,
 )
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.llm_providers.openai_responses import (
@@ -149,7 +149,7 @@ def _make_member(
 
 def build_member(
     name: str, *, mailbox_dir: Path = DEFAULT_DIR, model: str = DEFAULT_MODEL
-) -> MemberDriver:
+) -> MemberHost:
     """
     Build one member (agent or processor) sharing a durable mailbox (a
     FileCheckpointStore under ``mailbox_dir``) with the other member processes.
@@ -160,7 +160,7 @@ def build_member(
     member = _make_member(
         name, ctx=ctx, model=model, notes_path=mailbox_dir / "notes.md"
     )
-    return MemberDriver(
+    return MemberHost(
         member, cards=ROSTER, transport=CheckpointMailboxTransport(store)
     )
 
@@ -190,11 +190,11 @@ def build_team(
     )
 
 
-def _human_handler(driver: MemberDriver) -> Any:
+def _human_handler(host: MemberHost) -> Any:
     # Post human input to the member's mailbox as control-plane mail (it drains
-    # ahead of peer messages); the turn's events render through ``driver.events()``.
+    # ahead of peer messages); the turn's events render through ``host.run_stream()``.
     async def on_submit(text: str) -> AsyncIterator[Event[Any]]:
-        await driver.submit_message(text)
+        await host.submit_message(text)
         return
         yield  # unreachable: makes this an async generator that yields nothing
 
@@ -277,12 +277,12 @@ def main() -> None:
         run_tui_interactive(on_submit=team.run_stream, main_agent="lead", ctx=team.ctx)
         return
 
-    driver = build_member(args.who, mailbox_dir=args.dir, model=args.model)
+    host = build_member(args.who, mailbox_dir=args.dir, model=args.model)
     run_tui_interactive(
-        on_submit=_human_handler(driver),
-        events=driver.events(),
-        main_agent=driver.name,
-        ctx=driver.ctx,
+        on_submit=_human_handler(host),
+        events=host.run_stream(),
+        main_agent=host.name,
+        ctx=host.ctx,
     )
 
 

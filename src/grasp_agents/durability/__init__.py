@@ -12,6 +12,7 @@ from .checkpoints import (
     PersistedRecord,
     ProcessorCheckpoint,
     RunnerCheckpoint,
+    SessionCheckpoint,
     StepWatermark,
 )
 from .context_serialization import ContextKind, rehydrate_context, serialize_context
@@ -45,6 +46,7 @@ __all__ = [
     "ProcessorCheckpoint",
     "ResumeState",
     "RunnerCheckpoint",
+    "SessionCheckpoint",
     "StepWatermark",
     "TaskRecord",
     "TaskStatus",

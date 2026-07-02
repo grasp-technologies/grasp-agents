@@ -72,45 +72,32 @@ class TestObserverHooksStack:
         assert agent._loop.after_tool_hooks == [at]
 
 
-# ---------- Builder hooks (transcript / state) append ----------
-
-
-class TestBuilderHooksStack:
-    def test_state_builders_append_in_order(self) -> None:
-        agent = _make_agent()
-        assert agent._state_builders == []
-
-        async def s1(*, checkpoint: Any, exec_id: str) -> None: ...
-
-        async def s2(*, checkpoint: Any, exec_id: str) -> None: ...
-
-        agent.add_state_builder(s1)
-        agent.add_state_builder(s2)
-
-        assert agent._state_builders == [s1, s2]
-
-
 # ---------- Subclass override registered before decorator hooks ----------
 
 
 class TestSubclassOverrideOrdering:
-    def test_subclass_state_impl_runs_first(self) -> None:
+    def test_subclass_before_llm_impl_runs_first(self) -> None:
         class _Sub(LLMAgent[Any, Any, Any]):
-            async def build_state_impl(
-                self, *, checkpoint: Any, exec_id: str
+            async def on_before_llm_impl(
+                self, *, exec_id: str, turn: int, extra_llm_settings: dict[str, Any]
             ) -> None: ...
 
         agent = _Sub(name="sub", llm=MockLLM(model_name="mock", responses_queue=[]))
 
         # The subclass override is appended during __init__…
-        assert len(agent._state_builders) == 1
-        assert agent._state_builders[0].__func__ is _Sub.build_state_impl  # type: ignore[attr-defined]
+        assert len(agent._loop.before_llm_hooks) == 1
+        assert (
+            agent._loop.before_llm_hooks[0].__func__  # type: ignore[attr-defined]
+            is _Sub.on_before_llm_impl
+        )
 
-        # …and a decorator-registered builder runs after it.
-        async def later(*, checkpoint: Any, exec_id: str) -> None: ...
+        # …and a decorator-registered hook runs after it.
+        async def later(
+            *, exec_id: str, turn: int, extra_llm_settings: dict[str, Any]
+        ) -> None: ...
 
-        agent.add_state_builder(later)
-        assert agent._state_builders[1] is later
+        agent.add_before_llm_hook(later)
+        assert agent._loop.before_llm_hooks[1] is later
 
 
 # ---------- Single-decision hooks still replace (last wins) ----------

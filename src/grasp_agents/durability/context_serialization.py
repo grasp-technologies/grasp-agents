@@ -1,19 +1,19 @@
 """
-Optional machine-rehydration of ``RunContext.state`` across checkpoint
-round-trips.
+Optional machine-rehydration of ``RunContext.state`` across session
+checkpoint round-trips.
 
-The framework's default stance is that application state is rebuilt on
-resume via ``@agent.add_state_builder`` — the persistent source of truth
-is the app's own database, not the checkpoint. Serialization is therefore
-**opt-in**: set ``RunContext(serialize_state=True)`` for tests, notebooks,
-and simple workloads where state is a plain container and round-tripping
-it through the checkpoint is convenient.
+The framework's default stance is that application state is rebuilt by the
+caller and passed at ``RunContext`` construction — the persistent source of
+truth is the app's own database, not the checkpoint. Serialization is
+therefore **opt-in**: set ``RunContext(serialize_state=True)`` for tests,
+notebooks, and simple workloads where state is a plain container and
+round-tripping it through the session checkpoint is convenient.
 
 We record *how* the state was serialized alongside the payload so the
 restore path knows what to do with it:
 
 - ``OMITTED`` — state is ``None`` or an unrecognized type; load leaves
-  ``ctx.state`` untouched. ``state_builder`` does the work.
+  ``ctx.state`` untouched. The caller rebuilds state itself.
 - ``MAPPING`` — state is a ``dict`` (or dict-compatible). Round-trips as
   a JSON object; restored as ``dict``.
 - ``PYDANTIC`` — state is a Pydantic ``BaseModel``. Round-trips via
@@ -54,7 +54,7 @@ def serialize_context(state: Any) -> tuple[ContextKind, Any]:
     Classify ``state`` and return ``(kind, json-safe payload)``.
 
     Unsupported types (arbitrary classes without pydantic/dataclass
-    support) fall through to ``OMITTED`` — ``state_builder`` is then
+    support) fall through to ``OMITTED`` — the caller is then
     responsible for reconstruction on resume.
     """
     if state is None:

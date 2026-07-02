@@ -10,7 +10,6 @@ from typing import (
     Any,
     ClassVar,
     Final,
-    Literal,
     cast,
     final,
     get_origin,
@@ -39,11 +38,6 @@ from grasp_agents.durability.checkpoints import (
     CheckpointKind,
     StepWatermark,
 )
-from grasp_agents.durability.context_serialization import (
-    ContextKind,
-    rehydrate_context,
-    serialize_context,
-)
 from grasp_agents.durability.resume import prepare_messages_for_resume
 from grasp_agents.hooks import (
     AfterLlmHook,
@@ -55,7 +49,6 @@ from grasp_agents.hooks import (
     InitialContextBuilder,
     InputContentBuilder,
     OutputParser,
-    StateBuilder,
     ToolInputConverter,
     ToolOutputConverter,
     ViewProjector,
@@ -178,16 +171,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         stream_llm: bool = False,
         # Session persistence
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
-        # Filesystem-snapshot policy for checkpoints. Requires
-        # ``ctx.environment`` to be ``SnapshotCapable`` (e.g. E2B).
-        # ``"off"`` (default): never snapshot. ``"final"``: snapshot at
-        # run-end boundaries (final answer / max turns). ``"turn"``:
-        # snapshot at every checkpoint boundary, including after each
-        # tool batch — strongest rewind granularity, but each snapshot
-        # costs a provider round-trip. The checkpoint stores only the
-        # opaque ref; the bytes live with the snapshot owner.
-        fs_snapshot: Literal["off", "final", "turn"] = "off",
         # MCP integration (clients must be ``connect()``-ed before the
         # agent is constructed; pass a ``MCPClientSpec`` to filter tools)
         mcp_clients: "Sequence[MCPClient | MCPClientSpec] | None" = None,
@@ -235,7 +218,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             recipients=recipients,
             max_retries=max_retries,
             path=path,
-            session_metadata=session_metadata,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
@@ -432,18 +414,10 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # when the provider doesn't support caching (or hasn't set one).
         self.prompt_cache_key: str | None = None
 
-        # File system snapshot mode (if ctx.environment is SnapshotCapable).
-        self._fs_snapshot_mode = fs_snapshot
-
         # Wire the loop's checkpoint callback unconditionally. The
         # callback itself short-circuits when no store is attached to
         # the RunContext at call time.
         self._loop.checkpoint_callback = self.save_checkpoint
-
-        # Subclass hook points (set by decorators or subclass overrides).
-        # Stacked builders accumulate here; a subclass ``*_impl`` override is
-        # registered first (below) so it runs before decorator-added builders.
-        self._state_builders: list[StateBuilder] = []
 
         self._register_overridden_implementations()
 
@@ -674,11 +648,15 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         Called at the start of every run but **no-ops unless the transcript is
         empty**. An empty transcript is the signal for a cold start (a fresh
         process / new instance) where the durable log is the only surviving copy
-        of the conversation, so it is reloaded here along with turn, FS snapshot,
-        kernels, file-edit ledger, ``ctx.state``, and background tasks. A
-        non-empty transcript means a live in-memory session is already present
-        (a prior run in this process, or caller-seeded) and must not be clobbered
-        by a reload.
+        of the conversation, so it is reloaded here along with turn, kernels,
+        file-edit ledger, and background tasks. A non-empty transcript means a
+        live in-memory session is already present (a prior run in this process,
+        or caller-seeded) and must not be clobbered by a reload.
+
+        Only this agent's own working state is restored here. Session-scoped
+        state — ``ctx.state`` and the shared environment filesystem — is
+        restored once per session by ``RunContext.load_checkpoint`` (already
+        run by the time this loads).
 
         Context-management note: per-turn pruning / compaction belongs in the
         view projector (``@agent.add_view_projector``), which shapes the
@@ -712,38 +690,18 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # than appending a stale delta — the divergence is caught by the
         # prefix check in ``_serialize_agent_checkpoint``.
 
-        # Restore the filesystem before anything that may touch it
-        # (e.g. pending background tasks). A ref without a
-        # capable environment means the session cannot be resumed
-        # faithfully — crash rather than continue with divergent files.
-        if current.fs_snapshot_ref is not None:
-            environment = self._ctx.environment
-            if not isinstance(environment, SnapshotCapable):
-                raise RuntimeError(
-                    "Checkpoint carries fs_snapshot_ref="
-                    f"{current.fs_snapshot_ref!r} but ctx.environment "
-                    f"({type(environment).__name__}) is not SnapshotCapable; "
-                    "wire the same kind of environment the session was "
-                    "saved with."
-                )
-            await environment.restore(current.fs_snapshot_ref)
-
+        # Kernel-context ids are only meaningful inside the snapshotted
+        # filesystem they were captured with — re-attach only when the
+        # session restore actually rewound the shared filesystem.
         self._loop.agent_ctx.restore(
             current.agent_ctx_state,
-            rebind_kernels=current.fs_snapshot_ref is not None,
+            rebind_kernels=(
+                current.fs_snapshot_ref is not None and self._ctx.session_fs_restored
+            ),
         )
 
         self._step_watermarks = list(checkpoint.step_watermarks)
         self._committed = current
-
-        # Restore ctx.state for the machine-serializable kinds (mapping /
-        # pydantic / dataclass) when it was persisted. A None / OMITTED kind
-        # (the default — serialize_state off) leaves state untouched.
-        self._ctx.state = rehydrate_context(
-            checkpoint.context_kind,
-            checkpoint.context_data,
-            self._ctx.state,
-        )
 
         logger.info(
             "Loaded session %s for agent %s "
@@ -763,23 +721,19 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
         )
 
-        # Rebuild business state from external sources (DB, etc.) after
-        # conversation restoration is complete. Opt-in; fires only on resume.
-        for build_state in self._state_builders:
-            await build_state(checkpoint=checkpoint, exec_id=exec_id or "")
-
         return checkpoint
 
     def _fs_snapshot_due(self, location: AgentCheckpointLocation) -> bool:
-        if self._fs_snapshot_mode == "off":
+        mode = self._ctx.fs_snapshot_policy
+        if mode == "off":
             return False
         if not isinstance(self._ctx.environment, SnapshotCapable):
             raise TypeError(
-                f"fs_snapshot={self._fs_snapshot_mode!r} requires a "
+                f"fs_snapshot_policy={mode!r} requires a "
                 "SnapshotCapable ctx.environment (e.g. an E2BEnvironment); "
                 f"got {type(self._ctx.environment).__name__}."
             )
-        if self._fs_snapshot_mode == "turn":
+        if mode == "turn":
             return True
         return location in {
             AgentCheckpointLocation.AFTER_FINAL_ANSWER,
@@ -797,13 +751,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT,
     ) -> None:
         """Persist current conversation state to the store."""
-        # ``ctx.state`` is persisted only when opted in via
-        # ``RunContext.serialize_state``. Off by default.
-        context_kind: ContextKind | None = None
-        context_data: Any | None = None
-        if self._ctx.serialize_state:
-            context_kind, context_data = serialize_context(self._ctx.state)
-
         # Snapshot the environment filesystem first, so the persisted
         # (messages, files) pair is consistent: the ref always describes
         # the filesystem as of this checkpoint. Snapshot failures crash
@@ -813,6 +760,13 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         if self._fs_snapshot_due(location):
             environment = cast("SnapshotCapable", self._ctx.environment)
             fs_snapshot_ref = await environment.snapshot()
+
+        # Session-scoped state (ctx.state + the fs ref) goes to the one
+        # per-session record, before this agent's own head: a crash in
+        # between leaves the filesystem at-or-after the transcript (work
+        # gets redone) rather than the transcript claiming files that
+        # don't exist.
+        await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
 
         agent_ctx_state = self._loop.agent_ctx.snapshot()
         if fs_snapshot_ref is None:
@@ -832,15 +786,12 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         checkpoint = AgentCheckpoint(
             processor_name=self.name,
             session_key=self._ctx.session_key,
-            session_metadata=self._session_metadata,
             messages=list(self.transcript.messages),
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._cw.folds),
             output=output,
             location=location,
-            context_kind=context_kind,
-            context_data=context_data,
         )
         await self._serialize_agent_checkpoint(self._ctx, checkpoint)
         # Cache this head as the rewind point a *future* step will be cut from.
@@ -1043,7 +994,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             processor_name=self.name,
             messages=messages,
             checkpoint_number=self._checkpoint_number + 1,
-            session_metadata=self._session_metadata,
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._cw.folds),
@@ -1347,88 +1297,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                 messages, agent_name=self.name, exec_id=exec_id
             )
 
-    # --- Subclass hook points ---
-    #
-    # Override these in subclasses for customization.
-    # Alternatively, use the @agent.add_* decorators (preferred).
-    # These read the run context off ``self.ctx`` (the single shared
-    # session instance); ``on_before_tool_impl`` keeps an explicit ``ctx``
-    # for symmetry with the standalone approval-hook factories.
-
-    async def build_initial_context_impl(
-        self, messages: list[InputItem], *, exec_id: str
-    ) -> Sequence[InputItem]:
-        raise NotImplementedError
-
-    async def build_state_impl(
-        self,
-        *,
-        checkpoint: AgentCheckpoint,
-        exec_id: str,
-    ) -> None:
-        raise NotImplementedError
-
-    def parse_output_impl(
-        self,
-        final_answer: str,
-        *,
-        in_args: InT | None = None,
-        exec_id: str,
-    ) -> OutT:
-        raise NotImplementedError
-
-    def build_input_content_impl(self, in_args: InT, *, exec_id: str) -> Content:
-        raise NotImplementedError
-
-    def extract_final_answer_impl(
-        self,
-        *,
-        exec_id: str,
-        **kwargs: Any,
-    ) -> str | None:
-        raise NotImplementedError
-
-    async def on_before_llm_impl(
-        self,
-        *,
-        exec_id: str,
-        turn: int,
-        extra_llm_settings: dict[str, Any],
-    ) -> None:
-        raise NotImplementedError
-
-    async def on_after_llm_impl(
-        self,
-        response: Response,
-        *,
-        exec_id: str,
-        turn: int,
-    ) -> None:
-        raise NotImplementedError
-
-    async def on_before_tool_impl(
-        self,
-        *,
-        tool_calls: Sequence[FunctionToolCallItem],
-        ctx: RunContext[CtxT],
-        exec_id: str,
-    ) -> Mapping[str, ToolCallDecision] | None:
-        raise NotImplementedError
-
-    async def on_after_tool_impl(
-        self,
-        *,
-        tool_calls: Sequence[FunctionToolCallItem],
-        tool_messages: Sequence[Any],
-        exec_id: str,
-    ) -> None:
-        raise NotImplementedError
-
-    async def project_view_impl(
-        self, messages: list[InputItem], *, exec_id: str, input_tokens: int
-    ) -> Sequence[InputItem]:
-        raise NotImplementedError
-
     # --- Decorator API ---
     #
     # Preferred over subclassing. Each decorator sets a callback slot
@@ -1448,10 +1316,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         # Single-slot (replace): one transform of the ephemeral initial context
         # (system message + sections) prepended to the model-facing view.
         self._prompt_builder.initial_context_builder = func
-        return func
-
-    def add_state_builder(self, func: StateBuilder) -> StateBuilder:
-        self._state_builders.append(func)
         return func
 
     def add_system_prompt_section(self, section: "SystemPromptSection") -> None:
@@ -1550,6 +1414,80 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
 
         return decorator
 
+    # --- Subclass hook points ---
+    #
+    # Override these in subclasses for customization.
+    # Alternatively, use the @agent.add_* decorators (preferred).
+    # These read the run context off ``self.ctx`` (the single shared
+    # session instance); ``on_before_tool_impl`` keeps an explicit ``ctx``
+    # for symmetry with the standalone approval-hook factories.
+
+    async def build_initial_context_impl(
+        self, messages: list[InputItem], *, exec_id: str
+    ) -> Sequence[InputItem]:
+        raise NotImplementedError
+
+    def parse_output_impl(
+        self,
+        final_answer: str,
+        *,
+        in_args: InT | None = None,
+        exec_id: str,
+    ) -> OutT:
+        raise NotImplementedError
+
+    def build_input_content_impl(self, in_args: InT, *, exec_id: str) -> Content:
+        raise NotImplementedError
+
+    def extract_final_answer_impl(
+        self,
+        *,
+        exec_id: str,
+        **kwargs: Any,
+    ) -> str | None:
+        raise NotImplementedError
+
+    async def on_before_llm_impl(
+        self,
+        *,
+        exec_id: str,
+        turn: int,
+        extra_llm_settings: dict[str, Any],
+    ) -> None:
+        raise NotImplementedError
+
+    async def on_after_llm_impl(
+        self,
+        response: Response,
+        *,
+        exec_id: str,
+        turn: int,
+    ) -> None:
+        raise NotImplementedError
+
+    async def on_before_tool_impl(
+        self,
+        *,
+        tool_calls: Sequence[FunctionToolCallItem],
+        ctx: RunContext[CtxT],
+        exec_id: str,
+    ) -> Mapping[str, ToolCallDecision] | None:
+        raise NotImplementedError
+
+    async def on_after_tool_impl(
+        self,
+        *,
+        tool_calls: Sequence[FunctionToolCallItem],
+        tool_messages: Sequence[Any],
+        exec_id: str,
+    ) -> None:
+        raise NotImplementedError
+
+    async def project_view_impl(
+        self, messages: list[InputItem], *, exec_id: str, input_tokens: int
+    ) -> Sequence[InputItem]:
+        raise NotImplementedError
+
     # --- Override detection and registration ---
 
     def _register_overridden_implementations(self) -> None:
@@ -1568,9 +1506,9 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             )
 
         # Agent loop. ``final_answer_extractor`` / ``view_projector`` are
-        # single-slot (replace); the observer / decision hooks and the state
-        # builders stack — a subclass ``*_impl`` override is appended first so it
-        # runs before any decorator-registered hook.
+        # single-slot (replace); the observer / decision hooks stack — a
+        # subclass ``*_impl`` override is appended first so it runs before
+        # any decorator-registered hook.
         if is_method_overridden("extract_final_answer_impl", self, base_cls):
             self._loop.final_answer_extractor = self.extract_final_answer_impl
         if is_method_overridden("project_view_impl", self, base_cls):
@@ -1583,8 +1521,6 @@ class LLMAgent[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             self._loop.before_tool_hooks.append(self.on_before_tool_impl)
         if is_method_overridden("on_after_tool_impl", self, base_cls):
             self._loop.after_tool_hooks.append(self.on_after_tool_impl)
-        if is_method_overridden("build_state_impl", self, base_cls):
-            self._state_builders.append(self.build_state_impl)
 
     def copy(self) -> "LLMAgent[InT, OutT, CtxT]":
         # LLM sharing: handled by LLM.__deepcopy__ (returns self)

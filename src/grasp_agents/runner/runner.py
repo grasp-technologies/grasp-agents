@@ -44,7 +44,6 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
         ctx: RunContext[CtxT] | None = None,
         name: str | None = None,
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         if entry_proc not in procs:
@@ -103,8 +102,6 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
         self._path = path or []
         for proc in procs:
             proc.on_adopted(self)
-
-        self._session_metadata: dict[str, Any] = session_metadata or {}
 
         self._pending_events: dict[str, ProcPacketOutEvent] = {}
         self._final_event: RunPacketOutEvent | None = None
@@ -185,7 +182,6 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
         checkpoint = RunnerCheckpoint(
             session_key=self._ctx.session_key,
             processor_name=self._name,
-            session_metadata=self._session_metadata,
             pending_events=list(events.values()),
             active_steps=dict(self._active_steps),
             final_event=self._final_event,
@@ -394,6 +390,10 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
         # A fresh bus per run: the previous run's shutdown left the old bus
         # stopped, and a stopped bus silently drops every event.
         self._event_bus = EventBus()
+
+        # Session-scoped restore (ctx.state + shared filesystem) before any
+        # processor runs; idempotent, so member runs below no-op on it.
+        await self._ctx.load_checkpoint()
 
         # Load checkpoint or create initial pending events
         checkpoint = await self._load_checkpoint()

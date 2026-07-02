@@ -1,8 +1,8 @@
 """
-Tests for the metadata fields on ``AgentCheckpoint``:
+Tests for the metadata fields on ``AgentCheckpoint`` / ``SessionCheckpoint``:
 
-- context_kind / context_data auto-round-trip
-- prompt_cache_key round-trip
+- context_kind / context_data auto-round-trip (session record)
+- prompt_cache_key round-trip (agent head)
 - pre-persist user input before first LLM call
 """
 
@@ -19,6 +19,7 @@ from grasp_agents.durability import (
     AgentCheckpoint,
     ContextKind,
     InMemoryCheckpointStore,
+    SessionCheckpoint,
 )
 from grasp_agents.durability.checkpoints import SCHEMA_VERSION_SUMMARIES
 from grasp_agents.run_context import RunContext
@@ -63,16 +64,14 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v11: agent-team durability + record cleanup (AFTER_RESIDENT_TURN,
-        # created_at/updated_at audit pair, MessageRecord nests TeamMessage) —
-        # folded into one bump over the released v10 since none shipped separately.
-        assert CURRENT_SCHEMA_VERSION == 11
+        # v12: session-scoped state (serialized ctx.state, fs ref, metadata)
+        # moved out of per-processor checkpoints into one SessionCheckpoint
+        # per session_key.
+        assert CURRENT_SCHEMA_VERSION == 12
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
         snap = AgentCheckpoint(session_key="s", processor_name="a", messages=[])
-        assert snap.context_kind is None
-        assert snap.context_data is None
         assert snap.folds == []
         assert snap.current.prompt_cache_key is None
         assert snap.current.fs_snapshot_ref is None
@@ -80,6 +79,12 @@ class TestSchemaVersion:
         assert snap.current.agent_ctx_state.dotfile_overrides == []
         assert snap.current.agent_ctx_state.ipy_exec_context_id is None
         assert snap.current.agent_ctx_state.nb_exec_context_id is None
+
+        session = SessionCheckpoint(session_key="s")
+        assert session.context_kind is None
+        assert session.context_data is None
+        assert session.fs_snapshot_ref is None
+        assert session.session_metadata == {}
 
 
 # ---------------------------------------------------------------------------
@@ -97,11 +102,11 @@ class TestContextRoundTrip:
 
         await agent.run("hello")
 
-        data = await store.load("s1/agent/test_agent")
+        data = await store.load("s1/session")
         assert data is not None
-        snap = AgentCheckpoint.model_validate_json(data)
-        assert snap.context_kind == ContextKind.PYDANTIC
-        assert snap.context_data == {"pathway_id": "p-1", "count": 7}
+        record = SessionCheckpoint.model_validate_json(data)
+        assert record.context_kind == ContextKind.PYDANTIC
+        assert record.context_data == {"pathway_id": "p-1", "count": 7}
 
     @pytest.mark.asyncio
     async def test_pydantic_state_restored_on_resume(self) -> None:
@@ -113,12 +118,13 @@ class TestContextRoundTrip:
         ctx1.state.count = 3
         await agent1.run("hello")
 
-        # Fresh agent + ctx; state is default-initialized. Load rehydrates.
+        # Fresh agent + ctx; state is default-initialized. The session load
+        # rehydrates it.
         agent2, ctx2 = _make_agent(
             [_text_response("follow")], session_key="s1", store=store
         )
         assert not ctx2.state.pathway_id  # baseline
-        await agent2.load_checkpoint()
+        await ctx2.load_checkpoint()
         assert ctx2.state.pathway_id == "p-42"
         assert ctx2.state.count == 3
 
@@ -139,11 +145,11 @@ class TestContextRoundTrip:
         agent.on_adopted(ctx=ctx)
         await agent.run("hello")
 
-        snap = AgentCheckpoint.model_validate_json(
-            await store.load("s2/agent/test_agent") or b"{}"
+        record = SessionCheckpoint.model_validate_json(
+            await store.load("s2/session") or b"{}"
         )
-        assert snap.context_kind == ContextKind.OMITTED
-        assert snap.context_data is None
+        assert record.context_kind == ContextKind.OMITTED
+        assert record.context_data is None
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +174,8 @@ class TestSerializeStateOptIn:
         agent.on_adopted(ctx=ctx)
         await agent.run("hello")
 
-        snap = AgentCheckpoint.model_validate_json(
-            await store.load("s-off/agent/test_agent") or b"{}"
-        )
-        assert snap.context_kind is None
-        assert snap.context_data is None
+        # No session-scoped feature is on, so no session record is written.
+        assert await store.load("s-off/session") is None
 
     @pytest.mark.asyncio
     async def test_state_not_restored_by_default(self) -> None:
@@ -199,6 +202,7 @@ class TestSerializeStateOptIn:
             checkpoint_store=store, session_key="s-off2", state=_MyState()
         )
         agent2.on_adopted(ctx=ctx2)
+        await ctx2.load_checkpoint()
         await agent2.load_checkpoint()
         assert not ctx2.state.pathway_id
 

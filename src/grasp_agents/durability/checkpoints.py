@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 11
+CURRENT_SCHEMA_VERSION: int = 12
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -106,6 +106,19 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "mailbox before upgrading; acked ``processed/`` records are unaffected "
         "(dedup probes existence, not content)."
     ),
+    12: (
+        "Session-scoped state moved out of per-processor checkpoints into one "
+        "SessionCheckpoint per session_key (kind ``session``): the serialized "
+        "``RunContext.state`` (``context_kind``/``context_data``), the shared "
+        "filesystem's ``fs_snapshot_ref``, and ``session_metadata``. "
+        "AgentCheckpoint dropped ``context_kind``/``context_data`` (per-step "
+        "watermark refs remain for rollback); ProcessorCheckpoint dropped "
+        "``session_metadata``. v9-v11 records load fine (dropped fields "
+        "ignored), but their persisted ``ctx.state`` and cold-resume filesystem "
+        "restore are NOT migrated — a session saved with "
+        "``serialize_state=True`` or ``fs_snapshot_policy`` under v11 code resumes "
+        "under v12 with caller-built state and the live filesystem."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -123,6 +136,7 @@ class CheckpointKind(StrEnum):
     RUNNER = "runner"
     TEAM = "team"
     TASK = "task"
+    SESSION = "session"
     MAILBOX = "mailbox"
 
 
@@ -226,12 +240,37 @@ class PersistedRecord(BaseModel):
         return self
 
 
+class SessionCheckpoint(PersistedRecord):
+    """
+    The session-scoped half of a persisted session — state shared by every
+    processor bound to one :class:`~grasp_agents.run_context.RunContext`.
+
+    Exactly one per ``session_key`` (kind ``session``, no processor path):
+    the optionally serialized ``RunContext.state`` and the latest filesystem
+    snapshot of the shared ``ctx.environment``. Owned by ``RunContext``
+    (``save_checkpoint`` / ``load_checkpoint``) — never by an individual
+    processor, whose checkpoints carry only their own working state.
+    """
+
+    context_kind: ContextKind | None = None
+    context_data: Any | None = None
+
+    # The shared filesystem as of the last session save: the snapshot taken
+    # at that checkpoint boundary, or ``None`` when none was taken there —
+    # a cold resume then keeps the live filesystem rather than rewinding to
+    # a ref that no longer describes the transcript.
+    fs_snapshot_ref: str | None = None
+
+    # Operator-facing session labels (``RunContext.session_metadata``).
+    # Write-only: persisted for external inspection, never restored.
+    session_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProcessorCheckpoint(PersistedRecord):
     """Snapshot of a resumable processor's state at a turn boundary."""
 
     processor_name: str
     checkpoint_number: int = 0
-    session_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentCheckpoint(ProcessorCheckpoint):
@@ -282,9 +321,6 @@ class AgentCheckpoint(ProcessorCheckpoint):
 
     # Where in the agent loop this head was saved (diagnostics only).
     location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
-
-    context_kind: ContextKind | None = None
-    context_data: Any | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

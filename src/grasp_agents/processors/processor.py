@@ -125,7 +125,6 @@ class Processor[InT, OutT, CtxT](
         max_retries: int = 0,
         recipients: Sequence[ProcName] | None = None,
         path: list[str] | None = None,
-        session_metadata: dict[str, Any] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
@@ -147,7 +146,6 @@ class Processor[InT, OutT, CtxT](
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
 
-        self._session_metadata: dict[str, Any] = session_metadata or {}
         self._checkpoint_number: int = 0
         self._ctx: RunContext[CtxT] = (
             ctx if ctx is not None else current_run_context()  # type: ignore
@@ -534,6 +532,12 @@ class Processor[InT, OutT, CtxT](
         exec_id = self.generate_exec_id(exec_id)
 
         with grasp_logging.log_context(exec_id=exec_id, proc=self.name):
+            # Session-scoped restore (ctx.state + shared filesystem) — the
+            # ctx makes it a no-op for every run after the first on this ctx,
+            # so adopted subprocessors and tool-dispatched clones don't redo
+            # (or clobber) what the outermost run restored.
+            await self._ctx.load_checkpoint()
+
             val_in_args = self.validate_inputs(
                 exec_id=exec_id,
                 chat_inputs=chat_inputs,

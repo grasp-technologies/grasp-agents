@@ -1,4 +1,4 @@
-"""Drive a single team member off the shared mailbox + human input (one per process)."""
+"""Host a single team member off the shared mailbox + human input (one per process)."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _DONE = object()
 
 
-class MemberDriver:
+class MemberHost:
     """
     Runs ONE team member off the shared mailbox, one turn at a time so two turns
     never interleave into its transcript.
@@ -129,7 +129,7 @@ class MemberDriver:
             )
         )
 
-    async def events(
+    async def run_stream(
         self, *, stop_when_idle: bool = False
     ) -> AsyncIterator[Event[Any]]:
         """
@@ -237,7 +237,7 @@ class MemberDriver:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Dead-letter the failure; the per-process driver keeps serving.
+                # Dead-letter the failure; the per-process host keeps serving.
                 logger.warning("Member %r turn failed", member.name, exc_info=True)
 
         return handler

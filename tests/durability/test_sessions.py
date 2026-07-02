@@ -26,6 +26,7 @@ from grasp_agents.durability import (
     CheckpointStore,
     InMemoryCheckpointStore,
     InterruptionType,
+    SessionCheckpoint,
     StepWatermark,
     TaskRecord,
     TaskStatus,
@@ -212,13 +213,11 @@ class TestAgentCheckpoint:
             messages=messages,
             checkpoint_number=3,
             current=StepWatermark(step=0),
-            session_metadata={"parent_id": "p1"},
         )
         json_bytes = snap.model_dump_json().encode()
         restored = AgentCheckpoint.model_validate_json(json_bytes)
         assert restored.checkpoint_number == 3
         assert len(restored.messages) == 5
-        assert restored.session_metadata == {"parent_id": "p1"}
 
         # Verify types survive round-trip
         assert isinstance(restored.messages[0], InputMessageItem)
@@ -486,22 +485,25 @@ class TestAgentSessionPersistence:
 
     @pytest.mark.asyncio
     async def test_session_metadata_persisted(self):
-        """Session metadata is stored in the snapshot."""
+        """Session metadata is stored in the per-session record."""
         store = InMemoryCheckpointStore()
         agent = LLMAgent[str, str, None](
             name="test_agent",
             llm=MockLLM(responses_queue=[_text_response("ok")]),
             stream_llm=True,
+        )
+        ctx: RunContext[None] = RunContext(
+            checkpoint_store=store,
+            session_key="s1",
             session_metadata={"pathway_id": "pw_123"},
         )
-        ctx: RunContext[None] = RunContext(checkpoint_store=store, session_key="s1")
         agent.on_adopted(ctx=ctx)
         await agent.run("hi")
 
-        data = await store.load("s1/agent/test_agent")
+        data = await store.load("s1/session")
         assert data is not None
-        snap = AgentCheckpoint.model_validate_json(data)
-        assert snap.session_metadata == {"pathway_id": "pw_123"}
+        record = SessionCheckpoint.model_validate_json(data)
+        assert record.session_metadata == {"pathway_id": "pw_123"}
 
     @pytest.mark.asyncio
     async def test_checkpoint_number_increments(self):

@@ -2,7 +2,7 @@
 How a host runs each team member.
 
 Two concerns shared by both hosts (the in-process :class:`AgentTeam` and the
-per-process ``MemberDriver``): *classification* — agent vs plain processor,
+per-process ``MemberHost``): *classification* — agent vs plain processor,
 resident vs triggered, and whether a resident is currently idle (a host reads
 these to partition members and detect quiescence) — and the *triggered activation*
 itself (running one member for one inbound message), so that path is identical
