@@ -14,9 +14,9 @@ from grasp_agents.types.response import Response
 def _response(text: str = "x") -> Response:
     return Response(
         model="test-model",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],

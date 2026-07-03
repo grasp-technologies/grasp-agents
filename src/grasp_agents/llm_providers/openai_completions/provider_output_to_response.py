@@ -23,10 +23,11 @@ from openai.types.responses.response_usage import (
 from pydantic import TypeAdapter, ValidationError
 
 from grasp_agents.types.content import (
+    Annotation,
+    AnnotationUrlCitation,
     OutputMessagePart,
     OutputMessageRefusal,
     OutputMessageText,
-    UrlCitation,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -68,14 +69,14 @@ def _chat_completion_message_to_items(
 
 def convert_annotations(
     raw_annotations: list[ChatCompletionAnnotation] | list[dict[str, Any]],
-) -> list[UrlCitation]:
-    """Convert raw annotation dicts or Pydantic models to typed Citation objects."""
-    citations: list[UrlCitation] = []
+) -> list[Annotation]:
+    """Convert raw annotation dicts or Pydantic models to typed annotations."""
+    citations: list[Annotation] = []
     for ann in raw_annotations:
         if isinstance(ann, ChatCompletionAnnotation):
             raw_citation = ann.url_citation
             citations.append(
-                UrlCitation(
+                AnnotationUrlCitation(
                     end_index=raw_citation.end_index,
                     start_index=raw_citation.start_index,
                     title=raw_citation.title,
@@ -95,7 +96,7 @@ def convert_annotations(
                 and url is not None
             ):
                 citations.append(
-                    UrlCitation(
+                    AnnotationUrlCitation(
                         end_index=end_index,
                         start_index=start_index,
                         title=title,
@@ -120,7 +121,7 @@ def _extract_output_message_item(
     if raw_message.content:
         content_parts.append(
             OutputMessageText(
-                text=raw_message.content, citations=citations, logprobs=logprobs
+                text=raw_message.content, annotations=citations, logprobs=logprobs
             )
         )
 
@@ -128,7 +129,7 @@ def _extract_output_message_item(
         content_parts.append(OutputMessageRefusal(refusal=raw_message.refusal))
 
     return (
-        OutputMessageItem(status=status, content_parts=content_parts)
+        OutputMessageItem(status=status, content=content_parts)
         if content_parts
         else None
     )
@@ -245,8 +246,8 @@ def provider_output_to_response(provider_output: ChatCompletion) -> Response:
         id=provider_output.id,
         created_at=float(provider_output.created),
         model=provider_output.model,
-        output_items=output_items,
-        usage_with_cost=usage,
+        output=output_items,
+        usage=usage,
         status=status,
         incomplete_details=incomplete_details,
         service_tier=provider_output.service_tier,

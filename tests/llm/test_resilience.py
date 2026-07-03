@@ -55,9 +55,9 @@ def _resp(status_code: int) -> httpx.Response:
 def _text_response(text: str, model: str = "mock") -> Response:
     return Response(
         model=model,
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],

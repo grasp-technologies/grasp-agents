@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _format_usage(response: Response) -> str:
-    usage = response.usage_with_cost
+    usage = response.usage
     if usage is None:
         return "usage n/a"
     return f"{usage.input_tokens or 0:,} in / {usage.output_tokens or 0:,} out tok"

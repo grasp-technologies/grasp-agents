@@ -132,7 +132,7 @@ def _input_message_to_message_param(
     if item.role == "developer":
         return ChatCompletionDeveloperMessageParam(role="developer", content=item.text)
 
-    text_only = all(isinstance(part, InputText) for part in item.content_parts)
+    text_only = all(isinstance(part, InputText) for part in item.content)
     if text_only:
         return ChatCompletionUserMessageParam(role="user", content=item.text)
 
@@ -142,7 +142,7 @@ def _input_message_to_message_param(
         | ChatCompletionContentPartFileParam
     ] = []
 
-    for part in item.content_parts:
+    for part in item.content:
         if isinstance(part, InputText):
             content.append(
                 ChatCompletionContentPartTextParam(type="text", text=part.text)
@@ -173,15 +173,15 @@ def _tool_output_to_message_param(
     item: FunctionToolOutputItem,
 ) -> ChatCompletionToolMessageParam:
     """Convert a FunctionToolOutputItem to a tool message param."""
-    if isinstance(item.output_parts, list):
-        has_images = any(isinstance(part, InputImage) for part in item.output_parts)
+    if isinstance(item.output, list):
+        has_images = any(isinstance(part, InputImage) for part in item.output)
         if has_images:
             raise ValueError("Image tool outputs are not supported by Completions API")
         content = "\n".join(
-            part.text for part in item.output_parts if isinstance(part, InputText)
+            part.text for part in item.output if isinstance(part, InputText)
         )
     else:
-        content = item.output_parts
+        content = item.output
 
     return ChatCompletionToolMessageParam(
         role="tool", tool_call_id=item.call_id, content=content
@@ -244,7 +244,7 @@ def response_to_provider_input(
     reasoning_block_format: ReasoningBlockFormat | None = "anthropic",
 ) -> ChatCompletionAssistantMessageParamExt:
     # NOTE: Do we need response-level provider_specific_fields?
-    return _output_items_to_message_param(response.output_items, reasoning_block_format)
+    return _output_items_to_message_param(response.output, reasoning_block_format)
 
 
 def _add_output_message_items(

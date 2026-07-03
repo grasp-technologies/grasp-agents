@@ -148,9 +148,7 @@ def render_event(
         )
 
     if isinstance(event, ReasoningItemEvent):
-        parts = [
-            p.text for p in (event.data.summary_parts or []) if getattr(p, "text", "")
-        ]
+        parts = [p.text for p in (event.data.summary or []) if getattr(p, "text", "")]
         # A finalized reasoning item with no summary text (e.g. low effort, or
         # encrypted server-side reasoning) has nothing to show — skip it rather
         # than render an empty "thinking…" gutter. The live placeholder belongs
@@ -642,7 +640,7 @@ def usage_line(
     total_cost: float = 0.0,
     generation_count: int = 0,
 ) -> RenderableType | None:
-    usage = event.data.usage_with_cost
+    usage = event.data.usage
     if not usage:
         return None
     parts: list[str] = []
@@ -1158,7 +1156,7 @@ def _format_value(v: Any) -> str:
 
 def extract_input_text(msg: InputMessageItem) -> str:
     parts: list[str] = []
-    for part in msg.content_parts:
+    for part in msg.content:
         if isinstance(part, InputText):
             parts.append(part.text.strip())
         elif isinstance(part, InputImage):

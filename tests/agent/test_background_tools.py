@@ -46,11 +46,11 @@ def _multi_tool_call_response(
 ) -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             FunctionToolCallItem(call_id=cid, name=name, arguments=args)
             for name, args, cid in calls
         ],
-        usage_with_cost=_make_usage(),
+        usage=_make_usage(),
     )
 
 

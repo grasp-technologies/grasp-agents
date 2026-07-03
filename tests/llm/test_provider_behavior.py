@@ -49,7 +49,7 @@ from grasp_agents.llm_providers.openai_responses.tool_converters import (
     to_api_tool as responses_to_api_tool,
 )
 from grasp_agents.tools.base import BaseTool
-from grasp_agents.types.content import OutputMessageText, UrlCitation
+from grasp_agents.types.content import AnnotationUrlCitation, OutputMessageText
 from grasp_agents.types.items import OutputMessageItem, ReasoningItem
 from grasp_agents.types.llm_errors import LlmBadRequestError, LlmContextWindowError
 from grasp_agents.types.llm_events import OutputItemDone
@@ -190,9 +190,7 @@ class TestGeminiFinishReasons:
             FinishReason.IMAGE_SAFETY,
         ],
     )
-    def test_safety_reasons_map_to_content_filter(
-        self, reason: FinishReason
-    ) -> None:
+    def test_safety_reasons_map_to_content_filter(self, reason: FinishReason) -> None:
         out = gemini_output_to_response(_gemini_response(reason))
         assert out.status == "incomplete"
         assert out.incomplete_details is not None
@@ -221,19 +219,25 @@ class TestGeminiFinishReasons:
 
 class TestAnthropicCitationsPerBlock:
     def test_citations_not_duplicated_across_blocks(self) -> None:
-        cit1 = UrlCitation(
-            type="url_citation", url="https://a.example", title="A", start_index=0,
+        cit1 = AnnotationUrlCitation(
+            type="url_citation",
+            url="https://a.example",
+            title="A",
+            start_index=0,
             end_index=1,
         )
-        cit2 = UrlCitation(
-            type="url_citation", url="https://b.example", title="B", start_index=0,
+        cit2 = AnnotationUrlCitation(
+            type="url_citation",
+            url="https://b.example",
+            title="B",
+            start_index=0,
             end_index=1,
         )
         item = OutputMessageItem(
             status="completed",
-            content_parts=[
-                OutputMessageText(text="first", citations=[cit1]),
-                OutputMessageText(text="second", citations=[cit2]),
+            content=[
+                OutputMessageText(text="first", annotations=[cit1]),
+                OutputMessageText(text="second", annotations=[cit2]),
             ],
         )
         blocks = _output_message_to_blocks(item)
@@ -268,15 +272,11 @@ class TestAnthropicThinkingSignatures:
         blocks), each block keeps its own signature.
         """
         events = [
-            RawMessageStartEvent(
-                type="message_start", message=_make_message([])
-            ),
+            RawMessageStartEvent(type="message_start", message=_make_message([])),
             RawContentBlockStartEvent(
                 type="content_block_start",
                 index=0,
-                content_block=ThinkingBlock(
-                    type="thinking", thinking="", signature=""
-                ),
+                content_block=ThinkingBlock(type="thinking", thinking="", signature=""),
             ),
             RawContentBlockDeltaEvent(
                 type="content_block_delta",
@@ -292,9 +292,7 @@ class TestAnthropicThinkingSignatures:
             RawContentBlockStartEvent(
                 type="content_block_start",
                 index=1,
-                content_block=ThinkingBlock(
-                    type="thinking", thinking="", signature=""
-                ),
+                content_block=ThinkingBlock(type="thinking", thinking="", signature=""),
             ),
             RawContentBlockDeltaEvent(
                 type="content_block_delta",

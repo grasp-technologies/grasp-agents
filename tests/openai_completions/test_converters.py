@@ -30,9 +30,9 @@ from grasp_agents.llm_providers.openai_completions.tool_converters import (
 )
 from grasp_agents.tools.base import NamedToolChoice
 from grasp_agents.types.content import (
+    AnnotationUrlCitation,
     OutputMessageRefusal,
     OutputMessageText,
-    UrlCitation,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -103,9 +103,9 @@ class TestGeneratedMessageToItems:
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
         out_msg = items[0]
-        assert len(out_msg.content_parts) == 1
-        assert isinstance(out_msg.content_parts[0], OutputMessageRefusal)
-        assert out_msg.content_parts[0].refusal == "I can't do that"
+        assert len(out_msg.content) == 1
+        assert isinstance(out_msg.content[0], OutputMessageRefusal)
+        assert out_msg.content[0].refusal == "I can't do that"
 
     def test_text_and_refusal(self) -> None:
         msg = ChatCompletionMessage(
@@ -117,9 +117,9 @@ class TestGeneratedMessageToItems:
 
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
-        assert len(items[0].content_parts) == 2
-        assert isinstance(items[0].content_parts[0], OutputMessageText)
-        assert isinstance(items[0].content_parts[1], OutputMessageRefusal)
+        assert len(items[0].content) == 2
+        assert isinstance(items[0].content[0], OutputMessageText)
+        assert isinstance(items[0].content[1], OutputMessageRefusal)
 
     def test_tool_calls(self) -> None:
         tc = ChatCompletionMessageFunctionToolCall(
@@ -213,7 +213,7 @@ class TestConvertAnnotations:
         citations = convert_annotations([ann])
 
         assert len(citations) == 1
-        assert isinstance(citations[0], UrlCitation)
+        assert isinstance(citations[0], AnnotationUrlCitation)
         assert citations[0].url == "https://example.com"
         assert citations[0].title == "Test Source"
         assert citations[0].start_index == 10
@@ -281,9 +281,7 @@ class TestToolConverters:
         assert to_api_tool_choice("required") == "required"
 
     def test_to_api_tool_choice_named(self) -> None:
-        named = cast(
-            "dict[str, Any]", to_api_tool_choice(NamedToolChoice(name="add"))
-        )
+        named = cast("dict[str, Any]", to_api_tool_choice(NamedToolChoice(name="add")))
         assert named["type"] == "function"
         assert named["function"]["name"] == "add"
 
@@ -301,11 +299,11 @@ class TestProviderOutputToResponse:
         assert response.status == "completed"
         assert response.model == "gpt-4.1-nano"
         assert response.output_text == "Hello"
-        assert len(response.output_items) == 1
-        assert isinstance(response.output_items[0], OutputMessageItem)
-        assert response.usage_with_cost is not None
-        assert response.usage_with_cost.input_tokens == 10
-        assert response.usage_with_cost.output_tokens == 5
+        assert len(response.output) == 1
+        assert isinstance(response.output[0], OutputMessageItem)
+        assert response.usage is not None
+        assert response.usage.input_tokens == 10
+        assert response.usage.output_tokens == 5
 
     def test_length_finish_reason(self) -> None:
         completion = _make_completion(content="Partial...", finish_reason="length")
@@ -336,11 +334,11 @@ class TestProviderOutputToResponse:
         completion = _make_completion(content="Answer", usage=usage)
         response = provider_output_to_response(completion)
 
-        assert response.usage_with_cost is not None
-        assert response.usage_with_cost.input_tokens == 100
-        assert response.usage_with_cost.output_tokens == 50
-        assert response.usage_with_cost.input_tokens_details.cached_tokens == 30
-        assert response.usage_with_cost.output_tokens_details.reasoning_tokens == 20
+        assert response.usage is not None
+        assert response.usage.input_tokens == 100
+        assert response.usage.output_tokens == 50
+        assert response.usage.input_tokens_details.cached_tokens == 30
+        assert response.usage.output_tokens_details.reasoning_tokens == 20
 
     def test_convert_usage_no_details(self) -> None:
         usage = CompletionUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)

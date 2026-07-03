@@ -89,11 +89,11 @@ class TestInitialContextBuilder:
         sys_msg = header[0]
         assert isinstance(sys_msg, InputMessageItem)
         assert sys_msg.role == "system"
-        assert [p.text for p in sys_msg.content_parts if isinstance(p, InputText)] == [
+        assert [p.text for p in sys_msg.content if isinstance(p, InputText)] == [
             "Base prompt.",
             "Stable preamble.",
         ]
-        cached_part = sys_msg.content_parts[1]
+        cached_part = sys_msg.content[1]
         assert isinstance(cached_part, InputText)
         assert cached_part.cache_control == CacheControl(ttl="1h")
 

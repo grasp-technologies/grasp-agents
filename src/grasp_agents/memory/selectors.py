@@ -200,7 +200,7 @@ def make_llm_relevance_selector(
             response = await llm.generate_response(
                 input=[
                     InputMessageItem.from_text(rendered_system, role="system"),
-                    InputMessageItem(content_parts=query_parts, role="user"),
+                    InputMessageItem(content=query_parts, role="user"),
                 ],
                 output_schema=_MemorySelectionResult,
                 max_output_tokens=max_tokens,

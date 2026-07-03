@@ -107,7 +107,7 @@ def items_to_provider_inputs(
 def _input_to_user_content(item: InputMessageItem) -> GeminiContent:
     parts: list[GeminiPart] = []
 
-    for part in item.content_parts:
+    for part in item.content:
         if isinstance(part, InputText):
             parts.append(GeminiPart(text=part.text))
 
@@ -178,12 +178,12 @@ def _tool_output_to_content(
     item: FunctionToolOutputItem,
     call_id_to_name: dict[str, str] | None = None,
 ) -> GeminiContent:
-    if isinstance(item.output_parts, list):
+    if isinstance(item.output, list):
         output_str = "\n".join(
-            part.text for part in item.output_parts if isinstance(part, InputText)
+            part.text for part in item.output if isinstance(part, InputText)
         )
     else:
-        output_str = item.output_parts
+        output_str = item.output
 
     name = (call_id_to_name or {}).get(item.call_id, item.call_id)
 

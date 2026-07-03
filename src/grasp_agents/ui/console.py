@@ -443,9 +443,7 @@ class EventConsole:
             return
         if not self.show_thinking:
             return
-        parts = [
-            p.text for p in (event.data.summary_parts or []) if getattr(p, "text", "")
-        ]
+        parts = [p.text for p in (event.data.summary or []) if getattr(p, "text", "")]
         # Render a finalized (non-streamed) reasoning item through the same gutter
         # as the streaming path, so the console shows thinking one consistent way.
         # No summary text → nothing to show (matches the streaming path, which
@@ -462,9 +460,7 @@ class EventConsole:
             return
         self._render_web_search(event.data, event.source)
 
-    def _render_web_search(
-        self, item: WebSearchCallItem, source: str | None
-    ) -> None:
+    def _render_web_search(self, item: WebSearchCallItem, source: str | None) -> None:
         # A server-side web search/fetch call — show what the model searched
         # (queries / opened URL / find-in-page pattern) in its own panel,
         # followed by a blank line so it stands clear of the thinking or answer
@@ -509,7 +505,7 @@ class EventConsole:
         self._streamed_live_ids.clear()
         if not self.show_usage:
             return
-        usage = event.data.usage_with_cost
+        usage = event.data.usage
         if not usage:
             return
 

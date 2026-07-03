@@ -72,7 +72,7 @@ class TestEmptyToolCallArgs:
     def test_anthropic_request_build_tolerates_empty_args(self) -> None:
         items = [
             FunctionToolCallItem(call_id="c1", name="t", arguments=""),
-            FunctionToolOutputItem(call_id="c1", output_parts="done"),
+            FunctionToolOutputItem(call_id="c1", output="done"),
         ]
         _, messages = anthropic_items_to_inputs(items)
         tool_use = next(
@@ -93,7 +93,7 @@ class TestInputFileConversion:
     def test_anthropic_converts_file_to_document_block(self) -> None:
         msg = InputMessageItem(
             role="user",
-            content_parts=[InputText(text="read this"), _file_part()],
+            content=[InputText(text="read this"), _file_part()],
         )
         _, messages = anthropic_items_to_inputs([msg])
         blocks = messages[0]["content"]
@@ -113,7 +113,7 @@ class TestInputFileConversion:
     def test_completions_converts_file_part(self) -> None:
         msg = InputMessageItem(
             role="user",
-            content_parts=[InputText(text="read this"), _file_part()],
+            content=[InputText(text="read this"), _file_part()],
         )
         params = completions_items_to_inputs([msg])
         content = params[0]["content"]

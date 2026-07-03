@@ -269,8 +269,8 @@ class TestTextStream:
         )
         resp = _final_response(events).response
         assert resp.status == "completed"
-        assert len(resp.output_items) == 1
-        msg = resp.output_items[0]
+        assert len(resp.output) == 1
+        msg = resp.output[0]
         assert isinstance(msg, OutputMessageItem)
         assert msg.text == "Hi"
 
@@ -375,7 +375,7 @@ class TestToolCallStream:
             )
         )
         resp = _final_response(events).response
-        tools = [o for o in resp.output_items if isinstance(o, FunctionToolCallItem)]
+        tools = [o for o in resp.output if isinstance(o, FunctionToolCallItem)]
         assert len(tools) == 2
         assert {t.name for t in tools} == {"fn_a", "fn_b"}
 
@@ -457,10 +457,10 @@ class TestReasoningContentStream:
             )
         )
         resp = _final_response(events).response
-        assert len(resp.output_items) == 2
-        assert isinstance(resp.output_items[0], ReasoningItem)
-        assert resp.output_items[0].summary_text == "thought"
-        assert isinstance(resp.output_items[1], OutputMessageItem)
+        assert len(resp.output) == 2
+        assert isinstance(resp.output[0], ReasoningItem)
+        assert resp.output[0].summary_text == "thought"
+        assert isinstance(resp.output[1], OutputMessageItem)
 
 
 class TestReasoningDetailsStream:
@@ -491,7 +491,7 @@ class TestReasoningDetailsStream:
         assert "".join(d.delta for d in r_deltas) == "Deep thought continues"
 
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].summary_text == "Deep thought continues"
         assert reasoning[0].encrypted_content == "sig123"
@@ -522,7 +522,7 @@ class TestReasoningDetailsStream:
         assert len(_events_of_type(events, ReasoningSummaryPartTextDelta)) == 0
 
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].redacted is True
         assert reasoning[0].encrypted_content == "encrypted_data_here"
@@ -545,7 +545,7 @@ class TestReasoningDetailsStream:
         assert r_deltas[0].delta == "Brief thought"
 
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].summary_text == "Brief thought"
 
@@ -565,7 +565,7 @@ class TestReasoningDetailsStream:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         # Should use the structured detail, not double-count
         assert reasoning[0].summary_text == "structured"
@@ -588,7 +588,7 @@ class TestReasoningDetailsStream:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].redacted is True
 
@@ -633,7 +633,7 @@ class TestReasoningDetailsStream:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 3
 
         # First: normal reasoning with text
@@ -644,7 +644,7 @@ class TestReasoningDetailsStream:
         # Second: redacted block
         assert reasoning[1].redacted is True
         assert reasoning[1].encrypted_content == "secret_data"
-        assert reasoning[1].summary_parts == []
+        assert reasoning[1].summary == []
 
         # Third: normal reasoning with text
         assert reasoning[2].redacted is False
@@ -652,7 +652,7 @@ class TestReasoningDetailsStream:
         assert reasoning[2].encrypted_content == "sig2"
 
         # Text output should still be present after reasoning
-        msgs = [o for o in resp.output_items if isinstance(o, OutputMessageItem)]
+        msgs = [o for o in resp.output if isinstance(o, OutputMessageItem)]
         assert len(msgs) == 1
         assert msgs[0].text == "answer"
 
@@ -695,7 +695,7 @@ class TestReasoningDetailsStream:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 3
 
         assert reasoning[0].redacted is False
@@ -737,7 +737,7 @@ class TestReasoningDetailsStream:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 2
         assert reasoning[0].redacted is True
         assert reasoning[0].encrypted_content == "enc_1"
@@ -808,9 +808,9 @@ class TestLogprobs:
             )
         )
         resp = _final_response(events).response
-        msg = resp.output_items[0]
+        msg = resp.output[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is not None
         assert len(text_part.logprobs) == 1
@@ -829,9 +829,9 @@ class TestLogprobs:
         assert deltas[0].logprobs == []
 
         resp = _final_response(events).response
-        msg = resp.output_items[0]
+        msg = resp.output[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is None
 
@@ -895,9 +895,9 @@ class TestLifecycle:
             )
         )
         resp = _final_response(events).response
-        assert resp.usage_with_cost is not None
-        assert resp.usage_with_cost.input_tokens == 10
-        assert resp.usage_with_cost.output_tokens == 20
+        assert resp.usage is not None
+        assert resp.usage.input_tokens == 10
+        assert resp.usage.output_tokens == 20
 
 
 class TestFinishReasons:
@@ -977,7 +977,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].summary_text == "deep thought"
         assert reasoning[0].encrypted_content == "sig1"
@@ -1013,7 +1013,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].summary_text == "part1 part2 part3"
         assert reasoning[0].encrypted_content == "sig_final"
@@ -1034,11 +1034,11 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].redacted is True
         assert reasoning[0].encrypted_content == "encrypted_data"
-        assert reasoning[0].summary_parts == []
+        assert reasoning[0].summary == []
 
     def test_interleaved_thinking_and_redacted(self):
         """Thinking → redacted → thinking produces 3 items with correct flags."""
@@ -1075,7 +1075,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 3
 
         # First: normal thinking
@@ -1086,7 +1086,7 @@ class TestLiteLLMThinkingBlocks:
         # Second: redacted block — no summary, has encrypted data
         assert reasoning[1].redacted is True
         assert reasoning[1].encrypted_content == "secret"
-        assert reasoning[1].summary_parts == []
+        assert reasoning[1].summary == []
 
         # Third: normal thinking resumed after redacted
         assert reasoning[2].redacted is False
@@ -1139,13 +1139,13 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].summary_text == "Let me think about this."
         assert reasoning[0].encrypted_content == "final_sig"
 
         # Also verify the text output is present
-        msgs = [o for o in resp.output_items if isinstance(o, OutputMessageItem)]
+        msgs = [o for o in resp.output if isinstance(o, OutputMessageItem)]
         assert len(msgs) == 1
         assert msgs[0].text == "The answer is 42"
 
@@ -1192,7 +1192,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 3
 
         # First: accumulated multi-chunk thinking
@@ -1203,7 +1203,7 @@ class TestLiteLLMThinkingBlocks:
         # Second: redacted block — no summary text
         assert reasoning[1].redacted is True
         assert reasoning[1].encrypted_content == "secret_data"
-        assert reasoning[1].summary_parts == []
+        assert reasoning[1].summary == []
 
         # Third: resumed thinking after redacted
         assert reasoning[2].redacted is False
@@ -1232,7 +1232,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 2
         assert reasoning[0].redacted is True
         assert reasoning[0].encrypted_content == "enc_1"
@@ -1260,7 +1260,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].summary_text == "structured"
         assert reasoning[0].encrypted_content == "s"
@@ -1301,13 +1301,13 @@ class TestLiteLLMThinkingBlocks:
         assert all(item.redacted for item in done_items)
 
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 2
         assert reasoning[0].encrypted_content == "secret1"
         assert reasoning[1].encrypted_content == "secret2"
 
         # Text output still present
-        msgs = [o for o in resp.output_items if isinstance(o, OutputMessageItem)]
+        msgs = [o for o in resp.output if isinstance(o, OutputMessageItem)]
         assert len(msgs) == 1
         assert msgs[0].text == "answer"
 
@@ -1333,7 +1333,7 @@ class TestLiteLLMThinkingBlocks:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         # cache_control is no longer stored on ReasoningItem
         assert not hasattr(reasoning[0], "cache_control")
@@ -1363,9 +1363,9 @@ class TestLiteLLMAnnotations:
             )
         )
         resp = _final_response(events).response
-        msg = resp.output_items[0]
+        msg = resp.output[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 1
 
@@ -1396,8 +1396,8 @@ class TestLiteLLMMetadata:
         resp = _final_response(events).response
         assert resp.hidden_params is not None
         assert resp.hidden_params["response_cost"] == 0.001
-        assert resp.usage_with_cost is not None
-        assert resp.usage_with_cost.cost == 0.001
+        assert resp.usage is not None
+        assert resp.usage.cost == 0.001
 
     def test_response_ms(self):
         events = asyncio.run(
@@ -1447,7 +1447,7 @@ class TestLiteLLMMetadata:
             )
         )
         resp = _final_response(events).response
-        reasoning = [o for o in resp.output_items if isinstance(o, ReasoningItem)]
+        reasoning = [o for o in resp.output if isinstance(o, ReasoningItem)]
         assert len(reasoning) == 1
         assert reasoning[0].encrypted_content == "fallback_sig"
 
@@ -1480,8 +1480,8 @@ class TestLiteLLMLogprobs:
         assert len(deltas[0].logprobs) == 1
 
         resp = _final_response(events).response
-        msg = resp.output_items[0]
+        msg = resp.output[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is not None

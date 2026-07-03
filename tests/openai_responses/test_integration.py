@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel, Field
 
-from grasp_agents.types.content import OutputMessageText, UrlCitation
+from grasp_agents.types.content import AnnotationUrlCitation, OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -56,12 +56,12 @@ class TestOpenAIResponsesIntegration:
         response = await llm.generate_response(input_items)
 
         assert response.status == "completed"
-        assert len(response.output_items) >= 1
-        assert isinstance(response.output_items[0], OutputMessageItem)
+        assert len(response.output) >= 1
+        assert isinstance(response.output[0], OutputMessageItem)
         assert "hello" in response.output_text.lower()
-        assert response.usage_with_cost is not None
-        assert response.usage_with_cost.input_tokens > 0
-        assert response.usage_with_cost.output_tokens > 0
+        assert response.usage is not None
+        assert response.usage.input_tokens > 0
+        assert response.usage.output_tokens > 0
 
     @pytest.mark.asyncio
     async def test_stream_text(self, llm: CloudLLM) -> None:
@@ -94,7 +94,7 @@ class TestOpenAIResponsesIntegration:
             for tc in response.tool_call_items
         ]
 
-        full_input = [user_msg, *response.output_items, *tool_outputs]
+        full_input = [user_msg, *response.output, *tool_outputs]
         final_response = await llm.generate_response(full_input, tools=tools)
 
         assert "42" in final_response.output_text
@@ -168,20 +168,18 @@ class TestOpenAIResponsesWebSearch:
         assert response.output_text
 
         # WebSearchCallItem should appear in output_items
-        ws_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        ws_items = [i for i in response.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) >= 1
 
         msg = response.message_items[0]
         all_citations = [
             c
-            for part in msg.content_parts
+            for part in msg.content
             if isinstance(part, OutputMessageText)
             for c in part.citations
         ]
         assert len(all_citations) > 0
-        assert isinstance(all_citations[0], UrlCitation)
+        assert isinstance(all_citations[0], AnnotationUrlCitation)
         assert all_citations[0].url
 
     @pytest.mark.asyncio
@@ -197,20 +195,18 @@ class TestOpenAIResponsesWebSearch:
         response = completed[0].response
         assert response.output_text
 
-        ws_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        ws_items = [i for i in response.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) >= 1
 
         msg = response.message_items[0]
         all_citations = [
             c
-            for part in msg.content_parts
+            for part in msg.content
             if isinstance(part, OutputMessageText)
             for c in part.citations
         ]
         assert len(all_citations) > 0
-        assert isinstance(all_citations[0], UrlCitation)
+        assert isinstance(all_citations[0], AnnotationUrlCitation)
         assert all_citations[0].url
 
 
@@ -265,7 +261,7 @@ class TestOpenAIResponsesReasoningContinuity:
         ]
 
         # Pass ALL output_items (reasoning + tool call) + tool outputs back
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         r2 = await llm.generate_response(full_input, tools=tools)
 
         assert r2.status == "completed"
@@ -304,7 +300,7 @@ class TestOpenAIResponsesReasoningContinuity:
         ]
 
         # Second turn: streaming with reasoning continuity
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         events2 = [
             event
             async for event in llm.generate_response_stream(full_input, tools=tools)
@@ -376,7 +372,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
             item.model_copy(update={"encrypted_content": "CORRUPTED"})
             if isinstance(item, ReasoningItem) and item.encrypted_content
             else item
-            for item in r1.output_items
+            for item in r1.output
         ]
 
         full_input = [user_msg, *corrupted_items, *tool_outputs]
@@ -418,7 +414,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
             item.model_copy(update={"encrypted_content": None})
             if isinstance(item, ReasoningItem)
             else item
-            for item in r1.output_items
+            for item in r1.output
         ]
 
         full_input = [user_msg, *stripped_items, *tool_outputs]
@@ -457,9 +453,7 @@ class TestOpenAIResponsesWebFetch:
         response = await llm.generate_response(input_items)
 
         assert response.output_text
-        ws_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        ws_items = [i for i in response.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) >= 1
 
         open_page_items = [i for i in ws_items if isinstance(i.action, OpenPageAction)]
@@ -484,7 +478,7 @@ class TestOpenAIResponsesWebFetch:
 
         open_page_items = [
             i
-            for i in response.output_items
+            for i in response.output
             if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(open_page_items) >= 1
@@ -502,7 +496,7 @@ class TestOpenAIResponsesWebFetch:
 
         open_page_items = [
             i
-            for i in response.output_items
+            for i in response.output
             if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         # OpenAI's live behavior has varied here: older responses carried
@@ -525,7 +519,7 @@ class TestOpenAIResponsesWebFetch:
 
         open_page_items = [
             i
-            for i in r1.output_items
+            for i in r1.output
             if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(open_page_items) >= 1
@@ -533,7 +527,7 @@ class TestOpenAIResponsesWebFetch:
         follow_up = InputMessageItem.from_text(
             "What was the title of the page you visited?"
         )
-        full_input = [user_msg, *r1.output_items, follow_up]
+        full_input = [user_msg, *r1.output, follow_up]
         r2 = await llm.generate_response(full_input)
 
         assert r2.output_text
@@ -549,7 +543,7 @@ class TestOpenAIResponsesWebFetch:
 
         open_page_items = [
             i
-            for i in r1.output_items
+            for i in r1.output
             if isinstance(i, WebSearchCallItem) and isinstance(i.action, OpenPageAction)
         ]
         assert len(open_page_items) >= 1
@@ -557,7 +551,7 @@ class TestOpenAIResponsesWebFetch:
         follow_up = InputMessageItem.from_text(
             "What was the title of the page you visited?"
         )
-        full_input = [user_msg, *r1.output_items, follow_up]
+        full_input = [user_msg, *r1.output, follow_up]
         events = [event async for event in llm.generate_response_stream(full_input)]
 
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
@@ -614,7 +608,7 @@ class TestOpenAIResponsesParallelToolUse:
         assert tool_names == {"add", "multiply"}
 
         tool_outputs = _execute_parallel_tools(r1.tool_call_items)
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         r2 = await llm.generate_response(full_input, tools=parallel_tools)
 
         assert r2.status == "completed"
@@ -648,7 +642,7 @@ class TestOpenAIResponsesParallelToolUse:
         assert tool_names == {"add", "multiply"}
 
         tool_outputs = _execute_parallel_tools(r1.tool_call_items)
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         events2 = [
             event
             async for event in llm.generate_response_stream(

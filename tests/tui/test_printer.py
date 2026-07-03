@@ -75,7 +75,7 @@ class TestInputMessageText:
     def test_with_image_url(self):
         """Image URLs are included in text output."""
         msg = InputMessageItem(
-            content_parts=[
+            content=[
                 InputText(text="Look at this"),
                 InputImage.from_url("https://example.com/pic.jpg"),
             ],
@@ -88,7 +88,7 @@ class TestInputMessageText:
     def test_with_base64_image(self):
         """Base64 images show placeholder."""
         msg = InputMessageItem(
-            content_parts=[
+            content=[
                 InputText(text="Describe"),
                 InputImage.from_base64("abc123"),
             ],
@@ -186,7 +186,7 @@ class TestPrinterMessage:
         """OutputMessageItem (generated answer) prints <response> tags."""
         printer = Printer(output_to="stdout")
         msg = OutputMessageItem(
-            content_parts=[OutputMessageText(text="The answer is 42.")],
+            content=[OutputMessageText(text="The answer is 42.")],
             status="completed",
         )
 
@@ -203,7 +203,7 @@ class TestPrinterMessage:
 
         printer = Printer(output_to="stdout")
         item = ReasoningItem(
-            summary_parts=[ReasoningSummary(text="Let me work through this.")],
+            summary=[ReasoningSummary(text="Let me work through this.")],
             status="completed",
         )
 
@@ -279,9 +279,9 @@ class TestPrintEvents:
     def _make_response(self) -> Response:
         return Response(
             model="test-model",
-            output_items=[
+            output=[
                 OutputMessageItem(
-                    content_parts=[OutputMessageText(text="Hello")],
+                    content=[OutputMessageText(text="Hello")],
                     status="completed",
                 )
             ],
@@ -354,7 +354,7 @@ class TestPrintEvents:
     async def test_output_item_added_response(self, capsys):
         """OutputItemAdded with OutputMessageItem prints <response> tag."""
         item = OutputMessageItem(
-            content_parts=[OutputMessageText(text="test")],
+            content=[OutputMessageText(text="test")],
             status="in_progress",
         )
 
@@ -440,7 +440,7 @@ class TestPrintEvents:
     async def test_output_item_done_closing_tags(self, capsys):
         """OutputItemDone events print closing tags."""
         msg_item = OutputMessageItem(
-            content_parts=[OutputMessageText(text="done")],
+            content=[OutputMessageText(text="done")],
             status="completed",
         )
         tc_item = FunctionToolCallItem(call_id="tc_1", name="search", arguments="{}")

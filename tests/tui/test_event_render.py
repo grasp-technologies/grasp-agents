@@ -92,9 +92,9 @@ def test_untrusted_tool_result_unwrapped_to_kv_panel() -> None:
 
     raw = FunctionToolOutputItem.from_tool_result(
         call_id="1", output={"stdout": "line one\nline two", "returncode": 0}
-    ).output_parts
+    ).output
     item = FunctionToolOutputItem(
-        call_id="1", output_parts=wrap_untrusted(raw, source="Bash")
+        call_id="1", output=wrap_untrusted(raw, source="Bash")
     )
     ev = ToolOutputItemEvent(data=item, source="Bash", destination="analyst")
     out = _render_to_text(render_event(ev, inline_images=False))
@@ -121,9 +121,9 @@ def test_ansi_in_tool_result_keeps_border_aligned() -> None:
     stdout = f"a.txt\n{color}subdir{reset}\nb.txt"  # one colored line among plain
     raw = FunctionToolOutputItem.from_tool_result(
         call_id="1", output={"stdout": stdout, "returncode": 0}
-    ).output_parts
+    ).output
     item = FunctionToolOutputItem(
-        call_id="1", output_parts=wrap_untrusted(raw, source="Bash")
+        call_id="1", output=wrap_untrusted(raw, source="Bash")
     )
     ev = ToolOutputItemEvent(data=item, source="Bash", destination="agent")
     out = _render_to_text(render_event(ev, inline_images=False), width=60)
@@ -268,7 +268,7 @@ def test_message_is_markdown() -> None:
 
     ev = OutputMessageItemEvent(
         data=OutputMessageItem(
-            content_parts=[OutputMessageText(text="hello")], status="completed"
+            content=[OutputMessageText(text="hello")], status="completed"
         ),
         source="agent",
     )
@@ -282,7 +282,7 @@ def test_markdown_links_plain_without_hyperlinks_osc8_with() -> None:
     url = "https://www.techradar.com/pro/microsoft-forced-to-turn-to-aws"
     ev = OutputMessageItemEvent(
         data=OutputMessageItem(
-            content_parts=[OutputMessageText(text=f"AWS ([techradar.com]({url})).")],
+            content=[OutputMessageText(text=f"AWS ([techradar.com]({url})).")],
             status="completed",
         ),
         source="agent",
@@ -302,7 +302,7 @@ def test_pure_json_output_renders_like_tool_args() -> None:
     # table used for tool-call arguments — not as prose.
     ev = OutputMessageItemEvent(
         data=OutputMessageItem(
-            content_parts=[OutputMessageText(text='{"verdict": "pass", "score": 9}')],
+            content=[OutputMessageText(text='{"verdict": "pass", "score": 9}')],
             status="completed",
         ),
         source="grader",
@@ -316,7 +316,7 @@ def test_prose_output_with_leading_brace_stays_markdown() -> None:
     # Prose that merely starts with "{" is not valid JSON → stays Markdown.
     ev = OutputMessageItemEvent(
         data=OutputMessageItem(
-            content_parts=[OutputMessageText(text="{not json} here is the answer")],
+            content=[OutputMessageText(text="{not json} here is the answer")],
             status="completed",
         ),
         source="agent",
@@ -329,7 +329,7 @@ def test_reasoning_is_gutter() -> None:
     # streaming console / TUI thinking style.
     ev = ReasoningItemEvent(
         data=ReasoningItem(
-            summary_parts=[ReasoningSummary(text="thinking about it")],
+            summary=[ReasoningSummary(text="thinking about it")],
             status="completed",
         ),
         source="agent",
@@ -347,7 +347,7 @@ def test_empty_reasoning_item_not_rendered() -> None:
     # (e.g. low effort, or encrypted server-side reasoning) — it must not render
     # a stray "thinking…" box.
     ev = ReasoningItemEvent(
-        data=ReasoningItem(summary_parts=[], status="completed"), source="agent"
+        data=ReasoningItem(summary=[], status="completed"), source="agent"
     )
     assert render_event(ev) is None
 
@@ -392,8 +392,8 @@ def test_tool_error_event_has_no_display() -> None:
 def test_generation_end_usage_is_text() -> None:
     resp = Response(
         model="m",
-        output_items=[],
-        usage_with_cost=ResponseUsage(
+        output=[],
+        usage=ResponseUsage(
             input_tokens=10,
             input_tokens_details=InputTokensDetails(cached_tokens=0),
             output_tokens=5,
@@ -646,7 +646,7 @@ def test_tool_output_inputimage_parts_render() -> None:
     data_uri = "data:image/png;base64," + b64.b64encode(buf.getvalue()).decode()
     item = FunctionToolOutputItem(
         call_id="1",
-        output_parts=[InputText(text="chart ready"), InputImage(image_url=data_uri)],
+        output=[InputText(text="chart ready"), InputImage(image_url=data_uri)],
     )
     ev = ToolOutputItemEvent(data=item, source="make_chart", destination="agent")
     rendered = render_event(ev)

@@ -765,7 +765,7 @@ class GraspAgentsApp(App[None]):
         final = render_event(event, inline_images=False)
         # swap to the canonical panel unless the finalised item carries no summary
         # text (the "thinking…" placeholder), which would clobber streamed tokens
-        has_text = any(getattr(p, "text", "") for p in (event.data.summary_parts or []))
+        has_text = any(getattr(p, "text", "") for p in (event.data.summary or []))
         if final is not None and has_text:
             widget.update(final)
         if at_bottom:
@@ -787,7 +787,7 @@ class GraspAgentsApp(App[None]):
 
     def _usage_text(self, event: GenerationEndEvent) -> RenderableType | None:
         """Per-request usage line + a running session Σ total, like the console."""
-        usage = event.data.usage_with_cost
+        usage = event.data.usage
         if usage:
             self._ga_gen_count += 1
             if usage.cost:
@@ -803,7 +803,7 @@ class GraspAgentsApp(App[None]):
     def _track_context(self, event: Event[Any], owner: str) -> None:
         """Update an agent's running input-token count from its events."""
         if isinstance(event, GenerationEndEvent):
-            usage = event.data.usage_with_cost
+            usage = event.data.usage
             if not usage or not usage.input_tokens:
                 return
             self._ga_input_tokens[owner] = usage.input_tokens

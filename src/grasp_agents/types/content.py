@@ -13,10 +13,19 @@ from openai.types.responses import (
     ResponseOutputRefusal,
     ResponseOutputText,
 )
-from openai.types.responses.response_output_text import Annotation, Logprob
+from openai.types.responses.response_output_text import (
+    AnnotationContainerFileCitation as ResponseAnnotationContainerFileCitation,
+)
+from openai.types.responses.response_output_text import (
+    AnnotationFileCitation as ResponseAnnotationFileCitation,
+)
+from openai.types.responses.response_output_text import (
+    AnnotationFilePath as ResponseAnnotationFilePath,
+)
 from openai.types.responses.response_output_text import (
     AnnotationURLCitation as ResponseAnnotationURLCitation,
 )
+from openai.types.responses.response_output_text import Logprob
 from openai.types.responses.response_reasoning_item import (
     Content as ResponseReasoningContent,
 )
@@ -24,6 +33,8 @@ from openai.types.responses.response_reasoning_item import (
     Summary as ResponseReasoningSummary,
 )
 from pydantic import BaseModel, Field, model_validator
+
+# === Input content parts ===
 
 ImageDetail = Literal["low", "medium", "high", "ultra_high", "auto"]
 
@@ -306,7 +317,12 @@ class InputFile(ResponseInputFile):
         return cls(file_data=data, filename=path.name)
 
 
-class UrlCitation(ResponseAnnotationURLCitation):
+# === Outputs ===
+
+# --- Annotations/citations ---
+
+
+class AnnotationUrlCitation(ResponseAnnotationURLCitation):
     """URL citation with source excerpt and/or grounded response text."""
 
     # OpenResponses fields (UrlCitationBody):
@@ -339,7 +355,66 @@ class UrlCitation(ResponseAnnotationURLCitation):
     # """Anthropic-specific"""
 
 
-Citation = Annotated[UrlCitation, Field(discriminator="type")]
+# The following annotation variants are OpenAI-specific (not part of the
+# OpenResponses reference); kept so OpenAI payloads carrying them still validate.
+
+
+class AnnotationFileCitation(ResponseAnnotationFileCitation):
+    """Citation of an uploaded file (OpenAI-specific)."""
+
+    # OpenAI fields (AnnotationFileCitation):
+
+    type: Literal["file_citation"] = "file_citation"
+    file_id: str
+    filename: str
+    index: int
+
+    # grasp-agents fields:
+
+    provider_specific_fields: dict[str, Any] | None = None
+
+
+class AnnotationContainerFileCitation(ResponseAnnotationContainerFileCitation):
+    """Citation of a file produced in a code-interpreter container (OpenAI-specific)."""
+
+    # OpenAI fields (AnnotationContainerFileCitation):
+
+    type: Literal["container_file_citation"] = "container_file_citation"
+    container_id: str
+    file_id: str
+    filename: str
+    start_index: int
+    end_index: int
+
+    # grasp-agents fields:
+
+    provider_specific_fields: dict[str, Any] | None = None
+
+
+class AnnotationFilePath(ResponseAnnotationFilePath):
+    """Reference to a file path in the message text (OpenAI-specific)."""
+
+    # OpenAI fields (AnnotationFilePath):
+
+    type: Literal["file_path"] = "file_path"
+    file_id: str
+    index: int
+
+    # grasp-agents fields:
+
+    provider_specific_fields: dict[str, Any] | None = None
+
+
+Annotation = Annotated[
+    AnnotationUrlCitation
+    | AnnotationFileCitation
+    | AnnotationContainerFileCitation
+    | AnnotationFilePath,
+    Field(discriminator="type"),
+]
+
+
+# --- Output message content parts ---
 
 
 class OutputMessageText(ResponseOutputText):
@@ -348,25 +423,19 @@ class OutputMessageText(ResponseOutputText):
     # OpenResponses fields (OutputTextContent):
 
     type: Literal["output_text"] = "output_text"
-    annotations: list[Annotation] = Field(default_factory=list[Annotation])
+    annotations: list[Annotation] = Field(default_factory=list[Annotation])  # pyright: ignore[reportIncompatibleVariableOverride] — extended annotation types
     logprobs: list[Logprob] | None = None
     text: str
 
     # grasp-agents fields:
 
-    citations: list[Citation] = Field(default_factory=list[Citation])
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _sync_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
-        if "citations" in data and "annotations" not in data:
-            data["annotations"] = data["citations"]
-        elif "annotations" in data and "citations" not in data:
-            data["citations"] = data["annotations"]
-
-        return data
+    @property
+    def citations(self) -> list[AnnotationUrlCitation]:
+        """URL citations among :attr:`annotations`."""
+        return [a for a in self.annotations if isinstance(a, AnnotationUrlCitation)]
 
 
 class OutputMessageRefusal(ResponseOutputRefusal):
@@ -377,10 +446,13 @@ class OutputMessageRefusal(ResponseOutputRefusal):
     refusal: str
 
 
-class ReasoningText(ResponseReasoningContent):
+# --- Reasoning parts ---
+
+
+class ReasoningContent(ResponseReasoningContent):
     """Reasoning content produced by the model."""
 
-    # OpenResponses fields (ReasoningText):
+    # OpenResponses fields (ReasoningContent):
     type: Literal["reasoning_text"] = "reasoning_text"
     text: str
 
@@ -405,12 +477,12 @@ OutputMessagePart = Annotated[
 # summaries) is not considered "Content" in this sense.
 
 OutputContentPart = Annotated[
-    OutputMessageText | OutputMessageRefusal | ReasoningText,
+    OutputMessageText | OutputMessageRefusal | ReasoningContent,
     Field(discriminator="type"),
 ]
 
 OutputPart = Annotated[
-    OutputMessageText | OutputMessageRefusal | ReasoningText | ReasoningSummary,
+    OutputMessageText | OutputMessageRefusal | ReasoningContent | ReasoningSummary,
     Field(discriminator="type"),
 ]
 

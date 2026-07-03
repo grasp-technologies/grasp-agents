@@ -14,12 +14,13 @@ from grasp_agents.llm_providers.openai_responses.tool_converters import (
     to_api_tool_choice,
 )
 from grasp_agents.tools.base import NamedToolChoice
-from grasp_agents.types.content import InputImage, InputText
+from grasp_agents.types.content import InputImage, InputText, OutputMessageText
 from grasp_agents.types.items import (
     FindInPageAction,
     FunctionToolOutputItem,
     InputMessageItem,
     OpenPageAction,
+    OutputMessageItem,
     SearchAction,
     WebSearchCallItem,
 )
@@ -64,9 +65,7 @@ class TestResponsesToolConverters:
         assert to_api_tool_choice("required") == "required"
 
     def test_to_api_tool_choice_named(self) -> None:
-        named = cast(
-            "dict[str, Any]", to_api_tool_choice(NamedToolChoice(name="add"))
-        )
+        named = cast("dict[str, Any]", to_api_tool_choice(NamedToolChoice(name="add")))
         assert named["type"] == "function"
         assert named["name"] == "add"
 
@@ -147,9 +146,7 @@ class TestWebFetchRoundtrip:
             oai_resp.model_dump(warnings="none", by_alias=True)
         )
 
-        ws_items = [
-            i for i in internal.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        ws_items = [i for i in internal.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) == 2
 
         # OpenPageAction
@@ -203,9 +200,7 @@ class TestWebFetchRoundtrip:
         internal = InternalResponse.model_validate(
             oai_resp.model_dump(warnings="none", by_alias=True)
         )
-        ws = next(
-            i for i in internal.output_items if isinstance(i, WebSearchCallItem)
-        )
+        ws = next(i for i in internal.output if isinstance(i, WebSearchCallItem))
         assert isinstance(ws.action, FindInPageAction)
         assert ws.action.url == "https://example.com/page"
         assert ws.action.pattern == "needle"
@@ -268,9 +263,7 @@ class TestWebFetchRoundtrip:
             oai_resp.model_dump(warnings="none", by_alias=True)
         )
 
-        ws_items = [
-            i for i in internal.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        ws_items = [i for i in internal.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) == 1
         assert ws_items[0].status == "failed"
         assert isinstance(ws_items[0].action, OpenPageAction)
@@ -301,7 +294,7 @@ class TestMessageIdNotSent:
     def test_multimodal_message_id_stripped(self) -> None:
         msg = InputMessageItem(
             role="user",
-            content_parts=[
+            content=[
                 InputText(text="what is this?"),
                 InputImage.from_url("https://example.com/x.jpg"),
             ],
@@ -313,3 +306,22 @@ class TestMessageIdNotSent:
         assert "id" not in param
         # the image content survives the id strip
         assert "input_image" in [p["type"] for p in param["content"]]
+
+    def test_message_phase_sent_back(self) -> None:
+        """``phase`` must be echoed back to the API to avoid degradation."""
+        msg = OutputMessageItem(
+            status="completed",
+            phase="final_answer",
+            content=[OutputMessageText(text="done")],
+        )
+
+        [param] = items_to_provider_inputs([msg])
+
+        assert param["phase"] == "final_answer"
+
+        # Absent phase stays absent (None must not be sent).
+        no_phase = OutputMessageItem(
+            status="completed", content=[OutputMessageText(text="x")]
+        )
+        [param2] = items_to_provider_inputs([no_phase])
+        assert "phase" not in param2

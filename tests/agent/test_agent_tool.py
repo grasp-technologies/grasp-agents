@@ -74,13 +74,13 @@ def _text_response(text: str) -> Response:
 
     return Response(
         model="mock",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
-        usage_with_cost=_make_usage(),
+        usage=_make_usage(),
     )
 
 
@@ -89,14 +89,14 @@ def _tool_call_response(name: str, arguments: str, call_id: str) -> Response:
 
     return Response(
         model="mock",
-        output_items=[
+        output=[
             FunctionToolCallItem(
                 call_id=call_id,
                 name=name,
                 arguments=arguments,
             )
         ],
-        usage_with_cost=_make_usage(),
+        usage=_make_usage(),
     )
 
 
@@ -517,8 +517,8 @@ class TestAgentToolPromptBuilders:
                 **kwargs: Any,
             ) -> Response:
                 for item in input:
-                    if hasattr(item, "content_parts"):
-                        for part in item.content_parts:
+                    if hasattr(item, "content"):
+                        for part in item.content:
                             if hasattr(part, "text"):
                                 captured.append(part.text)
                 return _text_response("done")

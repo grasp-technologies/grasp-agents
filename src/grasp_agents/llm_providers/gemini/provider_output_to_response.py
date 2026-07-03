@@ -31,7 +31,11 @@ from openai.types.responses.response_usage import (
     OutputTokensDetails,
 )
 
-from grasp_agents.types.content import OutputMessageText, ReasoningSummary, UrlCitation
+from grasp_agents.types.content import (
+    AnnotationUrlCitation,
+    OutputMessageText,
+    ReasoningSummary,
+)
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     OpenPageAction,
@@ -159,7 +163,7 @@ def _merge_text_parts(acc: _TextPartAccumulator) -> OutputMessageItem:
 
     return OutputMessageItem(
         status="completed",
-        content_parts=list(acc.parts),
+        content=list(acc.parts),
         provider_specific_fields=(
             {"thought_signature": encoded_sig} if encoded_sig else None
         ),
@@ -171,7 +175,7 @@ def _merge_thinking_parts(acc: _ThinkingPartAccumulator) -> ReasoningItem:
     encoded_sig = encode_thought_signature(sig) if sig else None
 
     return ReasoningItem(
-        status="completed", summary_parts=acc.parts, encrypted_content=encoded_sig
+        status="completed", summary=acc.parts, encrypted_content=encoded_sig
     )
 
 
@@ -257,7 +261,7 @@ def _get_full_text(items: list[OutputItem]) -> str:
     parts: list[str] = []
     for item in items:
         if isinstance(item, OutputMessageItem):
-            for part in item.content_parts:
+            for part in item.content:
                 if isinstance(part, OutputMessageText):
                     parts.append(part.text)
     return "".join(parts)
@@ -277,7 +281,7 @@ def attach_grounding_annotations(
     full_text = _get_full_text(items)
     full_bytes = full_text.encode("utf-8")
 
-    annotations: list[UrlCitation] = []
+    annotations: list[AnnotationUrlCitation] = []
 
     for support in supports:
         if not support.grounding_chunk_indices:
@@ -306,7 +310,7 @@ def attach_grounding_annotations(
             )
 
             annotations.append(
-                UrlCitation(
+                AnnotationUrlCitation(
                     type="url_citation",
                     url=web.uri,
                     title=web.title or "",
@@ -330,12 +334,12 @@ def attach_citation_annotations(
     if not citation_meta or not citation_meta.citations:
         return
 
-    annotations: list[UrlCitation] = []
+    annotations: list[AnnotationUrlCitation] = []
     for citation in citation_meta.citations:
         if not citation.uri:
             continue
         annotations.append(
-            UrlCitation(
+            AnnotationUrlCitation(
                 type="url_citation",
                 url=citation.uri,
                 title=citation.title or "",
@@ -350,14 +354,14 @@ def attach_citation_annotations(
 
 def _distribute_annotations(
     items: list[OutputItem],
-    annotations: list[UrlCitation],
+    annotations: list[AnnotationUrlCitation],
 ) -> None:
     """Attach annotations to the correct text content parts by char offset."""
     text_parts: list[tuple[int, int, OutputMessageText]] = []
     offset = 0
     for item in items:
         if isinstance(item, OutputMessageItem):
-            for part in item.content_parts:
+            for part in item.content:
                 if isinstance(part, OutputMessageText):
                     end = offset + len(part.text)
                     text_parts.append((offset, end, part))
@@ -369,7 +373,7 @@ def _distribute_annotations(
     for ann in annotations:
         for start, end, part in text_parts:
             if ann.start_index < end and ann.end_index > start:
-                adjusted = UrlCitation(
+                adjusted = AnnotationUrlCitation(
                     type="url_citation",
                     url=ann.url,
                     title=ann.title,
@@ -421,7 +425,7 @@ def attach_logprobs(
     text_parts: list[OutputMessageText] = []
     for item in items:
         if isinstance(item, OutputMessageItem):
-            for part in item.content_parts:
+            for part in item.content:
                 if isinstance(part, OutputMessageText):
                     text_parts.append(part)
 
@@ -554,6 +558,6 @@ def provider_output_to_response(provider_output: GenerateContentResponse) -> Res
         model=provider_output.model_version or "<unknown-model>",
         status=status,
         incomplete_details=incomplete_details,
-        output_items=output_items,
-        usage_with_cost=usage,
+        output=output_items,
+        usage=usage,
     )

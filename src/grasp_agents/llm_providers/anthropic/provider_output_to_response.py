@@ -31,10 +31,10 @@ from openai.types.responses.response_usage import (
 )
 
 from grasp_agents.types.content import (
-    Citation,
+    Annotation,
+    AnnotationUrlCitation,
     OutputMessageText,
     ReasoningSummary,
-    UrlCitation,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -115,26 +115,26 @@ def _anthropic_message_to_items(
     return items
 
 
-def _extract_citations(block: AnthropicTextBlock) -> list[UrlCitation]:
+def _extract_citations(block: AnthropicTextBlock) -> list[AnnotationUrlCitation]:
     """Extract URL citations from a TextBlock's citations list."""
     if not block.citations:
         return []
 
-    citations: list[UrlCitation] = []
+    citations: list[AnnotationUrlCitation] = []
     for cit in block.citations:
         if cit.type == "web_search_result_location":
-            provide_specific_fields = {
+            provider_specific_fields = {
                 "anthropic:cited_text": cit.cited_text,
                 "anthropic:encrypted_index": cit.encrypted_index,
             }
             citations.append(
-                UrlCitation(
+                AnnotationUrlCitation(
                     type="url_citation",
                     url=cit.url,
                     title=cit.title or "",
                     start_index=0,
                     end_index=len(block.text),
-                    provider_specific_fields=provide_specific_fields,
+                    provider_specific_fields=provider_specific_fields,
                 )
             )
 
@@ -233,16 +233,16 @@ def _merge_text_blocks(
 ) -> OutputMessageItem:
     parts: list[OutputMessageText] = []
     for block in blocks:
-        citations: list[Citation] = list(_extract_citations(block))
-        parts.append(OutputMessageText(text=block.text, citations=citations))
+        annotations: list[Annotation] = list(_extract_citations(block))
+        parts.append(OutputMessageText(text=block.text, annotations=annotations))
 
-    return OutputMessageItem(status="completed", content_parts=list(parts))
+    return OutputMessageItem(status="completed", content=list(parts))
 
 
 def _thinking_block_to_reasoning_item(block: AnthropicThinkingBlock) -> ReasoningItem:
     return ReasoningItem(
         status="completed",
-        summary_parts=[ReasoningSummary(text=block.thinking)],
+        summary=[ReasoningSummary(text=block.thinking)],
         encrypted_content=block.signature,
     )
 
@@ -252,7 +252,7 @@ def _redacted_thinking_block_to_reasoning_item(
 ) -> ReasoningItem:
     return ReasoningItem(
         status="completed",
-        summary_parts=[],
+        summary=[],
         redacted=True,
         encrypted_content=block.data,
     )
@@ -321,6 +321,6 @@ def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
         model=provider_output.model,
         status=status,
         incomplete_details=incomplete_details,
-        output_items=output_items,
-        usage_with_cost=usage,
+        output=output_items,
+        usage=usage,
     )

@@ -1,4 +1,9 @@
 from .content import (
+    Annotation,
+    AnnotationContainerFileCitation,
+    AnnotationFileCitation,
+    AnnotationFilePath,
+    AnnotationUrlCitation,
     InputFile,
     InputImage,
     InputPart,
@@ -8,8 +13,8 @@ from .content import (
     OutputMessageRefusal,
     OutputMessageText,
     OutputPart,
+    ReasoningContent,
     ReasoningSummary,
-    ReasoningText,
 )
 from .events import (
     BackgroundTaskCompletedEvent,
@@ -104,7 +109,12 @@ from .response import (
 )
 
 __all__ = [
+    "Annotation",
     "AnnotationAdded",
+    "AnnotationContainerFileCitation",
+    "AnnotationFileCitation",
+    "AnnotationFilePath",
+    "AnnotationUrlCitation",
     "BackgroundTaskCompletedEvent",
     "BackgroundTaskInfo",
     "BackgroundTaskLaunchedEvent",
@@ -158,6 +168,7 @@ __all__ = [
     "Packet",
     "ProcName",
     "ProcPacketOutEvent",
+    "ReasoningContent",
     "ReasoningContentPartTextDelta",
     "ReasoningContentPartTextDone",
     "ReasoningItem",
@@ -167,7 +178,6 @@ __all__ = [
     "ReasoningSummaryPartDone",
     "ReasoningSummaryPartTextDelta",
     "ReasoningSummaryPartTextDone",
-    "ReasoningText",
     "RecoveryHint",
     "Response",
     "ResponseCompleted",

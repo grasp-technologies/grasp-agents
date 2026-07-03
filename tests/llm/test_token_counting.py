@@ -22,7 +22,7 @@ def test_counts_images_not_just_text() -> None:
         [
             FunctionToolOutputItem(
                 call_id="c1",
-                output_parts=[
+                output=[
                     InputText(text="hello"),
                     InputImage(image_url="https://example.com/x.png"),
                 ],
@@ -39,7 +39,7 @@ def test_counts_files_by_base64_size() -> None:
         [
             FunctionToolOutputItem(
                 call_id="c1",
-                output_parts=[
+                output=[
                     InputText(text="see file"),
                     InputFile(file_data="A" * 4000),
                 ],

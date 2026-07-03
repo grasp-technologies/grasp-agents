@@ -77,12 +77,12 @@ def _sanitize_source(source: str) -> str:
 
 
 def wrap_untrusted(
-    output_parts: str | list[ToolOutputPart],
+    output: str | list[ToolOutputPart],
     *,
     source: str,
 ) -> str | list[ToolOutputPart]:
     """
-    Fence a tool result's ``output_parts`` in ``<untrusted_content>`` tags.
+    Fence a tool result's ``output`` in ``<untrusted_content>`` tags.
 
     Text is neutralized so an embedded copy of the tag cannot forge the
     boundary; image / file parts pass through and are fenced positionally.
@@ -91,11 +91,11 @@ def wrap_untrusted(
     open_tag = f'<{UNTRUSTED_CONTENT_TAG} source="{_sanitize_source(source)}">\n'
     close_tag = f"\n</{UNTRUSTED_CONTENT_TAG}>"
 
-    if isinstance(output_parts, str):
-        return f"{open_tag}{_neutralize(output_parts)}{close_tag}"
+    if isinstance(output, str):
+        return f"{open_tag}{_neutralize(output)}{close_tag}"
 
     fenced: list[ToolOutputPart] = [InputText(text=open_tag)]
-    for part in output_parts:
+    for part in output:
         if isinstance(part, InputText):
             fenced.append(part.model_copy(update={"text": _neutralize(part.text)}))
         else:

@@ -460,7 +460,7 @@ class AgentLoop[CtxT]:
         else:
             parts = FunctionToolOutputItem.from_tool_result(
                 call_id=call.call_id, output=output
-            ).output_parts
+            ).output
             if not is_error and isinstance(parts, str):
                 parts = await spill_if_large(
                     self._ctx.file_backend,
@@ -475,7 +475,7 @@ class AgentLoop[CtxT]:
             parts = wrap_untrusted(parts, source=call.name)
 
         return FunctionToolOutputItem(
-            call_id=call.call_id, output_parts=parts, is_error=is_error
+            call_id=call.call_id, output=parts, is_error=is_error
         )
 
     async def _convert_tool_input(
@@ -609,16 +609,16 @@ class AgentLoop[CtxT]:
         else:
             try:
                 response = await self.llm.generate_response(**llm_params)
-                self.transcript.update(response.output_items)
+                self.transcript.update(response.output)
             except LLMToolCallValidationError as exc:
                 response = exc.response
                 if response is not None:
-                    self.transcript.update(response.output_items)
-                    for ev in self._item_events(response.output_items, exec_id=exec_id):
+                    self.transcript.update(response.output)
+                    for ev in self._item_events(response.output, exec_id=exec_id):
                         yield ev
                 async for ev in self._synthesize_validation_tool_results(
                     exc,
-                    response.output_items if response is not None else [],
+                    response.output if response is not None else [],
                     exec_id=exec_id,
                 ):
                     yield ev
@@ -637,7 +637,7 @@ class AgentLoop[CtxT]:
                 source=self.agent_name,
                 exec_id=exec_id,
             )
-            for ev in self._item_events(response.output_items, exec_id=exec_id):
+            for ev in self._item_events(response.output, exec_id=exec_id):
                 yield ev
 
         if not response:
@@ -1675,7 +1675,7 @@ class AgentLoop[CtxT]:
 
     def _process_response(self, response: Response, *, exec_id: str) -> None:
         self._ctx.record_response(self.agent_name, response)
-        usage = response.usage_with_cost
+        usage = response.usage
         if usage is not None and usage.input_tokens:
             # Anchor the compaction budget on the provider's exact reported count
             # for the view just sent.
@@ -1694,5 +1694,5 @@ class AgentLoop[CtxT]:
         # ``print_events`` instead; don't also set ``ctx.printer``.)
         if self._ctx.printer:
             self._ctx.printer.print_messages(
-                response.output_items, agent_name=self.agent_name, exec_id=exec_id
+                response.output, agent_name=self.agent_name, exec_id=exec_id
             )

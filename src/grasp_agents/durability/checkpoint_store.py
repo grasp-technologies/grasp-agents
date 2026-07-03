@@ -13,20 +13,10 @@ logger = logging.getLogger(__name__)
 
 _INPUT_ITEM_ADAPTER: TypeAdapter[InputItem] = TypeAdapter(InputItem)
 
-# SDK-typed mirror fields, redundant on disk: each item also stores the frozen
-# grasp-agents ``*_parts`` it was built from, and the sync validators rebuild
-# these from those parts on load. Dropping them ≈halves the per-message payload.
-# Providers never read this log — the OpenAI Responses converter builds its API
-# payload from its own ``model_dump``, the others read the ``*_parts`` directly.
-_REDUNDANT_ON_DISK = {"content", "output", "summary"}
-
 
 def encode_messages(messages: Sequence[InputItem]) -> bytes:
     """Frame messages as newline-terminated JSONL (one ``InputItem`` per line)."""
-    return b"".join(
-        m.model_dump_json(exclude=_REDUNDANT_ON_DISK).encode("utf-8") + b"\n"
-        for m in messages
-    )
+    return b"".join(m.model_dump_json().encode("utf-8") + b"\n" for m in messages)
 
 
 def decode_message_log(blob: bytes) -> list[InputItem]:

@@ -150,7 +150,7 @@ class TestItemsExtraction:
         assert len(items) == 1
         assert isinstance(items[0], OutputMessageItem)
         # Two content parts, merged into one message item
-        assert len(items[0].content_parts) == 2
+        assert len(items[0].content) == 2
 
     def test_thinking_then_text(self):
         """Thinking part → ReasoningItem, text → OutputMessageItem."""
@@ -182,9 +182,9 @@ class TestItemsExtraction:
         assert len(items) == 2
         assert isinstance(items[0], ReasoningItem)
         # Should have two summary parts
-        assert len(items[0].summary_parts) == 2
-        assert items[0].summary_parts[0].text == "Step 1: analyze"
-        assert items[0].summary_parts[1].text == "Step 2: decide"
+        assert len(items[0].summary) == 2
+        assert items[0].summary[0].text == "Step 1: analyze"
+        assert items[0].summary[1].text == "Step 2: decide"
 
     def test_thought_signature_captured(self):
         """thought_signature is preserved as encrypted_content."""
@@ -334,7 +334,7 @@ class TestItemsExtraction:
         assert len(items) == 2
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 1
         ann = text_part.annotations[0]
@@ -367,7 +367,7 @@ class TestItemsExtraction:
         assert len(items) == 1
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 1
         ann = text_part.annotations[0]
@@ -404,7 +404,7 @@ class TestItemsExtraction:
         assert len(items) == 1
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert text_part.logprobs is not None
         assert len(text_part.logprobs) == 2
@@ -449,7 +449,7 @@ class TestItemsExtraction:
 
         msg = items[0]
         assert isinstance(msg, OutputMessageItem)
-        text_part = msg.content_parts[0]
+        text_part = msg.content[0]
         assert isinstance(text_part, OutputMessageText)
         assert len(text_part.annotations) == 2
         assert text_part.annotations[0].url == "https://a.com"
@@ -471,12 +471,12 @@ class TestResponseConverters:
 
         assert result.id == "resp_test123"
         assert result.status == "completed"
-        assert len(result.output_items) == 1
-        assert isinstance(result.output_items[0], OutputMessageItem)
-        assert result.usage_with_cost is not None
-        assert result.usage_with_cost.input_tokens == 10
-        assert result.usage_with_cost.output_tokens == 5
-        assert result.usage_with_cost.total_tokens == 15
+        assert len(result.output) == 1
+        assert isinstance(result.output[0], OutputMessageItem)
+        assert result.usage is not None
+        assert result.usage.input_tokens == 10
+        assert result.usage.output_tokens == 5
+        assert result.usage.total_tokens == 15
 
     def test_thinking_tokens_folded_into_output(self):
         """
@@ -491,8 +491,8 @@ class TestResponseConverters:
         )
         result = provider_output_to_response(resp)
 
-        assert result.usage_with_cost is not None
-        usage = result.usage_with_cost
+        assert result.usage is not None
+        usage = result.usage
         assert usage.output_tokens == 25  # 5 visible + 20 thinking
         assert usage.output_tokens_details.reasoning_tokens == 20
         assert usage.total_tokens == 35  # 10 in + 5 out + 20 thinking
@@ -544,8 +544,8 @@ class TestResponseConverters:
         )
         result = provider_output_to_response(resp)
 
-        assert result.usage_with_cost is not None
-        assert result.usage_with_cost.output_tokens_details.reasoning_tokens == 50
+        assert result.usage is not None
+        assert result.usage.output_tokens_details.reasoning_tokens == 50
 
 
 # ==== response_to_provider_inputs ====
@@ -592,7 +592,7 @@ class TestResponseToProviderInputs:
             InputMessageItem.from_text("Hi"),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Hello!")],
+                content=[OutputMessageText(text="Hello!")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -615,11 +615,11 @@ class TestResponseToProviderInputs:
             ),
             FunctionToolOutputItem(
                 call_id="fc_abc",
-                output_parts="Sunny, 22°C",
+                output="Sunny, 22°C",
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="It's sunny in Paris!")],
+                content=[OutputMessageText(text="It's sunny in Paris!")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -650,12 +650,12 @@ class TestResponseToProviderInputs:
             InputMessageItem.from_text("Think about this"),
             ReasoningItem(
                 status="completed",
-                summary_parts=[],
+                summary=[],
                 encrypted_content=base64.b64encode(b"sig123").decode("ascii"),
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Done")],
+                content=[OutputMessageText(text="Done")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -674,12 +674,12 @@ class TestResponseToProviderInputs:
             InputMessageItem.from_text("Think"),
             ReasoningItem(
                 status="completed",
-                summary_parts=[],
+                summary=[],
                 encrypted_content=base64.b64encode(b"my_signature").decode("ascii"),
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Result")],
+                content=[OutputMessageText(text="Result")],
             ),
         ]
         _system, contents = items_to_provider_inputs(items)
@@ -953,7 +953,7 @@ class TestGeminiStreamConverter:
         events = self._run(chunks)
 
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
-        usage = completed[0].response.usage_with_cost
+        usage = completed[0].response.usage
         assert usage is not None
         assert usage.input_tokens == 100
         assert usage.output_tokens == 50

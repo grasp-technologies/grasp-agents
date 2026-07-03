@@ -67,7 +67,7 @@ def _gating_agent(store: TuiApprovalStore, sink: list[ApprovalDecision], *, call
             sink.append(await fut)
         yield OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[OutputMessageText(text="done")], status="completed"
+                content=[OutputMessageText(text="done")], status="completed"
             ),
             source="ops",
         )

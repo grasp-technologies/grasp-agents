@@ -73,8 +73,8 @@ if TYPE_CHECKING:
 def _resp(model: str, items: list[Any], *, cost: float) -> Response:
     return Response(
         model=model,
-        output_items=items,
-        usage_with_cost=ResponseUsage(
+        output=items,
+        usage=ResponseUsage(
             input_tokens=1500,
             input_tokens_details=InputTokensDetails(cached_tokens=900),
             output_tokens=220,
@@ -149,7 +149,7 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
         TurnStartEvent(data=TurnInfo(turn=0), source="coordinator", exec_id="c1"),
         ReasoningItemEvent(
             data=ReasoningItem(
-                summary_parts=[
+                summary=[
                     ReasoningSummary(text="I'll delegate research first, then writing.")
                 ],
                 status="completed",
@@ -159,7 +159,7 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
         ),
         OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[OutputMessageText(text="Delegating to the researcher…")],
+                content=[OutputMessageText(text="Delegating to the researcher…")],
                 status="completed",
             ),
             source="coordinator",
@@ -201,7 +201,7 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
         ),
         OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[
+                content=[
                     OutputMessageText(text="Found 4 key milestones; handing back.")
                 ],
                 status="completed",
@@ -261,7 +261,7 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
         ),
         OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[OutputMessageText(text="Chart rendered; brief ready.")],
+                content=[OutputMessageText(text="Chart rendered; brief ready.")],
                 status="completed",
             ),
             source="writer",
@@ -289,7 +289,7 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
         ),
         OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[
+                content=[
                     OutputMessageText(
                         text=(
                             "## Brief ready\n\n"
@@ -332,7 +332,7 @@ def console_demo_events() -> list[Event[Any]]:
     """
     text = OutputMessageItem(
         id="i2",  # matches the streamed delta's item_id below, as real providers emit
-        content_parts=[OutputMessageText(text="Let me research that for you.")],
+        content=[OutputMessageText(text="Let me research that for you.")],
         status="completed",
     )
     search = FunctionToolCallItem(

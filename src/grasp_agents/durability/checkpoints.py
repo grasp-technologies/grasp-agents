@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 12
+CURRENT_SCHEMA_VERSION: int = 13
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -20,7 +20,7 @@ changes in a way that older code could not load. Add an entry to
 ``SCHEMA_VERSION_SUMMARIES`` describing what changed.
 """
 
-MIN_SUPPORTED_SCHEMA_VERSION: int = 9
+MIN_SUPPORTED_SCHEMA_VERSION: int = 13
 """
 Oldest persisted schema version this code can still load.
 
@@ -118,6 +118,13 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "restore are NOT migrated — a session saved with "
         "``serialize_state=True`` or ``fs_snapshot_policy`` under v11 code resumes "
         "under v12 with caller-built state and the live filesystem."
+    ),
+    13: (
+        "Message items dropped the ``*_parts`` mirror fields: parts live directly "
+        "in the OpenResponses-named fields (``content``/``output``/``summary``), "
+        "which the message log now persists. Older logs stored ONLY the mirror "
+        "fields, so v13 code would load their messages as empty — hence the "
+        "supported floor is also raised to v13. Not migrated: resave sessions."
     ),
 }
 """

@@ -14,7 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from grasp_agents.llm.cloud_llm import APIProvider
-from grasp_agents.types.content import OutputMessageText, UrlCitation
+from grasp_agents.types.content import AnnotationUrlCitation, OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -63,12 +63,12 @@ class TestAnthropicIntegration:
         response = await llm.generate_response(input_items)
 
         assert response.status == "completed"
-        assert len(response.output_items) >= 1
-        assert isinstance(response.output_items[0], OutputMessageItem)
+        assert len(response.output) >= 1
+        assert isinstance(response.output[0], OutputMessageItem)
         assert "hello" in response.output_text.lower()
-        assert response.usage_with_cost is not None
-        assert response.usage_with_cost.input_tokens > 0
-        assert response.usage_with_cost.output_tokens > 0
+        assert response.usage is not None
+        assert response.usage.input_tokens > 0
+        assert response.usage.output_tokens > 0
 
     @pytest.mark.asyncio
     async def test_stream_text(self, llm: CloudLLM) -> None:
@@ -101,7 +101,7 @@ class TestAnthropicIntegration:
             for tc in response.tool_call_items
         ]
 
-        full_input = [user_msg, *response.output_items, *tool_outputs]
+        full_input = [user_msg, *response.output, *tool_outputs]
         final_response = await llm.generate_response(full_input, tools=tools)
 
         assert "42" in final_response.output_text
@@ -158,7 +158,7 @@ class TestAnthropicReasoningContinuity:
         ]
 
         # Pass ALL output_items (reasoning + tool call) + tool outputs back
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         r2 = await llm.generate_response(full_input, tools=tools)
 
         assert r2.status == "completed"
@@ -195,7 +195,7 @@ class TestAnthropicReasoningContinuity:
         ]
 
         # Second turn: streaming with reasoning continuity
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         events2 = [
             event
             async for event in llm.generate_response_stream(full_input, tools=tools)
@@ -235,7 +235,7 @@ class TestAnthropicReasoningContinuity:
             item.model_copy(update={"encrypted_content": "CORRUPTED"})
             if isinstance(item, ReasoningItem) and item.encrypted_content
             else item
-            for item in r1.output_items
+            for item in r1.output
         ]
 
         full_input = [user_msg, *corrupted_items, *tool_outputs]
@@ -271,7 +271,7 @@ class TestAnthropicReasoningContinuity:
             item.model_copy(update={"encrypted_content": None})
             if isinstance(item, ReasoningItem)
             else item
-            for item in r1.output_items
+            for item in r1.output
         ]
 
         full_input = [user_msg, *stripped_items, *tool_outputs]
@@ -313,9 +313,7 @@ class TestAnthropicWebSearch:
         assert response.output_text
 
         # WebSearchCallItem should appear in output_items
-        ws_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        ws_items = [i for i in response.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) >= 1
         ws = ws_items[0]
         assert ws.status == "completed"
@@ -326,13 +324,13 @@ class TestAnthropicWebSearch:
         msg = response.message_items[0]
         all_annotations = [
             ann
-            for part in msg.content_parts
+            for part in msg.content
             if isinstance(part, OutputMessageText)
             for ann in part.annotations
         ]
         assert len(all_annotations) > 0
         assert all_annotations[0].type == "url_citation"
-        assert isinstance(all_annotations[0], UrlCitation)
+        assert isinstance(all_annotations[0], AnnotationUrlCitation)
         assert all_annotations[0].provider_specific_fields["anthropic:cited_text"]
 
     @pytest.mark.asyncio
@@ -363,13 +361,13 @@ class TestAnthropicWebSearch:
         msg = response.message_items[0]
         all_annotations = [
             ann
-            for part in msg.content_parts
+            for part in msg.content
             if isinstance(part, OutputMessageText)
             for ann in part.annotations
         ]
         assert len(all_annotations) > 0
         assert all_annotations[0].type == "url_citation"
-        assert isinstance(all_annotations[0], UrlCitation)
+        assert isinstance(all_annotations[0], AnnotationUrlCitation)
         assert all_annotations[0].provider_specific_fields["anthropic:cited_text"]
 
     @pytest.mark.asyncio
@@ -380,12 +378,12 @@ class TestAnthropicWebSearch:
         )
         r1 = await llm.generate_response([user_msg])
 
-        ws_items = [i for i in r1.output_items if isinstance(i, WebSearchCallItem)]
+        ws_items = [i for i in r1.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) >= 1, "First turn should produce web search items"
 
         # Round-trip: pass all output_items (including WebSearchCallItem) back
         follow_up = InputMessageItem.from_text("What was the release date?")
-        full_input = [user_msg, *r1.output_items, follow_up]
+        full_input = [user_msg, *r1.output, follow_up]
         r2 = await llm.generate_response(full_input)
 
         assert r2.output_text
@@ -400,12 +398,12 @@ class TestAnthropicWebSearch:
         # First turn: non-streaming to get output_items
         r1 = await llm.generate_response([user_msg])
 
-        ws_items = [i for i in r1.output_items if isinstance(i, WebSearchCallItem)]
+        ws_items = [i for i in r1.output if isinstance(i, WebSearchCallItem)]
         assert len(ws_items) >= 1, "First turn should produce web search items"
 
         # Second turn: streaming with prior context
         follow_up = InputMessageItem.from_text("What was the release date?")
-        full_input = [user_msg, *r1.output_items, follow_up]
+        full_input = [user_msg, *r1.output, follow_up]
         events = [event async for event in llm.generate_response_stream(full_input)]
 
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
@@ -496,9 +494,7 @@ class TestAnthropicWebFetch:
         response = await llm.generate_response(input_items)
 
         assert response.output_text
-        wf_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        wf_items = [i for i in response.output if isinstance(i, WebSearchCallItem)]
         assert len(wf_items) >= 1
         wf = wf_items[0]
         assert isinstance(wf.action, OpenPageAction)
@@ -536,13 +532,13 @@ class TestAnthropicWebFetch:
         )
         r1 = await llm.generate_response([user_msg])
 
-        wf_items = [i for i in r1.output_items if isinstance(i, WebSearchCallItem)]
+        wf_items = [i for i in r1.output if isinstance(i, WebSearchCallItem)]
         assert len(wf_items) >= 1
 
         follow_up = InputMessageItem.from_text(
             "What was the title of the page you fetched?"
         )
-        full_input = [user_msg, *r1.output_items, follow_up]
+        full_input = [user_msg, *r1.output, follow_up]
         r2 = await llm.generate_response(full_input)
 
         assert r2.output_text
@@ -559,9 +555,7 @@ class TestAnthropicWebFetch:
         ]
         response = await llm.generate_response(input_items)
 
-        wf_items = [
-            i for i in response.output_items if isinstance(i, WebSearchCallItem)
-        ]
+        wf_items = [i for i in response.output if isinstance(i, WebSearchCallItem)]
         assert len(wf_items) >= 1
         assert any(
             wf.status == "failed" and isinstance(wf.action, OpenPageAction)
@@ -620,7 +614,7 @@ class TestAnthropicParallelToolUse:
         assert tool_names == {"add", "multiply"}
 
         tool_outputs = _execute_parallel_tools(r1.tool_call_items)
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         r2 = await llm.generate_response(full_input, tools=parallel_tools)
 
         assert r2.status == "completed"
@@ -654,7 +648,7 @@ class TestAnthropicParallelToolUse:
         assert tool_names == {"add", "multiply"}
 
         tool_outputs = _execute_parallel_tools(r1.tool_call_items)
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         events2 = [
             event
             async for event in llm.generate_response_stream(
@@ -694,9 +688,7 @@ class TestAnthropicErrorMappingLive:
     @pytest.mark.asyncio
     async def test_api_error_is_mapped(self, bad_model_llm: CloudLLM) -> None:
         with pytest.raises(LlmNotFoundError):
-            await bad_model_llm.generate_response(
-                [InputMessageItem.from_text("hi")]
-            )
+            await bad_model_llm.generate_response([InputMessageItem.from_text("hi")])
 
     @pytest.mark.asyncio
     async def test_stream_api_error_is_mapped(self, bad_model_llm: CloudLLM) -> None:

@@ -22,7 +22,7 @@ from anthropic.types import (
 from openai.types.responses.response import IncompleteDetails
 
 from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
-from grasp_agents.types.content import Citation, UrlCitation
+from grasp_agents.types.content import Annotation, AnnotationUrlCitation
 from grasp_agents.types.items import (
     OpenPageAction,
     SearchAction,
@@ -79,7 +79,7 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         # Map block index → server tool id for input_json_delta buffering
         self._server_tool_block_idx: dict[int, str] = {}
         # Accumulated citations for current text block
-        self._citations: list[UrlCitation] = []
+        self._citations: list[AnnotationUrlCitation] = []
 
     def _process_event(self, raw_event: AnthropicStreamEvent) -> Iterator[LlmEvent]:
         event_type = raw_event.type
@@ -206,7 +206,7 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
                 citation = delta.citation
                 if isinstance(citation, _AnthropicWebSearchCitation):
                     self._citations.append(
-                        UrlCitation(
+                        AnnotationUrlCitation(
                             url=citation.url,
                             title=citation.title or "",
                             start_index=0,
@@ -352,8 +352,8 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
 
         yield from self._close_web_search(item)
 
-    def _build_text_citations(self) -> list[Citation]:
-        return list(self._citations)  # type: ignore[list-item]
+    def _build_text_annotations(self) -> list[Annotation]:
+        return list(self._citations)
 
     def _build_response_completed(self) -> ResponseCompleted:
         return super()._build_response_completed()

@@ -251,8 +251,8 @@ class TestNoDuplicateToolResults:
         )
         response = Response(
             model="mock",
-            output_items=[bad_call, fa_call],
-            usage_with_cost=_make_usage(),
+            output=[bad_call, fa_call],
+            usage=_make_usage(),
         )
         loop, transcript = _make_loop(
             [response],
@@ -298,7 +298,7 @@ class TestClosureEventsStreamed:
         by_call = _closure_output_events(events)
         assert "tc1" in by_call
         cancellation = by_call["tc1"]
-        assert "turn limit" in str(cancellation.data.output_parts)
+        assert "turn limit" in str(cancellation.data.output)
         assert cancellation.source == "echo"
         assert cancellation.destination == "test"
         # Event/transcript parity: the streamed item IS the persisted one.
@@ -318,8 +318,8 @@ class TestClosureEventsStreamed:
         )
         response = Response(
             model="mock",
-            output_items=[sibling, fa_call],
-            usage_with_cost=_make_usage(),
+            output=[sibling, fa_call],
+            usage=_make_usage(),
         )
         loop, _ = _make_loop(
             [response],
@@ -331,8 +331,8 @@ class TestClosureEventsStreamed:
         events = await _drain(loop)
 
         by_call = _closure_output_events(events)
-        assert "Final answer recorded." in str(by_call["fa1"].data.output_parts)
-        assert "stopped with a final answer" in str(by_call["tc1"].data.output_parts)
+        assert "Final answer recorded." in str(by_call["fa1"].data.output)
+        assert "stopped with a final answer" in str(by_call["tc1"].data.output)
 
     @pytest.mark.asyncio
     async def test_closures_not_fed_to_after_tool_hook(self) -> None:
@@ -357,7 +357,7 @@ class TestClosureEventsStreamed:
             tool_messages: Sequence[FunctionToolOutputItem],
             exec_id: str,
         ) -> None:
-            received.extend(str(m.output_parts) for m in tool_messages)
+            received.extend(str(m.output) for m in tool_messages)
 
         loop.after_tool_hooks = [after_tool]  # type: ignore[assignment]
 

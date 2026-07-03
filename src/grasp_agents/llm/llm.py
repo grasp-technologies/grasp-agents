@@ -101,7 +101,7 @@ class LLM(ABC):
         member's response is priced as that member, not as whatever
         ``model_name`` the outer layer reports.
         """
-        usage = response.usage_with_cost
+        usage = response.usage
         if usage is not None and usage.cost is None and self.model_name:
             add_cost_to_usage(
                 usage,

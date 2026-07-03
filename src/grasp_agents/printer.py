@@ -150,7 +150,7 @@ def render_payload(payload: Any) -> str:
 
 def _input_message_text(msg: InputMessageItem) -> str:
     parts: list[str] = []
-    for part in msg.content_parts:
+    for part in msg.content:
         if isinstance(part, InputText):
             parts.append(part.text.strip(" \n"))
         elif isinstance(part, InputImage):

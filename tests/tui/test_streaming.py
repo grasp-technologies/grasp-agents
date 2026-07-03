@@ -122,7 +122,7 @@ async def test_llm_stream_finalizes_into_one_widget() -> None:
         yield _llm_delta("world", 1)
         yield OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[OutputMessageText(text="Hello world")],
+                content=[OutputMessageText(text="Hello world")],
                 status="completed",
             ),
             source="analyst",
@@ -163,7 +163,7 @@ async def test_thinking_stream_finalizes_into_one_widget() -> None:
         yield _think_delta("think", 1)
         yield ReasoningItemEvent(
             data=ReasoningItem(
-                summary_parts=[ReasoningSummary(text="Let me think")],
+                summary=[ReasoningSummary(text="Let me think")],
                 status="completed",
             ),
             source="analyst",
@@ -245,7 +245,7 @@ async def test_retry_then_fresh_stream_shows_only_retried_content() -> None:
         yield _llm_delta("answer", 4)
         yield OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[OutputMessageText(text="the real answer")],
+                content=[OutputMessageText(text="the real answer")],
                 status="completed",
             ),
             source="analyst",
@@ -332,7 +332,7 @@ async def test_backgrounded_tool_stream_does_not_displace_next_tool() -> None:
             source="de",
             destination="Bash",
         )
-        yield GenerationEndEvent(data=Response(output_items=[], model="m"), source="de")
+        yield GenerationEndEvent(data=Response(output=[], model="m"), source="de")
         yield BackgroundTaskLaunchedEvent(
             data=BackgroundTaskInfo(
                 task_id="bg_1",
@@ -371,7 +371,7 @@ async def test_backgrounded_tool_stream_does_not_displace_next_tool() -> None:
             source="de",
             destination="RunPython",
         )
-        yield GenerationEndEvent(data=Response(output_items=[], model="m"), source="de")
+        yield GenerationEndEvent(data=Response(output=[], model="m"), source="de")
         yield ToolStreamEvent(data="loading csv\n", source="RunPython")
         yield ToolOutputItemEvent(
             data=FunctionToolOutputItem.from_tool_result(
@@ -421,14 +421,10 @@ async def test_tool_stream_routes_to_destination_not_last_agent() -> None:
             source="de",
             destination="Bash",
         )
-        yield GenerationEndEvent(
-            data=Response(output_items=[], model="m"), source="de"
-        )
+        yield GenerationEndEvent(data=Response(output=[], model="m"), source="de")
         # 'analyst' generates AFTER 'de', so it is now the most-recent agent
         yield TurnStartEvent(data=TurnInfo(turn=0), source="analyst")
-        yield GenerationEndEvent(
-            data=Response(output_items=[], model="m"), source="analyst"
-        )
+        yield GenerationEndEvent(data=Response(output=[], model="m"), source="analyst")
         # 'de's backgrounded output bubbles now, stamped with destination='de'
         yield ToolStreamEvent(data="DE_STDOUT\n", source="Bash", destination="de")
 

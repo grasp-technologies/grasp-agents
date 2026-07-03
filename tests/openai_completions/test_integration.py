@@ -53,12 +53,12 @@ class TestOpenAICompletionsIntegration:
         response = await llm.generate_response(input_items)
 
         assert response.status == "completed"
-        assert len(response.output_items) >= 1
-        assert isinstance(response.output_items[0], OutputMessageItem)
+        assert len(response.output) >= 1
+        assert isinstance(response.output[0], OutputMessageItem)
         assert "hello" in response.output_text.lower()
-        assert response.usage_with_cost is not None
-        assert response.usage_with_cost.input_tokens > 0
-        assert response.usage_with_cost.output_tokens > 0
+        assert response.usage is not None
+        assert response.usage.input_tokens > 0
+        assert response.usage.output_tokens > 0
 
     @pytest.mark.asyncio
     async def test_stream_text(self, llm: CloudLLM) -> None:
@@ -91,7 +91,7 @@ class TestOpenAICompletionsIntegration:
             for tc in response.tool_call_items
         ]
 
-        full_input = [user_msg, *response.output_items, *tool_outputs]
+        full_input = [user_msg, *response.output, *tool_outputs]
         final_response = await llm.generate_response(full_input, tools=tools)
 
         assert "42" in final_response.output_text
@@ -184,7 +184,7 @@ class TestOpenAICompletionsParallelToolUse:
         assert tool_names == {"add", "multiply"}
 
         tool_outputs = _execute_parallel_tools(r1.tool_call_items)
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         r2 = await llm.generate_response(full_input, tools=parallel_tools)
 
         assert r2.status == "completed"
@@ -218,7 +218,7 @@ class TestOpenAICompletionsParallelToolUse:
         assert tool_names == {"add", "multiply"}
 
         tool_outputs = _execute_parallel_tools(r1.tool_call_items)
-        full_input = [user_msg, *r1.output_items, *tool_outputs]
+        full_input = [user_msg, *r1.output, *tool_outputs]
         events2 = [
             event
             async for event in llm.generate_response_stream(

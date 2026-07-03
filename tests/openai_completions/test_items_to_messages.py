@@ -17,7 +17,7 @@ from grasp_agents.types.content import (
     InputImage,
     InputText,
     OutputMessageText,
-    ReasoningText,
+    ReasoningContent,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -54,7 +54,7 @@ class TestInputMessageConversion:
         """User message with text + image → list of content parts."""
         img = InputImage.from_url("https://example.com/img.png", detail="high")
         item = InputMessageItem(
-            content_parts=[InputText(text="Describe this"), img],
+            content=[InputText(text="Describe this"), img],
             role="user",
         )
         msgs = items_to_completions_messages([item])
@@ -87,7 +87,7 @@ class TestOutputMessageConversion:
     def test_output_message_text_only(self):
         """OutputMessageItem without tool calls → assistant with content."""
         item = OutputMessageItem(
-            content_parts=[OutputMessageText(text="The answer is 42.")],
+            content=[OutputMessageText(text="The answer is 42.")],
             status="completed",
         )
         msgs = items_to_completions_messages([item])
@@ -100,7 +100,7 @@ class TestOutputMessageConversion:
     def test_output_message_with_tool_calls(self):
         """OutputMessageItem + FunctionToolCallItems → grouped assistant msg."""
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Let me search.")],
+            content=[OutputMessageText(text="Let me search.")],
             status="completed",
         )
         tc1 = FunctionToolCallItem(
@@ -129,7 +129,7 @@ class TestOutputMessageConversion:
     def test_output_empty_content_with_tool_calls(self):
         """When content is empty but tool calls exist, content should not be None."""
         output = OutputMessageItem(
-            content_parts=[],
+            content=[],
             status="completed",
         )
         tc = FunctionToolCallItem(call_id="call_1", name="search", arguments="{}")
@@ -172,7 +172,7 @@ class TestStandaloneToolCalls:
 class TestToolOutputConversion:
     def test_tool_output_string(self):
         """FunctionToolOutputItem with string output → tool message."""
-        item = FunctionToolOutputItem(call_id="call_1", output_parts='{"result": "ok"}')
+        item = FunctionToolOutputItem(call_id="call_1", output='{"result": "ok"}')
         msgs = items_to_completions_messages([item])
 
         assert len(msgs) == 1
@@ -200,10 +200,10 @@ class TestToolOutputConversion:
 class TestReasoningConversion:
     def test_reasoning_grouped_with_output(self):
         """ReasoningItem + OutputMessageItem → assistant msg with thinking_blocks."""
-        reasoning = ReasoningItem(content_parts=[ReasoningText(text="Let me think...")])
+        reasoning = ReasoningItem(content=[ReasoningContent(text="Let me think...")])
         user = InputMessageItem.from_text("What is 2+2?", role="user")
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="4")],
+            content=[OutputMessageText(text="4")],
             status="completed",
         )
 
@@ -222,11 +222,11 @@ class TestReasoningConversion:
     def test_reasoning_with_signature(self):
         """ReasoningItem with encrypted_content → thinking block has signature."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningText(text="Deep thought")],
+            content=[ReasoningContent(text="Deep thought")],
             encrypted_content="sig_abc123",
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Result")],
+            content=[OutputMessageText(text="Result")],
             status="completed",
         )
 
@@ -245,7 +245,7 @@ class TestReasoningConversion:
             redacted=True,
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Answer")],
+            content=[OutputMessageText(text="Answer")],
             status="completed",
         )
 
@@ -259,7 +259,7 @@ class TestReasoningConversion:
     def test_multiple_reasoning_items_grouped(self):
         """Multiple consecutive ReasoningItems are all included in thinking_blocks."""
         r1 = ReasoningItem(
-            content_parts=[ReasoningText(text="Step 1")],
+            content=[ReasoningContent(text="Step 1")],
             encrypted_content="sig_1",
         )
         r2 = ReasoningItem(
@@ -267,10 +267,10 @@ class TestReasoningConversion:
             redacted=True,
         )
         r3 = ReasoningItem(
-            content_parts=[ReasoningText(text="Step 3")],
+            content=[ReasoningContent(text="Step 3")],
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Final answer")],
+            content=[OutputMessageText(text="Final answer")],
             status="completed",
         )
 
@@ -291,7 +291,7 @@ class TestReasoningConversion:
     def test_reasoning_with_tool_calls_no_output(self):
         """ReasoningItem + tool calls (no OutputMessageItem) → assistant msg."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningText(text="I need to search")],
+            content=[ReasoningContent(text="I need to search")],
         )
         tc = FunctionToolCallItem(
             call_id="call_1", name="search", arguments='{"q": "test"}'
@@ -307,7 +307,7 @@ class TestReasoningConversion:
 
     def test_reasoning_standalone(self):
         """ReasoningItem with no output or tool calls → standalone assistant msg."""
-        reasoning = ReasoningItem(content_parts=[ReasoningText(text="Just thinking")])
+        reasoning = ReasoningItem(content=[ReasoningContent(text="Just thinking")])
         user = InputMessageItem.from_text("Next question", role="user")
 
         msgs = items_to_completions_messages([reasoning, user])
@@ -321,11 +321,11 @@ class TestReasoningConversion:
     def test_reasoning_output_tool_calls_all_grouped(self):
         """ReasoningItem + OutputMessageItem + FunctionToolCallItems → one message."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningText(text="Let me check two things")],
+            content=[ReasoningContent(text="Let me check two things")],
             encrypted_content="sig_xyz",
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Checking...")],
+            content=[OutputMessageText(text="Checking...")],
             status="completed",
         )
         tc1 = FunctionToolCallItem(call_id="c1", name="tool_a", arguments="{}")
@@ -352,7 +352,7 @@ class TestFullConversation:
             InputMessageItem.from_text("You are a calculator.", role="system"),
             InputMessageItem.from_text("What is 15 * 7?", role="user"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="I'll calculate that.")],
+                content=[OutputMessageText(text="I'll calculate that.")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -364,7 +364,7 @@ class TestFullConversation:
                 call_id="calc_1", output={"result": 105}
             ),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="15 * 7 = 105")],
+                content=[OutputMessageText(text="15 * 7 = 105")],
                 status="completed",
             ),
         ]
@@ -394,7 +394,7 @@ class TestFullConversation:
         """Multiple tool calls followed by their respective outputs."""
         items = [
             InputMessageItem.from_text("Compare weather", role="user"),
-            OutputMessageItem(content_parts=[], status="completed"),
+            OutputMessageItem(content=[], status="completed"),
             FunctionToolCallItem(
                 call_id="w1", name="weather", arguments='{"city": "NYC"}'
             ),
@@ -404,7 +404,7 @@ class TestFullConversation:
             FunctionToolOutputItem.from_tool_result(call_id="w1", output="Sunny, 72F"),
             FunctionToolOutputItem.from_tool_result(call_id="w2", output="Cloudy, 65F"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="NYC is warmer.")],
+                content=[OutputMessageText(text="NYC is warmer.")],
                 status="completed",
             ),
         ]
@@ -436,7 +436,7 @@ class TestFullConversation:
             InputMessageItem.from_text("Hello", role="user"),
             {"type": "unknown", "data": "something"},  # not a recognized item
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="Hi!")],
+                content=[OutputMessageText(text="Hi!")],
                 status="completed",
             ),
         ]
@@ -453,9 +453,9 @@ class TestFullConversation:
 class TestReasoningDetailsFormat:
     def test_reasoning_summary_format(self):
         """Normal reasoning → reasoning.summary entry."""
-        reasoning = ReasoningItem(content_parts=[ReasoningText(text="Let me think...")])
+        reasoning = ReasoningItem(content=[ReasoningContent(text="Let me think...")])
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="4")],
+            content=[OutputMessageText(text="4")],
             status="completed",
         )
 
@@ -474,11 +474,11 @@ class TestReasoningDetailsFormat:
     def test_reasoning_with_signature_format(self):
         """Reasoning with signature → reasoning.text entry."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningText(text="Deep thought")],
+            content=[ReasoningContent(text="Deep thought")],
             encrypted_content="sig_abc123",
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Result")],
+            content=[OutputMessageText(text="Result")],
             status="completed",
         )
 
@@ -498,7 +498,7 @@ class TestReasoningDetailsFormat:
             redacted=True,
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Answer")],
+            content=[OutputMessageText(text="Answer")],
             status="completed",
         )
 
@@ -513,7 +513,7 @@ class TestReasoningDetailsFormat:
     def test_multiple_reasoning_items(self):
         """Multiple reasoning items → multiple reasoning_details entries."""
         r1 = ReasoningItem(
-            content_parts=[ReasoningText(text="Step 1")],
+            content=[ReasoningContent(text="Step 1")],
             encrypted_content="sig_1",
         )
         r2 = ReasoningItem(
@@ -521,10 +521,10 @@ class TestReasoningDetailsFormat:
             redacted=True,
         )
         r3 = ReasoningItem(
-            content_parts=[ReasoningText(text="Step 3")],
+            content=[ReasoningContent(text="Step 3")],
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Done")],
+            content=[OutputMessageText(text="Done")],
             status="completed",
         )
 
@@ -545,10 +545,10 @@ class TestReasoningDetailsFormat:
     def test_reasoning_format_none_omits_reasoning(self):
         """reasoning_block_format=None omits reasoning entirely."""
         reasoning = ReasoningItem(
-            content_parts=[ReasoningText(text="Thinking...")],
+            content=[ReasoningContent(text="Thinking...")],
         )
         output = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Answer")],
+            content=[OutputMessageText(text="Answer")],
             status="completed",
         )
 
@@ -570,9 +570,9 @@ class TestResponseToCompletionsMessage:
         """Response with text output → assistant message with content."""
         response = Response(
             model="test-model",
-            output_items=[
+            output=[
                 OutputMessageItem(
-                    content_parts=[OutputMessageText(text="Hello!")],
+                    content=[OutputMessageText(text="Hello!")],
                     status="completed",
                 )
             ],
@@ -589,8 +589,8 @@ class TestResponseToCompletionsMessage:
         """Response with tool calls → assistant message with tool_calls."""
         response = Response(
             model="test-model",
-            output_items=[
-                OutputMessageItem(content_parts=[], status="completed"),
+            output=[
+                OutputMessageItem(content=[], status="completed"),
                 FunctionToolCallItem(
                     call_id="call_1",
                     name="search",
@@ -611,13 +611,13 @@ class TestResponseToCompletionsMessage:
         """Response with reasoning → thinking_blocks by default."""
         response = Response(
             model="test-model",
-            output_items=[
+            output=[
                 ReasoningItem(
-                    content_parts=[ReasoningText(text="Let me think")],
+                    content=[ReasoningContent(text="Let me think")],
                     encrypted_content="sig_123",
                 ),
                 OutputMessageItem(
-                    content_parts=[OutputMessageText(text="Answer")],
+                    content=[OutputMessageText(text="Answer")],
                     status="completed",
                 ),
             ],
@@ -634,12 +634,12 @@ class TestResponseToCompletionsMessage:
         """Response with reasoning + reasoning_block_format="openrouter"."""
         response = Response(
             model="test-model",
-            output_items=[
+            output=[
                 ReasoningItem(
-                    content_parts=[ReasoningText(text="Thinking")],
+                    content=[ReasoningContent(text="Thinking")],
                 ),
                 OutputMessageItem(
-                    content_parts=[OutputMessageText(text="Result")],
+                    content=[OutputMessageText(text="Result")],
                     status="completed",
                 ),
             ],

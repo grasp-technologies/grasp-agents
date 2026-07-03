@@ -106,7 +106,7 @@ class TestHelpers:
 
     def test_extract_input_text_with_image(self):
         msg = InputMessageItem(
-            content_parts=[
+            content=[
                 InputText(text="Look at this"),
                 InputImage.from_url("https://example.com/pic.jpg"),
             ],
@@ -118,7 +118,7 @@ class TestHelpers:
 
     def test_extract_input_text_base64_image(self):
         msg = InputMessageItem(
-            content_parts=[InputImage.from_base64("abc123")],
+            content=[InputImage.from_base64("abc123")],
             role="user",
         )
         assert "[image]" in extract_input_text(msg)
@@ -164,7 +164,7 @@ class TestTurnEvents:
             TurnStartEvent(data=TurnInfo(turn=0), source="teacher"),
             OutputMessageItemEvent(
                 data=OutputMessageItem(
-                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                    content=[OutputMessageText(text="hi")], status="completed"
                 ),
                 source="teacher",
                 exec_id="c",
@@ -250,7 +250,7 @@ class TestStreamingText:
     async def test_text_block_ends_with_newline(self):
         ec, buf = _make_console_with(markdown=False)  # live raw streaming path
         msg_item = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Hello")],
+            content=[OutputMessageText(text="Hello")],
             status="completed",
         )
         events = [
@@ -440,7 +440,7 @@ class TestNonStreamingMode:
         """When no deltas seen, OutputMessageItemEvent prints full text."""
         ec, buf = _make_console()
         msg = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Complete answer")],
+            content=[OutputMessageText(text="Complete answer")],
             status="completed",
         )
         events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
@@ -456,7 +456,7 @@ class TestNonStreamingMode:
         # real providers emit (one item id for the deltas and the done item).
         msg = OutputMessageItem(
             id="i1",
-            content_parts=[OutputMessageText(text="Hello world")],
+            content=[OutputMessageText(text="Hello world")],
             status="completed",
         )
         events = [
@@ -558,7 +558,7 @@ class TestNonStreamingMode:
     async def test_reasoning_item_non_streaming(self):
         ec, buf = _make_console_with(show_thinking=True)
         item = ReasoningItem(
-            summary_parts=[ReasoningSummary(text="planning the steps")],
+            summary=[ReasoningSummary(text="planning the steps")],
             status="completed",
         )
         events = [ReasoningItemEvent(data=item, source="agent", exec_id="c1")]
@@ -698,8 +698,12 @@ class TestMessageEvents:
         await _collect(ec, [UserMessageEvent(data=msg, source="bg_agent", exec_id="c")])
         out = buf.getvalue()
         for field in (
-            "bg_1", "Bash", "interrupted", "2s",
-            "Session restarted before completion", ".grasp/tasks/x.log",
+            "bg_1",
+            "Bash",
+            "interrupted",
+            "2s",
+            "Session restarted before completion",
+            ".grasp/tasks/x.log",
         ):
             assert field in out, field
         assert "bg_agent" in out  # the owning agent, in the "<tool> → <agent>" title
@@ -728,8 +732,8 @@ class TestUsageDisplay:
         ec, buf = _make_console()
         resp = Response(
             model="claude-sonnet-4-5",
-            output_items=[],
-            usage_with_cost=ResponseUsage(
+            output=[],
+            usage=ResponseUsage(
                 input_tokens=100, output_tokens=50, total_tokens=150, cost=0.0015
             ),
         )
@@ -746,10 +750,8 @@ class TestUsageDisplay:
         ec, buf = _make_console_with(show_usage=False)
         resp = Response(
             model="test-model",
-            output_items=[],
-            usage_with_cost=ResponseUsage(
-                input_tokens=100, output_tokens=50, total_tokens=150
-            ),
+            output=[],
+            usage=ResponseUsage(input_tokens=100, output_tokens=50, total_tokens=150),
         )
         events = [GenerationEndEvent(data=resp, source="agent", exec_id="c1")]
         await _collect(ec, events)
@@ -762,15 +764,15 @@ class TestUsageDisplay:
         ec, buf = _make_console()
         resp1 = Response(
             model="test-model",
-            output_items=[],
-            usage_with_cost=ResponseUsage(
+            output=[],
+            usage=ResponseUsage(
                 input_tokens=100, output_tokens=50, total_tokens=150, cost=0.005
             ),
         )
         resp2 = Response(
             model="test-model",
-            output_items=[],
-            usage_with_cost=ResponseUsage(
+            output=[],
+            usage=ResponseUsage(
                 input_tokens=200, output_tokens=80, total_tokens=280, cost=0.008
             ),
         )
@@ -791,8 +793,8 @@ class TestUsageDisplay:
         ec, buf = _make_console()
         resp = Response(
             model="test-model",
-            output_items=[],
-            usage_with_cost=ResponseUsage(
+            output=[],
+            usage=ResponseUsage(
                 input_tokens=500,
                 input_tokens_details=InputTokensDetails(cached_tokens=300),
                 output_tokens=50,
@@ -814,8 +816,8 @@ class TestUsageDisplay:
         ec, buf = _make_console()
         resp = Response(
             model="test-model",
-            output_items=[],
-            usage_with_cost=ResponseUsage(
+            output=[],
+            usage=ResponseUsage(
                 input_tokens=100,
                 output_tokens=200,
                 output_tokens_details=OutputTokensDetails(reasoning_tokens=150),
@@ -1065,7 +1067,7 @@ class TestRenderEventsFunction:
             # flushes the deferred turn header
             yield OutputMessageItemEvent(
                 data=OutputMessageItem(
-                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                    content=[OutputMessageText(text="hi")], status="completed"
                 ),
                 source="agent",
                 exec_id="c",
@@ -1092,7 +1094,7 @@ class TestFullSequence:
 
         text_item = OutputMessageItem(
             id="i1",
-            content_parts=[OutputMessageText(text="Let me search.")],
+            content=[OutputMessageText(text="Let me search.")],
             status="completed",
         )
         tool_item = FunctionToolCallItem(
@@ -1103,10 +1105,8 @@ class TestFullSequence:
         )
         resp = Response(
             model="test-model",
-            output_items=[text_item, tool_item],
-            usage_with_cost=ResponseUsage(
-                input_tokens=200, output_tokens=80, total_tokens=280
-            ),
+            output=[text_item, tool_item],
+            usage=ResponseUsage(input_tokens=200, output_tokens=80, total_tokens=280),
         )
 
         events: list[Event[Any]] = [
@@ -1210,8 +1210,8 @@ class TestFullSequence:
         )
         resp = Response(
             model="test-model",
-            output_items=[tool_item],
-            usage_with_cost=ResponseUsage(
+            output=[tool_item],
+            usage=ResponseUsage(
                 input_tokens=50, output_tokens=20, total_tokens=70, cost=0.001
             ),
         )
@@ -1255,7 +1255,7 @@ class TestFullSequence:
             TurnStartEvent(data=TurnInfo(turn=0), source="agent"),
             OutputMessageItemEvent(
                 data=OutputMessageItem(
-                    content_parts=[OutputMessageText(text="hi")], status="completed"
+                    content=[OutputMessageText(text="hi")], status="completed"
                 ),
                 source="agent",
                 exec_id="c",
@@ -1334,7 +1334,7 @@ class TestBackgroundSuppression:
         ec._handle(
             OutputMessageItemEvent(
                 data=OutputMessageItem(
-                    content_parts=[OutputMessageText(text="found it")],
+                    content=[OutputMessageText(text="found it")],
                     status="completed",
                 ),
                 source="research",
@@ -1404,9 +1404,7 @@ def _reasoning_done(item_id: str, text: str, seq: int) -> LLMStreamEvent:
     # which always close a reasoning item before the next starts).
     return LLMStreamEvent(
         data=OutputItemDone(
-            item=ReasoningItem(
-                id=item_id, summary_parts=[ReasoningSummary(text=text)]
-            ),
+            item=ReasoningItem(id=item_id, summary=[ReasoningSummary(text=text)]),
             output_index=0,
             sequence_number=seq,
         ),
@@ -1440,9 +1438,7 @@ class TestMultipleReasoningDedup:
         # Then the promoted item events the loop emits post-stream (same ids).
         events += [
             ReasoningItemEvent(
-                data=ReasoningItem(
-                    id=rid, summary_parts=[ReasoningSummary(text=text)]
-                ),
+                data=ReasoningItem(id=rid, summary=[ReasoningSummary(text=text)]),
                 source="agent",
                 exec_id="c1",
             )
@@ -1459,14 +1455,14 @@ class TestMultipleReasoningDedup:
         # A second generation reuses the dedup machinery cleanly: its reasoning
         # is suppressed too, and nothing from the first generation lingers.
         ec, buf = _make_console_with(show_thinking=True)
-        resp = Response(model="m", output_items=[], usage_with_cost=None)
+        resp = Response(model="m", output=[], usage=None)
         events: list[Event[Any]] = [
             _reasoning_added("rs1", 1),
             _reasoning_delta("rs1", "gen one thought", 2),
             _reasoning_done("rs1", "gen one thought", 3),
             ReasoningItemEvent(
                 data=ReasoningItem(
-                    id="rs1", summary_parts=[ReasoningSummary(text="gen one thought")]
+                    id="rs1", summary=[ReasoningSummary(text="gen one thought")]
                 ),
                 source="agent",
                 exec_id="c1",
@@ -1489,7 +1485,7 @@ class TestMarkdownToggle:
         ec, buf = _make_console_with(markdown=False)
         msg = OutputMessageItem(
             id="m1",
-            content_parts=[OutputMessageText(text="# Title\nbody")],
+            content=[OutputMessageText(text="# Title\nbody")],
             status="completed",
         )
         events = [
@@ -1519,7 +1515,7 @@ class TestMarkdownToggle:
         ec, buf = _make_console_with(markdown=True)
         msg = OutputMessageItem(
             id="m1",
-            content_parts=[OutputMessageText(text="# Title\nbody text")],
+            content=[OutputMessageText(text="# Title\nbody text")],
             status="completed",
         )
         events = [
@@ -1549,7 +1545,7 @@ class TestMarkdownToggle:
         # markdown off + no deltas (non-streaming run): plain text, no formatting.
         ec, buf = _make_console_with(markdown=False)
         msg = OutputMessageItem(
-            content_parts=[OutputMessageText(text="## Heading\ntext")],
+            content=[OutputMessageText(text="## Heading\ntext")],
             status="completed",
         )
         events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]
@@ -1561,7 +1557,7 @@ class TestMarkdownToggle:
     async def test_non_streaming_markdown_when_enabled(self):
         ec, buf = _make_console_with(markdown=True)
         msg = OutputMessageItem(
-            content_parts=[OutputMessageText(text="## Heading\ntext")],
+            content=[OutputMessageText(text="## Heading\ntext")],
             status="completed",
         )
         events = [OutputMessageItemEvent(data=msg, source="agent", exec_id="c1")]

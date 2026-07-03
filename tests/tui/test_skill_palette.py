@@ -63,7 +63,7 @@ def _recording_agent(sink: list[str]):
         )
         yield OutputMessageItemEvent(
             data=OutputMessageItem(
-                content_parts=[OutputMessageText(text="ok")], status="completed"
+                content=[OutputMessageText(text="ok")], status="completed"
             ),
             source="assistant",
         )

@@ -78,7 +78,7 @@ async def test_resident_consumes_multiple_messages_in_one_run() -> None:
         part.text
         for m in agent.transcript.messages
         if isinstance(m, InputMessageItem)
-        for part in m.content_parts
+        for part in m.content
         if getattr(part, "text", None) is not None
     ]
     # Each peer message is rendered as a user turn ("Message from <sender>: ...").

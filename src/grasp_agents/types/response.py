@@ -9,7 +9,6 @@ from openai.types.responses import (
 from openai.types.responses import (
     ResponseError,
     ResponseInputItem,
-    ResponseOutputItem,
     ResponseStatus,
     ResponseTextConfig,
     Tool,
@@ -21,7 +20,7 @@ from openai.types.responses.response_usage import (
 )
 from openai.types.responses.response_usage import ResponseUsage as _SDKResponseUsage
 from openai.types.shared import Metadata, Reasoning
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from .content import OutputMessageText
 from .items import (
@@ -29,7 +28,6 @@ from .items import (
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
-    WebSearchCallItem,
     prefixed_id,
 )
 
@@ -85,8 +83,8 @@ class Response(_SDKResponse):
     incomplete_details: IncompleteDetails | None = None
     error: ResponseError | None = None
 
-    output: list[ResponseOutputItem] = Field(default_factory=list[ResponseOutputItem])
-    usage: _SDKResponseUsage | None = None
+    output: list[OutputItem] = Field(default_factory=list[OutputItem])  # pyright: ignore[reportIncompatibleVariableOverride] — extended item types (incl. WebSearchCallItem)
+    usage: ResponseUsage | None = None  # pyright: ignore[reportIncompatibleVariableOverride] — extended with cost accounting
 
     # --- Request params ---
 
@@ -132,12 +130,6 @@ class Response(_SDKResponse):
     hidden_params: dict[str, Any] | None = None
     response_headers: dict[str, Any] | None = None
 
-    output_items: list[OutputItem] = Field(
-        default_factory=list[OutputItem], frozen=True
-    )
-
-    usage_with_cost: ResponseUsage | None = Field(default=None, frozen=True)
-
     # OpenAI-specific fields:
 
     # conversation: Conversation | None = None
@@ -154,44 +146,27 @@ class Response(_SDKResponse):
         Literal["in-memory", "24h", "in_memory"] | None
     ) = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _sync_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
-        if "output_items" in data and "output" not in data:
-            # Filter out WebSearchCallItem for SDK-compat `output` field
-            data["output"] = [
-                i for i in data["output_items"] if not isinstance(i, WebSearchCallItem)
-            ]
-        elif "output" in data and "output_items" not in data:
-            data["output_items"] = data["output"]
-
-        if "usage_with_cost" in data and "usage" not in data:
-            data["usage"] = data["usage_with_cost"]
-        elif "usage" in data and "usage_with_cost" not in data:
-            data["usage_with_cost"] = data["usage"]
-        return data
-
     @property
     def output_text(self) -> str:
         return "".join(
             part.text
-            for item in self.output_items
+            for item in self.output
             if isinstance(item, OutputMessageItem)
-            for part in item.content_parts
+            for part in item.content
             if isinstance(part, OutputMessageText)
         )
 
     @property
     def reasoning_items(self) -> list[ReasoningItem]:
-        return [i for i in self.output_items if isinstance(i, ReasoningItem)]
+        return [i for i in self.output if isinstance(i, ReasoningItem)]
 
     @property
     def message_items(self) -> list[OutputMessageItem]:
-        return [i for i in self.output_items if isinstance(i, OutputMessageItem)]
+        return [i for i in self.output if isinstance(i, OutputMessageItem)]
 
     @property
     def tool_call_items(self) -> list[FunctionToolCallItem]:
-        return [i for i in self.output_items if isinstance(i, FunctionToolCallItem)]
+        return [i for i in self.output if isinstance(i, FunctionToolCallItem)]
 
     @property
     def refusal(self) -> str | None:

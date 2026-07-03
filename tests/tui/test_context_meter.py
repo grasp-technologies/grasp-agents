@@ -36,8 +36,8 @@ def _gen(model: str, input_tokens: int) -> GenerationEndEvent:
         exec_id="e",
         data=Response(
             model=model,
-            output_items=[],
-            usage_with_cost=ResponseUsage(
+            output=[],
+            usage=ResponseUsage(
                 input_tokens=input_tokens,
                 input_tokens_details=InputTokensDetails(cached_tokens=0),
                 output_tokens=10,

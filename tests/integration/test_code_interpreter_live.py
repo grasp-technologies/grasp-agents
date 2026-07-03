@@ -85,7 +85,7 @@ async def test_freeform_agent_produces_plot_via_srt(
         "Plot y = x**2 for x from 0 to 10 and show me the figure."
     ):
         if isinstance(event, ToolOutputItemEvent):
-            parts = event.data.output_parts
+            parts = event.data.output
             if not isinstance(parts, str):
                 images += [p for p in parts if isinstance(p, InputImage)]
                 tool_text += [p.text for p in parts if not isinstance(p, InputImage)]

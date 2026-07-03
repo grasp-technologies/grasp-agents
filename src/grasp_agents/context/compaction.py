@@ -276,11 +276,7 @@ def collapse_tool_outputs(
             )
             if len(collapsed) < len(text):
                 shed += len(text) - len(collapsed)
-                # ``output_parts`` is frozen and ``model_copy`` skips the
-                # field-sync validator, so set both representations explicitly.
-                result[i] = item.model_copy(
-                    update={"output_parts": collapsed, "output": collapsed}
-                )
+                result[i] = item.model_copy(update={"output": collapsed})
     if shed:
         logger.debug(
             "collapse: kept last %d turn(s) verbatim; shed ~%d chars of older "
