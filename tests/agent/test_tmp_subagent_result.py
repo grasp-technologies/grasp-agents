@@ -54,20 +54,20 @@ def _usage() -> ResponseUsage:
 def _text(text: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)], status="completed"
+                content=[OutputMessageText(text=text)], status="completed"
             )
         ],
-        usage_with_cost=_usage(),
+        usage=_usage(),
     )
 
 
 def _call(name: str, args: str, call_id: str) -> Response:
     return Response(
         model="mock",
-        output_items=[FunctionToolCallItem(call_id=call_id, name=name, arguments=args)],
-        usage_with_cost=_usage(),
+        output=[FunctionToolCallItem(call_id=call_id, name=name, arguments=args)],
+        usage=_usage(),
     )
 
 

@@ -258,7 +258,7 @@ async def test_selector_forwards_image_only_query() -> None:
     image = InputImage(image_url="https://example.com/chart.png")
     picked = await selector(
         entries=(_entry("alpha"),),
-        messages=[InputMessageItem(content_parts=[image], role="user")],
+        messages=[InputMessageItem(content=[image], role="user")],
     )
     assert [e.name for e in picked] == ["alpha"]
     assert len(llm.calls) == 1
@@ -322,9 +322,7 @@ async def test_per_entry_staleness_warning_surfaced() -> None:
     )
 
     # Build a provider with one stale entry (mtime far in the past).
-    stale_ms = int(
-        (datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000
-    )
+    stale_ms = int((datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000)
     entry = _entry("stale_topic", mtime_ms=stale_ms, type_="reference")
     provider = InMemoryMemoryProvider(entries=[entry])
     # Set an identity selector so every entry is surfaced.

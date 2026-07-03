@@ -170,7 +170,7 @@ class TeamMessage(BaseModel):
             InputText(text=p) if isinstance(p, str) else p
             for p in self.to_chat_inputs()
         ]
-        return InputMessageItem(content_parts=parts, role="user")
+        return InputMessageItem(content=parts, role="user")
 
     def split_by_recipient(self) -> "list[TeamMessage]":
         """One single-recipient message per recipient (threading + id preserved)."""

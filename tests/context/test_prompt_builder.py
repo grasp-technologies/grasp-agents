@@ -305,9 +305,9 @@ class TestBuildInputMessage:
             chat_inputs=["Look at this:", img], exec_id="c1"
         )
         assert msg is not None
-        assert len(msg.content_parts) == 2
-        assert isinstance(msg.content_parts[0], InputText)
-        assert isinstance(msg.content_parts[1], InputImage)
+        assert len(msg.content) == 2
+        assert isinstance(msg.content[0], InputText)
+        assert isinstance(msg.content[1], InputImage)
 
     def test_chat_inputs_and_in_args_raises(self):
         builder = _make_builder(str)

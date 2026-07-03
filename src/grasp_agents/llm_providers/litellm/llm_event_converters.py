@@ -234,7 +234,7 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
         response = completed.response
 
         # Patch LiteLLM-specific fields onto the response
-        usage = response.usage_with_cost
+        usage = response.usage
         if usage and self._cost is not None:
             usage = usage.model_copy(update={"cost": self._cost})
 
@@ -244,8 +244,8 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
             model=response.model,
             status=response.status,
             incomplete_details=response.incomplete_details,
-            output_items=response.output_items,
-            usage_with_cost=usage,
+            output=response.output,
+            usage=usage,
             service_tier=response.service_tier,  # type: ignore[arg-type]
             response_ms=self._response_ms,
             provider_specific_fields=self._provider_specific_fields or None,

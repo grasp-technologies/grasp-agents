@@ -268,9 +268,9 @@ async def test_parallel_replicas_resume_multistep_from_own_checkpoints() -> None
             responses_queue=[
                 Response(
                     model="mock",
-                    output_items=[
+                    output=[
                         OutputMessageItem(
-                            content_parts=[OutputMessageText(text="phase2-final")],
+                            content=[OutputMessageText(text="phase2-final")],
                             status="completed",
                         )
                     ],

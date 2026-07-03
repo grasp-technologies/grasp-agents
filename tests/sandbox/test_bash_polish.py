@@ -595,7 +595,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
     )
 
     def _resp(items: list[Any]) -> Response:
-        return Response(model="mock", output_items=items, usage_with_cost=usage)
+        return Response(model="mock", output=items, usage=usage)
 
     @dataclass(frozen=True)
     class _QueueLLM(LLM):
@@ -640,7 +640,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
             _resp(
                 [
                     OutputMessageItem(
-                        content_parts=[OutputMessageText(text="done")],
+                        content=[OutputMessageText(text="done")],
                         status="completed",
                     )
                 ]

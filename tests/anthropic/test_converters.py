@@ -186,7 +186,7 @@ class TestAssistantMessageToItems:
         assert isinstance(items[0], ReasoningItem)
         assert items[0].redacted is True
         assert items[0].encrypted_content == "encrypted_data_123"
-        assert items[0].summary_parts == []
+        assert items[0].summary == []
 
     def test_tool_use(self):
         msg = _make_message(
@@ -269,10 +269,10 @@ class TestResponseConverters:
         assert response.model == "claude-sonnet-4-20250514"
         assert response.status == "completed"
         assert response.output_text == "Hello"
-        assert response.usage_with_cost is not None
-        assert response.usage_with_cost.input_tokens == 100
-        assert response.usage_with_cost.output_tokens == 50
-        assert response.usage_with_cost.total_tokens == 150
+        assert response.usage is not None
+        assert response.usage.input_tokens == 100
+        assert response.usage.output_tokens == 50
+        assert response.usage.total_tokens == 150
 
     def test_max_tokens_incomplete(self):
         msg = _make_message(
@@ -331,7 +331,7 @@ class TestResponseToMessage:
         )
 
         sys_msg = InputMessageItem(
-            content_parts=[
+            content=[
                 InputText(text="STATIC", cache_control=CacheControl()),
                 InputText(text="DYNAMIC"),
             ],
@@ -356,9 +356,7 @@ class TestResponseToMessage:
         )
 
         sys_msg = InputMessageItem(
-            content_parts=[
-                InputText(text="STATIC", cache_control=CacheControl(ttl="1h"))
-            ],
+            content=[InputText(text="STATIC", cache_control=CacheControl(ttl="1h"))],
             role="system",
         )
         system, _ = items_to_anthropic_messages(
@@ -375,7 +373,7 @@ class TestResponseToMessage:
         """
         from grasp_agents.types.content import InputText
 
-        sys_msg = InputMessageItem(content_parts=[InputText(text="A")], role="system")
+        sys_msg = InputMessageItem(content=[InputText(text="A")], role="system")
         items = [sys_msg, InputMessageItem.from_text("hi")]
 
         system, _ = items_to_anthropic_messages(items)
@@ -397,12 +395,12 @@ class TestResponseToMessage:
             InputMessageItem.from_text("Hi"),
             ReasoningItem(
                 status="completed",
-                summary_parts=[],
+                summary=[],
                 encrypted_content="sig123",
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Hello!")],
+                content=[OutputMessageText(text="Hello!")],
             ),
         ]
         _system, messages = items_to_anthropic_messages(items)
@@ -432,11 +430,11 @@ class TestResponseToMessage:
             ),
             FunctionToolOutputItem(
                 call_id="toolu_abc",
-                output_parts="Sunny, 22°C",
+                output="Sunny, 22°C",
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="It's sunny in Paris!")],
+                content=[OutputMessageText(text="It's sunny in Paris!")],
             ),
         ]
         _system, messages = items_to_anthropic_messages(items)
@@ -478,15 +476,15 @@ class TestResponseToMessage:
             ),
             FunctionToolOutputItem(
                 call_id="toolu_1",
-                output_parts="3",
+                output="3",
             ),
             FunctionToolOutputItem(
                 call_id="toolu_2",
-                output_parts="12",
+                output="12",
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Done")],
+                content=[OutputMessageText(text="Done")],
             ),
         ]
         _, messages = items_to_anthropic_messages(items)
@@ -522,13 +520,13 @@ class TestResponseToMessage:
             InputMessageItem.from_text("Think hard"),
             ReasoningItem(
                 status="completed",
-                summary_parts=[],
+                summary=[],
                 redacted=True,
                 encrypted_content="encrypted_data",
             ),
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Done")],
+                content=[OutputMessageText(text="Done")],
             ),
         ]
         _, messages = items_to_anthropic_messages(items)
@@ -546,13 +544,13 @@ class TestToolResultContent:
     """
     Tool-result *content* must survive conversion — not just the call id.
 
-    Regression: plain-string ``output_parts`` (the default tool-result path)
+    Regression: plain-string ``output`` (the default tool-result path)
     used to be iterated char-by-char and converted to ``content: []``, so the
     model never saw any tool output.
     """
 
     def test_str_output_parts_sent_verbatim(self):
-        item = FunctionToolOutputItem(call_id="toolu_str", output_parts="Sunny, 22°C")
+        item = FunctionToolOutputItem(call_id="toolu_str", output="Sunny, 22°C")
 
         _, messages = items_to_anthropic_messages([item])
 
@@ -578,7 +576,7 @@ class TestToolResultContent:
     def test_typed_output_parts_all_converted(self):
         item = FunctionToolOutputItem(
             call_id="toolu_parts",
-            output_parts=[InputText(text="part one"), InputText(text="part two")],
+            output=[InputText(text="part one"), InputText(text="part two")],
         )
 
         _, messages = items_to_anthropic_messages([item])
@@ -868,7 +866,7 @@ class TestAnthropicStreamConverter:
         # Second: redacted block
         assert reasoning_items[1].redacted is True
         assert reasoning_items[1].encrypted_content == "secret_data"
-        assert reasoning_items[1].summary_parts == []
+        assert reasoning_items[1].summary == []
 
         # Third: normal thinking resumed
         assert reasoning_items[2].redacted is False
@@ -989,7 +987,7 @@ class TestAnthropicStreamConverter:
         assert len(response.tool_call_items) == 1
 
         # Verify output ordering: message then tool call
-        output = response.output_items
+        output = response.output
         assert isinstance(output[0], OutputMessageItem)
         assert isinstance(output[1], FunctionToolCallItem)
 
@@ -1006,7 +1004,7 @@ class TestAnthropicStreamConverter:
         llm_events = self._run(events)
 
         completed = [e for e in llm_events if isinstance(e, ResponseCompleted)]
-        usage = completed[0].response.usage_with_cost
+        usage = completed[0].response.usage
         assert usage is not None
         assert usage.input_tokens == 100
         assert usage.output_tokens == 42
@@ -1201,7 +1199,7 @@ class TestWebSearchRoundtrip:
             ws_item,
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="Here's what I found.")],
+                content=[OutputMessageText(text="Here's what I found.")],
             ),
             InputMessageItem.from_text("Tell me more"),
         ]
@@ -1364,11 +1362,11 @@ class TestWebSearchStream:
         response = completed[0].response
 
         # 3 output items: WebSearchCallItem, OutputMessageItem, FunctionToolCallItem
-        assert len(response.output_items) == 3
-        assert isinstance(response.output_items[0], WebSearchCallItem)
-        assert isinstance(response.output_items[1], OutputMessageItem)
-        assert isinstance(response.output_items[2], FunctionToolCallItem)
-        assert response.output_items[2].name == "calc"
+        assert len(response.output) == 3
+        assert isinstance(response.output[0], WebSearchCallItem)
+        assert isinstance(response.output[1], OutputMessageItem)
+        assert isinstance(response.output[2], FunctionToolCallItem)
+        assert response.output[2].name == "calc"
 
 
 # ==== Web Fetch helpers ====
@@ -1547,7 +1545,7 @@ class TestWebFetchRoundtrip:
             wf_item,
             OutputMessageItem(
                 status="completed",
-                content_parts=[OutputMessageText(text="The page says...")],
+                content=[OutputMessageText(text="The page says...")],
             ),
             InputMessageItem.from_text("Tell me more"),
         ]

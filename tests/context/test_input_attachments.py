@@ -76,8 +76,8 @@ class TestApplyInputAttachments:
             msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         assert out is not msg
-        assert len(out.content_parts) == 2
-        attached = out.content_parts[1]
+        assert len(out.content) == 2
+        attached = out.content[1]
         assert isinstance(attached, InputText)
         assert attached.text.startswith("<system-reminder>")
         assert "Relevant note here." in attached.text
@@ -93,7 +93,7 @@ class TestApplyInputAttachments:
         out = await b.apply_input_attachments(
             msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
-        attached = out.content_parts[1]
+        attached = out.content[1]
         assert isinstance(attached, InputText)
         assert "<system-reminder>" in attached.text
         assert "Current time:" in attached.text
@@ -112,8 +112,8 @@ class TestApplyInputAttachments:
         out = await b.apply_input_attachments(
             msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
-        assert isinstance(out.content_parts[1], InputText)
-        assert out.content_parts[1].text == "raw text"
+        assert isinstance(out.content[1], InputText)
+        assert out.content[1].text == "raw text"
 
     @pytest.mark.asyncio
     async def test_none_return_is_skipped(self) -> None:
@@ -145,10 +145,10 @@ class TestApplyInputAttachments:
             msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
         # 1 original text part + 2 attached.
-        assert len(out.content_parts) == 3
-        assert isinstance(out.content_parts[1], InputText)
-        assert out.content_parts[1].text == "block"
-        assert isinstance(out.content_parts[2], InputImage)
+        assert len(out.content) == 3
+        assert isinstance(out.content[1], InputText)
+        assert out.content[1].text == "block"
+        assert isinstance(out.content[2], InputImage)
 
     @pytest.mark.asyncio
     async def test_multiple_attachments_run_in_order(self) -> None:
@@ -172,11 +172,11 @@ class TestApplyInputAttachments:
         out = await b.apply_input_attachments(
             msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
-        assert len(out.content_parts) == 3
-        assert isinstance(out.content_parts[1], InputText)
-        assert isinstance(out.content_parts[2], InputText)
-        assert out.content_parts[1].text == "first"
-        assert out.content_parts[2].text == "second"
+        assert len(out.content) == 3
+        assert isinstance(out.content[1], InputText)
+        assert isinstance(out.content[2], InputText)
+        assert out.content[1].text == "first"
+        assert out.content[2].text == "second"
 
     @pytest.mark.asyncio
     async def test_async_attachment(self) -> None:
@@ -192,8 +192,8 @@ class TestApplyInputAttachments:
         out = await b.apply_input_attachments(
             msg, ctx=SessionContext(state=_State()), exec_id="e"
         )
-        assert isinstance(out.content_parts[1], InputText)
-        assert out.content_parts[1].text == "async note"
+        assert isinstance(out.content[1], InputText)
+        assert out.content[1].text == "async note"
 
     def test_add_input_attachment_dedupes_by_name(self) -> None:
         b = _builder()

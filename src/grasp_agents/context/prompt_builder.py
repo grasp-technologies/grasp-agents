@@ -288,9 +288,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         )
         if parts is not None:
             content_parts: list[InputPart] = list(parts)
-            messages.append(
-                InputMessageItem(content_parts=content_parts, role="system")
-            )
+            messages.append(InputMessageItem(content=content_parts, role="system"))
         if self.initial_context_builder is not None:
             return list(await self.initial_context_builder(messages, exec_id=exec_id))
         return messages
@@ -345,7 +343,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
             return input_message
 
         return InputMessageItem(
-            content_parts=[*input_message.content_parts, *extra_parts],
+            content=[*input_message.content, *extra_parts],
             role=input_message.role,
         )
 
@@ -372,7 +370,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
                 InputText(text=part) if isinstance(part, str) else part
                 for part in chat_inputs
             ]
-            return InputMessageItem(content_parts=input_parts, role="user")
+            return InputMessageItem(content=input_parts, role="user")
 
         if (
             in_args is None
@@ -385,7 +383,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
 
         content = self.build_input_content(in_args=in_args, exec_id=exec_id)
 
-        return InputMessageItem(content_parts=content.parts, role="user")
+        return InputMessageItem(content=content.parts, role="user")
 
     @final
     def build_input_content(self, in_args: InT | None, *, exec_id: str) -> Content:

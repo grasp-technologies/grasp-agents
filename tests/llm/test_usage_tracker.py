@@ -33,13 +33,13 @@ def _make_response(
 ) -> Response:
     return Response(
         model="test-model",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
-        usage_with_cost=usage,
+        usage=usage,
     )
 
 

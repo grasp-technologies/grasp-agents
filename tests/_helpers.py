@@ -47,23 +47,23 @@ def _make_usage() -> ResponseUsage:
 def _text_response(text: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
-        usage_with_cost=_make_usage(),
+        usage=_make_usage(),
     )
 
 
 def _tool_call_response(name: str, arguments: str, call_id: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             FunctionToolCallItem(call_id=call_id, name=name, arguments=arguments),
         ],
-        usage_with_cost=_make_usage(),
+        usage=_make_usage(),
     )
 
 

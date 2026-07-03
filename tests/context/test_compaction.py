@@ -178,7 +178,7 @@ def test_short_outputs_are_kept() -> None:
 def test_output_with_image_is_kept() -> None:
     item = FunctionToolOutputItem(
         call_id="c1",
-        output_parts=[
+        output=[
             InputText(text=BIG),
             InputImage(image_url="https://example.com/x.png"),
         ],

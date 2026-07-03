@@ -14,13 +14,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_output_text import Annotation
 from openai.types.responses.response_output_text import (
     Logprob as OutputLogprob,
 )
 
 from grasp_agents.types.content import (
-    Citation,
+    Annotation,
     OutputMessagePart,
     OutputMessageRefusal,
     OutputMessageText,
@@ -134,8 +133,9 @@ class BaseLlmStreamConverter[T](ABC):
         # Logprobs (accumulated across chunks)
         self._logprobs: list[OutputLogprob] = []
 
-        # Annotations (accumulated across chunks, e.g. URL citations)
-        self._annotations: list[Annotation] = []
+        # Raw provider annotation payloads (accumulated across chunks,
+        # e.g. URL citations), converted by ``_build_text_annotations``
+        self._annotations: list[Any] = []
 
         # Provider-specific opaque data for message round-trip fidelity
         self._message_provider_specific_fields: dict[str, Any] | None = None
@@ -200,7 +200,7 @@ class BaseLlmStreamConverter[T](ABC):
             created_at=self._created_at,
             model=self._model,
             status="in_progress",
-            output_items=[],
+            output=[],
         )
         yield ResponseCreated(response=skeleton, sequence_number=self._next_seq())
         yield ResponseInProgress(response=skeleton, sequence_number=self._next_seq())
@@ -227,8 +227,8 @@ class BaseLlmStreamConverter[T](ABC):
             model=self._model,
             status=status,
             incomplete_details=incomplete_details,
-            output_items=self._items,
-            usage_with_cost=self._usage,
+            output=self._items,
+            usage=self._usage,
             service_tier=self._service_tier,  # type: ignore[arg-type]
         )
 
@@ -258,9 +258,7 @@ class BaseLlmStreamConverter[T](ABC):
         self._item_count += 1
 
         yield OutputItemAdded(
-            item=ReasoningItem(
-                id=self._reasoning_id, status="in_progress", summary_parts=[]
-            ),
+            item=ReasoningItem(id=self._reasoning_id, status="in_progress", summary=[]),
             output_index=self._reasoning_item_index,
             sequence_number=self._next_seq(),
         )
@@ -339,7 +337,7 @@ class BaseLlmStreamConverter[T](ABC):
         reasoning_item = ReasoningItem(
             id=self._reasoning_id,
             status="completed",
-            summary_parts=list(self._reasoning_summary_parts),
+            summary=list(self._reasoning_summary_parts),
             encrypted_content=self._reasoning_encrypted_content,
             redacted=self._reasoning_redacted,
         )
@@ -370,7 +368,7 @@ class BaseLlmStreamConverter[T](ABC):
 
         yield OutputItemAdded(
             item=OutputMessageItem(
-                id=self._message_id, status="in_progress", content_parts=[]
+                id=self._message_id, status="in_progress", content=[]
             ),
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
@@ -394,7 +392,7 @@ class BaseLlmStreamConverter[T](ABC):
             output_index=self._message_item_index,
             sequence_number=self._next_seq(),
             item_id=self._message_id,
-            part=OutputMessageText(text="", citations=[]),
+            part=OutputMessageText(text="", annotations=[]),
         )
 
     def _on_text(
@@ -436,7 +434,7 @@ class BaseLlmStreamConverter[T](ABC):
 
         part = OutputMessageText(
             text=self._text,
-            citations=self._build_text_citations(),
+            annotations=self._build_text_annotations(),
             logprobs=self._logprobs or None,
         )
         self._output_message_parts.append(part)
@@ -449,8 +447,8 @@ class BaseLlmStreamConverter[T](ABC):
             part=part,
         )
 
-    def _build_text_citations(self) -> list[Citation]:
-        """Build text citations. Override to convert provider-specific citations."""
+    def _build_text_annotations(self) -> list[Annotation]:
+        """Build text annotations. Override to convert provider-specific citations."""
         return []
 
     def _open_refusal(self) -> Iterator[LlmEvent]:
@@ -522,7 +520,7 @@ class BaseLlmStreamConverter[T](ABC):
         item = OutputMessageItem(
             id=self._message_id,
             status="completed",
-            content_parts=self._output_message_parts,
+            content=self._output_message_parts,
             provider_specific_fields=self._message_provider_specific_fields,
         )
         self._items.append(item)

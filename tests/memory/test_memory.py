@@ -25,7 +25,7 @@ class TestMemoryUpdate:
 
         user_msg = InputMessageItem.from_text("Hello", role="user")
         output_msg = OutputMessageItem(
-            content_parts=[OutputMessageText(text="Hi!")],
+            content=[OutputMessageText(text="Hi!")],
             status="completed",
         )
         mem.update([user_msg, output_msg])
@@ -52,7 +52,7 @@ class TestMemoryUpdate:
         items = [
             InputMessageItem.from_text("Hello", role="user"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="Hi")],
+                content=[OutputMessageText(text="Hi")],
                 status="completed",
             ),
             FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
@@ -114,7 +114,7 @@ class TestMemoryFullConversation:
         # First LLM response (with tool call)
         first_response_output = [
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="Let me calculate.")],
+                content=[OutputMessageText(text="Let me calculate.")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -132,7 +132,7 @@ class TestMemoryFullConversation:
         # Second LLM response (final answer)
         final_output = [
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="2 + 2 = 4")],
+                content=[OutputMessageText(text="2 + 2 = 4")],
                 status="completed",
             ),
         ]
@@ -189,7 +189,7 @@ class TestToolCallPairing:
             [
                 self._call("c1"),
                 OutputMessageItem(
-                    content_parts=[OutputMessageText(text="thinking")],
+                    content=[OutputMessageText(text="thinking")],
                     status="completed",
                 ),
                 self._result("c1"),

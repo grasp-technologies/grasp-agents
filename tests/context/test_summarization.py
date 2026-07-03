@@ -161,7 +161,7 @@ async def test_fold_keeps_reasoning_with_call_after_text() -> None:
         _user(BIGMSG),
         ReasoningItem(encrypted_content="enc"),
         OutputMessageItem(
-            content_parts=[OutputMessageText(text="let me check")], status="completed"
+            content=[OutputMessageText(text="let me check")], status="completed"
         ),
         FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
         FunctionToolOutputItem.from_tool_result(call_id="c1", output=BIGMSG),
@@ -438,7 +438,7 @@ async def test_summarizer_sends_text_transcript_not_live_messages() -> None:
         [
             _user("what is X?"),
             ReasoningItem(
-                summary_parts=[ReasoningSummary(text="private thoughts")],
+                summary=[ReasoningSummary(text="private thoughts")],
                 encrypted_content="enc",
             ),
             FunctionToolCallItem(call_id="c1", name="lookup", arguments='{"q": "X"}'),
@@ -446,7 +446,7 @@ async def test_summarizer_sends_text_transcript_not_live_messages() -> None:
                 call_id="c1", output="X is a thing"
             ),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="X is a thing.")],
+                content=[OutputMessageText(text="X is a thing.")],
                 status="completed",
             ),
         ]

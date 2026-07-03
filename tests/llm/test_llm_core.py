@@ -93,9 +93,7 @@ class TestRetryAfterSanity:
 
     def test_sane_server_hint_respected_as_floor(self) -> None:
         policy = RetryPolicy(jitter=0.0)
-        err = LlmRateLimitError(
-            "429", response=_resp(429), body=None, retry_after=7.0
-        )
+        err = LlmRateLimitError("429", response=_resp(429), body=None, retry_after=7.0)
         assert policy.api_delay_for(0, err) == 7.0
 
 
@@ -189,9 +187,7 @@ class TestStreamedResponseFailed:
         llm = FailedStreamCloudLLM(
             model_name="fake",
             fail_attempts=1,
-            retry_policy=RetryPolicy(
-                api_retries=2, initial_delay=0.01, max_delay=0.01
-            ),
+            retry_policy=RetryPolicy(api_retries=2, initial_delay=0.01, max_delay=0.01),
         )
         events = [e async for e in llm.generate_response_stream(_USER_MSG)]
         assert any(isinstance(e, ResponseRetrying) for e in events)
@@ -228,7 +224,7 @@ class TestFallbackCostAttribution:
         primary = ErrorLLM(model_name="primary")
         served = _text_response("recovered").model_copy(
             update={
-                "usage_with_cost": ResponseUsage(
+                "usage": ResponseUsage(
                     input_tokens=100, output_tokens=10, total_tokens=110
                 )
             }
@@ -242,7 +238,7 @@ class TestFallbackCostAttribution:
 
         result = await llm._generate_response_once(_USER_MSG)
 
-        usage = result.usage_with_cost
+        usage = result.usage
         assert usage is not None
         # Cost computed from the SERVING member (gpt-4o-mini), not "primary"
         # (an unknown model, which would silently yield no cost at all).
@@ -256,9 +252,7 @@ class TestAnthropicDefaults:
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
         llm = AnthropicLLM(model_name="claude-sonnet-4-5")
-        cap = get_model_capabilities(
-            "claude-sonnet-4-5", "anthropic"
-        ).max_output_tokens
+        cap = get_model_capabilities("claude-sonnet-4-5", "anthropic").max_output_tokens
         assert cap is not None
         assert llm._default_max_tokens == cap
 

@@ -127,7 +127,7 @@ class TestRunDeadlineBoundsApprovalWait:
 
         outputs = _tool_outputs_for(transcript, "tc1")
         assert len(outputs) == 1
-        assert "run deadline exceeded" in str(outputs[0].output_parts)
+        assert "run deadline exceeded" in str(outputs[0].output)
 
 
 # ---------- Item 17: rewrite crash cannot mis-pair head and log ----------

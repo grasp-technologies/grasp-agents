@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 
-    from grasp_agents.types.content import Citation
+    from grasp_agents.types.content import Annotation
     from grasp_agents.types.llm_events import LlmEvent
 
 
@@ -220,5 +220,5 @@ class CompletionsStreamConverter(BaseLlmStreamConverter[ChatCompletionChunk]):
 
     # ==== Hooks ====
 
-    def _build_text_citations(self) -> list[Citation]:
-        return convert_annotations(self._annotations)  # type: ignore[return-value]
+    def _build_text_annotations(self) -> list[Annotation]:
+        return convert_annotations(self._annotations)

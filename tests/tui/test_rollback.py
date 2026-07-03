@@ -27,7 +27,7 @@ async def _fake(text: str) -> AsyncIterator[Event[Any]]:
     yield TurnStartEvent(data=TurnInfo(turn=0), source="analyst")
     yield OutputMessageItemEvent(
         data=OutputMessageItem(
-            content_parts=[OutputMessageText(text=f"echo: {text}")], status="completed"
+            content=[OutputMessageText(text=f"echo: {text}")], status="completed"
         ),
         source="analyst",
     )

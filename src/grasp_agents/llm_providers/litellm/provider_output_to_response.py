@@ -32,10 +32,11 @@ from grasp_agents.llm_providers.openai_completions.provider_output_to_response i
     convert_usage,
 )
 from grasp_agents.types.content import (
+    Annotation,
+    AnnotationUrlCitation,
     OutputMessagePart,
     OutputMessageRefusal,
     OutputMessageText,
-    UrlCitation,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -87,9 +88,9 @@ def _litellm_chat_completion_message_to_items(
 
 def convert_annotations(
     raw_annotations: list[LiteLLMChatCompletionAnnotation],
-) -> list[UrlCitation]:
-    """Convert LiteLLM ChatCompletionAnnotation TypedDicts → UrlCitation."""
-    result: list[UrlCitation] = []
+) -> list[Annotation]:
+    """Convert LiteLLM ChatCompletionAnnotation TypedDicts → AnnotationUrlCitation."""
+    result: list[Annotation] = []
     for ann in raw_annotations:
         if "url_citation" in ann:
             uc = ann["url_citation"]
@@ -104,7 +105,7 @@ def convert_annotations(
                 and url is not None
             ):
                 result.append(
-                    UrlCitation(
+                    AnnotationUrlCitation(
                         end_index=end_index,
                         start_index=start_index,
                         title=title,
@@ -128,7 +129,7 @@ def _extract_output_message_item(
     if raw_message.content:
         content_parts.append(
             OutputMessageText(
-                text=raw_message.content, citations=citations, logprobs=logprobs
+                text=raw_message.content, annotations=citations, logprobs=logprobs
             )
         )
 
@@ -144,7 +145,7 @@ def _extract_output_message_item(
     return (
         OutputMessageItem(
             status=status,
-            content_parts=content_parts,
+            content=content_parts,
             provider_specific_fields=provider_specific_fields,
         )
         if content_parts
@@ -269,8 +270,8 @@ def provider_output_to_response(provider_output: LiteLLMCompletion) -> Response:
     return Response(
         id=response_id,
         created_at=created_at,
-        output_items=output_items,
-        usage_with_cost=usage,
+        output=output_items,
+        usage=usage,
         error=None,
         metadata=None,
         incomplete_details=incomplete_details,

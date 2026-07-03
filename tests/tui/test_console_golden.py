@@ -157,7 +157,7 @@ def _background_task_events() -> list[Event[Any]]:
         OutputMessageItemEvent(
             data=OutputMessageItem(
                 id="i1",
-                content_parts=[
+                content=[
                     OutputMessageText(
                         text="Working on your request while the analysis runs..."
                     )

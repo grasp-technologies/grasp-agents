@@ -197,7 +197,7 @@ class TestAgentCheckpoint:
             InputMessageItem.from_text("system prompt", role="system"),
             InputMessageItem.from_text("hello", role="user"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="hi there")],
+                content=[OutputMessageText(text="hi there")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -244,7 +244,7 @@ class TestResumeCleanup:
             InputMessageItem.from_text("prompt", role="system"),
             InputMessageItem.from_text("hi", role="user"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="hello")],
+                content=[OutputMessageText(text="hello")],
                 status="completed",
             ),
         ]
@@ -258,7 +258,7 @@ class TestResumeCleanup:
         messages: list[Any] = [
             InputMessageItem.from_text("hi", role="user"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="let me search")],
+                content=[OutputMessageText(text="let me search")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -279,7 +279,7 @@ class TestResumeCleanup:
         messages: list[Any] = [
             InputMessageItem.from_text("hi", role="user"),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="searching")],
+                content=[OutputMessageText(text="searching")],
                 status="completed",
             ),
             FunctionToolCallItem(call_id="fc_1", name="search", arguments='{"q":"a"}'),
@@ -311,7 +311,7 @@ class TestResumeCleanup:
             InputMessageItem.from_text("hi", role="user"),
             ReasoningItem(summary=[]),
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="thinking...")],
+                content=[OutputMessageText(text="thinking...")],
                 status="completed",
             ),
             FunctionToolCallItem(
@@ -342,7 +342,7 @@ class TestResumeCleanup:
             FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="echo: a"),
             # Turn 2: unresolved
             OutputMessageItem(
-                content_parts=[OutputMessageText(text="more work")],
+                content=[OutputMessageText(text="more work")],
                 status="completed",
             ),
             FunctionToolCallItem(call_id="fc_2", name="echo", arguments='{"text":"b"}'),
@@ -694,7 +694,7 @@ class TestResumeInputDetection:
                     InputMessageItem.from_text("sys", role="system"),
                     InputMessageItem.from_text("hello", role="user"),
                     OutputMessageItem(
-                        content_parts=[OutputMessageText(text="world")],
+                        content=[OutputMessageText(text="world")],
                         status="completed",
                     ),
                 ]
@@ -1303,7 +1303,7 @@ class TestPendingTaskResume:
                 InputMessageItem.from_text("system prompt", role="system"),
                 InputMessageItem.from_text("go", role="user"),
                 OutputMessageItem(
-                    content_parts=[OutputMessageText(text="launching task")],
+                    content=[OutputMessageText(text="launching task")],
                     status="completed",
                 ),
                 FunctionToolCallItem(

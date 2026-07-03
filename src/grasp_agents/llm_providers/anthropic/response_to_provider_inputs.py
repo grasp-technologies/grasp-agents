@@ -102,7 +102,7 @@ def items_to_provider_inputs(
 
         if isinstance(item, InputMessageItem):
             if item.role in {"system", "developer"}:
-                for part in item.content_parts:
+                for part in item.content:
                     if not isinstance(part, InputText):
                         continue
                     system_blocks.append(
@@ -117,7 +117,7 @@ def items_to_provider_inputs(
                 messages.append(
                     MessageParam(
                         role=item.role,  # type: ignore[assignment]
-                        content=_convert_content_parts(item.content_parts),  # type: ignore[assignment]
+                        content=_convert_content_parts(item.content),  # type: ignore[assignment]
                     )
                 )
                 i += 1
@@ -128,9 +128,9 @@ def items_to_provider_inputs(
             tool_results: list[ToolResultBlockParam] = []
             while i < n and isinstance(items[i], FunctionToolOutputItem):
                 tool_item: FunctionToolOutputItem = items[i]  # type: ignore[assignment]
-                # output_parts is a plain string on the default tool-result
+                # output is a plain string on the default tool-result
                 # path; Anthropic accepts it directly as tool_result content.
-                output_parts = tool_item.output_parts
+                output_parts = tool_item.output
                 content = (
                     output_parts
                     if isinstance(output_parts, str)
@@ -323,7 +323,7 @@ def _output_group_to_message_param(output_items: Sequence[OutputItem]) -> Messag
 def _output_message_to_blocks(item: OutputMessageItem) -> list[TextBlockParam]:
     blocks: list[TextBlockParam] = []
 
-    for part in item.content_parts:
+    for part in item.content:
         if isinstance(part, OutputMessageRefusal):
             continue
 

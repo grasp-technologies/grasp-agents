@@ -21,7 +21,7 @@ from grasp_agents.ui.app import GraspAgentsApp, PromptArea, SelectableStatic
 def _msg(text: str) -> OutputMessageItemEvent:
     return OutputMessageItemEvent(
         data=OutputMessageItem(
-            content_parts=[OutputMessageText(text=text)], status="completed"
+            content=[OutputMessageText(text=text)], status="completed"
         ),
         source="ops",
     )

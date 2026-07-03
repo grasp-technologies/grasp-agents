@@ -138,13 +138,13 @@ def _make_usage() -> ResponseUsage:
 def _make_text_response(text: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
-        usage_with_cost=_make_usage(),
+        usage=_make_usage(),
     )
 
 
@@ -158,15 +158,15 @@ def _make_tool_call_response(
     if text:
         output.append(
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         )
     output.append(FunctionToolCallItem(call_id=call_id, name=name, arguments=arguments))
     return Response(
         model="mock",
-        output_items=output,
-        usage_with_cost=_make_usage(),
+        output=output,
+        usage=_make_usage(),
     )
 
 

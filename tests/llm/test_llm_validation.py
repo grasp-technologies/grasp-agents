@@ -48,9 +48,9 @@ from grasp_agents.types.response import Response
 def _text_response(text: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageText(text=text)],
+                content=[OutputMessageText(text=text)],
                 status="completed",
             )
         ],
@@ -60,18 +60,16 @@ def _text_response(text: str) -> Response:
 def _tool_call_response(name: str, arguments: str) -> Response:
     return Response(
         model="mock",
-        output_items=[
-            FunctionToolCallItem(call_id="tc_1", name=name, arguments=arguments)
-        ],
+        output=[FunctionToolCallItem(call_id="tc_1", name=name, arguments=arguments)],
     )
 
 
 def _refusal_response(text: str = "I can't help with that.") -> Response:
     return Response(
         model="mock",
-        output_items=[
+        output=[
             OutputMessageItem(
-                content_parts=[OutputMessageRefusal(refusal=text)],
+                content=[OutputMessageRefusal(refusal=text)],
                 status="completed",
             )
         ],
@@ -83,10 +81,8 @@ def _content_filter_response() -> Response:
         model="mock",
         status="incomplete",
         incomplete_details=IncompleteDetails(reason="content_filter"),
-        output_items=[
-            OutputMessageItem(
-                content_parts=[OutputMessageText(text="")], status="incomplete"
-            )
+        output=[
+            OutputMessageItem(content=[OutputMessageText(text="")], status="incomplete")
         ],
     )
 
@@ -230,7 +226,7 @@ class TestValidationErrorTypes:
         """Two bad tool calls → both errors carried, not just the first."""
         response = Response(
             model="mock",
-            output_items=[
+            output=[
                 FunctionToolCallItem(
                     call_id="tc_1", name="add", arguments='{"a": "nope", "b": 1}'
                 ),

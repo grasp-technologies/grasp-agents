@@ -27,9 +27,6 @@ if TYPE_CHECKING:
 
 # Fields added by grasp-agents that are NOT part of the OpenAI Responses API
 _GRASP_EXTENSION_FIELDS = {
-    "content_parts",
-    "output_parts",
-    "summary_parts",
     "redacted",
     "provider_specific_fields",
     "is_error",
