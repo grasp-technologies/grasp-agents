@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from openai.types.responses.response_function_web_search_param import (
     ActionOpenPage as ActionOpenPageParam,
@@ -23,7 +23,7 @@ from openai.types.responses.response_input_item_param import (
 from grasp_agents.types.items import InputItem, SearchAction, WebSearchCallItem
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
 # Fields added by grasp-agents that are NOT part of the OpenAI Responses API
 _GRASP_EXTENSION_FIELDS = {
@@ -31,6 +31,36 @@ _GRASP_EXTENSION_FIELDS = {
     "provider_specific_fields",
     "is_error",
 }
+
+# Same, on content/output/summary parts and their annotations — the API rejects
+# unknown parameters (e.g. ``mime_type`` on a base64 image part).
+_GRASP_PART_EXTENSION_FIELDS = {
+    "mime_type",
+    "cache_control",
+    "provider_specific_fields",
+}
+
+
+def _iter_part_dicts(dumped: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    for field in ("content", "output", "summary"):
+        parts: object = dumped.get(field)
+        if not isinstance(parts, list):
+            continue
+        for part in cast("list[object]", parts):
+            if isinstance(part, dict):
+                yield cast("dict[str, Any]", part)
+
+
+def _scrub_part_fields(dumped: dict[str, Any]) -> None:
+    for part in _iter_part_dicts(dumped):
+        for key in _GRASP_PART_EXTENSION_FIELDS:
+            part.pop(key, None)
+        annotations: object = part.get("annotations")
+        if not isinstance(annotations, list):
+            continue
+        for annotation in cast("list[object]", annotations):
+            if isinstance(annotation, dict):
+                cast("dict[str, Any]", annotation).pop("provider_specific_fields", None)
 
 
 def items_to_provider_inputs(
@@ -44,6 +74,7 @@ def items_to_provider_inputs(
         dumped = item.model_dump(  # type: ignore[arg-type]
             exclude=_GRASP_EXTENSION_FIELDS, exclude_none=True, mode="json"
         )
+        _scrub_part_fields(dumped)
         # The Responses API reads a client-sent message ``id`` as a reference to a
         # stored item and 404s on it (fatally when the message carries an image);
         # our ``msg_`` ids are internal bookkeeping, so don't echo them back.

@@ -33,7 +33,9 @@ from grasp_agents.durability.context_serialization import (
     serialize_context,
 )
 from grasp_agents.session_context import SessionContext
+from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.items import InputItem, InputMessageItem
+from tests._helpers import AddTool
 from tests.durability.test_sessions import (  # type: ignore[attr-defined]
     MockLLM,
     _text_response,
@@ -41,7 +43,10 @@ from tests.durability.test_sessions import (  # type: ignore[attr-defined]
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
+
+    from grasp_agents.types.response import Response
 
 
 def _msgs(*texts: str) -> list[InputItem]:
@@ -305,6 +310,75 @@ class TestResumeLogLine:
         # The original defect: %d with step=None raised inside logging and
         # the diagnostic never rendered.
         assert "step=None" in loaded[0].getMessage()
+
+
+# ---------- Resume recomposes the ephemeral header (system prompt) ----------
+
+
+@dataclass(frozen=True)
+class _RecordingLLM(MockLLM):
+    """MockLLM that records the input items of every generate call."""
+
+    recorded_inputs: list[list[Any]] = field(default_factory=list)
+
+    async def _generate_response_once(
+        self, input: Sequence[Any], **kwargs: Any
+    ) -> Response:
+        self.recorded_inputs.append(list(input))
+        return await super()._generate_response_once(input, **kwargs)
+
+
+class TestResumeRebuildsEphemeralHeader:
+    @pytest.mark.asyncio
+    async def test_pure_resume_restores_system_prompt(self) -> None:
+        """
+        The ephemeral header is never persisted, so a resumed step must
+        recompose it — otherwise the model continues without its instructions.
+        """
+        store = InMemoryCheckpointStore()
+        sys_prompt = "You are a calculator. After the first sum, add 10 to it."
+
+        # Run 1: the model issues a tool call; the call + result are committed
+        # to the log, then the next LLM call crashes (empty response queue).
+        agent1 = LLMAgent[str, str, None](
+            name="calc",
+            ctx=SessionContext[None](checkpoint_store=store, session_key="s1"),
+            llm=MockLLM(
+                responses_queue=[_tool_call_response("add", '{"a": 1, "b": 2}', "c1")]
+            ),
+            sys_prompt=sys_prompt,
+            tools=[AddTool()],
+            env_info=False,
+        )
+        with pytest.raises(ProcRunError):
+            await agent1.run("go")
+
+        # Run 2 (fresh instance, same session): pure resume with no inputs.
+        recording_llm = _RecordingLLM(responses_queue=[_text_response("13")])
+        agent2 = LLMAgent[str, str, None](
+            name="calc",
+            ctx=SessionContext[None](checkpoint_store=store, session_key="s1"),
+            llm=recording_llm,
+            sys_prompt=sys_prompt,
+            tools=[AddTool()],
+            env_info=False,
+        )
+        await agent2.run()
+
+        assert recording_llm.recorded_inputs, "resumed run must call the LLM"
+        first_call = recording_llm.recorded_inputs[0]
+        system_messages = [
+            m
+            for m in first_call
+            if isinstance(m, InputMessageItem) and m.role == "system"
+        ]
+        assert system_messages, "resumed step must recompose the system prompt"
+        assert sys_prompt in system_messages[0].text
+        # The restored conversation follows the header.
+        assert any(
+            isinstance(m, InputMessageItem) and m.role == "user" and m.text == "go"
+            for m in first_call
+        )
 
 
 # ---------- Item 21: minimum schema-version floor ----------
