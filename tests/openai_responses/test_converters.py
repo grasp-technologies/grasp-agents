@@ -307,6 +307,26 @@ class TestMessageIdNotSent:
         # the image content survives the id strip
         assert "input_image" in [p["type"] for p in param["content"]]
 
+    def test_grasp_part_fields_stripped(self) -> None:
+        """Part-level grasp fields (e.g. ``mime_type``) must not reach the API."""
+        image = InputImage.from_base64(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA=", mime_type="image/png"
+        )
+        assert image.mime_type == "image/png"
+
+        tool_output = FunctionToolOutputItem.from_tool_result(
+            call_id="c1", output=[InputText(text="plot saved"), image]
+        )
+        msg = InputMessageItem(role="user", content=[InputText(text="hi"), image])
+
+        for param in items_to_provider_inputs([tool_output, msg]):
+            parts = param.get("output") or param.get("content")
+            assert isinstance(parts, list)
+            for part in parts:
+                assert "mime_type" not in part
+                assert "cache_control" not in part
+                assert "provider_specific_fields" not in part
+
     def test_message_phase_sent_back(self) -> None:
         """``phase`` must be echoed back to the API to avoid degradation."""
         msg = OutputMessageItem(
