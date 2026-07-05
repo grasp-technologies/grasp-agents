@@ -311,6 +311,46 @@ class TestFailedRunSettle:
         texts = [str(m) for m in agent.transcript.messages]
         assert sum("second try" in t for t in texts) == 1
 
+    @pytest.mark.asyncio
+    async def test_first_round_crash_storeless_settles_from_committed_head(
+        self,
+    ) -> None:
+        """
+        Crash in round 1 with NO checkpoint store and no completed round: the
+        only prior save is the AFTER_INPUT checkpoint at stream entry, which
+        maintains the in-memory head (``_committed``) even without a store.
+        The settle's context restore hinges on that head existing — pin it
+        directly, so the wiring (unconditional saves + AFTER_INPUT before the
+        first LLM call) is load-bearing rather than incidental.
+        """
+        agent, _ = _make_agent(
+            [_tool_call_response("echo", '{"text": "hi"}', "c1")],
+            tools=[_EchoTool()],
+        )
+        agent_ctx = agent._loop.agent_ctx
+        assert agent._committed is None  # nothing saved before the first run
+
+        @agent.add_before_tool_hook
+        async def crash(*, tool_calls: Any, ctx: Any, exec_id: str) -> None:
+            del tool_calls, ctx, exec_id
+            # Mutations after the AFTER_INPUT boundary that must roll back
+            # with the pruned (dangling) tool-call round.
+            agent_ctx.shell_state.cwd = "/mutated"
+            raise RuntimeError("boom in round 1")
+
+        with pytest.raises(ProcRunError):
+            await agent.run("first try")
+
+        # The AFTER_INPUT save left a committed head despite the missing
+        # store, so the settle restored the paired context state...
+        assert agent._committed is not None
+        assert agent_ctx.shell_state.cwd is None
+        # ...and pruned the dangling tool-call round, keeping the input.
+        texts = [str(m) for m in agent.transcript.messages]
+        assert sum("first try" in t for t in texts) == 1
+        assert all("echo" not in t for t in texts)
+        agent.transcript.validate_tool_call_pairing()
+
 
 # ---------------------------------------------------------------------------
 # Lenient validation ↔ dispatch parity

@@ -64,10 +64,15 @@ class SessionContext[CtxT](BaseModel):
 
     # The processor holding this session's environment-rewind right: the only
     # one that snapshots the filesystem at its checkpoints and may restore one
-    # (:meth:`restore_fs_snapshot`). Declare it here in multi-agent sessions
-    # (e.g. the coordinator); left ``None``, the right is claimed lazily by
-    # the first agent that records a rewind point (see
-    # :meth:`claim_environment_rewind`).
+    # (:meth:`restore_fs_snapshot`). Normally claimed for you: the first
+    # *stepped* delivery claims the unclaimed right at its start (so a
+    # coordinator claims before any of its subagents run), and a team lead's
+    # card claims at team construction. Declare it here only when neither
+    # applies — a multi-agent session whose rewinder never runs stepped, or a
+    # separate-process member sharing this environment (name the remote
+    # rewinder so local agents never snapshot). While the right is unclaimed
+    # with snapshots on, every agent snapshots at its checkpoints — provider
+    # round-trips (E2B) producing refs that can never be rewound to.
     environment_rewinder: ProcName | None = Field(default=None, exclude=True)
 
     responses: defaultdict[ProcName, list[Response]] = Field(
@@ -316,11 +321,15 @@ class SessionContext[CtxT](BaseModel):
         Rewinding the shared environment (:meth:`restore_fs_snapshot`) swaps
         the filesystem — and, for memory snapshots, every running kernel —
         under all participants, so exactly one processor per session may drive
-        it. Declare the rewinder explicitly at construction
-        (``SessionContext(environment_rewinder=...)``) in multi-agent
-        sessions; left unset, the right is claimed lazily by the first agent
-        that records a rewind point (a snapshot-carrying step boundary) or
-        rolls back to one. Idempotent for the holder.
+        it. The right is normally claimed without configuration: the first
+        stepped delivery claims it at its start when snapshots are on (steps
+        are the rewind points, so the stepper is the rewinder — and a
+        coordinator's claim lands before any of its subagents run), a team
+        lead's card claims it at team construction, and a rollback or a
+        snapshot-carrying boundary claims as a backstop. Set
+        ``SessionContext(environment_rewinder=...)`` only for topologies none
+        of these cover (an unstepped multi-agent session; a separate-process
+        member sharing the environment). Idempotent for the holder.
 
         Raises:
             RuntimeError: another processor already holds the right. Declare

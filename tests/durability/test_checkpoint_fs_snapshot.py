@@ -405,12 +405,13 @@ async def test_rollback_from_cold_instance_restores_fs(tmp_path: Path) -> None:
 # ---------- Environment-rewind right (one rewinder per session) ----------
 
 
-async def test_lazy_claim_gates_other_agents_snapshots(tmp_path: Path) -> None:
+async def test_first_stepped_delivery_claims_rewind_right(tmp_path: Path) -> None:
     """
-    A snapshot-carrying step boundary is a filesystem rewind point — a
-    session-global right claimed lazily by the first agent that records one.
-    Once claimed, other agents stop snapshotting: their boundaries never carry
-    refs, so their rollbacks are transcript-only and never conflict.
+    With snapshots on, the FIRST stepped delivery claims the session's
+    unclaimed rewind right at delivery start — steps are the rewind points,
+    so the stepper is the rewinder. Every later agent (stepped or not) never
+    snapshots: its boundaries carry no refs, so its rollbacks are
+    transcript-only and never conflict.
     """
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
@@ -431,15 +432,15 @@ async def test_lazy_claim_gates_other_agents_snapshots(tmp_path: Path) -> None:
         llm=MockLLM(responses_queue=[_text_response("b0"), _text_response("b1")]),
     )
 
-    # Step 0's boundary predates any snapshot (carries no ref) — no claim yet.
+    # Claimed at step 0's delivery start — not at a later snapshot-carrying
+    # boundary — so nothing else in the session ever snapshots.
     await coordinator.run("q0", step=0)
-    assert ctx.environment_rewinder is None
-    # Step 1's boundary carries step 0's end-of-run snapshot — claimed.
-    await coordinator.run("q1", step=1)
     assert ctx.environment_rewinder == "coordinator"
+    assert env.snapshots == ["snap-1"]
+    await coordinator.run("q1", step=1)
     assert env.snapshots == ["snap-1", "snap-2"]
 
-    # A second stepped agent no longer snapshots, so its boundaries carry no
+    # A second stepped agent never snapshots, so its boundaries carry no
     # refs and stepped delivery keeps working (transcript-only rollback).
     await other.run("p0", step=0)
     await other.run("p1", step=1)
@@ -450,6 +451,51 @@ async def test_lazy_claim_gates_other_agents_snapshots(tmp_path: Path) -> None:
     # An explicit rewind attempt by the non-holder still fails loudly.
     with pytest.raises(RuntimeError, match="rewind right"):
         ctx.claim_environment_rewind("other")
+
+
+async def test_subagents_never_snapshot_under_stepped_coordinator(
+    tmp_path: Path,
+) -> None:
+    """
+    Coordinator+subagents with NO declared rewinder: the coordinator's step-0
+    claim happens at delivery start, before any turn runs, so a subagent's
+    unstepped ``.as_tool()`` run inside the step is already gated — the only
+    snapshot is the coordinator's own run-end one.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    sub = LLMAgent[EchoInput, str, None](
+        name="sub",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("sub done")]),
+        stream_llm=True,
+    )
+    coordinator = LLMAgent[str, str, None](
+        name="coordinator",
+        ctx=ctx,
+        llm=MockLLM(
+            responses_queue=[
+                _tool_call_response("sub_agent", '{"text": "hi"}', "c1"),
+                _text_response("done"),
+            ]
+        ),
+        tools=[sub.as_tool(tool_name="sub_agent", tool_description="Sub agent")],
+        stream_llm=True,
+    )
+
+    await coordinator.run("q0", step=0)
+
+    assert ctx.environment_rewinder == "coordinator"
+    # The subagent's run completed mid-step (its own run-end boundary would
+    # have snapshotted under an unclaimed right) — only the coordinator's
+    # run-end snapshot exists.
+    assert env.snapshots == ["snap-1"]
 
 
 async def test_declared_rewinder_gates_snapshots_from_construction(

@@ -819,10 +819,22 @@ class LLMAgent[InT, OutT, CtxT](
         """
         if self._step is None:
             return
+        # With snapshots on, the first stepped delivery claims the session's
+        # unclaimed rewind right: steps are the rewind points, so the stepper
+        # is the rewinder — and claiming before any turn runs gates subagents
+        # (which run unstepped) out of snapshotting from the very first
+        # delivery. An already-set rewinder wins: a non-rewinder simply steps
+        # transcript-only.
+        if (
+            self._ctx.fs_snapshot_policy != "off"
+            and self._ctx.environment_rewinder is None
+        ):
+            self._ctx.claim_environment_rewind(self.name)
         prior = self._committed
         fs_snapshot_ref = prior.fs_snapshot_ref if prior else None
         if fs_snapshot_ref is not None:
-            # A snapshot-carrying boundary is a filesystem rewind point — a
+            # A snapshot-carrying boundary (possibly loaded from a persisted
+            # head by a cold instance) is a filesystem rewind point — a
             # session-global right held by one agent; fail here at run start,
             # not at a much-later rollback.
             self._ctx.claim_environment_rewind(self.name)
