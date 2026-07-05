@@ -74,11 +74,29 @@ async def test_unknown_recipient_is_not_sent() -> None:
     # model), rather than returning a success-looking string.
     with pytest.raises(ValueError, match="No teammate named 'charlie'"):
         await tool._run(
-            SendMessageInput(to="charlie", message="x"), ctx=ctx, agent_ctx=None
+            SendMessageInput(to="charlie", message="x"),
+            ctx=ctx,
+            agent_ctx=SimpleNamespace(agent_name="alice"),  # type: ignore[arg-type]
         )
 
     transport = CheckpointMailboxTransport(ctx.checkpoint_store)  # type: ignore[arg-type]
     assert await transport.has_pending("charlie") is False
+
+
+@pytest.mark.asyncio
+async def test_send_without_agent_identity_is_rejected() -> None:
+    # No calling-agent identity → the send must fail rather than masquerade as
+    # the human sender (which would also mis-route a '*' broadcast).
+    ctx = _ctx()
+    tool = SendMessageTool([MemberCard(name="bob")])
+
+    with pytest.raises(ValueError, match="no calling-agent identity"):
+        await tool._run(
+            SendMessageInput(to="bob", message="x"), ctx=ctx, agent_ctx=None
+        )
+
+    transport = CheckpointMailboxTransport(ctx.checkpoint_store)  # type: ignore[arg-type]
+    assert await transport.has_pending("bob") is False
 
 
 def test_description_does_not_inline_roster() -> None:

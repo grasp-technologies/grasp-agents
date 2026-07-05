@@ -72,7 +72,7 @@ async def activate_member(
     and routes a produced output packet onward through ``post`` (at default
     priority: a triggered member is never the lead, validated at host
     construction). Raises on a member failure; the caller decides whether that
-    stops the run or is dead-lettered.
+    stops the run or the message is dropped.
     """
     if await transport.was_processed(member.name, message.message_id):
         return

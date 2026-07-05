@@ -76,7 +76,7 @@ from .tool_decision import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
     from grasp_agents.hooks import (
         AfterLlmHook,
@@ -93,7 +93,6 @@ if TYPE_CHECKING:
     from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.bash_common import ShellState
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
-    from grasp_agents.types.message import TeamMessage
     from grasp_agents.types.response import Response
 
     from .background_tasks import BackgroundTaskManager
@@ -187,11 +186,6 @@ class AgentLoop[CtxT]:
 
     # Session persistence — wired by LLMAgent.setup_session()
     checkpoint_callback: CheckpointCallback | None
-
-    # Called with each inbox message as it is taken — before its consumption
-    # seq is minted and before it enters the transcript — so LLMAgent can
-    # archive a rollback boundary for a human turn. Wired by LLMAgent.
-    inbox_take_callback: Callable[[TeamMessage], None] | None
 
     _llm_output_schema: Any | None
     _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
@@ -309,7 +303,6 @@ class AgentLoop[CtxT]:
         self.after_tool_hooks = []
 
         self.checkpoint_callback = None
-        self.inbox_take_callback = None
         self.path = path
 
         # The single agent-scope state handed to each tool call. ``create``
@@ -1472,7 +1465,7 @@ class AgentLoop[CtxT]:
         inbox = self.inbox
         if inbox is None:
             return
-        message = await inbox.take(on_take=self.inbox_take_callback)
+        message = await inbox.take()
         if message is None:
             return
         # A new message resets the per-message turn budget (see decide_next_step).

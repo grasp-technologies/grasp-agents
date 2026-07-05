@@ -193,6 +193,59 @@ async def test_resident_anchor_memo_reuses_step_for_redelivery() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mint_after_rollback_floors_at_parked_step_with_sparse_steps() -> None:
+    # Sparse explicit steps: after a rollback drops the parked step's own
+    # boundary, the map alone would mint below it — the floor keeps the next
+    # chat delivery on the parked step.
+    agent, _ = _make_agent([_text_response(t) for t in ("a", "b", "c")])
+
+    await agent.run("q1", step=1)
+    await agent.run("q5", step=5)
+    await agent.rollback_to_step(5)
+    assert agent.step == 5
+
+    await agent.run("q5-replacement")
+    assert agent.step == 5
+    assert agent.rollback_steps == [1, 5]
+
+
+@pytest.mark.asyncio
+async def test_resident_rerun_after_rollback_re_anchors_the_repended_human() -> None:
+    # Same process, same agent: a rollback destroys the anchor boundary AND
+    # must invalidate the anchor memo — the re-taken (re-pended) human message
+    # then re-mints its step and re-archives the boundary, so a second
+    # rollback still has a target. (A stale memo would skip the mint after the
+    # pure-resume entry cleared ``step``, leaving the head unstepped.)
+    store = InMemoryCheckpointStore()
+    agent, transport = _resident(
+        MockLLM(
+            responses_queue=[_text_response("first"), _text_response("second")]
+        ),
+        store,
+    )
+    human = _human("human task")
+    await transport.post(human)
+    await _run_until_processed(agent, transport, human)
+    assert agent.rollback_steps == [1]
+
+    agent.detach_inbox()
+    await agent.rollback_to_step(1)
+    assert agent.rollback_steps == []
+
+    agent.attach_inbox()
+    await _run_until_processed(agent, transport, human)
+
+    assert agent.step == 1
+    assert agent.rollback_steps == [1]
+    assert str(agent.transcript.messages).count("human task") == 1
+
+    # The restored boundary is fully usable: roll back again.
+    await agent.rollback_to_step(1)
+    assert "human task" not in str(agent.transcript.messages)
+    assert not await transport.was_processed("test_agent", human.message_id)
+
+
+@pytest.mark.asyncio
 async def test_between_runs_rollback_unprocesses_detached_mailbox() -> None:
     # With the resident inbox detached (between runs), the mailbox half of a
     # rollback still runs — resolved from the session's transport.

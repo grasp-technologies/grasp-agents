@@ -23,6 +23,8 @@
                 "pylance"
         ],
         "words": [
+                "acked",
+                "acks",
                 "acompletion",
                 "agentic",
                 "AILLM",
@@ -76,6 +78,7 @@
                 "TGP",
                 "tobytes",
                 "toolu",
+                "undeliver",
                 "unprocess",
                 "unsandboxed",
                 "WezTerm",

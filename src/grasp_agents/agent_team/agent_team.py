@@ -269,6 +269,10 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._hop_exhausted = False
         self._token_exhausted = False
         self._tokens_at_start = 0
+        self._hops_at_start = 0
+        # Posts mid-flight between the budget count (saved first, conservative)
+        # and the transport deposit; quiescence holds while any are in flight.
+        self._posts_in_flight = 0
 
         self._stop_requested = False
         self._daemon = False
@@ -348,44 +352,53 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             )
             return
 
-        for single in envelope.split_by_recipient():
-            recipient = single.recipient
-            if recipient not in self._members_by_name:
-                logger.warning(
-                    "AgentTeam %s dropping message to unknown recipient %r",
-                    self._name,
-                    recipient,
+        # Hold quiescence open for the whole count-then-deposit sequence: the
+        # budget count (and its checkpoint save) lands before the deposit, so
+        # without this a slow save lets the monitor observe two idle polls
+        # with the delivery still in flight and tear the run down under it.
+        self._posts_in_flight += 1
+        try:
+            for single in envelope.split_by_recipient():
+                recipient = single.recipient
+                if recipient not in self._members_by_name:
+                    logger.warning(
+                        "AgentTeam %s dropping message to unknown recipient %r",
+                        self._name,
+                        recipient,
+                    )
+                    continue
+
+                # Count + persist the hop under the lock so concurrent sends can't
+                # both slip past the budget or double-bump the checkpoint number.
+                # The count is saved BEFORE depositing on the transport (mirroring
+                # the Runner's save-before-post): a crash then leaves the budget
+                # counted rather than under-counted — conservative for a safety cap.
+                async with self._checkpoint_lock:
+                    if not self._daemon and self._hops_spent() >= self._max_hops:
+                        # Budget spent: refuse further deliveries and ask to stop.
+                        self._hop_exhausted = True
+                        self._stop_requested = True
+                        return
+
+                    if not self._daemon and self._over_token_budget():
+                        # Token ceiling reached: stop spawning new activations
+                        # (those already in flight finish). A daemon opts out,
+                        # like max_hops.
+                        self._token_exhausted = True
+                        self._stop_requested = True
+                        return
+
+                    self._activations += 1
+                    await self._save_checkpoint()
+
+                await self._push(
+                    MessageDeliveredEvent(
+                        source=single.sender, destination=recipient, data=single
+                    )
                 )
-                continue
-
-            # Count + persist the hop under the lock so concurrent sends can't
-            # both slip past the budget or double-bump the checkpoint number.
-            # The count is saved BEFORE depositing on the transport (mirroring
-            # the Runner's save-before-post): a crash then leaves the budget
-            # counted rather than under-counted — conservative for a safety cap.
-            async with self._checkpoint_lock:
-                if not self._daemon and self._activations >= self._max_hops:
-                    # Budget spent: refuse further deliveries and ask to stop.
-                    self._hop_exhausted = True
-                    self._stop_requested = True
-                    return
-
-                if not self._daemon and self._over_token_budget():
-                    # Token ceiling reached: stop spawning new activations (those
-                    # already in flight finish). A daemon opts out, like max_hops.
-                    self._token_exhausted = True
-                    self._stop_requested = True
-                    return
-
-                self._activations += 1
-                await self._save_checkpoint()
-
-            await self._push(
-                MessageDeliveredEvent(
-                    source=single.sender, destination=recipient, data=single
-                )
-            )
-            await self._transport.post(single)
+                await self._transport.post(single)
+        finally:
+            self._posts_in_flight -= 1
 
     async def submit_message(self, to: str, text: str) -> None:
         """
@@ -487,9 +500,9 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         empty, no background work) — or at a budget: the ``max_hops`` delivery count
         or the ``max_tokens`` ceiling (this run's token spend). With ``daemon=True``
         it never self-terminates: it keeps serving mail (e.g. from an external
-        source), opts out of both budgets, and dead-letters a member failure rather
-        than stopping the team. Stop a daemon by cancelling the stream. Events carry
-        ``source = <member name>``.
+        source), opts out of both budgets, and drops a failing member's message
+        (logged, not retried) rather than stopping the team. Stop a daemon by
+        cancelling the stream. Events carry ``source = <member name>``.
         """
         entry = to or self._entry_name
         if entry not in self._members_by_name:
@@ -499,6 +512,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._poll_interval = poll_interval
         self._activations = 0
         self._failed = []
+        self._posts_in_flight = 0
 
         # Baseline the per-run token budget here; on resume this rebases (the budget
         # bounds this run's own spend, generous across restarts — like max_hops).
@@ -519,7 +533,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # member runs; idempotent, so member runs below no-op on it.
         await self._ctx.load_checkpoint()
 
-        # Resume: restore the session-wide hop count from a prior checkpoint. The
+        # Resume: restore the session-wide counters from a prior checkpoint. The
         # entry is re-seeded idempotently in ``_drive`` (deterministic id +
         # processed-dedup), so it is delivered exactly once across runs without a
         # separate "seeded" flag — a flag keyed on checkpoint existence could
@@ -528,6 +542,12 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         if checkpoint is not None:
             self._activations = checkpoint.activations
             self._runs_ended = checkpoint.runs_ended
+        # Rebase the per-run hop budget on the restored lifetime count (like
+        # the token baseline above): ``max_hops`` bounds this run's own
+        # deliveries, so a durable session's history can't wedge every future
+        # run — and a restart of an interrupted run gets a fresh budget,
+        # generous like the token one.
+        self._hops_at_start = self._activations
 
         yield TeamStartedEvent(source=self._name, data=TeamRunInfo(team=self._name))
 
@@ -680,8 +700,9 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 raise
 
             except Exception:
-                # Dead-letter a member failure rather than tearing down the team;
-                # a non-daemon run stops once this activation unwinds.
+                # Log and drop the failed message (the driver acks it — it is
+                # not retried or kept) rather than tearing down the team; a
+                # non-daemon run stops once this activation unwinds.
                 logger.warning(
                     "Team member %r failed handling a message",
                     member.name,
@@ -752,10 +773,16 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             logger.warning("AgentTeam %s: mailbox GC failed", self._name, exc_info=True)
 
     async def _is_quiescent(self, driver: ActorDriver[TeamMessage]) -> bool:
+        if self._posts_in_flight:
+            return False
         for resident in self._residents.values():
             if not await resident_idle(resident):
                 return False
         return await driver.is_quiescent()
+
+    def _hops_spent(self) -> int:
+        """This run's own delivery count (delta from its start baseline)."""
+        return self._activations - self._hops_at_start
 
     def _over_token_budget(self) -> bool:
         """

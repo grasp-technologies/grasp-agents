@@ -217,12 +217,12 @@ async def test_fs_snapshot_final_snapshots_at_run_end(tmp_path: Path) -> None:
     assert record.fs_snapshot_ref == "snap-1"
 
 
-async def test_session_ref_cleared_at_snapshotless_boundary(tmp_path: Path) -> None:
+async def test_session_ref_kept_at_snapshotless_boundary(tmp_path: Path) -> None:
     """
-    The session record pairs its ref with the *latest* checkpoint boundary:
-    a later boundary that takes no snapshot records ``None`` (a cold resume
-    then keeps the live filesystem) rather than leaving a stale ref that no
-    longer describes the transcript.
+    The session record keeps the *latest* snapshot ref: a later boundary that
+    takes no snapshot carries the last ref forward rather than nulling it —
+    the record is shared by every agent on the session, so a snapshotless
+    save must never erase the ref a cold resume restores from.
     """
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
@@ -237,11 +237,90 @@ async def test_session_ref_cleared_at_snapshotless_boundary(tmp_path: Path) -> N
     assert record is not None
     assert record.fs_snapshot_ref == "snap-1"
 
-    # A non-final boundary (AFTER_INPUT default) takes no snapshot.
+    # A non-final boundary (AFTER_INPUT default) takes no snapshot — the
+    # record keeps the ref describing the session filesystem.
     await agent.save_checkpoint()
     record = await _session_record(store)
     assert record is not None
-    assert record.fs_snapshot_ref is None
+    assert record.fs_snapshot_ref == "snap-1"
+
+
+async def test_non_rewinder_checkpoint_keeps_session_ref(tmp_path: Path) -> None:
+    """
+    A non-rewinder member's checkpoint must not clobber the session ref: its
+    ``_fs_snapshot_due`` is gated off, so its saves pass no ref — the shared
+    record still has to keep the rewinder's latest snapshot, or a cold resume
+    would restore no filesystem at all.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="final",
+        environment_rewinder="lead",
+    )
+    lead = LLMAgent[str, str, None](
+        name="lead",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("a0")]),
+    )
+    peer = LLMAgent[str, str, None](
+        name="peer",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("b0")]),
+    )
+
+    await lead.run("q0", step=0)
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-1"
+
+    # The peer's run checkpoints (snapshotless) — the lead's ref survives.
+    await peer.run("p0")
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-1"
+
+    # A cold resume restores the lead's filesystem.
+    fresh_env = _FakeSnapshotEnv(tmp_path)
+    rctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store, session_key="s1", environment=fresh_env
+    )
+    assert await rctx.load_checkpoint() is not None
+    assert fresh_env.restored == ["snap-1"]
+
+
+async def test_resumed_process_snapshotless_save_keeps_session_ref(
+    tmp_path: Path,
+) -> None:
+    """
+    The latest-ref latch survives a process restart: ``load_checkpoint``
+    seeds it from the loaded record, so a resumed process's first
+    snapshotless save carries the ref forward instead of erasing it.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    await agent.run("hello")
+
+    fresh_env = _FakeSnapshotEnv(tmp_path)
+    resumed, rctx = _make_agent(
+        [], store=store, environment=fresh_env, fs_snapshot_policy="final"
+    )
+    await rctx.load_checkpoint()
+    await resumed.load_checkpoint()
+    await resumed.save_checkpoint()  # AFTER_INPUT: no snapshot due
+
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-1"
 
 
 async def test_fs_snapshot_turn_snapshots_every_boundary(tmp_path: Path) -> None:
@@ -362,6 +441,13 @@ async def test_rollback_restores_fs_and_repoints_session_record(
     assert record.fs_snapshot_ref == "snap-1"
     # The agent's rolled-back head pairs the same ref.
     assert (await _stored_checkpoint(store)).current.fs_snapshot_ref == "snap-1"
+
+    # A later snapshotless save keeps the re-pointed ref (the rollback's
+    # re-point replaced the latch, even though the ref is older).
+    await agent.save_checkpoint()
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-1"
 
 
 async def test_restore_fs_snapshot_requires_capable_environment(

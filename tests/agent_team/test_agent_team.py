@@ -162,6 +162,29 @@ async def test_hop_budget_stops_with_pending_mail(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_hop_budget_is_per_run_on_a_durable_session() -> None:
+    # ``max_hops`` bounds each run's own deliveries. The lifetime activation
+    # count restored from the team checkpoint must not eat later runs'
+    # budgets — that would permanently wedge a durable team (every new run's
+    # entry seed refused) once the session's history crosses the cap.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team = AgentTeam([solo], ctx=ctx, max_hops=1)
+
+    result1 = await team.run("first question")
+    assert result1.stop_reason == "quiesced"
+    assert result1.activations == 1
+
+    result2 = await team.run("second question")
+    await team.aclose()
+
+    assert result2.stop_reason == "quiesced"
+    assert result2.activations == 2  # lifetime count keeps accumulating
+    assert solo.llm.call_count == 2  # the second seed was delivered
+
+
+@pytest.mark.asyncio
 async def test_token_budget_stops_with_pending_mail(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])

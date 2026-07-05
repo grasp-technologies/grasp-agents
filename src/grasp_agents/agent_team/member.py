@@ -203,8 +203,8 @@ class MemberHost:
         Stream the member's turns until cancelled — or until idle when
         ``stop_when_idle`` (for batch / tests). A resident runs a persistent loop
         (consuming its inbox between turns); a worker is triggered once per inbound
-        message. A failing turn is logged and its message dead-lettered; the loop
-        keeps serving.
+        message. A failing turn is logged and its message dropped (acked, not
+        retried); the loop keeps serving.
         """
         if self._resident is not None:
             stream = self._run_resident(stop_when_idle=stop_when_idle)
@@ -304,7 +304,8 @@ class MemberHost:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Dead-letter the failure; the per-process host keeps serving.
+                # Log and drop the failed message (the driver acks it — not
+                # retried or kept); the per-process host keeps serving.
                 logger.warning("Member %r turn failed", member.name, exc_info=True)
 
         return handler

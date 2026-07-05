@@ -984,13 +984,16 @@ class BackgroundTaskManager[CtxT]:
             # :meth:`flush_delivered` after the next checkpoint persists the
             # transcript holding this note: flipping now would lose the
             # outcome on a crash before that checkpoint (resume skips
-            # DELIVERED records). Records are kept for post-hoc
+            # DELIVERED records). The note's transcript position rides along —
+            # a step rollback that truncates below it re-injects the note
+            # (:meth:`undeliver_after`). Records are kept for post-hoc
             # observability; reclaim with ``prune_delivered``.
             if ctx.checkpoint_store is not None and pt.task_key is not None:
                 self._pending_delivered[pt.task_key] = {
                     "status": TaskStatus.DELIVERED,
                     "result": None if failed else _serialize_result(result),
                     "error": _serialize_result(result) if failed else None,
+                    "delivered_msg_count": len(self._transcript.messages),
                 }
 
             yield BackgroundTaskCompletedEvent(
@@ -1115,6 +1118,7 @@ class BackgroundTaskManager[CtxT]:
         keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
 
         notifications: list[InputMessageItem] = []
+        deferred_keys: list[str] = []
         for key in keys:
             record = await store.load_json(key, TaskRecord, subject="task record")
             if record is None:
@@ -1209,6 +1213,7 @@ class BackgroundTaskManager[CtxT]:
             # Deferred to ``flush_delivered`` (after the checkpoint that
             # persists the notice) — same loss-window reasoning as ``drain``.
             self._pending_delivered[key] = update
+            deferred_keys.append(key)
             notifications.append(notification)
 
         injected: list[InputMessageItem] = []
@@ -1229,6 +1234,15 @@ class BackgroundTaskManager[CtxT]:
             )
             injected = [framing, *notifications]
             self._transcript.update(injected)
+            # Stamp each re-injected note's transcript position on its
+            # deferred flip (mirrors ``drain``): a later rollback truncating
+            # below the note must know to re-inject it. The notices sit at
+            # the tail of ``injected``, after the framing line.
+            total = len(self._transcript.messages)
+            for offset, key in enumerate(deferred_keys):
+                self._pending_delivered[key]["delivered_msg_count"] = (
+                    total - len(deferred_keys) + offset + 1
+                )
 
         logger.info(
             "Handled %d task records for session %s", len(keys), ctx.session_key
@@ -1268,19 +1282,92 @@ class BackgroundTaskManager[CtxT]:
         if store is None or not (self._pending_delivered or self._pending_killed):
             return
         # A kill wins over a delivery flip for the same record: the kill came
-        # later, when the delivered note was rolled back.
+        # later, when the delivered note was rolled back. Each entry is
+        # dropped only once applied, so a store error mid-flush keeps the
+        # rest deferred for the next flush instead of losing them (a re-apply
+        # is idempotent — updates are absolute field sets).
         pending = {**self._pending_delivered, **self._pending_killed}
-        self._pending_delivered = {}
-        self._pending_killed = {}
         for key, update in pending.items():
             existing = await store.load(key)
-            if not existing:
+            if existing:
+                record = TaskRecord.model_validate_json(existing)
+                record = record.model_copy(
+                    update={**update, "updated_at": datetime.now(UTC)}
+                )
+                await store.save(key, record.model_dump_json().encode())
+            self._pending_delivered.pop(key, None)
+            self._pending_killed.pop(key, None)
+
+    async def undeliver_after(
+        self,
+        *,
+        message_count: int,
+        bg_launch_seq: int,
+        ctx: SessionContext[CtxT],
+    ) -> list[InputMessageItem]:
+        """
+        The bg-task half of a step rollback, called after the transcript is
+        truncated to ``message_count``: a DELIVERED record whose completion
+        note sat past the cut (``delivered_msg_count > message_count``) while
+        its launching call survived (``launch_seq <= bg_launch_seq``) just
+        lost the only live copy of its outcome — the finished task is no
+        longer tracked in memory, and resume skips DELIVERED records, so
+        nothing else would ever re-surface it and the agent would wait on it
+        forever. Re-inject each such note at the rewind point and re-defer its
+        DELIVERED flip with the new position.
+
+        Records launched *after* the boundary are ``cancel_launched_after``'s
+        business — their launching calls are gone, so their outcomes stay
+        buried. Returns the injected messages for the caller to surface as
+        events.
+        """
+        store = ctx.checkpoint_store
+        if store is None:
+            return []
+        prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self._path) + "/"
+        keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
+
+        matches: list[tuple[str, TaskRecord]] = []
+        for key in keys:
+            record = await store.load_json(key, TaskRecord, subject="task record")
+            if (
+                record is None
+                or record.status is not TaskStatus.DELIVERED
+                or record.delivered_msg_count is None
+                or record.delivered_msg_count <= message_count
+                or record.launch_seq > bg_launch_seq
+            ):
                 continue
-            record = TaskRecord.model_validate_json(existing)
-            record = record.model_copy(
-                update={**update, "updated_at": datetime.now(UTC)}
+            matches.append((key, record))
+        matches.sort(key=lambda kr: kr[1].launch_seq)
+
+        injected: list[InputMessageItem] = []
+        for key, record in matches:
+            is_fail = record.result is None and record.error is not None
+            notification = InputMessageItem.from_text(
+                _task_notification(
+                    task_id=record.task_id,
+                    tool_name=record.tool_name,
+                    status="failed" if is_fail else "completed",
+                    result=None if is_fail else record.result,
+                    error=record.error if is_fail else None,
+                    log_path=record.output_path,
+                ),
+                role="user",
             )
-            await store.save(key, record.model_dump_json().encode())
+            self._transcript.update([notification])
+            self._pending_delivered[key] = {
+                "status": TaskStatus.DELIVERED,
+                "delivered_msg_count": len(self._transcript.messages),
+            }
+            injected.append(notification)
+            logger.info(
+                "Re-injected background task %s (%s): its completion note was "
+                "truncated by a rollback",
+                record.task_id,
+                record.tool_name,
+            )
+        return injected
 
     # --- Offline cleanup ---
 

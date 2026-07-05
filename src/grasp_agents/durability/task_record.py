@@ -38,6 +38,12 @@ class TaskRecord(PersistedRecord):
     result: str | None = None
     error: str | None = None
 
+    # Transcript length right after this task's completion note was appended —
+    # the note's rewind horizon: a rollback that truncates below it re-injects
+    # the note (``BackgroundTaskManager.undeliver_after``). Set when the
+    # record flips DELIVERED.
+    delivered_msg_count: int | None = None
+
     # The agent-readable ``.grasp/tasks`` log file holding this task's full
     # streamed output (the single source of truth for it; ``None`` when no file
     # backend is wired). On resume the interrupted notice points the agent here.

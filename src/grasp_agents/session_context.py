@@ -156,6 +156,12 @@ class SessionContext[CtxT](BaseModel):
 
     _session_restored: bool = PrivateAttr(default=False)
     _session_fs_restored: bool = PrivateAttr(default=False)
+    # The last snapshot ref written to (or loaded from) the session record.
+    # Every save re-records it: several agents share one record, and a
+    # non-snapshotting save (a non-rewinder member, or a rewinder's own
+    # between-snapshot boundary) must never erase the ref that describes the
+    # session filesystem.
+    _last_fs_snapshot_ref: str | None = PrivateAttr(default=None)
     _session_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
     _environment_restored_callbacks: list[Callable[[str], Awaitable[None]]] = (
         PrivateAttr(default_factory=list["Callable[[str], Awaitable[None]]"])
@@ -282,6 +288,7 @@ class SessionContext[CtxT](BaseModel):
             self.state = rehydrate_context(
                 record.context_kind, record.context_data, self.state
             )
+            self._last_fs_snapshot_ref = record.fs_snapshot_ref
             self._session_restored = True
             logger.info(
                 "Restored session %s (state=%s, fs_snapshot_ref=%s)",
@@ -297,10 +304,13 @@ class SessionContext[CtxT](BaseModel):
 
         Called by agents alongside their own checkpoints; no-ops unless a
         session-scoped feature is on (``serialize_state`` / ``fs_snapshot_policy``
-        / ``session_metadata``). ``fs_snapshot_ref`` is recorded exactly as
-        given: ``None`` means no snapshot describes the session as of this
-        boundary, so a cold resume keeps the live filesystem instead of
-        rewinding to a stale ref.
+        / ``session_metadata``). The record keeps the session's **latest**
+        snapshot ref: a boundary that took no snapshot passes ``None``, and the
+        last recorded ref is carried forward — the record is shared by every
+        agent on the session, so a non-snapshotting save (a non-rewinder
+        member's checkpoint) must not erase the ref a cold resume restores
+        from. Per-boundary snapshot pairing lives on each agent's own
+        checkpoint head instead.
         """
         if (
             not self.serialize_state
@@ -314,6 +324,11 @@ class SessionContext[CtxT](BaseModel):
         key = self._session_store_key()
         if self.checkpoint_store is None or key is None:
             return
+        # ``None`` = this boundary took no snapshot: keep the latest recorded
+        # ref rather than nulling the shared record. An explicit ref replaces
+        # it — including an *older* one on a rollback's re-point.
+        if fs_snapshot_ref is not None:
+            self._last_fs_snapshot_ref = fs_snapshot_ref
         context_kind: ContextKind | None = None
         context_data: Any | None = None
         if self.serialize_state:
@@ -322,7 +337,7 @@ class SessionContext[CtxT](BaseModel):
             session_key=self.session_key,
             context_kind=context_kind,
             context_data=context_data,
-            fs_snapshot_ref=fs_snapshot_ref,
+            fs_snapshot_ref=self._last_fs_snapshot_ref,
             session_metadata=self.session_metadata,
         )
         await self.checkpoint_store.save(key, record.model_dump_json().encode("utf-8"))

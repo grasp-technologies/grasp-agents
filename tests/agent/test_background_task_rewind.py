@@ -350,6 +350,144 @@ class TestAgentRewindsTaskPlane:
         assert record.status == TaskStatus.CANCELLED
 
 
+class TestUndeliverAfter:
+    @pytest.mark.asyncio
+    async def test_rollback_reinjects_note_delivered_past_the_boundary(self) -> None:
+        # A task launched BEFORE a step boundary whose completion note was
+        # delivered (and its DELIVERED flip flushed) AFTER it: the rollback's
+        # truncation removes the note while the launch survives — the note
+        # must be re-injected, or the agent waits forever on an outcome
+        # nothing would ever re-surface.
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        agent = LLMAgent[str, str, None](
+            name="a",
+            ctx=ctx,
+            path=[],
+            llm=MockLLM(responses_queue=[_text_response("a1"), _text_response("a2")]),
+            sys_prompt="x",
+            env_info=False,
+        )
+        await agent.run("q1", step=1)
+        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+
+        # Launched in step 1's aftermath — before step 2's boundary.
+        tool = FireAndForgetTool(delay=0.01)
+        call = FunctionToolCallItem(
+            call_id="c1", name="fire_and_forget", arguments='{"text":"x"}'
+        )
+        _note, event = await mgr.run_backgroundable(
+            call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
+        )
+        assert event is not None
+        await agent.save_checkpoint(turn=0)  # the launch is durable pre-step-2
+        await mgr.wait_idle()  # finished before step 2 starts
+
+        # Step 2 drains the completion note into its own transcript span; its
+        # run-end checkpoint flushes the DELIVERED flip with the position.
+        await agent.run("q2", step=2)
+        boundary = next(wm for wm in agent._step_watermarks if wm.step == 2)  # pyright: ignore[reportPrivateUsage]
+        assert boundary.agent_ctx_state.bg_launch_seq == 1
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.DELIVERED
+        assert record.delivered_msg_count is not None
+        assert record.delivered_msg_count > boundary.message_count
+        assert str(agent.transcript.messages).count("<status>completed</status>") == 1
+
+        await agent.rollback_to_step(2)
+
+        # The note is back at the rewind point (once), queued for the next
+        # run's event stream, and the record's position moved with it.
+        assert str(agent.transcript.messages).count("<status>completed</status>") == 1
+        assert agent._resume_notifications  # pyright: ignore[reportPrivateUsage]
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.DELIVERED
+        assert record.delivered_msg_count == len(agent.transcript.messages)
+
+        # A cold resume injects nothing extra (no duplicate note).
+        t2 = LLMAgentTranscript()
+        t2.messages = [InputMessageItem.from_text("sys", role="system")]
+        mgr2 = BackgroundTaskManager[None](
+            agent_name="a", transcript=t2, tools={}, path=[]
+        )
+        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        assert injected == []
+
+    @pytest.mark.asyncio
+    async def test_note_of_task_launched_after_the_boundary_stays_buried(self) -> None:
+        # A DELIVERED record whose LAUNCH is also past the boundary is the
+        # cancel path's business: its launching call is gone, so the note is
+        # not re-injected.
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        agent = LLMAgent[str, str, None](
+            name="a",
+            ctx=ctx,
+            path=[],
+            llm=MockLLM(responses_queue=[_text_response("a1"), _text_response("a2")]),
+            sys_prompt="x",
+            env_info=False,
+        )
+        await agent.run("q1", step=1)
+        await agent.run("q2", step=2)
+        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+
+        # Launched, delivered, and flushed entirely inside step 2.
+        tool = FireAndForgetTool(delay=0.01)
+        call = FunctionToolCallItem(
+            call_id="c1", name="fire_and_forget", arguments='{"text":"x"}'
+        )
+        _note, event = await mgr.run_backgroundable(
+            call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
+        )
+        assert event is not None
+        await mgr.wait_idle()
+        async for _ in mgr.drain(exec_id="t", ctx=ctx):
+            pass
+        await agent.save_checkpoint(turn=1)
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.DELIVERED
+
+        await agent.rollback_to_step(2)
+
+        assert "<status>completed</status>" not in str(agent.transcript.messages)
+        assert not agent._resume_notifications  # pyright: ignore[reportPrivateUsage]
+
+
+class TestFlushDeliveredRetry:
+    @pytest.mark.asyncio
+    async def test_store_failure_keeps_unapplied_updates_deferred(self) -> None:
+        # A store error mid-flush must not drop the un-applied flips: they
+        # stay deferred, and the next flush applies them.
+        class _FailOnceStore(InMemoryCheckpointStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.fail_next_save = False
+
+            async def save(self, key: str, data: bytes) -> None:
+                if self.fail_next_save:
+                    self.fail_next_save = False
+                    raise RuntimeError("store down")
+                await super().save(key, data)
+
+        store = _FailOnceStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        mgr, _ = _make_manager()
+
+        await _launch(mgr, ctx, "c1")
+        mgr.cancel_launched_after(0)
+
+        store.fail_next_save = True
+        with pytest.raises(RuntimeError, match="store down"):
+            await mgr.flush_delivered(ctx=ctx)
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.PENDING  # flip not applied yet
+
+        await mgr.flush_delivered(ctx=ctx)  # retried at the next flush
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.CANCELLED
+
+
 class TestSettleKeepsDeliveredFlips:
     @pytest.mark.asyncio
     async def test_flip_survives_settle_when_note_survives(self) -> None:

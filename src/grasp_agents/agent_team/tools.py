@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 from grasp_agents.mailbox import resolve_session_transport
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
-from .message import LEAD_PRIORITY, USER_SENDER, TeamMessage
+from .message import LEAD_PRIORITY, TeamMessage
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -99,7 +99,15 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         del exec_id, progress_callback, path
         if ctx is None:
             raise ValueError("SendMessage requires a SessionContext.")
-        sender = agent_ctx.agent_name if agent_ctx is not None else USER_SENDER
+        if agent_ctx is None or not agent_ctx.agent_name:
+            # Never guess the sender: a send with no calling-agent identity
+            # would otherwise masquerade as the human (and a '*' broadcast,
+            # which excludes the sender, would reach the actual caller too).
+            raise ValueError(
+                "SendMessage must be called from an agent loop; there is no "
+                "calling-agent identity to stamp as the sender."
+            )
+        sender = agent_ctx.agent_name
         if inp.to == "*":
             recipients = sorted(self._recipients - {sender})
             if not recipients:
@@ -185,6 +193,12 @@ class ScheduleWakeupTool(BaseTool[ScheduleWakeupInput, str, Any]):
     a change, follow up) without holding a live loop open. Durable — the wait runs as
     a background task that resumes with the session (a crash re-runs the sleep).
     Stateless, so one instance is shared across the team.
+
+    A pending wakeup does not hold a bounded team run open: the run still ends
+    at quiescence, the (session-scoped) sleep keeps running, and the note is
+    delivered at the member's next run — live in-run wakeups need a daemon
+    run. ``BackgroundTaskManager.has_undelivered_completions`` is the signal an
+    embedder reads between runs to know a fired wakeup awaits delivery.
     """
 
     def __init__(self) -> None:
@@ -192,7 +206,8 @@ class ScheduleWakeupTool(BaseTool[ScheduleWakeupInput, str, Any]):
             name=SCHEDULE_WAKEUP_TOOL_NAME,
             description=(
                 "Schedule a message to your future self after a delay and keep "
-                "working — you will be reactivated with your note when it fires. Use "
+                "working — you will be reactivated with your note when it fires "
+                "(at your next run, if the team has gone idle by then). Use "
                 "it to act on your own initiative later (revisit a goal, poll for a "
                 "change, follow up) instead of waiting for someone to message you."
             ),

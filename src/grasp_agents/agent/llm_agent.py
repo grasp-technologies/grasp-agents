@@ -410,10 +410,6 @@ class LLMAgent[InT, OutT, CtxT](
         # Always wired; without a store a save still maintains the in-memory
         # head (``_committed``) and just skips persistence.
         self._loop.checkpoint_callback = self.save_checkpoint
-        # A resident's human turns are rollback anchors: the boundary is
-        # archived at the inbox take, before the message is stamped or
-        # appended, so a rollback to it re-pends the message itself.
-        self._loop.inbox_take_callback = self._anchor_human_turn
 
         self._register_overridden_implementations()
 
@@ -574,6 +570,12 @@ class LLMAgent[InT, OutT, CtxT](
 
     @inbox.setter
     def inbox(self, inbox: "AgentInbox | None") -> None:
+        if inbox is not None:
+            # A resident's human turns are rollback anchors: the boundary is
+            # archived at the inbox take, before the message is stamped or
+            # appended, so a rollback to it re-pends the message itself.
+            # Stamped on whichever inbox this agent consumes.
+            inbox.on_take = self._anchor_human_turn
         self._loop.inbox = inbox
 
     def attach_inbox(self) -> None:
@@ -757,12 +759,16 @@ class LLMAgent[InT, OutT, CtxT](
 
         committed = self._committed
         assert committed is not None
-        self._resume_notifications = await self._loop.bg_tasks.resume_durable(
-            ctx=self._ctx,
-            exec_id=exec_id,
-            agent_ctx=self._loop.agent_ctx,
-            # From the live head — a rollback completed just above moved it.
-            bg_launch_seq=committed.agent_ctx_state.bg_launch_seq,
+        # Extend, not assign: a rollback completed just above may have queued
+        # re-delivered completion notes of its own.
+        self._resume_notifications.extend(
+            await self._loop.bg_tasks.resume_durable(
+                ctx=self._ctx,
+                exec_id=exec_id,
+                agent_ctx=self._loop.agent_ctx,
+                # From the live head — a completed rollback moved it.
+                bg_launch_seq=committed.agent_ctx_state.bg_launch_seq,
+            )
         )
 
         return checkpoint
@@ -899,19 +905,22 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _mint_step(self) -> int:
         """
-        The next auto-minted step: one past every recorded boundary. A fresh
-        mint never equals a completed head's step (every stepped delivery
-        archives its boundary before it first persists), so it cannot read as
-        an orchestrator redelivery; after a rollback it lands on the parked
-        ``ROLLED_BACK`` step, whose re-delivery is fresh by construction.
+        The next auto-minted step: one past every recorded boundary, floored
+        at the current step. A fresh mint never equals a completed head's step
+        (every stepped delivery archives its boundary before it first
+        persists), so it cannot read as an orchestrator redelivery; after a
+        rollback it lands on the parked ``ROLLED_BACK`` step — the floor keeps
+        that true even when earlier steps are sparse (the parked step's own
+        boundary was just dropped, so the map alone could mint below it).
         """
-        return (
+        past_boundaries = (
             max(
                 (wm.step for wm in self._step_watermarks if wm.step is not None),
                 default=0,
             )
             + 1
         )
+        return max(past_boundaries, self._step or 0)
 
     def _anchor_human_turn(self, message: "TeamMessage") -> None:
         """
@@ -1075,6 +1084,19 @@ class LLMAgent[InT, OutT, CtxT](
         self._loop.bg_tasks.cancel_launched_after(
             boundary.agent_ctx_state.bg_launch_seq
         )
+        # The inverse gap: a task launched *before* the boundary whose
+        # completion note was delivered *after* it. The truncation just
+        # removed the only copy of the outcome while its durable record stays
+        # DELIVERED (resume skips it) and the finished task is no longer
+        # tracked in memory — re-inject the note at the rewind point, queued
+        # for the next run to stream.
+        self._resume_notifications.extend(
+            await self._loop.bg_tasks.undeliver_after(
+                message_count=boundary.message_count,
+                bg_launch_seq=boundary.agent_ctx_state.bg_launch_seq,
+                ctx=self._ctx,
+            )
+        )
         # Likewise the inbox messages absorbed after it: a leased (un-acked)
         # take's turn just left the transcript, so drop the lease to make the
         # message re-takeable; acked mailbox records above the boundary move
@@ -1088,30 +1110,35 @@ class LLMAgent[InT, OutT, CtxT](
         if inbox is not None:
             inbox.rollback()
         mailbox_hw = boundary.agent_ctx_state.mailbox_seq
-        if (
-            self._committed is not None
-            and self._committed.agent_ctx_state.mailbox_seq > mailbox_hw
-        ):
+        committed_hw = (
+            self._committed.agent_ctx_state.mailbox_seq
+            if self._committed is not None
+            else 0
+        )
+        transport = inbox.transport if inbox is not None else None
+        if transport is None and committed_hw > mailbox_hw:
             from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
 
-            transport = (
-                inbox.transport
-                if inbox is not None
-                else resolve_session_transport(self._ctx)
-            )
-            # A cold rollback resolves a fresh transport whose consumption
-            # counter is unseeded; seed it (max-only, no effect on a live one)
-            # so later takes cannot re-mint seqs that collide with the
-            # processed records retained below the boundary.
-            transport.seed_consumption_seq(
-                self.name, self._committed.agent_ctx_state.mailbox_seq
-            )
-            await transport.unprocess_after(self.name, mailbox_hw)
+            transport = resolve_session_transport(self._ctx)
+        if transport is not None:
+            # Seed whenever a transport is at hand, moved mail or not: a cold
+            # rollback's fresh transport has an unseeded consumption counter,
+            # and later takes must not re-mint seqs that collide with the
+            # processed records retained below the boundary (max-only, so a
+            # live transport is unaffected).
+            transport.seed_consumption_seq(self.name, committed_hw)
+            if committed_hw > mailbox_hw:
+                await transport.unprocess_after(self.name, mailbox_hw)
         self._committed = boundary
         self._cw.reset_anchor()
 
         # Parked at the start of ``step``, ready to (re)deliver it.
         self._step = step
+        # The step's anchor boundary was just destroyed — invalidate the memo
+        # so a resident's re-take of the re-pended human message re-mints and
+        # re-archives it (a memo hit would skip the mint after a pure-resume
+        # entry cleared ``_step``, leaving the head unstepped).
+        self._anchored_message_id = None
         self.prompt_cache_key = boundary.prompt_cache_key
 
         # Drop the rewound step's boundary and every later one — the boundary
