@@ -24,6 +24,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from weakref import WeakSet
 
 from grasp_agents.durability.checkpoints import CheckpointKind, CheckpointSchemaError
 from grasp_agents.durability.message_record import MessageRecord
@@ -44,6 +45,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Hand-set transports already warned about, so a mismatch is reported once per
+# transport rather than on every resolve.
+_mismatch_warned: WeakSet[Transport[TeamMessage]] = WeakSet()
+
+
+def _warn_if_durability_mismatched(
+    transport: Transport[TeamMessage], ctx: SessionContext[Any]
+) -> None:
+    """
+    Mail safety requires the mailbox and the session state to share a
+    durability fate: consumed mail's handling lives only in transcripts, and
+    pending mail lives only in the mailbox. A hand-set ``ctx.transport`` can
+    break that pairing — the resolver itself never does.
+    """
+    durable_session = ctx.checkpoint_store is not None
+    if (
+        isinstance(transport, CheckpointMailboxTransport) == durable_session
+        or transport in _mismatch_warned
+    ):
+        return
+    _mismatch_warned.add(transport)
+    if durable_session:
+        logger.warning(
+            "Session %s persists its state but ctx.transport is ephemeral: "
+            "pending mail dies with the process while the session resumes "
+            "without it. Leave ctx.transport unset to derive a durable "
+            "mailbox from the checkpoint store.",
+            ctx.session_key,
+        )
+    else:
+        logger.warning(
+            "Session %s does not persist its state but ctx.transport is "
+            "durable: a restart finds consumed messages acked while the "
+            "transcripts that absorbed them are gone — their handling is "
+            "lost without redelivery. Give the session a checkpoint store "
+            "(or an in-memory transport).",
+            ctx.session_key,
+        )
+
+
 def resolve_session_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage]:
     """
     The session's one mailbox transport (``ctx.transport``), created and
@@ -60,6 +101,8 @@ def resolve_session_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage
             if store is not None
             else InMemoryMailboxTransport()
         )
+    else:
+        _warn_if_durability_mismatched(ctx.transport, ctx)
     return ctx.transport
 
 

@@ -6,6 +6,7 @@ resolution. One transport seam — no separate mailbox type, no adapter.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 import pytest
@@ -437,3 +438,39 @@ def test_resolve_session_transport_defaults_and_installs() -> None:
     )
     resolved_durable = resolve_session_transport(durable_ctx)
     assert isinstance(resolved_durable, CheckpointMailboxTransport)
+
+
+@pytest.mark.asyncio
+async def test_resolve_warns_on_durability_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Mail safety needs the mailbox and the session state to share a
+    # durability fate; a hand-set ctx.transport can break the pairing, so
+    # resolution warns — once per transport, in either direction.
+    with caplog.at_level(logging.WARNING, logger="grasp_agents.mailbox"):
+        # Durable mailbox on a storeless session: consumed mail's handling
+        # would evaporate with the process, unredelivered.
+        ctx = SessionContext[None](state=None)
+        ctx.transport = CheckpointMailboxTransport(
+            InMemoryCheckpointStore(), session_key="s1"
+        )
+        assert resolve_session_transport(ctx) is ctx.transport
+        assert resolve_session_transport(ctx) is ctx.transport
+
+        # Ephemeral mailbox on a durable session: pending mail would die
+        # while the session resumes without it.
+        durable_ctx = SessionContext[None](
+            state=None, checkpoint_store=InMemoryCheckpointStore()
+        )
+        durable_ctx.transport = InMemoryMailboxTransport()
+        resolve_session_transport(durable_ctx)
+
+        # Aligned, hand-set configs stay silent.
+        aligned = SessionContext[None](state=None)
+        aligned.transport = InMemoryMailboxTransport()
+        resolve_session_transport(aligned)
+
+    mismatch_logs = [r for r in caplog.records if "ctx.transport" in r.getMessage()]
+    assert len(mismatch_logs) == 2  # one per mismatched transport, not per resolve
+    assert "durable" in mismatch_logs[0].getMessage()
+    assert "ephemeral" in mismatch_logs[1].getMessage()
