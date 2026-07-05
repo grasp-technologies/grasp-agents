@@ -101,3 +101,10 @@ def test_from_processor_works_on_plain_processor() -> None:
     assert card.name == "filer"
     assert card.input_type is _Ticket
     assert card.skills == []
+
+
+def test_render_marks_the_lead() -> None:
+    # Peers see who leads the team on the roster entry; a non-lead entry is unmarked.
+    lead = MemberCard(name="planner", description="coordinates", lead=True)
+    assert lead.render().startswith("planner (team lead): coordinates")
+    assert "(team lead)" not in MemberCard(name="scout").render()

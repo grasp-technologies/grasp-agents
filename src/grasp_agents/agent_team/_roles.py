@@ -69,8 +69,10 @@ async def activate_member(
     Otherwise renders the message into the member's ``run_stream`` — human content
     as a rendered user turn (``chat_inputs``), anything else as a typed input packet
     through the member's own input pipeline — streams its events through ``push``,
-    and routes a produced output packet onward through ``post``. Raises on a member
-    failure; the caller decides whether that stops the run or is dead-lettered.
+    and routes a produced output packet onward through ``post`` (at default
+    priority: a triggered member is never the lead, validated at host
+    construction). Raises on a member failure; the caller decides whether that
+    stops the run or is dead-lettered.
     """
     if await transport.was_processed(member.name, message.message_id):
         return

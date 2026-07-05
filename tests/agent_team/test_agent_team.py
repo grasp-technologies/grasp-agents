@@ -28,7 +28,12 @@ from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import InputRenderableModel
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
 from grasp_agents.types.response import Response
-from tests._helpers import MockLLM, _text_response, _tool_call_response
+from tests._helpers import (
+    FakeSnapshotEnv,
+    MockLLM,
+    _text_response,
+    _tool_call_response,
+)
 
 
 class ForwardProcessor(Processor[Any, Any, None]):
@@ -203,6 +208,30 @@ async def test_multiple_leads_rejected(tmp_path: Path) -> None:
     cards = [MemberCard(name="a", lead=True), MemberCard(name="b", lead=True)]
     with pytest.raises(ValueError, match="more than one lead"):
         AgentTeam([a, b], cards=cards, ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_triggered_lead_rejected(tmp_path: Path) -> None:
+    # The lead's role (priority mail, rewind right + announcements) presumes a
+    # persistent loop; a triggered member — a processor, an agent with static
+    # recipients, or one carded resident=False — cannot be the lead.
+    ctx = _ctx(tmp_path)
+    router = ForwardProcessor(name="router", recipients=["writer"])
+    writer = _agent("writer", [_text_response("x")])
+    with pytest.raises(ValueError, match="must run resident"):
+        AgentTeam(
+            [router, writer],
+            entry="router",
+            cards=[MemberCard(name="router", lead=True)],
+            ctx=ctx,
+        )
+
+    with pytest.raises(ValueError, match="must run resident"):
+        AgentTeam(
+            [_agent("a", []), _agent("b", [])],
+            cards=[MemberCard(name="a", lead=True, resident=False)],
+            ctx=_ctx(tmp_path),
+        )
 
 
 @pytest.mark.asyncio
@@ -578,3 +607,41 @@ async def test_submit_message_delivers_human_input_to_member(tmp_path: Path) -> 
     # Stamped as control-plane: from the human, priority-preempting peer mail.
     assert human.sender == "user"
     assert human.priority == CONTROL_PRIORITY
+
+
+@pytest.mark.asyncio
+async def test_environment_rewind_notifies_other_residents(tmp_path: Path) -> None:
+    # When the lead rewinds the shared environment mid-run, every OTHER resident
+    # gets a control-plane <environment_rewind> notice (so it re-verifies state
+    # instead of panicking); the rewinder itself is not notified.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    planner = _agent("planner", [_text_response("planner: kicked off")])
+    scout = _agent(
+        "scout", [_text_response("scout: saw the rewind, re-checking state")]
+    )
+    team = AgentTeam(
+        [planner, scout],
+        entry="planner",
+        cards=[MemberCard(name="planner", lead=True)],
+        ctx=ctx,
+    )
+    delivered: list[TeamMessage] = []
+
+    consumer = asyncio.create_task(_drain(team, "kick off", delivered))
+    try:
+        await _until(lambda: planner.llm.call_count == 1)  # seed handled
+        await ctx.restore_fs_snapshot("snap-1")
+        await _until(lambda: scout.llm.call_count == 1)  # notice reactivated scout
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+    await team.aclose()
+
+    assert env.restored == ["snap-1"]
+    notices = [m for m in delivered if "<environment_rewind>" in m.text]
+    assert [(m.sender, m.recipient) for m in notices] == [("planner", "scout")]
+    assert notices[0].priority == CONTROL_PRIORITY
+    # The notice names the rewinder for the recipient.
+    assert "planner" in notices[0].text

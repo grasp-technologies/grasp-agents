@@ -35,12 +35,13 @@ from grasp_agents.durability import (
 )
 from grasp_agents.durability.checkpoints import CheckpointSchemaError
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.environment import ExecutionEnvironment
 from grasp_agents.sandbox.policy import SandboxPolicy
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.response import Response
+from tests._helpers import FakeSnapshotEnv as _FakeSnapshotEnv
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 pytestmark = pytest.mark.asyncio
@@ -68,42 +69,6 @@ class EchoTool(BaseTool[EchoInput, str, Any]):
         agent_ctx: Any = None,
     ) -> str:
         return inp.text
-
-
-class _FakeSnapshotEnv(ExecutionEnvironment, SnapshotCapable):
-    """SnapshotCapable environment over a local backend, recording calls."""
-
-    def __init__(self, root: Path) -> None:
-        self._policy = SandboxPolicy(allowed_roots=(root,))
-        self._backend = LocalFileBackend(allowed_roots=[root])
-        self.snapshots: list[str] = []
-        self.restored: list[str] = []
-
-    @property
-    def policy(self) -> SandboxPolicy:
-        return self._policy
-
-    @property
-    def file_backend(self) -> LocalFileBackend:
-        return self._backend
-
-    @property
-    def exec_backend(self) -> None:
-        return None
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        return None
-
-    async def snapshot(self) -> str:
-        ref = f"snap-{len(self.snapshots) + 1}"
-        self.snapshots.append(ref)
-        return ref
-
-    async def restore(self, ref: str) -> None:
-        self.restored.append(ref)
 
 
 class _PlainEnv(ExecutionEnvironment):

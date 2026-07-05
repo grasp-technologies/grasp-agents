@@ -10,7 +10,11 @@ from grasp_agents.runtime import ActorDriver, Transport
 
 from ._roles import activate_member, is_llm_agent, is_resident, resident_idle
 from .message import CONTROL_PRIORITY, USER_SENDER, TeamMessage
-from .prompt import make_sender_attribution_attachment, make_team_section
+from .prompt import (
+    make_rewind_notice,
+    make_sender_attribution_attachment,
+    make_team_section,
+)
 from .tools import (
     SCHEDULE_WAKEUP_TOOL_NAME,
     SEND_MESSAGE_TOOL_NAME,
@@ -68,9 +72,37 @@ class MemberHost:
         self._mailbox = transport
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
+        # Peers a rewind notice goes to: everyone except this member and any peer
+        # explicitly carded as triggered (activated fresh per message, so it holds
+        # no cross-turn view of the filesystem). ``resident=None`` peers are kept —
+        # this host cannot run the residency inference on a remote member, and a
+        # spurious notice is cheaper than a missed one.
+        self._rewind_notice_peers = [
+            c.name for c in cards if c.name != member.name and c.resident is not False
+        ]
 
         # This member's card (its per-member team config: accepted input + role).
         card = next((c for c in cards if c.name == member.name), None)
+
+        if card is not None and card.lead:
+            # The lead's role — priority mail, rewind right, rewind announcements
+            # — presumes a persistent loop; a triggered member is activated fresh
+            # per message and cannot hold it.
+            if not is_resident(member, card):
+                raise ValueError(
+                    f"Member {member.name!r} is carded as the lead but runs "
+                    "triggered; the lead must run resident (an LLM agent "
+                    "consuming its inbox)."
+                )
+            # The lead holds its session's environment-rewind right (in a
+            # shared-environment deployment, every other process declares it via
+            # SessionContext(environment_rewinder=...)); when it rewinds, tell
+            # the peers over the shared mailbox so they re-verify state instead
+            # of panicking over a filesystem that changed under them.
+            member.ctx.claim_environment_rewind(member.name)
+            member.ctx.add_environment_restored_callback(
+                self._notify_environment_rewind
+            )
 
         # A resident runs a persistent loop; a worker is triggered. Hold the narrowed
         # reference so the resident path can use the LLMAgent-only inbox API.
@@ -125,6 +157,26 @@ class MemberHost:
                 sender=USER_SENDER,
                 to=self._member.name,
                 chat_inputs=chat_inputs,
+                priority=CONTROL_PRIORITY,
+            )
+        )
+
+    async def _notify_environment_rewind(self, fs_snapshot_ref: str) -> None:
+        """
+        Announce this member's environment rewind to every peer, control-plane
+        (drains ahead of queued mail). Posted straight to the shared mailbox, so
+        it reaches peers in other processes; each peer's own host renders it as
+        an inbound turn. Only the lead registers this callback — a rewind by
+        anyone else happens in that member's process, not here.
+        """
+        del fs_snapshot_ref
+        if not self._rewind_notice_peers:
+            return
+        await self._mailbox.post(
+            TeamMessage.from_text(
+                sender=self._member.name,
+                to=self._rewind_notice_peers,
+                text=make_rewind_notice(self._member.name),
                 priority=CONTROL_PRIORITY,
             )
         )

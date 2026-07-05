@@ -2,6 +2,7 @@ import asyncio
 import contextvars
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -138,6 +139,9 @@ class SessionContext[CtxT](BaseModel):
     _session_restored: bool = PrivateAttr(default=False)
     _session_fs_restored: bool = PrivateAttr(default=False)
     _session_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+    _environment_restored_callbacks: list[Callable[[str], Awaitable[None]]] = (
+        PrivateAttr(default_factory=list["Callable[[str], Awaitable[None]]"])
+    )
 
     def __enter__(self) -> "SessionContext[CtxT]":
         """
@@ -336,6 +340,17 @@ class SessionContext[CtxT](BaseModel):
                 "SessionContext(environment_rewinder=...))."
             )
 
+    def add_environment_restored_callback(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """
+        Register a callback awaited after every successful environment rewind
+        (:meth:`restore_fs_snapshot`), with the restored snapshot ref — the seam
+        a multi-agent host uses to tell the other environment tenants the
+        filesystem (and any kernels) changed under them.
+        """
+        self._environment_restored_callbacks.append(callback)
+
     async def restore_fs_snapshot(self, fs_snapshot_ref: str) -> None:
         """
         Rewind the shared environment filesystem to ``fs_snapshot_ref`` and
@@ -373,6 +388,12 @@ class SessionContext[CtxT](BaseModel):
             self.session_key,
             fs_snapshot_ref,
         )
+        # After the record write: the rewind is fully committed by the time the
+        # other tenants are told about it. A failing callback propagates — the
+        # restore itself is already durable, and a notification that cannot be
+        # delivered (e.g. a broken mailbox store) should be loud, not swallowed.
+        for callback in self._environment_restored_callbacks:
+            await callback(fs_snapshot_ref)
 
     def record_response(self, agent_name: ProcName, response: Response) -> None:
         """

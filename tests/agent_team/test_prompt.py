@@ -38,6 +38,18 @@ def test_team_section_carries_roster_and_schemas() -> None:
     assert "points" in text
 
 
+def test_team_section_explains_the_lead() -> None:
+    # With a lead on the roster, the section says who it is and what that means
+    # (priority mail + the environment-rewind notice); without one, it says nothing.
+    cards = [MemberCard(name="planner", lead=True), MemberCard(name="scout")]
+    text = make_team_section(cards).compute()
+    assert "team lead is 'planner'" in text
+    assert "environment_rewind" in text
+
+    no_lead = make_team_section([MemberCard(name="scout")]).compute()
+    assert "team lead" not in no_lead
+
+
 def test_sender_attribution_reminds_of_peer() -> None:
     out = make_sender_attribution_attachment().compute(source="scout")
     assert out is not None

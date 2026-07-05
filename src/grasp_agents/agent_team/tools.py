@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
-from .message import USER_SENDER, TeamMessage
+from .message import LEAD_PRIORITY, USER_SENDER, TeamMessage
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -133,9 +133,18 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
                 f"No teammate named {inp.to!r}; message not sent. "
                 f"Valid teammates: {valid}."
             )
+        # The lead's mail outranks ordinary peer messages in recipients' inboxes
+        # (below control-plane mail) — its direction is read before the backlog.
+        sender_card = self._cards.get(sender)
+        priority = LEAD_PRIORITY if sender_card is not None and sender_card.lead else 0
+
         if isinstance(inp.message, str):
             message = TeamMessage.from_text(
-                sender=sender, to=recipients, text=inp.message, reply_to=inp.reply_to
+                sender=sender,
+                to=recipients,
+                text=inp.message,
+                reply_to=inp.reply_to,
+                priority=priority,
             )
         else:
             # A structured body. For a single recipient that declares an input_type,
@@ -161,6 +170,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
                 routing=[recipients],
                 payloads=[payload],
                 reply_to=inp.reply_to,
+                priority=priority,
             )
         await self._resolve_transport(ctx).post(message)
         delivered = ", ".join(recipients)

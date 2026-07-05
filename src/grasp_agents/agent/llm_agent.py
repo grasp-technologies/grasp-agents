@@ -308,6 +308,7 @@ class LLMAgent[InT, OutT, CtxT](
                 # once so its server instructions aren't rendered twice.
                 if not any(mcp_client is c for c in self.mcp_clients):
                     self.mcp_clients.append(mcp_client)
+
             # MCP tools are auto-sourced (the server names them, not the user), so
             # they yield to explicit tools too — a clash is skipped, not an error.
             self._merge_auto_attached(tools, existing_names, mcp_tools, source="MCP")

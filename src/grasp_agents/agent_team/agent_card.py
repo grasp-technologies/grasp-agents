@@ -45,10 +45,12 @@ class MemberCard(BaseModel):
     # recipients runs resident. Set it explicitly when inference is ambiguous (e.g. a
     # chat agent that only becomes a messenger once given the ``SendMessage`` tool).
     resident: bool | None = None
-    # The team's lead: at most one per team (validated at team construction). The
-    # lead holds the session's environment-rewind right
-    # (``SessionContext.environment_rewinder``), so only it snapshots the shared
-    # filesystem and may roll it back.
+    # The team's lead: at most one per team, and it must run resident (both
+    # validated at host construction). The lead holds the session's
+    # environment-rewind right (``SessionContext.environment_rewinder``) — only
+    # it snapshots the shared filesystem and may roll it back, and a rewind is
+    # announced to the other members. Its messages carry ``LEAD_PRIORITY``,
+    # draining ahead of ordinary peer mail (below control-plane mail).
     lead: bool = False
 
     @classmethod
@@ -119,6 +121,8 @@ class MemberCard(BaseModel):
     def render(self) -> str:
         """A roster entry for the ``SendMessage`` tool description / team prompt."""
         lines = [self.name]
+        if self.lead:
+            lines[0] += " (team lead)"
         if self.description:
             lines[0] += f": {self.description}"
         if self.skills:

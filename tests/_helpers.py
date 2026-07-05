@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Self
 
 from openai.types.responses.response_usage import (
     InputTokensDetails,
@@ -20,7 +21,10 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, Field
 
+from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.llm.llm import LLM
+from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.policy import SandboxPolicy
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import FunctionToolCallItem, OutputMessageItem
@@ -175,3 +179,42 @@ class MultiplyTool(BaseTool[MultiplyInput, int, Any]):
         agent_ctx: Any = None,
     ) -> int:
         return inp.a * inp.b
+
+
+# --- Fake environments (SessionContext.environment stand-ins) ---
+
+
+class FakeSnapshotEnv(ExecutionEnvironment, SnapshotCapable):
+    """SnapshotCapable environment over a local backend, recording calls."""
+
+    def __init__(self, root: Path) -> None:
+        self._policy = SandboxPolicy(allowed_roots=(root,))
+        self._backend = LocalFileBackend(allowed_roots=[root])
+        self.snapshots: list[str] = []
+        self.restored: list[str] = []
+
+    @property
+    def policy(self) -> SandboxPolicy:
+        return self._policy
+
+    @property
+    def file_backend(self) -> LocalFileBackend:
+        return self._backend
+
+    @property
+    def exec_backend(self) -> None:
+        return None
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def snapshot(self) -> str:
+        ref = f"snap-{len(self.snapshots) + 1}"
+        self.snapshots.append(ref)
+        return ref
+
+    async def restore(self, ref: str) -> None:
+        self.restored.append(ref)

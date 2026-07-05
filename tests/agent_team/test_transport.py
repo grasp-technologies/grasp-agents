@@ -19,7 +19,7 @@ from grasp_agents.mailbox import (
 from grasp_agents.runtime import CLOSED, Transport
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import InputText
-from grasp_agents.types.message import TeamMessage
+from grasp_agents.types.message import CONTROL_PRIORITY, LEAD_PRIORITY, TeamMessage
 
 
 @pytest.fixture(params=["in_memory", "checkpoint"])
@@ -66,6 +66,34 @@ async def test_consume_orders_oldest_first(transport: Transport[TeamMessage]) ->
         await transport.ack("bob", msg)
     assert got == ["m0", "m1", "m2"]
     assert await transport.has_pending("bob") is False
+
+
+@pytest.mark.asyncio
+async def test_consume_orders_control_then_lead_then_peers(
+    transport: Transport[TeamMessage],
+) -> None:
+    # The three priority tiers: control-plane mail (human input, rewind notices)
+    # drains first, then the lead's mail, then ordinary peer messages — even when
+    # posted in the opposite order (ids supplied already in arrival order).
+    for i, (sender, priority) in enumerate(
+        [("peer", 0), ("lead", LEAD_PRIORITY), ("user", CONTROL_PRIORITY)]
+    ):
+        await transport.post(
+            TeamMessage.from_text(
+                sender=sender,
+                to="bob",
+                text=sender,
+                priority=priority,
+                message_id=f"{i:04d}-x",
+            )
+        )
+    got: list[str] = []
+    for _ in range(3):
+        msg = await transport.consume("bob")
+        assert isinstance(msg, TeamMessage)
+        got.append(msg.text)
+        await transport.ack("bob", msg)
+    assert got == ["user", "lead", "peer"]
 
 
 @pytest.mark.asyncio

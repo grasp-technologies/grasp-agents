@@ -41,7 +41,11 @@ from .events import (
     TeamStopReason,
 )
 from .message import CONTROL_PRIORITY, USER_SENDER, TeamMessage
-from .prompt import make_sender_attribution_attachment, make_team_section
+from .prompt import (
+    make_rewind_notice,
+    make_sender_attribution_attachment,
+    make_team_section,
+)
 from .tools import (
     SCHEDULE_WAKEUP_TOOL_NAME,
     SEND_MESSAGE_TOOL_NAME,
@@ -158,6 +162,16 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 f"Team {self._name!r} declares more than one lead: {leads}; "
                 "at most one member may be the lead."
             )
+        # The lead's role — priority mail, rewind right, rewind announcements —
+        # presumes a persistent loop; a triggered member is activated fresh per
+        # message and cannot hold it.
+        if leads and not is_resident(
+            self._members_by_name[leads[0]], self._cards_by_name[leads[0]]
+        ):
+            raise ValueError(
+                f"Team {self._name!r} lead {leads[0]!r} is a triggered member; "
+                "the lead must run resident (an LLM agent consuming its inbox)."
+            )
 
         # Bind the session: explicit ctx, else the ambient / process-default one.
         self._ctx: SessionContext[CtxT] = (
@@ -169,6 +183,11 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # rewinder) a construction error, not a mid-run one.
         if leads:
             self._ctx.claim_environment_rewind(leads[0])
+
+        # When the rewinder restores a snapshot mid-run, the filesystem (and any
+        # kernels) change under every other member — tell them so they re-verify
+        # state instead of panicking over the shift.
+        self._ctx.add_environment_restored_callback(self._notify_environment_rewind)
 
         # The one shared mailbox Transport every member views — residents
         # consume it via their AgentInbox, transforms via the ActorDriver. Explicit,
@@ -362,6 +381,29 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         await self.post(
             TeamMessage.from_text(
                 sender=USER_SENDER, to=to, text=text, priority=CONTROL_PRIORITY
+            )
+        )
+
+    async def _notify_environment_rewind(self, fs_snapshot_ref: str) -> None:
+        """
+        Tell every other resident the environment was rewound (control-plane, so
+        the notice drains ahead of queued peer mail and stale context is caught
+        before it is acted on). Residents only: a triggered member is activated
+        fresh per message and holds no cross-turn view of the filesystem. A no-op
+        outside a live run (``post`` drops it) — with no member mid-turn there is
+        no one to startle.
+        """
+        del fs_snapshot_ref
+        rewinder = self._ctx.environment_rewinder
+        recipients = [name for name in self._residents if name != rewinder]
+        if rewinder is None or not recipients:
+            return
+        await self.post(
+            TeamMessage.from_text(
+                sender=rewinder,
+                to=recipients,
+                text=make_rewind_notice(rewinder),
+                priority=CONTROL_PRIORITY,
             )
         )
 

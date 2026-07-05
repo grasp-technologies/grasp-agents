@@ -12,7 +12,7 @@ from grasp_agents.agent_team.tools import SendMessageInput, SendMessageTool
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.session_context import SessionContext
-from grasp_agents.types.message import TeamMessage
+from grasp_agents.types.message import LEAD_PRIORITY, TeamMessage
 
 
 class _Ticket(BaseModel):
@@ -41,6 +41,28 @@ async def test_send_delivers_with_sender_identity() -> None:
     assert isinstance(msg, TeamMessage)
     assert msg.sender == "alice"
     assert msg.text == "hello"
+    assert msg.priority == 0  # an ordinary peer's mail carries no priority
+
+
+@pytest.mark.asyncio
+async def test_lead_sender_mail_carries_lead_priority() -> None:
+    # A send from the team's lead is stamped LEAD_PRIORITY, so it drains ahead of
+    # ordinary peer mail (below control-plane) in the recipient's inbox.
+    ctx = _ctx()
+    tool = SendMessageTool(
+        [MemberCard(name="alice", lead=True), MemberCard(name="bob")]
+    )
+
+    await tool._run(
+        SendMessageInput(to="bob", message="do this next"),
+        ctx=ctx,
+        agent_ctx=SimpleNamespace(agent_name="alice"),  # type: ignore[arg-type]
+    )
+
+    transport = CheckpointMailboxTransport(ctx.checkpoint_store)  # type: ignore[arg-type]
+    msg = await transport.consume("bob")
+    assert isinstance(msg, TeamMessage)
+    assert msg.priority == LEAD_PRIORITY
 
 
 @pytest.mark.asyncio
