@@ -359,7 +359,9 @@ class TestResumeLogLine:
             llm=MockLLM(responses_queue=[_text_response("one")]),
             env_info=False,
         )
-        await agent1.run("hi")  # step is None (chat-style run)
+        # A typed-args run stays unstepped (a chat run would auto-mint a step),
+        # so the persisted head carries step=None.
+        await agent1.run(in_args="hi")
 
         agent2 = LLMAgent[str, str, None](
             name="t",

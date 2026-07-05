@@ -73,6 +73,7 @@ from grasp_agents.types.events import (
 )
 from grasp_agents.types.io import LLMPrompt, ProcName
 from grasp_agents.types.items import FunctionToolCallItem, InputItem, InputMessageItem
+from grasp_agents.types.message import USER_SENDER
 from grasp_agents.types.response import Response
 from grasp_agents.utils.callbacks import is_method_overridden
 from grasp_agents.utils.io import get_prompt
@@ -89,6 +90,7 @@ if TYPE_CHECKING:
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.mcp.client import MCPClient
     from grasp_agents.mcp.spec import MCPClientSpec
+    from grasp_agents.types.message import TeamMessage
 
     from .background_tasks import BackgroundTaskManager
 
@@ -365,7 +367,14 @@ class LLMAgent[InT, OutT, CtxT](
 
         # Session persistence
 
-        self._step: int | None = None  # caller's step= for the current/last run
+        # The current/last run's delivery step: the caller's ``step=``, or —
+        # for a chat delivery / a resident's human turn — auto-minted, so every
+        # human message is a rollback anchor.
+        self._step: int | None = None
+        # The last human message anchored by ``_anchor_human_turn``: a
+        # re-delivery of it (settled turn, rollback re-pend) keeps its step
+        # instead of minting a new one.
+        self._anchored_message_id: str | None = None
 
         # Set by ``_prepare_retry`` between ``with_retry`` attempts: the retry
         # continues the settled delivery (see ``_settle_run``) instead of
@@ -397,6 +406,10 @@ class LLMAgent[InT, OutT, CtxT](
         # Always wired; without a store a save still maintains the in-memory
         # head (``_committed``) and just skips persistence.
         self._loop.checkpoint_callback = self.save_checkpoint
+        # A resident's human turns are rollback anchors: the boundary is
+        # archived at the inbox take, before the message is stamped or
+        # appended, so a rollback to it re-pends the message itself.
+        self._loop.inbox_take_callback = self._anchor_human_turn
 
         self._register_overridden_implementations()
 
@@ -491,8 +504,21 @@ class LLMAgent[InT, OutT, CtxT](
 
     @property
     def step(self) -> int | None:
-        """Caller's ``step=`` for the current/last run; ``None`` if unstepped."""
+        """
+        The current/last run's delivery step: the caller's ``step=``, or the
+        auto-minted step of a chat delivery / resident human turn. ``None``
+        for an unstepped run (typed-args delivery, pure resume).
+        """
         return self._step
+
+    @property
+    def rollback_steps(self) -> list[int]:
+        """
+        Steps with a recorded rollback boundary, ascending — the valid inputs
+        to :meth:`rollback_to_step`. With auto-minted steps, one per human
+        turn.
+        """
+        return sorted(wm.step for wm in self._step_watermarks if wm.step is not None)
 
     @property
     def sys_prompt(self) -> LLMPrompt | None:
@@ -820,6 +846,40 @@ class LLMAgent[InT, OutT, CtxT](
         # that delivery rather than starting a fresh one.
         self._retry_continuation = True
 
+    def _mint_step(self) -> int:
+        """
+        The next auto-minted step: one past every recorded boundary. A fresh
+        mint never equals a completed head's step (every stepped delivery
+        archives its boundary before it first persists), so it cannot read as
+        an orchestrator redelivery; after a rollback it lands on the parked
+        ``ROLLED_BACK`` step, whose re-delivery is fresh by construction.
+        """
+        return (
+            max(
+                (wm.step for wm in self._step_watermarks if wm.step is not None),
+                default=0,
+            )
+            + 1
+        )
+
+    def _anchor_human_turn(self, message: "TeamMessage") -> None:
+        """
+        A resident's rollback anchor: a human message about to be taken from
+        the inbox starts a new step. Runs before the message's consumption seq
+        is minted and before it is appended, so the boundary's high-waters
+        exclude the message — a rollback to it re-pends the message itself.
+        Peer messages are not anchors.
+        """
+        if message.sender != USER_SENDER:
+            return
+        if message.message_id != self._anchored_message_id:
+            self._step = self._mint_step()
+            self._anchored_message_id = message.message_id
+        # A re-delivery (settled turn / rollback re-pend) keeps its step and
+        # re-archives at the settled position — one anchor per human message,
+        # not per delivery attempt.
+        self._archive_step_boundary()
+
     def _archive_step_boundary(self) -> None:
         """
         Record the rewind point for the step about to start: the transcript
@@ -888,6 +948,12 @@ class LLMAgent[InT, OutT, CtxT](
         transcript, turn, and agent context but leaves the shared filesystem
         (and, since kernel state lives in it, the kernels) untouched.
 
+        A resident's mailbox rewinds with it: messages absorbed after the
+        boundary — the anchoring human message included — return to pending
+        for re-delivery (the session mailbox is reached directly when the
+        inbox is detached between runs). Roll a hosted resident back *between
+        runs*: rewinding under its live loop would race the turn cycle.
+
         Raises:
             KeyError: ``step`` has no recorded boundary — it never started, or
                 an earlier rollback already discarded it.
@@ -940,9 +1006,22 @@ class LLMAgent[InT, OutT, CtxT](
         # Likewise the inbox messages absorbed after it: their turns left the
         # transcript, so move their acked mailbox records back to pending for
         # re-delivery (a crash mid-move heals by retrying the rollback, like
-        # the filesystem rewind above).
+        # the filesystem rewind above). Between runs the resident inbox is
+        # detached, so reach the session mailbox directly — but only when
+        # messages were actually absorbed past the boundary, so a lone agent's
+        # rollback never resolves a transport.
+        mailbox_hw = boundary.agent_ctx_state.mailbox_seq
         if self._loop.inbox is not None:
-            await self._loop.inbox.unprocess_after(boundary.agent_ctx_state.mailbox_seq)
+            await self._loop.inbox.unprocess_after(mailbox_hw)
+        elif (
+            self._committed is not None
+            and self._committed.agent_ctx_state.mailbox_seq > mailbox_hw
+        ):
+            from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
+
+            await resolve_session_transport(self._ctx).unprocess_after(
+                self.name, mailbox_hw
+            )
         self._committed = boundary
         self._cw.reset_anchor()
 
@@ -1087,8 +1166,6 @@ class LLMAgent[InT, OutT, CtxT](
         step: int | None = None,
         ctx: SessionContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
     ) -> AsyncIterator[Event[Any]]:
-        self._step = step
-
         inp = in_args[0] if in_args else None
 
         # Always load checkpoint (restores memory, background tasks, turn).
@@ -1123,6 +1200,18 @@ class LLMAgent[InT, OutT, CtxT](
         # transcript means the failure predates the input: deliver fresh.
         retry_continuation = self._retry_continuation and not self.transcript.is_empty
         self._retry_continuation = False
+
+        if retry_continuation:
+            # The retry continues the settled delivery under its original step
+            # (possibly auto-minted by the failed attempt).
+            step = self._step
+        elif step is None and chat_inputs is not None:
+            # A chat delivery with no explicit step: every human turn is a
+            # rollback anchor, so mint the next step. Typed-args deliveries
+            # (orchestrators, agents-as-tools) stay unstepped unless the
+            # caller steps them.
+            step = self._mint_step()
+        self._step = step
 
         # A ``step`` matching the persisted head *resumes* it (an
         # orchestrator's at-least-once redelivery): completed → replay the

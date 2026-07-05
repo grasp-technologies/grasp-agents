@@ -8,7 +8,8 @@ Verifies:
 - after rollback the discarded step is a *fresh* delivery, not a cached one
 - a cold instance (new process) can roll back via the persisted boundaries
 - unknown step raises; view-layer compaction does NOT block rollback (E0)
-- unstepped (chat) deliveries record no boundaries
+- unstepped (typed-args) deliveries record no boundaries; chat deliveries
+  auto-mint steps (covered in tests/agent/test_human_turn_anchors.py)
 """
 
 import asyncio
@@ -262,7 +263,9 @@ async def test_rollback_survives_compaction() -> None:
 async def test_unstepped_run_records_no_boundary() -> None:
     store = InMemoryCheckpointStore()
     agent, _ = _make_agent([_text_response("a")], session_key="s1", store=store)
-    await agent.run("hi")  # no step= → chat, untracked
+    # A typed-args delivery with no step= stays unstepped (a chat delivery
+    # would auto-mint one — see tests/agent/test_human_turn_anchors.py).
+    await agent.run(in_args="hi")
     assert agent._step_watermarks == []
 
 

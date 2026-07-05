@@ -28,7 +28,7 @@ from grasp_agents.mailbox import InMemoryMailboxTransport
 from grasp_agents.runtime import Closed
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from grasp_agents.runtime import Transport
     from grasp_agents.types.message import TeamMessage
@@ -64,7 +64,9 @@ class AgentInbox:
         """Deliver ``message`` through the transport (routed by its recipients)."""
         await self._transport.post(message)
 
-    async def take(self) -> TeamMessage | None:
+    async def take(
+        self, *, on_take: Callable[[TeamMessage], None] | None = None
+    ) -> TeamMessage | None:
         """
         Lease this agent's oldest **unprocessed** message *without* acking, or
         ``None`` if nothing new is takeable.
@@ -81,7 +83,10 @@ class AgentInbox:
         A taken message is stamped with its consumption ``seq`` (this inbox is
         the recipient's sole consumer, so take order is absorption order); the
         ack persists it, and a step rollback moves messages above a boundary's
-        high-water back to pending (:meth:`unprocess_after`).
+        high-water back to pending (:meth:`unprocess_after`). ``on_take`` runs
+        once a message is chosen for delivery, *before* its seq is minted —
+        the seam a resident uses to archive a rollback boundary whose
+        high-water excludes the message being taken.
         """
         while await self._transport.has_pending(self._recipient):
             # ``has_pending`` is true and this agent is the sole consumer of its
@@ -94,6 +99,8 @@ class AgentInbox:
             if await self._transport.was_processed(self._recipient, message.message_id):
                 await self._transport.ack(self._recipient, message)
                 continue
+            if on_take is not None:
+                on_take(message)
             message.seq = self._transport.mint_consumption_seq(self._recipient)
             self._leased[message.message_id] = message
             return message

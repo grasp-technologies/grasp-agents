@@ -1186,26 +1186,31 @@ class _AgentTurns:
     """
     Drives an agent from the interactive callbacks.
 
-    Each submitted message runs as its own step (``step=0, 1, 2, …``), recording
-    a rewind boundary, so the rollback picker can return to a previous message
-    via :meth:`LLMAgent.rollback_to_step`. ``on_rollback(i)`` rewinds to step
-    ``i`` and re-parks the counter there, so the next message re-delivers it —
-    matching the 0-based index the TUI assigns the i-th submission.
+    Each submitted message runs as a chat delivery, so the agent auto-mints
+    its step and records a rewind boundary; the minted step is captured per
+    submission, mapping the picker's 0-based indices onto the agent's steps.
+    ``on_rollback(i)`` rewinds to the i-th submission's step, so the next
+    message re-delivers from there.
     """
 
     def __init__(self, agent: LLMAgent[Any, Any, Any]) -> None:
         self._agent = agent
-        self._step = 0
+        self._steps: list[int] = []
 
     async def on_submit(self, text: str) -> AsyncIterator[Event[Any]]:
-        step = self._step
-        self._step += 1
-        async for event in self._agent.run_stream(text, step=step):
-            yield event
+        try:
+            async for event in self._agent.run_stream(text):
+                yield event
+        finally:
+            # Interrupted / failed turns still anchored a boundary; record the
+            # minted step so the picker stays aligned with the submissions.
+            step = self._agent.step
+            if step is not None and (not self._steps or self._steps[-1] != step):
+                self._steps.append(step)
 
     async def on_rollback(self, index: int) -> None:
-        await self._agent.rollback_to_step(index)
-        self._step = index
+        await self._agent.rollback_to_step(self._steps[index])
+        del self._steps[index:]
 
 
 def run_tui_interactive(

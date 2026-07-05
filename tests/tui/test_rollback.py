@@ -173,3 +173,36 @@ async def test_rollback_escape_cancels() -> None:
         await pilot.pause()
         assert calls == []
         assert app._ga_user_turns == ["m0"]
+
+
+@pytest.mark.asyncio
+async def test_agent_turns_maps_picker_indices_to_minted_steps() -> None:
+    # _AgentTurns runs submissions unstepped — the agent auto-mints each
+    # step — and records the mints so picker indices map onto them.
+    from grasp_agents.durability import InMemoryCheckpointStore
+    from grasp_agents.ui.app import _AgentTurns
+    from tests._helpers import _text_response
+    from tests.durability.test_sessions import _make_agent
+
+    agent, _ = _make_agent(
+        [_text_response(t) for t in ("alpha", "bravo", "charlie")],
+        session_key="s1",
+        store=InMemoryCheckpointStore(),
+    )
+    turns = _AgentTurns(agent)
+
+    async for _ in turns.on_submit("m0"):
+        pass
+    async for _ in turns.on_submit("m1"):
+        pass
+    assert turns._steps == [1, 2]
+
+    await turns.on_rollback(0)  # back to m0's start
+    assert agent.step == 1
+    assert turns._steps == []
+
+    async for _ in turns.on_submit("m0-edited"):
+        pass
+    assert turns._steps == [1]
+    assert "m0-edited" in str(agent.transcript.messages)
+    assert "m1" not in str(agent.transcript.messages)

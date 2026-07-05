@@ -671,3 +671,31 @@ async def test_attach_inbox_uses_session_transport(tmp_path: Path) -> None:
     inbox = agent.inbox
     assert inbox is not None
     assert inbox.transport is ctx.transport
+
+
+@pytest.mark.asyncio
+async def test_lead_member_rolls_back_directly_after_a_team_run(
+    tmp_path: Path,
+) -> None:
+    # The human seed reaches the lead over the mailbox and anchors a rollback
+    # boundary; between runs the lead rolls back like any stepping agent
+    # (which member may — the lead here — is the app's policy, not the
+    # team's), and the consumed seed returns to its mailbox.
+    ctx = _ctx(tmp_path)
+    alice = _agent("alice", [_text_response("done")])
+    bob = _agent("bob", [])
+    team = AgentTeam(
+        [alice, bob],
+        entry="alice",
+        cards=[MemberCard(name="alice", lead=True), MemberCard(name="bob")],
+        ctx=ctx,
+    )
+    await team.run("do the thing")
+
+    assert alice.rollback_steps == [1]
+    await alice.rollback_to_step(1)
+    assert alice.step == 1
+    assert "do the thing" not in str(alice.transcript.messages)
+    transport = ctx.transport
+    assert transport is not None
+    assert await transport.has_pending("alice")  # the seed was re-pended
