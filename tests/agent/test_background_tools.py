@@ -1000,7 +1000,7 @@ class TestDurableTaskRecords:
         await mgr.resume_durable(ctx=ctx, exec_id="t")
 
         # A new call this run gets a fresh id past every re-spawned one.
-        assert mgr._next_id() == "bg_3"  # pyright: ignore[reportPrivateUsage]
+        assert mgr._next_id() == ("bg_3", 3)  # pyright: ignore[reportPrivateUsage]
 
         await mgr.cancel_all(ctx=ctx)
 

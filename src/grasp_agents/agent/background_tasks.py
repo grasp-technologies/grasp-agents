@@ -137,6 +137,11 @@ class PendingTask:
     exec_id: str
     task: asyncio.Task[None]
     events: list[Event[Any]] = field(default_factory=list[Event[Any]])
+    # Monotonic per-agent launch sequence number (mirrored on the durable
+    # ``TaskRecord``). Watermarks record its high-water value; a transcript
+    # rewind cancels tasks above the watermark — their launching calls are
+    # no longer in the history the model sees.
+    launch_seq: int = 0
     # Whether this task's result gates the final answer (it is part of the
     # answer). Read from ``tool.blocks_final_answer`` at launch — independent of
     # how the task was backgrounded (immediate vs deadline).
@@ -300,6 +305,12 @@ class BackgroundTaskManager[CtxT]:
         # :meth:`flush_delivered` once a checkpoint has persisted the
         # transcript that carries the corresponding notification.
         self._pending_delivered: dict[str, dict[str, Any]] = {}
+        # Deferred CANCELLED flips for tasks killed by
+        # :meth:`cancel_launched_after`, also applied by :meth:`flush_delivered`.
+        # Kept apart from ``_pending_delivered`` because a watermark restore
+        # wholesale-replaces that map — a kill must survive it (the killed
+        # launch is gone from the transcript no matter which boundary is live).
+        self._pending_killed: dict[str, dict[str, Any]] = {}
 
     @property
     def has_live_tasks(self) -> bool:
@@ -409,7 +420,7 @@ class BackgroundTaskManager[CtxT]:
                 self._check_capacity()
             except RuntimeError as exc:
                 return f"Tool '{tool.name}' could not be backgrounded: {exc}", None
-            task_id = self._next_id()
+            task_id, launch_seq = self._next_id()
             log_path = await self._resolve_log(call.call_id, tool, ctx=ctx)
             # Persist the PENDING record *before* starting the task so a
             # near-instant finish still updates an existing record, and wire
@@ -417,7 +428,12 @@ class BackgroundTaskManager[CtxT]:
             # for a result that lands between drains).
             if task_key is not None:
                 await self._write_pending_record(
-                    task_key, call, task_id, ctx=ctx, output_path=log_path
+                    task_key,
+                    call,
+                    task_id,
+                    launch_seq=launch_seq,
+                    ctx=ctx,
+                    output_path=log_path,
                 )
             stream = tool.run_stream(
                 inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
@@ -428,6 +444,7 @@ class BackgroundTaskManager[CtxT]:
             )
             self._register(
                 task_id=task_id,
+                launch_seq=launch_seq,
                 task=task,
                 events=events,
                 tool=tool,
@@ -467,13 +484,14 @@ class BackgroundTaskManager[CtxT]:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
                 return f"Tool '{tool.name}' could not be backgrounded: {exc}", None
-            task_id = self._next_id()
+            task_id, launch_seq = self._next_id()
             # Resolve the log once, up front, so the single pending-record write
             # already carries ``output_path`` and the note can cite the file the
             # loop will have flushed output to by the model's next turn.
             log_path = await self._resolve_log(call.call_id, tool, ctx=ctx)
             self._register(
                 task_id=task_id,
+                launch_seq=launch_seq,
                 task=task,
                 events=events,
                 tool=tool,
@@ -485,7 +503,12 @@ class BackgroundTaskManager[CtxT]:
             )
             if task_key is not None:
                 await self._write_pending_record(
-                    task_key, call, task_id, ctx=ctx, output_path=log_path
+                    task_key,
+                    call,
+                    task_id,
+                    launch_seq=launch_seq,
+                    ctx=ctx,
+                    output_path=log_path,
                 )
                 if task.done() and ctx.checkpoint_store is not None:
                     # The call finished while the pending record was being
@@ -567,9 +590,24 @@ class BackgroundTaskManager[CtxT]:
 
         return "\n".join(parts)
 
-    def _next_id(self) -> str:
+    def _next_id(self) -> tuple[str, int]:
+        """Mint a task id and its ``launch_seq`` (the id's numeric suffix)."""
         self._bg_counter += 1
-        return f"bg_{self._bg_counter}"
+        return f"bg_{self._bg_counter}", self._bg_counter
+
+    @property
+    def last_launch_seq(self) -> int:
+        """High-water launch seq: every launch so far has ``launch_seq <=`` this."""
+        return self._bg_counter
+
+    def restore_launch_seq(self, seq: int) -> None:
+        """
+        Seed the launch counter from a restored watermark.
+
+        Never lowers it: after a rewind the cancelled launches' seqs stay
+        burned, so a re-run's fresh launches can't be mistaken for them.
+        """
+        self._bg_counter = max(self._bg_counter, seq)
 
     def _reserve_task_id(self, task_id: str) -> None:
         """
@@ -603,6 +641,7 @@ class BackgroundTaskManager[CtxT]:
         self,
         *,
         task_id: str,
+        launch_seq: int,
         task: asyncio.Task[None],
         events: list[Event[Any]],
         tool: BaseTool[BaseModel, Any, CtxT],
@@ -624,6 +663,7 @@ class BackgroundTaskManager[CtxT]:
         """
         pt = PendingTask(
             task_id=task_id,
+            launch_seq=launch_seq,
             tool_name=tool.name,
             exec_id=exec_id,
             tool_call_id=tool_call_id,
@@ -699,6 +739,7 @@ class BackgroundTaskManager[CtxT]:
         call: FunctionToolCallItem,
         task_id: str,
         *,
+        launch_seq: int,
         ctx: SessionContext[CtxT],
         output_path: str | None = None,
     ) -> None:
@@ -715,6 +756,7 @@ class BackgroundTaskManager[CtxT]:
         record = TaskRecord(
             session_key=ctx.session_key,
             task_id=task_id,
+            launch_seq=launch_seq,
             tool_call_id=call.call_id,
             tool_name=call.name,
             tool_call_arguments=call.arguments,
@@ -823,6 +865,42 @@ class BackgroundTaskManager[CtxT]:
             output=output,
             result=result,
         )
+
+    def cancel_launched_after(self, seq: int) -> None:
+        """
+        Cancel every task with ``launch_seq > seq`` — synchronous and I/O-free.
+
+        Called when the transcript is rewound past the tool calls that
+        launched these tasks (a failed-run settle or a step rollback): their
+        launches are no longer in the history the model sees, so letting them
+        finish would inject completion notes for calls that never happened.
+        Cancelled tasks are dropped from tracking immediately, so a completion
+        already queued for :meth:`drain` is suppressed rather than announced.
+        Tasks at or below ``seq`` keep running — their launches are still in
+        the kept transcript, and their notes deliver normally later.
+
+        Durable record flips (→ CANCELLED) are deferred to
+        :meth:`flush_delivered`, after the pruned transcript is durable; a
+        crash before that is covered by the resume-side orphan guard in
+        :meth:`resume_durable`.
+        """
+        for task_id, pt in list(self._tasks.items()):
+            if pt.launch_seq <= seq:
+                continue
+            if not pt.task.done():
+                pt.task.cancel()
+            del self._tasks[task_id]
+            if pt.task_key is not None:
+                self._pending_delivered.pop(pt.task_key, None)
+                self._pending_killed[pt.task_key] = {
+                    "status": TaskStatus.CANCELLED,
+                    "error": "Cancelled: the launching tool call was rolled back",
+                }
+            logger.info(
+                "Cancelled background task %s (%s): launched after the rewind point",
+                task_id,
+                pt.tool_name,
+            )
 
     # --- Turn-boundary drain ---
 
@@ -1003,6 +1081,7 @@ class BackgroundTaskManager[CtxT]:
         ctx: SessionContext[CtxT] | None = None,
         exec_id: str | None = None,
         agent_ctx: "AgentContext | None" = None,
+        bg_launch_seq: int | None = None,
     ) -> list[InputMessageItem]:
         """
         On resume, re-spawn or notify about interrupted background tasks.
@@ -1011,6 +1090,13 @@ class BackgroundTaskManager[CtxT]:
         reported to the agent — interrupted ones it may want to redo, completed
         ones whose result never reached it are re-injected. Any such notice is
         prefixed with a one-line framing so the agent understands it was resumed.
+
+        ``bg_launch_seq`` is the restored head's launch high-water: a record
+        above it was launched by a tool call that never made it into the
+        restored transcript (a crash before its checkpoint, or a rewind whose
+        deferred CANCELLED flip was lost with the process), so it is
+        dead-lettered — flipped CANCELLED, never re-spawned or reported.
+        ``None`` disables the guard.
 
         Returns the notification messages injected into the transcript so the
         caller can stream them as events (no transcript message stays hidden).
@@ -1042,6 +1128,30 @@ class BackgroundTaskManager[CtxT]:
             # a FAILED record is an errored task that the crash kept ``drain``
             # from delivering, so it still needs re-injecting below.)
             if record.status in {TaskStatus.CANCELLED, TaskStatus.DELIVERED}:
+                continue
+
+            # Orphan guard: launched after the restored head's boundary, so its
+            # launching tool call is not in the restored transcript — the agent
+            # has no memory of it. Dead-letter instead of re-spawning/reporting.
+            if bg_launch_seq is not None and record.launch_seq > bg_launch_seq:
+                record = record.model_copy(
+                    update={
+                        "status": TaskStatus.CANCELLED,
+                        "error": (
+                            "Cancelled: the launching tool call was never persisted"
+                        ),
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                await store.save(key, record.model_dump_json().encode())
+                logger.info(
+                    "Dead-lettered orphan task record %s (%s): launch_seq %d > "
+                    "restored head's %d",
+                    record.task_id,
+                    record.tool_name,
+                    record.launch_seq,
+                    bg_launch_seq,
+                )
                 continue
 
             if record.status == TaskStatus.PENDING:
@@ -1139,7 +1249,7 @@ class BackgroundTaskManager[CtxT]:
 
     async def flush_delivered(self, *, ctx: SessionContext[CtxT]) -> None:
         """
-        Apply deferred terminal record updates (→ ``DELIVERED``).
+        Apply deferred terminal record updates (→ ``DELIVERED`` / ``CANCELLED``).
 
         Called after a checkpoint has persisted the transcript containing the
         corresponding completion/interruption notes. Flipping the records any
@@ -1147,12 +1257,19 @@ class BackgroundTaskManager[CtxT]:
         checkpoint leaves a DELIVERED record whose note never became durable,
         so resume would never re-inject the outcome. (A crash between the
         checkpoint and this flush yields at worst a re-injected note — a
-        duplicate beats a lost outcome.)
+        duplicate beats a lost outcome.) The same holds for a
+        :meth:`cancel_launched_after` kill: its CANCELLED flip waits until the
+        transcript no longer referencing the launch is durable, so a crash in
+        between resumes with the launch still on record.
         """
         store = ctx.checkpoint_store
-        if store is None or not self._pending_delivered:
+        if store is None or not (self._pending_delivered or self._pending_killed):
             return
-        pending, self._pending_delivered = self._pending_delivered, {}
+        # A kill wins over a delivery flip for the same record: the kill came
+        # later, when the delivered note was rolled back.
+        pending = {**self._pending_delivered, **self._pending_killed}
+        self._pending_delivered = {}
+        self._pending_killed = {}
         for key, update in pending.items():
             existing = await store.load(key)
             if not existing:
@@ -1234,6 +1351,7 @@ class BackgroundTaskManager[CtxT]:
 
         self._register(
             task_id=record.task_id,
+            launch_seq=record.launch_seq,
             task=async_task,
             events=events,
             tool=tool,

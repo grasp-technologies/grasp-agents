@@ -20,10 +20,12 @@ from .durability.store_keys import make_store_key
 from .file_backend.base import FileBackend
 from .memory.provider import MemoryProvider
 from .printer import Printer
+from .runtime import Transport
 from .sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from .sandbox.exec_backend import ExecBackend
 from .skills.registry import SkillRegistry
 from .types.io import ProcName
+from .types.message import TeamMessage
 from .types.response import Response
 from .usage_tracker import UsageTracker
 
@@ -124,6 +126,17 @@ class SessionContext[CtxT](BaseModel):
     # prevent — is unrepresentable. When set, the validator below sources
     # :attr:`file_backend` from it.
     environment: ExecutionEnvironment | None = Field(default=None, exclude=True)
+
+    # The session's one inter-agent mailbox transport — every host (team,
+    # per-process member) and resident inbox in the session shares this
+    # instance. Hosts resolve it from here (installing one on first use when
+    # unset), so a host rebuilt mid-session reuses the same mailbox instead of
+    # opening a second one. Sharing matters beyond routing: the transport holds
+    # the live per-recipient consumption counters that order mailbox rewinds —
+    # deliberately NOT persisted here (their durable copy is each agent's
+    # ``mailbox_seq`` watermark, restored per agent alongside the boundaries a
+    # rollback is anchored to).
+    transport: Transport[TeamMessage] | None = Field(default=None, exclude=True)
 
     # Skills registry consumed by the top-level ``load_skill`` /
     # ``list_skills`` tools and the ``skills_system_prompt_section``.

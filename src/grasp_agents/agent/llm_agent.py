@@ -89,8 +89,6 @@ if TYPE_CHECKING:
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.mcp.client import MCPClient
     from grasp_agents.mcp.spec import MCPClientSpec
-    from grasp_agents.runtime import Transport
-    from grasp_agents.types.message import TeamMessage
 
     from .background_tasks import BackgroundTaskManager
 
@@ -548,21 +546,25 @@ class LLMAgent[InT, OutT, CtxT](
     def inbox(self, inbox: "AgentInbox | None") -> None:
         self._loop.inbox = inbox
 
-    def attach_inbox(self, transport: "Transport[TeamMessage]") -> None:
+    def attach_inbox(self) -> None:
         """
-        Make this agent run **resident** over ``transport``: bind a per-agent
-        inbox view keyed to the agent's own name, so its loop consumes peer
-        messages between turns instead of terminating on a final answer.
+        Make this agent run **resident**: bind a per-agent inbox view keyed to
+        the agent's own name, so its loop consumes peer messages between turns
+        instead of terminating on a final answer.
 
-        Called by a multi-agent host that owns the shared transport — the agent is
-        built host-agnostic, and residency is a hosting role attached per run (and
-        released with :meth:`detach_inbox`), like the ``ctx`` / ``path`` cascade
-        rather than a constructor argument. The agent supplies its own mailbox
-        address (its name); the host supplies only the channel.
+        Called by a multi-agent host — the agent is built host-agnostic, and
+        residency is a hosting role attached per run (and released with
+        :meth:`detach_inbox`), like the ``ctx`` / ``path`` cascade rather than
+        a constructor argument. The agent supplies its own mailbox address (its
+        name); the channel is always the session's mailbox (``ctx.transport``,
+        created and installed on first use).
         """
         from grasp_agents.inbox import AgentInbox  # noqa: PLC0415
+        from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
 
-        self.inbox = AgentInbox(transport=transport, recipient=self.name)
+        self.inbox = AgentInbox(
+            transport=resolve_session_transport(self._ctx), recipient=self.name
+        )
 
     def detach_inbox(self) -> None:
         """Drop the resident inbox, returning the agent to single-answer runs."""
@@ -691,7 +693,10 @@ class LLMAgent[InT, OutT, CtxT](
         )
 
         self._resume_notifications = await self._loop.bg_tasks.resume_durable(
-            ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
+            ctx=self._ctx,
+            exec_id=exec_id,
+            agent_ctx=self._loop.agent_ctx,
+            bg_launch_seq=current.agent_ctx_state.bg_launch_seq,
         )
 
         return checkpoint
@@ -798,7 +803,13 @@ class LLMAgent[InT, OutT, CtxT](
         )
         self.transcript.messages = pruned.messages
         if pruned.removed_count and self._committed is not None:
-            self._loop.agent_ctx.restore(self._committed.agent_ctx_state)
+            state = self._committed.agent_ctx_state
+            self._loop.agent_ctx.restore(state)
+            # Tasks launched by the pruned round are orphans — their launching
+            # calls just left the transcript. Cancel them (sync; the durable
+            # CANCELLED flips flush at the next save) so a queued completion
+            # can't inject a note for a call the model never made.
+            self._loop.bg_tasks.cancel_launched_after(state.bg_launch_seq)
         # The abnormal exit never acked an in-flight inbox message; drop its
         # lease so the resident re-takes it rather than wedging.
         if self._loop.agent_ctx.inbox is not None:
@@ -921,6 +932,17 @@ class LLMAgent[InT, OutT, CtxT](
         self._loop.agent_ctx.restore(
             boundary.agent_ctx_state, rebind_kernels=fs_ref is not None
         )
+        # Tasks launched after this boundary are orphans — the rewound
+        # transcript no longer holds their launching calls.
+        self._loop.bg_tasks.cancel_launched_after(
+            boundary.agent_ctx_state.bg_launch_seq
+        )
+        # Likewise the inbox messages absorbed after it: their turns left the
+        # transcript, so move their acked mailbox records back to pending for
+        # re-delivery (a crash mid-move heals by retrying the rollback, like
+        # the filesystem rewind above).
+        if self._loop.inbox is not None:
+            await self._loop.inbox.unprocess_after(boundary.agent_ctx_state.mailbox_seq)
         self._committed = boundary
         self._cw.reset_anchor()
 
@@ -940,6 +962,10 @@ class LLMAgent[InT, OutT, CtxT](
         self._cw.drop_folds_after(boundary.message_count)
 
         await self._persist_rollback(boundary, step=step)
+        # The rolled-back head no longer references the cancelled tasks'
+        # launches — safe to flip their records now rather than waiting for
+        # the next loop save.
+        await self._loop.bg_tasks.flush_delivered(ctx=self._ctx)
         logger.info(
             "agent '%s' rolled back to step %d (messages=%d, turn=%d)",
             self.name,

@@ -80,6 +80,39 @@ class Transport[E](ABC):
     case, a mailbox message for a team.
     """
 
+    def __init__(self) -> None:
+        # Per-recipient consumption counters (see mint_consumption_seq). Held
+        # here — the transport is the session-shared object that survives run
+        # boundaries — while the per-run consumer view (an agent's inbox) mints
+        # from and seeds them.
+        self._consumption_seqs: dict[str, int] = {}
+
+    def mint_consumption_seq(self, recipient: str) -> int:
+        """
+        Mint ``recipient``'s next consumption seq — called by its sole consumer
+        when it absorbs an envelope, so seqs follow consumption order (priority
+        mail drains out of arrival order, so arrival order would not do).
+        Process-local; the durable copy is the consumer's persisted high-water,
+        seeded back on resume via :meth:`seed_consumption_seq`.
+        """
+        seq = self._consumption_seqs.get(recipient, 0) + 1
+        self._consumption_seqs[recipient] = seq
+        return seq
+
+    def seed_consumption_seq(self, recipient: str, seq: int) -> None:
+        """
+        Seed ``recipient``'s counter from a restored watermark. Never lowers
+        it: after a rewind the moved-back envelopes' seqs stay burned, so
+        re-absorptions mint fresh ones.
+        """
+        self._consumption_seqs[recipient] = max(
+            self._consumption_seqs.get(recipient, 0), seq
+        )
+
+    def last_consumption_seq(self, recipient: str) -> int:
+        """High-water: every envelope absorbed so far has ``seq <=`` this."""
+        return self._consumption_seqs.get(recipient, 0)
+
     @abstractmethod
     def register(self, recipient: str) -> None:
         """
@@ -131,6 +164,21 @@ class Transport[E](ABC):
         del recipient, envelope_id
         return False
 
+    async def unprocess_after(self, recipient: str, seq: int) -> int:
+        """
+        Move ``recipient``'s acked envelopes with consumption ``seq > seq`` back
+        to pending, returning how many moved — the mailbox half of a step
+        rollback: the turns that absorbed those envelopes left the transcript,
+        so the recipient must receive them again.
+
+        Only envelopes whose consumer stamped a seq are eligible (a triggered
+        worker's driver acks without one; its redelivery is the orchestrator's
+        job). Defaults to ``0``: a queue transport removes envelopes on consume
+        and retains nothing to restore. Mailbox transports override this.
+        """
+        del recipient, seq
+        return 0
+
 
 class InProcessTransport[E: HasDestination](Transport[E]):
     """
@@ -143,6 +191,7 @@ class InProcessTransport[E: HasDestination](Transport[E]):
     """
 
     def __init__(self, max_queue_size: int = MAX_QUEUE_SIZE) -> None:
+        super().__init__()
         self._queues: dict[str, asyncio.Queue[E | Closed]] = {}
         self._max_queue_size = max_queue_size
 

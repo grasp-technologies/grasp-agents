@@ -23,8 +23,23 @@ from tests._helpers import FakeSnapshotEnv, MockLLM, _text_response, _tool_call_
 CARDS = [MemberCard(name="alice"), MemberCard(name="bob")]
 
 
-def _agent(name: str, responses: list[Response]) -> LLMAgent[Any, Any, None]:
-    return LLMAgent[Any, Any, None](name=name, llm=MockLLM(responses_queue=responses))
+def _agent(
+    name: str,
+    responses: list[Response],
+    *,
+    ctx: SessionContext[None] | None = None,
+) -> LLMAgent[Any, Any, None]:
+    return LLMAgent[Any, Any, None](
+        name=name, llm=MockLLM(responses_queue=responses), ctx=ctx
+    )
+
+
+def _session() -> tuple[SessionContext[None], InMemoryMailboxTransport]:
+    """A per-test session with its mailbox pre-installed on ``ctx.transport``."""
+    ctx = SessionContext[None](state=None)
+    transport = InMemoryMailboxTransport()
+    ctx.transport = transport
+    return ctx, transport
 
 
 def _send(to: str, message: str, call_id: str) -> Response:
@@ -39,9 +54,11 @@ async def _drain(host: MemberHost) -> list[Any]:
 
 @pytest.mark.asyncio
 async def test_host_activates_sends_and_acks() -> None:
-    transport = InMemoryMailboxTransport()
-    alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
-    host = MemberHost(alice, cards=CARDS, transport=transport)
+    ctx, transport = _session()
+    alice = _agent(
+        "alice", [_send("bob", "ping", "c1"), _text_response("alice done")], ctx=ctx
+    )
+    host = MemberHost(alice, cards=CARDS)
 
     await transport.post(TeamMessage.from_text(sender="user", to="alice", text="go"))
     events = await _drain(host)
@@ -56,9 +73,9 @@ async def test_host_activates_sends_and_acks() -> None:
 
 @pytest.mark.asyncio
 async def test_human_input_runs_a_turn() -> None:
-    transport = InMemoryMailboxTransport()
-    solo = _agent("solo", [_text_response("the answer")])
-    host = MemberHost(solo, cards=[MemberCard(name="solo")], transport=transport)
+    ctx, _transport = _session()
+    solo = _agent("solo", [_text_response("the answer")], ctx=ctx)
+    host = MemberHost(solo, cards=[MemberCard(name="solo")])
 
     await host.submit_message("hello")
     events = await _drain(host)
@@ -68,8 +85,10 @@ async def test_human_input_runs_a_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_hosts_converse_over_shared_transport() -> None:
-    transport = InMemoryMailboxTransport()
+async def test_two_hosts_converse_over_shared_session() -> None:
+    # Two hosts on one session share its mailbox (``ctx.transport``) — nothing
+    # is passed explicitly.
+    ctx, transport = _session()
     alice = _agent(
         "alice",
         [
@@ -77,10 +96,13 @@ async def test_two_hosts_converse_over_shared_transport() -> None:
             _text_response("alice sent ping"),
             _text_response("alice got pong"),
         ],
+        ctx=ctx,
     )
-    bob = _agent("bob", [_send("alice", "pong", "c2"), _text_response("bob done")])
-    host_a = MemberHost(alice, cards=CARDS, transport=transport)
-    host_b = MemberHost(bob, cards=CARDS, transport=transport)
+    bob = _agent(
+        "bob", [_send("alice", "pong", "c2"), _text_response("bob done")], ctx=ctx
+    )
+    host_a = MemberHost(alice, cards=CARDS)
+    host_b = MemberHost(bob, cards=CARDS)
 
     await transport.post(TeamMessage.from_text(sender="user", to="alice", text="go"))
     # Drive the causal chain: alice (→ping), bob (→pong), alice (consumes pong).
@@ -105,6 +127,7 @@ async def test_lead_host_claims_rewind_right_and_announces_rewind(
     env = FakeSnapshotEnv(tmp_path)
     ctx = SessionContext[None](state=None, environment=env)
     transport = InMemoryMailboxTransport()
+    ctx.transport = transport
     alice = LLMAgent[Any, Any, None](
         name="alice", llm=MockLLM(responses_queue=[]), ctx=ctx
     )
@@ -113,7 +136,7 @@ async def test_lead_host_claims_rewind_right_and_announces_rewind(
         MemberCard(name="bob"),
         MemberCard(name="filer", resident=False),
     ]
-    MemberHost(alice, cards=cards, transport=transport)
+    MemberHost(alice, cards=cards)
 
     assert ctx.environment_rewinder == "alice"
 
@@ -140,7 +163,7 @@ async def test_triggered_lead_rejected_by_host(tmp_path: Path) -> None:
     )
     cards = [MemberCard(name="alice", lead=True, resident=False)]
     with pytest.raises(ValueError, match="must run resident"):
-        MemberHost(alice, cards=cards, transport=InMemoryMailboxTransport())
+        MemberHost(alice, cards=cards)
 
 
 @pytest.mark.asyncio
@@ -150,6 +173,7 @@ async def test_lead_sends_carry_lead_priority_via_host(tmp_path: Path) -> None:
     env = FakeSnapshotEnv(tmp_path)
     ctx = SessionContext[None](state=None, environment=env)
     transport = InMemoryMailboxTransport()
+    ctx.transport = transport
     alice = LLMAgent[Any, Any, None](
         name="alice",
         llm=MockLLM(
@@ -158,7 +182,7 @@ async def test_lead_sends_carry_lead_priority_via_host(tmp_path: Path) -> None:
         ctx=ctx,
     )
     cards = [MemberCard(name="alice", lead=True), MemberCard(name="bob")]
-    host = MemberHost(alice, cards=cards, transport=transport)
+    host = MemberHost(alice, cards=cards)
 
     await transport.post(TeamMessage.from_text(sender="user", to="alice", text="go"))
     await _drain(host)
@@ -166,3 +190,18 @@ async def test_lead_sends_carry_lead_priority_via_host(tmp_path: Path) -> None:
     to_bob = await transport.consume("bob")
     assert isinstance(to_bob, TeamMessage)
     assert to_bob.priority == LEAD_PRIORITY
+
+
+@pytest.mark.asyncio
+async def test_host_resolves_transport_from_session_ctx() -> None:
+    # The mailbox is always the session's: the first host installs one on
+    # ``ctx.transport`` (in-memory here — no store on the session) and every
+    # later host reuses that same instance.
+    ctx = SessionContext[None](state=None)
+    alice = _agent("alice", [_text_response("hi")], ctx=ctx)
+    host = MemberHost(alice, cards=CARDS)
+    assert ctx.transport is not None
+    assert host._mailbox is ctx.transport  # pyright: ignore[reportPrivateUsage]
+
+    host2 = MemberHost(alice, cards=CARDS)
+    assert host2._mailbox is ctx.transport  # pyright: ignore[reportPrivateUsage]

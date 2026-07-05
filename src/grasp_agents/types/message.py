@@ -78,6 +78,13 @@ class TeamMessage(BaseModel):
     # priority). Control-plane mail (human input, wakeups) uses ``CONTROL_PRIORITY``
     # and a team lead's mail ``LEAD_PRIORITY``, so both preempt queued peer messages.
     priority: int = 0
+    # Per-recipient consumption ordinal, stamped by the recipient's inbox when
+    # it takes the message (0 = not yet absorbed / untracked). Consumption
+    # order, not arrival order — priority mail drains out of arrival order, and
+    # rollback needs "consumed after this boundary". Persisted on the acked
+    # mailbox record; a step rollback moves records above a boundary's
+    # high-water back to pending (``Transport.unprocess_after``).
+    seq: int = 0
 
     @field_validator("payloads", mode="before")
     @classmethod

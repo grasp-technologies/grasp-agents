@@ -252,14 +252,15 @@ async def test_lead_claims_environment_rewind_at_construction(
 
 
 @pytest.mark.asyncio
-async def test_explicit_transport_is_used_by_members() -> None:
-    # No file_backend on ctx: the team routes every send through the explicit
-    # transport, so the recording flag being set proves it reached the members.
+async def test_session_transport_is_used_by_members() -> None:
+    # The team always routes through the session's mailbox (``ctx.transport``),
+    # so the recording flag being set proves the sends reached it.
     transport = RecordingTransport()
     ctx = SessionContext[None](state=None)
+    ctx.transport = transport
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
-    team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
 
     result = await team.run("kick off")
     await team.aclose()
@@ -305,14 +306,15 @@ async def test_team_without_file_backend_uses_in_memory() -> None:
 @pytest.mark.asyncio
 async def test_team_over_checkpoint_transport() -> None:
     # A team running on the durable CheckpointStore-backed mailbox (the same
-    # substrate background tasks persist through).
-    transport = CheckpointMailboxTransport(
-        InMemoryCheckpointStore(), session_key="team"
+    # substrate background tasks persist through) — resolved automatically
+    # from the session's checkpoint store.
+    ctx = SessionContext[None](
+        state=None, checkpoint_store=InMemoryCheckpointStore(), session_key="team"
     )
-    ctx = SessionContext[None](state=None)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
-    team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
+    assert isinstance(ctx.transport, CheckpointMailboxTransport)
 
     result = await team.run("kick off")
     await team.aclose()
@@ -378,11 +380,9 @@ async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
 
     # RUN 1: the seed's checkpoint is saved, then its deposit crashes.
     entry1 = _agent("entry", [_text_response("hi")])
-    team1 = AgentTeam(
-        [entry1],
-        ctx=SessionContext[None](state=None, checkpoint_store=store),
-        transport=_DropFirstPost(),
-    )
+    ctx1 = SessionContext[None](state=None, checkpoint_store=store)
+    ctx1.transport = _DropFirstPost()
+    team1 = AgentTeam([entry1], ctx=ctx1)
     result1 = await team1.run("kick off")
     await team1.aclose()
     assert result1.stop_reason == "error"
@@ -391,11 +391,9 @@ async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
     # RUN 2 (resume) over the same store with a working transport: the seed was
     # never processed, so it is re-delivered and the entry finally runs.
     entry2 = _agent("entry", [_text_response("hi")])
-    team2 = AgentTeam(
-        [entry2],
-        ctx=SessionContext[None](state=None, checkpoint_store=store),
-        transport=CheckpointMailboxTransport(store, session_key="s"),
-    )
+    ctx2 = SessionContext[None](state=None, checkpoint_store=store)
+    ctx2.transport = CheckpointMailboxTransport(store, session_key="s")
+    team2 = AgentTeam([entry2], ctx=ctx2)
     result2 = await team2.run("kick off")
     await team2.aclose()
     assert entry2.llm.call_count == 1  # seed re-delivered, not stranded
@@ -645,3 +643,31 @@ async def test_environment_rewind_notifies_other_residents(tmp_path: Path) -> No
     assert notices[0].priority == CONTROL_PRIORITY
     # The notice names the rewinder for the recipient.
     assert "planner" in notices[0].text
+
+
+@pytest.mark.asyncio
+async def test_team_installs_transport_on_session_ctx(tmp_path: Path) -> None:
+    # The mailbox is session infrastructure: a team resolves it from
+    # ``ctx.transport`` (creating + installing one on first use), so any later
+    # host on the same session reuses that instance — the mailbox (and its
+    # live consumption counters) survives host rebuilds instead of being
+    # silently replaced by a fresh, empty one.
+    ctx = _ctx(tmp_path)
+    assert ctx.transport is None
+    team = AgentTeam([_agent("solo", [_text_response("a")])], ctx=ctx)
+    assert ctx.transport is not None
+
+    team2 = AgentTeam([_agent("solo2", [_text_response("b")])], ctx=ctx)
+    assert team2._transport is team._transport  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_attach_inbox_uses_session_transport(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    ctx.transport = InMemoryMailboxTransport()
+    agent = _agent("solo", [])
+    agent.on_adopted(ctx=ctx)
+    agent.attach_inbox()
+    inbox = agent.inbox
+    assert inbox is not None
+    assert inbox.transport is ctx.transport

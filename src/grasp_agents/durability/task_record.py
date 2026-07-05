@@ -23,6 +23,12 @@ class TaskRecord(PersistedRecord):
 
     task_id: str
 
+    # Monotonic per-agent launch sequence number. Watermarks record its
+    # high-water value (``AgentContextState.bg_launch_seq``); a rewind cancels
+    # tasks above the watermark, and resume dead-letters records above the
+    # restored head's — their launching tool call is not in the transcript.
+    launch_seq: int = 0
+
     tool_call_id: str  # FunctionToolCallItem.call_id that spawned this
     tool_name: str
     tool_call_arguments: str | None = None  # Serialized tool input for resume replay

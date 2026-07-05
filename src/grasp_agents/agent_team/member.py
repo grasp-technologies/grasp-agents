@@ -6,7 +6,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from grasp_agents.runtime import ActorDriver, Transport
+from grasp_agents.mailbox import resolve_session_transport
+from grasp_agents.runtime import ActorDriver
 
 from ._roles import activate_member, is_llm_agent, is_resident, resident_idle
 from .message import CONTROL_PRIORITY, USER_SENDER, TeamMessage
@@ -47,7 +48,8 @@ class MemberHost:
     never interleave into its transcript.
 
     The reusable core behind a per-process member UI — each member lives in its own
-    process, built against a shared (durable) transport, all running on the same
+    process, sharing the session's durable mailbox (``ctx.transport``, derived
+    from the session checkpoint store), all running on the same
     actor runtime as an in-process :class:`~.agent_team.AgentTeam`. The member may be
     an agent **or** a plain ``Processor``, and runs on the *same* execution model the
     in-process team uses: a resident (an agent with no static recipients) runs
@@ -64,12 +66,15 @@ class MemberHost:
         member: Processor[Any, Any, Any],
         *,
         cards: Sequence[MemberCard],
-        transport: Transport[TeamMessage],
         poll_interval: float = 0.5,
         run_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._member = member
-        self._mailbox = transport
+        # The session's mailbox (``ctx.transport``), created and installed on
+        # first use — durable over ``ctx.checkpoint_store`` when the session
+        # has one (the shared store IS the cross-process channel), else
+        # in-memory (single process).
+        self._mailbox = resolve_session_transport(member.ctx)
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
         # Peers a rewind notice goes to: everyone except this member and any peer
@@ -113,9 +118,7 @@ class MemberHost:
         # no tools.
         if is_resident(member, card):
             self._resident = cast("LLMAgent[Any, Any, Any]", member)
-            send_tool = SendMessageTool(
-                cards, transport_resolver=lambda _ctx: transport
-            )
+            send_tool = SendMessageTool(cards)
             wakeup_tool = ScheduleWakeupTool()
 
             for name, tool in (
@@ -203,7 +206,7 @@ class MemberHost:
     async def _run_resident(self, *, stop_when_idle: bool) -> AsyncIterator[Event[Any]]:
         member = self._resident
         assert member is not None
-        member.attach_inbox(self._mailbox)
+        member.attach_inbox()
         queue: asyncio.Queue[Any] = asyncio.Queue()
 
         async def run() -> None:

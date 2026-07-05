@@ -77,6 +77,11 @@ class AgentInbox:
         returning the same one). A message already marked processed — a redelivery
         whose ack only partly landed before a crash — is acked and skipped, since
         its effects are already durable.
+
+        A taken message is stamped with its consumption ``seq`` (this inbox is
+        the recipient's sole consumer, so take order is absorption order); the
+        ack persists it, and a step rollback moves messages above a boundary's
+        high-water back to pending (:meth:`unprocess_after`).
         """
         while await self._transport.has_pending(self._recipient):
             # ``has_pending`` is true and this agent is the sole consumer of its
@@ -89,6 +94,7 @@ class AgentInbox:
             if await self._transport.was_processed(self._recipient, message.message_id):
                 await self._transport.ack(self._recipient, message)
                 continue
+            message.seq = self._transport.mint_consumption_seq(self._recipient)
             self._leased[message.message_id] = message
             return message
         return None
@@ -118,6 +124,33 @@ class AgentInbox:
         rather than wedging on them. In-memory only — they were never removed.
         """
         self._leased.clear()
+
+    async def unprocess_after(self, seq: int) -> int:
+        """
+        Move this agent's acked messages with consumption ``seq >`` the
+        watermark back to pending — the mailbox half of a step rollback
+        (:meth:`LLMAgent.rollback_to_step`): the turns that absorbed them left
+        the transcript, so they must be re-delivered. Returns the count moved.
+        Acks only happen once a checkpoint has persisted the consuming turn, so
+        a failed-run settle never needs this — :meth:`rollback` (lease drop)
+        covers the message in flight.
+        """
+        return await self._transport.unprocess_after(self._recipient, seq)
+
+    @property
+    def last_taken_seq(self) -> int:
+        """High-water consumption seq: every message taken so far has ``seq <=``."""
+        return self._transport.last_consumption_seq(self._recipient)
+
+    def restore_taken_seq(self, seq: int) -> None:
+        """
+        Seed the consumption counter from a restored watermark (never lowers it
+        — the inbox sibling of :meth:`BackgroundTaskManager.restore_launch_seq`).
+        The counter lives on the shared transport, so it survives the per-run
+        inbox; this seeding covers a fresh process, where the restored
+        ``AgentContextState`` is the only surviving copy.
+        """
+        self._transport.seed_consumption_seq(self._recipient, seq)
 
     async def poll(self) -> TeamMessage | None:
         """Consume + ack this agent's oldest message in one step, or ``None``."""

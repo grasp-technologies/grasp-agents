@@ -76,6 +76,7 @@
                 "TGP",
                 "tobytes",
                 "toolu",
+                "unprocess",
                 "unsandboxed",
                 "WezTerm",
                 "zmq"

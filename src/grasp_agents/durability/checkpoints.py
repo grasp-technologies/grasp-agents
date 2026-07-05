@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 13
+CURRENT_SCHEMA_VERSION: int = 14
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -126,6 +126,20 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "fields, so v13 code would load their messages as empty — hence the "
         "supported floor is also raised to v13. Not migrated: resave sessions."
     ),
+    14: (
+        "Side-channel rewind ordering. TaskRecord gained ``launch_seq`` (a "
+        "monotonic per-agent launch counter) and TeamMessage gained ``seq`` (a "
+        "per-recipient consumption ordinal, stamped when a resident absorbs "
+        "the message and persisted via the acked mailbox record); "
+        "AgentContextState carries their high-water values ``bg_launch_seq`` / "
+        "``mailbox_seq``. A settle / step rollback cancels tasks launched "
+        "after the restored boundary; a step rollback also moves mailbox "
+        "records consumed after it back to pending; resume dead-letters task "
+        "records above the restored head's high-water (their launching call "
+        "was never persisted). Additive — v13 records load fine (fields "
+        "default 0 = not guarded); v13 code resuming a v14 session skips "
+        "these guards."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -191,6 +205,16 @@ class AgentContextState(BaseModel):
     pending_delivered: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
+    # High-water background-task launch seq at this boundary: every task
+    # launched by then has ``launch_seq <= bg_launch_seq``. A rewind to this
+    # boundary cancels tasks above it (their launching calls left the
+    # transcript); resume dead-letters task records above it.
+    bg_launch_seq: int = 0
+    # High-water inbox consumption seq at this boundary: every message absorbed
+    # by then has ``seq <= mailbox_seq``. A step rollback to this boundary
+    # moves acked mailbox records above it back to pending (their turns left
+    # the transcript), so the resident re-processes them.
+    mailbox_seq: int = 0
     ipy_exec_context_id: str | None = None
     nb_exec_context_id: str | None = None
 

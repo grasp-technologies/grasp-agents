@@ -164,3 +164,32 @@ async def test_durable_consume_is_not_redelivered_after_restart() -> None:
     while (msg := await resumed.poll()) is not None:
         remaining.append(msg.text)
     assert remaining == ["twice"]
+
+
+async def test_take_mints_consumption_seq_and_restore_never_lowers() -> None:
+    # The inbox mints ``TeamMessage.seq`` at take (it is the recipient's sole
+    # consumer, so take order is absorption order); the counter lives on the
+    # shared transport, so it survives the per-run inbox, and a restored
+    # watermark only ever seeds it forward — burned seqs stay burned.
+    transport = InMemoryMailboxTransport()
+    inbox = AgentInbox(transport=transport, recipient="curator")
+    await inbox.post(_msg("a"))
+    await inbox.post(_msg("b"))
+
+    first = await inbox.poll()
+    second = await inbox.poll()
+    assert first is not None
+    assert second is not None
+    assert (first.seq, second.seq) == (1, 2)
+    assert inbox.last_taken_seq == 2
+
+    inbox.restore_taken_seq(0)
+    assert inbox.last_taken_seq == 2
+    inbox.restore_taken_seq(9)
+
+    # A fresh per-run inbox over the same transport keeps counting from there.
+    reattached = AgentInbox(transport=transport, recipient="curator")
+    await reattached.post(_msg("c"))
+    third = await reattached.poll()
+    assert third is not None
+    assert third.seq == 10

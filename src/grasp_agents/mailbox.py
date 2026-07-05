@@ -36,10 +36,31 @@ from grasp_agents.types.message import TeamMessage
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import timedelta
+    from typing import Any
 
     from grasp_agents.durability.checkpoint_store import CheckpointStore
+    from grasp_agents.session_context import SessionContext
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_session_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage]:
+    """
+    The session's one mailbox transport (``ctx.transport``), created and
+    installed on first use: durable over ``ctx.checkpoint_store`` when the
+    session has one, else in-memory (single process). Hosts, resident inboxes,
+    and ``SendMessage`` all resolve through here — never a transport argument —
+    so every participant shares the one instance (and its live consumption
+    counters) across host rebuilds within the session.
+    """
+    if ctx.transport is None:
+        store = ctx.checkpoint_store
+        ctx.transport = (
+            CheckpointMailboxTransport(store, session_key=ctx.session_key)
+            if store is not None
+            else InMemoryMailboxTransport()
+        )
+    return ctx.transport
 
 
 class InMemoryMailboxTransport(Transport[TeamMessage]):
@@ -53,7 +74,13 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
     """
 
     def __init__(self, *, poll_interval: float = 0.05) -> None:
+        super().__init__()
         self._boxes: dict[str, list[TeamMessage]] = {}
+        # Acked messages whose consumer stamped a consumption ``seq``, retained
+        # so a step rollback can move them back to pending (they are the
+        # in-memory analog of the durable ``processed/`` records). Untracked
+        # acks (``seq == 0``) are dropped outright, as before.
+        self._processed: dict[str, list[TeamMessage]] = {}
         self._poll_interval = poll_interval
         self._closed = asyncio.Event()
 
@@ -84,9 +111,28 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
             self._boxes[recipient] = [
                 m for m in box if m.message_id != envelope.message_id
             ]
+        processed = self._processed.setdefault(recipient, [])
+        if envelope.seq > 0 and all(
+            m.message_id != envelope.message_id for m in processed
+        ):
+            processed.append(envelope)
 
     async def has_pending(self, recipient: str) -> bool:
         return bool(self._boxes.get(recipient))
+
+    async def unprocess_after(self, recipient: str, seq: int) -> int:
+        processed = self._processed.get(recipient, [])
+        moved = [m for m in processed if m.seq > seq]
+        if not moved:
+            return 0
+        self._processed[recipient] = [m for m in processed if m.seq <= seq]
+        box = self._boxes.setdefault(recipient, [])
+        for message in moved:
+            # Back to pending as if never consumed: the seq is re-minted when
+            # the recipient absorbs it again.
+            message.seq = 0
+            box.append(message)
+        return len(moved)
 
     async def shutdown(self) -> None:
         self._closed.set()
@@ -126,6 +172,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         session_key: str = DEFAULT_SESSION_KEY,
         poll_interval: float = 0.05,
     ) -> None:
+        super().__init__()
         self._store = store
         self._session_key = session_key
         self._poll_interval = poll_interval
@@ -165,6 +212,12 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
     def _inbox_prefix(self, recipient: str) -> str:
         base = make_store_key(
             self._session_key, CheckpointKind.MAILBOX, [recipient, "inbox"]
+        )
+        return base + "/"
+
+    def _processed_prefix(self, recipient: str) -> str:
+        base = make_store_key(
+            self._session_key, CheckpointKind.MAILBOX, [recipient, "processed"]
         )
         return base + "/"
 
@@ -246,13 +299,20 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         data = await self._store.load(inbox_key)
         if data is None:
             return
-        delivered = MessageRecord.model_validate_json(data).model_copy(
-            update={"status": TaskStatus.DELIVERED, "updated_at": datetime.now(UTC)}
-        )
-        await self._store.save(
-            self._processed_key(recipient, envelope.message_id),
-            delivered.model_dump_json().encode(),
-        )
+        processed_key = self._processed_key(recipient, envelope.message_id)
+        if await self._store.load(processed_key) is None:
+            # First ack wins, storing the acking consumer's envelope — it
+            # carries the consumption ``seq`` that :meth:`unprocess_after`
+            # needs. A redelivery dedupe re-acks with an unstamped copy and
+            # must only clear the lingering inbox key, never clobber the seq.
+            delivered = MessageRecord.model_validate_json(data).model_copy(
+                update={
+                    "status": TaskStatus.DELIVERED,
+                    "message": envelope,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._store.save(processed_key, delivered.model_dump_json().encode())
         await self._store.delete(inbox_key)
 
     async def has_pending(self, recipient: str) -> bool:
@@ -265,6 +325,41 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         # delete hadn't landed) finds the processed copy and skips re-running.
         key = self._processed_key(recipient, envelope_id)
         return await self._store.load(key) is not None
+
+    async def unprocess_after(self, recipient: str, seq: int) -> int:
+        """
+        Move ``processed/`` records with consumption ``seq >`` the watermark back
+        to ``inbox/`` (status PENDING, seq cleared for re-minting), returning the
+        count moved. The mailbox half of a step rollback.
+
+        Crash-safe the same way the rollback itself is: the pending copy is
+        written before the processed copy is deleted, so a crash in between
+        leaves both — the redelivery dedup (:meth:`was_processed`) suppresses
+        the stray pending copy, matching the not-yet-rolled-back head, and
+        retrying the rollback re-moves the record and heals.
+        """
+        moved = 0
+        for key in await self._store.list_keys(self._processed_prefix(recipient)):
+            record = await self._store.load_json(
+                key, MessageRecord, subject="mailbox processed record"
+            )
+            if record is None or record.message.seq <= seq:
+                continue
+            message = record.message.model_copy(update={"seq": 0})
+            pending = record.model_copy(
+                update={
+                    "status": TaskStatus.PENDING,
+                    "message": message,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._store.save(
+                self._inbox_key(recipient, message),
+                pending.model_dump_json().encode(),
+            )
+            await self._store.delete(key)
+            moved += 1
+        return moved
 
     async def prune_processed(
         self,
@@ -292,6 +387,12 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         schema version this process cannot read is skipped, not raised on — GC is
         best-effort and never re-runs a record. Mirrors
         ``BackgroundTaskManager.prune_delivered``.
+
+        ``older_than`` also bounds the **rollback horizon**: a step rollback
+        restores consumed messages from these records (:meth:`unprocess_after`),
+        so pruning one silently shrinks how far back a resident's mailbox can
+        be rewound. Keep the retention at least as long as the oldest rollback
+        boundary you intend to honor, or pin records via ``keep``.
         """
         now = datetime.now(UTC)
         processed_cutoff = now - older_than

@@ -33,7 +33,6 @@ from .tools import (
     ScheduleWakeupTool,
     SendMessageInput,
     SendMessageTool,
-    default_transport,
 )
 
 __all__ = [
@@ -53,5 +52,4 @@ __all__ = [
     "TeamRunResult",
     "TeamStartedEvent",
     "TeamStopReason",
-    "default_transport",
 ]

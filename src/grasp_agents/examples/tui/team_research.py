@@ -48,12 +48,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from grasp_agents import LLMAgent, SessionContext
-from grasp_agents.agent_team import (
-    AgentTeam,
-    CheckpointMailboxTransport,
-    MemberCard,
-    MemberHost,
-)
+from grasp_agents.agent_team import AgentTeam, MemberCard, MemberHost
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.llm_providers.openai_responses import (
     OpenAIResponsesLLM,
@@ -151,8 +146,9 @@ def build_member(
     name: str, *, mailbox_dir: Path = DEFAULT_DIR, model: str = DEFAULT_MODEL
 ) -> MemberHost:
     """
-    Build one member (agent or processor) sharing a durable mailbox (a
-    FileCheckpointStore under ``mailbox_dir``) with the other member processes.
+    Build one member (agent or processor) sharing a durable mailbox with the
+    other member processes — derived automatically from the session's
+    ``FileCheckpointStore`` under ``mailbox_dir``.
     """
     mailbox_dir.mkdir(parents=True, exist_ok=True)
     store = FileCheckpointStore(root=mailbox_dir)
@@ -160,19 +156,17 @@ def build_member(
     member = _make_member(
         name, ctx=ctx, model=model, notes_path=mailbox_dir / "notes.md"
     )
-    return MemberHost(
-        member, cards=ROSTER, transport=CheckpointMailboxTransport(store)
-    )
+    return MemberHost(member, cards=ROSTER)
 
 
 def build_team(
     *, model: str = DEFAULT_MODEL, mailbox_dir: Path = DEFAULT_DIR
 ) -> AgentTeam[None]:
     """
-    Build the whole team in one process over a durable mailbox (a
-    ``CheckpointMailboxTransport`` on a ``FileCheckpointStore`` under
-    ``mailbox_dir``), so in-flight mail, each member's transcript, and the team's
-    hop budget all persist to the same store.
+    Build the whole team in one process over a durable mailbox — derived
+    automatically from the session's ``FileCheckpointStore`` under
+    ``mailbox_dir`` — so in-flight mail, each member's transcript, and the
+    team's hop budget all persist to the same store.
     """
     mailbox_dir.mkdir(parents=True, exist_ok=True)
     store = FileCheckpointStore(root=mailbox_dir)
@@ -181,13 +175,7 @@ def build_team(
         _make_member(c.name, ctx=ctx, model=model, notes_path=mailbox_dir / "notes.md")
         for c in ROSTER
     ]
-    return AgentTeam(
-        members,
-        entry="lead",
-        cards=ROSTER,
-        ctx=ctx,
-        transport=CheckpointMailboxTransport(store),
-    )
+    return AgentTeam(members, entry="lead", cards=ROSTER, ctx=ctx)
 
 
 def _human_handler(host: MemberHost) -> Any:

@@ -11,12 +11,18 @@ Verifies:
 - unstepped (chat) deliveries record no boundaries
 """
 
+import asyncio
+import contextlib
+
 import pytest
 
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import AgentContextState, InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
+from grasp_agents.inbox import AgentInbox
+from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.types.items import InputMessageItem
+from grasp_agents.types.message import TeamMessage
 from tests._helpers import _text_response
 from tests.durability.test_sessions import _make_agent, load_agent_checkpoint
 
@@ -258,3 +264,66 @@ async def test_unstepped_run_records_no_boundary() -> None:
     agent, _ = _make_agent([_text_response("a")], session_key="s1", store=store)
     await agent.run("hi")  # no step= → chat, untracked
     assert agent._step_watermarks == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
+    # A resident's rollback rewinds its mailbox with its transcript: messages
+    # absorbed after the boundary go back to pending (their turns left the
+    # history), in consumption order, ready to be re-processed.
+    store = InMemoryCheckpointStore()
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    agent, _ = _make_agent(
+        [
+            _text_response("kickoff done"),
+            _text_response("reply one"),
+            _text_response("reply two"),
+        ],
+        session_key="s1",
+        store=store,
+    )
+    agent.inbox = AgentInbox(transport=transport, recipient="test_agent")
+
+    async def drain() -> None:
+        async for _ in agent.run_stream("kick off", step=1):
+            pass
+
+    run = asyncio.create_task(drain())
+    m1 = TeamMessage.from_text(sender="user", to="test_agent", text="task one")
+    m2 = TeamMessage.from_text(sender="peer", to="test_agent", text="task two")
+    await transport.post(m1)
+    await transport.post(m2)
+    try:
+        # Both messages absorbed, answered, and released at their turn
+        # checkpoints; their processed records carry the consumption seqs.
+        for _ in range(300):
+            if await transport.was_processed(
+                "test_agent", m2.message_id
+            ) and not await transport.has_pending("test_agent"):
+                break
+            await asyncio.sleep(0.01)
+        assert await transport.was_processed("test_agent", m1.message_id)
+        assert await transport.was_processed("test_agent", m2.message_id)
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+
+    blob = str(agent.transcript.messages)
+    assert "task one" in blob
+    assert "task two" in blob
+
+    await agent.rollback_to_step(1)
+
+    # The step-1 boundary predates both absorptions (high-water 0): both
+    # messages return to pending, no longer deduped, transcript rewound.
+    assert not await transport.was_processed("test_agent", m1.message_id)
+    assert not await transport.was_processed("test_agent", m2.message_id)
+    assert await transport.has_pending("test_agent")
+    inbox = agent.inbox
+    assert inbox is not None
+    first, second = await inbox.poll(), await inbox.poll()
+    assert first is not None
+    assert second is not None
+    assert (first.text, second.text) == ("task one", "task two")
+    assert "task one" not in str(agent.transcript.messages)

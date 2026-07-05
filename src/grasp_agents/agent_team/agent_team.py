@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind, TeamCheckpoint
-from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
+from grasp_agents.mailbox import CheckpointMailboxTransport, resolve_session_transport
 from grasp_agents.runtime import ActorDriver
 from grasp_agents.session_context import SessionContext, current_session_context
 
@@ -111,7 +111,6 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         entry: Processor[Any, Any, CtxT] | str | None = None,
         cards: Sequence[MemberCard] | None = None,
         ctx: SessionContext[CtxT] | None = None,
-        transport: Transport[TeamMessage] | None = None,
         name: str | None = None,
         path: list[str] | None = None,
         max_hops: int = 50,
@@ -190,17 +189,12 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._ctx.add_environment_restored_callback(self._notify_environment_rewind)
 
         # The one shared mailbox Transport every member views — residents
-        # consume it via their AgentInbox, transforms via the ActorDriver. Explicit,
-        # else durable over the session store, else in-memory (single process).
-        if transport is not None:
-            self._transport: Transport[TeamMessage] = transport
-        else:
-            store = self._ctx.checkpoint_store
-            self._transport = (
-                CheckpointMailboxTransport(store, session_key=self._ctx.session_key)
-                if store is not None
-                else InMemoryMailboxTransport()
-            )
+        # consume it via their AgentInbox, transforms via the ActorDriver.
+        # Always the session's (``ctx.transport``), created and installed on
+        # first use (durable over the session store, else in-memory), so a
+        # host rebuilt mid-session reuses the same mailbox — and its live
+        # consumption counters — instead of opening a fresh one.
+        self._transport: Transport[TeamMessage] = resolve_session_transport(self._ctx)
 
         # Partition members by execution mode (explicit on the card, else inferred):
         # a resident runs a persistent loop off its inbox; everything else
@@ -555,7 +549,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 )
 
             for member_name, resident in self._residents.items():
-                resident.attach_inbox(self._transport)
+                resident.attach_inbox()
                 self._resident_tasks.append(
                     asyncio.create_task(
                         self._run_resident(resident, run_kwargs),

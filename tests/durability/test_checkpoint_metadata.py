@@ -64,10 +64,10 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v13: items dropped the *_parts mirror fields; the message log persists
-        # the OpenResponses-named fields, so older logs (mirror-only) are
-        # unreadable and the supported floor is also v13.
-        assert CURRENT_SCHEMA_VERSION == 13
+        # v14: background-task launch ordering (TaskRecord.launch_seq +
+        # AgentContextState.bg_launch_seq) — additive over the v13 floor
+        # (items dropped the *_parts mirror fields; older logs unreadable).
+        assert CURRENT_SCHEMA_VERSION == 14
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:

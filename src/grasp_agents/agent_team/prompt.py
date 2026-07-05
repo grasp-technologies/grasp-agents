@@ -72,9 +72,12 @@ def make_rewind_notice(rewinder: str) -> str:
         "<environment_rewind>\n"
         f"The team lead ({rewinder}) has rewound the shared environment to an "
         "earlier snapshot. Files may have changed or reverted, and any running "
-        "kernels or shell sessions were reset along with the filesystem. This "
-        "was deliberate — do not treat it as corruption. Re-read any files you "
-        "rely on and re-establish kernel/shell state before continuing.\n"
+        "kernels or shell sessions were reset along with the filesystem. The "
+        "lead's own conversation was rewound to the same point: it will not "
+        "remember exchanges from after it, and messages you sent it since then "
+        "may be re-delivered and answered again. This was deliberate — do not "
+        "treat it as corruption. Re-read any files you rely on and "
+        "re-establish kernel/shell state before continuing.\n"
         "</environment_rewind>"
     )
 

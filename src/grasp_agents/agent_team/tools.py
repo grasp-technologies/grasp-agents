@@ -8,14 +8,13 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from grasp_agents.mailbox import CheckpointMailboxTransport
+from grasp_agents.mailbox import resolve_session_transport
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 from .message import LEAD_PRIORITY, USER_SENDER, TeamMessage
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.runtime import Transport
     from grasp_agents.session_context import SessionContext
 
     from .agent_card import MemberCard
@@ -39,23 +38,6 @@ class MessageSink(Protocol):
 # Resolves the destination a SendMessage call delivers into for the active run —
 # the team itself (which routes per recipient), or a bare transport.
 type TransportResolver = Callable[[SessionContext[Any]], MessageSink]
-
-
-def default_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage]:
-    """
-    A durable transport over ``ctx.checkpoint_store``. Raises if no checkpoint
-    store is wired — a single-process team uses
-    :class:`~grasp_agents.mailbox.InMemoryMailboxTransport` instead (the team
-    falls back to it automatically).
-    """
-    store = ctx.checkpoint_store
-    if store is None:
-        raise ValueError(
-            "Durable AgentTeam messaging requires ctx.checkpoint_store. Wire a "
-            "CheckpointStore (e.g. FileCheckpointStore(root=...)), or rely on the "
-            "in-memory transport for a single-process team."
-        )
-    return CheckpointMailboxTransport(store, session_key=ctx.session_key)
 
 
 class SendMessageInput(BaseModel):
@@ -88,7 +70,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         self,
         cards: Sequence[MemberCard],
         *,
-        transport_resolver: TransportResolver = default_transport,
+        transport_resolver: TransportResolver = resolve_session_transport,
     ) -> None:
         super().__init__(
             name=SEND_MESSAGE_TOOL_NAME,
