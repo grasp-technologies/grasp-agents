@@ -45,6 +45,11 @@ class MemberCard(BaseModel):
     # recipients runs resident. Set it explicitly when inference is ambiguous (e.g. a
     # chat agent that only becomes a messenger once given the ``SendMessage`` tool).
     resident: bool | None = None
+    # The team's lead: at most one per team (validated at team construction). The
+    # lead holds the session's environment-rewind right
+    # (``SessionContext.environment_rewinder``), so only it snapshots the shared
+    # filesystem and may roll it back.
+    lead: bool = False
 
     @classmethod
     def from_processor(
@@ -54,6 +59,7 @@ class MemberCard(BaseModel):
         description: str = "",
         skills: Sequence[str] | None = None,
         resident: bool | None = None,
+        lead: bool = False,
     ) -> MemberCard:
         """
         Build a card from a processor, taking its ``name`` and deriving ``input_type``
@@ -107,6 +113,7 @@ class MemberCard(BaseModel):
             skills=list(skills),
             input_type=input_type,
             resident=resident,
+            lead=lead,
         )
 
     def render(self) -> str:

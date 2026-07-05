@@ -409,12 +409,11 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
     assert not await transport.has_pending("curator")  # message stayed acked
 
 
-async def test_rewind_unleases_inbox_message() -> None:
-    # A transcript rewind (rollback / failed-run revert, both via
-    # ``_restore_session``) must drop the leased inbox message: it was never acked,
-    # so it stays in the mailbox and the resident re-takes it on the next run —
-    # rather than wedging behind the one-at-a-time lease on a message the rewound
-    # transcript no longer reflects.
+async def test_settle_unleases_inbox_message() -> None:
+    # An abnormal run exit (failure / cancel, both settle via ``_settle_run``)
+    # must drop the leased inbox message: it was never acked, so it stays in
+    # the mailbox and the resident re-takes it on the next run — rather than
+    # wedging behind the one-at-a-time lease.
     agent = LLMAgent[Any, Any, None](
         name="curator",
         llm=MockLLM(responses_queue=[]),
@@ -430,8 +429,8 @@ async def test_rewind_unleases_inbox_message() -> None:
     # While leased, the one-at-a-time gate hides it from a second take.
     assert await inbox.take() is None
 
-    # The chokepoint both rollback and the failed-run revert pass through.
-    agent._restore_session(agent._snapshot_session())  # pyright: ignore[reportPrivateUsage]
+    # The settle every abnormal run exit passes through.
+    agent._settle_run(failed=True)  # pyright: ignore[reportPrivateUsage]
 
     # Un-leased: the still-unacked message is takeable again.
     retaken = await inbox.take()

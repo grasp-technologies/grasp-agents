@@ -199,15 +199,19 @@ class StepWatermark(BaseModel):
     """
     A restorable session position — the coordinates needed to rewind here.
 
-    The transcript length to truncate to (``message_count`` against
-    ``log_version``), the loop turn, the delivery step, the provider cache key,
-    the filesystem snapshot to restore, and the agent-context state to reapply.
-    :class:`AgentCheckpoint` holds one of these as its current position and a
-    list of them as the per-step rollback points. See
-    :meth:`LLMAgent.rollback_to_step`.
+    The transcript length to truncate to (``message_count``), the loop turn,
+    the delivery step, the provider cache key, the filesystem snapshot to
+    restore, and the agent-context state to reapply. :class:`AgentCheckpoint`
+    holds one of these as its current position and a list of them as the
+    per-step rollback points. See :meth:`LLMAgent.rollback_to_step`.
     """
 
     message_count: int = 0
+    # The message-log file ``message_count`` indexes. Meaningful only on a
+    # head's ``current`` — stamped by the checkpoint serializers, never by
+    # callers. Rollback boundaries leave it defaulted: the log is append +
+    # suffix-truncate + content-preserving rewrite, so a boundary's
+    # ``message_count`` stays a valid prefix of whatever version is live.
     log_version: int = 0
     turn: int = 0
     step: int | None = None

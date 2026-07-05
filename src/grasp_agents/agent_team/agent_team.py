@@ -152,10 +152,23 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._cards = self._resolve_cards(cards)
         self._cards_by_name = {c.name: c for c in self._cards}
 
+        leads = [c.name for c in self._cards if c.lead]
+        if len(leads) > 1:
+            raise ValueError(
+                f"Team {self._name!r} declares more than one lead: {leads}; "
+                "at most one member may be the lead."
+            )
+
         # Bind the session: explicit ctx, else the ambient / process-default one.
         self._ctx: SessionContext[CtxT] = (
             ctx if ctx is not None else current_session_context()  # type: ignore[assignment]
         )
+
+        # The lead holds the session's environment-rewind right; claiming here
+        # makes a conflict (e.g. a ctx that already declares a different
+        # rewinder) a construction error, not a mid-run one.
+        if leads:
+            self._ctx.claim_environment_rewind(leads[0])
 
         # The one shared mailbox Transport every member views — residents
         # consume it via their AgentInbox, transforms via the ActorDriver. Explicit,

@@ -86,6 +86,7 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
                 logger.warning(
                     f"{err_message} -> retrying (attempt {n_attempt}):\n{err}"
                 )
+                self._prepare_retry()  # pyright: ignore[reportPrivateUsage]
 
     return cast("F", wrapper)
 
@@ -503,6 +504,14 @@ class Processor[InT, OutT, CtxT](
         return Packet(sender=self.name, payloads=outputs, routing=joined_routing)
 
     # --- Run ---
+
+    def _prepare_retry(self) -> None:
+        """
+        Hook run by ``with_retry`` before a retry attempt re-enters the
+        stream. Subclasses use it to carry the failed attempt's settled state
+        into the retry (see ``LLMAgent``); the base processor retries from
+        scratch.
+        """
 
     def generate_exec_id(self, exec_id: str | None) -> str:
         if exec_id is None:

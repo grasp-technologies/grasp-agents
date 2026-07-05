@@ -1,6 +1,6 @@
 # pyright: reportUnusedImport=false
 
-from .checkpoint_mixin import CheckpointPersistMixin
+from .checkpoint_mixin import AgentCheckpointPersistMixin, CheckpointPersistMixin
 from .checkpoint_store import CheckpointStore, InMemoryCheckpointStore
 from .checkpoints import (
     CURRENT_SCHEMA_VERSION,
@@ -33,6 +33,7 @@ __all__ = [
     "SCHEMA_VERSION_SUMMARIES",
     "TOOL_CALL_PREFIX",
     "AgentCheckpoint",
+    "AgentCheckpointPersistMixin",
     "CheckpointKind",
     "CheckpointPersistMixin",
     "CheckpointSchemaError",

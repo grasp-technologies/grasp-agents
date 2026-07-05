@@ -61,6 +61,14 @@ class SessionContext[CtxT](BaseModel):
         default="off", exclude=True
     )
 
+    # The processor holding this session's environment-rewind right: the only
+    # one that snapshots the filesystem at its checkpoints and may restore one
+    # (:meth:`restore_fs_snapshot`). Declare it here in multi-agent sessions
+    # (e.g. the coordinator); left ``None``, the right is claimed lazily by
+    # the first agent that records a rewind point (see
+    # :meth:`claim_environment_rewind`).
+    environment_rewinder: ProcName | None = Field(default=None, exclude=True)
+
     responses: defaultdict[ProcName, list[Response]] = Field(
         default_factory=lambda: defaultdict(list)
     )
@@ -203,8 +211,9 @@ class SessionContext[CtxT](BaseModel):
         """
         Whether this process rewound the shared filesystem to a snapshot.
 
-        Set by :meth:`load_checkpoint`; kernel re-attach is only meaningful
-        inside a restored filesystem, so consumers gate on this.
+        Set by :meth:`load_checkpoint` and :meth:`restore_fs_snapshot`; kernel
+        re-attach is only meaningful inside a restored filesystem, so
+        consumers gate on this.
         """
         return self._session_fs_restored
 
@@ -271,14 +280,17 @@ class SessionContext[CtxT](BaseModel):
         boundary, so a cold resume keeps the live filesystem instead of
         rewinding to a stale ref.
         """
-        key = self._session_store_key()
-        if self.checkpoint_store is None or key is None:
-            return
         if (
             not self.serialize_state
             and self.fs_snapshot_policy == "off"
             and not self.session_metadata
         ):
+            return
+        await self._write_session_record(fs_snapshot_ref=fs_snapshot_ref)
+
+    async def _write_session_record(self, *, fs_snapshot_ref: str | None) -> None:
+        key = self._session_store_key()
+        if self.checkpoint_store is None or key is None:
             return
         context_kind: ContextKind | None = None
         context_data: Any | None = None
@@ -292,6 +304,75 @@ class SessionContext[CtxT](BaseModel):
             session_metadata=self.session_metadata,
         )
         await self.checkpoint_store.save(key, record.model_dump_json().encode("utf-8"))
+
+    def claim_environment_rewind(self, proc_name: ProcName) -> None:
+        """
+        Claim the session's single environment-rewind right for ``proc_name``.
+
+        Rewinding the shared environment (:meth:`restore_fs_snapshot`) swaps
+        the filesystem — and, for memory snapshots, every running kernel —
+        under all participants, so exactly one processor per session may drive
+        it. Declare the rewinder explicitly at construction
+        (``SessionContext(environment_rewinder=...)``) in multi-agent
+        sessions; left unset, the right is claimed lazily by the first agent
+        that records a rewind point (a snapshot-carrying step boundary) or
+        rolls back to one. Idempotent for the holder.
+
+        Raises:
+            RuntimeError: another processor already holds the right. Declare
+                the intended rewinder via
+                ``SessionContext(environment_rewinder=...)``, or turn
+                ``fs_snapshot_policy`` off.
+
+        """
+        if self.environment_rewinder is None:
+            self.environment_rewinder = proc_name
+            return
+        if self.environment_rewinder != proc_name:
+            raise RuntimeError(
+                f"Processor {proc_name!r} cannot rewind the session "
+                f"environment: {self.environment_rewinder!r} already holds "
+                "the rewind right (one rewinder per session; declare it via "
+                "SessionContext(environment_rewinder=...))."
+            )
+
+    async def restore_fs_snapshot(self, fs_snapshot_ref: str) -> None:
+        """
+        Rewind the shared environment filesystem to ``fs_snapshot_ref`` and
+        re-point the session checkpoint at it.
+
+        The filesystem is session-owned, so a deliberate rewind (e.g.
+        :meth:`LLMAgent.rollback_to_step`) goes through here rather than
+        touching :attr:`environment` directly: the session record is rewritten
+        with the restored ref in the same call, so a crash right after never
+        cold-resumes into a filesystem newer than the one just restored —
+        retrying the rewind heals fully. Agent-initiated rewinds claim the
+        per-session rewind right first (:meth:`claim_environment_rewind`).
+
+        Raises:
+            RuntimeError: :attr:`environment` is not ``SnapshotCapable``.
+
+        """
+        if not isinstance(self.environment, SnapshotCapable):
+            # RuntimeError, not TypeError, to match load_checkpoint's
+            # resume-side twin of this wiring check.
+            raise RuntimeError(  # noqa: TRY004
+                f"Restoring fs_snapshot_ref={fs_snapshot_ref!r} requires a "
+                "SnapshotCapable ctx.environment; got "
+                f"{type(self.environment).__name__}."
+            )
+        await self.environment.restore(fs_snapshot_ref)
+        self._session_fs_restored = True
+        # Unconditional (unlike ``save_checkpoint``'s feature gate): the ref
+        # being restored proves a snapshot-carrying record exists, and leaving
+        # it pointing past the rewind is exactly the divergence this method
+        # closes.
+        await self._write_session_record(fs_snapshot_ref=fs_snapshot_ref)
+        logger.info(
+            "Restored session %s filesystem to snapshot %r",
+            self.session_key,
+            fs_snapshot_ref,
+        )
 
     def record_response(self, agent_name: ProcName, response: Response) -> None:
         """

@@ -196,6 +196,33 @@ async def test_duplicate_member_names_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_multiple_leads_rejected(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    a = _agent("a", [_text_response("x")])
+    b = _agent("b", [_text_response("y")])
+    cards = [MemberCard(name="a", lead=True), MemberCard(name="b", lead=True)]
+    with pytest.raises(ValueError, match="more than one lead"):
+        AgentTeam([a, b], cards=cards, ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_lead_claims_environment_rewind_at_construction(
+    tmp_path: Path,
+) -> None:
+    ctx = _ctx(tmp_path)
+    a = _agent("a", [_text_response("x")])
+    b = _agent("b", [_text_response("y")])
+    AgentTeam([a, b], cards=[MemberCard(name="a", lead=True)], ctx=ctx)
+    assert ctx.environment_rewinder == "a"
+
+    # A ctx that already declares a different rewinder conflicts immediately.
+    other_ctx = _ctx(tmp_path)
+    other_ctx.environment_rewinder = "someone-else"
+    with pytest.raises(RuntimeError, match="rewind right"):
+        AgentTeam([a, b], cards=[MemberCard(name="a", lead=True)], ctx=other_ctx)
+
+
+@pytest.mark.asyncio
 async def test_explicit_transport_is_used_by_members() -> None:
     # No file_backend on ctx: the team routes every send through the explicit
     # transport, so the recording flag being set proves it reached the members.

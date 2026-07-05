@@ -270,9 +270,9 @@ class TestFinalAnswerToolCallClosure:
 # ---------------------------------------------------------------------------
 
 
-class TestFailedRunRollback:
+class TestFailedRunSettle:
     @pytest.mark.asyncio
-    async def test_failed_run_restores_transcript(self) -> None:
+    async def test_failed_run_settles_to_last_closed_turn(self) -> None:
         agent, _ = _make_agent([_text_response("bad"), _text_response("good")])
         agent_ctx = agent._loop.agent_ctx
 
@@ -282,29 +282,33 @@ class TestFailedRunRollback:
         def parse(final_answer: str, *, in_args: Any = None, exec_id: str) -> str:
             del in_args, exec_id
             if fail:
-                # Simulate mid-run context mutations that must roll back with
-                # the transcript (a Read's ledger entry, a Bash `cd`).
+                # Simulate mutations after the last checkpoint boundary that
+                # must roll back with the pruned answer (a Read's ledger
+                # entry, a Bash `cd`).
                 agent_ctx.file_edit_state.import_state({"/tmp/x.py": 1.0}, [])
                 agent_ctx.shell_state.cwd = "/mutated"
                 raise ValueError("parser boom")
             return final_answer
 
-        before = list(agent.transcript.messages)
         with pytest.raises(ProcRunError) as excinfo:
             await agent.run("first try")
         assert "boom" in str(excinfo.value.__cause__)
-        assert list(agent.transcript.messages) == before
-        # The transcript-paired context state rolled back with it.
+        # Settled, not reverted: the input stays; the unparseable answer —
+        # not a closed turn — is pruned so a retry regenerates it.
+        texts = [str(m) for m in agent.transcript.messages]
+        assert sum("first try" in t for t in texts) == 1
+        assert sum("bad" in t for t in texts) == 0
+        # The context state rolled back to the last checkpoint boundary.
         assert agent_ctx.file_edit_state.read_file_state == {}
         assert agent_ctx.shell_state.cwd is None
 
-        # The same (reused) instance runs cleanly afterwards — no dangling
-        # input message, no pairing violation.
+        # The same (reused) instance runs cleanly afterwards — no pairing
+        # violation, and the new input lands once.
         fail = False
         out = await agent.run("second try")
         assert out.payloads[0] == "good"
+        agent.transcript.validate_tool_call_pairing()
         texts = [str(m) for m in agent.transcript.messages]
-        assert sum("first try" in t for t in texts) == 0
         assert sum("second try" in t for t in texts) == 1
 
 

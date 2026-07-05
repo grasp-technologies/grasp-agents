@@ -1,11 +1,11 @@
 """
 Cancelling a run mid-turn rolls back to the last settled boundary — the last
 completed tool round or the submitted message — keeping the work that finished
-and dropping only the unfinished tail. The transcript is pruned exactly as on
-session resume (``prepare_messages_for_resume``), and the paired agent-context
-state (here, the shell cwd) is restored to the same boundary. The TUI's
-Esc-interrupt relies on this so the next turn isn't poisoned by a dangling call
-or a context that disagrees with the transcript.
+and dropping only the round in flight (``prepare_messages_for_resume``), and
+the paired agent-context state (here, the shell cwd) is restored to the same
+boundary. The TUI's Esc-interrupt relies on this so the next turn isn't
+poisoned by a dangling call, a context that disagrees with the transcript, or
+re-issued tool calls for work that already completed.
 """
 
 from __future__ import annotations
@@ -100,23 +100,27 @@ async def test_cancel_first_turn_prunes_and_restores_state() -> None:
         await asyncio.wait_for(started.wait(), timeout=2.0)
         assert _call_ids(agent) == (["tc1"], [])  # dangling call committed
         assert agent._loop.agent_ctx.shell_state.cwd == "/mutated"  # tool mutated it
+        assert agent._committed is not None  # mid-run checkpoint advanced it
         await _cancel(task)
     finally:
         release.set()
 
     agent.transcript.validate_tool_call_pairing()
-    assert _call_ids(agent) == ([], [])  # cancelled turn pruned, no dangling call
+    assert _call_ids(agent) == ([], [])  # cancelled round pruned, no dangling call
     assert agent._loop.agent_ctx.shell_state.cwd is None  # state restored to boundary
+    # The AFTER_INPUT boundary pairs with the kept transcript — not reverted.
+    assert agent._committed is not None
 
     out = await agent.run("again")  # reusable
     assert out.payloads[0] == "second"
 
 
 @pytest.mark.asyncio
-async def test_cancel_strips_whole_turn_including_completed_round() -> None:
-    # A dangling call strips the WHOLE incomplete assistant turn back to the
-    # submitted message (resume semantics) — an earlier completed round in the
-    # same turn goes too, and its context mutation reverts with it.
+async def test_cancel_keeps_completed_round_drops_incomplete_one() -> None:
+    # Only the round in flight is dropped: an earlier round whose tool call
+    # already closed stays in the transcript (its work must not be re-issued),
+    # and the context state rewinds to the checkpoint boundary after it — the
+    # dropped round's mutation reverts, the kept round's survives.
     started, release = asyncio.Event(), asyncio.Event()
     agent = LLMAgent[str, str, None](
         name="a",
@@ -145,15 +149,16 @@ async def test_cancel_strips_whole_turn_including_completed_round() -> None:
         await asyncio.wait_for(started.wait(), timeout=2.0)
         # turn 0 completed (tc1 + result); turn 1's tc2 is dangling
         assert _call_ids(agent) == (["tc1", "tc2"], ["tc1"])
+        assert agent._loop.agent_ctx.shell_state.cwd == "/b"
         await _cancel(task)
     finally:
         release.set()
 
     agent.transcript.validate_tool_call_pairing()
-    # the whole incomplete turn (both rounds) is stripped back to the message
-    assert _call_ids(agent) == ([], [])
-    # ...and the turn's context mutations revert with it (pre-turn cwd = None)
-    assert agent._loop.agent_ctx.shell_state.cwd is None
+    # tc1's completed round stays; only tc2's dangling round is dropped
+    assert _call_ids(agent) == (["tc1"], ["tc1"])
+    # ...and the context rewinds to the boundary after the kept round
+    assert agent._loop.agent_ctx.shell_state.cwd == "/a"
 
     out = await agent.run("again")
     assert out.payloads[0] == "second"
