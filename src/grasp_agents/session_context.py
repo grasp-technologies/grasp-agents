@@ -373,6 +373,18 @@ class SessionContext[CtxT](BaseModel):
         """
         self._environment_restored_callbacks.append(callback)
 
+    def remove_environment_restored_callback(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """
+        Deregister a rewind callback (a no-op if it is not registered). A host
+        being torn down must remove the callback it added, or a host rebuilt
+        on the same session would leave a stale announcer posting duplicate
+        notices.
+        """
+        if callback in self._environment_restored_callbacks:
+            self._environment_restored_callbacks.remove(callback)
+
     async def restore_fs_snapshot(self, fs_snapshot_ref: str) -> None:
         """
         Rewind the shared environment filesystem to ``fs_snapshot_ref`` and

@@ -164,6 +164,18 @@ class MemberHost:
             )
         )
 
+    async def aclose(self) -> None:
+        """
+        Release the host's session hooks and close its member (cascading to
+        the member's shells / kernels / background tasks). Deregistering the
+        rewind announcer matters when a host is rebuilt on the same session:
+        a stale one would post duplicate rewind notices.
+        """
+        self._member.ctx.remove_environment_restored_callback(
+            self._notify_environment_rewind
+        )
+        await self._member.aclose()
+
     async def _notify_environment_rewind(self, fs_snapshot_ref: str) -> None:
         """
         Announce this member's environment rewind to every peer, control-plane

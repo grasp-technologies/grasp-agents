@@ -120,6 +120,16 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
     async def has_pending(self, recipient: str) -> bool:
         return bool(self._boxes.get(recipient))
 
+    async def was_processed(self, recipient: str, envelope_id: str) -> bool:
+        # The retained-processed list doubles as the dedupe record, so a
+        # deterministic-id re-post (an entry seed) is skipped here exactly as
+        # it is on the durable transport. Untracked acks (``seq == 0``) are
+        # not retained and so not deduped — they have no redelivery source
+        # in-process.
+        return any(
+            m.message_id == envelope_id for m in self._processed.get(recipient, [])
+        )
+
     async def unprocess_after(self, recipient: str, seq: int) -> int:
         processed = self._processed.get(recipient, [])
         moved = [m for m in processed if m.seq > seq]

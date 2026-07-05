@@ -225,3 +225,22 @@ async def test_hosted_member_rolls_back_directly_between_runs() -> None:
     assert alice.step == 1
     assert "hello" not in str(alice.transcript.messages)
     assert await transport.has_pending("alice")  # the human message re-pended
+
+
+@pytest.mark.asyncio
+async def test_closed_host_stops_announcing_rewinds(tmp_path: Path) -> None:
+    # host.aclose() deregisters the lead's rewind announcer, so a host rebuilt
+    # on the same session posts exactly one notice per rewind.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    transport = InMemoryMailboxTransport()
+    ctx.transport = transport
+    cards = [MemberCard(name="alice", lead=True), MemberCard(name="bob")]
+
+    host1 = MemberHost(_agent("alice", [], ctx=ctx), cards=cards)
+    await host1.aclose()
+    MemberHost(_agent("alice", [], ctx=ctx), cards=cards)
+
+    await ctx.restore_fs_snapshot("snap-1")
+
+    assert len(transport._boxes.get("bob", [])) == 1  # pyright: ignore[reportPrivateUsage]

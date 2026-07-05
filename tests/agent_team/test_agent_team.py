@@ -327,35 +327,48 @@ async def test_team_over_checkpoint_transport() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_does_not_reseed_or_reset_budget() -> None:
-    # The team checkpoint makes a re-run a resume, not a cold restart: its
-    # existence suppresses re-seeding the entry, and the persisted hop count is
-    # restored instead of reset to 0. A completed session therefore re-runs into
-    # immediate quiescence with no duplicate kickoff and no extra LLM calls.
+async def test_interrupted_run_resumes_without_reseeding() -> None:
+    # A cancelled/crashed run never advances the run ordinal, so re-running
+    # the SAME input is a resume, not a new turn: the already-processed seed
+    # is deduped and the persisted hop count continues instead of resetting.
+    # (A COMPLETED run advances the ordinal — a re-run then re-delivers; see
+    # test_repeat_identical_input_delivers_on_a_new_run.)
     store = InMemoryCheckpointStore()
 
-    def build() -> tuple[AgentTeam[None], LLMAgent[Any, Any, None]]:
+    def build() -> tuple[
+        AgentTeam[None], LLMAgent[Any, Any, None], LLMAgent[Any, Any, None]
+    ]:
         alice = _agent(
             "alice", [_send("bob", "ping", "c1"), _text_response("alice done")]
         )
         bob = _agent("bob", [_text_response("bob got it")])
         ctx = SessionContext[None](state=None, checkpoint_store=store)
-        return AgentTeam([alice, bob], entry="alice", ctx=ctx), bob
+        return AgentTeam([alice, bob], entry="alice", ctx=ctx), alice, bob
 
-    team1, _ = build()
-    result1 = await team1.run("kick off")
+    team1, _alice1, bob1 = build()
+
+    async def consume() -> None:
+        # Daemon: never self-terminates, so cancellation is the only exit —
+        # a deterministic stand-in for a crash (the ordinal never advances).
+        async for _ in team1.run_stream("kick off", daemon=True):
+            pass
+
+    run = asyncio.create_task(consume())
+    try:
+        await _until(lambda: bob1.llm.call_count >= 1)
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
     await team1.aclose()
-    assert result1.stop_reason == "quiesced"
-    assert result1.activations == 2
 
-    # Reconstruct on the same store (a fresh process) and re-run with the same
-    # input. The checkpoint exists, so the entry is NOT re-seeded.
-    team2, bob2 = build()
+    # Reconstruct on the same store (a fresh process) and re-run the same
+    # input: same ordinal → the processed seed is deduped, budget continues.
+    team2, alice2, _bob2 = build()
     result2 = await team2.run("kick off")
     await team2.aclose()
-    assert result2.activations == 2  # restored, not reset to 0 then re-seeded
-    assert result2.messages == []  # no duplicate kickoff delivered
-    assert bob2.llm.call_count == 0  # nothing re-run
+    assert alice2.llm.call_count == 0  # no duplicate kickoff
+    assert result2.activations == 2  # restored, not reset
 
 
 @pytest.mark.asyncio
@@ -699,3 +712,91 @@ async def test_lead_member_rolls_back_directly_after_a_team_run(
     transport = ctx.transport
     assert transport is not None
     assert await transport.has_pending("alice")  # the seed was re-pended
+
+
+@pytest.mark.asyncio
+async def test_team_runs_twice_on_the_same_session(tmp_path: Path) -> None:
+    # A run's driver shutdown must not close the session mailbox
+    # (``ctx.transport``), and a new input gets a fresh seed id — so a second
+    # run on the same team + ctx actually delivers.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    await team.run("first question")
+    await team.run("second question")
+
+    assert solo.llm.call_count == 2
+    blob = str(solo.transcript.messages)
+    assert "first question" in blob
+    assert "second question" in blob
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_team_reuses_open_session_mailbox(tmp_path: Path) -> None:
+    # A team rebuilt on the same session must find the mailbox usable, not
+    # latched shut by the previous team's run.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team1 = AgentTeam([solo], ctx=ctx)
+    await team1.run("first question")
+
+    team2 = AgentTeam([solo], ctx=ctx)
+    await team2.run("second question")
+
+    assert solo.llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_repeat_identical_input_delivers_on_a_new_run(tmp_path: Path) -> None:
+    # Identical content across completed runs is two legitimate turns: seed
+    # identity keys on the run ordinal, never on content.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    await team.run("same question")
+    await team.run("same question")
+
+    assert solo.llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rewind_notice_reaches_peers_between_runs(tmp_path: Path) -> None:
+    # A lead rollback restores a snapshot BETWEEN runs (no live driver); the
+    # notice must land on the session mailbox for the peers' next take rather
+    # than being dropped with the run-scoped routing.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    alice = _agent("alice", [])
+    bob = _agent("bob", [])
+    AgentTeam(
+        [alice, bob],
+        cards=[MemberCard(name="alice", lead=True), MemberCard(name="bob")],
+        ctx=ctx,
+    )
+
+    await ctx.restore_fs_snapshot("snap-1")
+
+    transport = ctx.transport
+    assert transport is not None
+    assert await transport.has_pending("bob")
+    assert not await transport.has_pending("alice")
+
+
+@pytest.mark.asyncio
+async def test_closed_team_stops_announcing_rewinds(tmp_path: Path) -> None:
+    # aclose() deregisters the rewind announcer: after a rebuild on the same
+    # session, one rewind produces exactly one notice — not one per build.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    cards = [MemberCard(name="alice", lead=True), MemberCard(name="bob")]
+    team1 = AgentTeam([_agent("alice", []), _agent("bob", [])], cards=cards, ctx=ctx)
+    await team1.aclose()
+    AgentTeam([_agent("alice", []), _agent("bob", [])], cards=cards, ctx=ctx)
+
+    await ctx.restore_fs_snapshot("snap-1")
+
+    transport = ctx.transport
+    assert isinstance(transport, InMemoryMailboxTransport)
+    assert len(transport._boxes.get("bob", [])) == 1  # pyright: ignore[reportPrivateUsage]

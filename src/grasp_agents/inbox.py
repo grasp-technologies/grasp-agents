@@ -50,10 +50,12 @@ class AgentInbox:
         self._waiting = False
         # Messages taken but not yet acked — released on the next checkpoint
         # (:meth:`flush_acks`) once the turn that consumed them is durable, or
-        # dropped un-acked on a transcript rewind (:meth:`rollback`). In-memory and
-        # transient: a crash loses the leases, and the un-acked messages are simply
-        # re-delivered. The host attaches a fresh inbox per run, so leases never
-        # outlive a run.
+        # dropped un-acked when the turn leaves the transcript (:meth:`rollback`).
+        # In-memory and transient: a crash loses the leases, and the un-acked
+        # messages are simply re-delivered. A lease must live exactly as long as
+        # the live transcript that absorbed its message — which is why an agent
+        # keeps ONE inbox across attach/detach cycles (see
+        # :meth:`LLMAgent.attach_inbox`) instead of building one per run.
         self._leased: dict[str, TeamMessage] = {}
 
     @property
@@ -126,9 +128,11 @@ class AgentInbox:
 
     def rollback(self) -> None:
         """
-        Drop all leases without acking, so a transcript rewind (rollback /
-        failed-run revert) re-takes the still-unacked messages from the mailbox
+        Drop all leases without acking, so a transcript rewind (step rollback,
+        cold reload) re-takes the still-unacked messages from the mailbox
         rather than wedging on them. In-memory only — they were never removed.
+        NOT for a failed-run settle: settling keeps the absorbed message's
+        turn, and its lease is what prevents a duplicate re-take.
         """
         self._leased.clear()
 

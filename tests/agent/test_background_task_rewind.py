@@ -348,3 +348,67 @@ class TestAgentRewindsTaskPlane:
         assert bg_task.cancelled()
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.CANCELLED
+
+
+class TestSettleKeepsDeliveredFlips:
+    @pytest.mark.asyncio
+    async def test_flip_survives_settle_when_note_survives(self) -> None:
+        # A completion note delivered BEFORE the round in flight survives the
+        # settle (settling prunes only that round); its deferred DELIVERED
+        # flip must survive with it — otherwise the record stays COMPLETED
+        # and a later resume re-injects a note the transcript already holds.
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        agent = LLMAgent[str, str, None](
+            name="a",
+            ctx=ctx,
+            path=[],
+            llm=MockLLM(responses_queue=[_text_response("hi there")]),
+            sys_prompt="x",
+            env_info=False,
+        )
+        await agent.run("hi")  # a completed, checkpointed turn
+        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+
+        # A task launched in a completed (checkpointed) round…
+        tool = FireAndForgetTool(delay=0.01)
+        call = FunctionToolCallItem(
+            call_id="c1", name="fire_and_forget", arguments='{"text":"x"}'
+        )
+        _note, event = await mgr.run_backgroundable(
+            call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
+        )
+        assert event is not None
+        await agent.save_checkpoint(turn=0)  # boundary covers the launch
+
+        # …completes and its note is drained into the transcript.
+        await mgr.wait_idle()
+        async for _ in mgr.drain(exec_id="t", ctx=ctx):
+            pass
+        notes_before = str(agent.transcript.messages).count("task_notification")
+        assert notes_before  # launch + completion notes
+        assert mgr.export_pending_delivered()  # the deferred DELIVERED flip
+
+        # A later round is interrupted in flight → settle prunes only it.
+        agent.transcript.update(
+            [FunctionToolCallItem(call_id="c2", name="foo", arguments="{}")]
+        )
+        agent._settle_run(failed=True)  # pyright: ignore[reportPrivateUsage]
+
+        # The notes are still in the transcript, and so is the flip.
+        assert str(agent.transcript.messages).count("task_notification") == notes_before
+        assert mgr.export_pending_delivered()
+
+        # The next save flushes the flip: the record lands DELIVERED…
+        await agent.save_checkpoint(turn=1)
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.DELIVERED
+
+        # …so a cold resume injects nothing (no duplicate note).
+        t2 = LLMAgentTranscript()
+        t2.messages = [InputMessageItem.from_text("sys", role="system")]
+        mgr2 = BackgroundTaskManager[None](
+            agent_name="a", transcript=t2, tools={}, path=[]
+        )
+        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        assert injected == []

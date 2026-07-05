@@ -1186,30 +1186,37 @@ class _AgentTurns:
     """
     Drives an agent from the interactive callbacks.
 
-    Each submitted message runs as a chat delivery, so the agent auto-mints
-    its step and records a rewind boundary; the minted step is captured per
-    submission, mapping the picker's 0-based indices onto the agent's steps.
-    ``on_rollback(i)`` rewinds to the i-th submission's step, so the next
-    message re-delivers from there.
+    Each submitted message runs as a chat delivery, so the agent auto-mints a
+    step and records a rewind boundary. Exactly one entry is recorded per
+    submission — the step the run actually anchored, or ``None`` when it
+    failed before anchoring — so indices stay aligned with the picker's turn
+    list even across failed/interrupted turns. ``on_rollback(i)`` rewinds to
+    the i-th submission's step (or, for an unanchored one, the earliest
+    anchored step after it, which discards the same turns).
     """
 
     def __init__(self, agent: LLMAgent[Any, Any, Any]) -> None:
         self._agent = agent
-        self._steps: list[int] = []
+        self._steps: list[int | None] = []
 
     async def on_submit(self, text: str) -> AsyncIterator[Event[Any]]:
+        anchored_before = set(self._agent.rollback_steps)
         try:
             async for event in self._agent.run_stream(text):
                 yield event
         finally:
-            # Interrupted / failed turns still anchored a boundary; record the
-            # minted step so the picker stays aligned with the submissions.
-            step = self._agent.step
-            if step is not None and (not self._steps or self._steps[-1] != step):
-                self._steps.append(step)
+            new = [s for s in self._agent.rollback_steps if s not in anchored_before]
+            # At most one anchor per delivery; ``None`` keeps the picker
+            # aligned when the run failed before anchoring its boundary.
+            self._steps.append(new[-1] if new else None)
 
     async def on_rollback(self, index: int) -> None:
-        await self._agent.rollback_to_step(self._steps[index])
+        # A failed submission anchored nothing (and contributed nothing);
+        # discarding from it means rewinding to the earliest anchored step at
+        # or after it — or touching nothing when no later turn anchored.
+        step = next((s for s in self._steps[index:] if s is not None), None)
+        if step is not None:
+            await self._agent.rollback_to_step(step)
         del self._steps[index:]
 
 

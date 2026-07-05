@@ -215,8 +215,24 @@ class ActorDriver[E]:
     async def _consume_loop(self, name: str) -> None:
         handler = self._handlers[name]
 
-        while True:
-            envelope = await self._transport.consume(name)
+        while not self._stopping:
+            # Wait for the next envelope, but also wake on this driver's own
+            # shutdown: the transport is shared session infrastructure (other
+            # drivers / resident inboxes keep using it after this run), so the
+            # driver must never close it — it only stops its own waiting
+            # consumers. In-flight handlers below still finish their activation.
+            consume = asyncio.ensure_future(self._transport.consume(name))
+            stopped = asyncio.ensure_future(self._stopped_evt.wait())
+            try:
+                await asyncio.wait(
+                    {consume, stopped}, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                stopped.cancel()
+            if not consume.done():
+                consume.cancel()
+                break
+            envelope = consume.result()
 
             if isinstance(envelope, Closed):
                 break
@@ -296,12 +312,17 @@ class ActorDriver[E]:
         await self.shutdown()
 
     async def shutdown(self) -> None:
+        """
+        Stop this driver's consumers and close its event stream. Deliberately
+        does NOT shut the transport down: the transport outlives the run (it is
+        the session's mailbox, shared with resident inboxes and later runs);
+        parked consumers wake on ``_stopped_evt`` instead.
+        """
         if self._stopping:
             await self._stopped_evt.wait()
             return
         self._stopping = True
         try:
-            await self._transport.shutdown()
             put_sentinel(self._streamed_event_queue)
         finally:
             self._stopped_evt.set()

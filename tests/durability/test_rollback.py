@@ -14,6 +14,7 @@ Verifies:
 
 import asyncio
 import contextlib
+from unittest.mock import patch
 
 import pytest
 
@@ -330,3 +331,42 @@ async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
     assert second is not None
     assert (first.text, second.text) == ("task one", "task two")
     assert "task one" not in str(agent.transcript.messages)
+
+
+@pytest.mark.asyncio
+async def test_interrupted_rollback_completes_on_resume() -> None:
+    # A rollback re-marks the head ROLLING_BACK before its durable side
+    # effects; a crash before the ROLLED_BACK head commits is therefore
+    # visible to resume, which completes the rollback instead of resuming the
+    # pre-rollback transcript over already-rewound side channels. Committing
+    # the rolled-back head clears the mark by overwriting it.
+    store = InMemoryCheckpointStore()
+    agent, _ = _make_agent(
+        [_text_response(t) for t in ("a1", "a2")], session_key="s1", store=store
+    )
+    await agent.run("q1", step=1)
+    await agent.run("q2", step=2)
+
+    from grasp_agents.agent.llm_agent import LLMAgent
+
+    with (
+        patch.object(LLMAgent, "_persist_rollback", side_effect=RuntimeError("crash")),
+        pytest.raises(RuntimeError, match="crash"),
+    ):
+        await agent.rollback_to_step(2)
+    head = await load_agent_checkpoint(store, _KEY)
+    assert head.location == AgentCheckpointLocation.ROLLING_BACK
+    assert head.current.step == 2  # the target rides on the marked head
+
+    # The FIRST post-crash call is a direct stepped run — resume must both
+    # complete the rollback and serve the run a fresh (post-rollback) head,
+    # or step 2's pre-rollback cached output would replay here.
+    agent2, _ = _make_agent([_text_response("a2_new")], session_key="s1", store=store)
+    out = await agent2.run("q2-new", step=2)
+    assert out.payloads[0] == "a2_new"
+
+    head = await load_agent_checkpoint(store, _KEY)
+    assert head.location != AgentCheckpointLocation.ROLLING_BACK  # mark cleared
+    blob = str(agent2.transcript.messages)
+    assert "q2-new" in blob
+    assert "q2'" not in blob  # the rolled-back turn's input is gone

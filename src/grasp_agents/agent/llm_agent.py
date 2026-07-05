@@ -376,6 +376,10 @@ class LLMAgent[InT, OutT, CtxT](
         # instead of minting a new one.
         self._anchored_message_id: str | None = None
 
+        # The one inbox this agent ever consumes (built on first
+        # ``attach_inbox``); see attach_inbox for why it outlives detaches.
+        self._inbox_cache: AgentInbox | None = None
+
         # Set by ``_prepare_retry`` between ``with_retry`` attempts: the retry
         # continues the settled delivery (see ``_settle_run``) instead of
         # re-memorizing the input. Consumed at the next stream entry.
@@ -588,12 +592,21 @@ class LLMAgent[InT, OutT, CtxT](
         from grasp_agents.inbox import AgentInbox  # noqa: PLC0415
         from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
 
-        self.inbox = AgentInbox(
-            transport=resolve_session_transport(self._ctx), recipient=self.name
-        )
+        # One inbox per agent lifetime (not per attach): its leases mark
+        # messages absorbed into the live transcript but not yet acked, so
+        # they must survive detach/re-attach with that transcript — a fresh
+        # inbox would re-take (duplicate) a settled, still-owed message.
+        transport = resolve_session_transport(self._ctx)
+        if self._inbox_cache is None or self._inbox_cache.transport is not transport:
+            self._inbox_cache = AgentInbox(transport=transport, recipient=self.name)
+        self.inbox = self._inbox_cache
 
     def detach_inbox(self) -> None:
-        """Drop the resident inbox, returning the agent to single-answer runs."""
+        """
+        Detach the resident inbox, returning the agent to single-answer runs.
+        The inbox itself (with any un-acked leases, which pair with turns still
+        in the live transcript) is kept for the next :meth:`attach_inbox`.
+        """
         self.inbox = None
 
     @property
@@ -700,6 +713,11 @@ class LLMAgent[InT, OutT, CtxT](
                 current.fs_snapshot_ref is not None and self._ctx.session_fs_restored
             ),
         )
+        # The rehydrated transcript holds only checkpointed (acked) turns, so
+        # any lease is for a take this transcript never absorbed — drop it so
+        # the message is re-delivered rather than blocked.
+        if self._loop.inbox is not None:
+            self._loop.inbox.rollback()
 
         self._step_watermarks = list(checkpoint.step_watermarks)
         self._committed = current
@@ -718,11 +736,33 @@ class LLMAgent[InT, OutT, CtxT](
             current.turn,
         )
 
+        # A crash mid-rollback committed the filesystem rewind / mailbox
+        # re-pend but not the rolled-back head: complete the rollback now
+        # rather than resuming the pre-rollback transcript over them, and
+        # reload the head so the caller sees the rolled-back state (never the
+        # stale pre-rollback one — its cached output must not replay).
+        if checkpoint.location is AgentCheckpointLocation.ROLLING_BACK:
+            target = current.step
+            assert target is not None
+            logger.warning(
+                "agent '%s': completing a rollback to step %d that was "
+                "interrupted by a crash",
+                self.name,
+                target,
+            )
+            await self.rollback_to_step(target)
+            reloaded = await self._deserialize_agent_checkpoint(self._ctx)
+            assert reloaded is not None
+            checkpoint = reloaded
+
+        committed = self._committed
+        assert committed is not None
         self._resume_notifications = await self._loop.bg_tasks.resume_durable(
             ctx=self._ctx,
             exec_id=exec_id,
             agent_ctx=self._loop.agent_ctx,
-            bg_launch_seq=current.agent_ctx_state.bg_launch_seq,
+            # From the live head — a rollback completed just above moved it.
+            bg_launch_seq=committed.agent_ctx_state.bg_launch_seq,
         )
 
         return checkpoint
@@ -830,16 +870,27 @@ class LLMAgent[InT, OutT, CtxT](
         self.transcript.messages = pruned.messages
         if pruned.removed_count and self._committed is not None:
             state = self._committed.agent_ctx_state
+            # Settling prunes only the trailing response round, never a
+            # delivered completion note (a user-role message before it) — so
+            # every deferred DELIVERED flip's note is still in the kept
+            # transcript. Re-merge the flips across the restore (whose
+            # snapshot predates the deliveries); dropping them would leave the
+            # records COMPLETED, and a later resume would re-inject notes the
+            # transcript already holds.
+            delivered = self._loop.bg_tasks.export_pending_delivered()
             self._loop.agent_ctx.restore(state)
+            self._loop.bg_tasks.restore_pending_delivered(
+                {**state.pending_delivered, **delivered}
+            )
             # Tasks launched by the pruned round are orphans — their launching
             # calls just left the transcript. Cancel them (sync; the durable
             # CANCELLED flips flush at the next save) so a queued completion
             # can't inject a note for a call the model never made.
             self._loop.bg_tasks.cancel_launched_after(state.bg_launch_seq)
-        # The abnormal exit never acked an in-flight inbox message; drop its
-        # lease so the resident re-takes it rather than wedging.
-        if self._loop.agent_ctx.inbox is not None:
-            self._loop.agent_ctx.inbox.rollback()
+        # An in-flight inbox message stays LEASED: the settle keeps its user
+        # turn (settling never prunes user messages), so the transcript still
+        # owes it a response — the lease is what stops the loop from re-taking
+        # (duplicating) it, and the next checkpoint's ack flush releases it.
 
     def _prepare_retry(self) -> None:
         # The failed attempt settled (``_settle_run``); the retry continues
@@ -984,6 +1035,27 @@ class LLMAgent[InT, OutT, CtxT](
                 "boundary map."
             )
 
+        # Re-mark the head ROLLING_BACK before the first durable side effect:
+        # the fs rewind and the mailbox re-pend commit ahead of the head, and
+        # only a rollback retry heals a crash in between — a plain resume
+        # would restore the pre-rollback head over them. A resume finding this
+        # mark completes the rollback instead, and committing the ROLLED_BACK
+        # head below overwrites (atomically clears) it.
+        if (
+            self._checkpoint_store_key(self._ctx) is not None
+            and self._committed is not None
+        ):
+            marker = AgentCheckpoint(
+                session_key=self._ctx.session_key,
+                processor_name=self.name,
+                messages=list(self.transcript.messages),
+                current=self._committed.model_copy(update={"step": step}),
+                step_watermarks=list(self._step_watermarks),
+                folds=list(self._cw.folds),
+                location=AgentCheckpointLocation.ROLLING_BACK,
+            )
+            await self._serialize_rollback_checkpoint(self._ctx, marker)
+
         # Rewind the filesystem before cutting this agent's head: the head
         # still carries this boundary until ``_persist_rollback``, so a crash
         # anywhere in the rewind heals by retrying the rollback. The claim
@@ -1003,25 +1075,38 @@ class LLMAgent[InT, OutT, CtxT](
         self._loop.bg_tasks.cancel_launched_after(
             boundary.agent_ctx_state.bg_launch_seq
         )
-        # Likewise the inbox messages absorbed after it: their turns left the
-        # transcript, so move their acked mailbox records back to pending for
-        # re-delivery (a crash mid-move heals by retrying the rollback, like
-        # the filesystem rewind above). Between runs the resident inbox is
-        # detached, so reach the session mailbox directly — but only when
+        # Likewise the inbox messages absorbed after it: a leased (un-acked)
+        # take's turn just left the transcript, so drop the lease to make the
+        # message re-takeable; acked mailbox records above the boundary move
+        # back to pending for re-delivery (a crash mid-move heals by retrying
+        # the rollback, like the filesystem rewind above). Works detached too
+        # (a between-runs rollback): the agent's cached inbox holds the
+        # leases, and the session mailbox is resolved directly — only when
         # messages were actually absorbed past the boundary, so a lone agent's
-        # rollback never resolves a transport.
+        # rollback never spins up a transport.
+        inbox = self._loop.inbox or self._inbox_cache
+        if inbox is not None:
+            inbox.rollback()
         mailbox_hw = boundary.agent_ctx_state.mailbox_seq
-        if self._loop.inbox is not None:
-            await self._loop.inbox.unprocess_after(mailbox_hw)
-        elif (
+        if (
             self._committed is not None
             and self._committed.agent_ctx_state.mailbox_seq > mailbox_hw
         ):
             from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
 
-            await resolve_session_transport(self._ctx).unprocess_after(
-                self.name, mailbox_hw
+            transport = (
+                inbox.transport
+                if inbox is not None
+                else resolve_session_transport(self._ctx)
             )
+            # A cold rollback resolves a fresh transport whose consumption
+            # counter is unseeded; seed it (max-only, no effect on a live one)
+            # so later takes cannot re-mint seqs that collide with the
+            # processed records retained below the boundary.
+            transport.seed_consumption_seq(
+                self.name, self._committed.agent_ctx_state.mailbox_seq
+            )
+            await transport.unprocess_after(self.name, mailbox_hw)
         self._committed = boundary
         self._cw.reset_anchor()
 

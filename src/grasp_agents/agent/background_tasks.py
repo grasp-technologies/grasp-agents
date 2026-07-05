@@ -1241,9 +1241,11 @@ class BackgroundTaskManager[CtxT]:
 
     def restore_pending_delivered(self, pending: dict[str, dict[str, Any]]) -> None:
         """
-        Restore a :meth:`export_pending_delivered` snapshot — a failed run's
-        deferred flips are discarded so records whose notes were rolled back
-        stay COMPLETED for a later resume to re-inject.
+        Restore a :meth:`export_pending_delivered` snapshot: on a rollback the
+        deferred flips are discarded, so records whose notes were rolled back
+        stay COMPLETED for a later resume to re-inject. A failed-run settle
+        instead re-merges the flips for the notes it kept (see
+        ``LLMAgent._settle_run``).
         """
         self._pending_delivered = dict(pending)
 

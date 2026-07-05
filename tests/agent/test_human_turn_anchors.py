@@ -9,6 +9,7 @@ itself. Typed-args deliveries and peer messages are not anchors.
 
 import asyncio
 import contextlib
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -16,8 +17,10 @@ import pytest
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.mailbox import CheckpointMailboxTransport
+from grasp_agents.session_context import SessionContext
+from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.message import TeamMessage
-from tests._helpers import _text_response
+from tests._helpers import MockLLM, _text_response
 from tests.durability.test_sessions import _make_agent
 
 # --- chat auto-minting ---
@@ -210,3 +213,132 @@ async def test_between_runs_rollback_unprocesses_detached_mailbox() -> None:
     await agent.rollback_to_step(1)
     assert not await transport.was_processed("test_agent", human.message_id)
     assert not await transport.was_processed("test_agent", peer.message_id)
+
+
+# --- settled human turns are not re-delivered ---
+
+
+@dataclass(frozen=True)
+class _FailFirstLLM(MockLLM):
+    """Raises on the first generation, then serves the queue."""
+
+    failures: list[str] = field(default_factory=lambda: ["boom"])
+
+    async def _generate_response_once(self, *args: Any, **kwargs: Any) -> Any:
+        if self.failures:
+            raise RuntimeError(self.failures.pop())
+        return await super()._generate_response_once(*args, **kwargs)
+
+
+def _resident(
+    llm: MockLLM, store: InMemoryCheckpointStore
+) -> tuple[LLMAgent[str, str, None], CheckpointMailboxTransport]:
+    ctx = SessionContext[None](checkpoint_store=store, session_key="s1")
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    ctx.transport = transport
+    agent = LLMAgent[str, str, None](
+        name="test_agent", ctx=ctx, llm=llm, stream_llm=True
+    )
+    agent.attach_inbox()
+    return agent, transport
+
+
+async def _run_until_processed(
+    agent: LLMAgent[str, str, None],
+    transport: CheckpointMailboxTransport,
+    message: TeamMessage,
+) -> None:
+    async def drain() -> None:
+        async for _ in agent.run_stream():
+            pass
+
+    run = asyncio.create_task(drain())
+    try:
+        for _ in range(500):
+            if await transport.was_processed("test_agent", message.message_id):
+                break
+            await asyncio.sleep(0.01)
+        assert await transport.was_processed("test_agent", message.message_id)
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+
+
+@pytest.mark.asyncio
+async def test_settled_human_turn_not_duplicated_on_reentry() -> None:
+    # A failed first turn settles keeping the absorbed message; its lease
+    # survives the settle, so the next run answers the kept copy instead of
+    # re-taking (duplicating) it — and the anchor boundary stays uncorrupted.
+    store = InMemoryCheckpointStore()
+    agent, transport = _resident(
+        _FailFirstLLM(responses_queue=[_text_response("handled")]), store
+    )
+    human = _human("human task")
+    await transport.post(human)
+
+    with pytest.raises(ProcRunError):
+        async for _ in agent.run_stream():
+            pass
+
+    await _run_until_processed(agent, transport, human)
+
+    assert str(agent.transcript.messages).count("human task") == 1
+    boundary = agent._step_watermarks[0]
+    assert (boundary.step, boundary.message_count) == (1, 0)
+    # Rollback fully removes the turn and re-pends the message.
+    await agent.rollback_to_step(1)
+    assert "human task" not in str(agent.transcript.messages)
+    assert not await transport.was_processed("test_agent", human.message_id)
+    assert await transport.has_pending("test_agent")
+
+
+@pytest.mark.asyncio
+async def test_lease_survives_detach_reattach() -> None:
+    # A host tearing the run down and re-attaching (same agent) must not
+    # re-deliver the settled, still-owed message: the inbox (and its lease)
+    # outlives the attach cycle.
+    store = InMemoryCheckpointStore()
+    agent, transport = _resident(
+        _FailFirstLLM(responses_queue=[_text_response("handled")]), store
+    )
+    human = _human("human task")
+    await transport.post(human)
+
+    with pytest.raises(ProcRunError):
+        async for _ in agent.run_stream():
+            pass
+
+    agent.detach_inbox()
+    agent.attach_inbox()
+
+    await _run_until_processed(agent, transport, human)
+    assert str(agent.transcript.messages).count("human task") == 1
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_agent_neither_wedges_nor_duplicates() -> None:
+    # A fresh agent instance (same session) starts from the persisted log —
+    # which never absorbed the message — and a fresh inbox: the message is
+    # re-delivered once, not blocked by the dead instance's lease.
+    store = InMemoryCheckpointStore()
+    agent1, transport = _resident(_FailFirstLLM(responses_queue=[]), store)
+    human = _human("human task")
+    await transport.post(human)
+
+    with pytest.raises(ProcRunError):
+        async for _ in agent1.run_stream():
+            pass
+
+    ctx2 = SessionContext[None](checkpoint_store=store, session_key="s1")
+    ctx2.transport = transport
+    agent2 = LLMAgent[str, str, None](
+        name="test_agent",
+        ctx=ctx2,
+        llm=MockLLM(responses_queue=[_text_response("handled")]),
+        stream_llm=True,
+    )
+    agent2.attach_inbox()
+
+    await _run_until_processed(agent2, transport, human)
+    assert str(agent2.transcript.messages).count("human task") == 1

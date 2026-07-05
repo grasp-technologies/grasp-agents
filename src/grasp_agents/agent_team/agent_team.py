@@ -17,6 +17,7 @@ member running, every inbox empty, no background work) or at the ``max_hops`` bu
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from datetime import timedelta
@@ -81,8 +82,18 @@ _MAILBOX_PROCESSED_RETENTION = timedelta(hours=1)
 _MAILBOX_CORRUPT_RETENTION = timedelta(days=7)
 
 
-def _seed_message_id(entry: str) -> str:
-    return f"{_SEED_ID_PREFIX}{entry}"
+def _seed_message_id(entry: str, run_ordinal: int, chat_inputs: Any) -> str:
+    """
+    Deterministic per-(entry, run, input) id. The run ordinal is the identity
+    axis: a re-run of an *interrupted* run (same ordinal — it never ended)
+    re-posts the same id and stays idempotent, while a new run (the prior one
+    ended) gets a fresh ordinal and is delivered even when its content repeats
+    — identical inputs are legitimate new turns, never deduped on content.
+    The content hash only guards the interrupted-run window, so a re-run with
+    *different* input cannot collide with the not-yet-advanced ordinal.
+    """
+    digest = hashlib.sha256(str(chat_inputs).encode("utf-8")).hexdigest()[:16]
+    return f"{_SEED_ID_PREFIX}{entry}-{run_ordinal}-{digest}"
 
 
 def _is_seed_id(message_id: str) -> bool:
@@ -115,7 +126,15 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         path: list[str] | None = None,
         max_hops: int = 50,
         max_tokens: int | None = None,
+        mailbox_processed_retention: timedelta = _MAILBOX_PROCESSED_RETENTION,
     ) -> None:
+        """
+        ``mailbox_processed_retention`` bounds how long consumed-mail records
+        are kept before the team's mailbox GC reclaims them — and with them
+        the **rollback horizon**: a member's rollback anchor older than this
+        can no longer return its consumed messages to the mailbox. Raise it
+        for sessions whose human turns should stay rewindable for longer.
+        """
         if not members:
             raise ValueError("AgentTeam requires at least one member.")
         names = [m.name for m in members]
@@ -129,6 +148,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         self._path = path or []
         self._max_hops = max_hops
         self._max_tokens = max_tokens
+        self._mailbox_processed_retention = mailbox_processed_retention
 
         # A member with static recipients hands its output off by name; those names
         # must be team members. (A resident routes dynamically via SendMessage
@@ -236,6 +256,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # coordinator scalars — see TeamCheckpoint).
         self._checkpoint_number = 0
         self._checkpoint_lock = asyncio.Lock()
+        self._runs_ended = 0
 
         # Per-run state (reset in run_stream).
 
@@ -284,6 +305,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             session_key=self._ctx.session_key,
             processor_name=self._name,
             activations=self._activations,
+            runs_ended=self._runs_ended,
         )
         await self._serialize_checkpoint(self._ctx, checkpoint)
 
@@ -383,27 +405,35 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         Tell every other resident the environment was rewound (control-plane, so
         the notice drains ahead of queued peer mail and stale context is caught
         before it is acted on). Residents only: a triggered member is activated
-        fresh per message and holds no cross-turn view of the filesystem. A no-op
-        outside a live run (``post`` drops it) — with no member mid-turn there is
-        no one to startle.
+        fresh per message and holds no cross-turn view of the filesystem.
+        During a live run the notice routes through :meth:`post` (announced +
+        budget-counted); between runs — e.g. a lead rollback restoring a
+        snapshot — it is deposited straight on the session mailbox so peers
+        still see it on their next take.
         """
         del fs_snapshot_ref
         rewinder = self._ctx.environment_rewinder
         recipients = [name for name in self._residents if name != rewinder]
         if rewinder is None or not recipients:
             return
-        await self.post(
-            TeamMessage.from_text(
-                sender=rewinder,
-                to=recipients,
-                text=make_rewind_notice(rewinder),
-                priority=CONTROL_PRIORITY,
-            )
+        notice = TeamMessage.from_text(
+            sender=rewinder,
+            to=recipients,
+            text=make_rewind_notice(rewinder),
+            priority=CONTROL_PRIORITY,
         )
+        if self._driver is not None:
+            await self.post(notice)
+        else:
+            await self._transport.post(notice)
 
     # -- lifecycle (session-scoped; the embedder closes the team) --
 
     async def aclose(self) -> None:
+        # Deregister the rewind announcer: a team rebuilt on the same session
+        # would otherwise stack a stale callback per build, and one rewind
+        # would post duplicate notices.
+        self._ctx.remove_environment_restored_callback(self._notify_environment_rewind)
         for member in self._members:
             try:
                 await member.aclose()
@@ -497,6 +527,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         checkpoint = await self._load_checkpoint()
         if checkpoint is not None:
             self._activations = checkpoint.activations
+            self._runs_ended = checkpoint.runs_ended
 
         yield TeamStartedEvent(source=self._name, data=TeamRunInfo(team=self._name))
 
@@ -523,6 +554,12 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
 
         else:
             stop_reason = self._final_stop_reason()
+            # The run ended (vs cancelled / crashed): the next run is a NEW
+            # one — advance the seed ordinal so its input is delivered even
+            # when the content repeats. An interrupted run keeps the ordinal,
+            # making its re-run an idempotent resume.
+            self._runs_ended += 1
+            await self._save_checkpoint()
 
         self._driver = None
 
@@ -564,17 +601,22 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             try:
                 # Seed the entry idempotently. Unlike a peer send (re-issued when
                 # its sender's turn re-runs on resume), the seed has no retry
-                # source, so it carries a deterministic id: a re-post on resume
-                # overwrites a still-pending copy and is dedup-skipped once the
-                # entry has processed it. So the entry is seeded exactly once
-                # across the session — never dropped (a crash can leave the hop
-                # checkpoint saved with the seed undelivered), never duplicated.
+                # source, so it carries a deterministic per-(entry, run, input)
+                # id: a resume of an interrupted run re-posts the same id
+                # (overwrites a still-pending copy, dedup-skipped once
+                # processed), so its input is seeded exactly once — never
+                # dropped (a crash can leave the hop checkpoint saved with the
+                # seed undelivered), never duplicated. A NEW run advances the
+                # ordinal, so its input is delivered even when it repeats an
+                # earlier run's content verbatim.
                 if chat_inputs is not None:
                     seed = TeamMessage.from_text(
                         sender=USER_SENDER,
                         to=entry,
                         text=str(chat_inputs),
-                        message_id=_seed_message_id(entry),
+                        message_id=_seed_message_id(
+                            entry, self._runs_ended, chat_inputs
+                        ),
                     )
                     if not await self._transport.was_processed(entry, seed.message_id):
                         await self.post(seed)
@@ -702,7 +744,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             return
         try:
             await transport.prune_processed(
-                older_than=_MAILBOX_PROCESSED_RETENTION,
+                older_than=self._mailbox_processed_retention,
                 keep=_is_seed_id,
                 corrupt_older_than=_MAILBOX_CORRUPT_RETENTION,
             )

@@ -178,6 +178,12 @@ class AgentCheckpointLocation(Enum):
     # and releases the consumed inbox message, and (like AFTER_FINAL_ANSWER) an
     # fs-snapshot so a restored transcript and filesystem stay in step.
     AFTER_RESIDENT_TURN = "after_resident_turn"
+    # Not a loop save-point: the pre-rollback head re-marked by
+    # rollback_to_step before its first durable side effect (``current.step``
+    # carries the target). A resume finding this completes the rollback —
+    # the filesystem/mailbox may already be rewound under the old transcript.
+    # Committing the ROLLED_BACK head overwrites (atomically clears) it.
+    ROLLING_BACK = "rolling_back"
     # Not a loop save-point: a synthetic head written by rollback_to_step,
     # parked at the start of the rolled-back-to step.
     ROLLED_BACK = "rolled_back"
@@ -405,12 +411,16 @@ class TeamCheckpoint(ProcessorCheckpoint):
 
     Deliberately tiny: the in-flight messages live in the durable mailbox
     transport and each member persists its own transcript, so this holds only
-    what neither can express — the session-wide hop count. Its *existence* marks
-    the session as seeded, so a resume skips re-seeding the entry (mirroring how
-    a loaded ``RunnerCheckpoint`` suppresses the runner's start event). The
-    terminal stop reason is re-derived on resume from this count (``activations
-    >= max_hops``) and a fresh run, not frozen here — so a member error that
-    stopped the run is retried, not permanently recorded.
+    what neither can express — the session-wide hop count and the run ordinal
+    that identifies entry seeds. The terminal stop reason is re-derived on
+    resume from the count (``activations >= max_hops``) and a fresh run, not
+    frozen here — so a member error that stopped the run is retried, not
+    permanently recorded.
     """
 
     activations: int = 0
+    # Runs ended so far (quiescence / budget stop; cancellation and crash do
+    # NOT count). The entry-seed identity axis: re-running an interrupted run
+    # keeps the ordinal (an idempotent resume), while a genuinely new run's
+    # input — identical content included — is delivered as a new seed.
+    runs_ended: int = 0
