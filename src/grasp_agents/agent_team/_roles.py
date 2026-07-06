@@ -100,8 +100,8 @@ async def resident_idle(member: LLMAgent[Any, Any, Any]) -> bool:
     running (e.g. a backgrounded shell command) does NOT hold it open — same as it
     never blocks a lone agent's final answer.
     """
-    inbox = member.inbox
+    inbox = member.agent_ctx.inbox
     if inbox is None or not inbox.is_waiting or await inbox.has_pending():
         return False
-    bg = member.background_tasks
+    bg = member.agent_ctx.bg_tasks
     return not (bg.has_pending or bg.has_undelivered_completions)

@@ -286,7 +286,7 @@ async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
         session_key="s1",
         store=store,
     )
-    agent.inbox = AgentInbox(transport=transport, recipient="test_agent")
+    agent.agent_ctx.inbox = AgentInbox(transport=transport, recipient="test_agent")
 
     async def drain() -> None:
         async for _ in agent.run_stream("kick off", step=1):
@@ -324,7 +324,7 @@ async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
     assert not await transport.was_processed("test_agent", m1.message_id)
     assert not await transport.was_processed("test_agent", m2.message_id)
     assert await transport.has_pending("test_agent")
-    inbox = agent.inbox
+    inbox = agent.agent_ctx.inbox
     assert inbox is not None
     first, second = await inbox.poll(), await inbox.poll()
     assert first is not None

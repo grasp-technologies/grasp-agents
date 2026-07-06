@@ -113,7 +113,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     # tasks WITHOUT finalizing their records (a real process death), so the
     # records stay PENDING for resume to act on. (aclose() would instead mark
     # them cancelled, and cancelled records are skipped on resume.)
-    in_flight = list(manager1._loop.bg_tasks._tasks.values())
+    in_flight = list(manager1._loop.agent_ctx.bg_tasks._tasks.values())
     for pt in in_flight:
         pt.task.cancel()
     await asyncio.gather(*(pt.task for pt in in_flight), return_exceptions=True)

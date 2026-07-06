@@ -43,13 +43,9 @@ from grasp_agents.types.items import (
     OutputMessageItem,
 )
 from grasp_agents.types.packet import Packet
+from tests._helpers import MockLLM, _text_response, _tool_call_response
 from tests.agent.test_background_tools import EchoInput, SlowTool
-from tests.durability.test_sessions import (  # type: ignore[attr-defined]
-    MockLLM,
-    _text_response,
-    _tool_call_response,
-    load_agent_checkpoint,
-)
+from tests.durability.test_sessions import load_agent_checkpoint
 
 
 async def _persisted_log(store: InMemoryCheckpointStore, key: str) -> list[Any]:

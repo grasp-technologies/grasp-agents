@@ -50,10 +50,8 @@ class AgentInbox:
         self._recipient = recipient
         # Runs once a message is chosen for delivery, *before* its consumption
         # seq is minted — the seam a resident agent uses to archive a rollback
-        # boundary whose high-waters exclude the message being taken. A plain
-        # attribute: ``LLMAgent`` stamps its anchor callback on whichever
-        # inbox it consumes.
-        self.on_take = on_take
+        # boundary whose high-waters exclude the message being taken.
+        self._on_take = on_take
         self._waiting = False
         # Messages taken but not yet acked — released on the next checkpoint
         # (:meth:`flush_acks`) once the turn that consumed them is durable, or
@@ -80,12 +78,14 @@ class AgentInbox:
 
         The message stays in the mailbox (leased) until :meth:`flush_acks`
         releases it on the next checkpoint — so a crash before then re-delivers it
-        rather than dropping it (at-least-once). One message is in flight at a
-        time: while a leased message is still the oldest in the mailbox, ``take``
-        returns ``None`` (``consume`` is non-removing, so it would otherwise keep
-        returning the same one). A message already marked processed — a redelivery
-        whose ack only partly landed before a crash — is acked and skipped, since
-        its effects are already durable.
+        rather than dropping it (at-least-once). While a leased message is still
+        the frontmost in the mailbox, ``take`` returns ``None`` (``consume`` is
+        non-removing, so it would otherwise keep returning the same one) — but a
+        *higher-priority* arrival is taken past an existing lease: that is how
+        control-plane mail (human steering) enters mid-task, so more than one
+        message can be leased at once. A message already marked processed — a
+        redelivery whose ack only partly landed before a crash — is acked and
+        skipped, since its effects are already durable.
 
         A taken message is stamped with its consumption ``seq`` (this inbox is
         the recipient's sole consumer, so take order is absorption order); the
@@ -104,8 +104,8 @@ class AgentInbox:
             if await self._transport.was_processed(self._recipient, message.message_id):
                 await self._transport.ack(self._recipient, message)
                 continue
-            if self.on_take is not None:
-                self.on_take(message)
+            if self._on_take is not None:
+                self._on_take(message)
             message.seq = self._transport.mint_consumption_seq(self._recipient)
             self._leased[message.message_id] = message
             return message
@@ -142,27 +142,15 @@ class AgentInbox:
         """
         self._leased.clear()
 
-    async def unprocess_after(self, seq: int) -> int:
-        """
-        Move this agent's acked messages with consumption ``seq >`` the
-        watermark back to pending — the mailbox half of a step rollback
-        (:meth:`LLMAgent.rollback_to_step`): the turns that absorbed them left
-        the transcript, so they must be re-delivered. Returns the count moved.
-        Acks only happen once a checkpoint has persisted the consuming turn, so
-        a failed-run settle never needs this — :meth:`rollback` (lease drop)
-        covers the message in flight.
-        """
-        return await self._transport.unprocess_after(self._recipient, seq)
-
     @property
-    def last_taken_seq(self) -> int:
+    def last_consumption_seq(self) -> int:
         """High-water consumption seq: every message taken so far has ``seq <=``."""
         return self._transport.last_consumption_seq(self._recipient)
 
-    def restore_taken_seq(self, seq: int) -> None:
+    def seed_consumption_seq(self, seq: int) -> None:
         """
         Seed the consumption counter from a restored watermark (never lowers it
-        — the inbox sibling of :meth:`BackgroundTaskManager.restore_launch_seq`).
+        — the inbox sibling of :meth:`BackgroundTaskManager.seed_launch_seq`).
         The counter lives on the shared transport, so it survives the per-run
         inbox; this seeding covers a fresh process, where the restored
         ``AgentContextState`` is the only surviving copy.

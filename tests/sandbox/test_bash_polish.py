@@ -32,6 +32,7 @@ from grasp_agents.tools.bash import Bash, BashInput, bash_tools
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput
 from grasp_agents.types.events import BackgroundTaskLaunchedEvent, UserMessageEvent
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
+from tests._helpers import _make_agent_loop
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,7 +78,7 @@ def _loop(
     """
     transcript = LLMAgentTranscript()
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    return AgentLoop[None](
+    return _make_agent_loop(
         agent_name="t",
         llm=_StubLLM(),
         transcript=transcript,
@@ -98,11 +99,11 @@ async def _bg(
     Returns ``(result, task_id)``: when it finishes in the foreground,
     ``result`` is the ``BashResult`` and ``task_id`` is ``None``; when it is
     moved to the background, ``result`` is the launch note and ``task_id`` is
-    the sidelined task's id (found in ``loop.bg_tasks``).
+    the sidelined task's id (found in ``loop.agent_ctx.bg_tasks``).
     """
     call = FunctionToolCallItem(call_id="c1", name=tool.name, arguments="{}")
-    before = set(loop.bg_tasks._tasks)  # pyright: ignore[reportPrivateUsage]
-    result, _launched = await loop.bg_tasks.run_backgroundable(
+    before = set(loop.agent_ctx.bg_tasks._tasks)  # pyright: ignore[reportPrivateUsage]
+    result, _launched = await loop.agent_ctx.bg_tasks.run_backgroundable(
         call,
         tool,
         BashInput(command=command, timeout=timeout),
@@ -110,7 +111,7 @@ async def _bg(
         exec_id="t",
         agent_ctx=loop.agent_ctx,
     )
-    new = set(loop.bg_tasks._tasks) - before  # pyright: ignore[reportPrivateUsage]
+    new = set(loop.agent_ctx.bg_tasks._tasks) - before  # pyright: ignore[reportPrivateUsage]
     return result, (next(iter(new)) if new else None)
 
 
@@ -238,8 +239,8 @@ async def test_cwd_persists_across_calls(tmp_path: Path) -> None:
     first, bid = await _bg(loop, bash, "cd sub && echo here")
     assert bid is None  # foreground
     assert first.returncode == 0
-    assert loop.shell_state.cwd is not None
-    assert loop.shell_state.cwd.endswith("sub")
+    assert loop.agent_ctx.shell_state.cwd is not None
+    assert loop.agent_ctx.shell_state.cwd.endswith("sub")
 
     # The next command starts where the previous one left off.
     second, _ = await _bg(loop, bash, "pwd")
@@ -254,10 +255,10 @@ async def test_cwd_isolated_per_loop(tmp_path: Path) -> None:
     bash = Bash(auto_background_at=30)  # one shared (stateless) instance
 
     await _bg(loop_a, bash, "cd a")
-    assert loop_a.shell_state.cwd is not None
-    assert loop_a.shell_state.cwd.endswith("/a")
+    assert loop_a.agent_ctx.shell_state.cwd is not None
+    assert loop_a.agent_ctx.shell_state.cwd.endswith("/a")
     # loop_b shares the filesystem but has its own shell_state — untouched.
-    assert loop_b.shell_state.cwd is None
+    assert loop_b.agent_ctx.shell_state.cwd is None
     out_b, _ = await _bg(loop_b, bash, "pwd")
     assert not out_b.stdout.strip().endswith("/a")
 
@@ -270,11 +271,11 @@ async def test_explicit_cwd_overrides_shell_state(tmp_path: Path) -> None:
     bash = Bash(auto_background_at=30)
 
     await _bg(loop, bash, "cd x")
-    assert loop.shell_state.cwd is not None
-    assert loop.shell_state.cwd.endswith("/x")
+    assert loop.agent_ctx.shell_state.cwd is not None
+    assert loop.agent_ctx.shell_state.cwd.endswith("/x")
     # An explicit per-call cwd wins over the round-tripped one for that call...
     call = FunctionToolCallItem(call_id="c1", name=bash.name, arguments="{}")
-    out, _launched = await loop.bg_tasks.run_backgroundable(
+    out, _launched = await loop.agent_ctx.bg_tasks.run_backgroundable(
         call,
         bash,
         BashInput(command="pwd", cwd=str(tmp_path / "y")),
@@ -284,7 +285,7 @@ async def test_explicit_cwd_overrides_shell_state(tmp_path: Path) -> None:
     )
     assert out.stdout.strip().endswith("/y")
     # ...and the round-trip then tracks where that call ended up.
-    assert loop.shell_state.cwd.endswith("/y")
+    assert loop.agent_ctx.shell_state.cwd.endswith("/y")
 
 
 # --- auto-background ----------------------------------------------------------
@@ -297,7 +298,7 @@ async def test_fast_command_completes_in_foreground(tmp_path: Path) -> None:
     assert task_id is None  # finished in the foreground before the deadline
     assert result.returncode == 0
     assert result.stdout.strip() == "fg"
-    assert loop.bg_tasks._tasks == {}  # pyright: ignore[reportPrivateUsage]
+    assert loop.agent_ctx.bg_tasks._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
@@ -312,19 +313,19 @@ async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
 
     # Block until it finishes (the loop's idle wait), then drain its completion
     # note — the result is delivered there; there is no polling.
-    await loop.bg_tasks.wait_idle()
-    notes = await _drain_notes(loop.bg_tasks, ctx)
+    await loop.agent_ctx.bg_tasks.wait_idle()
+    notes = await _drain_notes(loop.agent_ctx.bg_tasks, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "early" in notes[0]  # output produced before backgrounding
     assert "late" in notes[0]  # and after
-    assert loop.bg_tasks._tasks == {}  # pyright: ignore[reportPrivateUsage]
+    assert loop.agent_ctx.bg_tasks._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_kill_task_terminates_background_command(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    killer = KillTask(loop.bg_tasks)
+    killer = KillTask(loop.agent_ctx.bg_tasks)
 
     marker = tmp_path / "ticks.txt"
     _result, task_id = await _bg(
@@ -378,7 +379,7 @@ async def test_cancelling_foreground_run_kills_process(tmp_path: Path) -> None:
 async def test_caps_background_tasks(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    loop.bg_tasks._max_background = 1  # pyright: ignore[reportPrivateUsage]
+    loop.agent_ctx.bg_tasks._max_background = 1  # pyright: ignore[reportPrivateUsage]
 
     _first, first_id = await _bg(loop, Bash(auto_background_at=0.1), "echo a; sleep 1")
     assert first_id is not None
@@ -387,7 +388,7 @@ async def test_caps_background_tasks(tmp_path: Path) -> None:
     second, second_id = await _bg(loop, Bash(auto_background_at=0.1), "echo b; sleep 1")
     assert second_id is None
     assert "could not be backgrounded" in second
-    await loop.bg_tasks.kill_task(first_id)
+    await loop.agent_ctx.bg_tasks.kill_task(first_id)
 
 
 # --- completion notes ----------------------------------------------------------
@@ -396,7 +397,7 @@ async def test_caps_background_tasks(tmp_path: Path) -> None:
 async def test_completion_note_inlines_small_result_once(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    mgr = loop.bg_tasks
+    mgr = loop.agent_ctx.bg_tasks
     _result, task_id = await _bg(
         loop, Bash(auto_background_at=0.1), "echo done && sleep 0.3"
     )
@@ -433,7 +434,7 @@ async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
 
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    mgr = loop.bg_tasks
+    mgr = loop.agent_ctx.bg_tasks
     _note, task_id = await _bg(
         loop,
         Bash(auto_background_at=0.1, max_inline_result_chars=200),
@@ -476,7 +477,7 @@ async def test_progress_log_appends_deltas(tmp_path: Path) -> None:
 
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    mgr = loop.bg_tasks
+    mgr = loop.agent_ctx.bg_tasks
     _note, task_id = await _bg(
         loop, Bash(auto_background_at=0.1), "echo AAAA; sleep 0.6; echo BBBB; sleep 0.4"
     )
@@ -508,7 +509,7 @@ async def test_nonblocking_task_bubbles_stream_events(tmp_path: Path) -> None:
 
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    mgr = loop.bg_tasks
+    mgr = loop.agent_ctx.bg_tasks
     _note, task_id = await _bg(
         loop,
         Bash(auto_background_at=0.1, blocks_final_answer=False),  # fire-and-forget
@@ -537,20 +538,20 @@ async def test_deadline_note_points_at_log(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    log_path = loop.bg_tasks.get(task_id).log_path
+    log_path = loop.agent_ctx.bg_tasks.get(task_id).log_path
     assert log_path is not None  # resolved eagerly at sideline, before any flush
     assert ".grasp/tasks" in log_path
     assert log_path in note  # the note hands the model the exact path
     assert "Read or Grep" in note
 
-    await loop.bg_tasks.cancel_all(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
     """
     The loop's idle wait: a running command is waited on (no poll loop), and
     once it finishes drain yields exactly one completion note, announced once.
     """
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
-    mgr = loop.bg_tasks
+    mgr = loop.agent_ctx.bg_tasks
     _result, task_id = await _bg(
         loop, Bash(auto_background_at=0.1), "echo bg && sleep 0.4"
     )
@@ -647,7 +648,7 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
             ),
         ]
     )
-    loop = AgentLoop[None](
+    loop = _make_agent_loop(
         agent_name="t",
         llm=llm,
         transcript=transcript,
@@ -685,7 +686,7 @@ async def test_llm_agent_auto_wires_bash_notes() -> None:
     # The loop's background task manager runs both subagent tasks and
     # backgrounded Bash commands; the task tools resolve it per call from the
     # loop's AgentContext.
-    assert agent._loop.bg_tasks is not None
+    assert agent._loop.agent_ctx.bg_tasks is not None
     # The loop also owns one persistent-session holder, exposed the same way.
     assert agent._loop.agent_ctx.session_holder is not None
     bash = tools[0]
@@ -693,8 +694,8 @@ async def test_llm_agent_auto_wires_bash_notes() -> None:
     # Tools are stateless and shared — no per-agent copy: the passed instance
     # is the one the loop uses, and the manager lives on the AgentContext, not
     # on the tool.
-    assert agent._loop.tools["Bash"] is bash
-    assert agent._loop.agent_ctx.bg_tasks is agent._loop.bg_tasks
+    assert agent.agent_ctx.tools["Bash"] is bash
+    assert agent._loop.agent_ctx.bg_tasks is agent._loop.agent_ctx.bg_tasks
 
 
 # --- factory -------------------------------------------------------------------
@@ -715,7 +716,7 @@ async def test_bash_tools_factory_builds_pair(tmp_path: Path) -> None:
     loop = _loop(ctx)
     _result, task_id = await _bg(loop, bash, "echo x && sleep 0.4")
     assert task_id is not None
-    assert task_id in loop.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
+    assert task_id in loop.agent_ctx.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
     killed = await kill._run(TaskIdInput(task_id=task_id), agent_ctx=loop.agent_ctx)
     assert killed.status == "cancelled"
 
@@ -729,7 +730,7 @@ async def test_deadline_backgrounding_emits_launched_event(tmp_path: Path) -> No
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     call = FunctionToolCallItem(call_id="c1", name="Bash", arguments="{}")
-    note, launched = await loop.bg_tasks.run_backgroundable(
+    note, launched = await loop.agent_ctx.bg_tasks.run_backgroundable(
         call,
         Bash(auto_background_at=0.1),
         BashInput(command="echo hi && sleep 0.4", timeout=10),
@@ -740,8 +741,8 @@ async def test_deadline_backgrounding_emits_launched_event(tmp_path: Path) -> No
     assert "moved to the background" in note
     assert isinstance(launched, BackgroundTaskLaunchedEvent)
     assert launched.data.tool_name == "Bash"
-    assert launched.data.task_id in loop.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
-    await loop.bg_tasks.kill_task(launched.data.task_id)
+    assert launched.data.task_id in loop.agent_ctx.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
+    await loop.agent_ctx.bg_tasks.kill_task(launched.data.task_id)
 
 
 async def test_foreground_finish_emits_no_launched_event(tmp_path: Path) -> None:
@@ -749,7 +750,7 @@ async def test_foreground_finish_emits_no_launched_event(tmp_path: Path) -> None
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     call = FunctionToolCallItem(call_id="c1", name="Bash", arguments="{}")
-    result, launched = await loop.bg_tasks.run_backgroundable(
+    result, launched = await loop.agent_ctx.bg_tasks.run_backgroundable(
         call,
         Bash(auto_background_at=5.0),
         BashInput(command="echo fg"),
@@ -771,7 +772,7 @@ async def test_loop_dispatch_deadline_bash_yields_launched(tmp_path: Path) -> No
     ctx = _ctx(tmp_path)
     transcript = LLMAgentTranscript()
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    loop = AgentLoop[None](
+    loop = _make_agent_loop(
         agent_name="t",
         llm=_StubLLM(),
         transcript=transcript,
@@ -787,7 +788,7 @@ async def test_loop_dispatch_deadline_bash_yields_launched(tmp_path: Path) -> No
     launched = [e for e in events if isinstance(e, BackgroundTaskLaunchedEvent)]
     assert len(launched) == 1
     assert launched[0].data.tool_name == "Bash"
-    await loop.bg_tasks.cancel_all(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 
 
 async def test_companions_require_a_manager_in_scope() -> None:
@@ -825,7 +826,7 @@ async def test_backgrounded_bash_persists_pending_record(tmp_path: Path) -> None
     assert recs
     assert all(r.status == TaskStatus.PENDING and r.tool_name == "Bash" for r in recs)
 
-    await loop.bg_tasks.cancel_all(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 
 
 async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
@@ -840,7 +841,7 @@ async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
     _note, task_id = await _bg(loop, Bash(auto_background_at=0.1), "echo hi && sleep 5")
     assert task_id is not None
 
-    await loop.bg_tasks.kill_task(task_id, ctx=ctx)
+    await loop.agent_ctx.bg_tasks.kill_task(task_id, ctx=ctx)
 
     keys = await store.list_keys(task_prefix(ctx.session_key))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
@@ -870,8 +871,8 @@ async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    await loop.bg_tasks.wait_idle()
-    notes = await _drain_notes(loop.bg_tasks, ctx)
+    await loop.agent_ctx.bg_tasks.wait_idle()
+    notes = await _drain_notes(loop.agent_ctx.bg_tasks, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
 
@@ -885,7 +886,7 @@ async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
 
     # flush_delivered (called after the agent checkpoint) flips the records,
     # so a resume won't re-inject a result the agent already saw.
-    await loop.bg_tasks.flush_delivered(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.flush_delivered(ctx=ctx)
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert all(r.status == TaskStatus.DELIVERED for r in recs)
 
@@ -909,7 +910,7 @@ async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
     assert task_id is not None
 
     await asyncio.sleep(0.2)  # let the command emit "HELLO" before flushing
-    await _flush(loop.bg_tasks, ctx)
+    await _flush(loop.agent_ctx.bg_tasks, ctx)
 
     keys = await store.list_keys(task_prefix(ctx.session_key))
     rec = TaskRecord.model_validate_json(await store.load(keys[0]))
@@ -920,7 +921,7 @@ async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
     assert log.exists()
     assert "HELLO" in log.read_text()
 
-    await loop.bg_tasks.cancel_all(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 
 
 async def test_backgrounded_bash_writes_log_without_store(tmp_path: Path) -> None:
@@ -938,13 +939,13 @@ async def test_backgrounded_bash_writes_log_without_store(tmp_path: Path) -> Non
     assert task_id is not None
 
     await asyncio.sleep(0.2)
-    await _flush(loop.bg_tasks, ctx)
+    await _flush(loop.agent_ctx.bg_tasks, ctx)
 
     logs = list((tmp_path / ".grasp" / "tasks").glob("*.log"))
     assert logs, "no log written with a file backend but no checkpoint store"
     assert any("HELLO" in p.read_text() for p in logs)
 
-    await loop.bg_tasks.cancel_all(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 
 
 async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
@@ -963,11 +964,11 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
 
     await asyncio.sleep(0.2)
     await _flush(
-        loop.bg_tasks, ctx
+        loop.agent_ctx.bg_tasks, ctx
     )  # mirrors the .grasp log (output_path set at launch)
 
     # Simulate a crash: drop the in-flight task without finalizing the record.
-    for pt in list(loop.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]
+    for pt in list(loop.agent_ctx.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]
         pt.task.cancel()
         with _contextlib.suppress(asyncio.CancelledError):
             await pt.task
@@ -995,8 +996,8 @@ async def test_completion_note_reports_elapsed(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    await loop.bg_tasks.wait_idle()
-    notes = await _drain_notes(loop.bg_tasks, ctx)
+    await loop.agent_ctx.bg_tasks.wait_idle()
+    notes = await _drain_notes(loop.agent_ctx.bg_tasks, ctx)
     assert len(notes) == 1
     assert "ran_for" in notes[0]  # elapsed is surfaced in the completion note
 

@@ -181,11 +181,11 @@ async def test_take_mints_consumption_seq_and_restore_never_lowers() -> None:
     assert first is not None
     assert second is not None
     assert (first.seq, second.seq) == (1, 2)
-    assert inbox.last_taken_seq == 2
+    assert inbox.last_consumption_seq == 2
 
-    inbox.restore_taken_seq(0)
-    assert inbox.last_taken_seq == 2
-    inbox.restore_taken_seq(9)
+    inbox.seed_consumption_seq(0)
+    assert inbox.last_consumption_seq == 2
+    inbox.seed_consumption_seq(9)
 
     # A fresh per-run inbox over the same transport keeps counting from there.
     reattached = AgentInbox(transport=transport, recipient="curator")

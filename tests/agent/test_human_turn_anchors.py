@@ -9,7 +9,6 @@ itself. Typed-args deliveries and peer messages are not anchors.
 
 import asyncio
 import contextlib
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -20,7 +19,7 @@ from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.message import TeamMessage
-from tests._helpers import MockLLM, _text_response
+from tests._helpers import FailFirstLLM, MockLLM, _text_response
 from tests.durability.test_sessions import _make_agent
 
 # --- chat auto-minting ---
@@ -246,6 +245,138 @@ async def test_resident_rerun_after_rollback_re_anchors_the_repended_human() -> 
 
 
 @pytest.mark.asyncio
+async def test_rollback_to_step_zero_re_mints_step_zero() -> None:
+    # Step 0 is a legitimate explicit step; the parked-step re-mint must not
+    # treat it as "no step" (falsy) and drift to 1.
+    agent, _ = _make_agent([_text_response(t) for t in ("a", "b", "c")])
+
+    await agent.run("q0", step=0)
+    await agent.run("q1", step=1)
+    await agent.rollback_to_step(0)
+    assert agent.step == 0
+
+    await agent.run("q0-replacement")
+    assert agent.step == 0
+    assert agent.rollback_steps == [0]
+
+
+@pytest.mark.asyncio
+async def test_read_rollback_anchors_is_side_effect_free() -> None:
+    # The read-only picker surface: a cold instance enumerates the persisted
+    # anchors without rehydrating the session (no transcript load).
+    store = InMemoryCheckpointStore()
+    agent, _ = _make_agent(
+        [_text_response("a"), _text_response("b")], session_key="s1", store=store
+    )
+    await agent.run("q1")
+    await agent.run("q2")
+
+    cold, _ = _make_agent([], session_key="s1", store=store)
+    anchors = await cold.read_rollback_anchors()
+    assert [wm.step for wm in anchors] == [1, 2]
+    assert cold.transcript.is_empty  # nothing was rehydrated
+
+    # A live instance answers from memory.
+    live_anchors = await agent.read_rollback_anchors()
+    assert [wm.step for wm in live_anchors] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_cold_rolled_back_resume_restores_the_parked_step() -> None:
+    # A ROLLED_BACK head parks the agent at the discarded step's start; a cold
+    # resume must restore that parked step so the next chat delivery re-mints
+    # it (the mint floor) even when earlier steps are sparse.
+    store = InMemoryCheckpointStore()
+    agent, _ = _make_agent(
+        [_text_response("a"), _text_response("b")], session_key="s1", store=store
+    )
+    await agent.run("q1", step=1)
+    await agent.run("q5", step=5)
+    await agent.rollback_to_step(5)
+
+    resumed, _ = _make_agent(
+        [_text_response("c")], session_key="s1", store=store
+    )
+    assert await resumed.load_checkpoint() is not None
+    assert resumed.step == 5
+
+    await resumed.run("q5-replacement")
+    assert resumed.step == 5
+    assert resumed.rollback_steps == [1, 5]
+
+
+@pytest.mark.asyncio
+async def test_rollback_mid_run_is_refused() -> None:
+    # ``rollback_to_step`` is only valid between runs: rewinding under a live
+    # loop would race the turn cycle, so a mid-run call raises instead of
+    # silently corrupting the transcript.
+    store = InMemoryCheckpointStore()
+    agent, transport = _resident(
+        MockLLM(responses_queue=[_text_response("handled")]), store
+    )
+    human = _human("human task")
+    await transport.post(human)
+
+    async def drain() -> None:
+        async for _ in agent.run_stream():
+            pass
+
+    run = asyncio.create_task(drain())
+    try:
+        for _ in range(500):
+            if await transport.was_processed("test_agent", human.message_id):
+                break
+            await asyncio.sleep(0.01)
+        assert agent.rollback_steps == [1]
+
+        with pytest.raises(RuntimeError, match="mid-run"):
+            await agent.rollback_to_step(1)
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+
+    # Between runs (the stream is closed) the same call succeeds.
+    await agent.rollback_to_step(1)
+    assert agent.rollback_steps == []
+
+
+@pytest.mark.asyncio
+async def test_resident_retry_keeps_the_take_anchor() -> None:
+    # A retry continues an already-anchored delivery: re-archiving on the
+    # retry re-entry would move the boundary past the settled human message,
+    # so a later rollback would keep the message and never re-pend it.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](checkpoint_store=store, session_key="s1")
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    ctx.transport = transport
+    agent = LLMAgent[str, str, None](
+        name="test_agent",
+        ctx=ctx,
+        llm=FailFirstLLM(responses_queue=[_text_response("handled")]),
+        stream_llm=True,
+        max_retries=1,
+    )
+    agent.attach_inbox()
+
+    human = _human("human task")
+    await transport.post(human)
+    await _run_until_processed(agent, transport, human)
+
+    # The take-time anchor survived the retry: its high-waters exclude the
+    # message, so the rollback re-pends it.
+    boundary = agent._step_watermarks[0]
+    assert (boundary.step, boundary.message_count) == (1, 0)
+    assert boundary.agent_ctx_state.mailbox_seq == 0
+    assert str(agent.transcript.messages).count("human task") == 1
+
+    await agent.rollback_to_step(1)
+    assert "human task" not in str(agent.transcript.messages)
+    assert not await transport.was_processed("test_agent", human.message_id)
+    assert await transport.has_pending("test_agent")
+
+
+@pytest.mark.asyncio
 async def test_between_runs_rollback_unprocesses_detached_mailbox() -> None:
     # With the resident inbox detached (between runs), the mailbox half of a
     # rollback still runs — resolved from the session's transport.
@@ -269,18 +400,6 @@ async def test_between_runs_rollback_unprocesses_detached_mailbox() -> None:
 
 
 # --- settled human turns are not re-delivered ---
-
-
-@dataclass(frozen=True)
-class _FailFirstLLM(MockLLM):
-    """Raises on the first generation, then serves the queue."""
-
-    failures: list[str] = field(default_factory=lambda: ["boom"])
-
-    async def _generate_response_once(self, *args: Any, **kwargs: Any) -> Any:
-        if self.failures:
-            raise RuntimeError(self.failures.pop())
-        return await super()._generate_response_once(*args, **kwargs)
 
 
 def _resident(
@@ -325,7 +444,7 @@ async def test_settled_human_turn_not_duplicated_on_reentry() -> None:
     # re-taking (duplicating) it — and the anchor boundary stays uncorrupted.
     store = InMemoryCheckpointStore()
     agent, transport = _resident(
-        _FailFirstLLM(responses_queue=[_text_response("handled")]), store
+        FailFirstLLM(responses_queue=[_text_response("handled")]), store
     )
     human = _human("human task")
     await transport.post(human)
@@ -353,7 +472,7 @@ async def test_lease_survives_detach_reattach() -> None:
     # outlives the attach cycle.
     store = InMemoryCheckpointStore()
     agent, transport = _resident(
-        _FailFirstLLM(responses_queue=[_text_response("handled")]), store
+        FailFirstLLM(responses_queue=[_text_response("handled")]), store
     )
     human = _human("human task")
     await transport.post(human)
@@ -375,7 +494,7 @@ async def test_rebuilt_agent_neither_wedges_nor_duplicates() -> None:
     # which never absorbed the message — and a fresh inbox: the message is
     # re-delivered once, not blocked by the dead instance's lease.
     store = InMemoryCheckpointStore()
-    agent1, transport = _resident(_FailFirstLLM(responses_queue=[]), store)
+    agent1, transport = _resident(FailFirstLLM(responses_queue=[]), store)
     human = _human("human task")
     await transport.post(human)
 

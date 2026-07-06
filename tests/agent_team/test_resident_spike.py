@@ -51,7 +51,7 @@ async def test_resident_consumes_multiple_messages_in_one_run() -> None:
     # Attaching an inbox makes the agent resident: the seedless run_stream then
     # drives the loop off this inbox instead of terminating on a final answer.
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(
@@ -98,7 +98,7 @@ async def test_resident_survives_past_max_turns() -> None:
         ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     try:
@@ -144,7 +144,7 @@ async def test_resident_force_finalizes_runaway_message_and_continues() -> None:
         ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(TeamMessage.from_text(sender="user", to="curator", text="m0"))
@@ -191,7 +191,7 @@ async def test_bg_completion_while_idle_wakes_resident_loop() -> None:
         ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(
@@ -203,7 +203,7 @@ async def test_bg_completion_while_idle_wakes_resident_loop() -> None:
         # Round 1: tool call (call 1) then "started; idling" (call 2). The loop is
         # now idle, parked on the inbox while the backgrounded job runs.
         await _until(lambda: agent.llm.call_count == 2)
-        assert agent.background_tasks.has_live_tasks
+        assert agent.agent_ctx.bg_tasks.has_live_tasks
 
         # Release the job: its completion (NOT a peer message) must wake the loop
         # so the next turn's drain delivers the <task_notification>.
@@ -234,7 +234,7 @@ async def test_resident_reply_durable_and_message_released() -> None:
         llm=MockLLM(responses_queue=[_text_response("reply one")]),
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run = asyncio.create_task(_collect(agent))
     await transport.post(msg)
@@ -301,7 +301,7 @@ async def test_resident_message_released_on_absorption_not_at_reply() -> None:
         tools=[step1, step2],
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run = asyncio.create_task(_collect(agent))
     await transport.post(msg)
@@ -364,7 +364,7 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
         tools=[work, block_reply],
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent1.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent1.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run = asyncio.create_task(_collect(agent1))
     await transport.post(msg)
@@ -391,7 +391,7 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
         tools=[work, block_reply],
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent2.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent2.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run2 = asyncio.create_task(_collect(agent2))
     try:
@@ -422,7 +422,7 @@ async def test_settle_keeps_inbox_lease() -> None:
         ctx=SessionContext[None](state=None),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
     msg = TeamMessage.from_text(sender="user", to="curator", text="x")
     await inbox.post(msg)
 

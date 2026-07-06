@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 import json
+import operator
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from logging import getLogger
@@ -204,26 +205,36 @@ async def _consume(
         await _persist_outcome(store, task_key, result, failed=failed)
 
 
-async def _persist_outcome(
-    store: CheckpointStore, task_key: str, result: Any, *, failed: bool
+async def _save_record_update(
+    store: CheckpointStore, task_key: str, **updates: Any
 ) -> None:
-    """Flip an existing ``TaskRecord`` to its terminal outcome (no-op if absent)."""
+    """
+    Load → apply ``updates`` (stamping ``updated_at``) → save a ``TaskRecord``.
+    A no-op when no record exists at ``task_key``.
+    """
     existing = await store.load(task_key)
     if not existing:
         return
     record = TaskRecord.model_validate_json(existing)
-    if failed:
-        outcome = {
-            "status": TaskStatus.FAILED,
-            "error": _serialize_result(result),
-        }
-    else:
-        outcome = {
-            "status": TaskStatus.COMPLETED,
-            "result": _serialize_result(result),
-        }
-    record = record.model_copy(update={**outcome, "updated_at": datetime.now(UTC)})
+    record = record.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
     await store.save(task_key, record.model_dump_json().encode())
+
+
+async def _persist_outcome(
+    store: CheckpointStore, task_key: str, result: Any, *, failed: bool
+) -> None:
+    """Flip an existing ``TaskRecord`` to its terminal outcome (no-op if absent)."""
+    if failed:
+        await _save_record_update(
+            store, task_key, status=TaskStatus.FAILED, error=_serialize_result(result)
+        )
+    else:
+        await _save_record_update(
+            store,
+            task_key,
+            status=TaskStatus.COMPLETED,
+            result=_serialize_result(result),
+        )
 
 
 def _result_of(events: list[Event[Any]]) -> tuple[Any, bool]:
@@ -255,6 +266,34 @@ def _serialize_result(result: Any) -> str:
     if isinstance(result, str):
         return result
     return json.dumps(to_jsonable_python(result), indent=2)
+
+
+# Cap on inlined chars when a completion note is REBUILT from a durable record
+# (resume re-injection / rollback re-delivery). The tool's own
+# ``max_inline_result_chars`` is not persisted, so a conservative default
+# keeps a large stored result from being inlined whole into the transcript.
+_REINJECT_INLINE_CAP = 8000
+
+
+def _record_note(record: TaskRecord, *, failed: bool) -> InputMessageItem:
+    """A task's completion note rebuilt from its durable record."""
+    raw = record.error if failed else record.result
+    body: str | None = None
+    if raw is not None:
+        body, _ = excerpt_for_inline(
+            raw, _REINJECT_INLINE_CAP, output_file=record.output_path
+        )
+    return InputMessageItem.from_text(
+        _task_notification(
+            task_id=record.task_id,
+            tool_name=record.tool_name,
+            status="failed" if failed else "completed",
+            result=None if failed else body,
+            error=body if failed else None,
+            log_path=record.output_path,
+        ),
+        role="user",
+    )
 
 
 class BackgroundTaskManager[CtxT]:
@@ -292,7 +331,6 @@ class BackgroundTaskManager[CtxT]:
         self._agent_name = agent_name
         self._transcript = transcript
         self._tools = tools
-        self._path = path
         self._tasks: dict[str, PendingTask] = {}
         self._bg_counter = 0
         self._max_background = max_background
@@ -311,6 +349,8 @@ class BackgroundTaskManager[CtxT]:
         # wholesale-replaces that map — a kill must survive it (the killed
         # launch is gone from the transcript no matter which boundary is live).
         self._pending_killed: dict[str, dict[str, Any]] = {}
+
+        self.path = path
 
     @property
     def has_live_tasks(self) -> bool:
@@ -412,7 +452,7 @@ class BackgroundTaskManager[CtxT]:
         assert abg is not None
 
         task_key = self._task_store_key(ctx, call.call_id)
-        child_path = make_tool_call_path(self._path, call.call_id)
+        child_path = make_tool_call_path(self.path, call.call_id)
         events: list[Event[Any]] = []
 
         if abg == 0:
@@ -600,7 +640,7 @@ class BackgroundTaskManager[CtxT]:
         """High-water launch seq: every launch so far has ``launch_seq <=`` this."""
         return self._bg_counter
 
-    def restore_launch_seq(self, seq: int) -> None:
+    def seed_launch_seq(self, seq: int) -> None:
         """
         Seed the launch counter from a restored watermark.
 
@@ -728,7 +768,7 @@ class BackgroundTaskManager[CtxT]:
 
     def _task_store_key(self, ctx: SessionContext[CtxT], call_id: str) -> str | None:
         """Store key for a backgrounded call's ``TaskRecord`` (``None`` if none)."""
-        child_path = make_tool_call_path(self._path, call_id)
+        child_path = make_tool_call_path(self.path, call_id)
         if ctx.checkpoint_store is None or child_path is None:
             return None
         return make_store_key(ctx.session_key, CheckpointKind.TASK, child_path)
@@ -776,12 +816,7 @@ class BackgroundTaskManager[CtxT]:
         store = ctx.checkpoint_store if ctx else None
         if store is None or task_key is None:
             return
-        existing = await store.load(task_key)
-        if not existing:
-            return
-        record = TaskRecord.model_validate_json(existing)
-        record = record.model_copy(update={**updates, "updated_at": datetime.now(UTC)})
-        await store.save(task_key, record.model_dump_json().encode())
+        await _save_record_update(store, task_key, **updates)
 
     async def _append_log(
         self, pt: PendingTask, text: str, backend: "FileBackend"
@@ -1053,17 +1088,12 @@ class BackgroundTaskManager[CtxT]:
             for pt in self._tasks.values():
                 if pt.task_key is None:
                     continue
-                existing = await store.load(pt.task_key)
-                if existing:
-                    record = TaskRecord.model_validate_json(existing)
-                    record = record.model_copy(
-                        update={
-                            "status": TaskStatus.CANCELLED,
-                            "error": "Cancelled: agent session closed",
-                            "updated_at": datetime.now(UTC),
-                        }
-                    )
-                    await store.save(pt.task_key, record.model_dump_json().encode())
+                await _save_record_update(
+                    store,
+                    pt.task_key,
+                    status=TaskStatus.CANCELLED,
+                    error="Cancelled: agent session closed",
+                )
 
         tasks = [pt.task for pt in self._tasks.values()]
         for t in tasks:
@@ -1114,7 +1144,7 @@ class BackgroundTaskManager[CtxT]:
         # so a session-wide scan would make us handle (and mis-route) their
         # tasks. Keep only direct ``tc_*`` children — a deeper segment belongs
         # to a nested sub-agent.
-        prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self._path) + "/"
+        prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self.path) + "/"
         keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
 
         notifications: list[InputMessageItem] = []
@@ -1134,20 +1164,29 @@ class BackgroundTaskManager[CtxT]:
             if record.status in {TaskStatus.CANCELLED, TaskStatus.DELIVERED}:
                 continue
 
+            # A deferred flip restored with the head means the head's
+            # transcript already holds this record's note (the crash landed
+            # between that save and its flush) — don't inject a duplicate;
+            # the restored flip lands at the next save's flush.
+            if key in self._pending_delivered:
+                continue
+
+            # A deferred kill restored with the head: the task was cancelled
+            # by a rewind whose CANCELLED flip a crash kept from flushing.
+            # Never re-spawn or report it; the flip lands at the next flush.
+            if key in self._pending_killed:
+                continue
+
             # Orphan guard: launched after the restored head's boundary, so its
             # launching tool call is not in the restored transcript — the agent
             # has no memory of it. Dead-letter instead of re-spawning/reporting.
             if bg_launch_seq is not None and record.launch_seq > bg_launch_seq:
-                record = record.model_copy(
-                    update={
-                        "status": TaskStatus.CANCELLED,
-                        "error": (
-                            "Cancelled: the launching tool call was never persisted"
-                        ),
-                        "updated_at": datetime.now(UTC),
-                    }
+                await _save_record_update(
+                    store,
+                    key,
+                    status=TaskStatus.CANCELLED,
+                    error="Cancelled: the launching tool call was never persisted",
                 )
-                await store.save(key, record.model_dump_json().encode())
                 logger.info(
                     "Dead-lettered orphan task record %s (%s): launch_seq %d > "
                     "restored head's %d",
@@ -1194,17 +1233,8 @@ class BackgroundTaskManager[CtxT]:
             elif record.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
                 # Finished (ok or errored) but the crash kept ``drain`` from
                 # delivering it — re-inject the outcome, then mark it delivered.
-                is_fail = record.status == TaskStatus.FAILED
-                notification = InputMessageItem.from_text(
-                    _task_notification(
-                        task_id=record.task_id,
-                        tool_name=record.tool_name,
-                        status="failed" if is_fail else "completed",
-                        result=None if is_fail else record.result,
-                        error=record.error if is_fail else None,
-                        log_path=record.output_path,
-                    ),
-                    role="user",
+                notification = _record_note(
+                    record, failed=record.status == TaskStatus.FAILED
                 )
                 update = {"status": TaskStatus.DELIVERED}
             else:
@@ -1263,6 +1293,22 @@ class BackgroundTaskManager[CtxT]:
         """
         self._pending_delivered = dict(pending)
 
+    def export_pending_killed(self) -> dict[str, dict[str, Any]]:
+        """The deferred CANCELLED flips not yet flushed."""
+        return dict(self._pending_killed)
+
+    def restore_pending_killed(self, killed: dict[str, dict[str, Any]]) -> None:
+        """
+        Merge a snapshot's deferred CANCELLED flips UNDER the live ones: a
+        kill is never discarded by a watermark restore (the killed launch is
+        gone from the transcript no matter which boundary is live), and a
+        cold resume re-arms kills whose flush a crash pre-empted — otherwise
+        the restored head's ``bg_launch_seq`` (raised past the killed
+        launches before the flush) would defeat the resume orphan guard and
+        resurrect them.
+        """
+        self._pending_killed = {**killed, **self._pending_killed}
+
     async def flush_delivered(self, *, ctx: SessionContext[CtxT]) -> None:
         """
         Apply deferred terminal record updates (→ ``DELIVERED`` / ``CANCELLED``).
@@ -1288,13 +1334,7 @@ class BackgroundTaskManager[CtxT]:
         # is idempotent — updates are absolute field sets).
         pending = {**self._pending_delivered, **self._pending_killed}
         for key, update in pending.items():
-            existing = await store.load(key)
-            if existing:
-                record = TaskRecord.model_validate_json(existing)
-                record = record.model_copy(
-                    update={**update, "updated_at": datetime.now(UTC)}
-                )
-                await store.save(key, record.model_dump_json().encode())
+            await _save_record_update(store, key, **update)
             self._pending_delivered.pop(key, None)
             self._pending_killed.pop(key, None)
 
@@ -1304,10 +1344,11 @@ class BackgroundTaskManager[CtxT]:
         message_count: int,
         bg_launch_seq: int,
         ctx: SessionContext[CtxT],
+        deferred_delivered: Mapping[str, dict[str, Any]] | None = None,
     ) -> list[InputMessageItem]:
         """
         The bg-task half of a step rollback, called after the transcript is
-        truncated to ``message_count``: a DELIVERED record whose completion
+        truncated to ``message_count``: a delivered record whose completion
         note sat past the cut (``delivered_msg_count > message_count``) while
         its launching call survived (``launch_seq <= bg_launch_seq``) just
         lost the only live copy of its outcome — the finished task is no
@@ -1316,45 +1357,48 @@ class BackgroundTaskManager[CtxT]:
         forever. Re-inject each such note at the rewind point and re-defer its
         DELIVERED flip with the new position.
 
-        Records launched *after* the boundary are ``cancel_launched_after``'s
-        business — their launching calls are gone, so their outcomes stay
-        buried. Returns the injected messages for the caller to surface as
-        events.
+        ``deferred_delivered`` overlays not-yet-flushed DELIVERED flips onto
+        the stored records: a drained-but-unflushed note (its record still
+        COMPLETED) sits in the truncated span exactly like a flushed one's.
+        The caller passes the map exported *before* the rollback's context
+        restore replaced it. Records launched *after* the boundary are
+        ``cancel_launched_after``'s business — their launching calls are
+        gone, so their outcomes stay buried. Returns the injected messages
+        for the caller to surface as events.
         """
         store = ctx.checkpoint_store
         if store is None:
             return []
-        prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self._path) + "/"
+        deferred = (
+            dict(self._pending_delivered)
+            if deferred_delivered is None
+            else deferred_delivered
+        )
+        prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self.path) + "/"
         keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
 
-        matches: list[tuple[str, TaskRecord]] = []
+        matches: list[tuple[str, TaskRecord, int]] = []
         for key in keys:
             record = await store.load_json(key, TaskRecord, subject="task record")
-            if (
-                record is None
-                or record.status is not TaskStatus.DELIVERED
-                or record.delivered_msg_count is None
-                or record.delivered_msg_count <= message_count
-                or record.launch_seq > bg_launch_seq
-            ):
+            if record is None or record.launch_seq > bg_launch_seq:
                 continue
-            matches.append((key, record))
-        matches.sort(key=lambda kr: kr[1].launch_seq)
+            pending = deferred.get(key, {})
+            is_delivered = (
+                record.status is TaskStatus.DELIVERED
+                or pending.get("status") is TaskStatus.DELIVERED
+            )
+            count = pending.get("delivered_msg_count", record.delivered_msg_count)
+            if not is_delivered or count is None or count <= message_count:
+                continue
+            matches.append((key, record, count))
+        # Original observation order: the positions the notes held before the
+        # truncation (completion order, which can differ from launch order).
+        matches.sort(key=operator.itemgetter(2))
 
         injected: list[InputMessageItem] = []
-        for key, record in matches:
+        for key, record, _count in matches:
             is_fail = record.result is None and record.error is not None
-            notification = InputMessageItem.from_text(
-                _task_notification(
-                    task_id=record.task_id,
-                    tool_name=record.tool_name,
-                    status="failed" if is_fail else "completed",
-                    result=None if is_fail else record.result,
-                    error=record.error if is_fail else None,
-                    log_path=record.output_path,
-                ),
-                role="user",
-            )
+            notification = _record_note(record, failed=is_fail)
             self._transcript.update([notification])
             self._pending_delivered[key] = {
                 "status": TaskStatus.DELIVERED,
@@ -1424,7 +1468,7 @@ class BackgroundTaskManager[CtxT]:
         if not tool or not tool.resumable:
             return False
 
-        child_path = make_tool_call_path(self._path, record.tool_call_id)
+        child_path = make_tool_call_path(self.path, record.tool_call_id)
 
         events: list[Event[Any]] = []
         stream = tool.resume_stream(

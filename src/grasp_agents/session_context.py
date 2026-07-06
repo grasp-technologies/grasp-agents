@@ -55,11 +55,15 @@ class SessionContext[CtxT](BaseModel):
     # filesystem it snapshots. Requires :attr:`environment` to be
     # ``SnapshotCapable`` (e.g. E2B). ``"off"`` (default): never snapshot.
     # ``"final"``: snapshot at run-end boundaries (final answer / max turns /
-    # resident turn). ``"turn"``: snapshot at every checkpoint boundary,
-    # including after each tool batch — strongest rewind granularity, but
-    # each snapshot costs a provider round-trip. Only the opaque ref is
-    # stored (in the session checkpoint and per-step watermarks); the bytes
-    # live with the snapshot owner.
+    # resident turn) — a consistent cold resume is then guaranteed only at
+    # those boundaries: a crash mid-run resumes a transcript that has
+    # advanced past the restored snapshot (the resume warns and injects a
+    # filesystem-restored notice telling the agent to re-verify recent file
+    # claims). ``"turn"``: snapshot at every checkpoint boundary, including
+    # after each tool batch — consistent resume at every boundary, but each
+    # snapshot costs a provider round-trip. Only the opaque ref is stored
+    # (in the session checkpoint and per-step watermarks); the bytes live
+    # with the snapshot owner.
     fs_snapshot_policy: Literal["off", "final", "turn"] = Field(
         default="off", exclude=True
     )
@@ -156,12 +160,6 @@ class SessionContext[CtxT](BaseModel):
 
     _session_restored: bool = PrivateAttr(default=False)
     _session_fs_restored: bool = PrivateAttr(default=False)
-    # The last snapshot ref written to (or loaded from) the session record.
-    # Every save re-records it: several agents share one record, and a
-    # non-snapshotting save (a non-rewinder member, or a rewinder's own
-    # between-snapshot boundary) must never erase the ref that describes the
-    # session filesystem.
-    _last_fs_snapshot_ref: str | None = PrivateAttr(default=None)
     _session_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
     _environment_restored_callbacks: list[Callable[[str], Awaitable[None]]] = (
         PrivateAttr(default_factory=list["Callable[[str], Awaitable[None]]"])
@@ -288,7 +286,6 @@ class SessionContext[CtxT](BaseModel):
             self.state = rehydrate_context(
                 record.context_kind, record.context_data, self.state
             )
-            self._last_fs_snapshot_ref = record.fs_snapshot_ref
             self._session_restored = True
             logger.info(
                 "Restored session %s (state=%s, fs_snapshot_ref=%s)",
@@ -306,11 +303,17 @@ class SessionContext[CtxT](BaseModel):
         session-scoped feature is on (``serialize_state`` / ``fs_snapshot_policy``
         / ``session_metadata``). The record keeps the session's **latest**
         snapshot ref: a boundary that took no snapshot passes ``None``, and the
-        last recorded ref is carried forward — the record is shared by every
-        agent on the session, so a non-snapshotting save (a non-rewinder
+        ref already on the record is carried forward — the record is shared by
+        every agent on the session, so a non-snapshotting save (a non-rewinder
         member's checkpoint) must not erase the ref a cold resume restores
         from. Per-boundary snapshot pairing lives on each agent's own
         checkpoint head instead.
+
+        The record is one per ``session_key`` and has no per-field merge:
+        in a multi-process deployment, enable the record-writing features
+        (``serialize_state`` / ``session_metadata``) in ONE process — several
+        writers clobber each other's ``state`` last-writer-wins, and only the
+        environment-rewinder's process should pair snapshots with it.
         """
         if (
             not self.serialize_state
@@ -324,23 +327,33 @@ class SessionContext[CtxT](BaseModel):
         key = self._session_store_key()
         if self.checkpoint_store is None or key is None:
             return
-        # ``None`` = this boundary took no snapshot: keep the latest recorded
-        # ref rather than nulling the shared record. An explicit ref replaces
-        # it — including an *older* one on a rollback's re-point.
-        if fs_snapshot_ref is not None:
-            self._last_fs_snapshot_ref = fs_snapshot_ref
-        context_kind: ContextKind | None = None
-        context_data: Any | None = None
-        if self.serialize_state:
-            context_kind, context_data = serialize_context(self.state)
-        record = SessionCheckpoint(
-            session_key=self.session_key,
-            context_kind=context_kind,
-            context_data=context_data,
-            fs_snapshot_ref=self._last_fs_snapshot_ref,
-            session_metadata=self.session_metadata,
-        )
-        await self.checkpoint_store.save(key, record.model_dump_json().encode("utf-8"))
+        async with self._session_lock:
+            # ``None`` = this boundary took no snapshot: carry the ref already
+            # on the record forward rather than nulling it — read from the
+            # store (not a process-local memo), so another process's newer
+            # snapshot is preserved too. An explicit ref replaces it —
+            # including an *older* one on a rollback's re-point. The lock
+            # keeps concurrent in-process saves from interleaving the
+            # read-modify-write.
+            if fs_snapshot_ref is None:
+                existing = await self.checkpoint_store.load_json(
+                    key, SessionCheckpoint, subject=f"session checkpoint at {key}"
+                )
+                fs_snapshot_ref = existing.fs_snapshot_ref if existing else None
+            context_kind: ContextKind | None = None
+            context_data: Any | None = None
+            if self.serialize_state:
+                context_kind, context_data = serialize_context(self.state)
+            record = SessionCheckpoint(
+                session_key=self.session_key,
+                context_kind=context_kind,
+                context_data=context_data,
+                fs_snapshot_ref=fs_snapshot_ref,
+                session_metadata=self.session_metadata,
+            )
+            await self.checkpoint_store.save(
+                key, record.model_dump_json().encode("utf-8")
+            )
 
     def claim_environment_rewind(self, proc_name: ProcName) -> None:
         """
@@ -400,7 +413,9 @@ class SessionContext[CtxT](BaseModel):
         if callback in self._environment_restored_callbacks:
             self._environment_restored_callbacks.remove(callback)
 
-    async def restore_fs_snapshot(self, fs_snapshot_ref: str) -> None:
+    async def restore_fs_snapshot(
+        self, fs_snapshot_ref: str, *, claimant: ProcName | None = None
+    ) -> None:
         """
         Rewind the shared environment filesystem to ``fs_snapshot_ref`` and
         re-point the session checkpoint at it.
@@ -410,13 +425,20 @@ class SessionContext[CtxT](BaseModel):
         touching :attr:`environment` directly: the session record is rewritten
         with the restored ref in the same call, so a crash right after never
         cold-resumes into a filesystem newer than the one just restored —
-        retrying the rewind heals fully. Agent-initiated rewinds claim the
-        per-session rewind right first (:meth:`claim_environment_rewind`).
+        retrying the rewind heals fully. ``claimant`` names the processor
+        rewinding: it claims (or must already hold) the per-session rewind
+        right, so a rewind can never bypass the one-rewinder guarantee. Omit
+        it only for a session-owner override (application code rewinding
+        outside any processor).
 
         Raises:
-            RuntimeError: :attr:`environment` is not ``SnapshotCapable``.
+            RuntimeError: :attr:`environment` is not ``SnapshotCapable``, or
+                ``claimant`` does not hold the rewind right
+                (:meth:`claim_environment_rewind`).
 
         """
+        if claimant is not None:
+            self.claim_environment_rewind(claimant)
         if not isinstance(self.environment, SnapshotCapable):
             # RuntimeError, not TypeError, to match load_checkpoint's
             # resume-side twin of this wiring check.

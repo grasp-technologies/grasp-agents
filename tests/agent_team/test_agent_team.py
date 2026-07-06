@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +18,9 @@ import pytest
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_card import MemberCard
 from grasp_agents.agent_team.agent_team import AgentTeam
-from grasp_agents.agent_team.events import MessageDeliveredEvent
+from grasp_agents.agent_team.events import MessageDeliveredEvent, TeamEndedEvent
 from grasp_agents.durability import InMemoryCheckpointStore
+from grasp_agents.durability.checkpoints import TeamCheckpoint
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
 from grasp_agents.processors.processor import Processor
@@ -27,12 +28,15 @@ from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import InputRenderableModel
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
-from grasp_agents.types.response import Response
 from tests._helpers import (
+    FailFirstLLM,
     FakeSnapshotEnv,
     MockLLM,
+    _agent,
+    _send,
     _text_response,
     _tool_call_response,
+    _until,
 )
 
 
@@ -74,25 +78,6 @@ def _ctx(tmp_path: Path) -> SessionContext[None]:
     return SessionContext[None](
         state=None, file_backend=LocalFileBackend(allowed_roots=[tmp_path])
     )
-
-
-def _agent(name: str, responses: list[Response]) -> LLMAgent[Any, Any, None]:
-    return LLMAgent[Any, Any, None](name=name, llm=MockLLM(responses_queue=responses))
-
-
-def _send(to: str, message: str, call_id: str) -> Response:
-    return _tool_call_response(
-        "SendMessage", f'{{"to": "{to}", "message": "{message}"}}', call_id
-    )
-
-
-async def _until(pred: Callable[[], bool]) -> None:
-    """Poll ``pred`` until true, bounded to ~3s so a test can't hang."""
-    for _ in range(300):
-        if pred():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition not met within timeout")
 
 
 @pytest.mark.asyncio
@@ -395,7 +380,149 @@ async def test_interrupted_run_resumes_without_reseeding() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
+async def test_member_error_keeps_the_run_ordinal_for_retry() -> None:
+    # A member error stops the run but must NOT advance the seed ordinal:
+    # its documented recovery is re-running the SAME input as an idempotent
+    # resume — the entry's seed is deduped, not double-processed, and the
+    # failed member retries its still-owed message.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("sent")])
+    bob = LLMAgent[Any, Any, None](
+        name="bob",
+        llm=FailFirstLLM(responses_queue=[_text_response("bob answered")]),
+    )
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
+
+    result1 = await team.run("kickoff-task")
+    assert result1.stop_reason == "member_error"
+    assert team._runs_ended == 0  # ordinal kept — the retry is a resume
+    alice_calls_after_run1 = alice.llm.call_count
+
+    result2 = await team.run("kickoff-task")
+    await team.aclose()
+
+    assert result2.stop_reason == "quiesced"
+    assert team._runs_ended == 1
+    # The seed was deduped: alice never re-processed the same input.
+    assert alice.llm.call_count == alice_calls_after_run1
+    assert str(alice.transcript.messages).count("kickoff-task") == 1
+    # Bob's owed message was retried and answered.
+    assert "bob answered" in str(bob.transcript.messages)
+
+
+@pytest.mark.asyncio
+async def test_slow_seed_dedup_probe_does_not_quiesce_the_run() -> None:
+    # The seed's dedup probe is a store round-trip; the monitor polls for
+    # quiescence the whole time. A slow store must not let the run read as
+    # idle and tear down before the input is even deposited.
+    class _SlowDedupTransport(InMemoryMailboxTransport):
+        async def was_processed(self, recipient: str, envelope_id: str) -> bool:
+            await asyncio.sleep(0.3)  # >> two 0.05s quiescence polls
+            return await super().was_processed(recipient, envelope_id)
+
+    ctx = SessionContext[None](state=None)
+    ctx.transport = _SlowDedupTransport()
+    solo = _agent("solo", [_text_response("the answer")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    result = await team.run("question?")
+    await team.aclose()
+
+    assert result.stop_reason == "quiesced"
+    assert result.activations == 1
+    assert solo.llm.call_count == 1  # the input was delivered, not dropped
+
+
+@pytest.mark.asyncio
+async def test_run_ordinal_is_durable_before_the_stream_ends() -> None:
+    # The ordinal bump is persisted at quiescence, BEFORE teardown: a crash
+    # between the run's last useful work and its end then reads as "ended"
+    # (the next identical input is a fresh turn) instead of silently
+    # swallowing it.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent("solo", [_text_response("one")])
+    team = AgentTeam([solo], name="t1", ctx=ctx)
+
+    ended_seen = False
+    async for event in team.run_stream("first question"):
+        if isinstance(event, TeamEndedEvent):
+            ended_seen = True
+            keys = [k for k in await store.list_keys("") if "/team" in k]
+            assert keys, "team checkpoint must exist by stream end"
+            raw = await store.load(keys[0])
+            assert raw is not None
+            checkpoint = TeamCheckpoint.model_validate_json(raw)
+            assert checkpoint.runs_ended == 1
+    await team.aclose()
+    assert ended_seen
+
+
+async def _seed_records(store: InMemoryCheckpointStore) -> list[str]:
+    return [
+        k for k in await store.list_keys("") if "-seed-" in k and "/processed/" in k
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gc_reclaims_stale_ordinal_seeds() -> None:
+    # Entry seeds are pinned against GC only at the CURRENT run ordinal —
+    # older ordinals can never be re-posted, so their records must not
+    # accumulate forever. A triggered entry acks without a consumption seq,
+    # so no rollback horizon pins them either.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent(
+        "solo",
+        [_text_response("one"), _text_response("two"), _text_response("three")],
+    )
+    team = AgentTeam(
+        [solo],
+        ctx=ctx,
+        cards=[MemberCard(name="solo", resident=False)],
+        mailbox_processed_retention=timedelta(seconds=0),
+    )
+
+    await team.run("first question")
+    await team.run("second question")
+    assert len(await _seed_records(store)) == 2
+
+    await team._gc_mailbox()
+    assert len(await _seed_records(store)) == 0
+
+    # A fresh input still runs (its new-ordinal seed is unaffected).
+    result = await team.run("third question")
+    await team.aclose()
+    assert result.stop_reason == "quiesced"
+
+
+@pytest.mark.asyncio
+async def test_gc_keeps_records_inside_a_rollback_horizon() -> None:
+    # A resident's anchored boundary pins everything it consumed after it:
+    # even zero retention (and a stale seed ordinal) must not reclaim those
+    # records, or rolling back to the boundary could no longer re-deliver
+    # the messages.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent("solo", [_text_response("one")])
+    team = AgentTeam(
+        [solo], ctx=ctx, mailbox_processed_retention=timedelta(seconds=0)
+    )
+
+    await team.run("kick off")
+    assert solo.rollback_steps == [1]
+    assert len(await _seed_records(store)) == 1  # consumed by the resident
+
+    await team._gc_mailbox()
+    assert len(await _seed_records(store)) == 1  # pinned by the boundary
+
+    # The horizon is intact: the rollback re-pends the human kick-off.
+    await solo.rollback_to_step(1)
+    transport = ctx.transport
+    assert transport is not None
+    assert await transport.has_pending("solo")
+    await team.aclose()
     # The team saves its hop checkpoint BEFORE depositing on the transport. A
     # crash in that window for the entry seed must not strand the kickoff: the
     # deterministic seed id makes the resume re-post idempotent, so the seed is
@@ -704,7 +831,7 @@ async def test_attach_inbox_uses_session_transport(tmp_path: Path) -> None:
     agent = _agent("solo", [])
     agent.on_adopted(ctx=ctx)
     agent.attach_inbox()
-    inbox = agent.inbox
+    inbox = agent.agent_ctx.inbox
     assert inbox is not None
     assert inbox.transport is ctx.transport
 

@@ -10,7 +10,8 @@ call sites are unchanged when a local copy is replaced by an import.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self
@@ -21,10 +22,15 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, Field
 
+from grasp_agents.agent.agent_context import AgentContext
+from grasp_agents.agent.agent_loop import AgentLoop
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.llm.llm import LLM
 from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from grasp_agents.sandbox.policy import SandboxPolicy
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import FunctionToolCallItem, OutputMessageItem
@@ -218,3 +224,78 @@ class FakeSnapshotEnv(ExecutionEnvironment, SnapshotCapable):
 
     async def restore(self, ref: str) -> None:
         self.restored.append(ref)
+
+
+@dataclass(frozen=True)
+class FailFirstLLM(MockLLM):
+    """Raises on the first generation, then serves the queue."""
+
+    failures: list[str] = field(default_factory=lambda: ["boom"])
+
+    async def _generate_response_once(self, *args: Any, **kwargs: Any) -> Any:
+        if self.failures:
+            raise RuntimeError(self.failures.pop())
+        return await super()._generate_response_once(*args, **kwargs)
+
+
+# --- AgentLoop construction (loop tests drive the loop directly) ---
+
+
+def _make_agent_loop(
+    *,
+    agent_name: str,
+    llm: LLM,
+    transcript: LLMAgentTranscript,
+    ctx: SessionContext[None],
+    tools: Sequence[BaseTool[Any, Any, Any]] | None = None,
+    path: list[str] | None = None,
+    max_background: int = 16,
+    **loop_kwargs: Any,
+) -> AgentLoop[None]:
+    """An ``AgentLoop`` over a fresh ``AgentContext`` built from flat parts."""
+    agent_ctx = AgentContext.create(
+        transcript=transcript,
+        tools={t.name: t for t in (tools or [])},
+        agent_name=agent_name,
+        path=path,
+        max_background=max_background,
+    )
+    return AgentLoop[None](
+        agent_name=agent_name,
+        llm=llm,
+        agent_ctx=agent_ctx,
+        ctx=ctx,
+        path=path,
+        **loop_kwargs,
+    )
+
+
+# --- Team-test building blocks (AgentTeam / MemberHost harnesses) ---
+
+
+def _agent(
+    name: str,
+    responses: list[Response],
+    *,
+    ctx: SessionContext[None] | None = None,
+) -> LLMAgent[Any, Any, None]:
+    """A bare team member: a MockLLM agent serving ``responses`` in order."""
+    return LLMAgent[Any, Any, None](
+        name=name, llm=MockLLM(responses_queue=responses), ctx=ctx
+    )
+
+
+def _send(to: str, message: str, call_id: str) -> Response:
+    """A MockLLM turn that calls the team's ``SendMessage`` tool."""
+    return _tool_call_response(
+        "SendMessage", f'{{"to": "{to}", "message": "{message}"}}', call_id
+    )
+
+
+async def _until(pred: Callable[[], bool]) -> None:
+    """Poll ``pred`` until true, bounded to ~3s so a test can't hang."""
+    for _ in range(300):
+        if pred():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met within timeout")

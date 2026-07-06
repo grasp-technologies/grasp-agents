@@ -17,21 +17,9 @@ from grasp_agents.agent_team.member import MemberHost
 from grasp_agents.agent_team.message import CONTROL_PRIORITY, LEAD_PRIORITY, TeamMessage
 from grasp_agents.mailbox import InMemoryMailboxTransport
 from grasp_agents.session_context import SessionContext
-from grasp_agents.types.response import Response
-from tests._helpers import FakeSnapshotEnv, MockLLM, _text_response, _tool_call_response
+from tests._helpers import FakeSnapshotEnv, MockLLM, _agent, _send, _text_response
 
 CARDS = [MemberCard(name="alice"), MemberCard(name="bob")]
-
-
-def _agent(
-    name: str,
-    responses: list[Response],
-    *,
-    ctx: SessionContext[None] | None = None,
-) -> LLMAgent[Any, Any, None]:
-    return LLMAgent[Any, Any, None](
-        name=name, llm=MockLLM(responses_queue=responses), ctx=ctx
-    )
 
 
 def _session() -> tuple[SessionContext[None], InMemoryMailboxTransport]:
@@ -40,12 +28,6 @@ def _session() -> tuple[SessionContext[None], InMemoryMailboxTransport]:
     transport = InMemoryMailboxTransport()
     ctx.transport = transport
     return ctx, transport
-
-
-def _send(to: str, message: str, call_id: str) -> Response:
-    return _tool_call_response(
-        "SendMessage", f'{{"to": "{to}", "message": "{message}"}}', call_id
-    )
 
 
 async def _drain(host: MemberHost) -> list[Any]:

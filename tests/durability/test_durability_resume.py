@@ -39,12 +39,7 @@ from grasp_agents.types.items import (
     InputItem,
     InputMessageItem,
 )
-from tests._helpers import AddTool
-from tests.durability.test_sessions import (  # type: ignore[attr-defined]
-    MockLLM,
-    _text_response,
-    _tool_call_response,
-)
+from tests._helpers import AddTool, MockLLM, _text_response, _tool_call_response
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

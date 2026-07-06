@@ -36,7 +36,13 @@ from grasp_agents.types.items import (
     InputMessageItem,
 )
 from grasp_agents.types.response import Response
-from tests._helpers import MockLLM, _make_usage, _text_response, _tool_call_response
+from tests._helpers import (
+    MockLLM,
+    _make_agent_loop,
+    _make_usage,
+    _text_response,
+    _tool_call_response,
+)
 
 # ---------- Infrastructure ----------
 
@@ -102,7 +108,7 @@ def _make_loop(
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     transcript.update([InputMessageItem.from_text("go", role="user")])
 
-    loop = AgentLoop[None](
+    loop = _make_agent_loop(
         agent_name="test",
         llm=llm,
         transcript=transcript,
@@ -148,7 +154,7 @@ class TestFinalAnswerToolRegistration:
             final_answer_as_tool_call=True,
             final_answer_type=_Answer,
         )
-        assert "final_answer" in loop.tools
+        assert "final_answer" in loop.agent_ctx.tools
 
     @pytest.mark.asyncio
     async def test_loop_stops_on_final_answer_call(self) -> None:

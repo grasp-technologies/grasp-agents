@@ -67,7 +67,9 @@ logger = logging.getLogger(__name__)
 
 # Prefix for the entry-seed's deterministic message id. The 21-char all-zero
 # timestamp shape sorts before any real (``_new_message_id``) id, so the seed is
-# consumed first; the fixed value makes a resume re-post idempotent.
+# consumed first; the fixed value makes a resume re-post idempotent. Seed ids
+# embed the run ordinal (``_seed_message_id``), which the mailbox GC reads back
+# (``_seed_ordinal``) to pin only the current run's seed.
 _SEED_ID_PREFIX = "00000000T000000000000-seed-"
 
 # How often a running team reclaims its durable mailbox ``processed/`` records, and
@@ -77,6 +79,7 @@ _SEED_ID_PREFIX = "00000000T000000000000-seed-"
 # ``CheckpointMailboxTransport.prune_processed``.
 _MAILBOX_GC_INTERVAL_S = 300.0
 _MAILBOX_PROCESSED_RETENTION = timedelta(hours=1)
+
 # Dead-lettered (corrupt) records are kept longer — they exist for post-hoc
 # inspection, and corruption is rare (records are written atomically).
 _MAILBOX_CORRUPT_RETENTION = timedelta(days=7)
@@ -97,11 +100,23 @@ def _seed_message_id(entry: str, run_ordinal: int, chat_inputs: Any) -> str:
 
 
 def _is_seed_id(message_id: str) -> bool:
-    """
-    A permanent entry-seed marker — pinned against mailbox GC so a later resume
-    still finds it and does not re-seed the entry (see :meth:`_drive`).
-    """
+    """An entry-seed id (see :func:`_seed_message_id`)."""
     return message_id.startswith(_SEED_ID_PREFIX)
+
+
+def _seed_ordinal(message_id: str) -> int | None:
+    """
+    The run ordinal embedded in a seed id, or ``None`` for a non-seed id.
+    The team's mailbox GC pins only seeds at the CURRENT ordinal — those are
+    the ones a resume still dedupes against; once the ordinal advances, an
+    old seed can never be re-posted, so its record is reclaimable.
+    """
+    if not _is_seed_id(message_id):
+        return None
+    parts = message_id.rsplit("-", 2)
+    if len(parts) != 3 or not parts[1].isdigit():
+        return None
+    return int(parts[1])
 
 
 class TeamRunResult(BaseModel):
@@ -358,6 +373,25 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # with the delivery still in flight and tear the run down under it.
         self._posts_in_flight += 1
         try:
+            # Budgets are checked once per envelope, so a multi-recipient send
+            # (a broadcast, a rewind notice) is delivered whole or not at all —
+            # never a silent partial fan-out. An admitted envelope may finish
+            # crossing the cap; the next post is refused.
+            async with self._checkpoint_lock:
+                if not self._daemon and self._hops_spent() >= self._max_hops:
+                    # Budget spent: refuse further deliveries and ask to stop.
+                    self._hop_exhausted = True
+                    self._stop_requested = True
+                    return
+
+                if not self._daemon and self._over_token_budget():
+                    # Token ceiling reached: stop spawning new activations
+                    # (those already in flight finish). A daemon opts out,
+                    # like max_hops.
+                    self._token_exhausted = True
+                    self._stop_requested = True
+                    return
+
             for single in envelope.split_by_recipient():
                 recipient = single.recipient
                 if recipient not in self._members_by_name:
@@ -369,25 +403,11 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                     continue
 
                 # Count + persist the hop under the lock so concurrent sends can't
-                # both slip past the budget or double-bump the checkpoint number.
-                # The count is saved BEFORE depositing on the transport (mirroring
-                # the Runner's save-before-post): a crash then leaves the budget
-                # counted rather than under-counted — conservative for a safety cap.
+                # double-bump the checkpoint number. The count is saved BEFORE
+                # depositing on the transport (mirroring the Runner's
+                # save-before-post): a crash then leaves the budget counted
+                # rather than under-counted — conservative for a safety cap.
                 async with self._checkpoint_lock:
-                    if not self._daemon and self._hops_spent() >= self._max_hops:
-                        # Budget spent: refuse further deliveries and ask to stop.
-                        self._hop_exhausted = True
-                        self._stop_requested = True
-                        return
-
-                    if not self._daemon and self._over_token_budget():
-                        # Token ceiling reached: stop spawning new activations
-                        # (those already in flight finish). A daemon opts out,
-                        # like max_hops.
-                        self._token_exhausted = True
-                        self._stop_requested = True
-                        return
-
                     self._activations += 1
                     await self._save_checkpoint()
 
@@ -565,7 +585,6 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 yield event
 
         except asyncio.CancelledError:
-            self._driver = None
             raise
 
         except Exception:
@@ -574,14 +593,12 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
 
         else:
             stop_reason = self._final_stop_reason()
-            # The run ended (vs cancelled / crashed): the next run is a NEW
-            # one — advance the seed ordinal so its input is delivered even
-            # when the content repeats. An interrupted run keeps the ordinal,
-            # making its re-run an idempotent resume.
-            self._runs_ended += 1
-            await self._save_checkpoint()
 
-        self._driver = None
+        finally:
+            # Always cleared, even when the run crashes: a stale driver would
+            # let a later wakeup/source ``post`` count hops and deposit mail
+            # against a run that no longer exists.
+            self._driver = None
 
         yield TeamEndedEvent(
             source=self._name,
@@ -630,16 +647,26 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                 # ordinal, so its input is delivered even when it repeats an
                 # earlier run's content verbatim.
                 if chat_inputs is not None:
-                    seed = TeamMessage.from_text(
-                        sender=USER_SENDER,
-                        to=entry,
-                        text=str(chat_inputs),
-                        message_id=_seed_message_id(
-                            entry, self._runs_ended, chat_inputs
-                        ),
-                    )
-                    if not await self._transport.was_processed(entry, seed.message_id):
-                        await self.post(seed)
+                    # The dedup probe below is a store round-trip; hold
+                    # quiescence open across it (the monitor is already
+                    # polling, and an idle team with the seed still in flight
+                    # must not read as done).
+                    self._posts_in_flight += 1
+                    try:
+                        seed = TeamMessage.from_text(
+                            sender=USER_SENDER,
+                            to=entry,
+                            text=str(chat_inputs),
+                            message_id=_seed_message_id(
+                                entry, self._runs_ended, chat_inputs
+                            ),
+                        )
+                        if not await self._transport.was_processed(
+                            entry, seed.message_id
+                        ):
+                            await self.post(seed)
+                    finally:
+                        self._posts_in_flight -= 1
 
                 async for event in driver.stream_events():
                     yield event
@@ -748,6 +775,18 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
 
             last_idle_activations = self._activations
 
+        # The run is ending on its own terms (quiescence or a budget stop) —
+        # the next run is a NEW one, so advance the seed ordinal now, BEFORE
+        # teardown: a crash between here and the stream's end then reads as
+        # "ended" and at worst re-delivers the next identical input as a fresh
+        # turn (a duplicate beats a silently swallowed one). A member error
+        # keeps the ordinal — its documented recovery is re-running the same
+        # input as an idempotent resume — and a cancelled run never gets here.
+        if not self._failed:
+            async with self._checkpoint_lock:
+                self._runs_ended += 1
+                await self._save_checkpoint()
+
         for task in self._resident_tasks:
             task.cancel()
 
@@ -755,19 +794,32 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
 
     async def _gc_mailbox(self) -> None:
         """
-        Reclaim old durable ``processed/`` records, pinning the entry seeds. A
-        no-op on the in-memory transport (nothing to reclaim). Housekeeping, so a
-        transient sweep failure is logged and the run continues — the delivery path
-        crashes on its own if the store is truly broken.
+        Reclaim old durable ``processed/`` records. Pinned against the sweep:
+        current-ordinal entry seeds (a resume still dedupes against them;
+        older ordinals can never be re-posted) and every record above a
+        member's oldest rollback boundary (rolling back to a boundary
+        re-delivers the records consumed after it, so reclaiming them would
+        silently destroy the rollback horizon). A no-op on the in-memory
+        transport. Housekeeping, so a transient sweep failure is logged and
+        the run continues — the delivery path crashes on its own if the store
+        is truly broken.
         """
         transport = self._transport
         if not isinstance(transport, CheckpointMailboxTransport):
             return
+        floors = {
+            name: floor
+            for name, member in self._members_by_name.items()
+            if is_llm_agent(member)
+            and (floor := member.oldest_boundary_mailbox_seq) is not None
+        }
         try:
             await transport.prune_processed(
                 older_than=self._mailbox_processed_retention,
-                keep=_is_seed_id,
+                keep=lambda mid: (o := _seed_ordinal(mid)) is not None
+                and o >= self._runs_ended,
                 corrupt_older_than=_MAILBOX_CORRUPT_RETENTION,
+                rollback_floors=floors,
             )
         except Exception:
             logger.warning("AgentTeam %s: mailbox GC failed", self._name, exc_info=True)

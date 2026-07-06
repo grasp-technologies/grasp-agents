@@ -276,7 +276,7 @@ class TestAgentRewindsTaskPlane:
         task = asyncio.create_task(consume())
         try:
             await asyncio.wait_for(started.wait(), timeout=2.0)
-            mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+            mgr = agent._loop.agent_ctx.bg_tasks  # pyright: ignore[reportPrivateUsage]
             assert mgr.has_live_tasks
             bg_task = mgr.get("bg_1").task
             _, record = await _load_only_record(store, "s1")
@@ -292,7 +292,7 @@ class TestAgentRewindsTaskPlane:
         # The settle pruned the round in flight — its launched task is an
         # orphan and was cancelled with it.
         agent.transcript.validate_tool_call_pairing()
-        assert not agent._loop.bg_tasks.has_live_tasks  # pyright: ignore[reportPrivateUsage]
+        assert not agent._loop.agent_ctx.bg_tasks.has_live_tasks  # pyright: ignore[reportPrivateUsage]
         with contextlib.suppress(asyncio.CancelledError):
             await bg_task
         assert bg_task.cancelled()
@@ -334,7 +334,7 @@ class TestAgentRewindsTaskPlane:
 
         out = await agent.run("go", step=1)
         assert out.payloads[0] == "done"
-        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+        mgr = agent._loop.agent_ctx.bg_tasks  # pyright: ignore[reportPrivateUsage]
         assert mgr.has_live_tasks  # non-blocking task outlives the run
         bg_task = mgr.get("bg_1").task
 
@@ -369,7 +369,7 @@ class TestUndeliverAfter:
             env_info=False,
         )
         await agent.run("q1", step=1)
-        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+        mgr = agent._loop.agent_ctx.bg_tasks  # pyright: ignore[reportPrivateUsage]
 
         # Launched in step 1's aftermath — before step 2's boundary.
         tool = FireAndForgetTool(delay=0.01)
@@ -430,7 +430,7 @@ class TestUndeliverAfter:
         )
         await agent.run("q1", step=1)
         await agent.run("q2", step=2)
-        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+        mgr = agent._loop.agent_ctx.bg_tasks  # pyright: ignore[reportPrivateUsage]
 
         # Launched, delivered, and flushed entirely inside step 2.
         tool = FireAndForgetTool(delay=0.01)
@@ -452,6 +452,177 @@ class TestUndeliverAfter:
 
         assert "<status>completed</status>" not in str(agent.transcript.messages)
         assert not agent._resume_notifications  # pyright: ignore[reportPrivateUsage]
+
+
+class TestUndeliverOverlay:
+    @pytest.mark.asyncio
+    async def test_drained_but_unflushed_note_is_reinjected(self) -> None:
+        # A note drained in-process whose DELIVERED flip never flushed (its
+        # record still COMPLETED): the rollback passes the pre-restore
+        # deferred-flip map, and the overlay treats the note exactly like a
+        # flushed one — re-injected, not silently lost until a cold resume.
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        mgr, transcript = _make_manager()
+
+        key = mgr._task_store_key(ctx, "c1")  # pyright: ignore[reportPrivateUsage]
+        assert key is not None
+        await store.save(
+            key,
+            TaskRecord(
+                session_key="s1",
+                task_id="bg_1",
+                launch_seq=1,
+                tool_call_id="c1",
+                tool_name="slow",
+                status=TaskStatus.COMPLETED,
+                result="the outcome",
+            )
+            .model_dump_json()
+            .encode(),
+        )
+
+        # Without the overlay the COMPLETED record stays buried.
+        assert (
+            await mgr.undeliver_after(message_count=4, bg_launch_seq=1, ctx=ctx) == []
+        )
+
+        injected = await mgr.undeliver_after(
+            message_count=4,
+            bg_launch_seq=1,
+            ctx=ctx,
+            deferred_delivered={
+                key: {"status": TaskStatus.DELIVERED, "delivered_msg_count": 6}
+            },
+        )
+        assert len(injected) == 1
+        assert "the outcome" in str(injected[0])
+        assert str(transcript.messages).count("<status>completed</status>") == 1
+
+
+class TestKillsSurviveCrashBeforeFlush:
+    @pytest.mark.asyncio
+    async def test_restored_kill_is_not_resurrected_by_resume(self) -> None:
+        # A settle cancels an orphan task and defers its CANCELLED flip; the
+        # next head persists an inflated bg_launch_seq BEFORE the flush. A
+        # crash in that window must not resurrect the task on resume: the
+        # head also carries the deferred kill, and resume honors it ahead of
+        # the (defeated) orphan guard.
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        mgr, transcript = _make_manager()
+
+        await _launch(mgr, ctx, "c1")  # PENDING record, launch_seq=1
+        mgr.cancel_launched_after(0)  # deferred kill, never flushed
+
+        # The head snapshot carries both the raised counter and the kill.
+        agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
+        state = agent_ctx.snapshot()
+        assert state.bg_launch_seq == 1
+        assert state.pending_killed
+
+        # Cold resume: fresh manager, state restored from the head.
+        t2 = LLMAgentTranscript()
+        t2.messages = [InputMessageItem.from_text("sys", role="system")]
+        mgr2 = BackgroundTaskManager[None](
+            agent_name="t", transcript=t2, tools={}, path=[]
+        )
+        agent_ctx2 = AgentContext.create(transcript=t2, tools={}, bg_tasks=mgr2)
+        agent_ctx2.restore(state)
+
+        injected = await mgr2.resume_durable(
+            ctx=ctx, exec_id="t", bg_launch_seq=state.bg_launch_seq
+        )
+        assert injected == []  # no phantom "interrupted" notice, no re-spawn
+
+        # The re-armed kill lands at the next flush.
+        await mgr2.flush_delivered(ctx=ctx)
+        _, record = await _load_only_record(store, "s1")
+        assert record.status == TaskStatus.CANCELLED
+
+
+class TestResumeSkipsRestoredFlips:
+    @pytest.mark.asyncio
+    async def test_no_duplicate_note_when_flip_was_restored_with_the_head(
+        self,
+    ) -> None:
+        # Crash between the checkpoint that persisted a completion note and
+        # its record flush: the head's snapshot carries the deferred flip, so
+        # the restored transcript already holds the note — resume must not
+        # inject it again (the restored flip lands at the next save instead).
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        mgr, _ = _make_manager()
+
+        key = mgr._task_store_key(ctx, "c1")  # pyright: ignore[reportPrivateUsage]
+        assert key is not None
+        await store.save(
+            key,
+            TaskRecord(
+                session_key="s1",
+                task_id="bg_1",
+                launch_seq=1,
+                tool_call_id="c1",
+                tool_name="slow",
+                status=TaskStatus.COMPLETED,
+                result="the outcome",
+            )
+            .model_dump_json()
+            .encode(),
+        )
+        # The restored head carried this deferred flip.
+        mgr.restore_pending_delivered(
+            {key: {"status": TaskStatus.DELIVERED, "delivered_msg_count": 2}}
+        )
+
+        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        assert injected == []
+
+        # Without the restored flip the same record IS re-injected.
+        mgr.restore_pending_delivered({})
+        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        assert len(injected) == 2  # framing + the note
+        assert "the outcome" in str(injected[1])
+
+
+class TestUndeliverOrder:
+    @pytest.mark.asyncio
+    async def test_reinjects_in_original_delivery_order(self) -> None:
+        # Notes straddling the boundary are re-injected in the order the
+        # model originally observed them (delivery order), which can differ
+        # from launch order.
+        store = InMemoryCheckpointStore()
+        ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
+        mgr, transcript = _make_manager()
+
+        for call_id, task_id, seq, delivered_at in [
+            ("c1", "bg_1", 1, 6),  # launched first, delivered second
+            ("c2", "bg_2", 2, 5),  # launched second, delivered first
+        ]:
+            key = mgr._task_store_key(ctx, call_id)  # pyright: ignore[reportPrivateUsage]
+            assert key is not None
+            await store.save(
+                key,
+                TaskRecord(
+                    session_key="s1",
+                    task_id=task_id,
+                    launch_seq=seq,
+                    tool_call_id=call_id,
+                    tool_name=f"tool_{task_id}",
+                    status=TaskStatus.DELIVERED,
+                    result=f"result of {task_id}",
+                    delivered_msg_count=delivered_at,
+                )
+                .model_dump_json()
+                .encode(),
+            )
+
+        injected = await mgr.undeliver_after(message_count=4, bg_launch_seq=2, ctx=ctx)
+
+        assert len(injected) == 2
+        assert "bg_2" in str(injected[0])  # delivered first → re-injected first
+        assert "bg_1" in str(injected[1])
+        assert len(transcript.messages) == 3  # seeded system message + 2 notes
 
 
 class TestFlushDeliveredRetry:
@@ -506,7 +677,7 @@ class TestSettleKeepsDeliveredFlips:
             env_info=False,
         )
         await agent.run("hi")  # a completed, checkpointed turn
-        mgr = agent._loop.bg_tasks  # pyright: ignore[reportPrivateUsage]
+        mgr = agent._loop.agent_ctx.bg_tasks  # pyright: ignore[reportPrivateUsage]
 
         # A task launched in a completed (checkpointed) round…
         tool = FireAndForgetTool(delay=0.01)

@@ -36,7 +36,13 @@ from grasp_agents.types.items import (
     InputMessageItem,
 )
 from grasp_agents.types.response import Response
-from tests._helpers import MockLLM, _make_usage, _text_response, _tool_call_response
+from tests._helpers import (
+    MockLLM,
+    _make_agent_loop,
+    _make_usage,
+    _text_response,
+    _tool_call_response,
+)
 
 # ---------- Infrastructure ----------
 
@@ -177,7 +183,7 @@ def _make_executor(
     memory.update([InputMessageItem.from_text("go", role="user")])
 
     ctx = ctx if ctx is not None else SessionContext[None](state=None)
-    executor = AgentLoop[None](
+    executor = _make_agent_loop(
         agent_name="test",
         llm=llm,
         transcript=memory,
@@ -554,9 +560,9 @@ class TestMaxTurnsKeepsBackgroundTasks:
         assert len(completed) == 0
 
         # The task outlives the run; explicit teardown releases it.
-        assert executor.bg_tasks.has_live_tasks
-        await executor.bg_tasks.cancel_all(ctx=ctx)
-        assert not executor.bg_tasks.has_live_tasks
+        assert executor.agent_ctx.bg_tasks.has_live_tasks
+        await executor.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
+        assert not executor.agent_ctx.bg_tasks.has_live_tasks
 
 
 class TestFunctionToolBackground:
@@ -679,7 +685,7 @@ class TestCapAndDeferDelivery:
     async def test_large_result_excerpted_then_dropped(self):
         tool = BigOutputTool(size=1000, cap=100)
         executor, _, _ = _make_executor([], tools=[tool])
-        mgr = executor.bg_tasks
+        mgr = executor.agent_ctx.bg_tasks
         ctx = executor.ctx
 
         call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
@@ -724,7 +730,7 @@ class TestCapAndDeferDelivery:
         ctx = SessionContext[None](environment=env)
         tool = BigOutputTool(size=1000, cap=100)
         executor, _, _ = _make_executor([], tools=[tool], ctx=ctx)
-        mgr = executor.bg_tasks
+        mgr = executor.agent_ctx.bg_tasks
 
         call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
         _note, event = await mgr.run_backgroundable(
@@ -1080,7 +1086,7 @@ class TestFrontTrim:
         from grasp_agents.types.events import ToolStreamEvent
 
         executor, _, _ = _make_executor([])
-        mgr = executor.bg_tasks
+        mgr = executor.agent_ctx.bg_tasks
         ctx = executor.ctx
 
         async def _never() -> None:

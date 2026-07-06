@@ -240,6 +240,52 @@ async def test_unprocess_after_skips_untracked_acks(
 
 
 @pytest.mark.asyncio
+async def test_rollback_replay_preserves_consumption_order_across_priorities(
+    transport: Transport[TeamMessage],
+) -> None:
+    # A rollback replays history: re-pended messages must re-deliver in their
+    # recorded consumption order, not re-sorted by priority — otherwise a
+    # control-plane steering message that arrived AFTER the original input
+    # would replay BEFORE it, scrambling the conversation and the step map.
+    first = TeamMessage.from_text(sender="user", to="bob", text="FIRST")
+    await transport.post(first)
+    assert await _absorb(transport, "bob") == "FIRST"
+
+    second = TeamMessage.from_text(
+        sender="user", to="bob", text="SECOND", priority=CONTROL_PRIORITY
+    )
+    await transport.post(second)
+    assert await _absorb(transport, "bob") == "SECOND"
+
+    assert await transport.unprocess_after("bob", 0) == 2
+
+    assert await _absorb(transport, "bob") == "FIRST"
+    assert await _absorb(transport, "bob") == "SECOND"
+    assert await transport.has_pending("bob") is False
+
+
+@pytest.mark.asyncio
+async def test_replay_drains_before_fresh_mail(
+    transport: Transport[TeamMessage],
+) -> None:
+    # Replayed history drains ahead of live mail — even fresh control-plane
+    # mail — so the reconstructed conversation is contiguous; the fresh
+    # message follows once the replay is absorbed.
+    await transport.post(TeamMessage.from_text(sender="a", to="bob", text="old"))
+    assert await _absorb(transport, "bob") == "old"
+    assert await transport.unprocess_after("bob", 0) == 1
+
+    await transport.post(
+        TeamMessage.from_text(
+            sender="user", to="bob", text="fresh", priority=CONTROL_PRIORITY
+        )
+    )
+
+    assert await _absorb(transport, "bob") == "old"
+    assert await _absorb(transport, "bob") == "fresh"
+
+
+@pytest.mark.asyncio
 async def test_unprocess_after_rerun_is_idempotent() -> None:
     # A crash mid-rollback is healed by retrying the rollback: re-running
     # unprocess for the same watermark finds the records already moved home.

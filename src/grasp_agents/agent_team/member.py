@@ -77,14 +77,7 @@ class MemberHost:
         self._mailbox = resolve_session_transport(member.ctx)
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
-        # Peers a rewind notice goes to: everyone except this member and any peer
-        # explicitly carded as triggered (activated fresh per message, so it holds
-        # no cross-turn view of the filesystem). ``resident=None`` peers are kept —
-        # this host cannot run the residency inference on a remote member, and a
-        # spurious notice is cheaper than a missed one.
-        self._rewind_notice_peers = [
-            c.name for c in cards if c.name != member.name and c.resident is not False
-        ]
+        self._rewind_notice_peers: list[str] = []
 
         # This member's card (its per-member team config: accepted input + role).
         card = next((c for c in cards if c.name == member.name), None)
@@ -103,7 +96,17 @@ class MemberHost:
             # shared-environment deployment, every other process declares it via
             # SessionContext(environment_rewinder=...)); when it rewinds, tell
             # the peers over the shared mailbox so they re-verify state instead
-            # of panicking over a filesystem that changed under them.
+            # of panicking over a filesystem that changed under them. Notice
+            # recipients: every peer except any explicitly carded as triggered
+            # (activated fresh per message, so it holds no cross-turn view of
+            # the filesystem); ``resident=None`` peers are kept — this host
+            # cannot run the residency inference on a remote member, and a
+            # spurious notice is cheaper than a missed one.
+            self._rewind_notice_peers = [
+                c.name
+                for c in cards
+                if c.name != member.name and c.resident is not False
+            ]
             member.ctx.claim_environment_rewind(member.name)
             member.ctx.add_environment_restored_callback(
                 self._notify_environment_rewind

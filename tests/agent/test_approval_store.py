@@ -34,7 +34,7 @@ from grasp_agents.types.items import (
     InputMessageItem,
 )
 from grasp_agents.types.response import Response
-from tests._helpers import MockLLM, _make_usage, _text_response
+from tests._helpers import MockLLM, _make_agent_loop, _make_usage, _text_response
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -95,7 +95,7 @@ def _make_executor(
     memory.update([InputMessageItem.from_text("go", role="user")])
 
     ctx = SessionContext[None](state=None)
-    executor = AgentLoop[None](
+    executor = _make_agent_loop(
         agent_name="test",
         llm=llm,
         transcript=memory,

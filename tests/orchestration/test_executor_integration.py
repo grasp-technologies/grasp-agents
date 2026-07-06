@@ -43,6 +43,7 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
+from tests._helpers import _make_agent_loop
 
 # ---------- Mock LLM ----------
 
@@ -221,7 +222,7 @@ class TestExecutorTextResponse:
         memory = LLMAgentTranscript()
         memory.messages = [InputMessageItem.from_text("Be helpful.", role="system")]
 
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="test_agent",
             llm=llm,
             transcript=memory,
@@ -259,7 +260,7 @@ class TestExecutorTextResponse:
         memory = LLMAgentTranscript()
         memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="agent",
             llm=llm,
             transcript=memory,
@@ -305,7 +306,7 @@ class TestExecutorToolCalling:
 
         tool = AddTool()
         executor = _with_final_answer_extractor(
-            AgentLoop(
+            _make_agent_loop(
                 agent_name="calc",
                 llm=llm,
                 transcript=memory,
@@ -373,7 +374,7 @@ class TestExecutorToolCalling:
         memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
         tool = AddTool()
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="agent",
             llm=llm,
             transcript=memory,
@@ -411,7 +412,7 @@ class TestExecutorUsageTracking:
         memory = LLMAgentTranscript()
         memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="test_agent",
             llm=llm,
             transcript=memory,
@@ -455,7 +456,7 @@ class TestExecutorMemoryIntegrity:
         memory.messages = [InputMessageItem.from_text("calc", role="system")]
 
         executor = _with_final_answer_extractor(
-            AgentLoop(
+            _make_agent_loop(
                 agent_name="agent",
                 llm=llm,
                 transcript=memory,

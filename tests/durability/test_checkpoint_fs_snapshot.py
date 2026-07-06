@@ -142,8 +142,8 @@ async def test_ledger_round_trips_through_checkpoint(tmp_path: Path) -> None:
     agent, _ = _make_agent([_text_response("done")], store=store)
 
     target = tmp_path / "notes.md"
-    agent._loop.file_edit_state.record_read(target, mtime=123.5)
-    agent._loop.file_edit_state.add_dotfile_override(tmp_path / ".env")
+    agent._loop.agent_ctx.file_edit_state.record_read(target, mtime=123.5)
+    agent._loop.agent_ctx.file_edit_state.add_dotfile_override(tmp_path / ".env")
 
     await agent.run("hello")
 
@@ -157,10 +157,12 @@ async def test_ledger_round_trips_through_checkpoint(tmp_path: Path) -> None:
     resumed, _ = _make_agent([], store=store)
     loaded = await resumed.load_checkpoint()
     assert loaded is not None
-    record = resumed._loop.file_edit_state.get_read_record(target)
+    record = resumed._loop.agent_ctx.file_edit_state.get_read_record(target)
     assert record is not None
     assert record.mtime == 123.5
-    assert resumed._loop.file_edit_state.dotfile_overrides == {tmp_path / ".env"}
+    assert resumed._loop.agent_ctx.file_edit_state.dotfile_overrides == {
+        tmp_path / ".env"
+    }
 
 
 async def test_v1_checkpoint_rejected_by_version_floor() -> None:
@@ -296,9 +298,9 @@ async def test_resumed_process_snapshotless_save_keeps_session_ref(
     tmp_path: Path,
 ) -> None:
     """
-    The latest-ref latch survives a process restart: ``load_checkpoint``
-    seeds it from the loaded record, so a resumed process's first
-    snapshotless save carries the ref forward instead of erasing it.
+    The latest-ref carry-forward survives a process restart: the write path
+    reads the ref off the on-disk record, so a resumed process's first
+    snapshotless save carries it forward instead of erasing it.
     """
     store = InMemoryCheckpointStore()
     env = _FakeSnapshotEnv(tmp_path)
@@ -321,6 +323,125 @@ async def test_resumed_process_snapshotless_save_keeps_session_ref(
     record = await _session_record(store)
     assert record is not None
     assert record.fs_snapshot_ref == "snap-1"
+
+
+async def test_concurrent_process_snapshotless_save_preserves_newer_ref(
+    tmp_path: Path,
+) -> None:
+    """
+    Two live ctx instances on one session (a multi-process member topology):
+    a non-snapshotting save must preserve the NEWER ref another process wrote
+    after this one loaded — the write path reads the on-disk record rather
+    than trusting anything process-local.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("a0"), _text_response("a1")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    await agent.run("q0")  # record → snap-1
+
+    # "Process B": a second live ctx (shared environment, non-rewinder) that
+    # loaded while the record was snap-1.
+    ctx_b: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        environment_rewinder="fs_agent",
+        session_metadata={"member": "b"},
+    )
+    await ctx_b.load_checkpoint()
+
+    await agent.run("q1")  # record → snap-2 ("process A" moved on)
+
+    await ctx_b.save_checkpoint()  # B checkpoints without a snapshot
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-2"
+
+
+async def test_midrun_crash_under_final_policy_injects_skew_notice(
+    tmp_path: Path,
+) -> None:
+    """
+    Under ``fs_snapshot_policy="final"``, a crash after a mid-run tool-result
+    checkpoint resumes a transcript that has advanced past the restored
+    snapshot. The resume must say so: a warning plus an injected
+    filesystem-restored notice, so the agent re-verifies file claims instead
+    of trusting them.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [
+            _text_response("a0"),
+            # Run 2: a tool round completes (mid-run AFTER_TOOL_RESULT
+            # checkpoint fires), then the next LLM call crashes (empty queue).
+            _tool_call_response("echo", '{"text": "hi"}', "c1"),
+        ],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+        tools=[EchoTool()],
+    )
+    await agent.run("q0")  # run 1 ends → snap-1
+    with pytest.raises(ProcRunError):
+        await agent.run("q1")
+
+    # Cold resume: the session rewinds the filesystem to snap-1 while the
+    # agent's head carries run 2's completed tool round.
+    fresh_env = _FakeSnapshotEnv(tmp_path)
+    resumed, rctx = _make_agent(
+        [], store=store, environment=fresh_env, fs_snapshot_policy="final"
+    )
+    await rctx.load_checkpoint()
+    assert fresh_env.restored == ["snap-1"]
+    loaded = await resumed.load_checkpoint()
+    assert loaded is not None
+
+    blob = str(resumed.transcript.messages)
+    assert "<filesystem_restored>" in blob
+    assert resumed._resume_notifications  # streamed at the next run
+
+    # A run-end head (paired with its snapshot) resumes without the notice.
+    store2 = InMemoryCheckpointStore()
+    env2 = _FakeSnapshotEnv(tmp_path)
+    agent2, _ = _make_agent(
+        [_text_response("done")],
+        store=store2,
+        environment=env2,
+        fs_snapshot_policy="final",
+    )
+    await agent2.run("q0")
+    fresh_env2 = _FakeSnapshotEnv(tmp_path)
+    resumed2, rctx2 = _make_agent(
+        [], store=store2, environment=fresh_env2, fs_snapshot_policy="final"
+    )
+    await rctx2.load_checkpoint()
+    assert await resumed2.load_checkpoint() is not None
+    assert "<filesystem_restored>" not in str(resumed2.transcript.messages)
+
+
+async def test_restore_fs_snapshot_verifies_the_claimant(tmp_path: Path) -> None:
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="final",
+        environment_rewinder="lead",
+    )
+
+    with pytest.raises(RuntimeError, match="rewind right"):
+        await ctx.restore_fs_snapshot("snap-1", claimant="peer")
+    assert env.restored == []
+
+    await ctx.restore_fs_snapshot("snap-1", claimant="lead")
+    assert env.restored == ["snap-1"]
 
 
 async def test_fs_snapshot_turn_snapshots_every_boundary(tmp_path: Path) -> None:

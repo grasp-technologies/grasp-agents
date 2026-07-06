@@ -102,7 +102,9 @@ class TestSystemPromptIntegration:
     async def test_no_provider_no_memory_block(self) -> None:
         agent = _make_agent()
         ctx: SessionContext[_State] = SessionContext(state=_State())
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         # No ctx.memory → the memory block drops. (enable_memory still attaches
         # the file toolkit, so other sections — e.g. untrusted-content — may be
         # present; only the memory block itself must be absent.)
@@ -115,7 +117,9 @@ class TestSystemPromptIntegration:
             state=_State(),
             memory=InMemoryMemoryProvider(index="# index body\n"),
         )
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         assert prompt is not None
         assert "<memory-index>" in prompt
         assert "index body" in prompt
@@ -127,7 +131,9 @@ class TestSystemPromptIntegration:
             state=_State(),
             memory=InMemoryMemoryProvider(index="# idx\n"),
         )
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         assert prompt is not None
         assert prompt.startswith("You are a helper.")
         assert "<memory-index>" in prompt
@@ -139,7 +145,9 @@ class TestSystemPromptIntegration:
             state=_State(),
             memory=InMemoryMemoryProvider(),
         )
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         # Empty provider → no MEMORY.md index sub-block, but the
         # instructions still render (memory IS configured; the agent
         # should know how to use it once it has anything to load).
@@ -178,7 +186,9 @@ class TestAutoMemoryInstructions:
             state=_State(),
             memory=InMemoryMemoryProvider(index="# idx body\n"),
         )
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         assert prompt is not None
         assert "<memory-index>" in prompt  # index sub-block
         assert "# Memory" in prompt  # instructions sub-block
@@ -196,7 +206,9 @@ class TestAutoMemoryInstructions:
             state=_State(),
             memory=InMemoryMemoryProvider(index="# idx\n"),
         )
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         assert prompt is not None
         # Specialized memory-tool names from the old surface must not
         # appear — they no longer exist.
@@ -218,7 +230,9 @@ class TestAutoMemoryInstructions:
 
         agent = _make_agent()
         ctx: SessionContext[_State] = SessionContext(state=_State(), memory=provider)
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         assert prompt is not None
         assert "surfaced into each turn" in prompt
 
@@ -226,7 +240,9 @@ class TestAutoMemoryInstructions:
     async def test_no_memory_provider_no_section(self) -> None:
         agent = _make_agent()
         ctx: SessionContext[_State] = SessionContext(state=_State())
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         # No ctx.memory → the memory section drops. (enable_memory still attaches
         # the file toolkit, so the prompt may carry other sections; only the
         # memory section itself must be absent.)
@@ -238,7 +254,9 @@ class TestAutoMemoryInstructions:
         ctx: SessionContext[_State] = SessionContext(
             state=_State(), memory=InMemoryMemoryProvider()
         )
-        prompt = await agent.build_system_prompt(ctx, exec_id="e1")
+        prompt = await agent._prompt_builder.build_system_prompt(
+            ctx=ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+        )
         assert prompt is not None
         # No rendered <memory-index> sub-block when the index is empty.
         # (The instructions text REFERS to <memory-index> as a forward

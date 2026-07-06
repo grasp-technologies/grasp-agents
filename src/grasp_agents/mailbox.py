@@ -7,9 +7,10 @@ mailbox implementations, beside the in-process :class:`~grasp_agents.runtime.
 InProcessTransport` used for event routing. So a single agent's inbox, a multi-agent
 team's driver, and (in future) a networked backend all sit on the same seam — no
 adapter, no parallel transport type. A mailbox has no native arrival signal, so
-:meth:`consume` blocks by polling :meth:`has_pending` every ``poll_interval`` and
-wakes immediately on :meth:`shutdown`; ``fetch`` is non-removing and a consumer
-``ack``s after a successful activation, so delivery is at-least-once.
+:meth:`consume` blocks by polling :meth:`has_pending` every ``poll_interval``;
+``fetch`` is non-removing and a consumer ``ack``s after a successful activation,
+so delivery is at-least-once. The transport is session-scoped and outlives any
+one run — consumers stop by cancellation, not by closing it.
 
 - :class:`InMemoryMailboxTransport` — ephemeral, process-local; single-process.
 - :class:`CheckpointMailboxTransport` — durable, over the session
@@ -35,7 +36,7 @@ from grasp_agents.session_context import DEFAULT_SESSION_KEY
 from grasp_agents.types.message import TeamMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from datetime import timedelta
     from typing import Any
 
@@ -139,9 +140,20 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
         while not self._closed.is_set():
             box = self._boxes.get(recipient)
             if box:
-                # Highest priority first, then oldest (FIFO within a priority).
-                # Non-removing; removed by ack after activation.
-                return min(box, key=lambda m: (-m.priority, m.message_id))
+                # Replayed messages (a rollback moved them back; they retain
+                # their consumption ``seq``) drain first, in recorded
+                # consumption order — replay reconstructs history, so live
+                # priority preemption must not scramble it. Fresh mail
+                # (``seq == 0``) then drains highest priority first, oldest
+                # within a priority. Non-removing; removed by ack.
+                return min(
+                    box,
+                    key=lambda m: (
+                        m.seq == 0,
+                        m.seq or -m.priority,
+                        m.message_id,
+                    ),
+                )
             try:
                 await asyncio.wait_for(self._closed.wait(), self._poll_interval)
             except TimeoutError:
@@ -180,11 +192,11 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
             return 0
         self._processed[recipient] = [m for m in processed if m.seq <= seq]
         box = self._boxes.setdefault(recipient, [])
-        for message in moved:
-            # Back to pending as if never consumed: the seq is re-minted when
-            # the recipient absorbs it again.
-            message.seq = 0
-            box.append(message)
+        # Back to pending KEEPING the recorded seq: it marks the message as a
+        # replay and orders re-delivery by the original consumption order
+        # (see ``consume``). The recipient's next take overwrites it with a
+        # freshly minted seq.
+        box.extend(moved)
         return len(moved)
 
     async def shutdown(self) -> None:
@@ -240,6 +252,14 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         # Inverted, fixed-width: a higher priority yields a smaller string, so
         # sorted keys put control mail first; ids then order FIFO within a lane.
         return f"{99 - max(0, min(priority, 99)):02d}"
+
+    @staticmethod
+    def _replay_lane(seq: int) -> str:
+        # ``!`` sorts before every priority lane, so replayed messages (moved
+        # back by a rollback) drain first — in recorded consumption order,
+        # which the embedded seq encodes. Replay reconstructs history; live
+        # priority preemption must not scramble it.
+        return f"!{seq:020d}"
 
     def _inbox_key(self, recipient: str, message: TeamMessage) -> str:
         return make_store_key(
@@ -348,8 +368,17 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         return CLOSED
 
     async def ack(self, recipient: str, envelope: TeamMessage) -> None:
-        inbox_key = self._inbox_key(recipient, envelope)
-        data = await self._store.load(inbox_key)
+        # Locate the pending record by message id rather than recomputing its
+        # key: a replayed message sits in a replay lane, not the lane its
+        # priority implies.
+        inbox_keys = [
+            k
+            for k in await self._store.list_keys(self._inbox_prefix(recipient))
+            if key_leaf(k) == envelope.message_id
+        ]
+        if not inbox_keys:
+            return
+        data = await self._store.load(inbox_keys[0])
         if data is None:
             return
         processed_key = self._processed_key(recipient, envelope.message_id)
@@ -366,7 +395,8 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
                 }
             )
             await self._store.save(processed_key, delivered.model_dump_json().encode())
-        await self._store.delete(inbox_key)
+        for key in inbox_keys:
+            await self._store.delete(key)
 
     async def has_pending(self, recipient: str) -> bool:
         return bool(await self._store.list_keys(self._inbox_prefix(recipient)))
@@ -382,8 +412,10 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
     async def unprocess_after(self, recipient: str, seq: int) -> int:
         """
         Move ``processed/`` records with consumption ``seq >`` the watermark back
-        to ``inbox/`` (status PENDING, seq cleared for re-minting), returning the
-        count moved. The mailbox half of a step rollback.
+        to ``inbox/`` (status PENDING), returning the count moved. The mailbox
+        half of a step rollback. The recorded seq is KEPT: the pending copy
+        lands in a replay lane that drains before live mail, in the original
+        consumption order (the recipient's next take re-mints the seq).
 
         Crash-safe the same way the rollback itself is: the pending copy is
         written before the processed copy is deleted, so a crash in between
@@ -398,18 +430,23 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
             )
             if record is None or record.message.seq <= seq:
                 continue
-            message = record.message.model_copy(update={"seq": 0})
             pending = record.model_copy(
                 update={
                     "status": TaskStatus.PENDING,
-                    "message": message,
                     "updated_at": datetime.now(UTC),
                 }
             )
-            await self._store.save(
-                self._inbox_key(recipient, message),
-                pending.model_dump_json().encode(),
+            replay_key = make_store_key(
+                self._session_key,
+                CheckpointKind.MAILBOX,
+                [
+                    recipient,
+                    "inbox",
+                    self._replay_lane(record.message.seq),
+                    record.message.message_id,
+                ],
             )
+            await self._store.save(replay_key, pending.model_dump_json().encode())
             await self._store.delete(key)
             moved += 1
         return moved
@@ -420,6 +457,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         older_than: timedelta,
         keep: Callable[[str], bool] | None = None,
         corrupt_older_than: timedelta | None = None,
+        rollback_floors: Mapping[str, int] | None = None,
     ) -> int:
         """
         Delete stale ``processed/`` and ``corrupt/`` mailbox records, returning the
@@ -441,15 +479,19 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         best-effort and never re-runs a record. Mirrors
         ``BackgroundTaskManager.prune_delivered``.
 
-        ``older_than`` also bounds the **rollback horizon**: a step rollback
-        restores consumed messages from these records (:meth:`unprocess_after`),
-        so pruning one silently shrinks how far back a resident's mailbox can
-        be rewound. Keep the retention at least as long as the oldest rollback
-        boundary you intend to honor, or pin records via ``keep``.
+        A step rollback restores consumed messages from these records
+        (:meth:`unprocess_after`), so pruning one shrinks how far back a
+        recipient's mailbox can be rewound. ``rollback_floors`` protects that
+        horizon: a record whose consumption ``seq`` is above its recipient's
+        floor (the oldest live rollback boundary's high-water) is retained
+        regardless of age. Without a floor for a recipient, ``older_than``
+        alone bounds its rollback horizon — keep the retention at least as
+        long as the oldest boundary you intend to honor.
         """
         now = datetime.now(UTC)
         processed_cutoff = now - older_than
         corrupt_cutoff = now - (corrupt_older_than or older_than)
+        floors = rollback_floors or {}
         keys = await self._store.list_keys(self._mailbox_prefix())
         pending = {key_leaf(k) for k in keys if "/inbox/" in k}
         pruned = 0
@@ -464,9 +506,15 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
                     )
                 except CheckpointSchemaError:
                     continue
-                if record is not None and record.updated_at < processed_cutoff:
-                    await self._store.delete(key)
-                    pruned += 1
+                if record is None or record.updated_at >= processed_cutoff:
+                    continue
+                floor = floors.get(record.message.recipient)
+                if floor is not None and record.message.seq > floor:
+                    # Still inside a live rollback horizon — a rollback to
+                    # that boundary must be able to re-deliver this message.
+                    continue
+                await self._store.delete(key)
+                pruned += 1
             elif "/corrupt/" in key and self._corrupt_is_stale(
                 await self._store.load(key), corrupt_cutoff
             ):

@@ -211,6 +211,13 @@ class AgentContextState(BaseModel):
     pending_delivered: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
+    # Deferred CANCELLED flips for tasks killed by a rewind, persisted so a
+    # crash before their flush cannot resurrect the killed tasks on resume:
+    # the same head that raises ``bg_launch_seq`` past a killed launch (which
+    # defeats the resume orphan guard) also carries the kill itself.
+    pending_killed: dict[str, dict[str, Any]] = Field(
+        default_factory=dict[str, dict[str, Any]]
+    )
     # High-water background-task launch seq at this boundary: every task
     # launched by then has ``launch_seq <= bg_launch_seq``. A rewind to this
     # boundary cancels tasks above it (their launching calls left the

@@ -146,7 +146,11 @@ class Transport[E](ABC):
 
     @abstractmethod
     async def shutdown(self) -> None:
-        """Unblock every parked :meth:`consume` so consumers can stop."""
+        """
+        Unblock every parked :meth:`consume` (they return :data:`CLOSED`).
+        A terminal teardown affordance: the runtime itself never calls it —
+        the transport is session-scoped and consumers stop by cancellation.
+        """
 
     async def was_processed(self, recipient: str, envelope_id: str) -> bool:
         """
