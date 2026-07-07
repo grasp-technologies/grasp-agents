@@ -242,26 +242,20 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
             else:
                 self._transforms[member.name] = member
 
-        # Give every resident the shared messaging tool — plus the self-wakeup
-        # tool for members carded with ``wakeups=True`` (opt-in: mail already
-        # wakes a resident) — then adopt all members so ctx / path / tracing
-        # cascade down (as Runner adopts its procs). SendMessage routes through
-        # the team (``self`` is the sink); ScheduleWakeup is a self-contained
-        # background tool (no scheduler needed).
+        # Give every resident the shared messaging + self-wakeup tools, then
+        # adopt all members so ctx / path / tracing cascade down (as Runner adopts
+        # its procs). SendMessage routes through the team (``self`` is the sink);
+        # ScheduleWakeup is a self-contained background tool (no scheduler needed).
         send_tool = cast(
             "BaseTool[BaseModel, Any, CtxT]",
             SendMessageTool(self._cards, sink=self),
         )
         wakeup_tool = cast("BaseTool[BaseModel, Any, CtxT]", ScheduleWakeupTool())
-        for member_name, resident in self._residents.items():
-            card = self._cards_by_name.get(member_name)
-            wakeups = card is not None and card.wakeups
+        team_section = make_team_section(self._cards)
+        for resident in self._residents.values():
             resident.tools[SEND_MESSAGE_TOOL_NAME] = send_tool
-            if wakeups:
-                resident.tools[SCHEDULE_WAKEUP_TOOL_NAME] = wakeup_tool
-            resident.add_system_prompt_section(
-                make_team_section(self._cards, wakeups=wakeups)
-            )
+            resident.tools[SCHEDULE_WAKEUP_TOOL_NAME] = wakeup_tool
+            resident.add_system_prompt_section(team_section)
 
         # A triggered member renders a peer hand-off through its own input pipeline,
         # which has no sender fence; give every LLM member the attribution attachment
@@ -428,23 +422,16 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
 
     async def submit_message(self, to: str, text: str) -> None:
         """
-        Inject human input to a member — a control-plane message (drains ahead
-        of peer mail). Use this to talk to a team agent from a UI pane. During
-        a live run it routes like any other send (a bounded run counts it
-        against ``max_hops``; a daemon run does not). Outside one it is
-        deposited straight on the session mailbox — human input is never
-        dropped; it queues (durably, on a durable transport) until the member's
-        next run takes it.
+        Inject human input to a member mid-run — a control-plane message (drains
+        ahead of peer mail) routed like any other send. Use this to talk to a team
+        agent from a UI pane. A no-op outside a live run (``post`` drops it); a
+        bounded run counts it against ``max_hops`` (a daemon run does not).
         """
-        if to not in self._members_by_name:
-            raise ValueError(f"Recipient {to!r} is not a team member.")
-        message = TeamMessage.from_text(
-            sender=USER_SENDER, to=to, text=text, priority=CONTROL_PRIORITY
+        await self.post(
+            TeamMessage.from_text(
+                sender=USER_SENDER, to=to, text=text, priority=CONTROL_PRIORITY
+            )
         )
-        if self._driver is None:
-            await self._transport.post(message)
-        else:
-            await self.post(message)
 
     async def _notify_environment_rewind(self, fs_snapshot_ref: str) -> None:
         """

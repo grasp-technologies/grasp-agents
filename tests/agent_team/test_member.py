@@ -17,7 +17,6 @@ from grasp_agents.agent_team.member import MemberHost
 from grasp_agents.agent_team.message import CONTROL_PRIORITY, LEAD_PRIORITY, TeamMessage
 from grasp_agents.mailbox import InMemoryMailboxTransport
 from grasp_agents.session_context import SessionContext
-from grasp_agents.types.events import UserMessageEvent
 from tests._helpers import FakeSnapshotEnv, MockLLM, _agent, _send, _text_response
 
 CARDS = [MemberCard(name="alice"), MemberCard(name="bob")]
@@ -65,11 +64,6 @@ async def test_human_input_runs_a_turn() -> None:
 
     assert events
     assert solo.llm.call_count == 1
-    # The drained turn names its mailbox sender, so a UI can tell queued human
-    # input apart from peer hand-offs.
-    drained = next(e for e in events if isinstance(e, UserMessageEvent))
-    assert drained.source == "user"
-    assert drained.destination == "solo"
 
 
 @pytest.mark.asyncio

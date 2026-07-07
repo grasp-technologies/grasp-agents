@@ -115,24 +115,21 @@ class MemberHost:
         # reference so the resident path can use the LLMAgent-only inbox API.
         self._resident: LLMAgent[Any, Any, Any] | None = None
 
-        # A resident messages peers via SendMessage; a member carded with
-        # ``wakeups=True`` also schedules its own wakeups via ScheduleWakeup
-        # (opt-in: mail already wakes a resident). A worker hands its output
-        # off by name and gets no tools.
+        # A resident messages peers via SendMessage and schedules its own
+        # wakeups via ScheduleWakeup; a worker hands its output off by name and gets
+        # no tools.
         if is_resident(member, card):
             self._resident = cast("LLMAgent[Any, Any, Any]", member)
-            wakeups = card is not None and card.wakeups
-            tools: list[tuple[str, Any]] = [
-                (SEND_MESSAGE_TOOL_NAME, SendMessageTool(cards))
-            ]
-            if wakeups:
-                tools.append((SCHEDULE_WAKEUP_TOOL_NAME, ScheduleWakeupTool()))
-            for name, tool in tools:
+            send_tool = SendMessageTool(cards)
+            wakeup_tool = ScheduleWakeupTool()
+
+            for name, tool in (
+                (SEND_MESSAGE_TOOL_NAME, send_tool),
+                (SCHEDULE_WAKEUP_TOOL_NAME, wakeup_tool),
+            ):
                 self._resident.tools[name] = cast("BaseTool[Any, Any, Any]", tool)
                 tool.on_adopted(member)
-            self._resident.add_system_prompt_section(
-                make_team_section(cards, wakeups=wakeups)
-            )
+            self._resident.add_system_prompt_section(make_team_section(cards))
 
         # A triggered member renders a peer hand-off through its own input pipeline,
         # which has no sender fence; give every LLM member the attribution attachment
