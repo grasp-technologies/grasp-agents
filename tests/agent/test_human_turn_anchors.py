@@ -162,13 +162,20 @@ async def test_resident_anchors_human_turns_not_peer_turns() -> None:
     assert agent.rollback_steps == [1]
     boundary = agent._step_watermarks[0]
     # Archived before the human message's seq was minted: its high-water
-    # excludes the message, so a rollback re-pends it too.
+    # excludes the message, so a rollback voids it too.
     assert boundary.agent_ctx_state.mailbox_seq == 0
 
     await agent.rollback_to_step(1)
-    assert not await transport.was_processed("test_agent", human.message_id)
-    assert not await transport.was_processed("test_agent", peer.message_id)
+    # Both messages are voided: still deduped, never re-delivered.
+    assert await transport.was_processed("test_agent", human.message_id)
+    assert await transport.was_processed("test_agent", peer.message_id)
+    assert not await transport.has_pending("test_agent")
     assert "human task" not in str(agent.transcript.messages)
+    # The peer is notified; the human is not (they are rewriting history).
+    nack = await transport.consume("peer")
+    assert isinstance(nack, TeamMessage)
+    assert "<message_dropped>" in nack.text
+    assert not await transport.has_pending("user")
 
 
 @pytest.mark.asyncio
@@ -209,17 +216,14 @@ async def test_mint_after_rollback_floors_at_parked_step_with_sparse_steps() -> 
 
 
 @pytest.mark.asyncio
-async def test_resident_rerun_after_rollback_re_anchors_the_repended_human() -> None:
-    # Same process, same agent: a rollback destroys the anchor boundary AND
-    # must invalidate the anchor memo — the re-taken (re-pended) human message
-    # then re-mints its step and re-archives the boundary, so a second
-    # rollback still has a target. (A stale memo would skip the mint after the
-    # pure-resume entry cleared ``step``, leaving the head unstepped.)
+async def test_resident_rerun_after_rollback_re_anchors_a_new_human_message() -> None:
+    # Same process, same agent: a rollback voids the absorbed human message
+    # and destroys its anchor boundary; the human's NEXT (replacement)
+    # message re-mints the parked step and re-archives the boundary, so a
+    # second rollback still has a target.
     store = InMemoryCheckpointStore()
     agent, transport = _resident(
-        MockLLM(
-            responses_queue=[_text_response("first"), _text_response("second")]
-        ),
+        MockLLM(responses_queue=[_text_response("first"), _text_response("second")]),
         store,
     )
     human = _human("human task")
@@ -227,21 +231,25 @@ async def test_resident_rerun_after_rollback_re_anchors_the_repended_human() -> 
     await _run_until_processed(agent, transport, human)
     assert agent.rollback_steps == [1]
 
-    agent.detach_inbox()
     await agent.rollback_to_step(1)
     assert agent.rollback_steps == []
+    # The voided message is never re-delivered.
+    assert not await transport.has_pending("test_agent")
 
+    replacement = _human("replacement task")
+    await transport.post(replacement)
     agent.attach_inbox()
-    await _run_until_processed(agent, transport, human)
+    await _run_until_processed(agent, transport, replacement)
 
     assert agent.step == 1
     assert agent.rollback_steps == [1]
-    assert str(agent.transcript.messages).count("human task") == 1
+    blob = str(agent.transcript.messages)
+    assert "replacement task" in blob
+    assert "human task" not in blob
 
     # The restored boundary is fully usable: roll back again.
     await agent.rollback_to_step(1)
-    assert "human task" not in str(agent.transcript.messages)
-    assert not await transport.was_processed("test_agent", human.message_id)
+    assert "replacement task" not in str(agent.transcript.messages)
 
 
 @pytest.mark.asyncio
@@ -294,9 +302,7 @@ async def test_cold_rolled_back_resume_restores_the_parked_step() -> None:
     await agent.run("q5", step=5)
     await agent.rollback_to_step(5)
 
-    resumed, _ = _make_agent(
-        [_text_response("c")], session_key="s1", store=store
-    )
+    resumed, _ = _make_agent([_text_response("c")], session_key="s1", store=store)
     assert await resumed.load_checkpoint() is not None
     assert resumed.step == 5
 
@@ -345,7 +351,7 @@ async def test_rollback_mid_run_is_refused() -> None:
 async def test_resident_retry_keeps_the_take_anchor() -> None:
     # A retry continues an already-anchored delivery: re-archiving on the
     # retry re-entry would move the boundary past the settled human message,
-    # so a later rollback would keep the message and never re-pend it.
+    # so a later rollback would keep the message's turn instead of voiding it.
     store = InMemoryCheckpointStore()
     ctx = SessionContext[None](checkpoint_store=store, session_key="s1")
     transport = CheckpointMailboxTransport(store, session_key="s1")
@@ -364,7 +370,7 @@ async def test_resident_retry_keeps_the_take_anchor() -> None:
     await _run_until_processed(agent, transport, human)
 
     # The take-time anchor survived the retry: its high-waters exclude the
-    # message, so the rollback re-pends it.
+    # message, so the rollback voids it.
     boundary = agent._step_watermarks[0]
     assert (boundary.step, boundary.message_count) == (1, 0)
     assert boundary.agent_ctx_state.mailbox_seq == 0
@@ -372,14 +378,16 @@ async def test_resident_retry_keeps_the_take_anchor() -> None:
 
     await agent.rollback_to_step(1)
     assert "human task" not in str(agent.transcript.messages)
-    assert not await transport.was_processed("test_agent", human.message_id)
-    assert await transport.has_pending("test_agent")
+    # Voided: deduped, never re-delivered.
+    assert await transport.was_processed("test_agent", human.message_id)
+    assert not await transport.has_pending("test_agent")
 
 
 @pytest.mark.asyncio
-async def test_between_runs_rollback_unprocesses_detached_mailbox() -> None:
-    # With the resident inbox detached (between runs), the mailbox half of a
-    # rollback still runs — resolved from the session's transport.
+async def test_fresh_instance_rollback_voids_mailbox() -> None:
+    # A fresh agent instance (same session, no inbox attached — a
+    # cross-process rollback) still runs the mailbox half of a rollback,
+    # resolved from the session's transport.
     store = InMemoryCheckpointStore()
     agent, ctx = _make_agent(
         [_text_response("re: human"), _text_response("re: peer")],
@@ -392,11 +400,22 @@ async def test_between_runs_rollback_unprocesses_detached_mailbox() -> None:
 
     human, peer = _human("human task"), _peer("peer task")
     await _run_resident_until(agent, transport, [human, peer])
-    agent.detach_inbox()
 
-    await agent.rollback_to_step(1)
-    assert not await transport.was_processed("test_agent", human.message_id)
-    assert not await transport.was_processed("test_agent", peer.message_id)
+    ctx2 = SessionContext[None](checkpoint_store=store, session_key="s1")
+    ctx2.transport = transport
+    agent2 = LLMAgent[str, str, None](
+        name="test_agent", ctx=ctx2, llm=MockLLM(responses_queue=[])
+    )
+    await agent2.load_checkpoint()
+
+    await agent2.rollback_to_step(1)
+    # Both voided: still deduped, never re-delivered; the peer is notified.
+    assert await transport.was_processed("test_agent", human.message_id)
+    assert await transport.was_processed("test_agent", peer.message_id)
+    assert not await transport.has_pending("test_agent")
+    nack = await transport.consume("peer")
+    assert isinstance(nack, TeamMessage)
+    assert "<message_dropped>" in nack.text
 
 
 # --- settled human turns are not re-delivered ---
@@ -458,11 +477,11 @@ async def test_settled_human_turn_not_duplicated_on_reentry() -> None:
     assert str(agent.transcript.messages).count("human task") == 1
     boundary = agent._step_watermarks[0]
     assert (boundary.step, boundary.message_count) == (1, 0)
-    # Rollback fully removes the turn and re-pends the message.
+    # Rollback fully removes the turn and voids the message.
     await agent.rollback_to_step(1)
     assert "human task" not in str(agent.transcript.messages)
-    assert not await transport.was_processed("test_agent", human.message_id)
-    assert await transport.has_pending("test_agent")
+    assert await transport.was_processed("test_agent", human.message_id)
+    assert not await transport.has_pending("test_agent")
 
 
 @pytest.mark.asyncio
@@ -481,7 +500,6 @@ async def test_lease_survives_detach_reattach() -> None:
         async for _ in agent.run_stream():
             pass
 
-    agent.detach_inbox()
     agent.attach_inbox()
 
     await _run_until_processed(agent, transport, human)

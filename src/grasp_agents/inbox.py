@@ -59,7 +59,7 @@ class AgentInbox:
         # In-memory and transient: a crash loses the leases, and the un-acked
         # messages are simply re-delivered. A lease must live exactly as long as
         # the live transcript that absorbed its message — which is why an agent
-        # keeps ONE inbox across attach/detach cycles (see
+        # keeps its ONE inbox for its lifetime (see
         # :meth:`LLMAgent.attach_inbox`) instead of building one per run.
         self._leased: dict[str, TeamMessage] = {}
 
@@ -89,8 +89,8 @@ class AgentInbox:
 
         A taken message is stamped with its consumption ``seq`` (this inbox is
         the recipient's sole consumer, so take order is absorption order); the
-        ack persists it, and a step rollback moves messages above a boundary's
-        high-water back to pending (:meth:`unprocess_after`). ``on_take`` fires
+        ack persists it, and a step rollback voids messages above a boundary's
+        high-water (:meth:`Transport.void_processed_after`). ``on_take`` fires
         once a message is chosen for delivery, *before* its seq is minted.
         """
         while await self._transport.has_pending(self._recipient):
@@ -132,15 +132,19 @@ class AgentInbox:
             await self._transport.ack(self._recipient, message)
             self._leased.pop(message.message_id, None)
 
-    def rollback(self) -> None:
+    def rollback(self) -> list[TeamMessage]:
         """
-        Drop all leases without acking, so a transcript rewind (step rollback,
-        cold reload) re-takes the still-unacked messages from the mailbox
-        rather than wedging on them. In-memory only — they were never removed.
-        NOT for a failed-run settle: settling keeps the absorbed message's
-        turn, and its lease is what prevents a duplicate re-take.
+        Drop all leases without acking, returning the dropped messages.
+        In-memory only — the messages stay pending in the mailbox. A cold
+        reload leaves them there for re-delivery (their takes were never
+        checkpointed); a step rollback voids them instead (the caller acks
+        and notifies — see ``LLMAgent._rollback_mailbox``). NOT for a
+        failed-run settle: settling keeps the absorbed message's turn, and
+        its lease is what prevents a duplicate re-take.
         """
+        dropped = list(self._leased.values())
         self._leased.clear()
+        return dropped
 
     @property
     def last_consumption_seq(self) -> int:

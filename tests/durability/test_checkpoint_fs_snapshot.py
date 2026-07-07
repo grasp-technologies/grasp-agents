@@ -19,6 +19,7 @@ Tests for the filesystem half of agent checkpoints:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.response import Response
+from grasp_agents.workflow import SequentialWorkflow
 from tests._helpers import FakeSnapshotEnv as _FakeSnapshotEnv
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
@@ -261,7 +263,7 @@ async def test_non_rewinder_checkpoint_keeps_session_ref(tmp_path: Path) -> None
         session_key="s1",
         environment=env,
         fs_snapshot_policy="final",
-        environment_rewinder="lead",
+        session_writer="lead",
     )
     lead = LLMAgent[str, str, None](
         name="lead",
@@ -350,7 +352,7 @@ async def test_concurrent_process_snapshotless_save_preserves_newer_ref(
         checkpoint_store=store,
         session_key="s1",
         environment=env,
-        environment_rewinder="fs_agent",
+        session_writer="fs_agent",
         session_metadata={"member": "b"},
     )
     await ctx_b.load_checkpoint()
@@ -403,7 +405,7 @@ async def test_midrun_crash_under_final_policy_injects_skew_notice(
     assert loaded is not None
 
     blob = str(resumed.transcript.messages)
-    assert "<filesystem_restored>" in blob
+    assert 'subject="filesystem restored"' in blob
     assert resumed._resume_notifications  # streamed at the next run
 
     # A run-end head (paired with its snapshot) resumes without the notice.
@@ -422,7 +424,7 @@ async def test_midrun_crash_under_final_policy_injects_skew_notice(
     )
     await rctx2.load_checkpoint()
     assert await resumed2.load_checkpoint() is not None
-    assert "<filesystem_restored>" not in str(resumed2.transcript.messages)
+    assert 'subject="filesystem restored"' not in str(resumed2.transcript.messages)
 
 
 async def test_restore_fs_snapshot_verifies_the_claimant(tmp_path: Path) -> None:
@@ -433,10 +435,10 @@ async def test_restore_fs_snapshot_verifies_the_claimant(tmp_path: Path) -> None
         session_key="s1",
         environment=env,
         fs_snapshot_policy="final",
-        environment_rewinder="lead",
+        session_writer="lead",
     )
 
-    with pytest.raises(RuntimeError, match="rewind right"):
+    with pytest.raises(RuntimeError, match="already owns session persistence"):
         await ctx.restore_fs_snapshot("snap-1", claimant="peer")
     assert env.restored == []
 
@@ -603,7 +605,7 @@ async def test_rollback_from_cold_instance_restores_fs(tmp_path: Path) -> None:
     await agent2.rollback_to_step(1)
 
     assert fresh_env.restored == ["snap-1"]
-    assert rctx.environment_rewinder == "fs_agent"
+    assert rctx.session_writer == "fs_agent"
     record = await _session_record(store)
     assert record is not None
     assert record.fs_snapshot_ref == "snap-1"
@@ -642,7 +644,7 @@ async def test_first_stepped_delivery_claims_rewind_right(tmp_path: Path) -> Non
     # Claimed at step 0's delivery start — not at a later snapshot-carrying
     # boundary — so nothing else in the session ever snapshots.
     await coordinator.run("q0", step=0)
-    assert ctx.environment_rewinder == "coordinator"
+    assert ctx.session_writer == "coordinator"
     assert env.snapshots == ["snap-1"]
     await coordinator.run("q1", step=1)
     assert env.snapshots == ["snap-1", "snap-2"]
@@ -653,11 +655,11 @@ async def test_first_stepped_delivery_claims_rewind_right(tmp_path: Path) -> Non
     await other.run("p1", step=1)
     assert env.snapshots == ["snap-1", "snap-2"]
     assert all(wm.fs_snapshot_ref is None for wm in other._step_watermarks)
-    assert ctx.environment_rewinder == "coordinator"
+    assert ctx.session_writer == "coordinator"
 
     # An explicit rewind attempt by the non-holder still fails loudly.
-    with pytest.raises(RuntimeError, match="rewind right"):
-        ctx.claim_environment_rewind("other")
+    with pytest.raises(RuntimeError, match="already owns session persistence"):
+        ctx.claim_session_writer("other")
 
 
 async def test_subagents_never_snapshot_under_stepped_coordinator(
@@ -698,7 +700,7 @@ async def test_subagents_never_snapshot_under_stepped_coordinator(
 
     await coordinator.run("q0", step=0)
 
-    assert ctx.environment_rewinder == "coordinator"
+    assert ctx.session_writer == "coordinator"
     # The subagent's run completed mid-step (its own run-end boundary would
     # have snapshotted under an unclaimed right) — only the coordinator's
     # run-end snapshot exists.
@@ -709,7 +711,7 @@ async def test_declared_rewinder_gates_snapshots_from_construction(
     tmp_path: Path,
 ) -> None:
     """
-    ``SessionContext(environment_rewinder=...)`` fixes the lead up front:
+    ``SessionContext(session_writer=...)`` fixes the writer up front:
     even an agent that runs *first* (which under lazy claiming would have
     snapshotted and claimed) takes no snapshots; only the declared lead does.
     """
@@ -720,7 +722,7 @@ async def test_declared_rewinder_gates_snapshots_from_construction(
         session_key="s1",
         environment=env,
         fs_snapshot_policy="final",
-        environment_rewinder="coordinator",
+        session_writer="coordinator",
     )
     other = LLMAgent[str, str, None](
         name="other",
@@ -739,7 +741,7 @@ async def test_declared_rewinder_gates_snapshots_from_construction(
 
     await coordinator.run("q0", step=0)
     assert env.snapshots == ["snap-1"]
-    assert ctx.environment_rewinder == "coordinator"
+    assert ctx.session_writer == "coordinator"
 
 
 async def test_failed_step_settles_and_rollback_restores_boundary_fs(
@@ -875,3 +877,113 @@ async def test_ipy_exec_context_id_not_captured_without_fs_snapshot(
     assert (
         await _stored_checkpoint(store)
     ).current.agent_ctx_state.ipy_exec_context_id is None
+
+
+# ---------- Session writers ----------
+
+
+async def test_contained_agent_never_writes_session_record(tmp_path: Path) -> None:
+    # No writers declared: a contained agent (non-trivial path) neither
+    # snapshots nor writes the session record — only bare agents do.
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="turn",
+    )
+    agent = LLMAgent[str, str, None](
+        name="sub",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("done")]),
+        path=["coordinator", "sub"],
+    )
+
+    await agent.run(in_args="task")
+
+    assert env.snapshots == []
+    assert await _session_record(store) is None
+
+
+async def test_sequential_workflow_hands_writer_role_along_nodes(
+    tmp_path: Path,
+) -> None:
+    # A top-level sequential workflow hands the session-writer role to each
+    # node as it runs: each node's run-end snapshot advances the session
+    # record's ref.
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    node1 = LLMAgent[Any, str, None](
+        name="node1", llm=MockLLM(responses_queue=[_text_response("a")]), ctx=ctx
+    )
+    node2 = LLMAgent[str, str, None](
+        name="node2", llm=MockLLM(responses_queue=[_text_response("b")]), ctx=ctx
+    )
+    workflow = SequentialWorkflow[Any, str, None]("wf", [node1, node2], ctx=ctx)
+
+    await workflow.run("go")
+
+    assert ctx.session_writer == "node2"  # the last node holds the role
+    assert env.snapshots == ["snap-1", "snap-2"]
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-2"
+
+
+async def test_adopted_member_is_not_a_session_writer(tmp_path: Path) -> None:
+    # Containers (teams, Runner) keep flat member paths for checkpoint-key
+    # stability, so containment — not path shape — gates unclaimed session
+    # writes: an adopted member must not write the session record.
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="turn",
+    )
+    agent = LLMAgent[str, str, None](
+        name="member",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("done")]),
+    )
+    assert agent._is_session_writer()  # bare until adopted
+
+    agent.on_adopted(SimpleNamespace(ctx=ctx, path=[]))  # flat-path container
+    assert agent.path == ["member"]  # the path shape did not change...
+    assert not agent._is_session_writer()  # ...but containment gates writes
+
+    await agent.run(in_args="task")
+    assert env.snapshots == []
+    assert await _session_record(store) is None
+
+
+async def test_nested_workflow_does_not_hand_over_writer(tmp_path: Path) -> None:
+    # A workflow adopted by a container may run concurrently with siblings:
+    # it must not hand the session-writer role to its nodes.
+    env = _FakeSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=InMemoryCheckpointStore(),
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    node1 = LLMAgent[Any, str, None](
+        name="node1", llm=MockLLM(responses_queue=[]), ctx=ctx
+    )
+    node2 = LLMAgent[str, str, None](
+        name="node2", llm=MockLLM(responses_queue=[]), ctx=ctx
+    )
+    workflow = SequentialWorkflow[Any, str, None]("wf", [node1, node2], ctx=ctx)
+
+    workflow.on_adopted(SimpleNamespace(ctx=ctx, path=[]))  # nested in a container
+    workflow._hand_over_session_writer(node1)
+    assert ctx.session_writer is None
+    assert not node1._is_session_writer()

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.agent_loop import AgentLoop
+from grasp_agents.agent.context_window import ContextWindowManager
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend.local import LocalFileBackend
@@ -259,6 +260,12 @@ def _make_agent_loop(
         agent_name=agent_name,
         path=path,
         max_background=max_background,
+    )
+    loop_kwargs.setdefault(
+        "context_window",
+        ContextWindowManager(
+            transcript=transcript, model=llm.model_name, source=agent_name
+        ),
     )
     return AgentLoop[None](
         agent_name=agent_name,

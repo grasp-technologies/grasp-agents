@@ -76,10 +76,35 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
 
         self._in_type = start_proc.in_type
         self._out_type = end_proc.out_type
+        self._handoff_refusal_warned = False
 
     def _propagate_to_children(self) -> None:
         for subproc in self._subprocs:
             subproc.on_adopted(self)
+
+    def _hand_over_session_writer(self, subproc: Processor[Any, Any, CtxT]) -> None:
+        """
+        Hand the session-writer role to the node about to run: nodes run one
+        at a time, so each node's boundaries are session-wide frontiers while
+        it holds the role. Top-level workflows only (a nested one may run
+        concurrently with siblings), and never taken from an outside owner —
+        only from this workflow's own nodes.
+        """
+        if self._contained or not self._ctx.session_record_enabled:
+            return
+        writer = self._ctx.session_writer
+        if writer is None or writer in {p.name for p in self._subprocs}:
+            self._ctx.session_writer = subproc.name
+        elif not self._handoff_refusal_warned:
+            self._handoff_refusal_warned = True
+            logger.warning(
+                "Workflow %s will not persist session state: %r already owns "
+                "session persistence and is not one of this workflow's nodes. "
+                "Declare SessionContext(session_writer=...) if this workflow "
+                "should own it.",
+                self.name,
+                writer,
+            )
 
     def validate_inputs(
         self,

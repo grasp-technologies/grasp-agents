@@ -47,7 +47,7 @@ class MemberCard(BaseModel):
     resident: bool | None = None
     # The team's lead: at most one per team, and it must run resident (both
     # validated at host construction). The lead holds the session's
-    # environment-rewind right (``SessionContext.environment_rewinder``) — only
+    # environment-rewind right (``SessionContext.session_writer``) — only
     # it snapshots the shared filesystem and may roll it back, and a rewind is
     # announced to the other members. Its messages carry ``LEAD_PRIORITY``,
     # draining ahead of ordinary peer mail (below control-plane mail).

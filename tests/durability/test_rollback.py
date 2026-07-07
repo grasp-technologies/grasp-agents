@@ -271,13 +271,14 @@ async def test_unstepped_run_records_no_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
+async def test_rollback_voids_consumed_inbox_messages() -> None:
     # A resident's rollback rewinds its mailbox with its transcript: messages
-    # absorbed after the boundary go back to pending (their turns left the
-    # history), in consumption order, ready to be re-processed.
+    # absorbed after the boundary are voided, never re-delivered (a rollback
+    # rewrites history). The human's message is dropped silently; the peer
+    # gets a <message_dropped> note so it can resend.
     store = InMemoryCheckpointStore()
     transport = CheckpointMailboxTransport(store, session_key="s1")
-    agent, _ = _make_agent(
+    agent, ctx = _make_agent(
         [
             _text_response("kickoff done"),
             _text_response("reply one"),
@@ -286,7 +287,8 @@ async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
         session_key="s1",
         store=store,
     )
-    agent.agent_ctx.inbox = AgentInbox(transport=transport, recipient="test_agent")
+    ctx.transport = transport
+    agent.attach_inbox()
 
     async def drain() -> None:
         async for _ in agent.run_stream("kick off", step=1):
@@ -319,18 +321,19 @@ async def test_rollback_returns_consumed_inbox_messages_to_pending() -> None:
 
     await agent.rollback_to_step(1)
 
-    # The step-1 boundary predates both absorptions (high-water 0): both
-    # messages return to pending, no longer deduped, transcript rewound.
-    assert not await transport.was_processed("test_agent", m1.message_id)
-    assert not await transport.was_processed("test_agent", m2.message_id)
-    assert await transport.has_pending("test_agent")
-    inbox = agent.agent_ctx.inbox
-    assert inbox is not None
-    first, second = await inbox.poll(), await inbox.poll()
-    assert first is not None
-    assert second is not None
-    assert (first.text, second.text) == ("task one", "task two")
+    # The step-1 boundary predates both absorptions (high-water 0): both are
+    # voided — still deduped, never re-delivered, transcript rewound.
+    assert await transport.was_processed("test_agent", m1.message_id)
+    assert await transport.was_processed("test_agent", m2.message_id)
+    assert not await transport.has_pending("test_agent")
     assert "task one" not in str(agent.transcript.messages)
+
+    # The peer sender gets a dropped-message note; the human does not.
+    nack = await transport.consume("peer")
+    assert isinstance(nack, TeamMessage)
+    assert "<message_dropped>" in nack.text
+    assert "task two" in nack.text
+    assert not await transport.has_pending("user")
 
 
 @pytest.mark.asyncio

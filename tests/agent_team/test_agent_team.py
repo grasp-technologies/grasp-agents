@@ -250,12 +250,12 @@ async def test_lead_claims_environment_rewind_at_construction(
     a = _agent("a", [_text_response("x")])
     b = _agent("b", [_text_response("y")])
     AgentTeam([a, b], cards=[MemberCard(name="a", lead=True)], ctx=ctx)
-    assert ctx.environment_rewinder == "a"
+    assert ctx.session_writer == "a"
 
     # A ctx that already declares a different rewinder conflicts immediately.
     other_ctx = _ctx(tmp_path)
-    other_ctx.environment_rewinder = "someone-else"
-    with pytest.raises(RuntimeError, match="rewind right"):
+    other_ctx.session_writer = "someone-else"
+    with pytest.raises(RuntimeError, match="already owns session persistence"):
         AgentTeam([a, b], cards=[MemberCard(name="a", lead=True)], ctx=other_ctx)
 
 
@@ -498,30 +498,29 @@ async def test_gc_reclaims_stale_ordinal_seeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gc_keeps_records_inside_a_rollback_horizon() -> None:
-    # A resident's anchored boundary pins everything it consumed after it:
-    # even zero retention (and a stale seed ordinal) must not reclaim those
-    # records, or rolling back to the boundary could no longer re-deliver
-    # the messages.
+async def test_gc_reclaims_ended_run_seed_and_rollback_still_voids() -> None:
+    # Once the run ends (the seed's ordinal goes stale — it can never be
+    # re-posted), zero retention reclaims its record: nothing pins consumed
+    # mail anymore, since a rollback voids rather than re-delivers. The
+    # rollback still rewinds the transcript; the reclaimed seed simply has
+    # nothing left to void.
     store = InMemoryCheckpointStore()
     ctx = SessionContext[None](state=None, checkpoint_store=store)
     solo = _agent("solo", [_text_response("one")])
-    team = AgentTeam(
-        [solo], ctx=ctx, mailbox_processed_retention=timedelta(seconds=0)
-    )
+    team = AgentTeam([solo], ctx=ctx, mailbox_processed_retention=timedelta(seconds=0))
 
     await team.run("kick off")
     assert solo.rollback_steps == [1]
     assert len(await _seed_records(store)) == 1  # consumed by the resident
 
     await team._gc_mailbox()
-    assert len(await _seed_records(store)) == 1  # pinned by the boundary
+    assert len(await _seed_records(store)) == 0  # stale ordinal, reclaimed
 
-    # The horizon is intact: the rollback re-pends the human kick-off.
     await solo.rollback_to_step(1)
     transport = ctx.transport
     assert transport is not None
-    assert await transport.has_pending("solo")
+    assert not await transport.has_pending("solo")
+    assert "kick off" not in str(solo.transcript.messages)
     await team.aclose()
     # The team saves its hop checkpoint BEFORE depositing on the transport. A
     # crash in that window for the entry seed must not strand the kickoff: the
@@ -809,19 +808,16 @@ async def test_environment_rewind_notifies_other_residents(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_team_installs_transport_on_session_ctx(tmp_path: Path) -> None:
-    # The mailbox is session infrastructure: a team resolves it from
-    # ``ctx.transport`` (creating + installing one on first use), so any later
-    # host on the same session reuses that instance — the mailbox (and its
-    # live consumption counters) survives host rebuilds instead of being
-    # silently replaced by a fresh, empty one.
+async def test_hosts_share_the_session_transport(tmp_path: Path) -> None:
+    # The mailbox is session infrastructure, owned by ``ctx.transport``: every
+    # host on the same session uses that instance — the mailbox (and its live
+    # consumption counters) survives host rebuilds instead of being silently
+    # replaced by a fresh, empty one.
     ctx = _ctx(tmp_path)
-    assert ctx.transport is None
     team = AgentTeam([_agent("solo", [_text_response("a")])], ctx=ctx)
-    assert ctx.transport is not None
-
     team2 = AgentTeam([_agent("solo2", [_text_response("b")])], ctx=ctx)
-    assert team2._transport is team._transport  # pyright: ignore[reportPrivateUsage]
+    assert team._transport is ctx.transport  # pyright: ignore[reportPrivateUsage]
+    assert team2._transport is ctx.transport  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio
@@ -843,7 +839,7 @@ async def test_lead_member_rolls_back_directly_after_a_team_run(
     # The human seed reaches the lead over the mailbox and anchors a rollback
     # boundary; between runs the lead rolls back like any stepping agent
     # (which member may — the lead here — is the app's policy, not the
-    # team's), and the consumed seed returns to its mailbox.
+    # team's), and the consumed human seed is voided — not re-delivered.
     ctx = _ctx(tmp_path)
     alice = _agent("alice", [_text_response("done")])
     bob = _agent("bob", [])
@@ -861,7 +857,7 @@ async def test_lead_member_rolls_back_directly_after_a_team_run(
     assert "do the thing" not in str(alice.transcript.messages)
     transport = ctx.transport
     assert transport is not None
-    assert await transport.has_pending("alice")  # the seed was re-pended
+    assert not await transport.has_pending("alice")  # voided, not re-pended
 
 
 @pytest.mark.asyncio
@@ -950,3 +946,30 @@ async def test_closed_team_stops_announcing_rewinds(tmp_path: Path) -> None:
     transport = ctx.transport
     assert isinstance(transport, InMemoryMailboxTransport)
     assert len(transport._boxes.get("bob", [])) == 1  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_unowned_session_persistence_warns_once() -> None:
+    # A lead-less team with session persistence on: every member is contained
+    # and none claims the writer role, so the record is never written — the
+    # session warns exactly once instead of staying silently inert.
+    import logging
+
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store, serialize_state=True)
+    solo = _agent("solo", [_text_response("one")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    logger = logging.getLogger("grasp_agents.session_context")
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger.addHandler(handler)
+    try:
+        await team.run("go")
+    finally:
+        logger.removeHandler(handler)
+        await team.aclose()
+
+    warnings = [r for r in records if "no session writer" in r.getMessage()]
+    assert len(warnings) == 1

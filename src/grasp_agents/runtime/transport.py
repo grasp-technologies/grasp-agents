@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 # Queue bound: a publisher awaiting ``put`` on a full queue blocks until the
 # consumer catches up (backpressure) instead of growing memory without limit.
@@ -168,20 +171,30 @@ class Transport[E](ABC):
         del recipient, envelope_id
         return False
 
-    async def unprocess_after(self, recipient: str, seq: int) -> int:
+    async def void_processed_after(
+        self,
+        recipient: str,
+        seq: int,
+        *,
+        on_void: Callable[[E], Awaitable[None]] | None = None,
+    ) -> list[E]:
         """
-        Move ``recipient``'s acked envelopes with consumption ``seq > seq`` back
-        to pending, returning how many moved — the mailbox half of a step
-        rollback: the turns that absorbed those envelopes left the transcript,
-        so the recipient must receive them again.
+        Void ``recipient``'s acked envelopes with consumption ``seq > seq`` —
+        the mailbox half of a step rollback. A rollback rewrites history, so
+        the voided envelopes are never re-delivered (senders are notified
+        instead); they stay on record for dedup. Returns the voided
+        envelopes, once — re-voiding the same range returns nothing.
+
+        ``on_void`` is awaited per envelope BEFORE its void is made durable:
+        a crash between the two re-runs the callback on the retried rollback
+        (at-least-once notification; a duplicate beats a silent drop).
 
         Only envelopes whose consumer stamped a seq are eligible (a triggered
-        worker's driver acks without one; its redelivery is the orchestrator's
-        job). Defaults to ``0``: a queue transport removes envelopes on consume
-        and retains nothing to restore. Mailbox transports override this.
+        worker's driver acks without one). Defaults to empty: a queue
+        transport retains nothing to void. Mailbox transports override this.
         """
-        del recipient, seq
-        return 0
+        del recipient, seq, on_void
+        return []
 
 
 class InProcessTransport[E: HasDestination](Transport[E]):
@@ -205,9 +218,7 @@ class InProcessTransport[E: HasDestination](Transport[E]):
         return self._queues
 
     def register(self, recipient: str) -> None:
-        self._queues.setdefault(
-            recipient, asyncio.Queue(maxsize=self._max_queue_size)
-        )
+        self._queues.setdefault(recipient, asyncio.Queue(maxsize=self._max_queue_size))
 
     async def post(self, envelope: E) -> None:
         destination = envelope.destination

@@ -6,7 +6,6 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from grasp_agents.mailbox import resolve_session_transport
 from grasp_agents.runtime import ActorDriver
 
 from ._roles import activate_member, is_llm_agent, is_resident, resident_idle
@@ -74,7 +73,7 @@ class MemberHost:
         # first use — durable over ``ctx.checkpoint_store`` when the session
         # has one (the shared store IS the cross-process channel), else
         # in-memory (single process).
-        self._mailbox = resolve_session_transport(member.ctx)
+        self._mailbox = member.ctx.transport
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
         self._rewind_notice_peers: list[str] = []
@@ -94,7 +93,7 @@ class MemberHost:
                 )
             # The lead holds its session's environment-rewind right (in a
             # shared-environment deployment, every other process declares it via
-            # SessionContext(environment_rewinder=...)); when it rewinds, tell
+            # SessionContext(session_writer=...)); when it rewinds, tell
             # the peers over the shared mailbox so they re-verify state instead
             # of panicking over a filesystem that changed under them. Notice
             # recipients: every peer except any explicitly carded as triggered
@@ -107,7 +106,7 @@ class MemberHost:
                 for c in cards
                 if c.name != member.name and c.resident is not False
             ]
-            member.ctx.claim_environment_rewind(member.name)
+            member.ctx.claim_session_writer(member.name)
             member.ctx.add_environment_restored_callback(
                 self._notify_environment_rewind
             )
@@ -254,7 +253,6 @@ class MemberHost:
                 monitor.cancel()
             tasks = [run_task] + ([monitor] if monitor is not None else [])
             await asyncio.gather(*tasks, return_exceptions=True)
-            member.detach_inbox()
 
     async def _monitor_idle(self, run_task: asyncio.Task[None]) -> None:
         """

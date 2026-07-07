@@ -571,9 +571,10 @@ async def test_deadline_note_points_at_log(tmp_path: Path) -> None:
 
 async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
     """
-    End-to-end: the model takes a no-op turn while a backgrounded Bash command
-    runs, the loop idle-waits on it (no polling), and injects its completion
-    note as a user message before the next turn — which then ends the run.
+    End-to-end: the model answers while a backgrounded Bash command still
+    blocks the final answer, so the answer is deferred; the loop idle-waits on
+    the command (no polling) and injects its completion note as a user message
+    before the next turn — which then ends the run.
     """
     from dataclasses import field
 
@@ -633,11 +634,19 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     transcript.update([InputMessageItem.from_text("go", role="user")])
 
-    # Turn 0: empty output → no tool call, no final answer → the loop
-    # continues. Turn 1: a final answer ends the run (after the note).
+    # Turn 0: a text answer, deferred because the backgrounded command still
+    # blocks the final answer → the loop idle-waits and injects the note.
+    # Turn 1: a final answer ends the run.
     llm = _QueueLLM(
         queue=[
-            _resp([]),
+            _resp(
+                [
+                    OutputMessageItem(
+                        content=[OutputMessageText(text="Waiting for the command.")],
+                        status="completed",
+                    )
+                ]
+            ),
             _resp(
                 [
                     OutputMessageItem(

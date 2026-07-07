@@ -152,6 +152,11 @@ class Processor[InT, OutT, CtxT](
             ctx if ctx is not None else current_session_context()  # type: ignore
         )
         self._path: list[str] = [self.name] if path is None else list(path)
+        # Whether this processor lives inside a container or another agent's
+        # turn (adopted by a parent, or built under an explicit lineage) —
+        # contained processors don't own session persistence unless declared
+        # (see ``SessionContext.session_writer``).
+        self._contained: bool = path is not None and len(self._path) > 1
         self._propagate_to_children()
 
     # --- Session lifecycle ---
@@ -253,10 +258,18 @@ class Processor[InT, OutT, CtxT](
                 parent_path = getattr(parent, "path", None)
                 if parent_path is not None:
                     path = [*parent_path, self.name]
+
         if ctx is not None:
             self._ctx = ctx
+
         if path is not None:
             self._path = list(path)
+
+        if parent is not None or (path is not None and len(self._path) > 1):
+            # A bare ctx rebind is not containment; being attached to a parent
+            # (whatever its path shape) or dispatched under a lineage is.
+            self._contained = True
+
         self._propagate_to_children()
 
     def _inherit_tracing(self, parent: Any) -> None:

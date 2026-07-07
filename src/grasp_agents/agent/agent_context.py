@@ -195,16 +195,20 @@ class AgentContext:
         self.file_edit_state.import_state(
             state.read_file_state, state.dotfile_overrides
         )
+
         self.shell_state.cwd = state.shell_cwd
+
         self.bg_tasks.restore_pending_delivered(state.pending_delivered)
         self.bg_tasks.restore_pending_killed(state.pending_killed)
         self.bg_tasks.seed_launch_seq(state.bg_launch_seq)
+
         # Leases are NOT dropped here: a settle keeps the absorbed-but-unacked
         # message in the transcript, and its lease is what stops the loop from
         # re-taking (duplicating) it. The callers that discard the message's
         # turn — cold reload and step rollback — drop leases themselves.
         if self.inbox is not None:
             self.inbox.seed_consumption_seq(state.mailbox_seq)
+
         if rebind_kernels:
             if state.ipy_exec_context_id is not None and self.ipy_kernel_holder:
                 self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)

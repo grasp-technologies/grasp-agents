@@ -82,8 +82,8 @@ class TeamMessage(BaseModel):
     # it takes the message (0 = not yet absorbed / untracked). Consumption
     # order, not arrival order — priority mail drains out of arrival order, and
     # rollback needs "consumed after this boundary". Persisted on the acked
-    # mailbox record; a step rollback moves records above a boundary's
-    # high-water back to pending (``Transport.unprocess_after``).
+    # mailbox record; a step rollback voids records above a boundary's
+    # high-water (``Transport.void_processed_after``).
     seq: int = 0
 
     @field_validator("payloads", mode="before")

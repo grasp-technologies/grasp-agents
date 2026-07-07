@@ -54,6 +54,11 @@ def make_team_section(
             "shared workspace to an earlier snapshot (you will receive an "
             "<environment_rewind> notice when that happens)."
         )
+    text += (
+        "\n\nIf a peer's conversation is rolled back, messages you sent it may "
+        "be discarded unanswered — you will receive a <message_dropped> notice "
+        "for each; resend what is still relevant."
+    )
 
     def compute(**_: Any) -> str:
         return text

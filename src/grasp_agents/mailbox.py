@@ -25,7 +25,6 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from weakref import WeakSet
 
 from grasp_agents.durability.checkpoints import CheckpointKind, CheckpointSchemaError
 from grasp_agents.durability.message_record import MessageRecord
@@ -33,78 +32,62 @@ from grasp_agents.durability.store_keys import key_leaf, make_store_key
 from grasp_agents.durability.task_record import TaskStatus
 from grasp_agents.runtime import CLOSED, Closed, Transport
 from grasp_agents.session_context import DEFAULT_SESSION_KEY
-from grasp_agents.types.message import TeamMessage
+from grasp_agents.types.message import USER_SENDER, TeamMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Sequence
     from datetime import timedelta
-    from typing import Any
 
     from grasp_agents.durability.checkpoint_store import CheckpointStore
-    from grasp_agents.session_context import SessionContext
 
 logger = logging.getLogger(__name__)
 
 
-# Hand-set transports already warned about, so a mismatch is reported once per
-# transport rather than on every resolve.
-_mismatch_warned: WeakSet[Transport[TeamMessage]] = WeakSet()
+def _dropped_message_note(message: TeamMessage, *, recipient: str) -> str:
+    excerpt = message.text[:200]
+    return (
+        "<message_dropped>\n"
+        f"Your message to '{recipient}' (id {message.message_id}) was "
+        "discarded by a conversation rollback and will not be answered"
+        f"{': ' + excerpt if excerpt else '.'}\n"
+        "Resend it if it is still relevant.\n"
+        "</message_dropped>"
+    )
 
 
-def _warn_if_durability_mismatched(
-    transport: Transport[TeamMessage], ctx: SessionContext[Any]
+async def void_mail_after(
+    transport: Transport[TeamMessage],
+    recipient: str,
+    seq: int,
+    *,
+    leased: Sequence[TeamMessage] = (),
 ) -> None:
     """
-    Mail safety requires the mailbox and the session state to share a
-    durability fate: consumed mail's handling lives only in transcripts, and
-    pending mail lives only in the mailbox. A hand-set ``ctx.transport`` can
-    break that pairing — the resolver itself never does.
+    The mailbox half of a step rollback: everything ``recipient`` consumed
+    after ``seq`` is voided, never re-delivered — a rollback rewrites history,
+    so the human supplies new input instead of a replay (their dropped
+    messages are discarded silently), while each peer whose message was
+    dropped gets a ``<message_dropped>`` note so it can resend what is still
+    relevant. ``leased`` takes (absorbed but never acked) are acked first so
+    the void sweep covers them. Each note posts BEFORE its message's void is
+    made durable, so a crash in between re-notifies on the retried rollback
+    (a duplicate note beats a silent drop).
     """
-    durable_session = ctx.checkpoint_store is not None
-    if (
-        isinstance(transport, CheckpointMailboxTransport) == durable_session
-        or transport in _mismatch_warned
-    ):
-        return
-    _mismatch_warned.add(transport)
-    if durable_session:
-        logger.warning(
-            "Session %s persists its state but ctx.transport is ephemeral: "
-            "pending mail dies with the process while the session resumes "
-            "without it. Leave ctx.transport unset to derive a durable "
-            "mailbox from the checkpoint store.",
-            ctx.session_key,
-        )
-    else:
-        logger.warning(
-            "Session %s does not persist its state but ctx.transport is "
-            "durable: a restart finds consumed messages acked while the "
-            "transcripts that absorbed them are gone — their handling is "
-            "lost without redelivery. Give the session a checkpoint store "
-            "(or an in-memory transport).",
-            ctx.session_key,
+    for message in leased:
+        await transport.ack(recipient, message)
+
+    async def notify(message: TeamMessage) -> None:
+        if message.sender == USER_SENDER:
+            return
+        await transport.post(
+            TeamMessage.from_text(
+                sender=recipient,
+                to=message.sender,
+                text=_dropped_message_note(message, recipient=recipient),
+            )
         )
 
-
-def resolve_session_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage]:
-    """
-    The session's one mailbox transport (``ctx.transport``), created and
-    installed on first use: durable over ``ctx.checkpoint_store`` when the
-    session has one, else in-memory (single process). Hosts, resident inboxes,
-    and ``SendMessage`` all resolve through here — never a transport argument —
-    so every participant shares the one instance (and its live consumption
-    counters) across host rebuilds within the session.
-    """
-    if ctx.transport is None:
-        store = ctx.checkpoint_store
-        ctx.transport = (
-            CheckpointMailboxTransport(store, session_key=ctx.session_key)
-            if store is not None
-            else InMemoryMailboxTransport()
-        )
-    else:
-        _warn_if_durability_mismatched(ctx.transport, ctx)
-    return ctx.transport
+    await transport.void_processed_after(recipient, seq, on_void=notify)
 
 
 class InMemoryMailboxTransport(Transport[TeamMessage]):
@@ -121,10 +104,13 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
         super().__init__()
         self._boxes: dict[str, list[TeamMessage]] = {}
         # Acked messages whose consumer stamped a consumption ``seq``, retained
-        # so a step rollback can move them back to pending (they are the
-        # in-memory analog of the durable ``processed/`` records). Untracked
-        # acks (``seq == 0``) are dropped outright, as before.
+        # as the dedup record and for a step rollback to void (the in-memory
+        # analog of the durable ``processed/`` records). Untracked acks
+        # (``seq == 0``) are dropped outright, as before.
         self._processed: dict[str, list[TeamMessage]] = {}
+        # Ids already voided by a rollback, so a repeated rollback over the
+        # same range does not re-notify their senders.
+        self._voided: set[str] = set()
         self._poll_interval = poll_interval
         self._closed = asyncio.Event()
 
@@ -140,20 +126,9 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
         while not self._closed.is_set():
             box = self._boxes.get(recipient)
             if box:
-                # Replayed messages (a rollback moved them back; they retain
-                # their consumption ``seq``) drain first, in recorded
-                # consumption order — replay reconstructs history, so live
-                # priority preemption must not scramble it. Fresh mail
-                # (``seq == 0``) then drains highest priority first, oldest
-                # within a priority. Non-removing; removed by ack.
-                return min(
-                    box,
-                    key=lambda m: (
-                        m.seq == 0,
-                        m.seq or -m.priority,
-                        m.message_id,
-                    ),
-                )
+                # Highest priority first, oldest within a priority.
+                # Non-removing; removed by ack.
+                return min(box, key=lambda m: (-m.priority, m.message_id))
             try:
                 await asyncio.wait_for(self._closed.wait(), self._poll_interval)
             except TimeoutError:
@@ -185,19 +160,21 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
             m.message_id == envelope_id for m in self._processed.get(recipient, [])
         )
 
-    async def unprocess_after(self, recipient: str, seq: int) -> int:
-        processed = self._processed.get(recipient, [])
-        moved = [m for m in processed if m.seq > seq]
-        if not moved:
-            return 0
-        self._processed[recipient] = [m for m in processed if m.seq <= seq]
-        box = self._boxes.setdefault(recipient, [])
-        # Back to pending KEEPING the recorded seq: it marks the message as a
-        # replay and orders re-delivery by the original consumption order
-        # (see ``consume``). The recipient's next take overwrites it with a
-        # freshly minted seq.
-        box.extend(moved)
-        return len(moved)
+    async def void_processed_after(
+        self,
+        recipient: str,
+        seq: int,
+        *,
+        on_void: Callable[[TeamMessage], Awaitable[None]] | None = None,
+    ) -> list[TeamMessage]:
+        voided: list[TeamMessage] = []
+        for message in self._processed.get(recipient, []):
+            if message.seq > seq and message.message_id not in self._voided:
+                if on_void is not None:
+                    await on_void(message)
+                self._voided.add(message.message_id)
+                voided.append(message)
+        return voided
 
     async def shutdown(self) -> None:
         self._closed.set()
@@ -252,14 +229,6 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         # Inverted, fixed-width: a higher priority yields a smaller string, so
         # sorted keys put control mail first; ids then order FIFO within a lane.
         return f"{99 - max(0, min(priority, 99)):02d}"
-
-    @staticmethod
-    def _replay_lane(seq: int) -> str:
-        # ``!`` sorts before every priority lane, so replayed messages (moved
-        # back by a rollback) drain first — in recorded consumption order,
-        # which the embedded seq encodes. Replay reconstructs history; live
-        # priority preemption must not scramble it.
-        return f"!{seq:020d}"
 
     def _inbox_key(self, recipient: str, message: TeamMessage) -> str:
         return make_store_key(
@@ -368,24 +337,15 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         return CLOSED
 
     async def ack(self, recipient: str, envelope: TeamMessage) -> None:
-        # Locate the pending record by message id rather than recomputing its
-        # key: a replayed message sits in a replay lane, not the lane its
-        # priority implies.
-        inbox_keys = [
-            k
-            for k in await self._store.list_keys(self._inbox_prefix(recipient))
-            if key_leaf(k) == envelope.message_id
-        ]
-        if not inbox_keys:
-            return
-        data = await self._store.load(inbox_keys[0])
+        inbox_key = self._inbox_key(recipient, envelope)
+        data = await self._store.load(inbox_key)
         if data is None:
             return
         processed_key = self._processed_key(recipient, envelope.message_id)
         if await self._store.load(processed_key) is None:
             # First ack wins, storing the acking consumer's envelope — it
-            # carries the consumption ``seq`` that :meth:`unprocess_after`
-            # needs. A redelivery dedupe re-acks with an unstamped copy and
+            # carries the consumption ``seq`` that :meth:`void_processed_after`
+            # compares. A redelivery dedupe re-acks with an unstamped copy and
             # must only clear the lingering inbox key, never clobber the seq.
             delivered = MessageRecord.model_validate_json(data).model_copy(
                 update={
@@ -395,8 +355,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
                 }
             )
             await self._store.save(processed_key, delivered.model_dump_json().encode())
-        for key in inbox_keys:
-            await self._store.delete(key)
+        await self._store.delete(inbox_key)
 
     async def has_pending(self, recipient: str) -> bool:
         return bool(await self._store.list_keys(self._inbox_prefix(recipient)))
@@ -409,47 +368,46 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         key = self._processed_key(recipient, envelope_id)
         return await self._store.load(key) is not None
 
-    async def unprocess_after(self, recipient: str, seq: int) -> int:
+    async def void_processed_after(
+        self,
+        recipient: str,
+        seq: int,
+        *,
+        on_void: Callable[[TeamMessage], Awaitable[None]] | None = None,
+    ) -> list[TeamMessage]:
         """
-        Move ``processed/`` records with consumption ``seq >`` the watermark back
-        to ``inbox/`` (status PENDING), returning the count moved. The mailbox
-        half of a step rollback. The recorded seq is KEPT: the pending copy
-        lands in a replay lane that drains before live mail, in the original
-        consumption order (the recipient's next take re-mints the seq).
-
-        Crash-safe the same way the rollback itself is: the pending copy is
-        written before the processed copy is deleted, so a crash in between
-        leaves both — the redelivery dedup (:meth:`was_processed`) suppresses
-        the stray pending copy, matching the not-yet-rolled-back head, and
-        retrying the rollback re-moves the record and heals.
+        Mark ``processed/`` records with consumption ``seq >`` the watermark
+        ``CANCELLED`` — the mailbox half of a step rollback. Voided records
+        are never re-delivered (a rollback rewrites history; senders are
+        notified via ``on_void`` instead) but stay on record for the
+        redelivery dedup (:meth:`was_processed`). Returns the voided
+        messages, once: already-CANCELLED records are skipped, so retrying a
+        rollback (or a later rollback over the same range) does not re-notify
+        senders. ``on_void`` runs BEFORE a record's CANCELLED save — a crash
+        in between re-runs it on the retry (at-least-once notification).
         """
-        moved = 0
+        voided: list[TeamMessage] = []
         for key in await self._store.list_keys(self._processed_prefix(recipient)):
             record = await self._store.load_json(
                 key, MessageRecord, subject="mailbox processed record"
             )
-            if record is None or record.message.seq <= seq:
+            if (
+                record is None
+                or record.message.seq <= seq
+                or record.status is TaskStatus.CANCELLED
+            ):
                 continue
-            pending = record.model_copy(
+            if on_void is not None:
+                await on_void(record.message)
+            cancelled = record.model_copy(
                 update={
-                    "status": TaskStatus.PENDING,
+                    "status": TaskStatus.CANCELLED,
                     "updated_at": datetime.now(UTC),
                 }
             )
-            replay_key = make_store_key(
-                self._session_key,
-                CheckpointKind.MAILBOX,
-                [
-                    recipient,
-                    "inbox",
-                    self._replay_lane(record.message.seq),
-                    record.message.message_id,
-                ],
-            )
-            await self._store.save(replay_key, pending.model_dump_json().encode())
-            await self._store.delete(key)
-            moved += 1
-        return moved
+            await self._store.save(key, cancelled.model_dump_json().encode())
+            voided.append(record.message)
+        return voided
 
     async def prune_processed(
         self,
@@ -457,7 +415,6 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         older_than: timedelta,
         keep: Callable[[str], bool] | None = None,
         corrupt_older_than: timedelta | None = None,
-        rollback_floors: Mapping[str, int] | None = None,
     ) -> int:
         """
         Delete stale ``processed/`` and ``corrupt/`` mailbox records, returning the
@@ -478,20 +435,10 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         schema version this process cannot read is skipped, not raised on — GC is
         best-effort and never re-runs a record. Mirrors
         ``BackgroundTaskManager.prune_delivered``.
-
-        A step rollback restores consumed messages from these records
-        (:meth:`unprocess_after`), so pruning one shrinks how far back a
-        recipient's mailbox can be rewound. ``rollback_floors`` protects that
-        horizon: a record whose consumption ``seq`` is above its recipient's
-        floor (the oldest live rollback boundary's high-water) is retained
-        regardless of age. Without a floor for a recipient, ``older_than``
-        alone bounds its rollback horizon — keep the retention at least as
-        long as the oldest boundary you intend to honor.
         """
         now = datetime.now(UTC)
         processed_cutoff = now - older_than
         corrupt_cutoff = now - (corrupt_older_than or older_than)
-        floors = rollback_floors or {}
         keys = await self._store.list_keys(self._mailbox_prefix())
         pending = {key_leaf(k) for k in keys if "/inbox/" in k}
         pruned = 0
@@ -507,11 +454,6 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
                 except CheckpointSchemaError:
                     continue
                 if record is None or record.updated_at >= processed_cutoff:
-                    continue
-                floor = floors.get(record.message.recipient)
-                if floor is not None and record.message.seq > floor:
-                    # Still inside a live rollback horizon — a rollback to
-                    # that boundary must be able to re-deliver this message.
                     continue
                 await self._store.delete(key)
                 pruned += 1

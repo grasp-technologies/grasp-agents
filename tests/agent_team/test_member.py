@@ -120,7 +120,7 @@ async def test_lead_host_claims_rewind_right_and_announces_rewind(
     ]
     MemberHost(alice, cards=cards)
 
-    assert ctx.environment_rewinder == "alice"
+    assert ctx.session_writer == "alice"
 
     await ctx.restore_fs_snapshot("snap-1")
 
@@ -192,9 +192,8 @@ async def test_host_resolves_transport_from_session_ctx() -> None:
 @pytest.mark.asyncio
 async def test_hosted_member_rolls_back_directly_between_runs() -> None:
     # The human turn anchored a boundary; between runs the member rolls back
-    # like any stepping agent — its transcript rewinds and the consumed
-    # message returns to its mailbox (reached via the session transport, the
-    # host's inbox being detached).
+    # like any stepping agent — its transcript rewinds and the consumed human
+    # message is voided (discarded silently, never re-delivered).
     ctx, transport = _session()
     alice = _agent("alice", [_text_response("the answer")], ctx=ctx)
     host = MemberHost(alice, cards=CARDS)
@@ -206,7 +205,7 @@ async def test_hosted_member_rolls_back_directly_between_runs() -> None:
     await alice.rollback_to_step(1)
     assert alice.step == 1
     assert "hello" not in str(alice.transcript.messages)
-    assert await transport.has_pending("alice")  # the human message re-pended
+    assert not await transport.has_pending("alice")  # voided, not re-pended
 
 
 @pytest.mark.asyncio

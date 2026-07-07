@@ -134,11 +134,16 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "AgentContextState carries their high-water values ``bg_launch_seq`` / "
         "``mailbox_seq``. A settle / step rollback cancels tasks launched "
         "after the restored boundary; a step rollback also moves mailbox "
-        "records consumed after it back to pending; resume dead-letters task "
+        "records consumed after it (senders are notified); resume dead-letters task "
         "records above the restored head's high-water (their launching call "
-        "was never persisted). Additive — v13 records load fine (fields "
-        "default 0 = not guarded); v13 code resuming a v14 session skips "
-        "these guards."
+        "was never persisted). AgentCheckpointLocation.AFTER_MAX_TURNS was "
+        "renamed to AFTER_FORCED_FINAL_ANSWER (it is also written on run "
+        "timeout, not just turn exhaustion) and AFTER_RESIDENT_TURN to "
+        "AFTER_RESIDENT_ANSWER (written once per message answered, not per "
+        "turn). Otherwise additive — v13 records load fine (fields default "
+        "0 = not guarded) EXCEPT a head parked at a renamed location (rerun "
+        "or resave the session); v13 code resuming a v14 session skips the "
+        "new guards."
     ),
 }
 """
@@ -171,13 +176,16 @@ class AgentCheckpointLocation(Enum):
     AFTER_INPUT = "after_input"
     AFTER_TOOL_RESULT = "after_tool_result"
     AFTER_FINAL_ANSWER = "after_final_answer"
-    AFTER_MAX_TURNS = "after_max_turns"
-    # A resident agent's per-message turn boundary (it consumes a message inbox
-    # between turns and produces no terminal answer): the resident analog of
-    # AFTER_FINAL_ANSWER. Drives the per-turn checkpoint that persists the reply
-    # and releases the consumed inbox message, and (like AFTER_FINAL_ANSWER) an
-    # fs-snapshot so a restored transcript and filesystem stay in step.
-    AFTER_RESIDENT_TURN = "after_resident_turn"
+    # A force-generated final answer: the turn budget (MAX_TURNS) or the run's
+    # wall-clock deadline (TIMEOUT) was exhausted.
+    AFTER_FORCED_FINAL_ANSWER = "after_forced_final_answer"
+    # A resident agent's answer to one inbox message (its tool-loop turns in
+    # between checkpoint as AFTER_TOOL_RESULT): the per-message analog of
+    # AFTER_FINAL_ANSWER for an agent that never ends its run. Persists the
+    # reply, releases the consumed inbox message, and (like AFTER_FINAL_ANSWER)
+    # drives an fs-snapshot so a restored transcript and filesystem stay in
+    # step.
+    AFTER_RESIDENT_ANSWER = "after_resident_answer"
     # Not a loop save-point: the pre-rollback head re-marked by
     # rollback_to_step before its first durable side effect (``current.step``
     # carries the target). A resume finding this completes the rollback —
@@ -225,7 +233,7 @@ class AgentContextState(BaseModel):
     bg_launch_seq: int = 0
     # High-water inbox consumption seq at this boundary: every message absorbed
     # by then has ``seq <= mailbox_seq``. A step rollback to this boundary
-    # moves acked mailbox records above it back to pending (their turns left
+    # voids acked mailbox records above it (their turns left
     # the transcript), so the resident re-processes them.
     mailbox_seq: int = 0
     ipy_exec_context_id: str | None = None

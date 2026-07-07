@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.durability.checkpoint_mixin import CheckpointPersistMixin
 from grasp_agents.durability.checkpoints import CheckpointKind, TeamCheckpoint
-from grasp_agents.mailbox import CheckpointMailboxTransport, resolve_session_transport
+from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.runtime import ActorDriver
 from grasp_agents.session_context import SessionContext, current_session_context
 
@@ -216,7 +216,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # makes a conflict (e.g. a ctx that already declares a different
         # rewinder) a construction error, not a mid-run one.
         if leads:
-            self._ctx.claim_environment_rewind(leads[0])
+            self._ctx.claim_session_writer(leads[0])
 
         # When the rewinder restores a snapshot mid-run, the filesystem (and any
         # kernels) change under every other member — tell them so they re-verify
@@ -229,7 +229,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # first use (durable over the session store, else in-memory), so a
         # host rebuilt mid-session reuses the same mailbox — and its live
         # consumption counters — instead of opening a fresh one.
-        self._transport: Transport[TeamMessage] = resolve_session_transport(self._ctx)
+        self._transport: Transport[TeamMessage] = self._ctx.transport
 
         # Partition members by execution mode (explicit on the card, else inferred):
         # a resident runs a persistent loop off its inbox; everything else
@@ -248,7 +248,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         # ScheduleWakeup is a self-contained background tool (no scheduler needed).
         send_tool = cast(
             "BaseTool[BaseModel, Any, CtxT]",
-            SendMessageTool(self._cards, transport_resolver=lambda _ctx: self),
+            SendMessageTool(self._cards, sink=self),
         )
         wakeup_tool = cast("BaseTool[BaseModel, Any, CtxT]", ScheduleWakeupTool())
         team_section = make_team_section(self._cards)
@@ -445,7 +445,7 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
         still see it on their next take.
         """
         del fs_snapshot_ref
-        rewinder = self._ctx.environment_rewinder
+        rewinder = self._ctx.session_writer
         recipients = [name for name in self._residents if name != rewinder]
         if rewinder is None or not recipients:
             return
@@ -679,9 +679,6 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
                     monitor, *self._resident_tasks, return_exceptions=True
                 )
 
-                for resident in self._residents.values():
-                    resident.detach_inbox()
-
     async def _run_resident(
         self, resident: LLMAgent[Any, Any, Any], run_kwargs: dict[str, Any]
     ) -> None:
@@ -794,32 +791,23 @@ class AgentTeam[CtxT](CheckpointPersistMixin):
 
     async def _gc_mailbox(self) -> None:
         """
-        Reclaim old durable ``processed/`` records. Pinned against the sweep:
-        current-ordinal entry seeds (a resume still dedupes against them;
-        older ordinals can never be re-posted) and every record above a
-        member's oldest rollback boundary (rolling back to a boundary
-        re-delivers the records consumed after it, so reclaiming them would
-        silently destroy the rollback horizon). A no-op on the in-memory
-        transport. Housekeeping, so a transient sweep failure is logged and
-        the run continues — the delivery path crashes on its own if the store
-        is truly broken.
+        Reclaim old durable ``processed/`` records. Current-ordinal entry
+        seeds are pinned against the sweep (a resume still dedupes against
+        them; older ordinals can never be re-posted). A no-op on the
+        in-memory transport. Housekeeping, so a transient sweep failure is
+        logged and the run continues — the delivery path crashes on its own
+        if the store is truly broken.
         """
         transport = self._transport
         if not isinstance(transport, CheckpointMailboxTransport):
             return
-        floors = {
-            name: floor
-            for name, member in self._members_by_name.items()
-            if is_llm_agent(member)
-            and (floor := member.oldest_boundary_mailbox_seq) is not None
-        }
         try:
             await transport.prune_processed(
                 older_than=self._mailbox_processed_retention,
-                keep=lambda mid: (o := _seed_ordinal(mid)) is not None
-                and o >= self._runs_ended,
+                keep=lambda mid: (
+                    (o := _seed_ordinal(mid)) is not None and o >= self._runs_ended
+                ),
                 corrupt_older_than=_MAILBOX_CORRUPT_RETENTION,
-                rollback_floors=floors,
             )
         except Exception:
             logger.warning("AgentTeam %s: mailbox GC failed", self._name, exc_info=True)

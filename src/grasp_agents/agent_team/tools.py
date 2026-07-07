@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from grasp_agents.mailbox import resolve_session_transport
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 from .message import LEAD_PRIORITY, TeamMessage
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.session_context import SessionContext
 
@@ -33,11 +33,6 @@ class MessageSink(Protocol):
     """
 
     async def post(self, envelope: TeamMessage) -> None: ...
-
-
-# Resolves the destination a SendMessage call delivers into for the active run —
-# the team itself (which routes per recipient), or a bare transport.
-type TransportResolver = Callable[[SessionContext[Any]], MessageSink]
 
 
 class SendMessageInput(BaseModel):
@@ -70,7 +65,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         self,
         cards: Sequence[MemberCard],
         *,
-        transport_resolver: TransportResolver = resolve_session_transport,
+        sink: MessageSink | None = None,
     ) -> None:
         super().__init__(
             name=SEND_MESSAGE_TOOL_NAME,
@@ -84,7 +79,10 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         )
         self._recipients = {c.name for c in cards}
         self._cards = {c.name: c for c in cards}
-        self._resolve_transport = transport_resolver
+        # The destination a send delivers into: the hosting team (which
+        # routes, announces, and budget-counts per recipient), else the
+        # session mailbox.
+        self._sink = sink
 
     async def _run(
         self,
@@ -162,7 +160,8 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
                 reply_to=inp.reply_to,
                 priority=priority,
             )
-        await self._resolve_transport(ctx).post(message)
+        sink = self._sink if self._sink is not None else ctx.transport
+        await sink.post(message)
         delivered = ", ".join(recipients)
         return f"Message delivered to {delivered} (id={message.message_id})."
 

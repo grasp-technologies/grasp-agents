@@ -233,7 +233,7 @@ class TestExecutorTextResponse:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("What is 42?", role="user")])
 
         events, last_response = await _collect_events(executor, ctx)
@@ -271,7 +271,7 @@ class TestExecutorTextResponse:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("Hi", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
@@ -385,7 +385,7 @@ class TestExecutorToolCalling:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("loop", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
@@ -423,7 +423,7 @@ class TestExecutorUsageTracking:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("q", role="user")])
         await _collect_events(executor, ctx)
 

@@ -335,14 +335,17 @@ class BackgroundTaskManager[CtxT]:
         self._bg_counter = 0
         self._max_background = max_background
         self._max_task_log_bytes = max_task_log_bytes
+
         # Completed task ids, pushed by each task's done-callback (single
         # completion seam): :meth:`drain` pops them to deliver notes, and
         # :meth:`wait_idle` blocks on the next one — one queue, every task kind.
         self._completions: asyncio.Queue[str] = asyncio.Queue()
+
         # Deferred record updates (task_key → field update), applied by
         # :meth:`flush_delivered` once a checkpoint has persisted the
         # transcript that carries the corresponding notification.
         self._pending_delivered: dict[str, dict[str, Any]] = {}
+
         # Deferred CANCELLED flips for tasks killed by
         # :meth:`cancel_launched_after`, also applied by :meth:`flush_delivered`.
         # Kept apart from ``_pending_delivered`` because a watermark restore
@@ -403,7 +406,7 @@ class BackgroundTaskManager[CtxT]:
         """
         if not self._completions.empty():
             return
-        if not any(not pt.announced for pt in self._tasks.values()):
+        if all(pt.announced for pt in self._tasks.values()):
             return
         try:
             task_id = await asyncio.wait_for(self._completions.get(), timeout)

@@ -15,7 +15,7 @@ from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.mailbox import (
     CheckpointMailboxTransport,
     InMemoryMailboxTransport,
-    resolve_session_transport,
+    void_mail_after,
 )
 from grasp_agents.runtime import CLOSED, Transport
 from grasp_agents.session_context import SessionContext
@@ -167,7 +167,7 @@ async def _absorb(transport: Transport[TeamMessage], recipient: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_unprocess_after_moves_consumed_suffix_back_to_pending(
+async def test_void_processed_after_voids_consumed_suffix(
     transport: Transport[TeamMessage],
 ) -> None:
     for i in range(3):
@@ -182,26 +182,28 @@ async def test_unprocess_after_moves_consumed_suffix_back_to_pending(
     await _absorb(transport, "bob")
     assert await transport.has_pending("bob") is False
 
-    # Rewind to the boundary after the first absorption: m1 and m2 return to
-    # pending (seq cleared for re-minting); m0 stays consumed.
-    assert await transport.unprocess_after("bob", boundary) == 2
-    assert await transport.has_pending("bob") is True
-    # Re-absorptions mint fresh seqs above the burned ones, order preserved.
-    assert [await _absorb(transport, "bob") for _ in range(2)] == ["m1", "m2"]
-    assert transport.last_consumption_seq("bob") == 5
+    # Rewind to the boundary after the first absorption: m1 and m2 are voided
+    # — returned for sender notification, never re-delivered; m0 stays
+    # consumed untouched.
+    voided = await transport.void_processed_after("bob", boundary)
+    assert [m.text for m in voided] == ["m1", "m2"]
+    assert await transport.has_pending("bob") is False
+    # The voided records keep deduping redeliveries.
+    assert await transport.was_processed("bob", "0001-x") is True
+    assert await transport.was_processed("bob", "0002-x") is True
 
-    # Nothing above the watermark → nothing to move.
-    assert await transport.unprocess_after("bob", 10) == 0
+    # Nothing above the watermark → nothing to void.
+    assert await transport.void_processed_after("bob", 10) == []
 
 
 @pytest.mark.asyncio
-async def test_unprocess_after_uses_consumption_order_not_arrival(
+async def test_void_uses_consumption_order_not_arrival(
     transport: Transport[TeamMessage],
 ) -> None:
     # Control mail drains out of arrival order, so "consumed after the
     # boundary" must follow the stamped consumption seq: the control message
     # arrived LAST but was absorbed FIRST (before the boundary), so it stays
-    # consumed while the earlier-arrived normal message returns to pending.
+    # consumed while the earlier-arrived normal message is voided.
     await transport.post(
         TeamMessage.from_text(sender="a", to="bob", text="normal", message_id="0001-x")
     )
@@ -218,88 +220,43 @@ async def test_unprocess_after_uses_consumption_order_not_arrival(
     boundary = transport.last_consumption_seq("bob")
     assert await _absorb(transport, "bob") == "normal"
 
-    assert await transport.unprocess_after("bob", boundary) == 1
-    assert await _absorb(transport, "bob") == "normal"
+    voided = await transport.void_processed_after("bob", boundary)
+    assert [m.text for m in voided] == ["normal"]
     assert await transport.has_pending("bob") is False
 
 
 @pytest.mark.asyncio
-async def test_unprocess_after_skips_untracked_acks(
+async def test_void_skips_untracked_acks(
     transport: Transport[TeamMessage],
 ) -> None:
     # A triggered worker's driver acks without stamping a consumption seq;
-    # such a message is not restorable (its redelivery is the orchestrator's
-    # job) and must never bounce back into the mailbox.
+    # such a message was never part of a resident's step history and must
+    # not be voided (or its sender notified).
     await transport.post(TeamMessage.from_text(sender="a", to="bob", text="hi"))
     consumed = await transport.consume("bob")
     assert isinstance(consumed, TeamMessage)
     await transport.ack("bob", consumed)
 
-    assert await transport.unprocess_after("bob", 0) == 0
+    assert await transport.void_processed_after("bob", 0) == []
     assert await transport.has_pending("bob") is False
 
 
 @pytest.mark.asyncio
-async def test_rollback_replay_preserves_consumption_order_across_priorities(
+async def test_void_rerun_returns_nothing(
     transport: Transport[TeamMessage],
 ) -> None:
-    # A rollback replays history: re-pended messages must re-deliver in their
-    # recorded consumption order, not re-sorted by priority — otherwise a
-    # control-plane steering message that arrived AFTER the original input
-    # would replay BEFORE it, scrambling the conversation and the step map.
-    first = TeamMessage.from_text(sender="user", to="bob", text="FIRST")
-    await transport.post(first)
-    assert await _absorb(transport, "bob") == "FIRST"
-
-    second = TeamMessage.from_text(
-        sender="user", to="bob", text="SECOND", priority=CONTROL_PRIORITY
-    )
-    await transport.post(second)
-    assert await _absorb(transport, "bob") == "SECOND"
-
-    assert await transport.unprocess_after("bob", 0) == 2
-
-    assert await _absorb(transport, "bob") == "FIRST"
-    assert await _absorb(transport, "bob") == "SECOND"
-    assert await transport.has_pending("bob") is False
-
-
-@pytest.mark.asyncio
-async def test_replay_drains_before_fresh_mail(
-    transport: Transport[TeamMessage],
-) -> None:
-    # Replayed history drains ahead of live mail — even fresh control-plane
-    # mail — so the reconstructed conversation is contiguous; the fresh
-    # message follows once the replay is absorbed.
-    await transport.post(TeamMessage.from_text(sender="a", to="bob", text="old"))
-    assert await _absorb(transport, "bob") == "old"
-    assert await transport.unprocess_after("bob", 0) == 1
-
-    await transport.post(
-        TeamMessage.from_text(
-            sender="user", to="bob", text="fresh", priority=CONTROL_PRIORITY
-        )
-    )
-
-    assert await _absorb(transport, "bob") == "old"
-    assert await _absorb(transport, "bob") == "fresh"
-
-
-@pytest.mark.asyncio
-async def test_unprocess_after_rerun_is_idempotent() -> None:
-    # A crash mid-rollback is healed by retrying the rollback: re-running
-    # unprocess for the same watermark finds the records already moved home.
-    transport = CheckpointMailboxTransport(InMemoryCheckpointStore(), session_key="s")
+    # A crash mid-rollback is healed by retrying the rollback: the voided
+    # messages are returned once, so the retry (or a later rollback over the
+    # same range) does not re-notify their senders.
     msg = TeamMessage.from_text(sender="a", to="bob", text="hi")
     await transport.post(msg)
     await _absorb(transport, "bob")
 
-    assert await transport.unprocess_after("bob", 0) == 1
-    assert await transport.unprocess_after("bob", 0) == 0
-    # The moved record is a normal pending message again — deliverable, and no
-    # longer deduped as already-processed.
-    assert await transport.was_processed("bob", msg.message_id) is False
-    assert await _absorb(transport, "bob") == "hi"
+    assert [m.text for m in await transport.void_processed_after("bob", 0)] == ["hi"]
+    assert await transport.void_processed_after("bob", 0) == []
+    # Voided, not forgotten: never deliverable again, still deduped.
+    assert await transport.has_pending("bob") is False
+    assert await transport.was_processed("bob", msg.message_id) is True
 
 
 @pytest.mark.asyncio
@@ -322,7 +279,8 @@ async def test_redelivery_dedupe_ack_does_not_clobber_seq() -> None:
     await transport.ack("bob", msg)
     assert msg.seq == 0  # the redelivered copy really was unstamped
 
-    assert await transport.unprocess_after("bob", 0) == 1  # seq survived
+    # The stored seq survived: the record is still inside the voidable range.
+    assert len(await transport.void_processed_after("bob", 0)) == 1
 
 
 @pytest.mark.asyncio
@@ -469,54 +427,82 @@ async def test_shutdown_unblocks_consume(transport: Transport[TeamMessage]) -> N
     assert await transport.consume("bob") is CLOSED
 
 
-def test_resolve_session_transport_defaults_and_installs() -> None:
-    # The session owns its one mailbox: resolution creates it on first use —
-    # durable when the session has a store, else in-memory — installs it on
-    # ``ctx.transport``, and every later resolution returns that same instance.
+def test_ctx_builds_its_transport_at_construction() -> None:
+    # The session owns its one mailbox, built with the ctx — durable when the
+    # session has a store, else in-memory — and every read returns that same
+    # instance.
     ctx = SessionContext[None](state=None)
-    resolved = resolve_session_transport(ctx)
-    assert isinstance(resolved, InMemoryMailboxTransport)
-    assert ctx.transport is resolved
-    assert resolve_session_transport(ctx) is resolved
+    transport = ctx.transport
+    assert isinstance(transport, InMemoryMailboxTransport)
+    assert ctx.transport is transport
 
     durable_ctx = SessionContext[None](
         state=None, checkpoint_store=InMemoryCheckpointStore()
     )
-    resolved_durable = resolve_session_transport(durable_ctx)
-    assert isinstance(resolved_durable, CheckpointMailboxTransport)
+    assert isinstance(durable_ctx.transport, CheckpointMailboxTransport)
 
 
 @pytest.mark.asyncio
-async def test_resolve_warns_on_durability_mismatch(
+async def test_custom_transport_warns_on_durability_mismatch(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Mail safety needs the mailbox and the session state to share a
-    # durability fate; a hand-set ctx.transport can break the pairing, so
-    # resolution warns — once per transport, in either direction.
-    with caplog.at_level(logging.WARNING, logger="grasp_agents.mailbox"):
+    # durability fate; a caller-supplied transport can break the pairing, so
+    # construction warns — in either direction.
+    with caplog.at_level(logging.WARNING, logger="grasp_agents.session_context"):
         # Durable mailbox on a storeless session: consumed mail's handling
         # would evaporate with the process, unredelivered.
-        ctx = SessionContext[None](state=None)
-        ctx.transport = CheckpointMailboxTransport(
-            InMemoryCheckpointStore(), session_key="s1"
-        )
-        assert resolve_session_transport(ctx) is ctx.transport
-        assert resolve_session_transport(ctx) is ctx.transport
+        custom = CheckpointMailboxTransport(InMemoryCheckpointStore(), session_key="s1")
+        ctx = SessionContext[None](state=None, transport=custom)
+        assert ctx.transport is custom
 
         # Ephemeral mailbox on a durable session: pending mail would die
         # while the session resumes without it.
-        durable_ctx = SessionContext[None](
-            state=None, checkpoint_store=InMemoryCheckpointStore()
+        SessionContext[None](
+            state=None,
+            checkpoint_store=InMemoryCheckpointStore(),
+            transport=InMemoryMailboxTransport(),
         )
-        durable_ctx.transport = InMemoryMailboxTransport()
-        resolve_session_transport(durable_ctx)
 
-        # Aligned, hand-set configs stay silent.
-        aligned = SessionContext[None](state=None)
-        aligned.transport = InMemoryMailboxTransport()
-        resolve_session_transport(aligned)
+        # Aligned custom configs (and built defaults) stay silent.
+        SessionContext[None](state=None, transport=InMemoryMailboxTransport())
+        SessionContext[None](state=None)
 
     mismatch_logs = [r for r in caplog.records if "ctx.transport" in r.getMessage()]
-    assert len(mismatch_logs) == 2  # one per mismatched transport, not per resolve
+    assert len(mismatch_logs) == 2  # one per mismatched construction
     assert "durable" in mismatch_logs[0].getMessage()
     assert "ephemeral" in mismatch_logs[1].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_nack_survives_crash_mid_void() -> None:
+    # At-least-once sender notification: the NACK posts BEFORE the record's
+    # CANCELLED flip, so a crash between the two re-notifies on the retried
+    # rollback instead of silently dropping the peer's message.
+    store = InMemoryCheckpointStore()
+    transport = CheckpointMailboxTransport(store, session_key="s")
+    msg = TeamMessage.from_text(sender="peer", to="bob", text="ask")
+    await transport.post(msg)
+    await _absorb(transport, "bob")
+
+    original_post = transport.post
+    crashed = False
+
+    async def crashing_post(envelope: TeamMessage) -> None:
+        nonlocal crashed
+        crashed = True
+        raise RuntimeError("crash before deposit")
+
+    transport.post = crashing_post  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await void_mail_after(transport, "bob", 0)
+    assert crashed
+    transport.post = original_post  # type: ignore[method-assign]
+
+    # The record was NOT flipped (notify runs first): the retried rollback
+    # re-notifies, then voids.
+    await void_mail_after(transport, "bob", 0)
+    nack = await transport.consume("peer")
+    assert isinstance(nack, TeamMessage)
+    assert "<message_dropped>" in nack.text
+    assert await transport.void_processed_after("bob", 0) == []

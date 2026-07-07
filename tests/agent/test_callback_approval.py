@@ -108,7 +108,7 @@ def _make_executor(
 
 
 async def _drain(executor: AgentLoop[None], ctx: SessionContext[None]) -> Response:
-    executor._ctx = ctx
+    executor.ctx = ctx
     stream = ResponseCapture(executor.execute_stream(exec_id="t"))
     async for _ in stream:
         pass

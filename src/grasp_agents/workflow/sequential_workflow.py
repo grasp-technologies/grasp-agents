@@ -79,6 +79,8 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
 
             logger.info(f"\n[Running subprocessor {subproc.name}]\n")
 
+            self._hand_over_session_writer(subproc)
+
             async for event in subproc.run_stream(
                 chat_inputs=chat_inputs,
                 in_packet=packet,

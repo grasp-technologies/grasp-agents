@@ -8,7 +8,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Final,
     cast,
     final,
     get_origin,
@@ -19,7 +18,6 @@ if TYPE_CHECKING:
         InputAttachment,
         SystemPromptSection,
     )
-    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
 
 from pydantic import BaseModel
 
@@ -29,6 +27,7 @@ from grasp_agents.context.env_section import (
     make_env_info_section,
 )
 from grasp_agents.context.prompt_builder import PromptBuilder
+from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import make_untrusted_content_section
 from grasp_agents.durability import AgentCheckpoint, AgentCheckpointPersistMixin
 from grasp_agents.durability.checkpoints import (
@@ -79,6 +78,7 @@ from grasp_agents.utils.callbacks import is_method_overridden
 from grasp_agents.utils.io import get_prompt
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
+from .agent_context import AgentContext
 from .agent_loop import AgentLoop
 from .context_window import ContextWindowManager
 from .llm_agent_transcript import LLMAgentTranscript
@@ -87,14 +87,31 @@ from .tool_decision import ToolCallDecision
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from grasp_agents.inbox import AgentInbox
     from grasp_agents.mcp.client import MCPClient
     from grasp_agents.mcp.spec import MCPClientSpec
     from grasp_agents.types.message import TeamMessage
 
-    from .background_tasks import BackgroundTaskManager
-
 logger = logging.getLogger(__name__)
+
+
+def _validate_tool_names(
+    agent_name: str, tools: Sequence[BaseTool[BaseModel, Any, Any]]
+) -> None:
+    """
+    Tools are dispatched and their events routed by name, so names must be
+    unique and must not shadow the agent's own name — a duplicate would be
+    silently dropped by the tool map, and a name shared with the agent (or a
+    sub-agent, which is itself a tool here) conflates their event streams.
+    """
+    names = [t.name for t in tools]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(f"Agent '{agent_name}' has duplicate tool names: {duplicates}")
+    if agent_name in names:
+        raise ValueError(
+            f"Agent '{agent_name}' has a tool named '{agent_name}', colliding "
+            "with the agent's own name; tool and processor names must be unique."
+        )
 
 
 class LLMAgent[InT, OutT, CtxT](
@@ -107,8 +124,6 @@ class LLMAgent[InT, OutT, CtxT](
         0: "_in_type",
         1: "_out_type",
     }
-
-    reset_transcript_on_run: Final[bool]
 
     def __init__(
         self,
@@ -205,13 +220,67 @@ class LLMAgent[InT, OutT, CtxT](
             tracing_exclude_input_fields=tracing_exclude_input_fields,
         )
 
+        # Session persistence
+
+        # The current/last run's delivery step: the caller's ``step=``, or —
+        # for a chat delivery / a resident's human turn — auto-minted, so every
+        # human message is a rollback anchor.
+        self._step: int | None = None
+        # The last human message anchored by ``_anchor_human_turn``: a
+        # re-delivery of it (a settled turn's re-take) keeps its step
+        # instead of minting a new one.
+        self._anchored_message_id: str | None = None
+
+        # Set by ``_prepare_retry`` between ``with_retry`` attempts: the retry
+        # continues the settled delivery (see ``_settle_run``) instead of
+        # re-memorizing the input. Consumed at the next stream entry.
+        self._retry_continuation: bool = False
+
+        # True while a run's stream is live — the window ``rollback_to_step``
+        # refuses (rewinding under the loop would race the turn cycle).
+        self._run_active: bool = False
+
+        # Sender of the current run's input packet, captured in
+        # ``validate_inputs`` so an input attachment can attribute the turn;
+        # ``None`` for ``chat_inputs`` / no packet.
+        self._current_input_source: str | None = None
+
+        # Per-step rollback points and the last-persisted state they're cut from.
+        # ``_committed`` mirrors the most recent checkpoint head (set on save and
+        # on cold resume); when a new step begins it is archived into
+        # ``_step_watermarks`` so the step can later be discarded by
+        # :meth:`rollback_to_step`. Persisted in the head, restored on resume.
+        self._step_watermarks: list[StepWatermark] = []
+        self._committed: StepWatermark | None = None
+
+        # Resume notifications injected into the transcript by load_checkpoint,
+        # awaiting emission as stream events (no hidden transcript messages).
+        self._resume_notifications: list[InputMessageItem] = []
+
+        # Prompt cache key round-tripped through checkpoints and rollback
+        # boundaries. Reserved: nothing populates it yet (providers accept a
+        # cache key via their settings but do not report one back here), so it
+        # stays ``None`` unless the application sets it.
+        self.prompt_cache_key: str | None = None
+
+        # Prompt builder
+
+        sys_prompt = get_prompt(prompt_text=sys_prompt, prompt_path=sys_prompt_path)
+        in_prompt = get_prompt(prompt_text=in_prompt, prompt_path=in_prompt_path)
+
+        self._prompt_builder = PromptBuilder[self.in_type, CtxT](
+            agent_name=self.name, sys_prompt=sys_prompt, in_prompt=in_prompt
+        )
+
+        # Tools
+
         # Tools are stateless — per-agent state flows through the AgentContext
         # passed on each call — so one tool instance is safe to share across
         # agents. The list is copied so auto-attach appends below don't mutate
         # the caller's.
         tools = list(tools or [])
-
         existing_names = {t.name for t in tools}
+
         # Names the agent was *explicitly* given, captured before the
         # capability-tool auto-attach below. A sub-agent (``AgentTool``)
         # inherits only these, never the auto-attached skills/memory/MCP tools.
@@ -229,6 +298,7 @@ class LLMAgent[InT, OutT, CtxT](
         # Auto-attach the skill loader when the skills feature is on.
         # ``list_skills`` stays opt-in — the catalog is already in the
         # system prompt.
+        self._skill_filter = SkillFilter.build(skill_include, skill_exclude)
         if enable_skills:
             from grasp_agents.skills.tools import load_skill  # noqa: PLC0415
 
@@ -236,61 +306,11 @@ class LLMAgent[InT, OutT, CtxT](
                 tools, existing_names, [load_skill], source="skills"
             )
 
-        # Transcript (per-run message history)
-        self._transcript = transcript or LLMAgentTranscript()
-        self.reset_transcript_on_run = reset_transcript_on_run
-
-        # Prompt builder
-
-        sys_prompt = get_prompt(prompt_text=sys_prompt, prompt_path=sys_prompt_path)
-        in_prompt = get_prompt(prompt_text=in_prompt, prompt_path=in_prompt_path)
-
-        self._prompt_builder = PromptBuilder[self.in_type, CtxT](
-            agent_name=self.name, sys_prompt=sys_prompt, in_prompt=in_prompt
-        )
-
         self.mcp_clients: list[MCPClient] = []
 
-        # Auto-attached sections. Each compute returns ``None`` when its
-        # input is absent (no ``ctx.memory``, no ``ctx.skills``, no MCP
-        # clients) so registering them by feature flag is safe — they
-        # just no-op when the relevant data isn't wired. Users override
-        # any of them by adding a section with the same name —
-        # ``add_system_prompt_section`` dedupes by name.
-
-        if mcp_clients or any(t.untrusted_output for t in tools):
-            self._prompt_builder.add_system_prompt_section(
-                make_untrusted_content_section()
-            )
-
-        if enable_memory:
-            self._prompt_builder.add_system_prompt_section(make_memory_section())
-            self._prompt_builder.add_input_attachment(relevant_memories_attachment)
-
-        if env_info:
-            self._prompt_builder.add_system_prompt_section(
-                make_env_info_section(model_name=llm.model_name)
-                if env_info is True
-                else env_info
-            )
-        if enable_skills:
-            self._prompt_builder.add_system_prompt_section(make_skills_section())
-
-        if time_aware:
-            self._prompt_builder.add_input_attachment(
-                make_current_time_attachment() if time_aware is True else time_aware
-            )
-
         if mcp_clients:
-            from grasp_agents.mcp.section import (  # noqa: PLC0415
-                make_mcp_instructions_section,
-            )
             from grasp_agents.mcp.spec import (  # noqa: PLC0415
                 MCPClientSpec as _MCPClientSpec,
-            )
-
-            self._prompt_builder.add_system_prompt_section(
-                make_mcp_instructions_section(lambda: self.mcp_clients)
             )
 
             mcp_tools: list[BaseTool[BaseModel, Any, CtxT]] = []
@@ -313,18 +333,59 @@ class LLMAgent[InT, OutT, CtxT](
             # they yield to explicit tools too — a clash is skipped, not an error.
             self._merge_auto_attached(tools, existing_names, mcp_tools, source="MCP")
 
-        # Agent loop
+        # Make sure tool names and the agent's name are unique and don't collide
+        _validate_tool_names(self.name, tools)
 
-        if issubclass(self._out_type, BaseModel):
-            final_answer_type = self._out_type
-        elif not final_answer_as_tool_call:
-            final_answer_type = BaseModel
-        else:
-            raise TypeError(
-                "Final answer type must be a subclass of BaseModel if "
-                "final_answer_as_tool_call is True."
+        # System prompt sections
+
+        # Auto-attach system prompt sections. Each compute returns ``None`` when its
+        # input is absent (no ``ctx.memory``, no ``ctx.skills``, no MCP
+        # clients) so registering them by feature flag is safe — they
+        # just no-op when the relevant data isn't wired. Users override
+        # any of them by adding a section with the same name —
+        # ``add_system_prompt_section`` dedupes by name.
+
+        if mcp_clients or any(t.untrusted_output for t in tools):
+            self._prompt_builder.add_system_prompt_section(
+                make_untrusted_content_section()
             )
 
+        if enable_memory:
+            self._prompt_builder.add_system_prompt_section(make_memory_section())
+
+        if env_info:
+            self._prompt_builder.add_system_prompt_section(
+                make_env_info_section(model_name=llm.model_name)
+                if env_info is True
+                else env_info
+            )
+        if enable_skills:
+            self._prompt_builder.add_system_prompt_section(make_skills_section())
+
+        if mcp_clients:
+            from grasp_agents.mcp.section import (  # noqa: PLC0415
+                make_mcp_instructions_section,
+            )
+
+            self._prompt_builder.add_system_prompt_section(
+                make_mcp_instructions_section(lambda: self.mcp_clients)
+            )
+
+        # Input attachments
+
+        if enable_memory:
+            self._prompt_builder.add_input_attachment(relevant_memories_attachment)
+
+        if time_aware:
+            self._prompt_builder.add_input_attachment(
+                make_current_time_attachment() if time_aware is True else time_aware
+            )
+
+        # Output schemas
+
+        # For an agent with no tools (one-shot with no looping), the final answer
+        # is often directly the LLM output. Thus, when the output parser is not
+        # overridden, we can default the LLM output schema to the agent's ``out_type``.
         self._used_default_llm_output_schema = False
         if (
             llm_output_schema is None
@@ -336,86 +397,72 @@ class LLMAgent[InT, OutT, CtxT](
             llm_output_schema = self.out_type
             self._used_default_llm_output_schema = True
 
+        # Tool-calling agents can provide a final answer as a tool call.
+        # If so, the final answer type must be a subclass of BaseModel.
+        if issubclass(self._out_type, BaseModel):
+            final_answer_type = self._out_type
+        elif not final_answer_as_tool_call:
+            final_answer_type = BaseModel
+        else:
+            raise TypeError(
+                "Final answer type must be a subclass of BaseModel if "
+                "final_answer_as_tool_call is True."
+            )
+
+        # Context management
+
+        self._transcript = transcript or LLMAgentTranscript()
+        self.reset_transcript_on_run = reset_transcript_on_run
+
         # Context-window manager (view derivation, token budget, compaction);
         # owned here and shared into the loop so the agent's context operations
         # (checkpoint folds, rollback, hook registration) are single-hop rather
         # than reached through the loop.
         self._cw = ContextWindowManager(
-            transcript=self.transcript, model=llm.model_name, source=self.name
+            transcript=self._transcript, model=llm.model_name, source=self.name
         )
-        self._skill_filter = SkillFilter.build(skill_include, skill_exclude)
-        self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
+
+        # Agent loop
+
+        # Session-scoped agent state (transcript, tools, shell/kernel holders,
+        # background tasks, file-edit ledger): created by its owner — the
+        # agent — and handed to the per-run loop. Released by ``aclose()``,
+        # never at run end.
+        self._agent_ctx = AgentContext.create(
+            transcript=self._transcript,
+            tools={t.name: t for t in tools},
             agent_name=self.name,
+            path=path,
+            max_background=max_background,
+            explicit_tool_names=explicit_tool_names,
+            skill_filter=self._skill_filter,
+        )
+        self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             llm=llm,
-            tools=tools,
-            transcript=self.transcript,
             context_window=self._cw,
             ctx=self._ctx,
+            agent_ctx=self._agent_ctx,
+            agent_name=self.name,
+            path=path,
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
             run_timeout=run_timeout,
-            max_background=max_background,
             force_react_mode=force_react_mode,
             final_answer_type=final_answer_type,
             final_answer_as_tool_call=final_answer_as_tool_call,
             stream_llm=stream_llm,
-            path=path,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
-            explicit_tool_names=explicit_tool_names,
-            skill_filter=self._skill_filter,
         )
-
-        # Session persistence
-
-        # The current/last run's delivery step: the caller's ``step=``, or —
-        # for a chat delivery / a resident's human turn — auto-minted, so every
-        # human message is a rollback anchor.
-        self._step: int | None = None
-        # The last human message anchored by ``_anchor_human_turn``: a
-        # re-delivery of it (settled turn, rollback re-pend) keeps its step
-        # instead of minting a new one.
-        self._anchored_message_id: str | None = None
-
-        # The one inbox this agent ever consumes (built on first
-        # ``attach_inbox``); see attach_inbox for why it outlives detaches.
-        self._inbox_cache: AgentInbox | None = None
-
-        # Set by ``_prepare_retry`` between ``with_retry`` attempts: the retry
-        # continues the settled delivery (see ``_settle_run``) instead of
-        # re-memorizing the input. Consumed at the next stream entry.
-        self._retry_continuation: bool = False
-
-        # Sender of the current run's input packet, captured in
-        # ``validate_inputs`` so an input attachment can attribute the turn;
-        # ``None`` for ``chat_inputs`` / no packet.
-        self._current_input_source: str | None = None
-
-        # Per-step rollback points and the last-persisted state they're cut from.
-        # ``_committed`` mirrors the most recent checkpoint head (set on save and
-        # on cold resume); when a new step begins it is archived into
-        # ``_step_watermarks`` so the step can later be discarded by
-        # :meth:`rollback_to_step`. Persisted in the head, restored on resume.
-        self._step_watermarks: list[StepWatermark] = []
-        self._committed: StepWatermark | None = None
-
-        # Resume notifications injected into the transcript by load_checkpoint,
-        # awaiting emission as stream events (no hidden transcript messages).
-        self._resume_notifications: list[InputMessageItem] = []
-
-        # Provider-supplied prompt cache key, set by provider adapters after
-        # each LLM call and round-tripped through the checkpoint so resume
-        # keeps the model-side cache warm.
-        self.prompt_cache_key: str | None = None
 
         # Always wired; without a store a save still maintains the in-memory
         # head (``_committed``) and just skips persistence.
         self._loop.checkpoint_callback = self.save_checkpoint
 
-        self._register_overridden_implementations()
-
         # The loop and its tools are built after super().__init__, so the
         # session set there hasn't reached them yet — cascade it now.
         self._propagate_to_children()
+
+        self._register_overridden_implementations()
 
     def _merge_auto_attached(
         self,
@@ -463,26 +510,47 @@ class LLMAgent[InT, OutT, CtxT](
             and (exclude_set is None or tool.name not in exclude_set)
         ]
 
-    async def aclose(self) -> None:
-        """
-        Tear down this agent's session — delegated to :meth:`AgentContext.close`
-        (cancel background tasks, close the shell/kernel holders, cascade to
-        tools that wrap sub-processors).
+    def _propagate_to_children(self) -> None:
+        # ``super().__init__`` runs this hook before ``_loop`` exists; the
+        # end-of-``__init__`` call re-syncs, so the missed early call is
+        # harmless.
+        loop = cast("AgentLoop[CtxT] | None", getattr(self, "_loop", None))
+        if loop is None:
+            return
 
-        Execution resources are session-scoped — no run ever releases them —
-        so the embedder owns this call (directly, via ``async with agent:``,
-        or through the owning workflow/runner's ``aclose``). ``ctx`` is passed
-        so ``cancel_all`` can persist CANCELLED task records.
-        """
-        await self._loop.agent_ctx.close(ctx=self._ctx)
+        self._agent_ctx.bg_tasks.path = self.path
+        loop.path = self.path
+        loop.ctx = self._ctx
+
+        # Forward adoption onto every tool (no-op for stateless tools;
+        # :class:`ProcessorTool` rebinds its wrapped processor).
+        for tool in self._agent_ctx.tools.values():
+            tool.on_adopted(self)
 
     @property
     def llm(self) -> LLM:
         return self._loop.llm
 
     @property
+    def sys_prompt(self) -> LLMPrompt | None:
+        return self._prompt_builder.sys_prompt
+
+    @property
+    def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:
+        """Read-only view of registered system-prompt sections, in order."""
+        return tuple(self._prompt_builder.system_prompt_sections)
+
+    @property
+    def in_prompt(self) -> LLMPrompt | None:
+        return self._prompt_builder.in_prompt
+
+    @property
+    def transcript(self) -> LLMAgentTranscript:
+        return self._transcript
+
+    @property
     def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
-        return self._loop.tools
+        return self._agent_ctx.tools
 
     @property
     def turn(self) -> int:
@@ -491,6 +559,23 @@ class LLMAgent[InT, OutT, CtxT](
     @property
     def max_turns(self) -> int:
         return self._loop.max_turns
+
+    @property
+    def step(self) -> int | None:
+        """
+        The current/last run's delivery step: the caller's ``step=``, or the
+        auto-minted step of a chat delivery / resident human turn. ``None``
+        for an unstepped run (typed-args delivery, pure resume).
+        """
+        return self._step
+
+    @property
+    def skill_filter(self) -> SkillFilter | None:
+        """
+        The per-agent allow/deny filter applied to the run's skill catalog, or
+        ``None`` when the agent is not scoped to a subset of skills.
+        """
+        return self._skill_filter
 
     @property
     def context_window(self) -> int | None:
@@ -503,13 +588,30 @@ class LLMAgent[InT, OutT, CtxT](
         return self._cw.context_window
 
     @property
-    def step(self) -> int | None:
+    def agent_ctx(self) -> AgentContext:
         """
-        The current/last run's delivery step: the caller's ``step=``, or the
-        auto-minted step of a chat delivery / resident human turn. ``None``
-        for an unstepped run (typed-args delivery, pure resume).
+        This agent's session-scoped state (transcript, tool map, file-edit
+        ledger, background tasks, resident inbox, shell/kernel holders) —
+        created by the agent, passed to every tool call, released by
+        :meth:`aclose`. The one inspection surface for agent-scope state:
+        e.g. ``agent.agent_ctx.bg_tasks.has_undelivered_completions`` wakes an
+        idle driver, ``agent.agent_ctx.file_edit_state`` pre-seeds read
+        records.
         """
-        return self._step
+        return self._agent_ctx
+
+    async def aclose(self) -> None:
+        """
+        Tear down this agent's session — delegated to :meth:`AgentContext.close`
+        (cancel background tasks, close the shell/kernel holders, cascade to
+        tools that wrap sub-processors).
+
+        Execution resources are session-scoped — no run ever releases them —
+        so the embedder owns this call (directly, via ``async with agent:``,
+        or through the owning workflow/runner's ``aclose``). ``ctx`` is passed
+        so ``cancel_all`` can persist CANCELLED task records.
+        """
+        await self._agent_ctx.close(ctx=self._ctx)
 
     @property
     def rollback_steps(self) -> list[int]:
@@ -520,63 +622,24 @@ class LLMAgent[InT, OutT, CtxT](
         """
         return sorted(wm.step for wm in self._step_watermarks if wm.step is not None)
 
-    @property
-    def sys_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.sys_prompt
-
-    @property
-    def in_prompt(self) -> LLMPrompt | None:
-        return self._prompt_builder.in_prompt
-
-    @property
-    def transcript(self) -> LLMAgentTranscript:
-        return self._transcript
-
-    @property
-    def file_edit_state(self) -> "FileEditSessionState":
+    async def read_rollback_anchors(self) -> list[StepWatermark]:
         """
-        This agent's read-before-write / dotfile-override bookkeeping.
+        The recorded rollback boundaries, without rehydrating the session.
 
-        Activated for the duration of each run via a ContextVar so the
-        file-edit tools, file-search tools, and :class:`MemoryProvider`
-        share it. Exposed for inspection and for pre-seeding read records.
+        The read-only inspection surface for rollback pickers (e.g. a UI in
+        another process enumerating a persisted session's rewind points):
+        unlike :meth:`load_checkpoint`, this reads only the persisted head —
+        no transcript rehydration, no background-task re-spawn, no mailbox
+        lease changes. A live (or already-loaded) instance answers from
+        memory. Each anchor's ``step`` is a valid :meth:`rollback_to_step`
+        input, exactly like :attr:`rollback_steps`.
         """
-        return self._loop.file_edit_state
-
-    @property
-    def background_tasks(self) -> "BackgroundTaskManager[CtxT]":
-        """
-        This agent's session-scoped background-task manager.
-
-        Exposed so a driver can read its completion signals
-        (:attr:`~BackgroundTaskManager.has_live_tasks` /
-        :attr:`~BackgroundTaskManager.has_undelivered_completions`) — e.g. to wake
-        an idle agent when a backgrounded task finishes.
-        """
-        return self._loop.bg_tasks
-
-    @property
-    def inbox(self) -> "AgentInbox | None":
-        """
-        The resident inbox attached to this agent's loop, or ``None``.
-
-        Attaching an inbox makes a run **resident**: the loop consumes peer messages
-        from it between turns and runs until its task is cancelled from outside,
-        instead of terminating on a final answer (see :class:`AgentLoop`). A
-        multi-agent host attaches one keyed inbox per member; a lone agent never sets
-        it.
-        """
-        return self._loop.inbox
-
-    @inbox.setter
-    def inbox(self, inbox: "AgentInbox | None") -> None:
-        if inbox is not None:
-            # A resident's human turns are rollback anchors: the boundary is
-            # archived at the inbox take, before the message is stamped or
-            # appended, so a rollback to it re-pends the message itself.
-            # Stamped on whichever inbox this agent consumes.
-            inbox.on_take = self._anchor_human_turn
-        self._loop.inbox = inbox
+        if self._step_watermarks or not self.transcript.is_empty:
+            return list(self._step_watermarks)
+        checkpoint = await self._deserialize_checkpoint(self._ctx, AgentCheckpoint)
+        if checkpoint is None:
+            return []
+        return list(checkpoint.step_watermarks)
 
     def attach_inbox(self) -> None:
         """
@@ -585,84 +648,33 @@ class LLMAgent[InT, OutT, CtxT](
         instead of terminating on a final answer.
 
         Called by a multi-agent host — the agent is built host-agnostic, and
-        residency is a hosting role attached per run (and released with
-        :meth:`detach_inbox`), like the ``ctx`` / ``path`` cascade rather than
-        a constructor argument. The agent supplies its own mailbox address (its
-        name); the channel is always the session's mailbox (``ctx.transport``,
-        created and installed on first use).
+        residency is a hosting role stamped like the ``ctx`` / ``path``
+        cascade rather than a constructor argument. There is no detach:
+        the role holds for the agent's lifetime (its inbox leases pair with
+        turns in the live transcript, so the inbox must live exactly as long),
+        and re-attaching is a no-op unless the session's mailbox changed
+        (a ctx rebind), which drops the old session's leases with it. The
+        agent supplies its own mailbox address (its name); the channel is
+        always the session's mailbox (``ctx.transport``).
         """
         from grasp_agents.inbox import AgentInbox  # noqa: PLC0415
-        from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
 
-        # One inbox per agent lifetime (not per attach): its leases mark
-        # messages absorbed into the live transcript but not yet acked, so
-        # they must survive detach/re-attach with that transcript — a fresh
-        # inbox would re-take (duplicate) a settled, still-owed message.
-        transport = resolve_session_transport(self._ctx)
-        if self._inbox_cache is None or self._inbox_cache.transport is not transport:
-            self._inbox_cache = AgentInbox(transport=transport, recipient=self.name)
-        self.inbox = self._inbox_cache
-
-    def detach_inbox(self) -> None:
-        """
-        Detach the resident inbox, returning the agent to single-answer runs.
-        The inbox itself (with any un-acked leases, which pair with turns still
-        in the live transcript) is kept for the next :meth:`attach_inbox`.
-        """
-        self.inbox = None
-
-    @property
-    def skill_filter(self) -> SkillFilter | None:
-        """
-        The per-agent allow/deny filter applied to the run's skill catalog, or
-        ``None`` when the agent is not scoped to a subset of skills.
-        """
-        return self._skill_filter
-
-    @property
-    def system_prompt_sections(self) -> tuple["SystemPromptSection", ...]:
-        """Read-only view of registered system-prompt sections, in order."""
-        return tuple(self._prompt_builder.system_prompt_sections)
-
-    async def build_system_prompt(
-        self, ctx: "SessionContext[CtxT] | None" = None, exec_id: str = ""
-    ) -> str | None:
-        """
-        Render the agent's full system prompt (base + every section).
-
-        Useful for inspection / debugging — consumers don't normally need to
-        call this; the agent invokes it internally on every run. ``ctx`` is
-        accepted positionally for debugging convenience (otherwise the
-        agent's bound ctx is used).
-        """
-        return await self._prompt_builder.build_system_prompt(
-            ctx=ctx if ctx is not None else self._ctx,
-            exec_id=exec_id,
-            agent_ctx=self._loop.agent_ctx,
-        )
+        transport = self._ctx.transport
+        inbox = self._agent_ctx.inbox
+        if inbox is None or inbox.transport is not transport:
+            # A resident's human turns are rollback anchors: the boundary is
+            # archived at the inbox take, before the message is stamped or
+            # appended, so a rollback to it voids the message itself.
+            self._agent_ctx.inbox = AgentInbox(
+                transport=transport,
+                recipient=self.name,
+                on_take=self._anchor_human_turn,
+            )
 
     # --- Session persistence ---
 
-    def _propagate_to_children(self) -> None:
-        # ``super().__init__`` runs this hook before ``_loop`` exists; the
-        # end-of-``__init__`` call re-syncs, so the missed early call is
-        # harmless.
-        loop = getattr(self, "_loop", None)
-        if loop is None:
-            return
-        loop.path = self.path
-        # The agent owns its loop; adoption-time rebinding is friend access.
-        loop.bg_tasks._path = self.path  # noqa: SLF001
-        loop._ctx = self._ctx  # noqa: SLF001
-        # Forward adoption onto every tool (no-op for stateless tools;
-        # :class:`ProcessorTool` rebinds its wrapped processor).
-        for tool in loop.tools.values():
-            tool.on_adopted(self)
-
     async def load_checkpoint(
-        self,
-        *,
-        exec_id: str | None = None,
+        self, *, exec_id: str | None = None
     ) -> AgentCheckpoint | None:
         """
         Rehydrate the session from the checkpoint store on a cold start.
@@ -693,23 +705,28 @@ class LLMAgent[InT, OutT, CtxT](
             return None
 
         current = checkpoint.current
+
         self._loop.turn = current.turn
         self.prompt_cache_key = current.prompt_cache_key
 
+        # Settling is normally a no-op here: heads are written only at closed
+        # boundaries and the loader cuts the log at the head's watermark. If a
+        # log that violated that invariant does lose a dangling tail here, the
+        # transcript becomes a strict prefix of the on-disk log, and the next
+        # save's prefix check rewrites the log rather than appending.
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self.transcript.messages = resume_state.messages
+
         # Lossy summary folds must be carried so resume doesn't re-summarize;
         # deterministic projectors re-derive from the log for free.
         self._cw.load_folds(checkpoint.folds)
         # Recount the compaction budget for the replaced transcript.
         self._cw.reset_anchor()
-        # A stripped trailing turn leaves the transcript a prefix of the log;
-        # the next save's prefix check rewrites rather than appends.
 
         # Kernel-context ids are only meaningful inside the snapshotted
         # filesystem they were captured with — re-attach only when the
         # session restore actually rewound the shared filesystem.
-        self._loop.agent_ctx.restore(
+        self._agent_ctx.restore(
             current.agent_ctx_state,
             rebind_kernels=(
                 current.fs_snapshot_ref is not None and self._ctx.session_fs_restored
@@ -718,11 +735,16 @@ class LLMAgent[InT, OutT, CtxT](
         # The rehydrated transcript holds only checkpointed (acked) turns, so
         # any lease is for a take this transcript never absorbed — drop it so
         # the message is re-delivered rather than blocked.
-        if self._loop.inbox is not None:
-            self._loop.inbox.rollback()
+        if self._agent_ctx.inbox is not None:
+            self._agent_ctx.inbox.rollback()
 
         self._step_watermarks = list(checkpoint.step_watermarks)
         self._committed = current
+
+        if checkpoint.location is AgentCheckpointLocation.ROLLED_BACK:
+            # Restore the parked step, so the next chat delivery re-mints it
+            # (the mint floor) exactly as it would in the rolling-back process.
+            self._step = current.step
 
         logger.info(
             "Loaded session %s for agent %s "
@@ -739,7 +761,7 @@ class LLMAgent[InT, OutT, CtxT](
         )
 
         # A crash mid-rollback committed the filesystem rewind / mailbox
-        # re-pend but not the rolled-back head: complete the rollback now
+        # void but not the rolled-back head: complete the rollback now
         # rather than resuming the pre-rollback transcript over them, and
         # reload the head so the caller sees the rolled-back state (never the
         # stale pre-rollback one — its cached output must not replay).
@@ -752,20 +774,59 @@ class LLMAgent[InT, OutT, CtxT](
                 self.name,
                 target,
             )
-            await self.rollback_to_step(target)
+            # Unchecked: this load runs at stream start, inside the run-active
+            # window the public method refuses.
+            await self._rollback_to_step_unchecked(target)
             reloaded = await self._deserialize_agent_checkpoint(self._ctx)
             assert reloaded is not None
             checkpoint = reloaded
 
+        # A mid-run head resumed over a restored filesystem: the transcript
+        # has advanced past the snapshot the session was rewound to (a crash
+        # between snapshots under fs_snapshot_policy="final"), so it may
+        # claim files that no longer exist. The completed tool rounds are
+        # kept — their outcomes are real history — but the agent must not
+        # trust their file effects; tell it so.
+        if (
+            self._ctx.session_fs_restored
+            and checkpoint.current.fs_snapshot_ref is None
+            and checkpoint.location
+            in {
+                AgentCheckpointLocation.AFTER_INPUT,
+                AgentCheckpointLocation.AFTER_TOOL_RESULT,
+            }
+        ):
+            logger.warning(
+                "agent '%s': resumed a mid-run transcript over a filesystem "
+                "restored to an older snapshot — file effects after that "
+                "snapshot are gone",
+                self.name,
+            )
+            skew_notice = InputMessageItem.from_text(
+                wrap_in_system_reminder(
+                    "The session filesystem was restored to its last "
+                    "snapshot, which predates the interrupted run this "
+                    "conversation resumes. Files created or modified after "
+                    "that snapshot are missing or stale — re-verify "
+                    "(re-read, re-create) anything your recent turns claim "
+                    "to have written before relying on it.",
+                    subject="filesystem restored",
+                ),
+                role="user",
+            )
+            self.transcript.update([skew_notice])
+            self._resume_notifications.append(skew_notice)
+
         committed = self._committed
         assert committed is not None
+
         # Extend, not assign: a rollback completed just above may have queued
         # re-delivered completion notes of its own.
         self._resume_notifications.extend(
-            await self._loop.bg_tasks.resume_durable(
+            await self._agent_ctx.bg_tasks.resume_durable(
                 ctx=self._ctx,
                 exec_id=exec_id,
-                agent_ctx=self._loop.agent_ctx,
+                agent_ctx=self._agent_ctx,
                 # From the live head — a completed rollback moved it.
                 bg_launch_seq=committed.agent_ctx_state.bg_launch_seq,
             )
@@ -773,30 +834,38 @@ class LLMAgent[InT, OutT, CtxT](
 
         return checkpoint
 
+    def _is_session_writer(self) -> bool:
+        """
+        Whether this agent may write the session half of a checkpoint (see
+        ``SessionContext.session_writer``). While the role is unclaimed, only
+        a bare agent writes: a contained agent may run concurrently with
+        siblings or end inside its parent's turn, so its boundaries are not
+        session-wide resume points.
+        """
+        writer = self._ctx.session_writer
+        if writer is not None:
+            return writer == self.name
+        return not self._contained
+
     def _fs_snapshot_due(self, location: AgentCheckpointLocation) -> bool:
         mode = self._ctx.fs_snapshot_policy
-        if mode == "off":
+        if mode == "off" or not self._is_session_writer():
             return False
-        # Snapshots exist to be rewound to, and only the session's rewinder
-        # may rewind — other agents' snapshots would be dead weight (and, at
-        # a stepped boundary, a claim conflict).
-        rewinder = self._ctx.environment_rewinder
-        if rewinder is not None and rewinder != self.name:
-            return False
+
         if not isinstance(self._ctx.environment, SnapshotCapable):
             raise TypeError(
                 f"fs_snapshot_policy={mode!r} requires a "
                 "SnapshotCapable ctx.environment (e.g. an E2BEnvironment); "
                 f"got {type(self._ctx.environment).__name__}."
             )
+
         if mode == "turn":
             return True
+
         return location in {
             AgentCheckpointLocation.AFTER_FINAL_ANSWER,
-            AgentCheckpointLocation.AFTER_MAX_TURNS,
-            # A resident's per-turn boundary is its answer boundary; snapshot so
-            # the restored filesystem matches the per-turn transcript checkpoint.
-            AgentCheckpointLocation.AFTER_RESIDENT_TURN,
+            AgentCheckpointLocation.AFTER_FORCED_FINAL_ANSWER,
+            AgentCheckpointLocation.AFTER_RESIDENT_ANSWER,
         }
 
     async def save_checkpoint(
@@ -816,11 +885,20 @@ class LLMAgent[InT, OutT, CtxT](
             fs_snapshot_ref = await environment.snapshot()
 
         # Session record before this agent's head: a crash in between leaves
-        # the filesystem at-or-after the transcript (work gets redone), never
-        # the transcript claiming files that don't exist.
-        await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
+        # the filesystem at-or-after the transcript (work gets redone). The
+        # inverse — a transcript ahead of the restored filesystem — happens
+        # only when a head advances past the last snapshot (a mid-run
+        # boundary under ``"final"``); a cold resume detects that and injects
+        # a filesystem-restored notice (see ``load_checkpoint``). Written by
+        # the session's owner only (see ``_is_session_writer``).
+        if self._is_session_writer():
+            await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
+        elif self._ctx.session_writer is None and self._ctx.session_record_enabled:
+            # Every agent is contained and none has claimed: the enabled
+            # session persistence is silently inert — say so, once.
+            self._ctx.warn_unowned_session_record()
 
-        agent_ctx_state = self._loop.agent_ctx.snapshot()
+        agent_ctx_state = self._agent_ctx.snapshot()
         if fs_snapshot_ref is None:
             agent_ctx_state = agent_ctx_state.model_copy(
                 update={"ipy_exec_context_id": None, "nb_exec_context_id": None}
@@ -846,17 +924,20 @@ class LLMAgent[InT, OutT, CtxT](
             location=location,
         )
         await self._serialize_agent_checkpoint(self._ctx, checkpoint)
+
         # Cache this head as the rewind point a *future* step will be cut from.
         self._committed = current
+
         # The persisted transcript now contains any delivered background-task
         # notes — only now is it safe to flip their durable records to
         # DELIVERED.
-        await self._loop.bg_tasks.flush_delivered(ctx=self._ctx)
+        await self._agent_ctx.bg_tasks.flush_delivered(ctx=self._ctx)
+
         # Same persist covers a resident's drained inbox message: ack it now
         # (the inbox analog of the bg-task flush) so a crash before the
         # persist re-delivers it instead of stranding it.
-        if self._loop.inbox is not None:
-            await self._loop.inbox.flush_acks()
+        if self._agent_ctx.inbox is not None:
+            await self._agent_ctx.inbox.flush_acks()
 
     def _settle_run(self, *, failed: bool = False) -> None:
         """
@@ -879,20 +960,23 @@ class LLMAgent[InT, OutT, CtxT](
             # Settling prunes only the trailing response round, never a
             # delivered completion note (a user-role message before it) — so
             # every deferred DELIVERED flip's note is still in the kept
-            # transcript. Re-merge the flips across the restore (whose
-            # snapshot predates the deliveries); dropping them would leave the
-            # records COMPLETED, and a later resume would re-inject notes the
-            # transcript already holds.
-            delivered = self._loop.bg_tasks.export_pending_delivered()
-            self._loop.agent_ctx.restore(state)
-            self._loop.bg_tasks.restore_pending_delivered(
+            # transcript. Export the flips BEFORE the restore replaces the
+            # map with the boundary snapshot (which predates the deliveries),
+            # then re-merge; dropping them would leave the records COMPLETED,
+            # and a later resume would re-inject notes the transcript already
+            # holds.
+            delivered = self._agent_ctx.bg_tasks.export_pending_delivered()
+            self._agent_ctx.restore(state)
+            self._agent_ctx.bg_tasks.restore_pending_delivered(
                 {**state.pending_delivered, **delivered}
             )
+
             # Tasks launched by the pruned round are orphans — their launching
             # calls just left the transcript. Cancel them (sync; the durable
             # CANCELLED flips flush at the next save) so a queued completion
             # can't inject a note for a call the model never made.
-            self._loop.bg_tasks.cancel_launched_after(state.bg_launch_seq)
+            self._agent_ctx.bg_tasks.cancel_launched_after(state.bg_launch_seq)
+
         # An in-flight inbox message stays LEASED: the settle keeps its user
         # turn (settling never prunes user messages), so the transcript still
         # owes it a response — the lease is what stops the loop from re-taking
@@ -905,37 +989,35 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _mint_step(self) -> int:
         """
-        The next auto-minted step: one past every recorded boundary, floored
-        at the current step. A fresh mint never equals a completed head's step
-        (every stepped delivery archives its boundary before it first
-        persists), so it cannot read as an orchestrator redelivery; after a
-        rollback it lands on the parked ``ROLLED_BACK`` step — the floor keeps
-        that true even when earlier steps are sparse (the parked step's own
-        boundary was just dropped, so the map alone could mint below it).
+        The next auto-minted step. A current step with no recorded boundary is
+        a rollback's parked step (its boundary was just dropped, and every
+        remaining boundary sits below it) — re-mint it, whatever its number.
+        Otherwise mint one past every recorded boundary: a fresh mint never
+        equals a completed head's step (every stepped delivery archives its
+        boundary before it first persists), so it cannot read as an
+        orchestrator redelivery.
         """
-        past_boundaries = (
-            max(
-                (wm.step for wm in self._step_watermarks if wm.step is not None),
-                default=0,
-            )
-            + 1
-        )
-        return max(past_boundaries, self._step or 0)
+        recorded = {wm.step for wm in self._step_watermarks if wm.step is not None}
+        if self._step is not None and self._step not in recorded:
+            return self._step
+        return max(recorded, default=0) + 1
 
     def _anchor_human_turn(self, message: "TeamMessage") -> None:
         """
         A resident's rollback anchor: a human message about to be taken from
         the inbox starts a new step. Runs before the message's consumption seq
         is minted and before it is appended, so the boundary's high-waters
-        exclude the message — a rollback to it re-pends the message itself.
+        exclude the message — a rollback to it voids the message itself.
         Peer messages are not anchors.
         """
         if message.sender != USER_SENDER:
             return
+
         if message.message_id != self._anchored_message_id:
             self._step = self._mint_step()
             self._anchored_message_id = message.message_id
-        # A re-delivery (settled turn / rollback re-pend) keeps its step and
+
+        # A re-delivery (a settled turn's re-take) keeps its step and
         # re-archives at the settled position — one anchor per human message,
         # not per delivery attempt.
         self._archive_step_boundary()
@@ -950,25 +1032,29 @@ class LLMAgent[InT, OutT, CtxT](
         """
         if self._step is None:
             return
-        # With snapshots on, the first stepped delivery claims the session's
-        # unclaimed rewind right: steps are the rewind points, so the stepper
-        # is the rewinder — and claiming before any turn runs gates subagents
-        # (which run unstepped) out of snapshotting from the very first
-        # delivery. An already-set rewinder wins: a non-rewinder simply steps
+
+        # A bare agent's first stepped delivery claims session-writer status
+        # before any turn runs (steps are the rewind points). A declared
+        # writer wins, and a contained agent never claims by stepping
+        # (concurrent siblings would race the claim) — a non-writer steps
         # transcript-only.
         if (
-            self._ctx.fs_snapshot_policy != "off"
-            and self._ctx.environment_rewinder is None
+            self._ctx.session_record_enabled
+            and self._ctx.session_writer is None
+            and not self._contained
         ):
-            self._ctx.claim_environment_rewind(self.name)
+            self._ctx.claim_session_writer(self.name)
+
         prior = self._committed
+
         fs_snapshot_ref = prior.fs_snapshot_ref if prior else None
         if fs_snapshot_ref is not None:
             # A snapshot-carrying boundary (possibly loaded from a persisted
             # head by a cold instance) is a filesystem rewind point — a
             # session-global right held by one agent; fail here at run start,
             # not at a much-later rollback.
-            self._ctx.claim_environment_rewind(self.name)
+            self._ctx.claim_session_writer(self.name)
+
         # At most one boundary per step: a re-run after a rollback re-archives
         # the same step, so drop any prior entry for it before appending.
         self._step_watermarks = [
@@ -981,7 +1067,7 @@ class LLMAgent[InT, OutT, CtxT](
                 turn=prior.turn if prior else 0,
                 prompt_cache_key=self.prompt_cache_key,
                 fs_snapshot_ref=fs_snapshot_ref,
-                agent_ctx_state=self._loop.agent_ctx.snapshot(),
+                agent_ctx_state=self._agent_ctx.snapshot(),
             )
         )
 
@@ -1008,29 +1094,43 @@ class LLMAgent[InT, OutT, CtxT](
         transcript, turn, and agent context but leaves the shared filesystem
         (and, since kernel state lives in it, the kernels) untouched.
 
-        A resident's mailbox rewinds with it: messages absorbed after the
-        boundary — the anchoring human message included — return to pending
-        for re-delivery (the session mailbox is reached directly when the
-        inbox is detached between runs). Roll a hosted resident back *between
-        runs*: rewinding under its live loop would race the turn cycle.
+        A resident's mailbox rewinds with it: messages consumed after the
+        boundary — the anchoring human message included — are voided, never
+        re-delivered (a rollback rewrites history; the human supplies new
+        input, and peers whose messages were dropped are notified so they can
+        resend). Messages never consumed stay pending. Only valid *between
+        runs*: rewinding
+        under a live loop would race the turn cycle, so a mid-run call is
+        refused — cancel or finish the run first.
 
         Raises:
             KeyError: ``step`` has no recorded boundary — it never started, or
                 an earlier rollback already discarded it.
-            RuntimeError: a snapshot ref recorded at the boundary must be
-                restored but ``ctx.environment`` is not ``SnapshotCapable``,
-                or another agent holds the session's environment-rewind right
-                (see :meth:`SessionContext.claim_environment_rewind`).
+            RuntimeError: the agent is mid-run; or a snapshot ref recorded at
+                the boundary must be restored but ``ctx.environment`` is not
+                ``SnapshotCapable``; or another agent holds the session's
+                environment-rewind right
+                (see :meth:`SessionContext.claim_session_writer`).
 
         """
-        boundary = next((wm for wm in self._step_watermarks if wm.step == step), None)
-        if boundary is None:
-            recorded = sorted(
-                wm.step for wm in self._step_watermarks if wm.step is not None
+        if self._run_active:
+            raise RuntimeError(
+                f"Agent {self.name!r} is mid-run; rollback_to_step is only "
+                "valid between runs — cancel the run or let it finish first."
             )
+        if step not in self.rollback_steps:
             raise KeyError(
                 f"Agent {self.name!r}: no rollback boundary for step {step} "
-                f"(recorded steps: {recorded})."
+                f"(recorded steps: {self.rollback_steps})."
+            )
+        await self._rollback_to_step_unchecked(step)
+
+    async def _rollback_to_step_unchecked(self, step: int) -> None:
+        boundary = next((wm for wm in self._step_watermarks if wm.step == step), None)
+        if boundary is None:
+            raise KeyError(
+                f"Agent {self.name!r}: no rollback boundary for step {step} "
+                f"(recorded steps: {self.rollback_steps})."
             )
         # Boundary counts index the immutable log (append + suffix-truncate
         # only; view-layer compaction never touches it), so a committed
@@ -1045,7 +1145,7 @@ class LLMAgent[InT, OutT, CtxT](
             )
 
         # Re-mark the head ROLLING_BACK before the first durable side effect:
-        # the fs rewind and the mailbox re-pend commit ahead of the head, and
+        # the fs rewind and the mailbox void commit ahead of the head, and
         # only a rollback retry heals a crash in between — a plain resume
         # would restore the pre-rollback head over them. A resume finding this
         # mark completes the rollback instead, and committing the ROLLED_BACK
@@ -1071,71 +1171,26 @@ class LLMAgent[InT, OutT, CtxT](
         # covers boundaries loaded from a persisted head (cold instance).
         fs_ref = boundary.fs_snapshot_ref
         if fs_ref is not None:
-            self._ctx.claim_environment_rewind(self.name)
-            await self._ctx.restore_fs_snapshot(fs_ref)
+            await self._ctx.restore_fs_snapshot(fs_ref, claimant=self.name)
 
         self.transcript.messages = self.transcript.messages[: boundary.message_count]
         self._loop.turn = boundary.turn
-        self._loop.agent_ctx.restore(
+        # Exported before the restore replaces it: a drained-but-unflushed
+        # note's deferred flip is the only trace that the note (now truncated)
+        # was delivered — ``undeliver_after`` overlays it onto the records.
+        deferred_flips = self._agent_ctx.bg_tasks.export_pending_delivered()
+        self._agent_ctx.restore(
             boundary.agent_ctx_state, rebind_kernels=fs_ref is not None
         )
-        # Tasks launched after this boundary are orphans — the rewound
-        # transcript no longer holds their launching calls.
-        self._loop.bg_tasks.cancel_launched_after(
-            boundary.agent_ctx_state.bg_launch_seq
-        )
-        # The inverse gap: a task launched *before* the boundary whose
-        # completion note was delivered *after* it. The truncation just
-        # removed the only copy of the outcome while its durable record stays
-        # DELIVERED (resume skips it) and the finished task is no longer
-        # tracked in memory — re-inject the note at the rewind point, queued
-        # for the next run to stream.
-        self._resume_notifications.extend(
-            await self._loop.bg_tasks.undeliver_after(
-                message_count=boundary.message_count,
-                bg_launch_seq=boundary.agent_ctx_state.bg_launch_seq,
-                ctx=self._ctx,
-            )
-        )
-        # Likewise the inbox messages absorbed after it: a leased (un-acked)
-        # take's turn just left the transcript, so drop the lease to make the
-        # message re-takeable; acked mailbox records above the boundary move
-        # back to pending for re-delivery (a crash mid-move heals by retrying
-        # the rollback, like the filesystem rewind above). Works detached too
-        # (a between-runs rollback): the agent's cached inbox holds the
-        # leases, and the session mailbox is resolved directly — only when
-        # messages were actually absorbed past the boundary, so a lone agent's
-        # rollback never spins up a transport.
-        inbox = self._loop.inbox or self._inbox_cache
-        if inbox is not None:
-            inbox.rollback()
-        mailbox_hw = boundary.agent_ctx_state.mailbox_seq
-        committed_hw = (
-            self._committed.agent_ctx_state.mailbox_seq
-            if self._committed is not None
-            else 0
-        )
-        transport = inbox.transport if inbox is not None else None
-        if transport is None and committed_hw > mailbox_hw:
-            from grasp_agents.mailbox import resolve_session_transport  # noqa: PLC0415
-
-            transport = resolve_session_transport(self._ctx)
-        if transport is not None:
-            # Seed whenever a transport is at hand, moved mail or not: a cold
-            # rollback's fresh transport has an unseeded consumption counter,
-            # and later takes must not re-mint seqs that collide with the
-            # processed records retained below the boundary (max-only, so a
-            # live transport is unaffected).
-            transport.seed_consumption_seq(self.name, committed_hw)
-            if committed_hw > mailbox_hw:
-                await transport.unprocess_after(self.name, mailbox_hw)
+        await self._rollback_bg_tasks(boundary, deferred_delivered=deferred_flips)
+        await self._rollback_mailbox(boundary)
         self._committed = boundary
         self._cw.reset_anchor()
 
         # Parked at the start of ``step``, ready to (re)deliver it.
         self._step = step
         # The step's anchor boundary was just destroyed — invalidate the memo
-        # so a resident's re-take of the re-pended human message re-mints and
+        # so the human's next (replacement) message re-mints and
         # re-archives it (a memo hit would skip the mint after a pure-resume
         # entry cleared ``_step``, leaving the head unstepped).
         self._anchored_message_id = None
@@ -1156,7 +1211,7 @@ class LLMAgent[InT, OutT, CtxT](
         # The rolled-back head no longer references the cancelled tasks'
         # launches — safe to flip their records now rather than waiting for
         # the next loop save.
-        await self._loop.bg_tasks.flush_delivered(ctx=self._ctx)
+        await self._agent_ctx.bg_tasks.flush_delivered(ctx=self._ctx)
         logger.info(
             "agent '%s' rolled back to step %d (messages=%d, turn=%d)",
             self.name,
@@ -1165,21 +1220,97 @@ class LLMAgent[InT, OutT, CtxT](
             boundary.turn,
         )
 
-    async def _persist_rollback(
-        self, boundary: StepWatermark, *, step: int | None
+    async def _rollback_bg_tasks(
+        self,
+        boundary: StepWatermark,
+        *,
+        deferred_delivered: Mapping[str, dict[str, Any]],
     ) -> None:
+        """
+        The background-task half of a rollback. Tasks launched after
+        ``boundary`` are orphans — the rewound transcript no longer holds
+        their launching calls — and are cancelled. Inversely, a completion
+        note delivered *after* the boundary for a task launched *before* it
+        was just truncated away while its durable record stays DELIVERED
+        (resume skips it): the note is re-injected at the rewind point and
+        queued for the next run to stream. ``deferred_delivered`` is the
+        pre-restore flip map, so a drained-but-unflushed note counts as
+        delivered too.
+        """
+        self._agent_ctx.bg_tasks.cancel_launched_after(
+            boundary.agent_ctx_state.bg_launch_seq
+        )
+        self._resume_notifications.extend(
+            await self._agent_ctx.bg_tasks.undeliver_after(
+                message_count=boundary.message_count,
+                bg_launch_seq=boundary.agent_ctx_state.bg_launch_seq,
+                ctx=self._ctx,
+                deferred_delivered=deferred_delivered,
+            )
+        )
+
+    async def _rollback_mailbox(self, boundary: StepWatermark) -> None:
+        """
+        The mailbox half of a rollback: messages consumed after ``boundary``
+        are VOIDED, never re-delivered — a rollback rewrites history, so the
+        human supplies new input instead of a replay (their dropped messages
+        are discarded silently), while peers whose messages were dropped get
+        a note so they can resend what is still relevant. Messages never
+        consumed stay pending; leased (un-acked) takes are acked-and-voided.
+        Leases are in-memory, so a crash mid-rollback degrades them to crash
+        semantics: the re-driven rollback in a fresh process finds them still
+        pending and they are re-delivered rather than voided. Reads the
+        pre-rollback ``_committed`` high-water, so it must run before
+        ``boundary`` becomes the head.
+        """
+        inbox = self._agent_ctx.inbox
+        leased = inbox.rollback() if inbox is not None else []
+
+        mailbox_hw = boundary.agent_ctx_state.mailbox_seq
+        committed_hw = (
+            self._committed.agent_ctx_state.mailbox_seq
+            if self._committed is not None
+            else 0
+        )
+        if committed_hw <= mailbox_hw and not leased:
+            # No mail was absorbed past the boundary — nothing to void.
+            return
+
+        from grasp_agents.mailbox import void_mail_after  # noqa: PLC0415
+
+        transport = self._ctx.transport
+        # Seed the counter: a cold rollback's fresh transport starts at zero,
+        # and later takes must not re-mint seqs held by voided records
+        # (max-only, so a live transport is unaffected).
+        transport.seed_consumption_seq(self.name, committed_hw)
+        await void_mail_after(transport, self.name, mailbox_hw, leased=leased)
+
+    async def _persist_rollback(self, boundary: StepWatermark, *, step: int) -> None:
         """
         Persist the rolled-back session as a ``ROLLED_BACK`` head cut at
         ``boundary`` (store mechanics in
         :meth:`_serialize_rollback_checkpoint`). ``output`` is left unset —
         the rolled-back step's answer is discarded.
         """
-        ctx_state = boundary.agent_ctx_state
+        # Snapshot the LIVE deferred flips, not the boundary's copy: the
+        # rollback's ``undeliver_after`` just re-deferred DELIVERED flips with
+        # the re-injected notes' new positions, and a crash before the flush
+        # must not resume with the stale pre-rollback positions (a later,
+        # deeper rollback would re-inject notes the kept transcript already
+        # holds).
+        ctx_state = boundary.agent_ctx_state.model_copy(
+            update={
+                "pending_delivered": (
+                    self._agent_ctx.bg_tasks.export_pending_delivered()
+                )
+            }
+        )
         fs_ref = boundary.fs_snapshot_ref
         if fs_ref is None:
             ctx_state = ctx_state.model_copy(
                 update={"ipy_exec_context_id": None, "nb_exec_context_id": None}
             )
+
         current = StepWatermark(
             step=step,
             turn=boundary.turn,
@@ -1237,7 +1368,7 @@ class LLMAgent[InT, OutT, CtxT](
         # No inputs is allowed on resume (a checkpoint store is bound) and for
         # a resident (attached inbox), whose turns arrive from the inbox.
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and (self.is_resumable or self.inbox is not None):
+        if not has_input and (self.is_resumable or self._agent_ctx.inbox is not None):
             return None
 
         # Fan-in: a multi-payload packet (e.g. a ParallelProcessor's output)
@@ -1276,6 +1407,26 @@ class LLMAgent[InT, OutT, CtxT](
         in_args: list[InT] | None = None,
         exec_id: str,
         step: int | None = None,
+        ctx: SessionContext[CtxT] | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        # Everything past this point mutates the live transcript and its
+        # paired state — the window :meth:`rollback_to_step` must not enter.
+        self._run_active = True
+        try:
+            async for event in self._process_stream_body(
+                chat_inputs, in_args=in_args, exec_id=exec_id, step=step, ctx=ctx
+            ):
+                yield event
+        finally:
+            self._run_active = False
+
+    async def _process_stream_body(
+        self,
+        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
+        *,
+        in_args: list[InT] | None = None,
+        exec_id: str,
+        step: int | None = None,
         ctx: SessionContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
     ) -> AsyncIterator[Event[Any]]:
         inp = in_args[0] if in_args else None
@@ -1295,7 +1446,7 @@ class LLMAgent[InT, OutT, CtxT](
         # the loop on the restored (or live) transcript instead of rendering
         # an input prompt from nothing.
         pure_resume = step is None and chat_inputs is None and inp is None
-        if pure_resume and self.transcript.is_empty and self.inbox is None:
+        if pure_resume and self.transcript.is_empty and self._agent_ctx.inbox is None:
             # A resident legitimately starts parked with an empty transcript
             # (its turns come from the inbox); a non-resident has nothing to do.
             raise ProcInputValidationError(
@@ -1354,16 +1505,20 @@ class LLMAgent[InT, OutT, CtxT](
         # prepends it to the model-facing view each turn, so resume never sees
         # a stale system prompt and the log stays pure conversation.
         self._cw.initial_context = await self._prompt_builder.build_initial_context(
-            ctx=self._ctx, exec_id=exec_id, agent_ctx=self._loop.agent_ctx
+            ctx=self._ctx, exec_id=exec_id, agent_ctx=self._agent_ctx
         )
 
         try:
             # Step entry for anything that *starts or (re-)parks* a
             # conversation: new steps and every resident entry. A resumed step
             # skips this — re-archiving would replace its rollback boundary
-            # with a mid-step one.
+            # with a mid-step one. A retry continuation skips it for residents
+            # too: the boundary was archived at the human-message take, and
+            # re-archiving here would move it past the settled input.
             messages_to_expose: list[InputItem] = []
-            if starts_step or self.inbox is not None:
+            resident = self._agent_ctx.inbox is not None
+
+            if (starts_step or resident) and not retry_continuation:
                 if self.reset_transcript_on_run:
                     # A reset run starts a new conversation: drop the log (the
                     # system prompt lives in the ephemeral header, not here).
@@ -1390,7 +1545,7 @@ class LLMAgent[InT, OutT, CtxT](
                         ctx=self._ctx,
                         exec_id=exec_id,
                         messages=list(self.transcript.messages),
-                        agent_ctx=self._loop.agent_ctx,
+                        agent_ctx=self._agent_ctx,
                         source=self._current_input_source,
                     )
                     self.transcript.update([input_message])
