@@ -23,6 +23,7 @@ exclude = [
   # to library lint standards. litellm_tests.ipynb also trips a ruff-notebook
   # panic (astral-sh/ruff: "Transformed content out of bounds").
   "src/grasp_agents/examples",
+  "src/grasp_agents/kits",
 ]
 
 line-length = 88
@@ -171,12 +172,7 @@ ban-relative-imports = "parents"
 # generated profiles (S404 / S603). ASYNC109: fake exec backends mirror the
 # ExecBackend `timeout` contract (same rationale as the sandbox module);
 # B903: simple test-double data holders.
-"tests/sandbox/**/*.py" = [
-  "ASYNC109",
-  "B903",
-  "S404",
-  "S603",
-]
+"tests/sandbox/**/*.py" = ["ASYNC109", "B903", "S404", "S603"]
 # sandbox: `timeout` is part of the cross-boundary ExecBackend contract
 # (enforced per-backend: asyncio.wait_for / docker exec / remote API), not an
 # asyncio.timeout reinvention — ASYNC109 is a false positive here. S603

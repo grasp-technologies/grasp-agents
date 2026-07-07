@@ -104,4 +104,4 @@ async def resident_idle(member: LLMAgent[Any, Any, Any]) -> bool:
     if inbox is None or not inbox.is_waiting or await inbox.has_pending():
         return False
     bg = member.agent_ctx.bg_tasks
-    return not (bg.has_pending or bg.has_undelivered_completions)
+    return not (bg.has_blocking_tasks or bg.has_undelivered_completions)

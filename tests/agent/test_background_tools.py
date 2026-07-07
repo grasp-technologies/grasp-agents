@@ -711,7 +711,7 @@ class TestCapAndDeferDelivery:
         assert "chars omitted" in notes[0]
         # Once its note is delivered the task no longer gates the answer and is
         # dropped — nothing is retained in memory for a poll.
-        assert not mgr.has_pending
+        assert not mgr.has_blocking_tasks
         assert task_id not in mgr._tasks  # pyright: ignore[reportPrivateUsage]
 
     @pytest.mark.asyncio
@@ -796,7 +796,7 @@ class TestDurableTaskRecords:
         keys = await store.list_keys(task_prefix("s1"))
         recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
         assert recs
-        assert all(r.status == TaskStatus.PENDING for r in recs)
+        assert all(r.status == TaskStatus.RUNNING for r in recs)
 
         # Simulate a crash: drop the in-flight task without finalizing the record.
         for pt in list(mgr._tasks.values()):  # pyright: ignore[reportPrivateUsage]
@@ -824,7 +824,7 @@ class TestDurableTaskRecords:
         # The record stays PENDING until a checkpoint persists the notice —
         # a crash before that must re-surface it on the next resume.
         recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
-        assert all(r.status == TaskStatus.PENDING for r in recs)
+        assert all(r.status == TaskStatus.RUNNING for r in recs)
 
         # flush_delivered (called after the agent checkpoint) makes the
         # record terminal, so a second resume surfaces nothing.
@@ -926,7 +926,7 @@ class TestDurableTaskRecords:
                 tool_call_id="c1",
                 tool_name="researcher",
                 tool_call_arguments='{"prompt": "research the ocean"}',
-                status=TaskStatus.PENDING,
+                status=TaskStatus.RUNNING,
                 created_at=datetime.now(UTC),
             )
             .model_dump_json()
@@ -996,7 +996,7 @@ class TestDurableTaskRecords:
                     tool_call_id=cid,
                     tool_name="researcher",
                     tool_call_arguments='{"prompt": "x"}',
-                    status=TaskStatus.PENDING,
+                    status=TaskStatus.RUNNING,
                     created_at=datetime.now(UTC),
                 )
                 .model_dump_json()
@@ -1082,7 +1082,7 @@ class TestFrontTrim:
 
     @pytest.mark.asyncio
     async def test_drain_trims_running_task_buffer(self):
-        from grasp_agents.agent.background_tasks import PendingTask
+        from grasp_agents.agent.background_tasks import BackgroundTask
         from grasp_agents.types.events import ToolStreamEvent
 
         executor, _, _ = _make_executor([])
@@ -1093,7 +1093,7 @@ class TestFrontTrim:
             await asyncio.Event().wait()
 
         task = asyncio.create_task(_never())
-        pt = PendingTask(
+        pt = BackgroundTask(
             task_id="bg_1",
             tool_name="x",
             exec_id="t",
@@ -1119,8 +1119,8 @@ class TestFrontTrim:
     @pytest.mark.asyncio
     async def test_trim_stops_before_a_terminal_result(self):
         from grasp_agents.agent.background_tasks import (
+            BackgroundTask,
             BackgroundTaskManager,
-            PendingTask,
         )
         from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
 
@@ -1129,7 +1129,7 @@ class TestFrontTrim:
         task = asyncio.create_task(_noop())
         await task
 
-        pt = PendingTask(task_id="bg_1", tool_name="x", exec_id="t", task=task)
+        pt = BackgroundTask(task_id="bg_1", tool_name="x", exec_id="t", task=task)
         pt.events.append(ToolStreamEvent(data="s0", source="x"))
         pt.events.append(ToolOutputEvent(data="RESULT", source="x"))  # terminal
         pt.events.append(ToolStreamEvent(data="s2", source="x"))

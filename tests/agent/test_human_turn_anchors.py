@@ -163,7 +163,7 @@ async def test_resident_anchors_human_turns_not_peer_turns() -> None:
     boundary = agent._step_watermarks[0]
     # Archived before the human message's seq was minted: its high-water
     # excludes the message, so a rollback voids it too.
-    assert boundary.agent_ctx_state.mailbox_seq == 0
+    assert boundary.agent_ctx_state.mail_consumption_seq == 0
 
     await agent.rollback_to_step(1)
     # Both messages are voided: still deduped, never re-delivered.
@@ -373,7 +373,7 @@ async def test_resident_retry_keeps_the_take_anchor() -> None:
     # message, so the rollback voids it.
     boundary = agent._step_watermarks[0]
     assert (boundary.step, boundary.message_count) == (1, 0)
-    assert boundary.agent_ctx_state.mailbox_seq == 0
+    assert boundary.agent_ctx_state.mail_consumption_seq == 0
     assert str(agent.transcript.messages).count("human task") == 1
 
     await agent.rollback_to_step(1)

@@ -131,12 +131,15 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "monotonic per-agent launch counter) and TeamMessage gained ``seq`` (a "
         "per-recipient consumption ordinal, stamped when a resident absorbs "
         "the message and persisted via the acked mailbox record); "
-        "AgentContextState carries their high-water values ``bg_launch_seq`` / "
-        "``mailbox_seq``. A settle / step rollback cancels tasks launched "
-        "after the restored boundary; a step rollback also moves mailbox "
+        "AgentContextState carries their high-water values ``task_launch_seq`` / "
+        "``mail_consumption_seq``. A settle / step rollback cancels tasks launched "
+        "after the restored boundary; a step rollback also voids mailbox "
         "records consumed after it (senders are notified); resume dead-letters task "
         "records above the restored head's high-water (their launching call "
-        "was never persisted). AgentCheckpointLocation.AFTER_MAX_TURNS was "
+        "was never persisted). MessageRecord.status became its own "
+        "MessageStatus (pending/delivered/voided; was TaskStatus, whose "
+        "'pending' value is now 'running'). "
+        "AgentCheckpointLocation.AFTER_MAX_TURNS was "
         "renamed to AFTER_FORCED_FINAL_ANSWER (it is also written on run "
         "timeout, not just turn exhaustion) and AFTER_RESIDENT_TURN to "
         "AFTER_RESIDENT_ANSWER (written once per message answered, not per "
@@ -216,26 +219,26 @@ class AgentContextState(BaseModel):
     read_file_state: dict[str, float] = Field(default_factory=dict[str, float])
     dotfile_overrides: list[str] = Field(default_factory=list[str])
     shell_cwd: str | None = None
-    pending_delivered: dict[str, dict[str, Any]] = Field(
+    deferred_delivered: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
     # Deferred CANCELLED flips for tasks killed by a rewind, persisted so a
     # crash before their flush cannot resurrect the killed tasks on resume:
-    # the same head that raises ``bg_launch_seq`` past a killed launch (which
+    # the same head that raises ``task_launch_seq`` past a killed launch (which
     # defeats the resume orphan guard) also carries the kill itself.
-    pending_killed: dict[str, dict[str, Any]] = Field(
+    deferred_killed: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
     # High-water background-task launch seq at this boundary: every task
-    # launched by then has ``launch_seq <= bg_launch_seq``. A rewind to this
+    # launched by then has ``launch_seq <= task_launch_seq``. A rewind to this
     # boundary cancels tasks above it (their launching calls left the
     # transcript); resume dead-letters task records above it.
-    bg_launch_seq: int = 0
+    task_launch_seq: int = 0
     # High-water inbox consumption seq at this boundary: every message absorbed
-    # by then has ``seq <= mailbox_seq``. A step rollback to this boundary
-    # voids acked mailbox records above it (their turns left
-    # the transcript), so the resident re-processes them.
-    mailbox_seq: int = 0
+    # by then has ``seq <= mail_consumption_seq``. A step rollback to this
+    # boundary voids acked mailbox records above it (their turns left the
+    # transcript) — never re-delivered; senders are notified instead.
+    mail_consumption_seq: int = 0
     ipy_exec_context_id: str | None = None
     nb_exec_context_id: str | None = None
 

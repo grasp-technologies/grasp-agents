@@ -4,7 +4,7 @@ import logging.config
 import os
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from logging import Formatter, Handler, LogRecord
@@ -182,7 +182,7 @@ _LOG_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
 @contextmanager
 def log_context(
     *, exec_id: str | None = None, proc: str | None = None
-) -> Iterator[None]:
+) -> Generator[None]:
     """
     Bind correlation fields onto every log record emitted within the block.
 

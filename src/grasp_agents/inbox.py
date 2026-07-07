@@ -55,7 +55,8 @@ class AgentInbox:
         self._waiting = False
         # Messages taken but not yet acked — released on the next checkpoint
         # (:meth:`flush_acks`) once the turn that consumed them is durable, or
-        # dropped un-acked when the turn leaves the transcript (:meth:`rollback`).
+        # dropped un-acked when the turn leaves the transcript
+        # (:meth:`drop_leases`).
         # In-memory and transient: a crash loses the leases, and the un-acked
         # messages are simply re-delivered. A lease must live exactly as long as
         # the live transcript that absorbed its message — which is why an agent
@@ -132,7 +133,7 @@ class AgentInbox:
             await self._transport.ack(self._recipient, message)
             self._leased.pop(message.message_id, None)
 
-    def rollback(self) -> list[TeamMessage]:
+    def drop_leases(self) -> list[TeamMessage]:
         """
         Drop all leases without acking, returning the dropped messages.
         In-memory only — the messages stay pending in the mailbox. A cold

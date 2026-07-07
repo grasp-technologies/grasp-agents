@@ -95,7 +95,7 @@ class TestCancelLaunchedAfter:
         await mgr.cancel_all(ctx=ctx)
 
     @pytest.mark.asyncio
-    async def test_queued_completion_is_suppressed_not_announced(self) -> None:
+    async def test_queued_completion_is_suppressed_not_delivered(self) -> None:
         # The task finished (completion queued for drain) but its launching
         # call was rolled back: drain must stay silent — no ghost note.
         ctx = SessionContext[None](state=None)
@@ -121,7 +121,7 @@ class TestCancelLaunchedAfter:
 
         await _launch(mgr, ctx, "c1")
         _, record = await _load_only_record(store, "s1")
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
         assert record.launch_seq == 1
 
         mgr.cancel_launched_after(0)
@@ -129,7 +129,7 @@ class TestCancelLaunchedAfter:
         # Deferred: the record flips only once the rewound transcript is
         # durable (flush after the next checkpoint / the rollback persist).
         _, record = await _load_only_record(store, "s1")
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
 
         await mgr.flush_delivered(ctx=ctx)
         _, record = await _load_only_record(store, "s1")
@@ -149,7 +149,7 @@ class TestCancelLaunchedAfter:
 
         await _launch(mgr, ctx, "c1")
         mgr.cancel_launched_after(0)
-        mgr.restore_pending_delivered({})
+        mgr.restore_deferred_delivered({})
 
         await mgr.flush_delivered(ctx=ctx)
         _, record = await _load_only_record(store, "s1")
@@ -168,14 +168,14 @@ class TestLaunchSeqWatermark:
 
         agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
         state = agent_ctx.snapshot()
-        assert state.bg_launch_seq == 1
+        assert state.task_launch_seq == 1
 
         # Restoring an older watermark must not resurrect burned seqs: a
         # re-run's fresh launches can't be mistaken for the cancelled ones.
-        agent_ctx.restore(state.model_copy(update={"bg_launch_seq": 0}))
+        agent_ctx.restore(state.model_copy(update={"task_launch_seq": 0}))
         assert mgr.last_launch_seq == 1
         # A fresh manager (cold resume) seeds forward from the head.
-        agent_ctx.restore(state.model_copy(update={"bg_launch_seq": 5}))
+        agent_ctx.restore(state.model_copy(update={"task_launch_seq": 5}))
         assert mgr.last_launch_seq == 5
         assert mgr._next_id() == ("bg_6", 6)  # pyright: ignore[reportPrivateUsage]
 
@@ -200,13 +200,13 @@ class TestResumeOrphanGuard:
                     launch_seq=seq,
                     tool_call_id=cid,
                     tool_name="slow",
-                    status=TaskStatus.PENDING,
+                    status=TaskStatus.RUNNING,
                 )
                 .model_dump_json()
                 .encode(),
             )
 
-        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
 
         # bg_1's launch is inside the restored transcript → interrupted
         # notice as usual; bg_2's launching call was never persisted → dead-
@@ -280,7 +280,7 @@ class TestAgentRewindsTaskPlane:
             assert mgr.has_live_tasks
             bg_task = mgr.get("bg_1").task
             _, record = await _load_only_record(store, "s1")
-            assert record.status == TaskStatus.PENDING
+            assert record.status == TaskStatus.RUNNING
             assert record.launch_seq == 1
 
             task.cancel()
@@ -300,14 +300,14 @@ class TestAgentRewindsTaskPlane:
         # The flip is deferred (no checkpoint ran after the settle): a fresh
         # resume dead-letters the record off the head's watermark instead.
         _, record = await _load_only_record(store, "s1")
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
 
         t2 = LLMAgentTranscript()
         t2.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr2 = BackgroundTaskManager[None](
             agent_name="a", transcript=t2, tools={}, path=[]
         )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=0)
+        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=0)
         assert injected == []  # no "interrupted" ghost for the orphan
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.CANCELLED
@@ -387,7 +387,7 @@ class TestUndeliverAfter:
         # run-end checkpoint flushes the DELIVERED flip with the position.
         await agent.run("q2", step=2)
         boundary = next(wm for wm in agent._step_watermarks if wm.step == 2)  # pyright: ignore[reportPrivateUsage]
-        assert boundary.agent_ctx_state.bg_launch_seq == 1
+        assert boundary.agent_ctx_state.task_launch_seq == 1
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.DELIVERED
         assert record.delivered_msg_count is not None
@@ -410,7 +410,7 @@ class TestUndeliverAfter:
         mgr2 = BackgroundTaskManager[None](
             agent_name="a", transcript=t2, tools={}, path=[]
         )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
         assert injected == []
 
     @pytest.mark.asyncio
@@ -484,12 +484,12 @@ class TestUndeliverOverlay:
 
         # Without the overlay the COMPLETED record stays buried.
         assert (
-            await mgr.undeliver_after(message_count=4, bg_launch_seq=1, ctx=ctx) == []
+            await mgr.redeliver_after(message_count=4, task_launch_seq=1, ctx=ctx) == []
         )
 
-        injected = await mgr.undeliver_after(
+        injected = await mgr.redeliver_after(
             message_count=4,
-            bg_launch_seq=1,
+            task_launch_seq=1,
             ctx=ctx,
             deferred_delivered={
                 key: {"status": TaskStatus.DELIVERED, "delivered_msg_count": 6}
@@ -504,7 +504,7 @@ class TestKillsSurviveCrashBeforeFlush:
     @pytest.mark.asyncio
     async def test_restored_kill_is_not_resurrected_by_resume(self) -> None:
         # A settle cancels an orphan task and defers its CANCELLED flip; the
-        # next head persists an inflated bg_launch_seq BEFORE the flush. A
+        # next head persists an inflated task_launch_seq BEFORE the flush. A
         # crash in that window must not resurrect the task on resume: the
         # head also carries the deferred kill, and resume honors it ahead of
         # the (defeated) orphan guard.
@@ -518,8 +518,8 @@ class TestKillsSurviveCrashBeforeFlush:
         # The head snapshot carries both the raised counter and the kill.
         agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
         state = agent_ctx.snapshot()
-        assert state.bg_launch_seq == 1
-        assert state.pending_killed
+        assert state.task_launch_seq == 1
+        assert state.deferred_killed
 
         # Cold resume: fresh manager, state restored from the head.
         t2 = LLMAgentTranscript()
@@ -531,7 +531,7 @@ class TestKillsSurviveCrashBeforeFlush:
         agent_ctx2.restore(state)
 
         injected = await mgr2.resume_durable(
-            ctx=ctx, exec_id="t", bg_launch_seq=state.bg_launch_seq
+            ctx=ctx, exec_id="t", task_launch_seq=state.task_launch_seq
         )
         assert injected == []  # no phantom "interrupted" notice, no re-spawn
 
@@ -571,16 +571,16 @@ class TestResumeSkipsRestoredFlips:
             .encode(),
         )
         # The restored head carried this deferred flip.
-        mgr.restore_pending_delivered(
+        mgr.restore_deferred_delivered(
             {key: {"status": TaskStatus.DELIVERED, "delivered_msg_count": 2}}
         )
 
-        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
         assert injected == []
 
         # Without the restored flip the same record IS re-injected.
-        mgr.restore_pending_delivered({})
-        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        mgr.restore_deferred_delivered({})
+        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
         assert len(injected) == 2  # framing + the note
         assert "the outcome" in str(injected[1])
 
@@ -617,7 +617,9 @@ class TestUndeliverOrder:
                 .encode(),
             )
 
-        injected = await mgr.undeliver_after(message_count=4, bg_launch_seq=2, ctx=ctx)
+        injected = await mgr.redeliver_after(
+            message_count=4, task_launch_seq=2, ctx=ctx
+        )
 
         assert len(injected) == 2
         assert "bg_2" in str(injected[0])  # delivered first → re-injected first
@@ -652,7 +654,7 @@ class TestFlushDeliveredRetry:
         with pytest.raises(RuntimeError, match="store down"):
             await mgr.flush_delivered(ctx=ctx)
         _, record = await _load_only_record(store, "s1")
-        assert record.status == TaskStatus.PENDING  # flip not applied yet
+        assert record.status == TaskStatus.RUNNING  # flip not applied yet
 
         await mgr.flush_delivered(ctx=ctx)  # retried at the next flush
         _, record = await _load_only_record(store, "s1")
@@ -696,7 +698,7 @@ class TestSettleKeepsDeliveredFlips:
             pass
         notes_before = str(agent.transcript.messages).count("task_notification")
         assert notes_before  # launch + completion notes
-        assert mgr.export_pending_delivered()  # the deferred DELIVERED flip
+        assert mgr.export_deferred_delivered()  # the deferred DELIVERED flip
 
         # A later round is interrupted in flight → settle prunes only it.
         agent.transcript.update(
@@ -706,7 +708,7 @@ class TestSettleKeepsDeliveredFlips:
 
         # The notes are still in the transcript, and so is the flip.
         assert str(agent.transcript.messages).count("task_notification") == notes_before
-        assert mgr.export_pending_delivered()
+        assert mgr.export_deferred_delivered()
 
         # The next save flushes the flip: the record lands DELIVERED…
         await agent.save_checkpoint(turn=1)
@@ -719,5 +721,5 @@ class TestSettleKeepsDeliveredFlips:
         mgr2 = BackgroundTaskManager[None](
             agent_name="a", transcript=t2, tools={}, path=[]
         )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", bg_launch_seq=1)
+        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
         assert injected == []

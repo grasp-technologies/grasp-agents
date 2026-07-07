@@ -65,7 +65,7 @@ def _make_agent(
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
         # v14: background-task launch ordering (TaskRecord.launch_seq +
-        # AgentContextState.bg_launch_seq) — additive over the v13 floor
+        # AgentContextState.task_launch_seq) — additive over the v13 floor
         # (items dropped the *_parts mirror fields; older logs unreadable).
         assert CURRENT_SCHEMA_VERSION == 14
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES

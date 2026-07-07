@@ -438,7 +438,7 @@ async def test_settle_keeps_inbox_lease() -> None:
     assert await inbox.take() is None
 
     # A transcript rewind (rollback / cold reload) is what unleases it.
-    inbox.rollback()
+    inbox.drop_leases()
     retaken = await inbox.take()
     assert retaken is not None
     assert retaken.message_id == msg.message_id

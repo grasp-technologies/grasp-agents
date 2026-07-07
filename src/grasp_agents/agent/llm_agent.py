@@ -736,7 +736,7 @@ class LLMAgent[InT, OutT, CtxT](
         # any lease is for a take this transcript never absorbed — drop it so
         # the message is re-delivered rather than blocked.
         if self._agent_ctx.inbox is not None:
-            self._agent_ctx.inbox.rollback()
+            self._agent_ctx.inbox.drop_leases()
 
         self._step_watermarks = list(checkpoint.step_watermarks)
         self._committed = current
@@ -828,7 +828,7 @@ class LLMAgent[InT, OutT, CtxT](
                 exec_id=exec_id,
                 agent_ctx=self._agent_ctx,
                 # From the live head — a completed rollback moved it.
-                bg_launch_seq=committed.agent_ctx_state.bg_launch_seq,
+                task_launch_seq=committed.agent_ctx_state.task_launch_seq,
             )
         )
 
@@ -965,17 +965,17 @@ class LLMAgent[InT, OutT, CtxT](
             # then re-merge; dropping them would leave the records COMPLETED,
             # and a later resume would re-inject notes the transcript already
             # holds.
-            delivered = self._agent_ctx.bg_tasks.export_pending_delivered()
+            delivered = self._agent_ctx.bg_tasks.export_deferred_delivered()
             self._agent_ctx.restore(state)
-            self._agent_ctx.bg_tasks.restore_pending_delivered(
-                {**state.pending_delivered, **delivered}
+            self._agent_ctx.bg_tasks.restore_deferred_delivered(
+                {**state.deferred_delivered, **delivered}
             )
 
             # Tasks launched by the pruned round are orphans — their launching
             # calls just left the transcript. Cancel them (sync; the durable
             # CANCELLED flips flush at the next save) so a queued completion
             # can't inject a note for a call the model never made.
-            self._agent_ctx.bg_tasks.cancel_launched_after(state.bg_launch_seq)
+            self._agent_ctx.bg_tasks.cancel_launched_after(state.task_launch_seq)
 
         # An in-flight inbox message stays LEASED: the settle keeps its user
         # turn (settling never prunes user messages), so the transcript still
@@ -1177,8 +1177,8 @@ class LLMAgent[InT, OutT, CtxT](
         self._loop.turn = boundary.turn
         # Exported before the restore replaces it: a drained-but-unflushed
         # note's deferred flip is the only trace that the note (now truncated)
-        # was delivered — ``undeliver_after`` overlays it onto the records.
-        deferred_flips = self._agent_ctx.bg_tasks.export_pending_delivered()
+        # was delivered — ``redeliver_after`` overlays it onto the records.
+        deferred_flips = self._agent_ctx.bg_tasks.export_deferred_delivered()
         self._agent_ctx.restore(
             boundary.agent_ctx_state, rebind_kernels=fs_ref is not None
         )
@@ -1238,12 +1238,12 @@ class LLMAgent[InT, OutT, CtxT](
         delivered too.
         """
         self._agent_ctx.bg_tasks.cancel_launched_after(
-            boundary.agent_ctx_state.bg_launch_seq
+            boundary.agent_ctx_state.task_launch_seq
         )
         self._resume_notifications.extend(
-            await self._agent_ctx.bg_tasks.undeliver_after(
+            await self._agent_ctx.bg_tasks.redeliver_after(
                 message_count=boundary.message_count,
-                bg_launch_seq=boundary.agent_ctx_state.bg_launch_seq,
+                task_launch_seq=boundary.agent_ctx_state.task_launch_seq,
                 ctx=self._ctx,
                 deferred_delivered=deferred_delivered,
             )
@@ -1264,11 +1264,11 @@ class LLMAgent[InT, OutT, CtxT](
         ``boundary`` becomes the head.
         """
         inbox = self._agent_ctx.inbox
-        leased = inbox.rollback() if inbox is not None else []
+        leased = inbox.drop_leases() if inbox is not None else []
 
-        mailbox_hw = boundary.agent_ctx_state.mailbox_seq
+        mailbox_hw = boundary.agent_ctx_state.mail_consumption_seq
         committed_hw = (
-            self._committed.agent_ctx_state.mailbox_seq
+            self._committed.agent_ctx_state.mail_consumption_seq
             if self._committed is not None
             else 0
         )
@@ -1293,15 +1293,15 @@ class LLMAgent[InT, OutT, CtxT](
         the rolled-back step's answer is discarded.
         """
         # Snapshot the LIVE deferred flips, not the boundary's copy: the
-        # rollback's ``undeliver_after`` just re-deferred DELIVERED flips with
+        # rollback's ``redeliver_after`` just re-deferred DELIVERED flips with
         # the re-injected notes' new positions, and a crash before the flush
         # must not resume with the stale pre-rollback positions (a later,
         # deeper rollback would re-inject notes the kept transcript already
         # holds).
         ctx_state = boundary.agent_ctx_state.model_copy(
             update={
-                "pending_delivered": (
-                    self._agent_ctx.bg_tasks.export_pending_delivered()
+                "deferred_delivered": (
+                    self._agent_ctx.bg_tasks.export_deferred_delivered()
                 )
             }
         )

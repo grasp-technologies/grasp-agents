@@ -27,9 +27,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from grasp_agents.durability.checkpoints import CheckpointKind, CheckpointSchemaError
-from grasp_agents.durability.message_record import MessageRecord
+from grasp_agents.durability.message_record import MessageRecord, MessageStatus
 from grasp_agents.durability.store_keys import key_leaf, make_store_key
-from grasp_agents.durability.task_record import TaskStatus
 from grasp_agents.runtime import CLOSED, Closed, Transport
 from grasp_agents.session_context import DEFAULT_SESSION_KEY
 from grasp_agents.types.message import USER_SENDER, TeamMessage
@@ -184,8 +183,8 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
     """
     Mailboxes persisted in the session :class:`CheckpointStore` as
     :class:`~grasp_agents.durability.MessageRecord`s — the same durable substrate
-    (store, store-key convention, ``TaskStatus`` lifecycle) that background tasks
-    use, so messages and task records live beside each other under one session key
+    (store and store-key convention) that background-task records persist through,
+    so messages and task records live beside each other under one session key
     and resume together. Durable, and cross-process over a shared store
     (``FileCheckpointStore``).
 
@@ -272,7 +271,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
             record = MessageRecord(
                 session_key=self._session_key,
                 message=single,
-                status=TaskStatus.PENDING,
+                status=MessageStatus.PENDING,
             )
             await self._store.save(
                 self._inbox_key(single.recipient, single),
@@ -349,7 +348,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
             # must only clear the lingering inbox key, never clobber the seq.
             delivered = MessageRecord.model_validate_json(data).model_copy(
                 update={
-                    "status": TaskStatus.DELIVERED,
+                    "status": MessageStatus.DELIVERED,
                     "message": envelope,
                     "updated_at": datetime.now(UTC),
                 }
@@ -377,13 +376,13 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
     ) -> list[TeamMessage]:
         """
         Mark ``processed/`` records with consumption ``seq >`` the watermark
-        ``CANCELLED`` — the mailbox half of a step rollback. Voided records
+        ``VOIDED`` — the mailbox half of a step rollback. Voided records
         are never re-delivered (a rollback rewrites history; senders are
         notified via ``on_void`` instead) but stay on record for the
         redelivery dedup (:meth:`was_processed`). Returns the voided
-        messages, once: already-CANCELLED records are skipped, so retrying a
+        messages, once: already-voided records are skipped, so retrying a
         rollback (or a later rollback over the same range) does not re-notify
-        senders. ``on_void`` runs BEFORE a record's CANCELLED save — a crash
+        senders. ``on_void`` runs BEFORE a record's VOIDED save — a crash
         in between re-runs it on the retry (at-least-once notification).
         """
         voided: list[TeamMessage] = []
@@ -394,18 +393,18 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
             if (
                 record is None
                 or record.message.seq <= seq
-                or record.status is TaskStatus.CANCELLED
+                or record.status is MessageStatus.VOIDED
             ):
                 continue
             if on_void is not None:
                 await on_void(record.message)
-            cancelled = record.model_copy(
+            voided_record = record.model_copy(
                 update={
-                    "status": TaskStatus.CANCELLED,
+                    "status": MessageStatus.VOIDED,
                     "updated_at": datetime.now(UTC),
                 }
             )
-            await self._store.save(key, cancelled.model_dump_json().encode())
+            await self._store.save(key, voided_record.model_dump_json().encode())
             voided.append(record.message)
         return voided
 

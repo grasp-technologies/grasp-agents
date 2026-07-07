@@ -133,7 +133,7 @@ class TestTaskRecordVersion:
         assert rec.schema_version == CURRENT_SCHEMA_VERSION
 
     def test_round_trip_preserves_schema_version(self) -> None:
-        rec = self._record(status=TaskStatus.PENDING)
+        rec = self._record(status=TaskStatus.RUNNING)
         loaded = TaskRecord.model_validate_json(rec.model_dump_json())
         assert loaded.schema_version == CURRENT_SCHEMA_VERSION
         assert loaded.task_id == "t1"
@@ -145,7 +145,7 @@ class TestTaskRecordVersion:
                 "session_key": "s1",
                 "tool_call_id": "c1",
                 "tool_name": "do_thing",
-                "status": "pending",
+                "status": "running",
                 "created_at": "2026-04-17T00:00:00+00:00",
                 "updated_at": "2026-04-17T00:00:00+00:00",
             }

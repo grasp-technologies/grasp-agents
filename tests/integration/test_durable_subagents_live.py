@@ -121,7 +121,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     keys = await store.list_keys(task_prefix("subagents"))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert len(recs) >= 2, "both sub-agents should have been launched as bg tasks"
-    assert any(r.status == TaskStatus.PENDING for r in recs), (
+    assert any(r.status == TaskStatus.RUNNING for r in recs), (
         "at least one sub-agent should be mid-flight (PENDING) at the crash"
     )
 
@@ -148,7 +148,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
         for k in await store.list_keys(task_prefix("subagents"))
     ]
     assert recs
-    assert not any(r.status == TaskStatus.PENDING for r in recs), (
+    assert not any(r.status == TaskStatus.RUNNING for r in recs), (
         f"no sub-agent task should be left pending after resume, got "
         f"{[(r.tool_name, r.status) for r in recs]}"
     )

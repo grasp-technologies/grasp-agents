@@ -477,7 +477,7 @@ async def test_custom_transport_warns_on_durability_mismatch(
 @pytest.mark.asyncio
 async def test_nack_survives_crash_mid_void() -> None:
     # At-least-once sender notification: the NACK posts BEFORE the record's
-    # CANCELLED flip, so a crash between the two re-notifies on the retried
+    # VOIDED flip, so a crash between the two re-notifies on the retried
     # rollback instead of silently dropping the peer's message.
     store = InMemoryCheckpointStore()
     transport = CheckpointMailboxTransport(store, session_key="s")

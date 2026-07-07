@@ -77,7 +77,7 @@ class NextStepContinue:
     """
     Non-terminal: no tools and no final answer — loop again.
     Covers reason-turns under ``force_react_mode`` and final-answer
-    suppression while background tasks are pending.
+    suppression while blocking background tasks are undelivered.
     """
 
 
@@ -97,7 +97,7 @@ def decide_next_step(
     tool_calls: Sequence[FunctionToolCallItem],
     turn: int,
     max_turns: int,
-    bg_tasks_pending: bool,
+    blocking_bg_tasks: bool,
     deadline_exceeded: bool = False,
     inbox_open: bool = False,
     turns_on_message: int = 0,
@@ -126,7 +126,7 @@ def decide_next_step(
     over_budget = budget_turn >= max_turns
 
     # A blown deadline or an exhausted budget overrides waiting on background work.
-    wait_for_bg = bg_tasks_pending and not over_budget and not deadline_exceeded
+    wait_for_bg = blocking_bg_tasks and not over_budget and not deadline_exceeded
 
     if final_answer is not None and not wait_for_bg and not inbox_open:
         return NextStepStop(final_answer=final_answer)

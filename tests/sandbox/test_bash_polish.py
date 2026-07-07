@@ -547,7 +547,7 @@ async def test_deadline_note_points_at_log(tmp_path: Path) -> None:
     await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
     """
     The loop's idle wait: a running command is waited on (no poll loop), and
-    once it finishes drain yields exactly one completion note, announced once.
+    once it finishes drain yields exactly one completion note, delivered once.
     """
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
@@ -833,7 +833,7 @@ async def test_backgrounded_bash_persists_pending_record(tmp_path: Path) -> None
     keys = await store.list_keys(task_prefix(ctx.session_key))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert recs
-    assert all(r.status == TaskStatus.PENDING and r.tool_name == "Bash" for r in recs)
+    assert all(r.status == TaskStatus.RUNNING and r.tool_name == "Bash" for r in recs)
 
     await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 

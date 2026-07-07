@@ -1020,7 +1020,7 @@ class AgentLoop[CtxT]:
             tool_calls=response.tool_call_items,
             turn=self.turn,
             max_turns=self.max_turns,
-            bg_tasks_pending=self._agent_ctx.bg_tasks.has_pending,
+            blocking_bg_tasks=self._agent_ctx.bg_tasks.has_blocking_tasks,
             deadline_exceeded=self._deadline is not None
             and time.monotonic() >= self._deadline,
             inbox_open=self._agent_ctx.inbox is not None,

@@ -1150,7 +1150,7 @@ class TestTaskRecord:
         restored = TaskRecord.model_validate_json(json_bytes)
         assert restored.task_id == "t1"
         assert restored.session_key == "s1"
-        assert restored.status == TaskStatus.PENDING
+        assert restored.status == TaskStatus.RUNNING
         assert restored.result is None
 
     def test_model_copy_update(self):
@@ -1166,7 +1166,7 @@ class TestTaskRecord:
         assert updated.status == TaskStatus.COMPLETED
         assert updated.result == "done"
         # Original unchanged
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
 
 
 # ================================================================== #
@@ -1317,7 +1317,7 @@ class TestTaskRecordPersistence:
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
 
         await agent.aclose()
 
@@ -1349,7 +1349,7 @@ class TestTaskRecordPersistence:
 # ================================================================== #
 
 
-class TestPendingTaskResume:
+class TestRunningTaskResume:
     @pytest.mark.asyncio
     async def test_pending_record_injects_interruption_notification(self):
         """On resume, a PENDING TaskRecord injects an interruption message."""
@@ -1466,7 +1466,7 @@ class TestPendingTaskResume:
         # The sibling's task is untouched (still PENDING).
         other_data = await store.load(other_key)
         assert other_data is not None
-        assert TaskRecord.model_validate_json(other_data).status == TaskStatus.PENDING
+        assert TaskRecord.model_validate_json(other_data).status == TaskStatus.RUNNING
 
     @pytest.mark.asyncio
     async def test_completed_record_injects_result(self):
