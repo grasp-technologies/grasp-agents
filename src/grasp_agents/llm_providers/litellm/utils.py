@@ -29,7 +29,9 @@ def validate_completion(completion: LiteLLMCompletion) -> None:
         raise CompletionError("Multiple choices are not supported")
 
     choice = completion.choices[0]
-    if not isinstance(choice, LiteLLMChoice):
+    # Runtime guard: litellm's annotations promise Choices, but a streaming
+    # response can put StreamingChoices here.
+    if not isinstance(choice, LiteLLMChoice):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise CompletionError("choice is not a LiteLLM Choice")
 
     if choice.message is None:  # type: ignore[comparison-overlap]

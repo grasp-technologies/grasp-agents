@@ -8,8 +8,9 @@ module re-exports it for the team API.
 
 from grasp_agents.types.message import (
     CONTROL_PRIORITY,
+    LEAD_PRIORITY,
     USER_SENDER,
     TeamMessage,
 )
 
-__all__ = ["CONTROL_PRIORITY", "USER_SENDER", "TeamMessage"]
+__all__ = ["CONTROL_PRIORITY", "LEAD_PRIORITY", "USER_SENDER", "TeamMessage"]

@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 # Queue bound: a publisher awaiting ``put`` on a full queue blocks until the
 # consumer catches up (backpressure) instead of growing memory without limit.
@@ -80,6 +83,39 @@ class Transport[E](ABC):
     case, a mailbox message for a team.
     """
 
+    def __init__(self) -> None:
+        # Per-recipient consumption counters (see mint_consumption_seq). Held
+        # here — the transport is the session-shared object that survives run
+        # boundaries — while the per-run consumer view (an agent's inbox) mints
+        # from and seeds them.
+        self._consumption_seqs: dict[str, int] = {}
+
+    def mint_consumption_seq(self, recipient: str) -> int:
+        """
+        Mint ``recipient``'s next consumption seq — called by its sole consumer
+        when it absorbs an envelope, so seqs follow consumption order (priority
+        mail drains out of arrival order, so arrival order would not do).
+        Process-local; the durable copy is the consumer's persisted high-water,
+        seeded back on resume via :meth:`seed_consumption_seq`.
+        """
+        seq = self._consumption_seqs.get(recipient, 0) + 1
+        self._consumption_seqs[recipient] = seq
+        return seq
+
+    def seed_consumption_seq(self, recipient: str, seq: int) -> None:
+        """
+        Seed ``recipient``'s counter from a restored watermark. Never lowers
+        it: after a rewind the moved-back envelopes' seqs stay burned, so
+        re-absorptions mint fresh ones.
+        """
+        self._consumption_seqs[recipient] = max(
+            self._consumption_seqs.get(recipient, 0), seq
+        )
+
+    def last_consumption_seq(self, recipient: str) -> int:
+        """High-water: every envelope absorbed so far has ``seq <=`` this."""
+        return self._consumption_seqs.get(recipient, 0)
+
     @abstractmethod
     def register(self, recipient: str) -> None:
         """
@@ -113,7 +149,11 @@ class Transport[E](ABC):
 
     @abstractmethod
     async def shutdown(self) -> None:
-        """Unblock every parked :meth:`consume` so consumers can stop."""
+        """
+        Unblock every parked :meth:`consume` (they return :data:`CLOSED`).
+        A terminal teardown affordance: the runtime itself never calls it —
+        the transport is session-scoped and consumers stop by cancellation.
+        """
 
     async def was_processed(self, recipient: str, envelope_id: str) -> bool:
         """
@@ -131,6 +171,31 @@ class Transport[E](ABC):
         del recipient, envelope_id
         return False
 
+    async def void_processed_after(
+        self,
+        recipient: str,
+        seq: int,
+        *,
+        on_void: Callable[[E], Awaitable[None]] | None = None,
+    ) -> list[E]:
+        """
+        Void ``recipient``'s acked envelopes with consumption ``seq > seq`` —
+        the mailbox half of a step rollback. A rollback rewrites history, so
+        the voided envelopes are never re-delivered (senders are notified
+        instead); they stay on record for dedup. Returns the voided
+        envelopes, once — re-voiding the same range returns nothing.
+
+        ``on_void`` is awaited per envelope BEFORE its void is made durable:
+        a crash between the two re-runs the callback on the retried rollback
+        (at-least-once notification; a duplicate beats a silent drop).
+
+        Only envelopes whose consumer stamped a seq are eligible (a triggered
+        worker's driver acks without one). Defaults to empty: a queue
+        transport retains nothing to void. Mailbox transports override this.
+        """
+        del recipient, seq, on_void
+        return []
+
 
 class InProcessTransport[E: HasDestination](Transport[E]):
     """
@@ -143,6 +208,7 @@ class InProcessTransport[E: HasDestination](Transport[E]):
     """
 
     def __init__(self, max_queue_size: int = MAX_QUEUE_SIZE) -> None:
+        super().__init__()
         self._queues: dict[str, asyncio.Queue[E | Closed]] = {}
         self._max_queue_size = max_queue_size
 
@@ -152,9 +218,7 @@ class InProcessTransport[E: HasDestination](Transport[E]):
         return self._queues
 
     def register(self, recipient: str) -> None:
-        self._queues.setdefault(
-            recipient, asyncio.Queue(maxsize=self._max_queue_size)
-        )
+        self._queues.setdefault(recipient, asyncio.Queue(maxsize=self._max_queue_size))
 
     async def post(self, envelope: E) -> None:
         destination = envelope.destination

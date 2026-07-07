@@ -15,6 +15,7 @@
         "node_modules",
         "venv",
         "src/grasp_agents/examples",
+        "src/grasp_agents/kits",
         "scripts"
     ],
     "extraPaths": [

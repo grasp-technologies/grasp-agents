@@ -105,6 +105,9 @@ async def test_short_research_session(
     researcher2, ctx2 = build_researcher(ws, model=_model(), max_turns=30)
     assert ctx2.state == ResearchState()  # fresh state before loading
     async with researcher2:
+        # Run-start order: the session restore (ctx.state) precedes the
+        # agent's own reload — run_stream does both; a direct load must too.
+        await ctx2.load_checkpoint()
         checkpoint = await researcher2.load_checkpoint()
     assert checkpoint is not None, "no agent checkpoint on disk"
     # serialize_state=True rehydrates the experiment log + hidden labels.

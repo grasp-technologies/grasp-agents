@@ -51,7 +51,7 @@ async def test_resident_consumes_multiple_messages_in_one_run() -> None:
     # Attaching an inbox makes the agent resident: the seedless run_stream then
     # drives the loop off this inbox instead of terminating on a final answer.
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(
@@ -98,7 +98,7 @@ async def test_resident_survives_past_max_turns() -> None:
         ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     try:
@@ -144,7 +144,7 @@ async def test_resident_force_finalizes_runaway_message_and_continues() -> None:
         ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(TeamMessage.from_text(sender="user", to="curator", text="m0"))
@@ -191,7 +191,7 @@ async def test_bg_completion_while_idle_wakes_resident_loop() -> None:
         ctx=SessionContext[None](),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
 
     run = asyncio.create_task(_collect(agent))
     await inbox.post(
@@ -203,7 +203,7 @@ async def test_bg_completion_while_idle_wakes_resident_loop() -> None:
         # Round 1: tool call (call 1) then "started; idling" (call 2). The loop is
         # now idle, parked on the inbox while the backgrounded job runs.
         await _until(lambda: agent.llm.call_count == 2)
-        assert agent.background_tasks.has_live_tasks
+        assert agent.agent_ctx.bg_tasks.has_live_tasks
 
         # Release the job: its completion (NOT a peer message) must wake the loop
         # so the next turn's drain delivers the <task_notification>.
@@ -234,7 +234,7 @@ async def test_resident_reply_durable_and_message_released() -> None:
         llm=MockLLM(responses_queue=[_text_response("reply one")]),
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run = asyncio.create_task(_collect(agent))
     await transport.post(msg)
@@ -301,7 +301,7 @@ async def test_resident_message_released_on_absorption_not_at_reply() -> None:
         tools=[step1, step2],
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run = asyncio.create_task(_collect(agent))
     await transport.post(msg)
@@ -364,7 +364,7 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
         tools=[work, block_reply],
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent1.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent1.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run = asyncio.create_task(_collect(agent1))
     await transport.post(msg)
@@ -391,7 +391,7 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
         tools=[work, block_reply],
         ctx=SessionContext[None](state=None, checkpoint_store=store),
     )
-    agent2.inbox = AgentInbox(transport=transport, recipient="curator")
+    agent2.agent_ctx.inbox = AgentInbox(transport=transport, recipient="curator")
 
     run2 = asyncio.create_task(_collect(agent2))
     try:
@@ -409,19 +409,20 @@ async def test_resident_resume_continues_owed_tool_results() -> None:
     assert not await transport.has_pending("curator")  # message stayed acked
 
 
-async def test_rewind_unleases_inbox_message() -> None:
-    # A transcript rewind (rollback / failed-run revert, both via
-    # ``_restore_session``) must drop the leased inbox message: it was never acked,
-    # so it stays in the mailbox and the resident re-takes it on the next run —
-    # rather than wedging behind the one-at-a-time lease on a message the rewound
-    # transcript no longer reflects.
+async def test_settle_keeps_inbox_lease() -> None:
+    # An abnormal run exit (failure / cancel, both settle via ``_settle_run``)
+    # KEEPS the absorbed message's turn — settling never prunes user messages
+    # — so its lease must survive the settle too: re-taking would hand the
+    # model the same message twice. The lease is released by the next
+    # checkpoint's ack flush, or dropped when the turn actually leaves the
+    # transcript (step rollback / cold reload).
     agent = LLMAgent[Any, Any, None](
         name="curator",
         llm=MockLLM(responses_queue=[]),
         ctx=SessionContext[None](state=None),
     )
     inbox = AgentInbox(recipient="curator")
-    agent.inbox = inbox
+    agent.agent_ctx.inbox = inbox
     msg = TeamMessage.from_text(sender="user", to="curator", text="x")
     await inbox.post(msg)
 
@@ -430,10 +431,14 @@ async def test_rewind_unleases_inbox_message() -> None:
     # While leased, the one-at-a-time gate hides it from a second take.
     assert await inbox.take() is None
 
-    # The chokepoint both rollback and the failed-run revert pass through.
-    agent._restore_session(agent._snapshot_session())  # pyright: ignore[reportPrivateUsage]
+    # The settle every abnormal run exit passes through.
+    agent._settle_run(failed=True)  # pyright: ignore[reportPrivateUsage]
 
-    # Un-leased: the still-unacked message is takeable again.
+    # Still leased: the settled transcript keeps the turn, so no re-delivery.
+    assert await inbox.take() is None
+
+    # A transcript rewind (rollback / cold reload) is what unleases it.
+    inbox.drop_leases()
     retaken = await inbox.take()
     assert retaken is not None
     assert retaken.message_id == msg.message_id

@@ -38,6 +38,7 @@ class Msg:
 
 class FakeMailbox(Transport[Msg]):
     def __init__(self, poll: float = 0.005) -> None:
+        super().__init__()
         self._boxes: dict[str, list[Msg]] = {}
         self._poll = poll
         self._closed = asyncio.Event()

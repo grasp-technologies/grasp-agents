@@ -81,7 +81,9 @@ async def _prompt(
     agent: LLMAgent[str, str, _State], ctx: SessionContext[_State]
 ) -> str | None:
     agent.on_adopted(ctx=ctx)
-    return await agent.build_system_prompt(exec_id="e1")
+    return await agent._prompt_builder.build_system_prompt(
+        ctx=agent.ctx, exec_id="e1", agent_ctx=agent.agent_ctx
+    )
 
 
 # ---------- SkillFilter value object ----------

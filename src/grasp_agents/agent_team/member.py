@@ -6,11 +6,15 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from grasp_agents.runtime import ActorDriver, Transport
+from grasp_agents.runtime import ActorDriver
 
 from ._roles import activate_member, is_llm_agent, is_resident, resident_idle
 from .message import CONTROL_PRIORITY, USER_SENDER, TeamMessage
-from .prompt import make_sender_attribution_attachment, make_team_section
+from .prompt import (
+    make_rewind_notice,
+    make_sender_attribution_attachment,
+    make_team_section,
+)
 from .tools import (
     SCHEDULE_WAKEUP_TOOL_NAME,
     SEND_MESSAGE_TOOL_NAME,
@@ -43,7 +47,8 @@ class MemberHost:
     never interleave into its transcript.
 
     The reusable core behind a per-process member UI — each member lives in its own
-    process, built against a shared (durable) transport, all running on the same
+    process, sharing the session's durable mailbox (``ctx.transport``, derived
+    from the session checkpoint store), all running on the same
     actor runtime as an in-process :class:`~.agent_team.AgentTeam`. The member may be
     an agent **or** a plain ``Processor``, and runs on the *same* execution model the
     in-process team uses: a resident (an agent with no static recipients) runs
@@ -60,17 +65,51 @@ class MemberHost:
         member: Processor[Any, Any, Any],
         *,
         cards: Sequence[MemberCard],
-        transport: Transport[TeamMessage],
         poll_interval: float = 0.5,
         run_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._member = member
-        self._mailbox = transport
+        # The session's mailbox (``ctx.transport``), created and installed on
+        # first use — durable over ``ctx.checkpoint_store`` when the session
+        # has one (the shared store IS the cross-process channel), else
+        # in-memory (single process).
+        self._mailbox = member.ctx.transport
         self._poll_interval = poll_interval
         self._run_kwargs = run_kwargs or {}
+        self._rewind_notice_peers: list[str] = []
 
         # This member's card (its per-member team config: accepted input + role).
         card = next((c for c in cards if c.name == member.name), None)
+
+        if card is not None and card.lead:
+            # The lead's role — priority mail, rewind right, rewind announcements
+            # — presumes a persistent loop; a triggered member is activated fresh
+            # per message and cannot hold it.
+            if not is_resident(member, card):
+                raise ValueError(
+                    f"Member {member.name!r} is carded as the lead but runs "
+                    "triggered; the lead must run resident (an LLM agent "
+                    "consuming its inbox)."
+                )
+            # The lead holds its session's environment-rewind right (in a
+            # shared-environment deployment, every other process declares it via
+            # SessionContext(session_writer=...)); when it rewinds, tell
+            # the peers over the shared mailbox so they re-verify state instead
+            # of panicking over a filesystem that changed under them. Notice
+            # recipients: every peer except any explicitly carded as triggered
+            # (activated fresh per message, so it holds no cross-turn view of
+            # the filesystem); ``resident=None`` peers are kept — this host
+            # cannot run the residency inference on a remote member, and a
+            # spurious notice is cheaper than a missed one.
+            self._rewind_notice_peers = [
+                c.name
+                for c in cards
+                if c.name != member.name and c.resident is not False
+            ]
+            member.ctx.claim_session_writer(member.name)
+            member.ctx.add_environment_restored_callback(
+                self._notify_environment_rewind
+            )
 
         # A resident runs a persistent loop; a worker is triggered. Hold the narrowed
         # reference so the resident path can use the LLMAgent-only inbox API.
@@ -81,9 +120,7 @@ class MemberHost:
         # no tools.
         if is_resident(member, card):
             self._resident = cast("LLMAgent[Any, Any, Any]", member)
-            send_tool = SendMessageTool(
-                cards, transport_resolver=lambda _ctx: transport
-            )
+            send_tool = SendMessageTool(cards)
             wakeup_tool = ScheduleWakeupTool()
 
             for name, tool in (
@@ -129,6 +166,38 @@ class MemberHost:
             )
         )
 
+    async def aclose(self) -> None:
+        """
+        Release the host's session hooks and close its member (cascading to
+        the member's shells / kernels / background tasks). Deregistering the
+        rewind announcer matters when a host is rebuilt on the same session:
+        a stale one would post duplicate rewind notices.
+        """
+        self._member.ctx.remove_environment_restored_callback(
+            self._notify_environment_rewind
+        )
+        await self._member.aclose()
+
+    async def _notify_environment_rewind(self, fs_snapshot_ref: str) -> None:
+        """
+        Announce this member's environment rewind to every peer, control-plane
+        (drains ahead of queued mail). Posted straight to the shared mailbox, so
+        it reaches peers in other processes; each peer's own host renders it as
+        an inbound turn. Only the lead registers this callback — a rewind by
+        anyone else happens in that member's process, not here.
+        """
+        del fs_snapshot_ref
+        if not self._rewind_notice_peers:
+            return
+        await self._mailbox.post(
+            TeamMessage.from_text(
+                sender=self._member.name,
+                to=self._rewind_notice_peers,
+                text=make_rewind_notice(self._member.name),
+                priority=CONTROL_PRIORITY,
+            )
+        )
+
     async def run_stream(
         self, *, stop_when_idle: bool = False
     ) -> AsyncIterator[Event[Any]]:
@@ -136,8 +205,8 @@ class MemberHost:
         Stream the member's turns until cancelled — or until idle when
         ``stop_when_idle`` (for batch / tests). A resident runs a persistent loop
         (consuming its inbox between turns); a worker is triggered once per inbound
-        message. A failing turn is logged and its message dead-lettered; the loop
-        keeps serving.
+        message. A failing turn is logged and its message dropped (acked, not
+        retried); the loop keeps serving.
         """
         if self._resident is not None:
             stream = self._run_resident(stop_when_idle=stop_when_idle)
@@ -151,7 +220,7 @@ class MemberHost:
     async def _run_resident(self, *, stop_when_idle: bool) -> AsyncIterator[Event[Any]]:
         member = self._resident
         assert member is not None
-        member.attach_inbox(self._mailbox)
+        member.attach_inbox()
         queue: asyncio.Queue[Any] = asyncio.Queue()
 
         async def run() -> None:
@@ -184,7 +253,6 @@ class MemberHost:
                 monitor.cancel()
             tasks = [run_task] + ([monitor] if monitor is not None else [])
             await asyncio.gather(*tasks, return_exceptions=True)
-            member.detach_inbox()
 
     async def _monitor_idle(self, run_task: asyncio.Task[None]) -> None:
         """
@@ -237,7 +305,8 @@ class MemberHost:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Dead-letter the failure; the per-process host keeps serving.
+                # Log and drop the failed message (the driver acks it — not
+                # retried or kept); the per-process host keeps serving.
                 logger.warning("Member %r turn failed", member.name, exc_info=True)
 
         return handler

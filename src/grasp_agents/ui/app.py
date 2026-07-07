@@ -1186,26 +1186,38 @@ class _AgentTurns:
     """
     Drives an agent from the interactive callbacks.
 
-    Each submitted message runs as its own step (``step=0, 1, 2, …``), recording
-    a rewind boundary, so the rollback picker can return to a previous message
-    via :meth:`LLMAgent.rollback_to_step`. ``on_rollback(i)`` rewinds to step
-    ``i`` and re-parks the counter there, so the next message re-delivers it —
-    matching the 0-based index the TUI assigns the i-th submission.
+    Each submitted message runs as a chat delivery, so the agent auto-mints a
+    step and records a rewind boundary. Exactly one entry is recorded per
+    submission — the step the run actually anchored, or ``None`` when it
+    failed before anchoring — so indices stay aligned with the picker's turn
+    list even across failed/interrupted turns. ``on_rollback(i)`` rewinds to
+    the i-th submission's step (or, for an unanchored one, the earliest
+    anchored step after it, which discards the same turns).
     """
 
     def __init__(self, agent: LLMAgent[Any, Any, Any]) -> None:
         self._agent = agent
-        self._step = 0
+        self._steps: list[int | None] = []
 
     async def on_submit(self, text: str) -> AsyncIterator[Event[Any]]:
-        step = self._step
-        self._step += 1
-        async for event in self._agent.run_stream(text, step=step):
-            yield event
+        anchored_before = set(self._agent.rollback_steps)
+        try:
+            async for event in self._agent.run_stream(text):
+                yield event
+        finally:
+            new = [s for s in self._agent.rollback_steps if s not in anchored_before]
+            # At most one anchor per delivery; ``None`` keeps the picker
+            # aligned when the run failed before anchoring its boundary.
+            self._steps.append(new[-1] if new else None)
 
     async def on_rollback(self, index: int) -> None:
-        await self._agent.rollback_to_step(index)
-        self._step = index
+        # A failed submission anchored nothing (and contributed nothing);
+        # discarding from it means rewinding to the earliest anchored step at
+        # or after it — or touching nothing when no later turn anchored.
+        step = next((s for s in self._steps[index:] if s is not None), None)
+        if step is not None:
+            await self._agent.rollback_to_step(step)
+        del self._steps[index:]
 
 
 def run_tui_interactive(

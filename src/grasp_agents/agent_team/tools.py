@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
-from .message import USER_SENDER, TeamMessage
+from .message import LEAD_PRIORITY, TeamMessage
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from grasp_agents.agent.agent_context import AgentContext
-    from grasp_agents.runtime import Transport
     from grasp_agents.session_context import SessionContext
 
     from .agent_card import MemberCard
@@ -34,28 +33,6 @@ class MessageSink(Protocol):
     """
 
     async def post(self, envelope: TeamMessage) -> None: ...
-
-
-# Resolves the destination a SendMessage call delivers into for the active run —
-# the team itself (which routes per recipient), or a bare transport.
-type TransportResolver = Callable[[SessionContext[Any]], MessageSink]
-
-
-def default_transport(ctx: SessionContext[Any]) -> Transport[TeamMessage]:
-    """
-    A durable transport over ``ctx.checkpoint_store``. Raises if no checkpoint
-    store is wired — a single-process team uses
-    :class:`~grasp_agents.mailbox.InMemoryMailboxTransport` instead (the team
-    falls back to it automatically).
-    """
-    store = ctx.checkpoint_store
-    if store is None:
-        raise ValueError(
-            "Durable AgentTeam messaging requires ctx.checkpoint_store. Wire a "
-            "CheckpointStore (e.g. FileCheckpointStore(root=...)), or rely on the "
-            "in-memory transport for a single-process team."
-        )
-    return CheckpointMailboxTransport(store, session_key=ctx.session_key)
 
 
 class SendMessageInput(BaseModel):
@@ -88,7 +65,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         self,
         cards: Sequence[MemberCard],
         *,
-        transport_resolver: TransportResolver = default_transport,
+        sink: MessageSink | None = None,
     ) -> None:
         super().__init__(
             name=SEND_MESSAGE_TOOL_NAME,
@@ -102,7 +79,10 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         )
         self._recipients = {c.name for c in cards}
         self._cards = {c.name: c for c in cards}
-        self._resolve_transport = transport_resolver
+        # The destination a send delivers into: the hosting team (which
+        # routes, announces, and budget-counts per recipient), else the
+        # session mailbox.
+        self._sink = sink
 
     async def _run(
         self,
@@ -117,7 +97,15 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
         del exec_id, progress_callback, path
         if ctx is None:
             raise ValueError("SendMessage requires a SessionContext.")
-        sender = agent_ctx.agent_name if agent_ctx is not None else USER_SENDER
+        if agent_ctx is None or not agent_ctx.agent_name:
+            # Never guess the sender: a send with no calling-agent identity
+            # would otherwise masquerade as the human (and a '*' broadcast,
+            # which excludes the sender, would reach the actual caller too).
+            raise ValueError(
+                "SendMessage must be called from an agent loop; there is no "
+                "calling-agent identity to stamp as the sender."
+            )
+        sender = agent_ctx.agent_name
         if inp.to == "*":
             recipients = sorted(self._recipients - {sender})
             if not recipients:
@@ -133,9 +121,18 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
                 f"No teammate named {inp.to!r}; message not sent. "
                 f"Valid teammates: {valid}."
             )
+        # The lead's mail outranks ordinary peer messages in recipients' inboxes
+        # (below control-plane mail) — its direction is read before the backlog.
+        sender_card = self._cards.get(sender)
+        priority = LEAD_PRIORITY if sender_card is not None and sender_card.lead else 0
+
         if isinstance(inp.message, str):
             message = TeamMessage.from_text(
-                sender=sender, to=recipients, text=inp.message, reply_to=inp.reply_to
+                sender=sender,
+                to=recipients,
+                text=inp.message,
+                reply_to=inp.reply_to,
+                priority=priority,
             )
         else:
             # A structured body. For a single recipient that declares an input_type,
@@ -161,8 +158,10 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
                 routing=[recipients],
                 payloads=[payload],
                 reply_to=inp.reply_to,
+                priority=priority,
             )
-        await self._resolve_transport(ctx).post(message)
+        sink = self._sink if self._sink is not None else ctx.transport
+        await sink.post(message)
         delivered = ", ".join(recipients)
         return f"Message delivered to {delivered} (id={message.message_id})."
 
@@ -193,6 +192,12 @@ class ScheduleWakeupTool(BaseTool[ScheduleWakeupInput, str, Any]):
     a change, follow up) without holding a live loop open. Durable — the wait runs as
     a background task that resumes with the session (a crash re-runs the sleep).
     Stateless, so one instance is shared across the team.
+
+    A pending wakeup does not hold a bounded team run open: the run still ends
+    at quiescence, the (session-scoped) sleep keeps running, and the note is
+    delivered at the member's next run — live in-run wakeups need a daemon
+    run. ``BackgroundTaskManager.has_undelivered_completions`` is the signal an
+    embedder reads between runs to know a fired wakeup awaits delivery.
     """
 
     def __init__(self) -> None:
@@ -200,7 +205,8 @@ class ScheduleWakeupTool(BaseTool[ScheduleWakeupInput, str, Any]):
             name=SCHEDULE_WAKEUP_TOOL_NAME,
             description=(
                 "Schedule a message to your future self after a delay and keep "
-                "working — you will be reactivated with your note when it fires. Use "
+                "working — you will be reactivated with your note when it fires "
+                "(at your next run, if the team has gone idle by then). Use "
                 "it to act on your own initiative later (revisit a goal, poll for a "
                 "change, follow up) instead of waiting for someone to message you."
             ),

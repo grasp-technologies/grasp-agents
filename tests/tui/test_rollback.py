@@ -173,3 +173,114 @@ async def test_rollback_escape_cancels() -> None:
         await pilot.pause()
         assert calls == []
         assert app._ga_user_turns == ["m0"]
+
+
+@pytest.mark.asyncio
+async def test_agent_turns_maps_picker_indices_to_minted_steps() -> None:
+    # _AgentTurns runs submissions unstepped — the agent auto-mints each
+    # step — and records the mints so picker indices map onto them.
+    from grasp_agents.durability import InMemoryCheckpointStore
+    from grasp_agents.ui.app import _AgentTurns
+    from tests._helpers import _text_response
+    from tests.durability.test_sessions import _make_agent
+
+    agent, _ = _make_agent(
+        [_text_response(t) for t in ("alpha", "bravo", "charlie")],
+        session_key="s1",
+        store=InMemoryCheckpointStore(),
+    )
+    turns = _AgentTurns(agent)
+
+    async for _ in turns.on_submit("m0"):
+        pass
+    async for _ in turns.on_submit("m1"):
+        pass
+    assert turns._steps == [1, 2]
+
+    await turns.on_rollback(0)  # back to m0's start
+    assert agent.step == 1
+    assert turns._steps == []
+
+    async for _ in turns.on_submit("m0-edited"):
+        pass
+    assert turns._steps == [1]
+    assert "m0-edited" in str(agent.transcript.messages)
+    assert "m1" not in str(agent.transcript.messages)
+
+
+@pytest.mark.asyncio
+async def test_agent_turns_stays_aligned_across_failed_submissions() -> None:
+    # A submission that fails before anchoring records a None placeholder, so
+    # later picker indices still map to the right steps; rolling back to the
+    # failed turn discards from the next anchored step.
+    from unittest.mock import patch
+
+    from grasp_agents.durability import InMemoryCheckpointStore
+    from grasp_agents.types.errors import ProcRunError
+    from grasp_agents.ui.app import _AgentTurns
+    from tests._helpers import _text_response
+    from tests.durability.test_sessions import _make_agent
+
+    agent, _ = _make_agent(
+        [_text_response(t) for t in ("alpha", "bravo")],
+        session_key="s1",
+        store=InMemoryCheckpointStore(),
+    )
+    turns = _AgentTurns(agent)
+
+    async for _ in turns.on_submit("m0"):
+        pass
+
+    # m1 dies before the run mints/anchors anything (e.g. a resume error).
+    with (
+        patch.object(type(agent), "load_checkpoint", side_effect=RuntimeError("boom")),
+        pytest.raises(ProcRunError),
+    ):
+        async for _ in turns.on_submit("m1"):
+            pass
+
+    async for _ in turns.on_submit("m2"):
+        pass
+
+    assert turns._steps == [1, None, 2]
+
+    # Rolling back to the failed m1 lands on m2's boundary (same state) and
+    # truncates the mapping to m0 only.
+    await turns.on_rollback(1)
+    assert agent.step == 2
+    assert turns._steps == [1]
+
+
+@pytest.mark.asyncio
+async def test_agent_turns_rollback_to_trailing_failed_turn_is_inert() -> None:
+    # Discarding a trailing failed submission has nothing to rewind: no later
+    # turn anchored a boundary, so the agent is untouched.
+    from unittest.mock import patch
+
+    from grasp_agents.durability import InMemoryCheckpointStore
+    from grasp_agents.types.errors import ProcRunError
+    from grasp_agents.ui.app import _AgentTurns
+    from tests._helpers import _text_response
+    from tests.durability.test_sessions import _make_agent
+
+    agent, _ = _make_agent(
+        [_text_response("alpha")],
+        session_key="s1",
+        store=InMemoryCheckpointStore(),
+    )
+    turns = _AgentTurns(agent)
+
+    async for _ in turns.on_submit("m0"):
+        pass
+
+    with (
+        patch.object(type(agent), "load_checkpoint", side_effect=RuntimeError("boom")),
+        pytest.raises(ProcRunError),
+    ):
+        async for _ in turns.on_submit("m1"):
+            pass
+
+    assert turns._steps == [1, None]
+    await turns.on_rollback(1)
+    assert agent.step == 1  # unchanged: m1 contributed nothing
+    assert turns._steps == [1]

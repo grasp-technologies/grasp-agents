@@ -43,13 +43,9 @@ from grasp_agents.types.items import (
     OutputMessageItem,
 )
 from grasp_agents.types.packet import Packet
+from tests._helpers import MockLLM, _text_response, _tool_call_response
 from tests.agent.test_background_tools import EchoInput, SlowTool
-from tests.durability.test_sessions import (  # type: ignore[attr-defined]
-    MockLLM,
-    _text_response,
-    _tool_call_response,
-    load_agent_checkpoint,
-)
+from tests.durability.test_sessions import load_agent_checkpoint
 
 
 async def _persisted_log(store: InMemoryCheckpointStore, key: str) -> list[Any]:
@@ -270,9 +266,9 @@ class TestFinalAnswerToolCallClosure:
 # ---------------------------------------------------------------------------
 
 
-class TestFailedRunRollback:
+class TestFailedRunSettle:
     @pytest.mark.asyncio
-    async def test_failed_run_restores_transcript(self) -> None:
+    async def test_failed_run_settles_to_last_closed_turn(self) -> None:
         agent, _ = _make_agent([_text_response("bad"), _text_response("good")])
         agent_ctx = agent._loop.agent_ctx
 
@@ -282,30 +278,74 @@ class TestFailedRunRollback:
         def parse(final_answer: str, *, in_args: Any = None, exec_id: str) -> str:
             del in_args, exec_id
             if fail:
-                # Simulate mid-run context mutations that must roll back with
-                # the transcript (a Read's ledger entry, a Bash `cd`).
+                # Simulate mutations after the last checkpoint boundary that
+                # must roll back with the pruned answer (a Read's ledger
+                # entry, a Bash `cd`).
                 agent_ctx.file_edit_state.import_state({"/tmp/x.py": 1.0}, [])
                 agent_ctx.shell_state.cwd = "/mutated"
                 raise ValueError("parser boom")
             return final_answer
 
-        before = list(agent.transcript.messages)
         with pytest.raises(ProcRunError) as excinfo:
             await agent.run("first try")
         assert "boom" in str(excinfo.value.__cause__)
-        assert list(agent.transcript.messages) == before
-        # The transcript-paired context state rolled back with it.
+        # Settled, not reverted: the input stays; the unparseable answer —
+        # not a closed turn — is pruned so a retry regenerates it.
+        texts = [str(m) for m in agent.transcript.messages]
+        assert sum("first try" in t for t in texts) == 1
+        assert sum("bad" in t for t in texts) == 0
+        # The context state rolled back to the last checkpoint boundary.
         assert agent_ctx.file_edit_state.read_file_state == {}
         assert agent_ctx.shell_state.cwd is None
 
-        # The same (reused) instance runs cleanly afterwards — no dangling
-        # input message, no pairing violation.
+        # The same (reused) instance runs cleanly afterwards — no pairing
+        # violation, and the new input lands once.
         fail = False
         out = await agent.run("second try")
         assert out.payloads[0] == "good"
+        agent.transcript.validate_tool_call_pairing()
         texts = [str(m) for m in agent.transcript.messages]
-        assert sum("first try" in t for t in texts) == 0
         assert sum("second try" in t for t in texts) == 1
+
+    @pytest.mark.asyncio
+    async def test_first_round_crash_storeless_settles_from_committed_head(
+        self,
+    ) -> None:
+        """
+        Crash in round 1 with NO checkpoint store and no completed round: the
+        only prior save is the AFTER_INPUT checkpoint at stream entry, which
+        maintains the in-memory head (``_committed``) even without a store.
+        The settle's context restore hinges on that head existing — pin it
+        directly, so the wiring (unconditional saves + AFTER_INPUT before the
+        first LLM call) is load-bearing rather than incidental.
+        """
+        agent, _ = _make_agent(
+            [_tool_call_response("echo", '{"text": "hi"}', "c1")],
+            tools=[_EchoTool()],
+        )
+        agent_ctx = agent._loop.agent_ctx
+        assert agent._committed is None  # nothing saved before the first run
+
+        @agent.add_before_tool_hook
+        async def crash(*, tool_calls: Any, ctx: Any, exec_id: str) -> None:
+            del tool_calls, ctx, exec_id
+            # Mutations after the AFTER_INPUT boundary that must roll back
+            # with the pruned (dangling) tool-call round.
+            agent_ctx.shell_state.cwd = "/mutated"
+            raise RuntimeError("boom in round 1")
+
+        with pytest.raises(ProcRunError):
+            await agent.run("first try")
+
+        # The AFTER_INPUT save left a committed head despite the missing
+        # store, so the settle restored the paired context state...
+        assert agent._committed is not None
+        assert agent_ctx.shell_state.cwd is None
+        # ...and pruned the dangling tool-call round, keeping the input.
+        texts = [str(m) for m in agent.transcript.messages]
+        assert sum("first try" in t for t in texts) == 1
+        assert all("echo" not in t for t in texts)
+        agent.transcript.validate_tool_call_pairing()
 
 
 # ---------------------------------------------------------------------------

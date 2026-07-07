@@ -46,10 +46,45 @@ def make_team_section(
     roster = "\n".join(f"- {card.render()}" for card in cards)
     text = f"{_TEAM_INSTRUCTIONS}\n\nTeammates you can message:\n{roster}"
 
+    lead = next((c.name for c in cards if c.lead), None)
+    if lead is not None:
+        text += (
+            f"\n\nThe team lead is {lead!r}: messages from the lead arrive ahead "
+            "of other peers' in your inbox, and the lead may rewind the team's "
+            "shared workspace to an earlier snapshot (you will receive an "
+            "<environment_rewind> notice when that happens)."
+        )
+    text += (
+        "\n\nIf a peer's conversation is rolled back, messages you sent it may "
+        "be discarded unanswered — you will receive a <message_dropped> notice "
+        "for each; resend what is still relevant."
+    )
+
     def compute(**_: Any) -> str:
         return text
 
     return SystemPromptSection(name=section_name, compute=compute)
+
+
+def make_rewind_notice(rewinder: str) -> str:
+    """
+    The message body announcing an environment rewind to the other members —
+    posted control-plane by the host when ``rewinder`` restores a filesystem
+    snapshot, so each member learns the workspace changed under it before acting
+    on queued mail.
+    """
+    return (
+        "<environment_rewind>\n"
+        f"The team lead ({rewinder}) has rewound the shared environment to an "
+        "earlier snapshot. Files may have changed or reverted, and any running "
+        "kernels or shell sessions were reset along with the filesystem. The "
+        "lead's own conversation was rewound to the same point: it will not "
+        "remember exchanges from after it, and messages you sent it since then "
+        "may be re-delivered and answered again. This was deliberate — do not "
+        "treat it as corruption. Re-read any files you rely on and "
+        "re-establish kernel/shell state before continuing.\n"
+        "</environment_rewind>"
+    )
 
 
 def make_sender_attribution_attachment(

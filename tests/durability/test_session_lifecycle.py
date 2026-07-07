@@ -72,7 +72,7 @@ class TestBackgroundTasksAcrossRuns:
         # Run 1: the answer ships while the job runs; the run does NOT kill it.
         result = await agent.run("run the tests")
         assert result.payloads[0] == "started, will report"
-        assert agent._loop.bg_tasks.has_live_tasks
+        assert agent._loop.agent_ctx.bg_tasks.has_live_tasks
 
         # The job finishes between runs (e.g. while the human is typing).
         release.set()
@@ -84,7 +84,7 @@ class TestBackgroundTasksAcrossRuns:
         assert "job done: tests" in transcript_text
 
         await agent.aclose()
-        assert not agent._loop.bg_tasks.has_live_tasks
+        assert not agent._loop.agent_ctx.bg_tasks.has_live_tasks
 
     async def test_force_final_answer_keeps_task_running(self) -> None:
         started = asyncio.Event()
@@ -109,10 +109,10 @@ class TestBackgroundTasksAcrossRuns:
         await agent.run("go")
         await started.wait()
         # MAX_TURNS did not kill the deliberately backgrounded job.
-        assert agent._loop.bg_tasks.has_live_tasks
+        assert agent._loop.agent_ctx.bg_tasks.has_live_tasks
 
         await agent.aclose()
-        assert not agent._loop.bg_tasks.has_live_tasks
+        assert not agent._loop.agent_ctx.bg_tasks.has_live_tasks
 
 
 # ---------- Holders survive runs; aclose closes them ----------
@@ -241,7 +241,7 @@ class TestCompositeAclose:
             result = await agent.run("hi")
             assert result.payloads[0] == "ok"
         # __aexit__ ran aclose — background manager is clean.
-        assert not agent._loop.bg_tasks.has_live_tasks
+        assert not agent._loop.agent_ctx.bg_tasks.has_live_tasks
 
     async def test_plain_processor_aclose_is_noop(self) -> None:
         proc = ListProcessor(name="p")

@@ -232,7 +232,9 @@ class LiteLLM(CloudLLM):
     ) -> AsyncIterator[LiteLLMCompletionChunk]:
         stream_options = dict(api_llm_settings.get("stream_options") or {})
         stream_options["include_usage"] = True
-        _api_llm_settings = api_llm_settings | {"stream_options": stream_options}
+        _api_llm_settings: dict[str, Any] = api_llm_settings | {
+            "stream_options": stream_options
+        }
 
         stream: CustomStreamWrapper = await litellm.acompletion(  # type: ignore[no-untyped-call, assignment]
             model=self.model_name,

@@ -284,7 +284,7 @@ class TestPruneDelivered:
         pending, pending_key = _record(
             task_id="t-p",
             session_key="s",
-            status=TaskStatus.PENDING,
+            status=TaskStatus.RUNNING,
             updated_at=old,
         )
         failed, failed_key = _record(

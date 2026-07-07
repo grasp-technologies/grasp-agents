@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 13
+CURRENT_SCHEMA_VERSION: int = 14
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -126,6 +126,28 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "fields, so v13 code would load their messages as empty — hence the "
         "supported floor is also raised to v13. Not migrated: resave sessions."
     ),
+    14: (
+        "Side-channel rewind ordering. TaskRecord gained ``launch_seq`` (a "
+        "monotonic per-agent launch counter) and TeamMessage gained ``seq`` (a "
+        "per-recipient consumption ordinal, stamped when a resident absorbs "
+        "the message and persisted via the acked mailbox record); "
+        "AgentContextState carries their high-water values ``task_launch_seq`` / "
+        "``mail_consumption_seq``. A settle / step rollback cancels tasks launched "
+        "after the restored boundary; a step rollback also voids mailbox "
+        "records consumed after it (senders are notified); resume dead-letters task "
+        "records above the restored head's high-water (their launching call "
+        "was never persisted). MessageRecord.status became its own "
+        "MessageStatus (pending/delivered/voided; was TaskStatus, whose "
+        "'pending' value is now 'running'). "
+        "AgentCheckpointLocation.AFTER_MAX_TURNS was "
+        "renamed to AFTER_FORCED_FINAL_ANSWER (it is also written on run "
+        "timeout, not just turn exhaustion) and AFTER_RESIDENT_TURN to "
+        "AFTER_RESIDENT_ANSWER (written once per message answered, not per "
+        "turn). Otherwise additive — v13 records load fine (fields default "
+        "0 = not guarded) EXCEPT a head parked at a renamed location (rerun "
+        "or resave the session); v13 code resuming a v14 session skips the "
+        "new guards."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -157,13 +179,22 @@ class AgentCheckpointLocation(Enum):
     AFTER_INPUT = "after_input"
     AFTER_TOOL_RESULT = "after_tool_result"
     AFTER_FINAL_ANSWER = "after_final_answer"
-    AFTER_MAX_TURNS = "after_max_turns"
-    # A resident agent's per-message turn boundary (it consumes a message inbox
-    # between turns and produces no terminal answer): the resident analog of
-    # AFTER_FINAL_ANSWER. Drives the per-turn checkpoint that persists the reply
-    # and releases the consumed inbox message, and (like AFTER_FINAL_ANSWER) an
-    # fs-snapshot so a restored transcript and filesystem stay in step.
-    AFTER_RESIDENT_TURN = "after_resident_turn"
+    # A force-generated final answer: the turn budget (MAX_TURNS) or the run's
+    # wall-clock deadline (TIMEOUT) was exhausted.
+    AFTER_FORCED_FINAL_ANSWER = "after_forced_final_answer"
+    # A resident agent's answer to one inbox message (its tool-loop turns in
+    # between checkpoint as AFTER_TOOL_RESULT): the per-message analog of
+    # AFTER_FINAL_ANSWER for an agent that never ends its run. Persists the
+    # reply, releases the consumed inbox message, and (like AFTER_FINAL_ANSWER)
+    # drives an fs-snapshot so a restored transcript and filesystem stay in
+    # step.
+    AFTER_RESIDENT_ANSWER = "after_resident_answer"
+    # Not a loop save-point: the pre-rollback head re-marked by
+    # rollback_to_step before its first durable side effect (``current.step``
+    # carries the target). A resume finding this completes the rollback —
+    # the filesystem/mailbox may already be rewound under the old transcript.
+    # Committing the ROLLED_BACK head overwrites (atomically clears) it.
+    ROLLING_BACK = "rolling_back"
     # Not a loop save-point: a synthetic head written by rollback_to_step,
     # parked at the start of the rolled-back-to step.
     ROLLED_BACK = "rolled_back"
@@ -188,9 +219,26 @@ class AgentContextState(BaseModel):
     read_file_state: dict[str, float] = Field(default_factory=dict[str, float])
     dotfile_overrides: list[str] = Field(default_factory=list[str])
     shell_cwd: str | None = None
-    pending_delivered: dict[str, dict[str, Any]] = Field(
+    deferred_delivered: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
+    # Deferred CANCELLED flips for tasks killed by a rewind, persisted so a
+    # crash before their flush cannot resurrect the killed tasks on resume:
+    # the same head that raises ``task_launch_seq`` past a killed launch (which
+    # defeats the resume orphan guard) also carries the kill itself.
+    deferred_killed: dict[str, dict[str, Any]] = Field(
+        default_factory=dict[str, dict[str, Any]]
+    )
+    # High-water background-task launch seq at this boundary: every task
+    # launched by then has ``launch_seq <= task_launch_seq``. A rewind to this
+    # boundary cancels tasks above it (their launching calls left the
+    # transcript); resume dead-letters task records above it.
+    task_launch_seq: int = 0
+    # High-water inbox consumption seq at this boundary: every message absorbed
+    # by then has ``seq <= mail_consumption_seq``. A step rollback to this
+    # boundary voids acked mailbox records above it (their turns left the
+    # transcript) — never re-delivered; senders are notified instead.
+    mail_consumption_seq: int = 0
     ipy_exec_context_id: str | None = None
     nb_exec_context_id: str | None = None
 
@@ -199,15 +247,19 @@ class StepWatermark(BaseModel):
     """
     A restorable session position — the coordinates needed to rewind here.
 
-    The transcript length to truncate to (``message_count`` against
-    ``log_version``), the loop turn, the delivery step, the provider cache key,
-    the filesystem snapshot to restore, and the agent-context state to reapply.
-    :class:`AgentCheckpoint` holds one of these as its current position and a
-    list of them as the per-step rollback points. See
-    :meth:`LLMAgent.rollback_to_step`.
+    The transcript length to truncate to (``message_count``), the loop turn,
+    the delivery step, the provider cache key, the filesystem snapshot to
+    restore, and the agent-context state to reapply. :class:`AgentCheckpoint`
+    holds one of these as its current position and a list of them as the
+    per-step rollback points. See :meth:`LLMAgent.rollback_to_step`.
     """
 
     message_count: int = 0
+    # The message-log file ``message_count`` indexes. Meaningful only on a
+    # head's ``current`` — stamped by the checkpoint serializers, never by
+    # callers. Rollback boundaries leave it defaulted: the log is append +
+    # suffix-truncate + content-preserving rewrite, so a boundary's
+    # ``message_count`` stays a valid prefix of whatever version is live.
     log_version: int = 0
     turn: int = 0
     step: int | None = None
@@ -377,12 +429,16 @@ class TeamCheckpoint(ProcessorCheckpoint):
 
     Deliberately tiny: the in-flight messages live in the durable mailbox
     transport and each member persists its own transcript, so this holds only
-    what neither can express — the session-wide hop count. Its *existence* marks
-    the session as seeded, so a resume skips re-seeding the entry (mirroring how
-    a loaded ``RunnerCheckpoint`` suppresses the runner's start event). The
-    terminal stop reason is re-derived on resume from this count (``activations
-    >= max_hops``) and a fresh run, not frozen here — so a member error that
-    stopped the run is retried, not permanently recorded.
+    what neither can express — the session-wide hop count and the run ordinal
+    that identifies entry seeds. The terminal stop reason is re-derived on
+    resume from the count (``activations >= max_hops``) and a fresh run, not
+    frozen here — so a member error that stopped the run is retried, not
+    permanently recorded.
     """
 
     activations: int = 0
+    # Runs ended so far (quiescence / budget stop; cancellation and crash do
+    # NOT count). The entry-seed identity axis: re-running an interrupted run
+    # keeps the ordinal (an idempotent resume), while a genuinely new run's
+    # input — identical content included — is delivered as a new seed.
+    runs_ended: int = 0

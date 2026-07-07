@@ -43,6 +43,7 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
+from tests._helpers import _make_agent_loop
 
 # ---------- Mock LLM ----------
 
@@ -221,7 +222,7 @@ class TestExecutorTextResponse:
         memory = LLMAgentTranscript()
         memory.messages = [InputMessageItem.from_text("Be helpful.", role="system")]
 
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="test_agent",
             llm=llm,
             transcript=memory,
@@ -232,7 +233,7 @@ class TestExecutorTextResponse:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("What is 42?", role="user")])
 
         events, last_response = await _collect_events(executor, ctx)
@@ -259,7 +260,7 @@ class TestExecutorTextResponse:
         memory = LLMAgentTranscript()
         memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="agent",
             llm=llm,
             transcript=memory,
@@ -270,7 +271,7 @@ class TestExecutorTextResponse:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("Hi", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
@@ -305,7 +306,7 @@ class TestExecutorToolCalling:
 
         tool = AddTool()
         executor = _with_final_answer_extractor(
-            AgentLoop(
+            _make_agent_loop(
                 agent_name="calc",
                 llm=llm,
                 transcript=memory,
@@ -373,7 +374,7 @@ class TestExecutorToolCalling:
         memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
         tool = AddTool()
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="agent",
             llm=llm,
             transcript=memory,
@@ -384,7 +385,7 @@ class TestExecutorToolCalling:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("loop", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
@@ -411,7 +412,7 @@ class TestExecutorUsageTracking:
         memory = LLMAgentTranscript()
         memory.messages = [InputMessageItem.from_text("sys", role="system")]
 
-        executor = AgentLoop(
+        executor = _make_agent_loop(
             agent_name="test_agent",
             llm=llm,
             transcript=memory,
@@ -422,7 +423,7 @@ class TestExecutorUsageTracking:
         )
 
         ctx = SessionContext[None]()
-        executor._ctx = ctx
+        executor.ctx = ctx
         memory.update([InputMessageItem.from_text("q", role="user")])
         await _collect_events(executor, ctx)
 
@@ -455,7 +456,7 @@ class TestExecutorMemoryIntegrity:
         memory.messages = [InputMessageItem.from_text("calc", role="system")]
 
         executor = _with_final_answer_extractor(
-            AgentLoop(
+            _make_agent_loop(
                 agent_name="agent",
                 llm=llm,
                 transcript=memory,

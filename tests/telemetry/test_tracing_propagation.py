@@ -80,7 +80,7 @@ def test_direct_tool_inherits_on_construction() -> None:
         tools=[search],
         tracing_exclude_input_fields={"secret"},
     )
-    (tool,) = agent._loop.tools.values()
+    (tool,) = agent.agent_ctx.tools.values()
     assert tool.tracing_exclude_input_fields == {"secret"}
 
 

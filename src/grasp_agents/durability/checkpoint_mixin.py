@@ -28,16 +28,6 @@ class CheckpointPersistMixin:
     _path: list[str]
     _checkpoint_number: int
 
-    # Append-only message-log bookkeeping. Only meaningful for the agent
-    # checkpoint (the only message-bearing one); harmless defaults elsewhere.
-    # ``_persisted_messages`` holds the exact message objects already on the
-    # log (strong refs, so identity comparison stays sound): a save appends the
-    # delta while they remain a leading prefix of the transcript, else rewrites
-    # the whole log. ``_log_version`` is the log file the current head points
-    # at — rewrites bump it (see :meth:`_serialize_agent_checkpoint`).
-    _persisted_messages: tuple[Any, ...] = ()
-    _log_version: int = 0
-
     def _checkpoint_store_key(self, ctx: SessionContext[Any]) -> str | None:
         if ctx.checkpoint_store is None or self._checkpoint_kind is None:
             return None
@@ -94,6 +84,25 @@ class CheckpointPersistMixin:
             self._checkpoint_number,
             (time.monotonic() - t0) * 1000,
         )
+
+
+class AgentCheckpointPersistMixin(CheckpointPersistMixin):
+    """
+    Extends checkpoint persistence with the agent's message-log plane.
+
+    An :class:`AgentCheckpoint` is stored as a small head blob plus an
+    append-only message log; this mixin owns the log bookkeeping and the
+    three write/read paths over it (append/rewrite on save, truncate on
+    rollback, trim-and-load on resume).
+    """
+
+    # ``_persisted_messages`` holds the exact message objects already on the
+    # log (strong refs, so identity comparison stays sound): a save appends the
+    # delta while they remain a leading prefix of the transcript, else rewrites
+    # the whole log. ``_log_version`` is the log file the current head points
+    # at — rewrites bump it (see :meth:`_serialize_agent_checkpoint`).
+    _persisted_messages: tuple[Any, ...] = ()
+    _log_version: int = 0
 
     async def _serialize_agent_checkpoint(
         self,
@@ -176,6 +185,42 @@ class CheckpointPersistMixin:
             ", full rewrite" if rewrite else "",
             (time.monotonic() - t0) * 1000,
         )
+
+    async def _serialize_rollback_checkpoint(
+        self,
+        ctx: SessionContext[Any],
+        checkpoint: AgentCheckpoint,
+    ) -> None:
+        """
+        Persist a rewound :class:`AgentCheckpoint`: head-first, then truncate
+        the durable message-log to match.
+
+        Head-first — lower the head's watermark before shrinking the log — so
+        a crash in between leaves the head pointing *within* the log (resume
+        re-trims the leftover tail), never past it. The log is truncated in
+        place, so the head keeps the live log version (the checkpoint's
+        ``current`` may be cut from an older boundary). Without a checkpoint
+        store (live-only rollback) only the append bookkeeping is re-anchored
+        to the truncated transcript.
+        """
+        messages = checkpoint.messages
+        checkpoint.current.message_count = len(messages)
+        checkpoint.current.log_version = self._log_version
+
+        store = ctx.checkpoint_store
+        key = self._checkpoint_store_key(ctx)
+        if store is None or key is None:
+            self._persisted_messages = tuple(messages)
+            return
+
+        checkpoint.checkpoint_number = self._checkpoint_number + 1
+        head_blob = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")
+        await store.save(key, head_blob)
+        await store.truncate_messages(
+            key, message_count=len(messages), version=self._log_version
+        )
+        self._persisted_messages = tuple(messages)
+        self._checkpoint_number += 1
 
     async def _deserialize_agent_checkpoint(
         self,

@@ -28,7 +28,7 @@ from grasp_agents.mailbox import InMemoryMailboxTransport
 from grasp_agents.runtime import Closed
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from grasp_agents.runtime import Transport
     from grasp_agents.types.message import TeamMessage
@@ -40,6 +40,7 @@ class AgentInbox:
         *,
         transport: Transport[TeamMessage] | None = None,
         recipient: str = "",
+        on_take: Callable[[TeamMessage], None] | None = None,
     ) -> None:
         # No transport → an in-memory one (single process). A durable / networked
         # team passes a shared transport (the same instance every member views).
@@ -47,13 +48,20 @@ class AgentInbox:
             transport if transport is not None else InMemoryMailboxTransport()
         )
         self._recipient = recipient
+        # Runs once a message is chosen for delivery, *before* its consumption
+        # seq is minted — the seam a resident agent uses to archive a rollback
+        # boundary whose high-waters exclude the message being taken.
+        self._on_take = on_take
         self._waiting = False
         # Messages taken but not yet acked — released on the next checkpoint
         # (:meth:`flush_acks`) once the turn that consumed them is durable, or
-        # dropped un-acked on a transcript rewind (:meth:`rollback`). In-memory and
-        # transient: a crash loses the leases, and the un-acked messages are simply
-        # re-delivered. The host attaches a fresh inbox per run, so leases never
-        # outlive a run.
+        # dropped un-acked when the turn leaves the transcript
+        # (:meth:`drop_leases`).
+        # In-memory and transient: a crash loses the leases, and the un-acked
+        # messages are simply re-delivered. A lease must live exactly as long as
+        # the live transcript that absorbed its message — which is why an agent
+        # keeps its ONE inbox for its lifetime (see
+        # :meth:`LLMAgent.attach_inbox`) instead of building one per run.
         self._leased: dict[str, TeamMessage] = {}
 
     @property
@@ -71,12 +79,20 @@ class AgentInbox:
 
         The message stays in the mailbox (leased) until :meth:`flush_acks`
         releases it on the next checkpoint — so a crash before then re-delivers it
-        rather than dropping it (at-least-once). One message is in flight at a
-        time: while a leased message is still the oldest in the mailbox, ``take``
-        returns ``None`` (``consume`` is non-removing, so it would otherwise keep
-        returning the same one). A message already marked processed — a redelivery
-        whose ack only partly landed before a crash — is acked and skipped, since
-        its effects are already durable.
+        rather than dropping it (at-least-once). While a leased message is still
+        the frontmost in the mailbox, ``take`` returns ``None`` (``consume`` is
+        non-removing, so it would otherwise keep returning the same one) — but a
+        *higher-priority* arrival is taken past an existing lease: that is how
+        control-plane mail (human steering) enters mid-task, so more than one
+        message can be leased at once. A message already marked processed — a
+        redelivery whose ack only partly landed before a crash — is acked and
+        skipped, since its effects are already durable.
+
+        A taken message is stamped with its consumption ``seq`` (this inbox is
+        the recipient's sole consumer, so take order is absorption order); the
+        ack persists it, and a step rollback voids messages above a boundary's
+        high-water (:meth:`Transport.void_processed_after`). ``on_take`` fires
+        once a message is chosen for delivery, *before* its seq is minted.
         """
         while await self._transport.has_pending(self._recipient):
             # ``has_pending`` is true and this agent is the sole consumer of its
@@ -89,6 +105,9 @@ class AgentInbox:
             if await self._transport.was_processed(self._recipient, message.message_id):
                 await self._transport.ack(self._recipient, message)
                 continue
+            if self._on_take is not None:
+                self._on_take(message)
+            message.seq = self._transport.mint_consumption_seq(self._recipient)
             self._leased[message.message_id] = message
             return message
         return None
@@ -105,19 +124,43 @@ class AgentInbox:
         checkpoint that persisted the turn which consumed them: the messages are
         now durably absorbed into the log, so removing them from the mailbox can no
         longer strand them (resume re-derives the owed response from the log). A
-        crash before this re-delivers them; :meth:`take` dedupes the redelivery.
+        crash before this re-delivers them: one whose ack partly landed is
+        dedupe-skipped by :meth:`take`, but one never acked genuinely re-runs
+        its (already persisted) turn — the at-least-once duplicate this design
+        accepts over a lost message.
         """
         for message in list(self._leased.values()):
             await self._transport.ack(self._recipient, message)
             self._leased.pop(message.message_id, None)
 
-    def rollback(self) -> None:
+    def drop_leases(self) -> list[TeamMessage]:
         """
-        Drop all leases without acking, so a transcript rewind (rollback /
-        failed-run revert) re-takes the still-unacked messages from the mailbox
-        rather than wedging on them. In-memory only — they were never removed.
+        Drop all leases without acking, returning the dropped messages.
+        In-memory only — the messages stay pending in the mailbox. A cold
+        reload leaves them there for re-delivery (their takes were never
+        checkpointed); a step rollback voids them instead (the caller acks
+        and notifies — see ``LLMAgent._rollback_mailbox``). NOT for a
+        failed-run settle: settling keeps the absorbed message's turn, and
+        its lease is what prevents a duplicate re-take.
         """
+        dropped = list(self._leased.values())
         self._leased.clear()
+        return dropped
+
+    @property
+    def last_consumption_seq(self) -> int:
+        """High-water consumption seq: every message taken so far has ``seq <=``."""
+        return self._transport.last_consumption_seq(self._recipient)
+
+    def seed_consumption_seq(self, seq: int) -> None:
+        """
+        Seed the consumption counter from a restored watermark (never lowers it
+        — the inbox sibling of :meth:`BackgroundTaskManager.seed_launch_seq`).
+        The counter lives on the shared transport, so it survives the per-run
+        inbox; this seeding covers a fresh process, where the restored
+        ``AgentContextState`` is the only surviving copy.
+        """
+        self._transport.seed_consumption_seq(self._recipient, seq)
 
     async def poll(self) -> TeamMessage | None:
         """Consume + ack this agent's oldest message in one step, or ``None``."""

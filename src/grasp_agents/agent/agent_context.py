@@ -12,6 +12,16 @@ The loop owns one and passes it (as ``agent_ctx``) to every tool call, so tools
 stay stateless: a single tool instance can be shared across agents without the
 state of one clobbering another, and there is no async-local ``ContextVar`` to
 set / reset around a run.
+
+``bg_tasks`` and ``inbox`` are the agent's two *side channels* — separate queues
+that inject messages into the transcript between turns, sharing one mirrored
+lifecycle: a monotonic per-item seq (task ``launch_seq`` / mail consumption
+``seq``) whose high-waters are checkpointed and ``seed_*``-ed back on resume;
+durable effects deferred until the absorbing turn is checkpointed
+(``flush_delivered`` / ``flush_acks``); and rollback keyed on ``seq >`` the
+boundary's high-water — tasks launched past it are *cancelled*, task notes
+truncated by the cut are *redelivered*, consumed mail is *voided* (senders
+notified, never re-delivered).
 """
 
 from __future__ import annotations
@@ -160,7 +170,12 @@ class AgentContext:
             read_file_state=read_file_state,
             dotfile_overrides=dotfile_overrides,
             shell_cwd=self.shell_state.cwd,
-            pending_delivered=self.bg_tasks.export_pending_delivered(),
+            deferred_delivered=self.bg_tasks.export_deferred_delivered(),
+            deferred_killed=self.bg_tasks.export_deferred_killed(),
+            task_launch_seq=self.bg_tasks.last_launch_seq,
+            mail_consumption_seq=(
+                self.inbox.last_consumption_seq if self.inbox is not None else 0
+            ),
             ipy_exec_context_id=(
                 self.ipy_kernel_holder.context_id if self.ipy_kernel_holder else None
             ),
@@ -190,14 +205,20 @@ class AgentContext:
         self.file_edit_state.import_state(
             state.read_file_state, state.dotfile_overrides
         )
+
         self.shell_state.cwd = state.shell_cwd
-        self.bg_tasks.restore_pending_delivered(state.pending_delivered)
-        # A rewind discards any leased inbox message's partial handling; it is still
-        # un-acked in the mailbox, so the resident loop re-takes it rather than
-        # wedging on a stale pointer. Leases are transient (never snapshotted), so
-        # they are dropped here, not reapplied from ``state``.
+
+        self.bg_tasks.restore_deferred_delivered(state.deferred_delivered)
+        self.bg_tasks.restore_deferred_killed(state.deferred_killed)
+        self.bg_tasks.seed_launch_seq(state.task_launch_seq)
+
+        # Leases are NOT dropped here: a settle keeps the absorbed-but-unacked
+        # message in the transcript, and its lease is what stops the loop from
+        # re-taking (duplicating) it. The callers that discard the message's
+        # turn — cold reload and step rollback — drop leases themselves.
         if self.inbox is not None:
-            self.inbox.rollback()
+            self.inbox.seed_consumption_seq(state.mail_consumption_seq)
+
         if rebind_kernels:
             if state.ipy_exec_context_id is not None and self.ipy_kernel_holder:
                 self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)

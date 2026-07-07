@@ -253,6 +253,46 @@ class TestResumeCleanup:
         assert state.interruption == InterruptionType.NONE
         assert state.removed_count == 0
 
+    def test_keeps_contiguous_completed_round(self):
+        """
+        A closed round directly followed by a dangling one (no assistant text
+        between) survives: only the round in flight is dropped, so its
+        already-completed tools are never re-issued on resume or after a
+        live interrupt.
+        """
+        messages: list[Any] = [
+            InputMessageItem.from_text("hi", role="user"),
+            FunctionToolCallItem(call_id="fc_1", name="echo", arguments='{"text":"a"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="echo: a"),
+            FunctionToolCallItem(call_id="fc_2", name="echo", arguments='{"text":"b"}'),
+        ]
+        state = prepare_messages_for_resume(messages)
+        assert len(state.messages) == 3  # user + fc_1 call + fc_1 output
+        assert state.removed_count == 1
+        assert state.interruption == InterruptionType.MID_ASSISTANT_TURN
+
+    def test_partial_parallel_outputs_drop_whole_round(self):
+        """One resolved + one dangling call in the last round: all of it goes."""
+        messages: list[Any] = [
+            InputMessageItem.from_text("hi", role="user"),
+            FunctionToolCallItem(call_id="fc_1", name="echo", arguments='{"text":"a"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="echo: a"),
+            ReasoningItem(summary=[]),
+            OutputMessageItem(
+                content=[OutputMessageText(text="fanning out")],
+                status="completed",
+            ),
+            FunctionToolCallItem(call_id="fc_2", name="echo", arguments='{"text":"b"}'),
+            FunctionToolCallItem(call_id="fc_3", name="echo", arguments='{"text":"c"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_2", output="echo: b"),
+            # fc_3 has no output — interrupted mid-round.
+        ]
+        state = prepare_messages_for_resume(messages)
+        # The whole last round (reasoning + text + both calls + partial output)
+        # goes; the earlier closed round stays.
+        assert len(state.messages) == 3
+        assert state.removed_count == 5
+
     def test_strips_dangling_tool_calls(self):
         """Unresolved tool calls at the end are stripped."""
         messages: list[Any] = [
@@ -352,6 +392,27 @@ class TestResumeCleanup:
         # Strips: OutputMessageItem + fc_2 = 2
         assert len(state.messages) == 3
         assert state.removed_count == 2
+
+    def test_drop_trailing_response_prunes_failed_answer(self):
+        """A trailing call-less response block (a failed final answer) goes."""
+        messages: list[Any] = [
+            InputMessageItem.from_text("hi", role="user"),
+            FunctionToolCallItem(call_id="fc_1", name="echo", arguments='{"text":"a"}'),
+            FunctionToolOutputItem.from_tool_result(call_id="fc_1", output="echo: a"),
+            ReasoningItem(summary=[]),
+            OutputMessageItem(
+                content=[OutputMessageText(text="not-parseable answer")],
+                status="completed",
+            ),
+        ]
+        state = prepare_messages_for_resume(messages, drop_trailing_response=True)
+        # The closed round stays; the answer block (reasoning + text) goes.
+        assert len(state.messages) == 3
+        assert state.removed_count == 2
+
+        # Without the flag (resume / cancel), the answer is left untouched.
+        state = prepare_messages_for_resume(messages)
+        assert state.removed_count == 0
 
 
 # ================================================================== #
@@ -1089,7 +1150,7 @@ class TestTaskRecord:
         restored = TaskRecord.model_validate_json(json_bytes)
         assert restored.task_id == "t1"
         assert restored.session_key == "s1"
-        assert restored.status == TaskStatus.PENDING
+        assert restored.status == TaskStatus.RUNNING
         assert restored.result is None
 
     def test_model_copy_update(self):
@@ -1105,7 +1166,7 @@ class TestTaskRecord:
         assert updated.status == TaskStatus.COMPLETED
         assert updated.result == "done"
         # Original unchanged
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
 
 
 # ================================================================== #
@@ -1256,7 +1317,7 @@ class TestTaskRecordPersistence:
         data = await store.load(keys[0])
         assert data is not None
         record = TaskRecord.model_validate_json(data)
-        assert record.status == TaskStatus.PENDING
+        assert record.status == TaskStatus.RUNNING
 
         await agent.aclose()
 
@@ -1288,7 +1349,7 @@ class TestTaskRecordPersistence:
 # ================================================================== #
 
 
-class TestPendingTaskResume:
+class TestRunningTaskResume:
     @pytest.mark.asyncio
     async def test_pending_record_injects_interruption_notification(self):
         """On resume, a PENDING TaskRecord injects an interruption message."""
@@ -1405,7 +1466,7 @@ class TestPendingTaskResume:
         # The sibling's task is untouched (still PENDING).
         other_data = await store.load(other_key)
         assert other_data is not None
-        assert TaskRecord.model_validate_json(other_data).status == TaskStatus.PENDING
+        assert TaskRecord.model_validate_json(other_data).status == TaskStatus.RUNNING
 
     @pytest.mark.asyncio
     async def test_completed_record_injects_result(self):

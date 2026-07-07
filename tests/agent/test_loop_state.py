@@ -52,7 +52,7 @@ class TestNextStepStop:
             tool_calls=[],
             turn=0,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepStop)
         assert step.final_answer == "answer"
@@ -66,7 +66,7 @@ class TestNextStepStop:
             tool_calls=[_call()],
             turn=1,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepStop)
         assert step.final_answer == "answer"
@@ -78,7 +78,7 @@ class TestNextStepStop:
             tool_calls=[],
             turn=10,
             max_turns=10,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
         )
         assert isinstance(step, NextStepStop)
 
@@ -98,7 +98,7 @@ class TestNextStepForceFinalAnswer:
             tool_calls=[_call()],
             turn=10,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepForceFinalAnswer)
 
@@ -108,7 +108,7 @@ class TestNextStepForceFinalAnswer:
             tool_calls=[],
             turn=10,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepForceFinalAnswer)
 
@@ -120,7 +120,7 @@ class TestNextStepForceFinalAnswer:
             tool_calls=[_call("a"), _call("b")],
             turn=5,
             max_turns=5,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
         )
         assert isinstance(step, NextStepForceFinalAnswer)
 
@@ -135,7 +135,7 @@ class TestDeadline:
             tool_calls=[_call()],
             turn=2,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             deadline_exceeded=True,
         )
         assert isinstance(step, NextStepForceFinalAnswer)
@@ -147,7 +147,7 @@ class TestDeadline:
             tool_calls=[_call()],
             turn=10,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepForceFinalAnswer)
         assert step.stop_reason is StopReason.MAX_TURNS
@@ -159,7 +159,7 @@ class TestDeadline:
             tool_calls=[],
             turn=2,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             deadline_exceeded=True,
         )
         assert isinstance(step, NextStepStop)
@@ -172,7 +172,7 @@ class TestDeadline:
             tool_calls=[],
             turn=2,
             max_turns=10,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
             deadline_exceeded=True,
         )
         assert isinstance(step, NextStepStop)
@@ -189,7 +189,7 @@ class TestNextStepRunTools:
             tool_calls=calls,
             turn=1,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepRunTools)
         assert list(step.tool_calls) == calls
@@ -201,7 +201,7 @@ class TestNextStepRunTools:
             tool_calls=calls,
             turn=3,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepRunTools)
         assert len(step.tool_calls) == 2
@@ -220,7 +220,7 @@ class TestNextStepContinue:
             tool_calls=[],
             turn=3,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
         )
         assert isinstance(step, NextStepContinue)
 
@@ -232,7 +232,7 @@ class TestNextStepContinue:
             tool_calls=[],
             turn=1,
             max_turns=10,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
         )
         assert isinstance(step, NextStepContinue)
 
@@ -245,7 +245,7 @@ class TestNextStepContinue:
             tool_calls=[_call()],
             turn=1,
             max_turns=10,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
         )
         assert isinstance(step, NextStepRunTools)
 
@@ -262,7 +262,7 @@ class TestNextStepResidentReply:
             tool_calls=[],
             turn=3,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
         )
         assert isinstance(step, NextStepResidentReply)
@@ -276,7 +276,7 @@ class TestNextStepResidentReply:
             tool_calls=[_call()],
             turn=3,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
         )
         assert isinstance(step, NextStepRunTools)
@@ -289,7 +289,7 @@ class TestNextStepResidentReply:
             tool_calls=[],
             turn=3,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
         )
         assert isinstance(step, NextStepContinue)
@@ -302,7 +302,7 @@ class TestNextStepResidentReply:
             tool_calls=[],
             turn=1,
             max_turns=10,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
             inbox_open=True,
         )
         assert isinstance(step, NextStepContinue)
@@ -316,7 +316,7 @@ class TestNextStepResidentReply:
             tool_calls=[],
             turn=99,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             deadline_exceeded=True,
             inbox_open=True,
             turns_on_message=99,
@@ -332,7 +332,7 @@ class TestNextStepResidentReply:
             tool_calls=[_call()],
             turn=999,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
             turns_on_message=2,
         )
@@ -351,7 +351,7 @@ class TestNextStepForceResidentReply:
             tool_calls=[_call()],
             turn=50,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
             turns_on_message=10,
         )
@@ -365,7 +365,7 @@ class TestNextStepForceResidentReply:
             tool_calls=[_call("a"), _call("b")],
             turn=20,
             max_turns=5,
-            bg_tasks_pending=True,
+            blocking_bg_tasks=True,
             inbox_open=True,
             turns_on_message=7,
         )
@@ -379,7 +379,7 @@ class TestNextStepForceResidentReply:
             tool_calls=[],
             turn=20,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
             turns_on_message=10,
         )
@@ -394,7 +394,7 @@ class TestNextStepForceResidentReply:
             tool_calls=[],
             turn=20,
             max_turns=10,
-            bg_tasks_pending=False,
+            blocking_bg_tasks=False,
             inbox_open=True,
             turns_on_message=3,
         )
@@ -436,7 +436,7 @@ def test_precedence_table(
         tool_calls=calls,
         turn=turn,
         max_turns=max_turns,
-        bg_tasks_pending=bg,
+        blocking_bg_tasks=bg,
     )
     assert isinstance(step, expected)
 

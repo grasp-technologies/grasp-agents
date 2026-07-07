@@ -8,15 +8,23 @@ Verifies:
 - after rollback the discarded step is a *fresh* delivery, not a cached one
 - a cold instance (new process) can roll back via the persisted boundaries
 - unknown step raises; view-layer compaction does NOT block rollback (E0)
-- unstepped (chat) deliveries record no boundaries
+- unstepped (typed-args) deliveries record no boundaries; chat deliveries
+  auto-mint steps (covered in tests/agent/test_human_turn_anchors.py)
 """
+
+import asyncio
+import contextlib
+from unittest.mock import patch
 
 import pytest
 
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import AgentContextState, InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
+from grasp_agents.inbox import AgentInbox
+from grasp_agents.mailbox import CheckpointMailboxTransport
 from grasp_agents.types.items import InputMessageItem
+from grasp_agents.types.message import TeamMessage
 from tests._helpers import _text_response
 from tests.durability.test_sessions import _make_agent, load_agent_checkpoint
 
@@ -256,5 +264,112 @@ async def test_rollback_survives_compaction() -> None:
 async def test_unstepped_run_records_no_boundary() -> None:
     store = InMemoryCheckpointStore()
     agent, _ = _make_agent([_text_response("a")], session_key="s1", store=store)
-    await agent.run("hi")  # no step= → chat, untracked
+    # A typed-args delivery with no step= stays unstepped (a chat delivery
+    # would auto-mint one — see tests/agent/test_human_turn_anchors.py).
+    await agent.run(in_args="hi")
     assert agent._step_watermarks == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_voids_consumed_inbox_messages() -> None:
+    # A resident's rollback rewinds its mailbox with its transcript: messages
+    # absorbed after the boundary are voided, never re-delivered (a rollback
+    # rewrites history). The human's message is dropped silently; the peer
+    # gets a <message_dropped> note so it can resend.
+    store = InMemoryCheckpointStore()
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    agent, ctx = _make_agent(
+        [
+            _text_response("kickoff done"),
+            _text_response("reply one"),
+            _text_response("reply two"),
+        ],
+        session_key="s1",
+        store=store,
+    )
+    ctx.transport = transport
+    agent.attach_inbox()
+
+    async def drain() -> None:
+        async for _ in agent.run_stream("kick off", step=1):
+            pass
+
+    run = asyncio.create_task(drain())
+    m1 = TeamMessage.from_text(sender="user", to="test_agent", text="task one")
+    m2 = TeamMessage.from_text(sender="peer", to="test_agent", text="task two")
+    await transport.post(m1)
+    await transport.post(m2)
+    try:
+        # Both messages absorbed, answered, and released at their turn
+        # checkpoints; their processed records carry the consumption seqs.
+        for _ in range(300):
+            if await transport.was_processed(
+                "test_agent", m2.message_id
+            ) and not await transport.has_pending("test_agent"):
+                break
+            await asyncio.sleep(0.01)
+        assert await transport.was_processed("test_agent", m1.message_id)
+        assert await transport.was_processed("test_agent", m2.message_id)
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+
+    blob = str(agent.transcript.messages)
+    assert "task one" in blob
+    assert "task two" in blob
+
+    await agent.rollback_to_step(1)
+
+    # The step-1 boundary predates both absorptions (high-water 0): both are
+    # voided — still deduped, never re-delivered, transcript rewound.
+    assert await transport.was_processed("test_agent", m1.message_id)
+    assert await transport.was_processed("test_agent", m2.message_id)
+    assert not await transport.has_pending("test_agent")
+    assert "task one" not in str(agent.transcript.messages)
+
+    # The peer sender gets a dropped-message note; the human does not.
+    nack = await transport.consume("peer")
+    assert isinstance(nack, TeamMessage)
+    assert "<message_dropped>" in nack.text
+    assert "task two" in nack.text
+    assert not await transport.has_pending("user")
+
+
+@pytest.mark.asyncio
+async def test_interrupted_rollback_completes_on_resume() -> None:
+    # A rollback re-marks the head ROLLING_BACK before its durable side
+    # effects; a crash before the ROLLED_BACK head commits is therefore
+    # visible to resume, which completes the rollback instead of resuming the
+    # pre-rollback transcript over already-rewound side channels. Committing
+    # the rolled-back head clears the mark by overwriting it.
+    store = InMemoryCheckpointStore()
+    agent, _ = _make_agent(
+        [_text_response(t) for t in ("a1", "a2")], session_key="s1", store=store
+    )
+    await agent.run("q1", step=1)
+    await agent.run("q2", step=2)
+
+    from grasp_agents.agent.llm_agent import LLMAgent
+
+    with (
+        patch.object(LLMAgent, "_persist_rollback", side_effect=RuntimeError("crash")),
+        pytest.raises(RuntimeError, match="crash"),
+    ):
+        await agent.rollback_to_step(2)
+    head = await load_agent_checkpoint(store, _KEY)
+    assert head.location == AgentCheckpointLocation.ROLLING_BACK
+    assert head.current.step == 2  # the target rides on the marked head
+
+    # The FIRST post-crash call is a direct stepped run — resume must both
+    # complete the rollback and serve the run a fresh (post-rollback) head,
+    # or step 2's pre-rollback cached output would replay here.
+    agent2, _ = _make_agent([_text_response("a2_new")], session_key="s1", store=store)
+    out = await agent2.run("q2-new", step=2)
+    assert out.payloads[0] == "a2_new"
+
+    head = await load_agent_checkpoint(store, _KEY)
+    assert head.location != AgentCheckpointLocation.ROLLING_BACK  # mark cleared
+    blob = str(agent2.transcript.messages)
+    assert "q2-new" in blob
+    assert "q2'" not in blob  # the rolled-back turn's input is gone

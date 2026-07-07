@@ -25,9 +25,15 @@ from .packet import Packet, PacketRouting
 # inbox (members address each other by name; "user" is the human).
 USER_SENDER = "user"
 
-# Priority for control-plane mail (human input, self-wakeups): it drains ahead of
-# normal peer messages so an interruption is weighed promptly. Default is 0.
-CONTROL_PRIORITY = 1
+# Priority for control-plane mail (human input, self-wakeups, environment-rewind
+# notices): it drains ahead of everything else so an interruption is weighed
+# promptly. Default is 0.
+CONTROL_PRIORITY = 2
+
+# Priority for messages sent by a team's lead: they drain after control-plane
+# mail but ahead of ordinary peer messages, so the lead's direction is weighed
+# before the rest of the queue.
+LEAD_PRIORITY = 1
 
 _INPUT_PART_ADAPTER: TypeAdapter[Any] = TypeAdapter(InputPart)
 
@@ -70,8 +76,15 @@ class TeamMessage(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     # Higher drains first; ties break on the time-ordered id (FIFO within a
     # priority). Control-plane mail (human input, wakeups) uses ``CONTROL_PRIORITY``
-    # so it preempts queued peer messages.
+    # and a team lead's mail ``LEAD_PRIORITY``, so both preempt queued peer messages.
     priority: int = 0
+    # Per-recipient consumption ordinal, stamped by the recipient's inbox when
+    # it takes the message (0 = not yet absorbed / untracked). Consumption
+    # order, not arrival order — priority mail drains out of arrival order, and
+    # rollback needs "consumed after this boundary". Persisted on the acked
+    # mailbox record; a step rollback voids records above a boundary's
+    # high-water (``Transport.void_processed_after``).
+    seq: int = 0
 
     @field_validator("payloads", mode="before")
     @classmethod

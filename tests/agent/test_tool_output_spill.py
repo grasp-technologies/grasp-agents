@@ -25,7 +25,7 @@ from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.events import ToolErrorInfo
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
-from tests._helpers import MockLLM
+from tests._helpers import MockLLM, _make_agent_loop
 
 
 @function_tool(max_inline_result_chars=100)
@@ -51,7 +51,7 @@ def _loop(
 ) -> AgentLoop[None]:
     transcript = LLMAgentTranscript()
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    return AgentLoop[None](
+    return _make_agent_loop(
         agent_name="test",
         llm=MockLLM(model_name="mock", responses_queue=[]),
         transcript=transcript,

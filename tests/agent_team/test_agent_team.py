@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +18,9 @@ import pytest
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent_team.agent_card import MemberCard
 from grasp_agents.agent_team.agent_team import AgentTeam
-from grasp_agents.agent_team.events import MessageDeliveredEvent
+from grasp_agents.agent_team.events import MessageDeliveredEvent, TeamEndedEvent
 from grasp_agents.durability import InMemoryCheckpointStore
+from grasp_agents.durability.checkpoints import TeamCheckpoint
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
 from grasp_agents.processors.processor import Processor
@@ -27,8 +28,16 @@ from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import InputRenderableModel
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
-from grasp_agents.types.response import Response
-from tests._helpers import MockLLM, _text_response, _tool_call_response
+from tests._helpers import (
+    FailFirstLLM,
+    FakeSnapshotEnv,
+    MockLLM,
+    _agent,
+    _send,
+    _text_response,
+    _tool_call_response,
+    _until,
+)
 
 
 class ForwardProcessor(Processor[Any, Any, None]):
@@ -69,25 +78,6 @@ def _ctx(tmp_path: Path) -> SessionContext[None]:
     return SessionContext[None](
         state=None, file_backend=LocalFileBackend(allowed_roots=[tmp_path])
     )
-
-
-def _agent(name: str, responses: list[Response]) -> LLMAgent[Any, Any, None]:
-    return LLMAgent[Any, Any, None](name=name, llm=MockLLM(responses_queue=responses))
-
-
-def _send(to: str, message: str, call_id: str) -> Response:
-    return _tool_call_response(
-        "SendMessage", f'{{"to": "{to}", "message": "{message}"}}', call_id
-    )
-
-
-async def _until(pred: Callable[[], bool]) -> None:
-    """Poll ``pred`` until true, bounded to ~3s so a test can't hang."""
-    for _ in range(300):
-        if pred():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition not met within timeout")
 
 
 @pytest.mark.asyncio
@@ -157,6 +147,29 @@ async def test_hop_budget_stops_with_pending_mail(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_hop_budget_is_per_run_on_a_durable_session() -> None:
+    # ``max_hops`` bounds each run's own deliveries. The lifetime activation
+    # count restored from the team checkpoint must not eat later runs'
+    # budgets — that would permanently wedge a durable team (every new run's
+    # entry seed refused) once the session's history crosses the cap.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team = AgentTeam([solo], ctx=ctx, max_hops=1)
+
+    result1 = await team.run("first question")
+    assert result1.stop_reason == "quiesced"
+    assert result1.activations == 1
+
+    result2 = await team.run("second question")
+    await team.aclose()
+
+    assert result2.stop_reason == "quiesced"
+    assert result2.activations == 2  # lifetime count keeps accumulating
+    assert solo.llm.call_count == 2  # the second seed was delivered
+
+
+@pytest.mark.asyncio
 async def test_token_budget_stops_with_pending_mail(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
@@ -196,14 +209,66 @@ async def test_duplicate_member_names_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_transport_is_used_by_members() -> None:
-    # No file_backend on ctx: the team routes every send through the explicit
-    # transport, so the recording flag being set proves it reached the members.
+async def test_multiple_leads_rejected(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    a = _agent("a", [_text_response("x")])
+    b = _agent("b", [_text_response("y")])
+    cards = [MemberCard(name="a", lead=True), MemberCard(name="b", lead=True)]
+    with pytest.raises(ValueError, match="more than one lead"):
+        AgentTeam([a, b], cards=cards, ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_triggered_lead_rejected(tmp_path: Path) -> None:
+    # The lead's role (priority mail, rewind right + announcements) presumes a
+    # persistent loop; a triggered member — a processor, an agent with static
+    # recipients, or one carded resident=False — cannot be the lead.
+    ctx = _ctx(tmp_path)
+    router = ForwardProcessor(name="router", recipients=["writer"])
+    writer = _agent("writer", [_text_response("x")])
+    with pytest.raises(ValueError, match="must run resident"):
+        AgentTeam(
+            [router, writer],
+            entry="router",
+            cards=[MemberCard(name="router", lead=True)],
+            ctx=ctx,
+        )
+
+    with pytest.raises(ValueError, match="must run resident"):
+        AgentTeam(
+            [_agent("a", []), _agent("b", [])],
+            cards=[MemberCard(name="a", lead=True, resident=False)],
+            ctx=_ctx(tmp_path),
+        )
+
+
+@pytest.mark.asyncio
+async def test_lead_claims_environment_rewind_at_construction(
+    tmp_path: Path,
+) -> None:
+    ctx = _ctx(tmp_path)
+    a = _agent("a", [_text_response("x")])
+    b = _agent("b", [_text_response("y")])
+    AgentTeam([a, b], cards=[MemberCard(name="a", lead=True)], ctx=ctx)
+    assert ctx.session_writer == "a"
+
+    # A ctx that already declares a different rewinder conflicts immediately.
+    other_ctx = _ctx(tmp_path)
+    other_ctx.session_writer = "someone-else"
+    with pytest.raises(RuntimeError, match="already owns session persistence"):
+        AgentTeam([a, b], cards=[MemberCard(name="a", lead=True)], ctx=other_ctx)
+
+
+@pytest.mark.asyncio
+async def test_session_transport_is_used_by_members() -> None:
+    # The team always routes through the session's mailbox (``ctx.transport``),
+    # so the recording flag being set proves the sends reached it.
     transport = RecordingTransport()
     ctx = SessionContext[None](state=None)
+    ctx.transport = transport
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
-    team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
 
     result = await team.run("kick off")
     await team.aclose()
@@ -249,14 +314,15 @@ async def test_team_without_file_backend_uses_in_memory() -> None:
 @pytest.mark.asyncio
 async def test_team_over_checkpoint_transport() -> None:
     # A team running on the durable CheckpointStore-backed mailbox (the same
-    # substrate background tasks persist through).
-    transport = CheckpointMailboxTransport(
-        InMemoryCheckpointStore(), session_key="team"
+    # substrate background tasks persist through) — resolved automatically
+    # from the session's checkpoint store.
+    ctx = SessionContext[None](
+        state=None, checkpoint_store=InMemoryCheckpointStore(), session_key="team"
     )
-    ctx = SessionContext[None](state=None)
     alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("alice done")])
     bob = _agent("bob", [_text_response("bob got it")])
-    team = AgentTeam([alice, bob], entry="alice", ctx=ctx, transport=transport)
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
+    assert isinstance(ctx.transport, CheckpointMailboxTransport)
 
     result = await team.run("kick off")
     await team.aclose()
@@ -269,39 +335,193 @@ async def test_team_over_checkpoint_transport() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_does_not_reseed_or_reset_budget() -> None:
-    # The team checkpoint makes a re-run a resume, not a cold restart: its
-    # existence suppresses re-seeding the entry, and the persisted hop count is
-    # restored instead of reset to 0. A completed session therefore re-runs into
-    # immediate quiescence with no duplicate kickoff and no extra LLM calls.
+async def test_interrupted_run_resumes_without_reseeding() -> None:
+    # A cancelled/crashed run never advances the run ordinal, so re-running
+    # the SAME input is a resume, not a new turn: the already-processed seed
+    # is deduped and the persisted hop count continues instead of resetting.
+    # (A COMPLETED run advances the ordinal — a re-run then re-delivers; see
+    # test_repeat_identical_input_delivers_on_a_new_run.)
     store = InMemoryCheckpointStore()
 
-    def build() -> tuple[AgentTeam[None], LLMAgent[Any, Any, None]]:
+    def build() -> tuple[
+        AgentTeam[None], LLMAgent[Any, Any, None], LLMAgent[Any, Any, None]
+    ]:
         alice = _agent(
             "alice", [_send("bob", "ping", "c1"), _text_response("alice done")]
         )
         bob = _agent("bob", [_text_response("bob got it")])
         ctx = SessionContext[None](state=None, checkpoint_store=store)
-        return AgentTeam([alice, bob], entry="alice", ctx=ctx), bob
+        return AgentTeam([alice, bob], entry="alice", ctx=ctx), alice, bob
 
-    team1, _ = build()
-    result1 = await team1.run("kick off")
+    team1, _alice1, bob1 = build()
+
+    async def consume() -> None:
+        # Daemon: never self-terminates, so cancellation is the only exit —
+        # a deterministic stand-in for a crash (the ordinal never advances).
+        async for _ in team1.run_stream("kick off", daemon=True):
+            pass
+
+    run = asyncio.create_task(consume())
+    try:
+        await _until(lambda: bob1.llm.call_count >= 1)
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
     await team1.aclose()
-    assert result1.stop_reason == "quiesced"
-    assert result1.activations == 2
 
-    # Reconstruct on the same store (a fresh process) and re-run with the same
-    # input. The checkpoint exists, so the entry is NOT re-seeded.
-    team2, bob2 = build()
+    # Reconstruct on the same store (a fresh process) and re-run the same
+    # input: same ordinal → the processed seed is deduped, budget continues.
+    team2, alice2, _bob2 = build()
     result2 = await team2.run("kick off")
     await team2.aclose()
-    assert result2.activations == 2  # restored, not reset to 0 then re-seeded
-    assert result2.messages == []  # no duplicate kickoff delivered
-    assert bob2.llm.call_count == 0  # nothing re-run
+    assert alice2.llm.call_count == 0  # no duplicate kickoff
+    assert result2.activations == 2  # restored, not reset
 
 
 @pytest.mark.asyncio
-async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
+async def test_member_error_keeps_the_run_ordinal_for_retry() -> None:
+    # A member error stops the run but must NOT advance the seed ordinal:
+    # its documented recovery is re-running the SAME input as an idempotent
+    # resume — the entry's seed is deduped, not double-processed, and the
+    # failed member retries its still-owed message.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    alice = _agent("alice", [_send("bob", "ping", "c1"), _text_response("sent")])
+    bob = LLMAgent[Any, Any, None](
+        name="bob",
+        llm=FailFirstLLM(responses_queue=[_text_response("bob answered")]),
+    )
+    team = AgentTeam([alice, bob], entry="alice", ctx=ctx)
+
+    result1 = await team.run("kickoff-task")
+    assert result1.stop_reason == "member_error"
+    assert team._runs_ended == 0  # ordinal kept — the retry is a resume
+    alice_calls_after_run1 = alice.llm.call_count
+
+    result2 = await team.run("kickoff-task")
+    await team.aclose()
+
+    assert result2.stop_reason == "quiesced"
+    assert team._runs_ended == 1
+    # The seed was deduped: alice never re-processed the same input.
+    assert alice.llm.call_count == alice_calls_after_run1
+    assert str(alice.transcript.messages).count("kickoff-task") == 1
+    # Bob's owed message was retried and answered.
+    assert "bob answered" in str(bob.transcript.messages)
+
+
+@pytest.mark.asyncio
+async def test_slow_seed_dedup_probe_does_not_quiesce_the_run() -> None:
+    # The seed's dedup probe is a store round-trip; the monitor polls for
+    # quiescence the whole time. A slow store must not let the run read as
+    # idle and tear down before the input is even deposited.
+    class _SlowDedupTransport(InMemoryMailboxTransport):
+        async def was_processed(self, recipient: str, envelope_id: str) -> bool:
+            await asyncio.sleep(0.3)  # >> two 0.05s quiescence polls
+            return await super().was_processed(recipient, envelope_id)
+
+    ctx = SessionContext[None](state=None)
+    ctx.transport = _SlowDedupTransport()
+    solo = _agent("solo", [_text_response("the answer")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    result = await team.run("question?")
+    await team.aclose()
+
+    assert result.stop_reason == "quiesced"
+    assert result.activations == 1
+    assert solo.llm.call_count == 1  # the input was delivered, not dropped
+
+
+@pytest.mark.asyncio
+async def test_run_ordinal_is_durable_before_the_stream_ends() -> None:
+    # The ordinal bump is persisted at quiescence, BEFORE teardown: a crash
+    # between the run's last useful work and its end then reads as "ended"
+    # (the next identical input is a fresh turn) instead of silently
+    # swallowing it.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent("solo", [_text_response("one")])
+    team = AgentTeam([solo], name="t1", ctx=ctx)
+
+    ended_seen = False
+    async for event in team.run_stream("first question"):
+        if isinstance(event, TeamEndedEvent):
+            ended_seen = True
+            keys = [k for k in await store.list_keys("") if "/team" in k]
+            assert keys, "team checkpoint must exist by stream end"
+            raw = await store.load(keys[0])
+            assert raw is not None
+            checkpoint = TeamCheckpoint.model_validate_json(raw)
+            assert checkpoint.runs_ended == 1
+    await team.aclose()
+    assert ended_seen
+
+
+async def _seed_records(store: InMemoryCheckpointStore) -> list[str]:
+    return [
+        k for k in await store.list_keys("") if "-seed-" in k and "/processed/" in k
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gc_reclaims_stale_ordinal_seeds() -> None:
+    # Entry seeds are pinned against GC only at the CURRENT run ordinal —
+    # older ordinals can never be re-posted, so their records must not
+    # accumulate forever. A triggered entry acks without a consumption seq,
+    # so no rollback horizon pins them either.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent(
+        "solo",
+        [_text_response("one"), _text_response("two"), _text_response("three")],
+    )
+    team = AgentTeam(
+        [solo],
+        ctx=ctx,
+        cards=[MemberCard(name="solo", resident=False)],
+        mailbox_processed_retention=timedelta(seconds=0),
+    )
+
+    await team.run("first question")
+    await team.run("second question")
+    assert len(await _seed_records(store)) == 2
+
+    await team._gc_mailbox()
+    assert len(await _seed_records(store)) == 0
+
+    # A fresh input still runs (its new-ordinal seed is unaffected).
+    result = await team.run("third question")
+    await team.aclose()
+    assert result.stop_reason == "quiesced"
+
+
+@pytest.mark.asyncio
+async def test_gc_reclaims_ended_run_seed_and_rollback_still_voids() -> None:
+    # Once the run ends (the seed's ordinal goes stale — it can never be
+    # re-posted), zero retention reclaims its record: nothing pins consumed
+    # mail anymore, since a rollback voids rather than re-delivers. The
+    # rollback still rewinds the transcript; the reclaimed seed simply has
+    # nothing left to void.
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store)
+    solo = _agent("solo", [_text_response("one")])
+    team = AgentTeam([solo], ctx=ctx, mailbox_processed_retention=timedelta(seconds=0))
+
+    await team.run("kick off")
+    assert solo.rollback_steps == [1]
+    assert len(await _seed_records(store)) == 1  # consumed by the resident
+
+    await team._gc_mailbox()
+    assert len(await _seed_records(store)) == 0  # stale ordinal, reclaimed
+
+    await solo.rollback_to_step(1)
+    transport = ctx.transport
+    assert transport is not None
+    assert not await transport.has_pending("solo")
+    assert "kick off" not in str(solo.transcript.messages)
+    await team.aclose()
     # The team saves its hop checkpoint BEFORE depositing on the transport. A
     # crash in that window for the entry seed must not strand the kickoff: the
     # deterministic seed id makes the resume re-post idempotent, so the seed is
@@ -322,11 +542,9 @@ async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
 
     # RUN 1: the seed's checkpoint is saved, then its deposit crashes.
     entry1 = _agent("entry", [_text_response("hi")])
-    team1 = AgentTeam(
-        [entry1],
-        ctx=SessionContext[None](state=None, checkpoint_store=store),
-        transport=_DropFirstPost(),
-    )
+    ctx1 = SessionContext[None](state=None, checkpoint_store=store)
+    ctx1.transport = _DropFirstPost()
+    team1 = AgentTeam([entry1], ctx=ctx1)
     result1 = await team1.run("kick off")
     await team1.aclose()
     assert result1.stop_reason == "error"
@@ -335,11 +553,9 @@ async def test_resume_redelivers_seed_dropped_before_deposit() -> None:
     # RUN 2 (resume) over the same store with a working transport: the seed was
     # never processed, so it is re-delivered and the entry finally runs.
     entry2 = _agent("entry", [_text_response("hi")])
-    team2 = AgentTeam(
-        [entry2],
-        ctx=SessionContext[None](state=None, checkpoint_store=store),
-        transport=CheckpointMailboxTransport(store, session_key="s"),
-    )
+    ctx2 = SessionContext[None](state=None, checkpoint_store=store)
+    ctx2.transport = CheckpointMailboxTransport(store, session_key="s")
+    team2 = AgentTeam([entry2], ctx=ctx2)
     result2 = await team2.run("kick off")
     await team2.aclose()
     assert entry2.llm.call_count == 1  # seed re-delivered, not stranded
@@ -551,3 +767,209 @@ async def test_submit_message_delivers_human_input_to_member(tmp_path: Path) -> 
     # Stamped as control-plane: from the human, priority-preempting peer mail.
     assert human.sender == "user"
     assert human.priority == CONTROL_PRIORITY
+
+
+@pytest.mark.asyncio
+async def test_environment_rewind_notifies_other_residents(tmp_path: Path) -> None:
+    # When the lead rewinds the shared environment mid-run, every OTHER resident
+    # gets a control-plane <environment_rewind> notice (so it re-verifies state
+    # instead of panicking); the rewinder itself is not notified.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    planner = _agent("planner", [_text_response("planner: kicked off")])
+    scout = _agent(
+        "scout", [_text_response("scout: saw the rewind, re-checking state")]
+    )
+    team = AgentTeam(
+        [planner, scout],
+        entry="planner",
+        cards=[MemberCard(name="planner", lead=True)],
+        ctx=ctx,
+    )
+    delivered: list[TeamMessage] = []
+
+    consumer = asyncio.create_task(_drain(team, "kick off", delivered))
+    try:
+        await _until(lambda: planner.llm.call_count == 1)  # seed handled
+        await ctx.restore_fs_snapshot("snap-1")
+        await _until(lambda: scout.llm.call_count == 1)  # notice reactivated scout
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+    await team.aclose()
+
+    assert env.restored == ["snap-1"]
+    notices = [m for m in delivered if "<environment_rewind>" in m.text]
+    assert [(m.sender, m.recipient) for m in notices] == [("planner", "scout")]
+    assert notices[0].priority == CONTROL_PRIORITY
+    # The notice names the rewinder for the recipient.
+    assert "planner" in notices[0].text
+
+
+@pytest.mark.asyncio
+async def test_hosts_share_the_session_transport(tmp_path: Path) -> None:
+    # The mailbox is session infrastructure, owned by ``ctx.transport``: every
+    # host on the same session uses that instance — the mailbox (and its live
+    # consumption counters) survives host rebuilds instead of being silently
+    # replaced by a fresh, empty one.
+    ctx = _ctx(tmp_path)
+    team = AgentTeam([_agent("solo", [_text_response("a")])], ctx=ctx)
+    team2 = AgentTeam([_agent("solo2", [_text_response("b")])], ctx=ctx)
+    assert team._transport is ctx.transport  # pyright: ignore[reportPrivateUsage]
+    assert team2._transport is ctx.transport  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_attach_inbox_uses_session_transport(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    ctx.transport = InMemoryMailboxTransport()
+    agent = _agent("solo", [])
+    agent.on_adopted(ctx=ctx)
+    agent.attach_inbox()
+    inbox = agent.agent_ctx.inbox
+    assert inbox is not None
+    assert inbox.transport is ctx.transport
+
+
+@pytest.mark.asyncio
+async def test_lead_member_rolls_back_directly_after_a_team_run(
+    tmp_path: Path,
+) -> None:
+    # The human seed reaches the lead over the mailbox and anchors a rollback
+    # boundary; between runs the lead rolls back like any stepping agent
+    # (which member may — the lead here — is the app's policy, not the
+    # team's), and the consumed human seed is voided — not re-delivered.
+    ctx = _ctx(tmp_path)
+    alice = _agent("alice", [_text_response("done")])
+    bob = _agent("bob", [])
+    team = AgentTeam(
+        [alice, bob],
+        entry="alice",
+        cards=[MemberCard(name="alice", lead=True), MemberCard(name="bob")],
+        ctx=ctx,
+    )
+    await team.run("do the thing")
+
+    assert alice.rollback_steps == [1]
+    await alice.rollback_to_step(1)
+    assert alice.step == 1
+    assert "do the thing" not in str(alice.transcript.messages)
+    transport = ctx.transport
+    assert transport is not None
+    assert not await transport.has_pending("alice")  # voided, not re-pended
+
+
+@pytest.mark.asyncio
+async def test_team_runs_twice_on_the_same_session(tmp_path: Path) -> None:
+    # A run's driver shutdown must not close the session mailbox
+    # (``ctx.transport``), and a new input gets a fresh seed id — so a second
+    # run on the same team + ctx actually delivers.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    await team.run("first question")
+    await team.run("second question")
+
+    assert solo.llm.call_count == 2
+    blob = str(solo.transcript.messages)
+    assert "first question" in blob
+    assert "second question" in blob
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_team_reuses_open_session_mailbox(tmp_path: Path) -> None:
+    # A team rebuilt on the same session must find the mailbox usable, not
+    # latched shut by the previous team's run.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team1 = AgentTeam([solo], ctx=ctx)
+    await team1.run("first question")
+
+    team2 = AgentTeam([solo], ctx=ctx)
+    await team2.run("second question")
+
+    assert solo.llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_repeat_identical_input_delivers_on_a_new_run(tmp_path: Path) -> None:
+    # Identical content across completed runs is two legitimate turns: seed
+    # identity keys on the run ordinal, never on content.
+    ctx = _ctx(tmp_path)
+    solo = _agent("solo", [_text_response("one"), _text_response("two")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    await team.run("same question")
+    await team.run("same question")
+
+    assert solo.llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rewind_notice_reaches_peers_between_runs(tmp_path: Path) -> None:
+    # A lead rollback restores a snapshot BETWEEN runs (no live driver); the
+    # notice must land on the session mailbox for the peers' next take rather
+    # than being dropped with the run-scoped routing.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    alice = _agent("alice", [])
+    bob = _agent("bob", [])
+    AgentTeam(
+        [alice, bob],
+        cards=[MemberCard(name="alice", lead=True), MemberCard(name="bob")],
+        ctx=ctx,
+    )
+
+    await ctx.restore_fs_snapshot("snap-1")
+
+    transport = ctx.transport
+    assert transport is not None
+    assert await transport.has_pending("bob")
+    assert not await transport.has_pending("alice")
+
+
+@pytest.mark.asyncio
+async def test_closed_team_stops_announcing_rewinds(tmp_path: Path) -> None:
+    # aclose() deregisters the rewind announcer: after a rebuild on the same
+    # session, one rewind produces exactly one notice — not one per build.
+    env = FakeSnapshotEnv(tmp_path)
+    ctx = SessionContext[None](state=None, environment=env)
+    cards = [MemberCard(name="alice", lead=True), MemberCard(name="bob")]
+    team1 = AgentTeam([_agent("alice", []), _agent("bob", [])], cards=cards, ctx=ctx)
+    await team1.aclose()
+    AgentTeam([_agent("alice", []), _agent("bob", [])], cards=cards, ctx=ctx)
+
+    await ctx.restore_fs_snapshot("snap-1")
+
+    transport = ctx.transport
+    assert isinstance(transport, InMemoryMailboxTransport)
+    assert len(transport._boxes.get("bob", [])) == 1  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_unowned_session_persistence_warns_once() -> None:
+    # A lead-less team with session persistence on: every member is contained
+    # and none claims the writer role, so the record is never written — the
+    # session warns exactly once instead of staying silently inert.
+    import logging
+
+    store = InMemoryCheckpointStore()
+    ctx = SessionContext[None](state=None, checkpoint_store=store, serialize_state=True)
+    solo = _agent("solo", [_text_response("one")])
+    team = AgentTeam([solo], ctx=ctx)
+
+    logger = logging.getLogger("grasp_agents.session_context")
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger.addHandler(handler)
+    try:
+        await team.run("go")
+    finally:
+        logger.removeHandler(handler)
+        await team.aclose()
+
+    warnings = [r for r in records if "no session writer" in r.getMessage()]
+    assert len(warnings) == 1

@@ -2,6 +2,7 @@ import asyncio
 import contextvars
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,10 +20,12 @@ from .durability.store_keys import make_store_key
 from .file_backend.base import FileBackend
 from .memory.provider import MemoryProvider
 from .printer import Printer
+from .runtime import Transport
 from .sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from .sandbox.exec_backend import ExecBackend
 from .skills.registry import SkillRegistry
 from .types.io import ProcName
+from .types.message import TeamMessage
 from .types.response import Response
 from .usage_tracker import UsageTracker
 
@@ -35,6 +38,24 @@ Session-scoped stores route lookups by ``session_key``; trace grouping treats
 this value as "no session" (each run is its own trace root). Set a real
 ``session_key`` to opt a session into single-trace grouping across runs.
 """
+
+
+def _default_transport(data: dict[str, Any]) -> Transport[TeamMessage]:
+    """
+    Data-aware default factory (pydantic calls a one-argument factory with
+    the already-validated fields): ``transport`` must stay declared AFTER
+    ``checkpoint_store`` and ``session_key``, or the lookups below fail.
+    """
+    # Local import: mailbox.py imports this module at module level.
+    from .mailbox import (  # noqa: PLC0415
+        CheckpointMailboxTransport,
+        InMemoryMailboxTransport,
+    )
+
+    store = data["checkpoint_store"]
+    if store is not None:
+        return CheckpointMailboxTransport(store, session_key=data["session_key"])
+    return InMemoryMailboxTransport()
 
 
 class SessionContext[CtxT](BaseModel):
@@ -52,14 +73,30 @@ class SessionContext[CtxT](BaseModel):
     # filesystem it snapshots. Requires :attr:`environment` to be
     # ``SnapshotCapable`` (e.g. E2B). ``"off"`` (default): never snapshot.
     # ``"final"``: snapshot at run-end boundaries (final answer / max turns /
-    # resident turn). ``"turn"``: snapshot at every checkpoint boundary,
-    # including after each tool batch — strongest rewind granularity, but
-    # each snapshot costs a provider round-trip. Only the opaque ref is
-    # stored (in the session checkpoint and per-step watermarks); the bytes
-    # live with the snapshot owner.
+    # resident turn) — a consistent cold resume is then guaranteed only at
+    # those boundaries: a crash mid-run resumes a transcript that has
+    # advanced past the restored snapshot (the resume warns and injects a
+    # filesystem-restored notice telling the agent to re-verify recent file
+    # claims). ``"turn"``: snapshot at every checkpoint boundary, including
+    # after each tool batch — consistent resume at every boundary, but each
+    # snapshot costs a provider round-trip. Only the opaque ref is stored
+    # (in the session checkpoint and per-step watermarks); the bytes live
+    # with the snapshot owner.
     fs_snapshot_policy: Literal["off", "final", "turn"] = Field(
         default="off", exclude=True
     )
+
+    # The processor owning session-scoped persistence: only it writes the
+    # per-session record (serialized ``state``, fs snapshot ref, metadata),
+    # snapshots the filesystem, and may restore one. Normally claimed
+    # automatically: a bare agent's first stepped delivery, a team lead's
+    # card — and a top-level workflow hands the role from node to
+    # node as each runs. Declare explicitly only for topologies those miss.
+    # While unclaimed, only a bare (uncontained) agent writes — see
+    # ``LLMAgent._is_session_writer``. Name-keyed: don't reuse the writer's
+    # name for another processor (e.g. an ``.as_tool()`` clone) in the
+    # same session.
+    session_writer: ProcName | None = Field(default=None, exclude=True)
 
     responses: defaultdict[ProcName, list[Response]] = Field(
         default_factory=lambda: defaultdict(list)
@@ -111,6 +148,17 @@ class SessionContext[CtxT](BaseModel):
     # :attr:`file_backend` from it.
     environment: ExecutionEnvironment | None = Field(default=None, exclude=True)
 
+    # The session's one inter-agent mailbox transport — every host, resident
+    # inbox, and ``SendMessage`` shares this instance (it holds the live
+    # per-recipient consumption counters, so a host rebuilt mid-session
+    # reuses the same mailbox instead of opening a second one). Built at
+    # construction: durable over ``checkpoint_store`` when the session has
+    # one, else in-memory. Pass one only to supply a custom transport (e.g.
+    # a shared instance across separately built sessions).
+    transport: Transport[TeamMessage] = Field(
+        default_factory=_default_transport, exclude=True
+    )
+
     # Skills registry consumed by the top-level ``load_skill`` /
     # ``list_skills`` tools and the ``skills_system_prompt_section``.
     skills: SkillRegistry | None = Field(default=None, exclude=True)
@@ -128,8 +176,12 @@ class SessionContext[CtxT](BaseModel):
     )
 
     _session_restored: bool = PrivateAttr(default=False)
+    _unowned_record_warned: bool = PrivateAttr(default=False)
     _session_fs_restored: bool = PrivateAttr(default=False)
     _session_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+    _environment_restored_callbacks: list[Callable[[str], Awaitable[None]]] = (
+        PrivateAttr(default_factory=list["Callable[[str], Awaitable[None]]"])
+    )
 
     def __enter__(self) -> "SessionContext[CtxT]":
         """
@@ -203,8 +255,9 @@ class SessionContext[CtxT](BaseModel):
         """
         Whether this process rewound the shared filesystem to a snapshot.
 
-        Set by :meth:`load_checkpoint`; kernel re-attach is only meaningful
-        inside a restored filesystem, so consumers gate on this.
+        Set by :meth:`load_checkpoint` and :meth:`restore_fs_snapshot`; kernel
+        re-attach is only meaningful inside a restored filesystem, so
+        consumers gate on this.
         """
         return self._session_fs_restored
 
@@ -264,34 +317,188 @@ class SessionContext[CtxT](BaseModel):
         """
         Persist session-scoped state as of the current checkpoint boundary.
 
-        Called by agents alongside their own checkpoints; no-ops unless a
-        session-scoped feature is on (``serialize_state`` / ``fs_snapshot_policy``
-        / ``session_metadata``). ``fs_snapshot_ref`` is recorded exactly as
-        given: ``None`` means no snapshot describes the session as of this
-        boundary, so a cold resume keeps the live filesystem instead of
-        rewinding to a stale ref.
+        Called by the session's owning agent alongside its own checkpoints
+        (the session writer, or a bare agent while the role is unclaimed —
+        see :meth:`claim_session_writer`); no-ops unless a session-scoped
+        feature is on (``serialize_state`` / ``fs_snapshot_policy``
+        / ``session_metadata``). The record keeps the session's **latest**
+        snapshot ref: a boundary that took no snapshot passes ``None``, and
+        the ref already on the record is carried forward, so a snapshotless
+        boundary (mid-run under ``"final"``) never erases the ref a cold
+        resume restores from. Per-boundary snapshot pairing lives on each
+        agent's own checkpoint head instead.
+
+        The record is one per ``session_key`` and has no per-field merge:
+        in a multi-process deployment, enable the record-writing features
+        (``serialize_state`` / ``session_metadata``) in ONE process — several
+        writers clobber each other's ``state`` last-writer-wins, and only the
+        session writer's process should pair snapshots with it.
         """
+        if not self.session_record_enabled:
+            return
+        await self._write_session_record(fs_snapshot_ref=fs_snapshot_ref)
+
+    @property
+    def session_record_enabled(self) -> bool:
+        """Whether any session-scoped persistence feature is on."""
+        return bool(
+            self.serialize_state
+            or self.fs_snapshot_policy != "off"
+            or self.session_metadata
+        )
+
+    def warn_unowned_session_record(self) -> None:
+        """
+        One warning per session: persistence is enabled but no session writer
+        exists, so the record is never written (e.g. every agent is contained
+        — a lead-less team — and none claims the role).
+        """
+        if self._unowned_record_warned:
+            return
+        self._unowned_record_warned = True
+        logger.warning(
+            "Session %s has session persistence enabled (serialize_state / "
+            "fs_snapshot_policy / session_metadata) but no session writer: "
+            "the session record is never written and state will not survive "
+            "a cold resume. Declare SessionContext(session_writer=...) or "
+            "mark a team lead.",
+            self.session_key,
+        )
+
+    async def _write_session_record(self, *, fs_snapshot_ref: str | None) -> None:
         key = self._session_store_key()
         if self.checkpoint_store is None or key is None:
             return
-        if (
-            not self.serialize_state
-            and self.fs_snapshot_policy == "off"
-            and not self.session_metadata
-        ):
+
+        async with self._session_lock:
+            # ``None`` = this boundary took no snapshot: carry the ref already
+            # on the record forward rather than nulling it — read from the
+            # store (not a process-local memo), so another process's newer
+            # snapshot is preserved too. An explicit ref replaces it —
+            # including an *older* one on a rollback's re-point. The lock
+            # keeps concurrent in-process saves from interleaving the
+            # read-modify-write.
+            if fs_snapshot_ref is None:
+                existing = await self.checkpoint_store.load_json(
+                    key, SessionCheckpoint, subject=f"session checkpoint at {key}"
+                )
+                fs_snapshot_ref = existing.fs_snapshot_ref if existing else None
+
+            context_kind: ContextKind | None = None
+            context_data: Any | None = None
+            if self.serialize_state:
+                context_kind, context_data = serialize_context(self.state)
+
+            record = SessionCheckpoint(
+                session_key=self.session_key,
+                context_kind=context_kind,
+                context_data=context_data,
+                fs_snapshot_ref=fs_snapshot_ref,
+                session_metadata=self.session_metadata,
+            )
+            await self.checkpoint_store.save(
+                key, record.model_dump_json().encode("utf-8")
+            )
+
+    def claim_session_writer(self, proc_name: ProcName) -> None:
+        """
+        Make ``proc_name`` the session writer (see :attr:`session_writer`).
+
+        Claiming the unclaimed role takes it; re-claiming as the holder is a
+        no-op.
+
+        Raises:
+            RuntimeError: another processor already owns session persistence —
+                declare the intended writer via
+                ``SessionContext(session_writer=...)``.
+
+        """
+        if self.session_writer is None:
+            self.session_writer = proc_name
             return
-        context_kind: ContextKind | None = None
-        context_data: Any | None = None
-        if self.serialize_state:
-            context_kind, context_data = serialize_context(self.state)
-        record = SessionCheckpoint(
-            session_key=self.session_key,
-            context_kind=context_kind,
-            context_data=context_data,
-            fs_snapshot_ref=fs_snapshot_ref,
-            session_metadata=self.session_metadata,
+        if proc_name != self.session_writer:
+            raise RuntimeError(
+                f"Processor {proc_name!r} cannot claim session-writer "
+                f"status: {self.session_writer!r} already owns session "
+                "persistence (declare the writer via "
+                "SessionContext(session_writer=...))."
+            )
+
+    def add_environment_restored_callback(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """
+        Register a callback awaited after every successful environment rewind
+        (:meth:`restore_fs_snapshot`), with the restored snapshot ref — the seam
+        a multi-agent host uses to tell the other environment tenants the
+        filesystem (and any kernels) changed under them.
+        """
+        self._environment_restored_callbacks.append(callback)
+
+    def remove_environment_restored_callback(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """
+        Deregister a rewind callback (a no-op if it is not registered). A host
+        being torn down must remove the callback it added, or a host rebuilt
+        on the same session would leave a stale announcer posting duplicate
+        notices.
+        """
+        if callback in self._environment_restored_callbacks:
+            self._environment_restored_callbacks.remove(callback)
+
+    async def restore_fs_snapshot(
+        self, fs_snapshot_ref: str, *, claimant: ProcName | None = None
+    ) -> None:
+        """
+        Rewind the shared environment filesystem to ``fs_snapshot_ref`` and
+        re-point the session checkpoint at it.
+
+        The filesystem is session-owned, so a deliberate rewind (e.g.
+        :meth:`LLMAgent.rollback_to_step`) goes through here rather than
+        touching :attr:`environment` directly: the session record is rewritten
+        with the restored ref in the same call, so a crash right after never
+        cold-resumes into a filesystem newer than the one just restored —
+        retrying the rewind heals fully. ``claimant`` names the processor
+        rewinding: it claims (or must already hold) the session-writer role, so
+        a rewind can never bypass the one-writer guarantee. Omit it only for a
+        session-owner override (application code rewinding outside any
+        processor).
+
+        Raises:
+            RuntimeError: :attr:`environment` is not ``SnapshotCapable``, or
+                ``claimant`` does not hold the session-writer role
+                (:meth:`claim_session_writer`).
+
+        """
+        if claimant is not None:
+            self.claim_session_writer(claimant)
+        if not isinstance(self.environment, SnapshotCapable):
+            # RuntimeError, not TypeError, to match load_checkpoint's
+            # resume-side twin of this wiring check.
+            raise RuntimeError(  # noqa: TRY004
+                f"Restoring fs_snapshot_ref={fs_snapshot_ref!r} requires a "
+                "SnapshotCapable ctx.environment; got "
+                f"{type(self.environment).__name__}."
+            )
+        await self.environment.restore(fs_snapshot_ref)
+        self._session_fs_restored = True
+        # Unconditional (unlike ``save_checkpoint``'s feature gate): the ref
+        # being restored proves a snapshot-carrying record exists, and leaving
+        # it pointing past the rewind is exactly the divergence this method
+        # closes.
+        await self._write_session_record(fs_snapshot_ref=fs_snapshot_ref)
+        logger.info(
+            "Restored session %s filesystem to snapshot %r",
+            self.session_key,
+            fs_snapshot_ref,
         )
-        await self.checkpoint_store.save(key, record.model_dump_json().encode("utf-8"))
+        # After the record write: the rewind is fully committed by the time the
+        # other tenants are told about it. A failing callback propagates — the
+        # restore itself is already durable, and a notification that cannot be
+        # delivered (e.g. a broken mailbox store) should be loud, not swallowed.
+        for callback in self._environment_restored_callbacks:
+            await callback(fs_snapshot_ref)
 
     def record_response(self, agent_name: ProcName, response: Response) -> None:
         """
@@ -305,6 +512,35 @@ class SessionContext[CtxT](BaseModel):
         cap = self.max_responses_per_agent
         if cap is not None and len(bucket) > cap:
             del bucket[: len(bucket) - cap]
+
+    @model_validator(mode="after")
+    def _warn_transport_durability_mismatch(self) -> "SessionContext[CtxT]":
+        # Mail safety requires the mailbox and the session state to share a
+        # durability fate: consumed mail's handling lives only in transcripts,
+        # and pending mail lives only in the mailbox. A caller-supplied
+        # transport can break that pairing — the built default never does.
+        from .mailbox import CheckpointMailboxTransport  # noqa: PLC0415
+
+        durable_session = self.checkpoint_store is not None
+        durable_mailbox = isinstance(self.transport, CheckpointMailboxTransport)
+        if durable_session and not durable_mailbox:
+            logger.warning(
+                "Session %s persists its state but ctx.transport is "
+                "ephemeral: pending mail dies with the process while the "
+                "session resumes without it. Leave transport unset to derive "
+                "a durable mailbox from the checkpoint store.",
+                self.session_key,
+            )
+        elif durable_mailbox and not durable_session:
+            logger.warning(
+                "Session %s does not persist its state but ctx.transport is "
+                "durable: a restart finds consumed messages acked while the "
+                "transcripts that absorbed them are gone — their handling is "
+                "lost without redelivery. Give the session a checkpoint "
+                "store (or an in-memory transport).",
+                self.session_key,
+            )
+        return self
 
     @model_validator(mode="after")
     def _reconcile_environment(self) -> "SessionContext[CtxT]":

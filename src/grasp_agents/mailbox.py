@@ -7,9 +7,10 @@ mailbox implementations, beside the in-process :class:`~grasp_agents.runtime.
 InProcessTransport` used for event routing. So a single agent's inbox, a multi-agent
 team's driver, and (in future) a networked backend all sit on the same seam — no
 adapter, no parallel transport type. A mailbox has no native arrival signal, so
-:meth:`consume` blocks by polling :meth:`has_pending` every ``poll_interval`` and
-wakes immediately on :meth:`shutdown`; ``fetch`` is non-removing and a consumer
-``ack``s after a successful activation, so delivery is at-least-once.
+:meth:`consume` blocks by polling :meth:`has_pending` every ``poll_interval``;
+``fetch`` is non-removing and a consumer ``ack``s after a successful activation,
+so delivery is at-least-once. The transport is session-scoped and outlives any
+one run — consumers stop by cancellation, not by closing it.
 
 - :class:`InMemoryMailboxTransport` — ephemeral, process-local; single-process.
 - :class:`CheckpointMailboxTransport` — durable, over the session
@@ -26,20 +27,66 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from grasp_agents.durability.checkpoints import CheckpointKind, CheckpointSchemaError
-from grasp_agents.durability.message_record import MessageRecord
+from grasp_agents.durability.message_record import MessageRecord, MessageStatus
 from grasp_agents.durability.store_keys import key_leaf, make_store_key
-from grasp_agents.durability.task_record import TaskStatus
 from grasp_agents.runtime import CLOSED, Closed, Transport
 from grasp_agents.session_context import DEFAULT_SESSION_KEY
-from grasp_agents.types.message import TeamMessage
+from grasp_agents.types.message import USER_SENDER, TeamMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from datetime import timedelta
 
     from grasp_agents.durability.checkpoint_store import CheckpointStore
 
 logger = logging.getLogger(__name__)
+
+
+def _dropped_message_note(message: TeamMessage, *, recipient: str) -> str:
+    excerpt = message.text[:200]
+    return (
+        "<message_dropped>\n"
+        f"Your message to '{recipient}' (id {message.message_id}) was "
+        "discarded by a conversation rollback and will not be answered"
+        f"{': ' + excerpt if excerpt else '.'}\n"
+        "Resend it if it is still relevant.\n"
+        "</message_dropped>"
+    )
+
+
+async def void_mail_after(
+    transport: Transport[TeamMessage],
+    recipient: str,
+    seq: int,
+    *,
+    leased: Sequence[TeamMessage] = (),
+) -> None:
+    """
+    The mailbox half of a step rollback: everything ``recipient`` consumed
+    after ``seq`` is voided, never re-delivered — a rollback rewrites history,
+    so the human supplies new input instead of a replay (their dropped
+    messages are discarded silently), while each peer whose message was
+    dropped gets a ``<message_dropped>`` note so it can resend what is still
+    relevant. ``leased`` takes (absorbed but never acked) are acked first so
+    the void sweep covers them. Each note posts BEFORE its message's void is
+    made durable, so a crash in between re-notifies on the retried rollback
+    (a duplicate note beats a silent drop).
+    """
+    for message in leased:
+        await transport.ack(recipient, message)
+
+    async def notify(message: TeamMessage) -> None:
+        if message.sender == USER_SENDER:
+            return
+        await transport.post(
+            TeamMessage.from_text(
+                sender=recipient,
+                to=message.sender,
+                text=_dropped_message_note(message, recipient=recipient),
+            )
+        )
+
+    await transport.void_processed_after(recipient, seq, on_void=notify)
 
 
 class InMemoryMailboxTransport(Transport[TeamMessage]):
@@ -53,7 +100,16 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
     """
 
     def __init__(self, *, poll_interval: float = 0.05) -> None:
+        super().__init__()
         self._boxes: dict[str, list[TeamMessage]] = {}
+        # Acked messages whose consumer stamped a consumption ``seq``, retained
+        # as the dedup record and for a step rollback to void (the in-memory
+        # analog of the durable ``processed/`` records). Untracked acks
+        # (``seq == 0``) are dropped outright, as before.
+        self._processed: dict[str, list[TeamMessage]] = {}
+        # Ids already voided by a rollback, so a repeated rollback over the
+        # same range does not re-notify their senders.
+        self._voided: set[str] = set()
         self._poll_interval = poll_interval
         self._closed = asyncio.Event()
 
@@ -69,8 +125,8 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
         while not self._closed.is_set():
             box = self._boxes.get(recipient)
             if box:
-                # Highest priority first, then oldest (FIFO within a priority).
-                # Non-removing; removed by ack after activation.
+                # Highest priority first, oldest within a priority.
+                # Non-removing; removed by ack.
                 return min(box, key=lambda m: (-m.priority, m.message_id))
             try:
                 await asyncio.wait_for(self._closed.wait(), self._poll_interval)
@@ -84,9 +140,40 @@ class InMemoryMailboxTransport(Transport[TeamMessage]):
             self._boxes[recipient] = [
                 m for m in box if m.message_id != envelope.message_id
             ]
+        processed = self._processed.setdefault(recipient, [])
+        if envelope.seq > 0 and all(
+            m.message_id != envelope.message_id for m in processed
+        ):
+            processed.append(envelope)
 
     async def has_pending(self, recipient: str) -> bool:
         return bool(self._boxes.get(recipient))
+
+    async def was_processed(self, recipient: str, envelope_id: str) -> bool:
+        # The retained-processed list doubles as the dedupe record, so a
+        # deterministic-id re-post (an entry seed) is skipped here exactly as
+        # it is on the durable transport. Untracked acks (``seq == 0``) are
+        # not retained and so not deduped — they have no redelivery source
+        # in-process.
+        return any(
+            m.message_id == envelope_id for m in self._processed.get(recipient, [])
+        )
+
+    async def void_processed_after(
+        self,
+        recipient: str,
+        seq: int,
+        *,
+        on_void: Callable[[TeamMessage], Awaitable[None]] | None = None,
+    ) -> list[TeamMessage]:
+        voided: list[TeamMessage] = []
+        for message in self._processed.get(recipient, []):
+            if message.seq > seq and message.message_id not in self._voided:
+                if on_void is not None:
+                    await on_void(message)
+                self._voided.add(message.message_id)
+                voided.append(message)
+        return voided
 
     async def shutdown(self) -> None:
         self._closed.set()
@@ -96,8 +183,8 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
     """
     Mailboxes persisted in the session :class:`CheckpointStore` as
     :class:`~grasp_agents.durability.MessageRecord`s — the same durable substrate
-    (store, store-key convention, ``TaskStatus`` lifecycle) that background tasks
-    use, so messages and task records live beside each other under one session key
+    (store and store-key convention) that background-task records persist through,
+    so messages and task records live beside each other under one session key
     and resume together. Durable, and cross-process over a shared store
     (``FileCheckpointStore``).
 
@@ -126,6 +213,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         session_key: str = DEFAULT_SESSION_KEY,
         poll_interval: float = 0.05,
     ) -> None:
+        super().__init__()
         self._store = store
         self._session_key = session_key
         self._poll_interval = poll_interval
@@ -168,6 +256,12 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         )
         return base + "/"
 
+    def _processed_prefix(self, recipient: str) -> str:
+        base = make_store_key(
+            self._session_key, CheckpointKind.MAILBOX, [recipient, "processed"]
+        )
+        return base + "/"
+
     def _mailbox_prefix(self) -> str:
         base = make_store_key(self._session_key, CheckpointKind.MAILBOX, [])
         return base + "/"
@@ -177,7 +271,7 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
             record = MessageRecord(
                 session_key=self._session_key,
                 message=single,
-                status=TaskStatus.PENDING,
+                status=MessageStatus.PENDING,
             )
             await self._store.save(
                 self._inbox_key(single.recipient, single),
@@ -246,13 +340,20 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         data = await self._store.load(inbox_key)
         if data is None:
             return
-        delivered = MessageRecord.model_validate_json(data).model_copy(
-            update={"status": TaskStatus.DELIVERED, "updated_at": datetime.now(UTC)}
-        )
-        await self._store.save(
-            self._processed_key(recipient, envelope.message_id),
-            delivered.model_dump_json().encode(),
-        )
+        processed_key = self._processed_key(recipient, envelope.message_id)
+        if await self._store.load(processed_key) is None:
+            # First ack wins, storing the acking consumer's envelope — it
+            # carries the consumption ``seq`` that :meth:`void_processed_after`
+            # compares. A redelivery dedupe re-acks with an unstamped copy and
+            # must only clear the lingering inbox key, never clobber the seq.
+            delivered = MessageRecord.model_validate_json(data).model_copy(
+                update={
+                    "status": MessageStatus.DELIVERED,
+                    "message": envelope,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._store.save(processed_key, delivered.model_dump_json().encode())
         await self._store.delete(inbox_key)
 
     async def has_pending(self, recipient: str) -> bool:
@@ -265,6 +366,47 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         # delete hadn't landed) finds the processed copy and skips re-running.
         key = self._processed_key(recipient, envelope_id)
         return await self._store.load(key) is not None
+
+    async def void_processed_after(
+        self,
+        recipient: str,
+        seq: int,
+        *,
+        on_void: Callable[[TeamMessage], Awaitable[None]] | None = None,
+    ) -> list[TeamMessage]:
+        """
+        Mark ``processed/`` records with consumption ``seq >`` the watermark
+        ``VOIDED`` — the mailbox half of a step rollback. Voided records
+        are never re-delivered (a rollback rewrites history; senders are
+        notified via ``on_void`` instead) but stay on record for the
+        redelivery dedup (:meth:`was_processed`). Returns the voided
+        messages, once: already-voided records are skipped, so retrying a
+        rollback (or a later rollback over the same range) does not re-notify
+        senders. ``on_void`` runs BEFORE a record's VOIDED save — a crash
+        in between re-runs it on the retry (at-least-once notification).
+        """
+        voided: list[TeamMessage] = []
+        for key in await self._store.list_keys(self._processed_prefix(recipient)):
+            record = await self._store.load_json(
+                key, MessageRecord, subject="mailbox processed record"
+            )
+            if (
+                record is None
+                or record.message.seq <= seq
+                or record.status is MessageStatus.VOIDED
+            ):
+                continue
+            if on_void is not None:
+                await on_void(record.message)
+            voided_record = record.model_copy(
+                update={
+                    "status": MessageStatus.VOIDED,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._store.save(key, voided_record.model_dump_json().encode())
+            voided.append(record.message)
+        return voided
 
     async def prune_processed(
         self,
@@ -310,9 +452,10 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
                     )
                 except CheckpointSchemaError:
                     continue
-                if record is not None and record.updated_at < processed_cutoff:
-                    await self._store.delete(key)
-                    pruned += 1
+                if record is None or record.updated_at >= processed_cutoff:
+                    continue
+                await self._store.delete(key)
+                pruned += 1
             elif "/corrupt/" in key and self._corrupt_is_stale(
                 await self._store.load(key), corrupt_cutoff
             ):

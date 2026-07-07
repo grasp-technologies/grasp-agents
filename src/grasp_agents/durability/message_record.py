@@ -1,7 +1,14 @@
+from enum import StrEnum, auto
+
 from grasp_agents.types.message import TeamMessage
 
 from .checkpoints import PersistedRecord
-from .task_record import TaskStatus
+
+
+class MessageStatus(StrEnum):
+    PENDING = auto()  # Posted, not yet consumed
+    DELIVERED = auto()  # Consumed and acked
+    VOIDED = auto()  # Dropped by a step rollback — never re-delivered
 
 
 class MessageRecord(PersistedRecord):
@@ -10,12 +17,11 @@ class MessageRecord(PersistedRecord):
     :class:`TaskRecord`.
 
     Shares the same checkpoint-store substrate: the store-key convention
-    (``"<session_key>/mailbox/<recipient>/inbox|processed/<message_id>"``), the
-    :class:`TaskStatus` lifecycle (``PENDING`` undelivered → ``DELIVERED``), and
+    (``"<session_key>/mailbox/<recipient>/inbox|processed/<message_id>"``) and
     schema versioning. The :class:`TeamMessage` is nested directly (it is fully
     serializable) — sender / recipient / id all live on it, so the record adds
     only the delivery status on top.
     """
 
     message: TeamMessage
-    status: TaskStatus = TaskStatus.PENDING
+    status: MessageStatus = MessageStatus.PENDING

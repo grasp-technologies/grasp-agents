@@ -16,7 +16,9 @@ def _make_loop():
     # collected in isolation.
     from pydantic import BaseModel
 
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.agent.agent_loop import AgentLoop
+    from grasp_agents.agent.context_window import ContextWindowManager
     from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
     from grasp_agents.session_context import SessionContext
 
@@ -24,11 +26,15 @@ def _make_loop():
         model_name = "stub"
         litellm_provider = "stub"
 
+    transcript = LLMAgentTranscript()
+    agent_ctx = AgentContext.create(transcript=transcript, tools={}, agent_name="A")
     return AgentLoop[BaseModel](
         agent_name="A",
         llm=_StubLLM(),  # type: ignore[arg-type]
-        transcript=LLMAgentTranscript(),
-        tools=None,
+        agent_ctx=agent_ctx,
+        context_window=ContextWindowManager(
+            transcript=transcript, model="stub", source="A"
+        ),
         ctx=SessionContext[BaseModel](),  # type: ignore[call-arg]
         max_turns=1,
     )
@@ -37,7 +43,7 @@ def _make_loop():
 def test_agent_loop_owns_distinct_state_per_instance() -> None:
     """Two AgentLoop instances each get their own ``file_edit_state``."""
     a, b = _make_loop(), _make_loop()
-    assert a.file_edit_state is not b.file_edit_state
+    assert a.agent_ctx.file_edit_state is not b.agent_ctx.file_edit_state
 
 
 def test_agent_ctx_wraps_loop_state() -> None:
@@ -47,6 +53,6 @@ def test_agent_ctx_wraps_loop_state() -> None:
     contexts — the per-agent separation that replaces the old ContextVar.
     """
     a, b = _make_loop(), _make_loop()
-    assert a.agent_ctx.file_edit_state is a.file_edit_state
+    assert a.agent_ctx.file_edit_state is a.agent_ctx.file_edit_state
     assert a.agent_ctx is not b.agent_ctx
     assert a.agent_ctx.file_edit_state is not b.agent_ctx.file_edit_state

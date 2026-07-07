@@ -24,7 +24,12 @@ from grasp_agents.types.items import (
     InputMessageItem,
 )
 from grasp_agents.types.response import Response
-from tests._helpers import MockLLM, _text_response, _tool_call_response
+from tests._helpers import (
+    MockLLM,
+    _make_agent_loop,
+    _text_response,
+    _tool_call_response,
+)
 
 # ---------- Infrastructure ----------
 
@@ -54,7 +59,7 @@ def _make_executor(
     memory.update([InputMessageItem.from_text("go", role="user")])
 
     ctx = ctx if ctx is not None else SessionContext[None](state=None)
-    executor = AgentLoop[None](
+    executor = _make_agent_loop(
         agent_name="test",
         llm=llm,
         transcript=memory,

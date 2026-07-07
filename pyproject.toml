@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "1.0.12"
+version = "1.0.13"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
@@ -101,7 +101,9 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = ["integration: requires real API keys (skipped by default)"]
-addopts = "-m 'not integration'"
+# tests/kits needs the standalone grasp_kits package (not a dependency here);
+# skipped until it is wired back in.
+addopts = "-m 'not integration' --ignore=tests/kits"
 
 [tool.coverage.run]
 source = ["src/grasp_agents"]

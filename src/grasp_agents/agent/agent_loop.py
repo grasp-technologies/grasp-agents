@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel
 
-from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
@@ -56,7 +55,6 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.utils.streaming import stream_concurrent
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
-from .context_window import ContextWindowManager
 from .loop_state import (
     NextStep,
     NextStepContinue,
@@ -87,16 +85,12 @@ if TYPE_CHECKING:
         ToolInputConverter,
         ToolOutputConverter,
     )
-    from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
     from grasp_agents.session_context import SessionContext
-    from grasp_agents.skills.types import SkillFilter
-    from grasp_agents.tools.bash_common import ShellState
-    from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.types.response import Response
 
-    from .background_tasks import BackgroundTaskManager
-    from .llm_agent_transcript import LLMAgentTranscript
+    from .agent_context import AgentContext
+    from .context_window import ContextWindowManager
 
 logger = getLogger(__name__)
 
@@ -155,130 +149,108 @@ class AgentLoop[CtxT]:
     """
 
     agent_name: Final[str]
-    llm: Final[LLM]
-    final_answer_type: type[BaseModel]
-    max_turns: Final[int]
-    force_react_mode: Final[bool]
-    final_answer_as_tool_call: Final[bool]
-    tracing_exclude_input_fields: Final[set[str] | None]
     stream_llm: Final[bool]
+    final_answer_type: type[BaseModel]
+    final_answer_as_tool_call: Final[bool]
+    max_turns: Final[int]
+    run_timeout: Final[float | None]
+    force_react_mode: Final[bool]
+    tracing_exclude_input_fields: Final[set[str] | None]
 
     # Mutable state
-    # Agent-scope state (transcript, tools, bg_tasks, file_edit_state,
-    # session_holder, shell_state) lives on the single ``_agent_ctx`` and is
-    # exposed via read-only properties below — one source, no duplicate attrs.
-    final_answer: str | None  # extracted by _check_stop / _force_generate
-    turn: int  # current LLM cycle within a step
-    path: list[str] | None
 
-    # Hook callback slots — set by LLMAgent. The observer / decision hooks are
-    # lists: registering more than one stacks them (invoked in registration
-    # order) instead of replacing. ``final_answer_extractor`` stays single-slot
-    # — there is exactly one final-answer decision, so a later registration
-    # replaces it.
-    final_answer_extractor: FinalAnswerExtractor | None
+    turn: int
+    ctx: SessionContext[CtxT]
+    path: list[str] | None
+    llm_output_schema: Any | None
+
+    # Hooks and callbacks
+
     before_llm_hooks: list[BeforeLlmHook]
     after_llm_hooks: list[AfterLlmHook]
     before_tool_hooks: list[BeforeToolHook[CtxT]]
     after_tool_hooks: list[AfterToolHook]
     tool_output_converters: dict[str, ToolOutputConverter]
     tool_input_converters: dict[str, ToolInputConverter]
-
-    # Session persistence — wired by LLMAgent.setup_session()
+    final_answer_extractor: FinalAnswerExtractor | None
     checkpoint_callback: CheckpointCallback | None
 
-    _llm_output_schema: Any | None
-    _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
-    _ctx: SessionContext[CtxT]
+    # Properties
 
-    # Context-window management — view derivation, token budget, and compaction —
-    # delegated to a dedicated manager so the loop stays focused on the cycle.
+    _agent_ctx: AgentContext
     _cw: ContextWindowManager
+    _llm: LLM
+    _final_answer: str | None
+    _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
+
+    # Private state
+
+    _deadline: float | None
+    _message_start_turn: int
+    _skip_call_ids: set[str]
+    _inbox_poll_interval: float
 
     def __init__(
         self,
         *,
         agent_name: str,
         llm: LLM,
-        transcript: LLMAgentTranscript,
-        context_window: ContextWindowManager | None = None,
-        tools: list[BaseTool[BaseModel, Any, CtxT]] | None,
         ctx: SessionContext[CtxT],
-        llm_output_schema: Any | None = None,
-        max_turns: int,
-        run_timeout: float | None = None,
-        max_background: int = 16,
-        force_react_mode: bool = False,
+        agent_ctx: AgentContext,
+        context_window: ContextWindowManager,
+        path: list[str] | None = None,
         final_answer_type: type[BaseModel] = BaseModel,
         final_answer_as_tool_call: bool = False,
+        llm_output_schema: Any | None = None,
         stream_llm: bool = True,
-        path: list[str] | None = None,
+        max_turns: int,
+        run_timeout: float | None = None,
         tracing_exclude_input_fields: set[str] | None = None,
-        # Names of the explicitly-passed tools (excludes auto-attached capability
-        # tools); exposed on the AgentContext so a sub-agent inherits only these.
-        explicit_tool_names: frozenset[str] = frozenset(),
-        # Per-agent view over the session-shared skill catalog; ``None`` = all.
-        skill_filter: SkillFilter | None = None,
+        force_react_mode: bool = False,
     ) -> None:
         super().__init__()
 
-        self._ctx: SessionContext[CtxT] = ctx
+        # Mutable
 
-        self.final_answer = None
         self.turn = 0
+        self.ctx: SessionContext[CtxT] = ctx
+        self.path = path
+        self.llm_output_schema = llm_output_schema
+
+        # Frozen
+
+        self.agent_name = agent_name
+        self.stream_llm = stream_llm
+        self.max_turns = max_turns
+        self.run_timeout = run_timeout
+        self.force_react_mode = force_react_mode
+        self.final_answer_type = final_answer_type
+        self.final_answer_as_tool_call = final_answer_as_tool_call
+        self.tracing_exclude_input_fields = tracing_exclude_input_fields
+
+        # Properties
+
+        self._llm = llm
+        self._cw = context_window
+        self._agent_ctx = agent_ctx
+        self._final_answer = None
+
+        # Private state
+
+        self._deadline = None
+
         # The lifetime ``turn`` for a resident grows unbounded across inbox
         # messages; this marks where the current message's handling began, so the
         # per-message turn budget is ``turn - _message_start_turn`` (reset on each
         # delivered message — see ``_drain_inbox``).
         self._message_start_turn = 0
 
-        self.agent_name = agent_name
-        self.llm = llm
-        self.max_turns = max_turns
-        # Wall-clock budget for one ``execute_stream`` run, checked at turn
-        # boundaries (JUDGE). ``None`` = unbounded. ``_deadline`` is the
-        # monotonic stamp set per run.
-        self.run_timeout = run_timeout
-        self._deadline: float | None = None
-
-        self.stream_llm = stream_llm
-
-        self.force_react_mode = force_react_mode
-        self.final_answer_type = final_answer_type
-        self.final_answer_as_tool_call = final_answer_as_tool_call
-
-        self.tracing_exclude_input_fields = tracing_exclude_input_fields
-
-        self._llm_output_schema = llm_output_schema
-        self._final_answer_tool = self._make_final_answer_tool()
-
-        tools_list = list(tools or [])
-        if final_answer_as_tool_call:
-            tools_list.append(self._final_answer_tool)
-        # Tools are dispatched and their events routed by name, so names must be
-        # unique and must not shadow the agent's own name — otherwise the dict
-        # below silently drops a duplicate, and a name shared with the agent (or
-        # a sub-agent, which is itself a tool here) conflates their event
-        # streams.
-        tool_names = [t.name for t in tools_list]
-        duplicates = sorted({n for n in tool_names if tool_names.count(n) > 1})
-        if duplicates:
-            raise ValueError(
-                f"Agent '{agent_name}' has duplicate tool names: {duplicates}"
-            )
-        if agent_name in tool_names:
-            raise ValueError(
-                f"Agent '{agent_name}' has a tool named '{agent_name}', colliding with "
-                "the agent's own name; tool and processor names must be unique."
-            )
-        tools_dict = {t.name: t for t in tools_list}
-
         # Tool call_ids whose results were already synthesized at the LLM
         # validation layer (bad arguments → ``LLMToolCallValidationError``
         # caught in :meth:`query_llm`). The dispatcher skips them — their
         # error tool_result is already in the transcript, and re-dispatch
         # would just trigger pydantic validation again.
-        self._skip_call_ids: set[str] = set()
+        self._skip_call_ids = set()
 
         # Resident operation. The inbox lives on the agent context (the sibling
         # of ``bg_tasks``); when one is attached the loop consumes peer messages
@@ -287,103 +259,43 @@ class AgentLoop[CtxT]:
         # context) keeps the original single-answer behavior unchanged.
         self._inbox_poll_interval: float = 0.05
 
-        self.final_answer_extractor = None
-        # Context-window management (view derivation, token budget, compaction).
-        # Owned by the agent and shared in (so its context operations are single-
-        # hop); a standalone loop builds its own. The loop only decides when to
-        # project / compact via ``self._cw``.
-        self._cw = context_window or ContextWindowManager(
-            transcript=transcript, model=llm.model_name, source=agent_name
-        )
         self.before_llm_hooks = []
         self.after_llm_hooks = []
         self.tool_output_converters = {}
         self.tool_input_converters = {}
         self.before_tool_hooks = []
         self.after_tool_hooks = []
-
+        self.final_answer_extractor = None
         self.checkpoint_callback = None
-        self.path = path
 
-        # The single agent-scope state handed to each tool call. ``create``
-        # fills the fresh session state (file-edit ledger, Bash session, the
-        # RunCell + RunPython kernels, the shell cwd, the background-task
-        # manager). Tools read what they need from here and store nothing, so
-        # a single tool instance is safe to share across agents;
-        # ``agent.copy()`` deep-copies the loop and this context together, so
-        # a replica's tools resolve the replica's own state. Session-scoped:
-        # released by ``LLMAgent.aclose()``, never at run end. Exposed via
-        # the read-only properties below.
-        self._agent_ctx = AgentContext.create(
-            transcript=transcript,
-            tools=tools_dict,
-            agent_name=agent_name,
-            path=path,
-            max_background=max_background,
-            explicit_tool_names=explicit_tool_names,
-            skill_filter=skill_filter,
-        )
-
-    @property
-    def llm_output_schema(self) -> Any | None:
-        return self._llm_output_schema
-
-    @llm_output_schema.setter
-    def llm_output_schema(self, value: Any | None) -> None:
-        self._llm_output_schema = value
-
-    @property
-    def ctx(self) -> SessionContext[CtxT]:
-        return self._ctx
+        self._final_answer_tool = self._make_final_answer_tool()
+        if final_answer_as_tool_call:
+            if self._final_answer_tool.name in agent_ctx.tools:
+                raise ValueError(
+                    f"Agent '{agent_name}' has a tool named "
+                    f"'{self._final_answer_tool.name}', colliding with the "
+                    "final-answer tool; tool names must be unique."
+                )
+            agent_ctx.tools[self._final_answer_tool.name] = self._final_answer_tool
 
     @property
     def agent_ctx(self) -> AgentContext:
         return self._agent_ctx
 
-    # Agent-scope state — read-only views onto the single ``_agent_ctx``.
+    @property
+    def final_answer(self) -> str | None:
+        return self._final_answer
 
     @property
-    def transcript(self) -> LLMAgentTranscript:
-        return self._agent_ctx.transcript
+    def llm(self) -> LLM:
+        return self._llm
 
     @property
-    def tools(self) -> dict[str, BaseTool[BaseModel, Any, CtxT]]:
-        return self._agent_ctx.tools
-
-    @property
-    def bg_tasks(self) -> BackgroundTaskManager[CtxT]:
-        return self._agent_ctx.bg_tasks
-
-    @property
-    def inbox(self) -> AgentInbox | None:
-        """
-        The attached resident inbox, or ``None`` for ordinary (single-answer) runs.
-
-        Held on the agent context (beside ``bg_tasks``). When set,
-        :meth:`execute_stream` runs resident: it consumes peer messages from this
-        inbox between turns and runs until its task is cancelled from outside,
-        rather than terminating on the first final answer.
-        """
-        return self._agent_ctx.inbox
-
-    @inbox.setter
-    def inbox(self, inbox: AgentInbox | None) -> None:
-        self._agent_ctx.inbox = inbox
-
-    @property
-    def file_edit_state(self) -> FileEditSessionState:
-        return self._agent_ctx.file_edit_state
-
-    @property
-    def shell_state(self) -> ShellState:
-        return self._agent_ctx.shell_state
+    def cw(self) -> ContextWindowManager:
+        return self._cw
 
     async def checkpoint(
-        self,
-        *,
-        turn: int,
-        location: AgentCheckpointLocation,
-        output: str | None = None,
+        self, *, turn: int, location: AgentCheckpointLocation, output: str | None = None
     ) -> None:
         """Persist session state if a checkpoint callback is configured."""
         if self.checkpoint_callback:
@@ -392,11 +304,7 @@ class AgentLoop[CtxT]:
     # --- Hook dispatch ---
 
     async def on_before_llm(
-        self,
-        *,
-        exec_id: str,
-        turn: int,
-        extra_llm_settings: dict[str, Any],
+        self, *, exec_id: str, turn: int, extra_llm_settings: dict[str, Any]
     ) -> None:
         for hook in self.before_llm_hooks:
             await hook(
@@ -404,11 +312,7 @@ class AgentLoop[CtxT]:
             )
 
     async def on_after_llm(
-        self,
-        response: Response,
-        *,
-        exec_id: str,
-        turn: int,
+        self, response: Response, *, exec_id: str, turn: int
     ) -> None:
         for hook in self.after_llm_hooks:
             await hook(response=response, exec_id=exec_id, turn=turn)
@@ -421,11 +325,10 @@ class AgentLoop[CtxT]:
         # another's veto, and ties resolve to the later-registered hook.
         merged: dict[str, ToolCallDecision] = {}
         for hook in self.before_tool_hooks:
-            decisions = await hook(
-                tool_calls=tool_calls, ctx=self._ctx, exec_id=exec_id
-            )
+            decisions = await hook(tool_calls=tool_calls, ctx=self.ctx, exec_id=exec_id)
             for call_id, decision in (decisions or {}).items():
                 merged[call_id] = _more_restrictive(merged.get(call_id), decision)
+
         return merged or None
 
     async def on_after_tool(
@@ -441,15 +344,12 @@ class AgentLoop[CtxT]:
             )
 
     async def _convert_tool_output(
-        self,
-        output: Any,
-        call: FunctionToolCallItem,
-        *,
-        exec_id: str,
+        self, output: Any, call: FunctionToolCallItem, *, exec_id: str
     ) -> FunctionToolOutputItem:
         converter = self.tool_output_converters.get(call.name)
-        tool = self.tools.get(call.name)
+        tool = self._agent_ctx.tools.get(call.name)
         untrusted = tool is not None and tool.untrusted_output
+
         # A tool failure surfaces as a ToolErrorInfo result — flag it so the UI
         # can mark the result panel (e.g. a red border).
         is_error = isinstance(output, ToolErrorInfo)
@@ -463,7 +363,7 @@ class AgentLoop[CtxT]:
             ).output
             if not is_error and isinstance(parts, str):
                 parts = await spill_if_large(
-                    self._ctx.file_backend,
+                    self.ctx.file_backend,
                     name=call.call_id,
                     text=parts,
                     cap=tool.max_inline_result_chars if tool is not None else None,
@@ -484,7 +384,7 @@ class AgentLoop[CtxT]:
         *,
         exec_id: str,
     ) -> BaseModel:
-        tool = self.tools[call.name]
+        tool = self._agent_ctx.tools[call.name]
         llm_args = validate_obj_from_json_or_py_string(
             call.arguments,
             schema=tool.llm_in_type,
@@ -523,23 +423,19 @@ class AgentLoop[CtxT]:
 
     # --- LLM generation ---
 
-    @traced(name="generate")
-    async def query_llm(
+    async def _try_query_llm(
         self,
         *,
         tool_choice: ToolChoice | None = None,
         exec_id: str,
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
-        # Enforce the tool_call → tool_result pairing invariant on the log before
-        # every provider call (where a violation would otherwise 400); the
-        # projected view is repaired separately in ``_project_view``.
-        self.transcript.validate_tool_call_pairing()
+        self._agent_ctx.transcript.validate_tool_call_pairing()
 
         llm_params: dict[str, Any] = {
             "input": await self._cw.project_view(exec_id=exec_id),
             "output_schema": self.llm_output_schema,
-            "tools": self.tools or None,
+            "tools": self._agent_ctx.tools or None,
             "tool_choice": tool_choice,
             **extra_llm_settings,
         }
@@ -553,8 +449,9 @@ class AgentLoop[CtxT]:
             # bad assistant ``tool_calls`` end up in history without
             # matching ``tool_results``, and OpenAI 400s.
             pending: list[OutputItem] = []
+
             try:
-                async for se in self.llm.generate_response_stream(**llm_params):
+                async for se in self._llm.generate_response_stream(**llm_params):
                     if isinstance(se, ResponseRetrying):
                         # Validation or transient API retry just fired —
                         # the previous attempt's items are about to be
@@ -577,58 +474,65 @@ class AgentLoop[CtxT]:
                     yield LLMStreamEvent(
                         data=se, source=self.agent_name, exec_id=exec_id
                     )
+
             except LLMToolCallValidationError as exc:
                 # Validation retries exhausted at the LLM layer. Commit
                 # the bad assistant items + synthesize matching
                 # tool_results so the next turn sees the failure and
                 # can correct itself. The dispatcher will skip these
                 # call_ids via ``_skip_call_ids``.
-                response = exc.response
                 if pending:
-                    self.transcript.update(pending)
+                    self._agent_ctx.transcript.update(pending)
                     for ev in self._item_events(pending, exec_id=exec_id):
                         yield ev
+
                 async for ev in self._synthesize_validation_tool_results(
                     exc, pending, exec_id=exec_id
                 ):
                     yield ev
+
+                response = exc.response
                 if response is not None:
                     yield LLMStreamEvent(
                         data=ResponseCompleted(response=response, sequence_number=0),
                         source=self.agent_name,
                         exec_id=exec_id,
                     )
-                    self._process_response(response, exec_id=exec_id)
+                    self._record_llm_response(response, exec_id=exec_id)
                 return
+
             # Clean completion → commit pending items, then surface their
             # item events (post-write, per the convention above).
-            self.transcript.update(pending)
+            self._agent_ctx.transcript.update(pending)
             for ev in self._item_events(pending, exec_id=exec_id):
                 yield ev
 
         else:
             try:
-                response = await self.llm.generate_response(**llm_params)
-                self.transcript.update(response.output)
+                response = await self._llm.generate_response(**llm_params)
+                self._agent_ctx.transcript.update(response.output)
+
             except LLMToolCallValidationError as exc:
                 response = exc.response
                 if response is not None:
-                    self.transcript.update(response.output)
+                    self._agent_ctx.transcript.update(response.output)
                     for ev in self._item_events(response.output, exec_id=exec_id):
                         yield ev
+
                 async for ev in self._synthesize_validation_tool_results(
                     exc,
                     response.output if response is not None else [],
                     exec_id=exec_id,
                 ):
                     yield ev
+
                 if response is not None:
                     yield LLMStreamEvent(
                         data=ResponseCompleted(response=response, sequence_number=0),
                         source=self.agent_name,
                         exec_id=exec_id,
                     )
-                    self._process_response(response, exec_id=exec_id)
+                    self._record_llm_response(response, exec_id=exec_id)
                 return
 
             # LLMStream event immediate; item events after the write above.
@@ -643,7 +547,7 @@ class AgentLoop[CtxT]:
         if not response:
             return
 
-        self._process_response(response, exec_id=exec_id)
+        self._record_llm_response(response, exec_id=exec_id)
 
     async def _synthesize_validation_tool_results(
         self,
@@ -675,13 +579,10 @@ class AgentLoop[CtxT]:
             msg = FunctionToolOutputItem.from_tool_result(
                 call_id=item.call_id, output=err_info
             )
-            self.transcript.update([msg])
+            self._agent_ctx.transcript.update([msg])
             self._skip_call_ids.add(item.call_id)
             yield ToolOutputItemEvent(
-                source=item.name,
-                destination=self.agent_name,
-                exec_id=exec_id,
-                data=msg,
+                source=item.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
 
     def _item_events(
@@ -719,12 +620,45 @@ class AgentLoop[CtxT]:
                     source=self.agent_name, exec_id=exec_id, data=item
                 )
 
+    @traced(name="generate")
+    async def query_llm(
+        self,
+        *,
+        tool_choice: ToolChoice | None = None,
+        exec_id: str,
+        extra_llm_settings: dict[str, Any],
+    ) -> AsyncIterator[Event[Any]]:
+        try:
+            async for event in self._try_query_llm(
+                tool_choice=tool_choice,
+                exec_id=exec_id,
+                extra_llm_settings=extra_llm_settings,
+            ):
+                yield event
+
+        except LlmContextWindowError:
+            # The view overflowed the window despite (or without) proactive
+            # compaction. Force a fold and retry once; if nothing can be
+            # folded, surface the error.
+            fold = await self._cw.maybe_compact(exec_id=exec_id, force=True)
+            if fold is None:
+                raise
+            yield self._cw.compaction_event(fold, exec_id=exec_id)
+            logger.warning(
+                "agent '%s' hit the context window; compacted and retrying",
+                self.agent_name,
+            )
+            async for event in self._try_query_llm(
+                tool_choice=tool_choice,
+                exec_id=exec_id,
+                extra_llm_settings=extra_llm_settings,
+            ):
+                yield event
+
     # --- Tool calling ---
 
     async def execute_tools_stream(
-        self,
-        calls: Sequence[FunctionToolCallItem],
-        exec_id: str,
+        self, calls: Sequence[FunctionToolCallItem], exec_id: str
     ) -> AsyncIterator[Event[Any]]:
         # Tool call events are now emitted from query_llm via OutputItemDone promotion
 
@@ -755,7 +689,7 @@ class AgentLoop[CtxT]:
                 self._skip_call_ids.discard(call.call_id)
                 skipped[i] = True
                 continue
-            tool = self.tools[call.name]
+            tool = self._agent_ctx.tools[call.name]
             try:
                 inp = await self._convert_tool_input(call, exec_id=exec_id)
             except Exception as err:
@@ -780,11 +714,11 @@ class AgentLoop[CtxT]:
         # else a launch note + a ``BackgroundTaskLaunchedEvent`` to bubble.
         bg_tasks_async: dict[int, asyncio.Task[Any]] = {
             i: asyncio.create_task(
-                self.bg_tasks.run_backgroundable(
+                self._agent_ctx.bg_tasks.run_backgroundable(
                     call,
                     tool,
                     inp,
-                    ctx=self._ctx,
+                    ctx=self.ctx,
                     exec_id=exec_id,
                     agent_ctx=self._agent_ctx,
                 )
@@ -803,7 +737,7 @@ class AgentLoop[CtxT]:
                 streams = [
                     tool.run_stream(
                         inp=inp,
-                        ctx=self._ctx,
+                        ctx=self.ctx,
                         exec_id=exec_id,
                         path=make_tool_call_path(self.path, call.call_id),
                         agent_ctx=self._agent_ctx,
@@ -866,13 +800,13 @@ class AgentLoop[CtxT]:
                 continue
             msg = await self._convert_tool_output(output, call, exec_id=exec_id)
             tool_messages.append(msg)
-            self.transcript.update([msg])
+            self._agent_ctx.transcript.update([msg])
             yield ToolOutputItemEvent(
                 source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
 
-        if self._ctx.printer:
-            self._ctx.printer.print_messages(
+        if self.ctx.printer:
+            self.ctx.printer.print_messages(
                 tool_messages,
                 agent_name=self.agent_name,
                 exec_id=exec_id,
@@ -890,7 +824,7 @@ class AgentLoop[CtxT]:
             "Exceeded the maximum number of turns: provide a final answer now!",
             role="user",
         )
-        self.transcript.update([user_message])
+        self._agent_ctx.transcript.update([user_message])
         # TODO: set source
         yield UserMessageEvent(
             source=None,
@@ -899,8 +833,8 @@ class AgentLoop[CtxT]:
             data=user_message,
         )
 
-        if self._ctx.printer:
-            self._ctx.printer.print_messages(
+        if self.ctx.printer:
+            self.ctx.printer.print_messages(
                 [user_message],
                 agent_name=self.agent_name,
                 exec_id=exec_id,
@@ -931,17 +865,17 @@ class AgentLoop[CtxT]:
 
         await self.on_after_llm(stream.response, turn=self.turn, exec_id=exec_id)
 
-        self.final_answer = self._extract_final_answer(
+        self._final_answer = self._extract_final_answer(
             response=stream.response, exec_id=exec_id
         )
-        if self.final_answer is None:
+        if self._final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, exec_id=exec_id)
 
         closures = self._close_stop_tool_calls(stream.response)
         for closure_event in self._closure_events(closures, exec_id=exec_id):
             yield closure_event
 
-    # --- Main execution loop ---
+    # --- Tool call utils ---
 
     def _compute_tool_choice(self, had_tool_calls: bool) -> ToolChoice:
         """Compute tool_choice for the current turn."""
@@ -951,35 +885,6 @@ class AgentLoop[CtxT]:
         if self.turn == 0 or had_tool_calls:
             return "none"  # first turn or just acted → reason
         return "required"  # just reasoned → must act
-
-    def _decide_next_step(
-        self,
-        response: Response,
-        *,
-        exec_id: str,
-    ) -> NextStep:
-        """
-        Classify the post-ACT loop transition.
-
-        Delegates to the pure :func:`decide_next_step` so the JUDGE-phase
-        state machine can be tested without mocking the loop.
-        """
-        final = self._extract_final_answer(
-            response=response,
-            exec_id=exec_id,
-            turn=self.turn,
-        )
-        return decide_next_step(
-            final_answer=final,
-            tool_calls=response.tool_call_items,
-            turn=self.turn,
-            max_turns=self.max_turns,
-            bg_tasks_pending=self.bg_tasks.has_pending,
-            deadline_exceeded=self._deadline is not None
-            and time.monotonic() >= self._deadline,
-            inbox_open=self.inbox is not None,
-            turns_on_message=self.turn - self._message_start_turn,
-        )
 
     def _unanswered_tool_calls(self, response: Response) -> list[FunctionToolCallItem]:
         """
@@ -994,7 +899,7 @@ class AgentLoop[CtxT]:
             return []
         answered = {
             m.call_id
-            for m in self.transcript.messages
+            for m in self._agent_ctx.transcript.messages
             if isinstance(m, FunctionToolOutputItem)
         }
         for tc in tool_calls:
@@ -1023,7 +928,7 @@ class AgentLoop[CtxT]:
             for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self.transcript.update([msg for _, msg in closures])
+            self._agent_ctx.transcript.update([msg for _, msg in closures])
 
         return closures
 
@@ -1055,7 +960,7 @@ class AgentLoop[CtxT]:
             for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self.transcript.update([msg for _, msg in closures])
+            self._agent_ctx.transcript.update([msg for _, msg in closures])
 
         return closures
 
@@ -1084,96 +989,45 @@ class AgentLoop[CtxT]:
                 exec_id=exec_id,
                 data=msg,
             )
-        if self._ctx.printer:
-            self._ctx.printer.print_messages(
+        if self.ctx.printer:
+            self.ctx.printer.print_messages(
                 [msg for _, msg in closures],
                 agent_name=self.agent_name,
                 exec_id=exec_id,
             )
 
+    # --- Next-step classification ---
+
+    def _decide_next_step(
+        self,
+        response: Response,
+        *,
+        exec_id: str,
+    ) -> NextStep:
+        """
+        Classify the post-ACT loop transition.
+
+        Delegates to the pure :func:`decide_next_step` so the JUDGE-phase
+        state machine can be tested without mocking the loop.
+        """
+        final = self._extract_final_answer(
+            response=response,
+            exec_id=exec_id,
+            turn=self.turn,
+        )
+        return decide_next_step(
+            final_answer=final,
+            tool_calls=response.tool_call_items,
+            turn=self.turn,
+            max_turns=self.max_turns,
+            blocking_bg_tasks=self._agent_ctx.bg_tasks.has_blocking_tasks,
+            deadline_exceeded=self._deadline is not None
+            and time.monotonic() >= self._deadline,
+            inbox_open=self._agent_ctx.inbox is not None,
+            turns_on_message=self.turn - self._message_start_turn,
+        )
+
     # --- Per-state handlers (dispatched from execute_stream) ---
-
-    async def _handle_stop(
-        self,
-        step: NextStepStop,
-        response: Response,
-        *,
-        exec_id: str,
-    ) -> AsyncIterator[Event[Any]]:
-        """``NextStepStop``: final answer extracted, end loop cleanly."""
-        self.final_answer = step.final_answer
-        closures = self._close_stop_tool_calls(response)
-        for closure_event in self._closure_events(closures, exec_id=exec_id):
-            yield closure_event
-        await self.checkpoint(
-            turn=self.turn,
-            location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
-            output=self.final_answer,
-        )
-        yield TurnEndEvent(
-            source=self.agent_name,
-            exec_id=exec_id,
-            data=TurnEndInfo(
-                turn=self.turn,
-                had_tool_calls=False,
-                stop_reason=step.stop_reason,
-            ),
-        )
-
-    async def _handle_force_final_answer(
-        self,
-        response: Response,
-        *,
-        exec_id: str,
-        stop_reason: StopReason,
-        extra_llm_settings: dict[str, Any],
-    ) -> AsyncIterator[Event[Any]]:
-        """
-        ``NextStepForceFinalAnswer``: budget exhausted (turn count or the run's
-        wall-clock deadline).
-
-        Closes dangling tool calls, force-generates a final answer, and ends
-        the loop with the given ``stop_reason`` (``MAX_TURNS`` or ``TIMEOUT``).
-        Background tasks are NOT cancelled — exhausting a turn budget must not
-        kill deliberately backgrounded work; completion notes land at a later
-        run's drain.
-        """
-        closures = self._close_dangling_tool_calls(response)
-        for closure_event in self._closure_events(closures, exec_id=exec_id):
-            yield closure_event
-
-        async for event in self._force_generate_final_answer_stream(
-            exec_id=exec_id,
-            extra_llm_settings=extra_llm_settings,
-        ):
-            yield event
-
-        await self.checkpoint(
-            turn=self.turn,
-            location=AgentCheckpointLocation.AFTER_MAX_TURNS,
-            output=self.final_answer,
-        )
-
-        yield TurnEndEvent(
-            source=self.agent_name,
-            exec_id=exec_id,
-            data=TurnEndInfo(
-                turn=self.turn,
-                had_tool_calls=False,
-                stop_reason=stop_reason,
-            ),
-        )
-
-        if stop_reason is StopReason.TIMEOUT:
-            logger.info(
-                "Run timeout reached: %ss. Forcing a final answer.",
-                self.run_timeout,
-            )
-        else:
-            logger.info(
-                "Max turns reached: %s. Exiting the tool call loop.",
-                self.max_turns,
-            )
 
     async def _handle_run_tools(
         self,
@@ -1246,7 +1100,7 @@ class AgentLoop[CtxT]:
                 )
                 tool_msgs.append(msg)
                 rejection_msgs.append(msg)
-                self.transcript.update([msg])
+                self._agent_ctx.transcript.update([msg])
                 yield ToolOutputItemEvent(
                     source=call.name,
                     destination=self.agent_name,
@@ -1256,8 +1110,8 @@ class AgentLoop[CtxT]:
             else:
                 allowed_calls.append(call)
 
-        if rejection_msgs and self._ctx.printer:
-            self._ctx.printer.print_messages(
+        if rejection_msgs and self.ctx.printer:
+            self.ctx.printer.print_messages(
                 rejection_msgs,
                 agent_name=self.agent_name,
                 exec_id=exec_id,
@@ -1315,11 +1169,92 @@ class AgentLoop[CtxT]:
             data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
         )
 
-    async def _handle_resident_reply(
+    async def _handle_stop(
         self,
-        step: NextStepResidentReply,
+        step: NextStepStop,
+        response: Response,
         *,
         exec_id: str,
+    ) -> AsyncIterator[Event[Any]]:
+        """``NextStepStop``: final answer extracted, end loop cleanly."""
+        self._final_answer = step.final_answer
+        closures = self._close_stop_tool_calls(response)
+        for closure_event in self._closure_events(closures, exec_id=exec_id):
+            yield closure_event
+
+        await self.checkpoint(
+            turn=self.turn,
+            location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
+            output=self._final_answer,
+        )
+
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(
+                turn=self.turn,
+                had_tool_calls=False,
+                stop_reason=step.stop_reason,
+            ),
+        )
+
+    async def _handle_force_final_answer(
+        self,
+        response: Response,
+        *,
+        exec_id: str,
+        stop_reason: StopReason,
+        extra_llm_settings: dict[str, Any],
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        ``NextStepForceFinalAnswer``: budget exhausted (turn count or the run's
+        wall-clock deadline).
+
+        Closes dangling tool calls, force-generates a final answer, and ends
+        the loop with the given ``stop_reason`` (``MAX_TURNS`` or ``TIMEOUT``).
+        Background tasks are NOT cancelled — exhausting a turn budget must not
+        kill deliberately backgrounded work; completion notes land at a later
+        run's drain.
+        """
+        closures = self._close_dangling_tool_calls(response)
+        for closure_event in self._closure_events(closures, exec_id=exec_id):
+            yield closure_event
+
+        async for event in self._force_generate_final_answer_stream(
+            exec_id=exec_id,
+            extra_llm_settings=extra_llm_settings,
+        ):
+            yield event
+
+        await self.checkpoint(
+            turn=self.turn,
+            location=AgentCheckpointLocation.AFTER_FORCED_FINAL_ANSWER,
+            output=self._final_answer,
+        )
+
+        yield TurnEndEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=TurnEndInfo(
+                turn=self.turn,
+                had_tool_calls=False,
+                stop_reason=stop_reason,
+            ),
+        )
+
+        if stop_reason is StopReason.TIMEOUT:
+            logger.info(
+                "Run timeout reached: %ss. Forcing a final answer.",
+                self.run_timeout,
+            )
+        else:
+            logger.info(
+                "Max turns reached: %s. Exiting the tool call loop.",
+                self.max_turns,
+            )
+
+    async def _handle_resident_reply(
+        self, step: NextStepResidentReply, *, exec_id: str
     ) -> AsyncIterator[Event[Any]]:
         """
         ``NextStepResidentReply``: a resident produced its reply to the current
@@ -1334,7 +1269,7 @@ class AgentLoop[CtxT]:
 
         await self.checkpoint(
             turn=self.turn + 1,
-            location=AgentCheckpointLocation.AFTER_RESIDENT_TURN,
+            location=AgentCheckpointLocation.AFTER_RESIDENT_ANSWER,
         )
 
         yield TurnEndEvent(
@@ -1354,7 +1289,7 @@ class AgentLoop[CtxT]:
         ``NextStepForceResidentReply``: a resident burned its per-message turn
         budget without an answer it can return. The resident analog of
         :meth:`_handle_force_final_answer`: close dangling tool calls, force-generate
-        a final answer for this message, persist it (``AFTER_RESIDENT_TURN``,
+        a final answer for this message, persist it (``AFTER_RESIDENT_ANSWER``,
         releasing the message), then park for the next — the run continues. Caps one
         runaway message; background tasks are left running (same as the lone-agent
         force path).
@@ -1377,7 +1312,7 @@ class AgentLoop[CtxT]:
 
         await self.checkpoint(
             turn=self.turn + 1,
-            location=AgentCheckpointLocation.AFTER_RESIDENT_TURN,
+            location=AgentCheckpointLocation.AFTER_RESIDENT_ANSWER,
         )
 
         yield TurnEndEvent(
@@ -1413,7 +1348,7 @@ class AgentLoop[CtxT]:
         )
 
         tool_choice: ToolChoice | None = None
-        if self.tools:
+        if self._agent_ctx.tools:
             tool_choice = self._compute_tool_choice(had_tool_calls)
         tool_choice = settings.pop("tool_choice", tool_choice)
 
@@ -1432,7 +1367,15 @@ class AgentLoop[CtxT]:
 
         yield GenerationEndEvent(source=self.agent_name, exec_id=exec_id, data=response)
 
-    # --- Resident PRE-ACT wait ---
+    # --- Inbox / background-task message queues ---
+
+    async def _await_bg_tasks(self) -> None:
+        idle_timeout = (
+            max(0.0, self._deadline - time.monotonic())
+            if self._deadline is not None
+            else None
+        )
+        await self._agent_ctx.bg_tasks.wait_idle(timeout=idle_timeout)
 
     async def _await_inbox(self) -> None:
         """
@@ -1442,13 +1385,15 @@ class AgentLoop[CtxT]:
         completion (both surfaced by the drains below). Ended from outside by
         cancelling the resident run's task.
         """
-        inbox = self.inbox
+        inbox = self._agent_ctx.inbox
         assert inbox is not None
-        # Mark the inbox parked so a team supervisor can read this loop as idle
-        # while it blocks here (the per-actor quiescence signal).
+
+        # Mark the inbox parked ("waiting") so a team supervisor can read this loop
+        # as idle while it blocks here (the per-actor quiescence signal).
         with inbox.waiting():
             while not (
-                await inbox.has_pending() or self.bg_tasks.has_undelivered_completions
+                await inbox.has_pending()
+                or self._agent_ctx.bg_tasks.has_undelivered_completions
             ):
                 await inbox.wait(timeout=self._inbox_poll_interval)
 
@@ -1462,16 +1407,19 @@ class AgentLoop[CtxT]:
         attached (non-resident) or none queued (the wait was woken by a
         background-task completion instead).
         """
-        inbox = self.inbox
+        inbox = self._agent_ctx.inbox
         if inbox is None:
             return
+
         message = await inbox.take()
         if message is None:
             return
+
         # A new message resets the per-message turn budget (see decide_next_step).
         self._message_start_turn = self.turn
         item = message.to_input_message()
-        self.transcript.update([item])
+        self._agent_ctx.transcript.update([item])
+
         yield UserMessageEvent(
             data=item,
             source=None,
@@ -1487,11 +1435,13 @@ class AgentLoop[CtxT]:
         extra_llm_settings: dict[str, Any] | None = None,
     ) -> AsyncIterator[Event[Any]]:
         had_tool_calls = False
-        self.final_answer = None
+        self._final_answer = None
+
         # Start (or, on resume, restart) the current message's per-message turn
         # budget from here — a resumed resident gets a fresh budget for whatever
         # message it was mid-handling, which only ever loosens the cap.
         self._message_start_turn = self.turn
+
         self._deadline = (
             time.monotonic() + self.run_timeout
             if self.run_timeout is not None
@@ -1505,47 +1455,41 @@ class AgentLoop[CtxT]:
                 location=AgentCheckpointLocation.AFTER_INPUT,
             )
 
+        extra_llm_settings = deepcopy(extra_llm_settings or {})
+
         # A resident agent (inbox attached) loops until its task is cancelled from
         # outside — it must NOT exit on the lifetime turn budget, which bounds a lone
         # agent's whole run. A resident is instead bounded *per inbox message*
         # (``turns_on_message`` in ``decide_next_step``): a runaway message force-
         # finalizes and the loop moves on, but the run itself only ends on cancel.
-        while self.inbox is not None or self.turn <= self.max_turns:
+        while self._agent_ctx.inbox is not None or self.turn <= self.max_turns:
             # ── PRE-ACT: prepare for generation ──
 
-            # When the model has nothing to do but wait — a resident agent for its
-            # next inbox message, or any agent for an outstanding background task —
-            # block instead of spinning poll turns. (Only answer-blocking tasks delay
-            # a final answer; a backgrounded Bash command is waited on but never
-            # blocks it — see JUDGE / has_pending.)
-            if self.inbox is not None:
-                # Resident: park for the next message only when the log does not
-                # already owe a response (tool results to continue from, or a resumed
-                # unanswered tail). Reading "owes" off the log — not an in-memory
-                # flag — is what lets a crash-and-resume mid-handling continue rather
-                # than park forever on its (indefinite) inbox wait. Ended only when
-                # the run's task is cancelled.
-                if not self.transcript.owes_response:
+            # Wait for new inbox messages or background-task completions only if
+            # the agent has nothing to respond to (user messages or tool outputs)
+            # at this turn.
+            if not self._agent_ctx.transcript.owes_response:
+                if self._agent_ctx.inbox is not None:
+                    # Resident: park for the next inbox message (or a pending
+                    # background completion). Indefinite — ended only when the
+                    # run's task is cancelled from outside.
                     await self._await_inbox()
-            elif self.turn > 0 and not had_tool_calls:
-                # Lone agent: a bounded idle-wait for outstanding background work
-                # (returns at once when there is none, so it never strands a resumed
-                # tool-result tail). Capped by the remaining run-timeout budget so a
-                # non-blocking task that never completes can't block past the
-                # deadline (the next JUDGE check then stops the run).
-                idle_timeout = (
-                    max(0.0, self._deadline - time.monotonic())
-                    if self._deadline is not None
-                    else None
-                )
-                await self.bg_tasks.wait_idle(timeout=idle_timeout)
+                else:
+                    # Lone agent: a bounded idle-wait for outstanding
+                    # background work (returns at once when there is none).
+                    # Capped by the remaining run-timeout budget so a
+                    # non-blocking task that never completes can't block past
+                    # the deadline (the next JUDGE check then stops the run).
+                    await self._await_bg_tasks()
 
             # Turn-boundary delivery: the next resident inbox message as a user
             # turn, then any background-task completions (bubbling their events,
             # mirroring stream output to the .grasp logs, etc.).
             async for event in self._drain_inbox(exec_id=exec_id):
                 yield event
-            async for event in self.bg_tasks.drain(exec_id=exec_id, ctx=self._ctx):
+
+            bg_tasks = self._agent_ctx.bg_tasks
+            async for event in bg_tasks.drain(exec_id=exec_id, ctx=self.ctx):
                 yield event
 
             # Compaction: fold an old span before generating if the view
@@ -1560,37 +1504,15 @@ class AgentLoop[CtxT]:
 
             # ── ACT: LLM generates response ──
 
-            try:
-                act = ResponseCapture(
-                    self._run_act_stream(
-                        exec_id=exec_id,
-                        extra_llm_settings=extra_llm_settings or {},
-                        had_tool_calls=had_tool_calls,
-                    ),
-                )
-                async for event in act:
-                    yield event
-            except LlmContextWindowError:
-                # The view overflowed the window despite (or without) proactive
-                # compaction. Force a fold and retry once; if nothing can be
-                # folded, surface the error.
-                fold = await self._cw.maybe_compact(exec_id=exec_id, force=True)
-                if fold is None:
-                    raise
-                yield self._cw.compaction_event(fold, exec_id=exec_id)
-                logger.warning(
-                    "agent '%s' hit the context window; compacted and retrying",
-                    self.agent_name,
-                )
-                act = ResponseCapture(
-                    self._run_act_stream(
-                        exec_id=exec_id,
-                        extra_llm_settings=extra_llm_settings or {},
-                        had_tool_calls=had_tool_calls,
-                    ),
-                )
-                async for event in act:
-                    yield event
+            act = ResponseCapture(
+                self._run_act_stream(
+                    exec_id=exec_id,
+                    extra_llm_settings=extra_llm_settings,
+                    had_tool_calls=had_tool_calls,
+                ),
+            )
+            async for event in act:
+                yield event
 
             assert act.response is not None
             response = act.response
@@ -1613,6 +1535,14 @@ class AgentLoop[CtxT]:
 
             # ── Dispatch to per-state handler ──
 
+            if isinstance(step, NextStepRunTools):
+                async for event in self._handle_run_tools(step, exec_id=exec_id):
+                    yield event
+
+            if isinstance(step, NextStepContinue):
+                async for event in self._handle_continue(exec_id=exec_id):
+                    yield event
+
             if isinstance(step, NextStepStop):
                 async for event in self._handle_stop(step, response, exec_id=exec_id):
                     yield event
@@ -1623,14 +1553,10 @@ class AgentLoop[CtxT]:
                     response,
                     exec_id=exec_id,
                     stop_reason=step.stop_reason,
-                    extra_llm_settings=deepcopy(extra_llm_settings or {}),
+                    extra_llm_settings=extra_llm_settings,
                 ):
                     yield event
                 return
-
-            if isinstance(step, NextStepRunTools):
-                async for event in self._handle_run_tools(step, exec_id=exec_id):
-                    yield event
 
             if isinstance(step, NextStepResidentReply):
                 async for event in self._handle_resident_reply(step, exec_id=exec_id):
@@ -1640,12 +1566,8 @@ class AgentLoop[CtxT]:
                 async for event in self._handle_force_resident_reply(
                     response,
                     exec_id=exec_id,
-                    extra_llm_settings=deepcopy(extra_llm_settings or {}),
+                    extra_llm_settings=extra_llm_settings,
                 ):
-                    yield event
-
-            if isinstance(step, NextStepContinue):
-                async for event in self._handle_continue(exec_id=exec_id):
                     yield event
 
             had_tool_calls = isinstance(step, NextStepRunTools)
@@ -1673,26 +1595,29 @@ class AgentLoop[CtxT]:
 
         return FinalAnswerTool()
 
-    def _process_response(self, response: Response, *, exec_id: str) -> None:
-        self._ctx.record_response(self.agent_name, response)
+    def _record_llm_response(self, response: Response, *, exec_id: str) -> None:
+        self.ctx.record_response(self.agent_name, response)
         usage = response.usage
+
         if usage is not None and usage.input_tokens:
             # Anchor the compaction budget on the provider's exact reported count
             # for the view just sent.
             self._cw.note_response_usage(usage.input_tokens)
-        self._ctx.usage_tracker.update(
+
+        self.ctx.usage_tracker.update(
             agent_name=self.agent_name,
             responses=[response],
-            model_name=self.llm.model_name,
-            litellm_provider=self.llm.litellm_provider,
+            model_name=self._llm.model_name,
+            litellm_provider=self._llm.litellm_provider,
         )
+
         # Mirror generated output (reasoning, text, tool calls) to the raw debug
         # printer (``ctx.printer``), if attached — the counterpart to the input /
         # tool-result mirroring elsewhere in the loop, so a non-streaming run
         # with a :class:`Printer` shows the full raw conversation, model output
         # included. (For live token-by-token raw output, stream through
         # ``print_events`` instead; don't also set ``ctx.printer``.)
-        if self._ctx.printer:
-            self._ctx.printer.print_messages(
+        if self.ctx.printer:
+            self.ctx.printer.print_messages(
                 response.output, agent_name=self.agent_name, exec_id=exec_id
             )

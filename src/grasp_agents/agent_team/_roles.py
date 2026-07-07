@@ -69,8 +69,10 @@ async def activate_member(
     Otherwise renders the message into the member's ``run_stream`` — human content
     as a rendered user turn (``chat_inputs``), anything else as a typed input packet
     through the member's own input pipeline — streams its events through ``push``,
-    and routes a produced output packet onward through ``post``. Raises on a member
-    failure; the caller decides whether that stops the run or is dead-lettered.
+    and routes a produced output packet onward through ``post`` (at default
+    priority: a triggered member is never the lead, validated at host
+    construction). Raises on a member failure; the caller decides whether that
+    stops the run or the message is dropped.
     """
     if await transport.was_processed(member.name, message.message_id):
         return
@@ -98,8 +100,8 @@ async def resident_idle(member: LLMAgent[Any, Any, Any]) -> bool:
     running (e.g. a backgrounded shell command) does NOT hold it open — same as it
     never blocks a lone agent's final answer.
     """
-    inbox = member.inbox
+    inbox = member.agent_ctx.inbox
     if inbox is None or not inbox.is_waiting or await inbox.has_pending():
         return False
-    bg = member.background_tasks
-    return not (bg.has_pending or bg.has_undelivered_completions)
+    bg = member.agent_ctx.bg_tasks
+    return not (bg.has_blocking_tasks or bg.has_undelivered_completions)

@@ -113,7 +113,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     # tasks WITHOUT finalizing their records (a real process death), so the
     # records stay PENDING for resume to act on. (aclose() would instead mark
     # them cancelled, and cancelled records are skipped on resume.)
-    in_flight = list(manager1._loop.bg_tasks._tasks.values())
+    in_flight = list(manager1._loop.agent_ctx.bg_tasks._tasks.values())
     for pt in in_flight:
         pt.task.cancel()
     await asyncio.gather(*(pt.task for pt in in_flight), return_exceptions=True)
@@ -121,7 +121,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     keys = await store.list_keys(task_prefix("subagents"))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert len(recs) >= 2, "both sub-agents should have been launched as bg tasks"
-    assert any(r.status == TaskStatus.PENDING for r in recs), (
+    assert any(r.status == TaskStatus.RUNNING for r in recs), (
         "at least one sub-agent should be mid-flight (PENDING) at the crash"
     )
 
@@ -148,7 +148,7 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
         for k in await store.list_keys(task_prefix("subagents"))
     ]
     assert recs
-    assert not any(r.status == TaskStatus.PENDING for r in recs), (
+    assert not any(r.status == TaskStatus.RUNNING for r in recs), (
         f"no sub-agent task should be left pending after resume, got "
         f"{[(r.tool_name, r.status) for r in recs]}"
     )
