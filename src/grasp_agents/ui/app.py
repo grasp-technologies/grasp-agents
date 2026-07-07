@@ -23,6 +23,7 @@ import re
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.align import Align
+from rich.console import Group
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -42,6 +43,7 @@ from textual.widgets import (
 from textual.worker import Worker, WorkerState
 
 from grasp_agents.llm.model_info import get_context_window
+from grasp_agents.printer import sanitize_terminal_text
 from grasp_agents.skills import parse_slash_command
 from grasp_agents.types.content import InputImage
 from grasp_agents.types.events import (
@@ -74,6 +76,7 @@ from grasp_agents.types.llm_events import (
     ResponseFallback,
     ResponseRetrying,
 )
+from grasp_agents.types.message import USER_SENDER
 
 from ._approval import ApprovalScreen, TuiApprovalStore
 from ._event_render import (
@@ -107,7 +110,7 @@ from ._widgets import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from rich.console import RenderableType
     from textual.theme import Theme
@@ -119,6 +122,10 @@ if TYPE_CHECKING:
 # Events only an LLM-backed agent emits. A source that emits one of these owns
 # an agent pane; tools (RunPython, Bash, …) emit only tool/exec output, so they
 # never get a pane of their own — their output renders in the calling agent's.
+# Background-task lifecycle events belong here too: their source is the
+# launching agent (stamped by its task manager), and routing them by source —
+# not the last-active-agent fallback — keeps a launch/completion notice in the
+# launcher's pane when several members' streams interleave.
 _AGENT_EVENTS: tuple[type[Event[Any]], ...] = (
     SystemMessageEvent,
     TurnStartEvent,
@@ -129,6 +136,8 @@ _AGENT_EVENTS: tuple[type[Event[Any]], ...] = (
     LLMStreamEvent,
     ToolCallItemEvent,
     WebSearchCallItemEvent,
+    BackgroundTaskLaunchedEvent,
+    BackgroundTaskCompletedEvent,
 )
 
 _GLYPH: dict[str, str] = {
@@ -180,6 +189,11 @@ class GraspAgentsApp(App[None]):
         width: 1fr; height: 1; max-height: 10; border: none; background: transparent;
     }
     #context-meter { width: 1fr; height: auto; padding: 0 3; margin-top: 1; }
+    #queued-strip { width: 1fr; height: auto; padding: 0 3; margin-top: 1; }
+    /* Background-task panes tinted in the tab bar; the dim/full pair mirrors
+       Textual's own inactive/active tab contrast. */
+    #agents Tab.ga-task { color: $warning 55%; }
+    #agents Tab.ga-task.-active { color: $warning; }
     #skill-palette {
         height: auto; max-height: 10; margin: 0 3; padding: 0 1;
         border: round $accent; background: $surface;
@@ -194,17 +208,34 @@ class GraspAgentsApp(App[None]):
 
     def __init__(
         self,
-        events: AsyncIterator[Event[Any]] | None = None,
+        events: AsyncIterator[Event[Any]]
+        | Callable[[], AsyncIterator[Event[Any]]]
+        | None = None,
         *,
         on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
+        on_post: Callable[[str], Awaitable[None]] | None = None,
         on_rollback: Callable[[int], Awaitable[None]] | None = None,
         main_agent: str | None = None,
+        agents: Sequence[str] | None = None,
         ctx: SessionContext[Any] | None = None,
     ) -> None:
         super().__init__()
+        if on_submit is not None and on_post is not None:
+            raise ValueError("Pass either on_submit or on_post, not both.")
         prime_image_protocol()
+        # A bare iterator is consumed once; a zero-arg factory can also be
+        # RESTARTED — Esc stops the stream (interrupting whatever it drives),
+        # the next submission starts a fresh one.
         self._ga_events = events
+        # Known member names: their panes/tabs are pre-created at mount (idle),
+        # so a resumed session shows the whole roster before anyone speaks.
+        self._ga_roster: list[str] = list(agents or [])
         self._ga_on_submit = on_submit
+        # Fire-and-forget input (mailbox mode): each submission is posted (e.g.
+        # to a team member's mailbox) and queues until the member takes it; the
+        # turn's events arrive through the background ``events`` stream. Queued
+        # submissions are listed above the prompt until their user turn renders.
+        self._ga_on_post = on_post
         # Rollback callback (interactive only): given the 0-based index of a prior
         # user message, the host rewinds the agent to that point (it owns the
         # step↔message mapping). Enables the /rollback command and ctrl+r.
@@ -218,7 +249,7 @@ class GraspAgentsApp(App[None]):
         self._ga_skills = skills
         self._ga_palette: SkillPalette | None = (
             SkillPalette(skills.all)
-            if on_submit is not None and skills is not None
+            if (on_submit is not None or on_post is not None) and skills is not None
             else None
         )
         self._ga_last_agent: str | None = None
@@ -274,6 +305,17 @@ class GraspAgentsApp(App[None]):
         # written). Their streamed output is live progress mirrored to that log,
         # not a result the agent sees — rendered distinctly, headed by the log.
         self._ga_bg_tools: dict[str, str | None] = {}
+        # Background-task panes: each backgrounded task gets its own pane showing
+        # its live log. Keyed by (launching agent, task_id) — the identity a
+        # stamped ToolStreamEvent carries via (destination, task_id) — mapped to
+        # the pane's source key, unmapped on completion. ``_ga_task_keys`` holds
+        # every key ever minted (a pane stays a task pane — tab tint, log-style
+        # rendering — for its lifetime); the text/widget maps hold the
+        # accumulating log per pane.
+        self._ga_task_panes: dict[tuple[str, str], str] = {}
+        self._ga_task_keys: set[str] = set()
+        self._ga_task_log_text: dict[str, str] = {}
+        self._ga_task_log_widget: dict[str, SelectableStatic] = {}
         # Context-token meter: the last reported input-token count + model per
         # agent (the running context size), shown for the active pane's agent
         # against its window. The window is inferred — learned from
@@ -293,21 +335,29 @@ class GraspAgentsApp(App[None]):
         # rewinds the counter to its value there (not the running maximum)
         self._ga_turn_counts: list[int] = []
         self._ga_rollback_open = False
+        # Queued human submissions (on_post mode): (id, label) in post order.
+        # The oldest is popped when its drained user turn renders (a
+        # UserMessageEvent whose source is the human sender).
+        self._ga_queued: list[tuple[int, str]] = []
+        self._ga_post_seq = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield ContentSwitcher(id="panes")
-        if self._ga_on_submit is not None:
+        if self._ga_on_submit is not None or self._ga_on_post is not None:
             if self._ga_palette is not None:
                 yield self._ga_palette
             yield Static("", id="context-meter")
+            strip = Static("", id="queued-strip")
+            strip.display = False  # collapsed until something is queued
+            yield strip
             with Horizontal(id="prompt-bar"):
                 yield Static("❯", id="prompt-arrow")  # noqa: RUF001
                 yield PromptArea(id="prompt")
         yield Tabs(id="agents")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.register_theme(GRASP_DARK)
         self.register_theme(GRASP_LIGHT)
         # restore the last-used theme (persisted across launches) instead of
@@ -318,12 +368,18 @@ class GraspAgentsApp(App[None]):
         )
         self._apply_markup_theme()
         self.theme_changed_signal.subscribe(self, self._on_theme_changed)
+        # Pre-create a pane per known member (idle) so the whole roster is
+        # visible from launch — a member resuming a persisted session emits
+        # nothing until it speaks, which would otherwise hide it entirely.
+        for name in self._ga_roster:
+            await self._ensure(name, status="idle")
         if self._ga_events is not None:
             self._ga_worker = self._consume()
         if self._ga_on_submit is not None:
             # Interactive only — bound here (not in class BINDINGS) so monitor
             # mode shows no dead rollback key in the footer.
             self.bind("ctrl+r", "rollback", description="Rollback")
+        if self._ga_on_submit is not None or self._ga_on_post is not None:
             self.query_one("#prompt", PromptArea).focus()
         if self._ga_approval_store is not None:
             self._consume_approvals()
@@ -362,12 +418,32 @@ class GraspAgentsApp(App[None]):
 
     # ── event consumption ──
 
+    def _next_event_stream(self) -> AsyncIterator[Event[Any]] | None:
+        events = self._ga_events
+        if events is None:
+            return None
+        if callable(events):
+            return events()
+        # A bare iterator is one-shot: hand it out once — after an interrupt
+        # there is nothing to restart.
+        self._ga_events = None
+        return events
+
     @work(exclusive=False)
     async def _consume(self) -> None:
-        if self._ga_events is None:
+        stream = self._next_event_stream()
+        if stream is None:
             return
-        async for event in self._ga_events:
-            await self._feed(event)
+        try:
+            async for event in stream:
+                await self._feed(event)
+        finally:
+            # Close the stream so its cleanup runs when the worker is cancelled
+            # (Esc) — for a team/member stream this cancels the in-flight turns.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(Exception):
+                    await aclose()
 
     async def wait_for_stream(self) -> None:
         """Await full consumption of the event stream (tests / screenshots)."""
@@ -379,7 +455,7 @@ class GraspAgentsApp(App[None]):
     @on(PromptArea.Submitted)
     def _on_prompt_submit(self, event: PromptArea.Submitted) -> None:
         text = event.value.strip()
-        if not text or self._ga_on_submit is None:
+        if not text or (self._ga_on_submit is None and self._ga_on_post is None):
             return
         self._hide_palette()
         if text == _ROLLBACK_COMMAND:
@@ -387,6 +463,9 @@ class GraspAgentsApp(App[None]):
             prompt.text = ""
             prompt.sync_height()
             self._open_rollback()
+            return
+        if self._ga_on_post is not None:
+            self._enqueue_post(text)
             return
         self._record_turn(text)
         self._dispatch(self._unwrap_slash_command(text))
@@ -465,6 +544,70 @@ class GraspAgentsApp(App[None]):
         prompt.disabled = True
         self._ga_run_worker = self._run_turn(text)
 
+    # ── fire-and-forget input (on_post mode) ──
+
+    def _enqueue_post(self, text: str) -> None:
+        """
+        Post a submission without blocking the prompt, and show it as queued.
+
+        The prompt stays enabled — the recipient takes queued mail at its own
+        turn boundaries, so the user can stack messages. Each one is listed in
+        the strip above the prompt until its user turn renders in the pane.
+        """
+        prompt = self.query_one("#prompt", PromptArea)
+        prompt.text = ""
+        prompt.sync_height()
+        self._ga_post_seq += 1
+        self._ga_queued.append((self._ga_post_seq, text))
+        self._refresh_queue_strip()
+        self._post_submission(self._ga_post_seq, self._unwrap_slash_command(text))
+        # Resume the event stream if Esc stopped it (restartable factory only).
+        self._ensure_event_stream()
+
+    def _ensure_event_stream(self) -> None:
+        if self._ga_events is None:
+            return
+        worker = self._ga_worker
+        if worker is None or worker.state not in {
+            WorkerState.PENDING,
+            WorkerState.RUNNING,
+        }:
+            self._ga_worker = self._consume()
+
+    @work(exclusive=False)
+    async def _post_submission(self, entry_id: int, text: str) -> None:
+        assert self._ga_on_post is not None
+        try:
+            await self._ga_on_post(text)
+        except Exception as exc:
+            # The message never reached the mailbox — unqueue it and say so.
+            self._ga_queued = [e for e in self._ga_queued if e[0] != entry_id]
+            self._refresh_queue_strip()
+            self.notify(f"Message not sent: {exc}", severity="error")
+
+    def _refresh_queue_strip(self) -> None:
+        try:
+            strip = self.query_one("#queued-strip", Static)
+        except NoMatches:
+            return
+        if not self._ga_queued:
+            # Collapse the (margin-bearing) widget so it leaves no gap.
+            strip.display = False
+            strip.update("")
+            return
+        strip.display = True
+        lines: list[RenderableType] = [
+            Text(
+                f"✉ queued: {label.splitlines()[0]}",
+                style=f"italic {PALETTE['usage']}",
+                no_wrap=True,
+                overflow="ellipsis",
+                justify="right",
+            )
+            for _, label in self._ga_queued
+        ]
+        strip.update(Group(*lines))
+
     @work
     async def _run_turn(self, text: str) -> None:
         if self._ga_on_submit is None:
@@ -512,6 +655,16 @@ class GraspAgentsApp(App[None]):
 
     async def _feed(self, event: Event[Any]) -> None:
         self._record_edge(event)
+        # A drained human turn (mailbox mode): the member picked up the oldest
+        # queued submission — human mail is control-priority, FIFO among itself,
+        # so pops track takes in order.
+        if (
+            self._ga_queued
+            and isinstance(event, UserMessageEvent)
+            and event.source == USER_SENDER
+        ):
+            self._ga_queued.pop(0)
+            self._refresh_queue_strip()
         owner = self._owner(event)
         pane = await self._ensure(owner)
         # auto-scroll only when already at the bottom, so streaming content never
@@ -597,9 +750,14 @@ class GraspAgentsApp(App[None]):
                     pane.scroll_end(animate=False)
             return True
         if isinstance(event, ToolStreamEvent):
-            await self._stream_tool(
-                owner, pane, event.source or "tool", str(event.data), at_bottom
-            )
+            if owner in self._ga_task_keys:
+                # A backgrounded task's log pane: plain full-width append, not
+                # the inline right-aligned live box.
+                await self._stream_task_log(owner, pane, str(event.data), at_bottom)
+            else:
+                await self._stream_tool(
+                    owner, pane, event.source or "tool", str(event.data), at_bottom
+                )
             return True
         if isinstance(event, ReasoningItemEvent) and owner in self._ga_stream_think:
             self._finalize_thinking(owner, event, pane, at_bottom)
@@ -742,6 +900,80 @@ class GraspAgentsApp(App[None]):
         self._ga_stream_tool_text.pop(owner, None)
         self._ga_stream_tool_name.pop(owner, None)
 
+    # ── background-task log panes ──
+
+    async def _open_task_pane(self, event: BackgroundTaskLaunchedEvent) -> None:
+        """
+        Give a backgrounded task its own pane, nested under the launching agent.
+
+        The pane mirrors the task's live output — the same stream its ``.grasp``
+        log is written from — one drained chunk per turn boundary. Works for any
+        background task (a shell command's stdout/stderr, a sub-workflow, a
+        long-running function tool); a sub-agent task additionally gets the
+        usual per-agent pane from its own bubbled agent events.
+        """
+        info = event.data
+        agent = event.source or ""
+        ident = (agent, info.task_id)
+        if ident in self._ga_task_panes:
+            return
+        key = f"{info.tool_name} {info.task_id}"
+        if key in self._ga_panes:
+            # Another agent minted the same task id — qualify to keep panes apart.
+            key = f"{key} · {agent or '?'}"
+        self._ga_task_panes[ident] = key
+        self._ga_task_keys.add(key)
+        if agent:
+            self._ga_parent.setdefault(key, agent)
+        pane = await self._ensure(key)
+        head = f"⧗ {info.tool_name} running in background (id: {info.task_id})"
+        if info.output_name:
+            head += f" · {info.output_name}"
+        await pane.mount(
+            SelectableStatic(Text(head, style=PALETTE["warn"]), classes="ga-msg")
+        )
+
+    async def _close_task_pane(self, event: BackgroundTaskCompletedEvent) -> None:
+        """Mark the task's pane done and stop routing its (finished) stream."""
+        ident = (event.source or "", event.data.task_id)
+        key = self._ga_task_panes.pop(ident, None)
+        if key is None:
+            return
+        # ``_ga_task_keys`` keeps the key: the pane remains a task pane (tab
+        # tint) for its lifetime; routing stopped with the unmapping above.
+        self._ga_task_log_text.pop(key, None)
+        self._ga_task_log_widget.pop(key, None)
+        pane = self._ga_panes.get(key)
+        if pane is not None:
+            at_bottom = pane.scroll_offset.y >= pane.max_scroll_y - 1
+            await pane.mount(
+                SelectableStatic(
+                    Text("✓ completed", style=PALETTE["tool_result"]),
+                    classes="ga-msg",
+                )
+            )
+            if at_bottom:
+                pane.scroll_end(animate=False)
+        self._set_status(key, "done")
+
+    async def _stream_task_log(
+        self, owner: str, pane: VerticalScroll, delta: str, at_bottom: bool
+    ) -> None:
+        """Append a drained chunk to the task pane's accumulating log text."""
+        text = self._ga_task_log_text.get(owner, "") + delta
+        self._ga_task_log_text[owner] = text
+        rend = Text(sanitize_terminal_text(text))
+        widget = self._ga_task_log_widget.get(owner)
+        if widget is None:
+            widget = SelectableStatic(rend, classes="ga-msg")
+            self._ga_task_log_widget[owner] = widget
+            self._ga_last_kind[owner] = "text"
+            await pane.mount(widget)
+        else:
+            widget.update(rend)
+        if at_bottom:
+            pane.scroll_end(animate=False)
+
     def _finalize_message(
         self, owner: str, event: Event[Any], pane: VerticalScroll, at_bottom: bool
     ) -> None:
@@ -866,10 +1098,10 @@ class GraspAgentsApp(App[None]):
                 color = PALETTE["warn"]
             else:
                 color = PALETTE["usage"]
-            body = f"context: {tokens:,} / {window:,} tokens ({pct}%)"
+            body = f"context: {tokens:,} / {window:,} ({pct}%)"
         else:
             color = PALETTE["usage"]
-            body = f"context: {tokens:,} tokens"
+            body = f"context: {tokens:,}"
         return Text(body, style=color, justify="right")
 
     async def _flush_turn(
@@ -895,6 +1127,12 @@ class GraspAgentsApp(App[None]):
             # item event); seal it so this call and the next tool's output land
             # below it, not folded into the leaked widget above.
             self._seal_stream_tool(owner)
+        if isinstance(event, BackgroundTaskLaunchedEvent):
+            # Open the task's own log pane; the "⧗ launched" notice still
+            # renders in the agent's pane below (the generic path).
+            await self._open_task_pane(event)
+        elif isinstance(event, BackgroundTaskCompletedEvent):
+            await self._close_task_pane(event)
         if isinstance(event, TurnStartEvent):
             # monotonic per-agent turn count — the loop's own turn resets to 0
             # each step, so two consecutive turns can both read turn=0. Defer the
@@ -975,6 +1213,11 @@ class GraspAgentsApp(App[None]):
             return (
                 event.destination or self._ga_main or self._ga_last_agent or "session"
             )
+        # a backgrounded task's live output goes to that task's own log pane
+        if isinstance(event, ToolStreamEvent) and event.task_id is not None:
+            key = self._ga_task_panes.get((event.destination or "", event.task_id))
+            if key is not None:
+                return key
         # tool / exec output (source = tool name) renders in the calling agent's
         # pane: its destination when that's a known agent, else the current one
         dest = getattr(event, "destination", None)
@@ -993,7 +1236,7 @@ class GraspAgentsApp(App[None]):
         if child and parent and child != parent:
             self._ga_parent.setdefault(child, parent)
 
-    async def _ensure(self, source: str) -> VerticalScroll:
+    async def _ensure(self, source: str, *, status: str = "working") -> VerticalScroll:
         if source in self._ga_panes:
             return self._ga_panes[source]
 
@@ -1011,10 +1254,12 @@ class GraspAgentsApp(App[None]):
 
         tab_id = _tab_id(source)
         self._ga_tab_source[tab_id] = source
-        self._ga_status[source] = "working"
-        await self.query_one("#agents", Tabs).add_tab(
-            Tab(self._tab_label(source), id=tab_id)
-        )
+        self._ga_status[source] = status
+        tab = Tab(self._tab_label(source), id=tab_id)
+        if source in self._ga_task_keys:
+            # Background-task pane: tinted in the tab bar (CSS `.ga-task`).
+            tab.add_class("ga-task")
+        await self.query_one("#agents", Tabs).add_tab(tab)
         return pane
 
     def _activate(self, source: str) -> None:
@@ -1049,6 +1294,9 @@ class GraspAgentsApp(App[None]):
             event, (ToolErrorEvent, LLMStreamingErrorEvent, ProcStreamingErrorEvent)
         ):
             self._set_status(owner, "error")
+        elif isinstance(event, TurnStartEvent):
+            # wake a pre-created (idle) roster pane once its member actually runs
+            self._set_status(owner, "working")
         elif isinstance(event, TurnEndEvent):
             reason = event.data.stop_reason
             if str(getattr(reason, "value", reason)) == "final_answer":
@@ -1154,25 +1402,42 @@ class GraspAgentsApp(App[None]):
 
     async def action_interrupt(self) -> None:
         """
-        Cancel the in-flight interactive turn (``esc``).
+        Interrupt what is running (``esc``).
 
-        A no-op when nothing is running, or when a modal (e.g. the approval
-        dialog) is open — that screen handles ``esc`` itself. Cancelling the
-        turn worker raises ``CancelledError`` through the agent's stream, which
-        closes it (see :meth:`_run_turn`).
+        A no-op when a modal (e.g. the approval dialog) is open — that screen
+        handles ``esc`` itself. In ``on_submit`` mode this cancels the in-flight
+        turn worker, raising ``CancelledError`` through the agent's stream,
+        which closes it (see :meth:`_run_turn`). In mailbox/monitor mode it
+        cancels the background event-stream worker instead — closing the stream
+        (see :meth:`_consume`), which cancels the member turns it drives. When
+        ``events`` was given as a restartable factory, the next submission
+        starts a fresh stream; undelivered mailbox messages are retaken then
+        (at-least-once), with new human input draining first.
         """
         worker = self._ga_run_worker
-        if not self._ga_running or worker is None:
+        if self._ga_running and worker is not None:
+            if worker.state in {WorkerState.PENDING, WorkerState.RUNNING}:
+                worker.cancel()
+            await self._mount_interrupt_note("⊘ interrupted")
             return
-        if worker.state in {WorkerState.PENDING, WorkerState.RUNNING}:
-            worker.cancel()
+        stream_worker = self._ga_worker
+        if stream_worker is not None and stream_worker.state in {
+            WorkerState.PENDING,
+            WorkerState.RUNNING,
+        }:
+            stream_worker.cancel()
+            self._ga_worker = None
+            note = "⊘ interrupted"
+            if callable(self._ga_events):
+                note += "; sending a message resumes it"
+            await self._mount_interrupt_note(note)
+
+    async def _mount_interrupt_note(self, note: str) -> None:
         owner = self._ga_last_agent or self._ga_main
         if owner and owner in self._ga_panes:
             pane = self._ga_panes[owner]
             await pane.mount(
-                SelectableStatic(
-                    Text("⊘ interrupted", style="italic"), classes="ga-msg"
-                )
+                SelectableStatic(Text(note, style="italic"), classes="ga-msg")
             )
             pane.scroll_end(animate=False)
 
@@ -1224,10 +1489,14 @@ def run_tui_interactive(
     agent: LLMAgent[Any, Any, Any] | None = None,
     *,
     on_submit: Callable[[str], AsyncIterator[Event[Any]]] | None = None,
+    on_post: Callable[[str], Awaitable[None]] | None = None,
     on_rollback: Callable[[int], Awaitable[None]] | None = None,
     main_agent: str | None = None,
+    agents: Sequence[str] | None = None,
     ctx: SessionContext[Any] | None = None,
-    events: AsyncIterator[Event[Any]] | None = None,
+    events: AsyncIterator[Event[Any]]
+    | Callable[[], AsyncIterator[Event[Any]]]
+    | None = None,
 ) -> None:
     """
     Interactive TUI: type a message, the agent runs, events stream into panes.
@@ -1244,14 +1513,29 @@ def run_tui_interactive(
     (rewind to a message's 0-based index), ``main_agent``, and ``ctx``. Either
     overrides the value inferred from ``agent`` when both are given.
 
+    For mailbox-driven members (a team), pass ``on_post`` instead of
+    ``on_submit`` — a fire-and-forget coroutine ``(text) -> None`` (e.g.
+    ``AgentTeam.submit_message`` / ``MemberHost.submit_message``). The prompt
+    stays enabled, so messages can stack: each is listed above the prompt as
+    *queued* until the member takes it at a turn boundary and its user turn
+    renders in the pane. The member's events arrive via ``events``.
+
     Pass ``events`` to also render a background event stream concurrently with
     human turns — e.g. a team member reacting to its mailbox while you type. Its
-    events route to panes by ``source`` like any other.
+    events route to panes by ``source`` like any other. Pass it as a zero-arg
+    factory (``lambda: team.run_stream(daemon=True)``) to make it restartable:
+    ``esc`` then stops the stream (interrupting the member turns it drives) and
+    the next submission starts a fresh one — undelivered mailbox messages are
+    retaken (at-least-once), new human input first.
+
+    ``agents`` pre-creates a pane per listed member at launch (idle status), so
+    a team resuming a persisted session shows its whole roster before anyone
+    speaks.
     """
     window: int | None = None
     if agent is not None:
         turns = _AgentTurns(agent)
-        if on_submit is None:
+        if on_submit is None and on_post is None:
             on_submit = turns.on_submit
         if on_rollback is None and hasattr(agent, "rollback_to_step"):
             on_rollback = turns.on_rollback
@@ -1260,15 +1544,18 @@ def run_tui_interactive(
         if ctx is None:
             ctx = agent.ctx
         window = getattr(agent, "context_window", None)
-    if on_submit is None:
+    if on_submit is None and on_post is None:
         raise ValueError(
-            "run_tui_interactive needs either an `agent` or an `on_submit` callback."
+            "run_tui_interactive needs an `agent`, an `on_submit` callback, "
+            "or an `on_post` callback."
         )
     app = GraspAgentsApp(
         events=events,
         on_submit=on_submit,
+        on_post=on_post,
         on_rollback=on_rollback,
         main_agent=main_agent,
+        agents=agents,
         ctx=ctx,
     )
     if window and main_agent:

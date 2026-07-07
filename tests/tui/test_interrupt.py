@@ -78,3 +78,41 @@ async def test_escape_is_a_noop_when_idle() -> None:
         await pilot.pause()
         assert app._ga_running is False
         assert app.query_one("#prompt", PromptArea).disabled is False
+
+
+@pytest.mark.asyncio
+async def test_escape_stops_background_stream_and_message_resumes_it() -> None:
+    """
+    Mailbox mode: Esc cancels the events stream (closing it, so the team's
+    in-flight turns cancel); the next submission restarts a factory stream.
+    """
+    starts: list[int] = []
+    closed: list[int] = []
+
+    async def stream():
+        starts.append(1)
+        try:
+            yield TurnStartEvent(data=TurnInfo(turn=0), source="lead")
+            while True:  # parked until cancelled; nothing to signal  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+        finally:
+            closed.append(1)
+
+    async def on_post(text: str) -> None:
+        pass
+
+    app = GraspAgentsApp(events=stream, on_post=on_post, main_agent="lead")
+    async with app.run_test() as pilot:
+        await _wait(pilot, lambda: starts == [1] and "lead" in app._ga_panes)
+
+        await pilot.press("escape")
+        await _wait(pilot, lambda: closed == [1])
+        assert closed == [1]  # stream closed -> the run it drives is cancelled
+        assert starts == [1]  # not restarted on its own
+
+        prompt = app.query_one("#prompt", PromptArea)
+        assert prompt.disabled is False
+        prompt.text = "resume please"
+        await pilot.press("enter")
+        await _wait(pilot, lambda: len(starts) == 2)
+        assert len(starts) == 2  # a fresh stream serves the new message

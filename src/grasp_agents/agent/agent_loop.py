@@ -1420,9 +1420,11 @@ class AgentLoop[CtxT]:
         item = message.to_input_message()
         self._agent_ctx.transcript.update([item])
 
+        # ``source`` names the mailbox sender (a peer, or "user" for human
+        # input), so a UI can tell queued human turns from peer hand-offs.
         yield UserMessageEvent(
             data=item,
-            source=None,
+            source=message.sender,
             destination=self.agent_name,
             exec_id=exec_id,
         )
