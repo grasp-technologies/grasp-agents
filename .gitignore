@@ -193,5 +193,6 @@ orchestration_workdir/
 autoresearch_workdir/
 CLAUDE.md
 .claude/
+.grasp/
 src/grasp_agents/kits/
 tests/kits/

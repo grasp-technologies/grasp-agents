@@ -1035,6 +1035,80 @@ class _StreamingTool(BaseTool[EchoInput, Any, Any]):
         yield ToolOutputEvent(data="done", source="streamer", exec_id=exec_id)
 
 
+class _BgStreamingTool(BaseTool[EchoInput, Any, Any]):
+    """A backgrounded tool that streams (one structured chunk) then finishes."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="bg_streamer",
+            description="Streams in background",
+            auto_background_at=0,
+        )
+
+    async def _run(self, inp, *, ctx=None, **kwargs):
+        del inp, ctx, kwargs
+        return "done"
+
+    async def _run_stream(self, inp, *, exec_id=None, **kwargs):
+        del inp, kwargs
+        from grasp_agents.tools.bash_common import ExecStreamChunk, ExecStreamEvent
+        from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
+
+        yield ToolStreamEvent(data="chunk", source="bg_streamer", exec_id=exec_id)
+        yield ExecStreamEvent(
+            data=ExecStreamChunk(channel="stdout", text="out"),
+            source="bg_streamer",
+            exec_id=exec_id,
+        )
+        # A nested tool's stream (as bubbled through a sub-agent task).
+        yield ToolStreamEvent(data="inner", source="inner_tool", exec_id=exec_id)
+        yield ToolOutputEvent(data="done", source="bg_streamer", exec_id=exec_id)
+
+
+class TestBackgroundStreamTaskStamping:
+    """Drain stamps a task's own stream deltas with its task identity."""
+
+    @pytest.mark.asyncio
+    async def test_drain_stamps_task_id_and_keeps_subclass(self):
+        from grasp_agents.tools.bash_common import ExecStreamEvent
+        from grasp_agents.types.events import ToolStreamEvent
+
+        tool = _BgStreamingTool()
+        executor, _, _ = _make_executor([], tools=[tool])  # AgentLoop name "test"
+        mgr = executor.agent_ctx.bg_tasks
+        ctx = executor.ctx
+
+        call = FunctionToolCallItem(call_id="c1", name="bg_streamer", arguments="{}")
+        _note, event = await mgr.run_backgroundable(
+            call,
+            tool,
+            EchoInput(text="x"),
+            ctx=ctx,
+            exec_id="t",
+            agent_ctx=executor.agent_ctx,
+        )
+        assert event is not None
+        task_id = event.data.task_id
+
+        await mgr.wait_idle()
+        bubbled = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
+        streams = [e for e in bubbled if isinstance(e, ToolStreamEvent)]
+
+        own = [e for e in streams if e.source == "bg_streamer"]
+        assert own
+        assert all(e.task_id == task_id for e in own)
+        # run_stream already stamped the owning agent as the destination.
+        assert all(e.destination == "test" for e in own)
+        # A structured subclass survives the stamping intact.
+        exec_events = [e for e in own if isinstance(e, ExecStreamEvent)]
+        assert exec_events
+        assert exec_events[0].data.channel == "stdout"
+        # An inner tool's stream is not claimed by the outer task.
+        inner = [e for e in streams if e.source == "inner_tool"]
+        assert inner
+        assert all(e.task_id is None for e in inner)
+
+
 class TestToolStreamDestinationStamping:
     """``BaseTool.run_stream`` stamps the owning agent so the UI can route."""
 

@@ -44,6 +44,25 @@ from grasp_agents.ui import run_tui_interactive
 run_tui_interactive(agent)   # rollback, skills palette, and token meter inferred
 ```
 
+**Mailbox-driven** (agent teams) — pass `on_post` instead of an agent: each
+submission is posted fire-and-forget (e.g. `MemberHost.submit_message` /
+`AgentTeam.submit_message`) while the member's events render from a background
+`events=` stream. The prompt never blocks, so messages can stack — each is
+listed above the prompt as *queued* until the member takes it at a turn
+boundary. See `grasp_agents.examples.tui.team_research`.
+
+**Relaunch = restore.** When the session ctx carries a checkpoint store,
+reopening the TUI over the same session path shows the state you closed it
+with (`restore_history=True`, the default): each agent's persisted transcript
+replays into its pane under a `↻ restored session` rule, background-task panes
+come back from their records and mirrored `.grasp/tasks` logs, and human mail
+still queued in the mailbox re-fills the queued strip. Pass the member
+*objects* in `agents=` (names also work, but restore less) so each pane is
+headed by the member's initial context — the system prompt + leading messages
+are never persisted with the transcript, so they are recomposed live and
+reflect the *current* configuration. Not restored (never persisted):
+per-generation usage/cost lines and streaming partials of an in-flight turn.
+
 `run_tui*` start the app's own event loop, so call them at module top level (not
 inside `asyncio.run`).
 
@@ -131,6 +150,13 @@ source). Tool results / user input route to their `destination` (the addressed
 agent). Parent→child edges come from `ToolCallItemEvent` /
 `BackgroundTaskLaunchedEvent` (and show as a `↳` prefix). Status: working `●` →
 done `✓` / error `✗`.
+
+Every **backgrounded task** also gets its own pane (nested under the launching
+agent) showing its live output — the same stream its `.grasp` log is written
+from, one drained chunk per turn boundary. This is uniform across task kinds: a
+shell command's stdout/stderr, a long-running function tool, or a sub-workflow;
+a sub-agent task additionally gets the usual per-agent pane from its own
+events.
 
 ## Images
 
