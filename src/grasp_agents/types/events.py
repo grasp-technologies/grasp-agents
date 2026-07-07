@@ -84,11 +84,17 @@ class ToolStreamEvent(Event[Any], frozen=True):
     ``ToolStreamEvent``.
 
     ``destination`` is the owning agent so a UI can route a tool's live output
-    to that agent's pane.
+    to that agent's pane. ``task_id`` names the backgrounded task this delta
+    belongs to — stamped by the background-task manager when it bubbles a
+    task's buffered output at a turn boundary (matching the ``task_id`` of the
+    :class:`BackgroundTaskLaunchedEvent`), so a UI can give each task its own
+    live-log surface even when several tasks of one tool run at once; ``None``
+    for a foreground (inline) stream.
     """
 
     type: Literal["tool.stream"] = "tool.stream"
     destination: str | None = None
+    task_id: str | None = None
 
 
 class ToolErrorInfo(BaseModel):

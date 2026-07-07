@@ -52,6 +52,12 @@ class MemberCard(BaseModel):
     # announced to the other members. Its messages carry ``LEAD_PRIORITY``,
     # draining ahead of ordinary peer mail (below control-plane mail).
     lead: bool = False
+    # Opt-in: give this (resident) member the ``ScheduleWakeup`` tool — a
+    # self-addressed timer for acting on its own initiative later (a follow-up,
+    # a poll, a no-reply timeout). Off by default: inbound mail already wakes a
+    # resident, and models tend to schedule wakeups merely to "wait" for
+    # replies that would wake them anyway.
+    wakeups: bool = False
 
     @classmethod
     def from_processor(

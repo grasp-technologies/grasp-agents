@@ -976,6 +976,8 @@ class BackgroundTaskManager[CtxT]:
             while bt.cursor < len(bt.events):
                 event = bt.events[bt.cursor]
                 bt.cursor += 1
+                if isinstance(event, ToolStreamEvent) and event.source == bt.tool_name:
+                    event = event.model_copy(update={"task_id": bt.task_id})
                 yield event
             if backend is not None and bt.cursor > start:
                 await self._append_log(

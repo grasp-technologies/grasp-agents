@@ -18,33 +18,51 @@ SENDER_ATTRIBUTION_ATTACHMENT_NAME = "team_sender"
 
 _TEAM_INSTRUCTIONS = (
     "You are one member of a team that collaborates by SENDING MESSAGES — there is no "
-    "shared chat and no one sees your reasoning. A message from a teammate (or the "
-    "user) arrives as a user turn fenced in <team_member_message from=...>...</"
-    "team_member_message>. To reply, delegate, or hand work off, call the SendMessage "
+    "shared chat and no one sees your reasoning. A message from a teammate arrives as "
+    "a user turn fenced in <team_member_message from=...>...</team_member_message>; "
+    "the user's own messages arrive as plain user turns. To reply, delegate, or hand "
+    "work off, call the SendMessage "
     "tool addressed to a teammate by name; the roster below lists who you can message "
     "and what structured input each accepts. Delivery is asynchronous, so you will not "
-    "block for a reply (it arrives later as another message). Use ScheduleWakeup to "
+    "block for a reply (it arrives later as another message). "
+)
+
+# Appended only for a member carded with ``wakeups=True`` (which is what puts
+# the ScheduleWakeup tool on it).
+_WAKEUP_INSTRUCTIONS = (
+    "Use ScheduleWakeup to "
     "revisit something later on your own initiative instead of waiting to be messaged. "
+)
+
+_PARK_INSTRUCTIONS = (
     "When you have nothing left to do, stop and wait for the next message rather than "
     "inventing work — you will be reactivated when one arrives."
 )
 
 
 def make_team_section(
-    cards: Sequence[MemberCard], *, section_name: str = TEAM_SECTION_NAME
+    cards: Sequence[MemberCard],
+    *,
+    section_name: str = TEAM_SECTION_NAME,
+    wakeups: bool = False,
 ) -> SystemPromptSection:
     """
     Build the team :class:`SystemPromptSection` attached to every resident member.
 
     It frames the member as part of a message-passing team — how to send
-    (``SendMessage``), receive (the ``<team_member_message>`` fence), schedule its own
-    wakeups (``ScheduleWakeup``), and park when idle — and carries the roster: who is
-    on the team and what structured input each accepts. The roster lives here, not in
-    the ``SendMessage`` tool description, so the tool schema stays lean and the team
-    context sits where the model reads its instructions.
+    (``SendMessage``), receive (the ``<team_member_message>`` fence), and park when
+    idle — and carries the roster: who is on the team and what structured input each
+    accepts. The roster lives here, not in the ``SendMessage`` tool description, so
+    the tool schema stays lean and the team context sits where the model reads its
+    instructions. Pass ``wakeups=True`` for a member that carries the
+    ``ScheduleWakeup`` tool, so the framing mentions it.
     """
+    instructions = _TEAM_INSTRUCTIONS
+    if wakeups:
+        instructions += _WAKEUP_INSTRUCTIONS
+    instructions += _PARK_INSTRUCTIONS
     roster = "\n".join(f"- {card.render()}" for card in cards)
-    text = f"{_TEAM_INSTRUCTIONS}\n\nTeammates you can message:\n{roster}"
+    text = f"{instructions}\n\nTeammates you can message:\n{roster}"
 
     lead = next((c.name for c in cards if c.lead), None)
     if lead is not None:

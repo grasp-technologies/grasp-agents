@@ -805,3 +805,35 @@ def test_compaction_notice_singular_turn() -> None:
     text = _render_to_text(render_event(ev))
     assert "folded 1 turn" in text
     assert "1 turns" not in text
+
+
+def test_bg_launched_notice_cites_log_only_when_present() -> None:
+    from grasp_agents.types.events import (
+        BackgroundTaskInfo,
+        BackgroundTaskLaunchedEvent,
+    )
+
+    with_log = render_event(
+        BackgroundTaskLaunchedEvent(
+            data=BackgroundTaskInfo(
+                task_id="bg_1",
+                tool_name="Bash",
+                tool_call_id="c1",
+                output_name="call_c1.log",
+            ),
+            source="lead",
+        )
+    )
+    assert isinstance(with_log, Text)
+    assert "· call_c1.log" in with_log.plain
+
+    without_log = render_event(
+        BackgroundTaskLaunchedEvent(
+            data=BackgroundTaskInfo(
+                task_id="bg_1", tool_name="Bash", tool_call_id="c1"
+            ),
+            source="lead",
+        )
+    )
+    assert isinstance(without_log, Text)
+    assert "call_c1.log" not in without_log.plain
