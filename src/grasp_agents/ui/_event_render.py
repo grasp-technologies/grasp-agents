@@ -238,8 +238,8 @@ def render_event(
     if isinstance(event, UserMessageEvent):
         text = extract_input_text(event.data)
         # Framework notices get a specialized render (shared by every surface).
-        # The owning agent is the recipient: drain delivers with
-        # destination=agent, resume injects with source=agent.
+        # The owning agent is the recipient (``destination``); ``source`` is
+        # kept as a fallback for emitters that only name the agent there.
         if "<task_notification>" in text:
             return render_task_notification(
                 text, agent=event.destination or event.source
