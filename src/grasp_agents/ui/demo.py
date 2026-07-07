@@ -39,6 +39,7 @@ from grasp_agents.types.events import (
     ToolCallItemEvent,
     ToolErrorInfo,
     ToolOutputItemEvent,
+    ToolStreamEvent,
     TurnEndEvent,
     TurnEndInfo,
     TurnInfo,
@@ -226,9 +227,21 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
         TurnStartEvent(data=TurnInfo(turn=1), source="coordinator", exec_id="c1"),
         BackgroundTaskLaunchedEvent(
             data=BackgroundTaskInfo(
-                task_id="bg1", tool_name="index_sources", tool_call_id="c_bg"
+                task_id="bg1",
+                tool_name="index_sources",
+                tool_call_id="c_bg",
+                output_name="call_c_bg.log",
             ),
             source="coordinator",
+            exec_id="c1",
+        ),
+        # The backgrounded task's live output — stamped with its task_id, so it
+        # streams into the task's own log pane, not the coordinator's.
+        ToolStreamEvent(
+            data="indexing 4 sources…\n",
+            source="index_sources",
+            destination="coordinator",
+            task_id="bg1",
             exec_id="c1",
         ),
         ToolCallItemEvent(
@@ -278,6 +291,13 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
             ),
             source="writer",
             destination="coordinator",
+            exec_id="c1",
+        ),
+        ToolStreamEvent(
+            data="indexed 4/4 · building embeddings… done (3.1s)\n",
+            source="index_sources",
+            destination="coordinator",
+            task_id="bg1",
             exec_id="c1",
         ),
         BackgroundTaskCompletedEvent(
@@ -453,7 +473,10 @@ def console_demo_events() -> list[Event[Any]]:
         TurnStartEvent(data=TurnInfo(turn=1), source="coordinator", exec_id="c1"),
         BackgroundTaskLaunchedEvent(
             data=BackgroundTaskInfo(
-                task_id="bg_1", tool_name="index_sources", tool_call_id="tc_bg1"
+                task_id="bg_1",
+                tool_name="index_sources",
+                tool_call_id="tc_bg1",
+                output_name="call_tc_bg1.log",
             ),
             source="coordinator",
             exec_id="c1",

@@ -142,3 +142,37 @@ class TestInitialContextBuilder:
         assert len(header) == 1
         assert isinstance(header[0], InputMessageItem)
         assert header[0].text == "Custom system."
+
+
+class TestPreviewInitialContext:
+    @pytest.mark.asyncio
+    async def test_preview_composes_without_running(self) -> None:
+        agent = _agent(sys_prompt="Base.")
+
+        preview = await agent.preview_initial_context()
+
+        assert len(preview) == 1
+        assert isinstance(preview[0], InputMessageItem)
+        assert preview[0].role == "system"
+        assert preview[0].text == "Base."
+        # Read-only: nothing ran, nothing entered the log.
+        assert agent.transcript.is_empty
+
+    @pytest.mark.asyncio
+    async def test_preview_reflects_sections_and_builder(self) -> None:
+        agent = _agent(sys_prompt="Base.")
+        agent.add_system_prompt_section(_cached_section())
+
+        @agent.add_initial_context_builder
+        async def build(messages: list[InputItem], *, exec_id: str) -> list[InputItem]:
+            del exec_id
+            return [*messages, InputMessageItem.from_text("Leading note.")]
+
+        preview = await agent.preview_initial_context()
+
+        assert len(preview) == 2
+        assert isinstance(preview[0], InputMessageItem)
+        assert preview[0].texts == ["Base.", "Stable preamble."]
+        assert isinstance(preview[1], InputMessageItem)
+        assert preview[1].role == "user"
+        assert preview[1].text == "Leading note."

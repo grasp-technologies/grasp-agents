@@ -99,7 +99,7 @@ async def test_meter_shows_tokens_over_window() -> None:
         await _submit(pilot, app)
         assert app._ga_input_tokens["analyst"] == 1000
         text = _meter_text(app)
-        assert "1,000 / 2,000 tokens" in text
+        assert "1,000 / 2,000 (50%)" in text
         assert "50%" in text
 
 
@@ -124,7 +124,7 @@ async def test_meter_updates_to_post_fold_size_on_compaction() -> None:
         await _submit(pilot, app)
         # the compaction event's post-fold size supersedes the pre-fold generation
         assert app._ga_input_tokens["analyst"] == 400
-        assert "400 / 2,000 tokens" in _meter_text(app)
+        assert "400 / 2,000 (20%)" in _meter_text(app)
 
 
 @pytest.mark.asyncio
@@ -138,7 +138,7 @@ async def test_meter_without_window_shows_bare_count() -> None:
         await pilot.pause()
         await _submit(pilot, app)
         text = _meter_text(app)
-        assert "1,234 tokens" in text
+        assert "context: 1,234" in text
         assert "/" not in text
 
 
