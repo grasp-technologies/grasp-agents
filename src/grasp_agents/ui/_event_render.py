@@ -252,9 +252,9 @@ def render_event(
         skill = match_invocation_wrapper(text)
         if skill is not None:
             return panel(f"skill <{skill}>", _message_body(text), PALETTE["accent"])
-        # A received input — drained mailbox mail names its sender ("user", or
-        # a peer member); other paths may not know one, so fall back to showing
-        # just the recipient.
+        # A received input — we don't reliably know the sender (it may be the
+        # user or an upstream agent), so don't assert one; just show the
+        # recipient.
         dst = event.destination or "agent"
         label = f"{event.source} → {dst}" if event.source else f"→ {dst}"
         return panel(label, _message_body(text), PALETTE["border_input"])
@@ -267,10 +267,10 @@ def render_event(
 
     if isinstance(event, BackgroundTaskLaunchedEvent):
         i = event.data
-        text = f"⧗ {i.tool_name} launched in background (id: {i.task_id})"
-        if i.output_name:
-            text += f" · {i.output_name}"
-        return Text(text, style=PALETTE["warn"])
+        return Text(
+            f"⧗ {i.tool_name} launched in background (id: {i.task_id})",
+            style=PALETTE["warn"],
+        )
 
     if isinstance(event, BackgroundTaskCompletedEvent):
         i = event.data

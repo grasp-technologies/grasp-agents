@@ -254,22 +254,16 @@ def _format_inbound(message: TeamMessage) -> str:
     Render one inbound message's text as a user-turn header/body for the recipient.
     Image / file payloads are excluded here and carried separately as content parts
     (see :meth:`TeamMessage.to_chat_inputs`), so they reach a multimodal model intact.
-
-    The ``<team_member_message>`` fence exists to attribute *peer* mail; human
-    input renders bare, exactly like a plain user turn outside a team.
     """
+    header = f"<team_member_message from={message.sender}"
+    if message.reply_to:
+        header += f" reply_to={message.reply_to}"
+    header += ">"
     body_parts = [
         _render_payload(p)
         for p in message.payloads
         if not isinstance(p, (InputImage, InputFile))
     ]
-    if message.sender == USER_SENDER:
-        return "\n\n".join(p for p in body_parts if p)
-
-    header = f"<team_member_message from={message.sender}"
-    if message.reply_to:
-        header += f" reply_to={message.reply_to}"
-    header += ">"
     tail = "</team_member_message>"
 
     return "\n\n".join(p for p in (header, *body_parts, tail) if p)

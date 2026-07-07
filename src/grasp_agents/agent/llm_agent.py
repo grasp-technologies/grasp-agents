@@ -129,35 +129,46 @@ class LLMAgent[InT, OutT, CtxT](
         self,
         name: ProcName,
         *,
+        # Session context — bound at construction. The agent reads/writes
+        # state on this ``ctx`` for its lifetime; passing a different ``ctx``
+        # at ``.run()`` time is not supported.
         ctx: SessionContext[CtxT] | None = None,
+        # LLM
         llm: LLM,
+        # Tools
         tools: list[BaseTool[Any, Any, CtxT]] | None = None,
-        transcript: LLMAgentTranscript | None = None,
-        recipients: Sequence[ProcName] | None = None,
-        path: list[str] | None = None,
-        sys_prompt: LLMPrompt | None = None,
-        sys_prompt_path: str | Path | None = None,
+        # Input prompt template (combines user and received arguments)
         in_prompt: LLMPrompt | None = None,
         in_prompt_path: str | Path | None = None,
+        # System prompt template
+        sys_prompt: LLMPrompt | None = None,
+        sys_prompt_path: str | Path | None = None,
+        # LLM response validation
         llm_output_schema: Any | None = None,
-        stream_llm: bool = False,
-        # Clear message history (except the prefix) on each run
-        reset_transcript_on_run: bool = False,
-        # Maximum number of agent turns in one run
+        # Agent loop settings
         max_turns: int = 100,
-        # Agent run retries
-        max_retries: int = 0,
-        # Wall-clock budget for one run
+        # Wall-clock budget for one run; on expiry the loop force-generates a
+        # final answer and stops with ``StopReason.TIMEOUT`` (checked at turn
+        # boundaries). ``None`` = unbounded.
         run_timeout: float | None = None,
         # Max concurrently-running background tasks (auto-backgrounded tool calls
-        # / sub-agents). Hitting the cap errors until some finish.
+        # / sub-agents). Hitting the cap errors until some finish; raise it for
+        # agents that fan out many long-running background commands.
         max_background: int = 16,
-        # Force the agent to produce a separate message without tool calls
-        # prior to calling tools [For non-reasoning LLMs only]
         force_react_mode: bool = False,
-        # Call a tool to produce a structured final answer instead of
-        # generating it as plain assistant text
         final_answer_as_tool_call: bool = False,
+        # Per-run message history (the LLM agent's transcript). Cross-session
+        # knowledge memory is separate and lives on ``SessionContext.memory``.
+        transcript: LLMAgentTranscript | None = None,
+        reset_transcript_on_run: bool = False,
+        # Agent run retries
+        max_retries: int = 0,
+        # Multi-agent routing
+        recipients: Sequence[ProcName] | None = None,
+        # Streaming
+        stream_llm: bool = False,
+        # Session persistence
+        path: list[str] | None = None,
         # MCP integration (clients must be ``connect()``-ed before the
         # agent is constructed; pass a ``MCPClientSpec`` to filter tools)
         mcp_clients: "Sequence[MCPClient | MCPClientSpec] | None" = None,
@@ -195,9 +206,8 @@ class LLMAgent[InT, OutT, CtxT](
         # giving the agent a clock for deadlines / staleness / "now". Pass an
         # ``InputAttachment`` to customize. Default False.
         time_aware: "bool | InputAttachment" = False,
-        # Tracing on/off
+        # Tracing
         tracing_enabled: bool = True,
-        # Fields to exclude from tracing input events
         tracing_exclude_input_fields: set[str] | None = None,
     ) -> None:
         super().__init__(

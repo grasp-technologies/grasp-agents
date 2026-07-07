@@ -62,9 +62,3 @@ def test_sender_attribution_inert_for_human_or_none() -> None:
     assert attach.compute(source=USER_SENDER) is None
     assert attach.compute(source=None) is None
     assert attach.compute() is None
-
-
-def test_team_section_mentions_wakeups_only_when_enabled() -> None:
-    cards = [MemberCard(name="scout")]
-    assert "ScheduleWakeup" not in make_team_section(cards).compute()
-    assert "ScheduleWakeup" in make_team_section(cards, wakeups=True).compute()

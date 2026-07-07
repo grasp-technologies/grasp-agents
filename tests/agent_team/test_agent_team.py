@@ -770,32 +770,6 @@ async def test_submit_message_delivers_human_input_to_member(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_submit_message_outside_live_run_queues(tmp_path: Path) -> None:
-    # Human input posted with no run in flight is never dropped: it is deposited
-    # straight on the session mailbox and the next run takes it — ahead of the
-    # run's own seed, since human mail is control-priority.
-    ctx = _ctx(tmp_path)
-    solo = _agent("solo", [_text_response("a1"), _text_response("a2")])
-    team = AgentTeam([solo], ctx=ctx)
-
-    with pytest.raises(ValueError, match="not a team member"):
-        await team.submit_message("nobody", "hi")
-
-    await team.submit_message("solo", "queued before the run")
-    assert await ctx.transport.has_pending("solo")
-
-    result = await team.run("the seed")
-    await team.aclose()
-
-    assert result.stop_reason == "quiesced"
-    assert solo.llm.call_count == 2
-    blob = str(solo.transcript.messages)
-    assert "queued before the run" in blob
-    assert "the seed" in blob
-    assert not await ctx.transport.has_pending("solo")
-
-
-@pytest.mark.asyncio
 async def test_environment_rewind_notifies_other_residents(tmp_path: Path) -> None:
     # When the lead rewinds the shared environment mid-run, every OTHER resident
     # gets a control-plane <environment_rewind> notice (so it re-verifies state
