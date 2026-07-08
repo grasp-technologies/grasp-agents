@@ -20,11 +20,18 @@ from typing import Any, cast, overload
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
-from opentelemetry.context import Context
+from opentelemetry.context import (
+    _SUPPRESS_INSTRUMENTATION_KEY,  # noqa: PLC2701 # pyright: ignore[reportPrivateUsage]
+    Context,
+)
 from opentelemetry.trace.propagation import set_span_in_context
 from pydantic import BaseModel
 
 logger = getLogger(__name__)
+
+# The plain-string twin of the context-api key above, read by older OTel
+# contrib instrumentations (see opentelemetry.instrumentation.utils).
+_SUPPRESS_INSTRUMENTATION_KEY_PLAIN = "suppress_instrumentation"
 
 # ---------------------------------------------------------------------------
 # Span kind values
@@ -124,7 +131,35 @@ def _should_send_prompts() -> bool:
     return (val or "true").lower() == "true"
 
 
+@contextmanager
+def _suppressed_instrumentation() -> Generator[None, None, None]:
+    """
+    Mark downstream auto-instrumentation suppressed for the duration.
+
+    A ``tracing_enabled=False`` component must go fully dark: skipping its own
+    span still leaves provider-SDK auto-instrumentation (the OpenInference
+    openai / anthropic / google-genai instrumentors) emitting orphan spans for
+    the LLM calls the component makes. Instrumentors check the OTel context
+    keys set here — ``create_key`` appends a uuid, so the context-api key must
+    be the imported object, not a recreation. Mirrors
+    ``opentelemetry.instrumentation.utils.suppress_instrumentation`` without
+    depending on that package.
+    """
+    ctx = otel_context.get_current()
+    for key in (_SUPPRESS_INSTRUMENTATION_KEY, _SUPPRESS_INSTRUMENTATION_KEY_PLAIN):
+        ctx = otel_context.set_value(key, value=True, context=ctx)
+    token = otel_context.attach(ctx)
+    try:
+        yield
+    finally:
+        otel_context.detach(token)
+
+
 def _tracing_enabled(instance: Any | None = None) -> bool:
+    # Inside a suppressed region (a disabled ancestor), nested grasp spans go
+    # dark too, matching the suppressed provider instrumentation.
+    if otel_context.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
+        return False
     if instance is None:
         return True
     return bool(getattr(instance, "tracing_enabled", True))
@@ -451,8 +486,9 @@ def _entity_method[F: Callable[..., Any]](
                     exclude_fields = _exclude_fields_from_instance(instance)
 
                     if not _tracing_enabled(instance):
-                        async for item in fn(*args, **kwargs):
-                            yield item
+                        with _suppressed_instrumentation():
+                            async for item in fn(*args, **kwargs):
+                                yield item
                         return
 
                     resolved_kind = _resolve_span_kind(instance, span_kind)
@@ -495,7 +531,8 @@ def _entity_method[F: Callable[..., Any]](
                 exclude_fields = _exclude_fields_from_instance(instance)
 
                 if not _tracing_enabled(instance):
-                    return await fn(*args, **kwargs)
+                    with _suppressed_instrumentation():
+                        return await fn(*args, **kwargs)
 
                 resolved_kind = _resolve_span_kind(instance, span_kind)
                 span_name = _get_span_name(
@@ -530,7 +567,8 @@ def _entity_method[F: Callable[..., Any]](
                 exclude_fields = _exclude_fields_from_instance(instance)
 
                 if not _tracing_enabled(instance):
-                    yield from fn(*args, **kwargs)
+                    with _suppressed_instrumentation():
+                        yield from fn(*args, **kwargs)
                     return
 
                 resolved_kind = _resolve_span_kind(instance, span_kind)
@@ -570,7 +608,8 @@ def _entity_method[F: Callable[..., Any]](
             exclude_fields = _exclude_fields_from_instance(instance)
 
             if not _tracing_enabled(instance):
-                return fn(*args, **kwargs)
+                with _suppressed_instrumentation():
+                    return fn(*args, **kwargs)
 
             resolved_kind = _resolve_span_kind(instance, span_kind)
             span_name = _get_span_name(

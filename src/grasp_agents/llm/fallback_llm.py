@@ -70,9 +70,10 @@ class FallbackLLM(LLM):
             except LlmErrorTuple as e:
                 last_error = e
                 logger.warning(
-                    "Model %s failed (%s), trying next fallback",
+                    "Model %s failed (%s: %s), trying next fallback",
                     llm.model_name,
                     type(e).__name__,
+                    e,
                 )
 
         assert last_error is not None
@@ -125,9 +126,10 @@ class FallbackLLM(LLM):
                     attempt=attempt,
                 )
                 logger.warning(
-                    "Model %s failed (%s), trying next fallback",
+                    "Model %s failed (%s: %s), trying next fallback",
                     llm.model_name,
                     type(e).__name__,
+                    e,
                 )
 
         assert last_error is not None
