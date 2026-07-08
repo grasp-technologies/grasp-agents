@@ -264,7 +264,8 @@ class AnthropicLLM(CloudLLM):
 
         api_tools: list[ToolParam | Any] | None = None
         if tools:
-            api_tools = [to_api_tool(tool) for tool in tools.values()]
+            strict = self.apply_tool_call_schema_via_provider
+            api_tools = [to_api_tool(tool, strict=strict) for tool in tools.values()]
 
         api_tool_choice: ToolChoiceParam | None = None
         if tool_choice is not None:

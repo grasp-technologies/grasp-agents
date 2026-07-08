@@ -181,33 +181,3 @@ class LLMResponseValidationError(JSONSchemaValidationError):
             message
             or f"Failed to validate LLM response:\n{s}\nExpected type: {schema}",
         )
-
-
-class LLMResponseRefusalError(Exception):
-    """
-    Raised when an LLM response carries no usable content for a *semantic*
-    reason — the model refused, or the provider's content filter blocked
-    the output.
-
-    Distinct from the validation errors above: bad JSON / tool arguments are
-    re-sampled (the model can self-correct), but a refusal or content filter
-    recurs on the same prompt, so this is **not** retried. Catch it to choose
-    an application-level fallback (reroute, soften the request, abort).
-
-    Carries the normalized completion signal read off :class:`Response`:
-    ``status``, ``reason`` (from ``incomplete_details``), and ``refusal`` text.
-    """
-
-    def __init__(
-        self,
-        *,
-        status: str | None = None,
-        reason: str | None = None,
-        refusal: str | None = None,
-        message: str | None = None,
-    ) -> None:
-        detail = refusal or reason or status or "unknown"
-        super().__init__(message or f"LLM declined to produce content: {detail}")
-        self.status = status
-        self.reason = reason
-        self.refusal = refusal

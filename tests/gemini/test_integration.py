@@ -106,6 +106,55 @@ class TestGeminiIntegration:
 
 
 @pytest.mark.integration
+class TestGeminiStrictTools:
+    @pytest.fixture
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+
+        # VALIDATED function calling is Gemini 3+ only.
+        return GeminiLLM(
+            model_name="gemini-3.1-pro-preview",
+            api_provider=APIProvider(
+                name="google",
+                base_url=None,
+                api_key=google_api_key,
+            ),
+            apply_tool_call_schema_via_provider=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_validated_tool_call_args_conform(
+        self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        user_msg = InputMessageItem.from_text("What is 17 + 25? Use the add tool.")
+        response = await llm.generate_response([user_msg], tools=tools)
+
+        assert response.tool_call_items
+        args = json.loads(response.tool_call_items[0].arguments)
+        assert set(args) == {"a", "b"}
+        assert isinstance(args["a"], int)
+        assert isinstance(args["b"], int)
+
+    @pytest.mark.asyncio
+    async def test_stream_validated_tool_call_args_conform(
+        self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        user_msg = InputMessageItem.from_text("What is 17 + 25? Use the add tool.")
+        events = [
+            e async for e in llm.generate_response_stream([user_msg], tools=tools)
+        ]
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+
+        assert len(completed) == 1
+        tool_calls = completed[0].response.tool_call_items
+        assert tool_calls
+        args = json.loads(tool_calls[0].arguments)
+        assert set(args) == {"a", "b"}
+        assert isinstance(args["a"], int)
+        assert isinstance(args["b"], int)
+
+
+@pytest.mark.integration
 class TestGeminiReasoningContinuity:
     """
     Reasoning traces (thought parts with signatures) must survive

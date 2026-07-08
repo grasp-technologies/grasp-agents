@@ -294,7 +294,7 @@ def _output_group_to_message_param(output_items: Sequence[OutputItem]) -> Messag
             content.append(_reasoning_to_block(item))
 
         elif isinstance(item, OutputMessageItem):
-            if item.text:
+            if item.text or item.refusal:
                 content.extend(_output_message_to_blocks(item))
 
         elif isinstance(item, WebSearchCallItem):
@@ -325,6 +325,11 @@ def _output_message_to_blocks(item: OutputMessageItem) -> list[TextBlockParam]:
 
     for part in item.content:
         if isinstance(part, OutputMessageRefusal):
+            # Anthropic has no refusal input block — round-trip the refusal
+            # as text so the model sees it on the next turn and can correct
+            # course.
+            if part.refusal:
+                blocks.append(TextBlockParam(type="text", text=part.refusal))
             continue
 
         # Each text block carries its own citations — using the item-level

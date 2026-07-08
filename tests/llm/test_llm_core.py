@@ -234,7 +234,7 @@ class TestFallbackCostAttribution:
             litellm_provider="openai",
             response=served,
         )
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         result = await llm._generate_response_once(_USER_MSG)
 

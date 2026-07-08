@@ -7,6 +7,7 @@ Focuses on:
 - Stream retry emits ResponseRetrying with correct sequence_number
 """
 
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,7 +22,6 @@ from grasp_agents.llm.resilience import RetryPolicy
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText
 from grasp_agents.types.errors import (
-    LLMResponseRefusalError,
     LLMResponseValidationError,
     LLMToolCallValidationError,
 )
@@ -258,50 +258,70 @@ class TestValidationErrorTypes:
 
 
 class TestRefusalAndContentFilter:
-    """Refusals / content filters raise a dedicated, non-retryable error."""
+    """Refusals / content filters log a warning; the response flows through."""
 
     @pytest.mark.asyncio
-    async def test_refusal_part_raises_refusal_error(self):
+    async def test_refusal_returns_response_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ):
         llm = MockLLM(model_name="mock", responses=[_refusal_response()])
-        with pytest.raises(LLMResponseRefusalError):
-            await llm.generate_response(_USER_MSG)
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.llm.llm"):
+            response = await llm.generate_response(_USER_MSG)
+        assert response.refusal == "I can't help with that."
+        assert any("refusal" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_content_filter_raises_refusal_error(self):
+    async def test_content_filter_returns_response_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ):
         llm = MockLLM(model_name="mock", responses=[_content_filter_response()])
-        with pytest.raises(LLMResponseRefusalError) as ei:
-            await llm.generate_response(_USER_MSG)
-        assert ei.value.reason == "content_filter"
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.llm.llm"):
+            response = await llm.generate_response(_USER_MSG)
+        assert response.incomplete_details is not None
+        assert response.incomplete_details.reason == "content_filter"
+        assert any("content_filter" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_refusal_takes_precedence_over_schema(self):
-        """A refusal raises the refusal error, not a schema-validation error."""
-        llm = MockLLM(model_name="mock", responses=[_refusal_response()])
+    async def test_refusal_with_output_schema_is_resampled(self):
+        """With a schema, the refusal fails validation and re-samples."""
 
         class M(BaseModel):
             v: int
 
-        with pytest.raises(LLMResponseRefusalError):
-            await llm.generate_response(_USER_MSG, output_schema=M)
-
-    @pytest.mark.asyncio
-    async def test_refusal_is_not_retried(self):
-        """Even with validation retries available, a refusal is terminal."""
         llm = MockLLM(
             model_name="mock",
             responses=[_refusal_response(), _text_response('{"v": 1}')],
             retry_policy=RetryPolicy(validation_retries=3),
         )
-        with pytest.raises(LLMResponseRefusalError):
-            await llm.generate_response(_USER_MSG)
-        assert llm.call_count == 1
+        response = await llm.generate_response(_USER_MSG, output_schema=M)
+        assert llm.call_count == 2
+        assert response.output_text == '{"v": 1}'
 
     @pytest.mark.asyncio
-    async def test_refusal_raised_from_stream_path(self):
+    async def test_persistent_refusal_with_schema_raises_validation_error(self):
+        class M(BaseModel):
+            v: int
+
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_refusal_response(), _refusal_response()],
+            retry_policy=RetryPolicy(validation_retries=1),
+        )
+        with pytest.raises(LLMResponseValidationError):
+            await llm.generate_response(_USER_MSG, output_schema=M)
+        assert llm.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_refusal_streams_through(self, caplog: pytest.LogCaptureFixture):
         llm = MockLLM(model_name="mock", responses=[_refusal_response()])
-        with pytest.raises(LLMResponseRefusalError):
-            async for _ in llm.generate_response_stream(_USER_MSG):
-                pass
+        events: list[LlmEvent] = []
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.llm.llm"):
+            async for ev in llm.generate_response_stream(_USER_MSG):
+                events.append(ev)
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        assert completed[0].response.refusal == "I can't help with that."
+        assert any("refusal" in r.getMessage() for r in caplog.records)
 
 
 # ---------- Retry behavior ----------

@@ -188,10 +188,17 @@ class GeminiLLM(CloudLLM):
         if system_instruction is not None:
             config_kwargs["system_instruction"] = system_instruction
 
+        strict_tools = self.apply_tool_call_schema_via_provider
         if tools:
             config_kwargs["tools"] = [to_api_tools(tools)]
         if tool_choice is not None:
-            config_kwargs["tool_config"] = to_api_tool_config(tool_choice)
+            config_kwargs["tool_config"] = to_api_tool_config(
+                tool_choice, strict=strict_tools
+            )
+        elif tools and strict_tools:
+            # Schema enforcement is a function-calling *mode* on Gemini, so
+            # opting in must set a tool_config even without a tool_choice.
+            config_kwargs["tool_config"] = to_api_tool_config("auto", strict=True)
 
         # Forward settings to GenerateContentConfig
         config_kwargs.update({k: merged.pop(k) for k in _CONFIG_KEYS if k in merged})

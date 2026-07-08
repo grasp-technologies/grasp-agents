@@ -130,7 +130,9 @@ unfixable = ["F401"]
 ban-relative-imports = "parents"
 
 [lint.per-file-ignores]
-"__init__.py" = ["F401"]
+# RUF067: lazy provider re-exports (module __getattr__ + name tables) and
+# optional-extra import guards are legitimate __init__ machinery.
+"__init__.py" = ["F401", "RUF067"]
 "*.ipynb" = ["I"]
 # Tests may white-box internals — private-member access (SLF001) and private
 # imports (PLC2701) — where that is the clearest assertion. Test-idiomatic

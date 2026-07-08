@@ -60,7 +60,11 @@ from grasp_agents.llm_providers.anthropic.tool_converters import (
     to_api_tool_choice,
 )
 from grasp_agents.tools.base import BaseTool, NamedToolChoice
-from grasp_agents.types.content import InputText, OutputMessageText
+from grasp_agents.types.content import (
+    InputText,
+    OutputMessageRefusal,
+    OutputMessageText,
+)
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -300,6 +304,24 @@ class TestResponseToMessage:
         assert system == "You are helpful"
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
+
+    def test_refusal_round_trips_as_text_block(self):
+        """A refusal-only assistant message rides back as a text block."""
+        items = [
+            InputMessageItem.from_text("Hi"),
+            OutputMessageItem(
+                status="completed",
+                content=[OutputMessageRefusal(refusal="I can't help with that.")],
+            ),
+        ]
+        _system, messages = items_to_anthropic_messages(items)
+
+        assert len(messages) == 2
+        assert messages[1]["role"] == "assistant"
+        blocks = messages[1]["content"]
+        assert isinstance(blocks, list)
+        assert blocks[0]["type"] == "text"  # type: ignore[index]
+        assert blocks[0]["text"] == "I can't help with that."  # type: ignore[index]
 
     def test_multiple_system_messages_emit_blocks(self):
         """
@@ -623,6 +645,33 @@ class TestToolConverters:
         schema = api_tool["input_schema"]
         assert "city" in schema["properties"]
         assert "units" in schema["properties"]
+
+    def test_to_api_tool_strict(self):
+        tool = _WeatherTool()
+        api_tool = to_api_tool(tool, strict=True)
+
+        assert api_tool["strict"] is True
+        schema = api_tool["input_schema"]
+        assert schema["additionalProperties"] is False
+        assert "city" in schema["properties"]  # type: ignore[index]
+
+    def test_to_api_tool_not_strict_by_default(self):
+        api_tool = to_api_tool(_WeatherTool())
+        assert "strict" not in api_tool
+
+    def test_llm_strict_gate_wires_into_api_tools(self):
+        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+        llm = AnthropicLLM(
+            model_name="claude-sonnet-4-5",
+            api_provider={"name": "anthropic", "base_url": None, "api_key": "dummy"},
+            apply_tool_call_schema_via_provider=True,
+        )
+        params = llm._make_api_input([], tools={"get_weather": _WeatherTool()})
+        api_tools = params["api_tools"]
+        assert api_tools is not None
+        assert api_tools[0]["strict"] is True
+        assert api_tools[0]["input_schema"]["additionalProperties"] is False
 
     def test_to_api_tool_choice_auto(self):
         result = to_api_tool_choice("auto")

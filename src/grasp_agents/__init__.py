@@ -9,6 +9,7 @@ their own subpackages and are imported from there, e.g.::
 
     from grasp_agents.agent import NextStep, ToolCallDecision
     from grasp_agents.context import make_env_info_section, SystemPromptSection
+    from grasp_agents.llm_providers import OpenAIResponsesLLM
     from grasp_agents.types.llm_errors import LlmRateLimitError
     from grasp_agents.types.events import TurnStartEvent
     from grasp_agents.memory import scan_memdir

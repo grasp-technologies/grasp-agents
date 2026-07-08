@@ -108,6 +108,60 @@ class TestAnthropicIntegration:
 
 
 @pytest.mark.integration
+class TestAnthropicStrictTools:
+    @pytest.fixture
+    def llm(self, anthropic_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+        return AnthropicLLM(
+            model_name="claude-haiku-4-5-20251001",
+            api_provider=APIProvider(
+                name="anthropic",
+                base_url=None,
+                api_key=anthropic_api_key,
+            ),
+            llm_settings={"max_tokens": 200},
+            apply_tool_call_schema_via_provider=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_strict_tool_call_args_conform(
+        self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        user_msg = InputMessageItem.from_text("What is 17 + 25? Use the add tool.")
+        response = await llm.generate_response(
+            [user_msg], tools=tools, tool_choice="required"
+        )
+
+        assert response.tool_call_items
+        args = json.loads(response.tool_call_items[0].arguments)
+        assert set(args) == {"a", "b"}
+        assert isinstance(args["a"], int)
+        assert isinstance(args["b"], int)
+
+    @pytest.mark.asyncio
+    async def test_stream_strict_tool_call_args_conform(
+        self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        user_msg = InputMessageItem.from_text("What is 17 + 25? Use the add tool.")
+        events = [
+            e
+            async for e in llm.generate_response_stream(
+                [user_msg], tools=tools, tool_choice="required"
+            )
+        ]
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+
+        assert len(completed) == 1
+        tool_calls = completed[0].response.tool_call_items
+        assert tool_calls
+        args = json.loads(tool_calls[0].arguments)
+        assert set(args) == {"a", "b"}
+        assert isinstance(args["a"], int)
+        assert isinstance(args["b"], int)
+
+
+@pytest.mark.integration
 class TestAnthropicReasoningContinuity:
     """
     Reasoning traces (thinking blocks) must survive tool-call round-trips.

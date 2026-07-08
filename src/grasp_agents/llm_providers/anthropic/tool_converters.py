@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from anthropic import transform_schema
 from anthropic.types import (
     ToolChoiceAnyParam,
     ToolChoiceAutoParam,
@@ -17,7 +18,20 @@ from pydantic import BaseModel
 from grasp_agents.tools.base import BaseTool, NamedToolChoice, ToolChoice
 
 
-def to_api_tool(tool: BaseTool[BaseModel, Any, Any]) -> ToolParam:
+def to_api_tool(
+    tool: BaseTool[BaseModel, Any, Any], strict: bool | None = None
+) -> ToolParam:
+    if strict:
+        # ``transform_schema`` rewrites the schema into the strict-compatible
+        # subset (``additionalProperties: false`` everywhere; unsupported
+        # keywords folded into descriptions) — only apply it when strict
+        # mode is actually requested.
+        return ToolParam(
+            name=tool.name,
+            description=tool.description,
+            input_schema=transform_schema(tool.llm_in_type),
+            strict=True,
+        )
     return ToolParam(
         name=tool.name,
         description=tool.description,

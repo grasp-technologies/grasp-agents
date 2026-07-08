@@ -13,10 +13,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from grasp_agents import grasp_logging
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import (
     JSONSchemaValidationError,
-    LLMResponseRefusalError,
     LLMResponseValidationError,
     LLMToolCallValidationError,
 )
@@ -288,8 +288,8 @@ class LLM(ABC):
                     if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
                         # Incomplete responses validate exactly like the
                         # non-streaming path (which returns them as response
-                        # objects): a content filter raises a typed refusal
-                        # error; a truncated response reaches the caller.
+                        # objects): a refusal / content filter logs a warning;
+                        # a truncated response reaches the caller.
                         self._validate_response(
                             event.response, tools=tools, output_schema=output_schema
                         )
@@ -314,16 +314,19 @@ class LLM(ABC):
 
     # --- Validation ---
 
-    def _check_refusal(self, response: Response) -> None:
+    def _warn_refusal(self, response: Response) -> None:
         """
-        Raise :class:`LLMResponseRefusalError` when the response is a
-        refusal or was blocked by the provider's content filter.
+        Log a warning when the response is a refusal or was blocked by the
+        provider's content filter.
 
         Reads the normalized signal both providers populate: an explicit
         ``refusal`` content part (OpenAI / LiteLLM) or
         ``incomplete_details.reason == "content_filter"`` (Anthropic maps
-        its ``stop_reason == "refusal"`` to this). Not retried — re-sampling
-        the same prompt won't clear a filter.
+        its ``stop_reason == "refusal"`` to this). Deliberately not an
+        error: the refusal flows into the transcript, so the agent — and
+        the caller — can see it and correct course. Structured-output
+        calls still fail schema validation on the refusal text and
+        re-sample via ``validation_retries``.
         """
         refusal = response.refusal
         reason = (
@@ -332,8 +335,14 @@ class LLM(ABC):
             else None
         )
         if refusal or reason == "content_filter":
-            raise LLMResponseRefusalError(
-                status=response.status, reason=reason, refusal=refusal
+            logger.warning(
+                "llm %s: response is a refusal (status=%s, reason=%s): %s",
+                self.model_name,
+                response.status,
+                reason,
+                grasp_logging.body_for_log(
+                    refusal or "", full=grasp_logging.LOG_LLM_OUTPUT
+                ),
             )
 
     def _validate_response(
@@ -343,11 +352,7 @@ class LLM(ABC):
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
     ) -> None:
-        # A refusal / content filter means there is no usable content to
-        # validate — surface it as a dedicated, non-retryable error before
-        # the tool / schema checks (which would otherwise misfire on the
-        # empty or refusal text).
-        self._check_refusal(response)
+        self._warn_refusal(response)
 
         if tools is not None:
             self._validate_tool_calls(response, tools)
