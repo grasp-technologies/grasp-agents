@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -26,6 +27,7 @@ from grasp_agents.telemetry import (
     traced,
 )
 from grasp_agents.telemetry.decorators import (
+    _SUPPRESS_INSTRUMENTATION_KEY,
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
     ATTR_ENTITY_OUTPUT,
@@ -324,6 +326,97 @@ class TestTracingOptOut:
                 return "done"
 
         assert Disabled().run() == "done"
+        assert len(_exporter.get_finished_spans()) == 0
+
+
+# ========================================================================= #
+#  tracing_enabled=False suppresses downstream auto-instrumentation          #
+# ========================================================================= #
+
+
+def _suppression_active() -> bool:
+    """The switch OpenInference / OTel-contrib instrumentors check."""
+    return bool(otel_context.get_value(_SUPPRESS_INSTRUMENTATION_KEY))
+
+
+class TestDisabledInstrumentationSuppression:
+    """
+    ``tracing_enabled=False`` must go fully dark: not just skip the grasp
+    span, but mark OTel auto-instrumentation suppressed for the call's
+    duration — otherwise a disabled agent's provider-SDK calls (OpenInference
+    google-genai / anthropic / openai instrumentors) still surface as orphan
+    traces in the backend.
+    """
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_disabled_call_suppresses_all_four_wrapper_shapes(self) -> None:
+        observed: list[bool] = []
+
+        class Disabled:
+            tracing_enabled = False
+
+            @traced(name="noop_async")
+            async def run_async(self) -> None:
+                observed.append(_suppression_active())
+
+            @traced(name="noop_async_gen")
+            async def run_async_gen(self) -> AsyncIterator[int]:
+                observed.append(_suppression_active())
+                yield 1
+
+            @traced(name="noop_sync")
+            def run_sync(self) -> None:
+                observed.append(_suppression_active())
+
+            @traced(name="noop_sync_gen")
+            def run_sync_gen(self) -> Iterator[int]:
+                observed.append(_suppression_active())
+                yield 1
+
+        d = Disabled()
+        await d.run_async()
+        async for _ in d.run_async_gen():
+            pass
+        d.run_sync()
+        for _ in d.run_sync_gen():
+            pass
+
+        assert observed == [True, True, True, True]
+        # Detached once each call ends — later calls are not affected.
+        assert _suppression_active() is False
+        assert len(_exporter.get_finished_spans()) == 0
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_enabled_call_does_not_suppress(self) -> None:
+        observed: list[bool] = []
+
+        class Enabled:
+            @traced(name="probe")
+            async def run(self) -> None:
+                observed.append(_suppression_active())
+
+        await Enabled().run()
+
+        assert observed == [False]
+        assert len(_exporter.get_finished_spans()) == 1
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_nested_traced_call_inside_disabled_region_emits_no_span(
+        self,
+    ) -> None:
+        class Inner:
+            @traced(name="inner")
+            async def run(self) -> str:
+                return "ok"
+
+        class Outer:
+            tracing_enabled = False
+
+            @traced(name="outer")
+            async def run(self) -> str:
+                return await Inner().run()
+
+        assert await Outer().run() == "ok"
         assert len(_exporter.get_finished_spans()) == 0
 
 
