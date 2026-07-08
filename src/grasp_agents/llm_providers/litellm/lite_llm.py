@@ -2,7 +2,7 @@ import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import litellm
 from litellm.litellm_core_utils.get_supported_openai_params import (
@@ -16,7 +16,7 @@ from litellm.utils import (
     supports_response_schema,
     supports_tool_choice,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents.llm.cloud_llm import ApiCallParams, APIProvider, CloudLLM
 from grasp_agents.llm_providers.openai_completions import OpenAILLMSettings
@@ -49,12 +49,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@with_config(ConfigDict(extra="allow"))
 class LiteLLMSettings(OpenAILLMSettings, total=False):
     thinking: AnthropicThinkingParam | None
 
 
 @dataclass(frozen=True)
 class LiteLLM(CloudLLM):
+    _settings_type: ClassVar[Any] = LiteLLMSettings
+
     llm_settings: LiteLLMSettings | None = None
 
     client_timeout: float = 60.0

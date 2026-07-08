@@ -6,6 +6,8 @@ representative sample of the expanded settings lands in the API request that
 ``_make_api_input`` builds — i.e. nothing is silently dropped.
 """
 
+from typing import cast
+
 import pytest
 
 from grasp_agents.llm.cloud_llm import APIProvider
@@ -35,17 +37,25 @@ def test_anthropic_forwards_new_settings(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_openai_completions_forwards_new_settings() -> None:
-    from grasp_agents.llm_providers.openai_completions.completions_llm import OpenAILLM
+    from grasp_agents.llm_providers.openai_completions.completions_llm import (
+        OpenAILLM,
+        OpenAILLMSettings,
+    )
 
+    # ``not_yet_declared`` is not in the settings TypedDict — undeclared keys
+    # must still reach the API untouched.
     llm = OpenAILLM(
         model_name="gpt-4o",
         api_provider=_OPENAI,
-        llm_settings={"n": 2, "service_tier": "flex", "verbosity": "low"},
+        llm_settings=cast(
+            "OpenAILLMSettings",
+            {"n": 2, "service_tier": "flex", "not_yet_declared": "kept"},
+        ),
     )
     extra = llm._make_api_input([]).get("extra_settings", {})
     assert extra["n"] == 2
     assert extra["service_tier"] == "flex"
-    assert extra["verbosity"] == "low"
+    assert extra["not_yet_declared"] == "kept"
 
 
 def test_openai_responses_forwards_new_settings() -> None:

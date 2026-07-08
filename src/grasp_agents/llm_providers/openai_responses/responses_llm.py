@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from openai._types import omit  # noqa: PLC2701
@@ -38,7 +38,7 @@ from openai.types.responses.tool_param import (
 from openai.types.responses.web_search_tool_param import WebSearchToolParam
 from openai.types.shared import Reasoning
 from openai.types.shared_params import Metadata
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter, with_config
 
 from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
@@ -99,25 +99,32 @@ def _items_after_last_response(
     return api_input[start:]
 
 
+VerbosityLevel = Literal["low", "medium", "high"]
+PromptCacheRetention = Literal["in_memory", "24h"]
+
+
+@with_config(ConfigDict(extra="allow"))
 class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
     reasoning: Reasoning
+    verbosity: VerbosityLevel | None
     parallel_tool_calls: bool
     max_output_tokens: int
     max_tool_calls: int | None
     top_logprobs: int | None
-    web_search: WebSearchToolParam | None
-
-    truncation: Literal["auto", "disabled"] | None
-    service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None
-    include: list[ResponseIncludable] | None
-    context_management: Iterable[ResponsesContextManagement] | None
 
     prompt_cache_key: str
-    prompt_cache_retention: Literal["in_memory", "24h"] | None
-    safety_identifier: str
+    prompt_cache_retention: PromptCacheRetention | None
+
+    context_management: Iterable[ResponsesContextManagement] | None
+    truncation: Literal["auto", "disabled"] | None
+    include: list[ResponseIncludable] | None
+
+    web_search: WebSearchToolParam | None
 
     text: ResponseTextConfigParam
     stream_options: ResponsesStreamOptionsParam | None
+    safety_identifier: str
+    service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None
     metadata: Metadata | None
     store: bool | None
     user: str
@@ -132,6 +139,8 @@ class ResponsesApiCallParams(ApiCallParams, total=False):
 
 @dataclass(frozen=True)
 class OpenAIResponsesLLM(CloudLLM):
+    _settings_type: ClassVar[Any] = OpenAIResponsesLLMSettings
+
     litellm_provider: str | None = "openai"
     llm_settings: OpenAIResponsesLLMSettings | None = None
     # "openai" routes to api.openai.com (or an OpenAI-compatible endpoint via

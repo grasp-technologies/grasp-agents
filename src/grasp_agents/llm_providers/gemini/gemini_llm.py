@@ -5,11 +5,20 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict
 
 from google.genai import Client
+from google.genai.types import (
+    AutomaticFunctionCallingConfigDict,
+    GenerationConfigRoutingConfigDict,
+    MediaResolution,
+    ModelArmorConfigDict,
+    ModelSelectionConfigDict,
+    ServiceTier,
+    UrlContext,
+)
 from google.genai.types import HttpOptions as GeminiHttpOptions
-from google.genai.types import UrlContext
+from pydantic import ConfigDict, with_config
 
 from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
@@ -18,7 +27,14 @@ from grasp_agents.llm.cloud_llm import (
     CloudLLMSettings,
 )
 
-from . import GeminiConfig, GeminiGoogleSearch, GeminiGoogleSearchDict, GeminiTool
+from . import (
+    GeminiConfig,
+    GeminiGoogleSearch,
+    GeminiGoogleSearchDict,
+    GeminiSafetySettingDict,
+    GeminiThinkingConfigDict,
+    GeminiTool,
+)
 from .error_mapping import map_api_error
 from .llm_event_converters import GeminiStreamConverter
 from .provider_output_to_response import provider_output_to_response
@@ -28,14 +44,6 @@ from .tool_converters import to_api_tool_config, to_api_tools
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
 
-    from google.genai.types import (
-        AutomaticFunctionCallingConfigDict,
-        GenerationConfigRoutingConfigDict,
-        MediaResolution,
-        ModelArmorConfigDict,
-        ModelSelectionConfigDict,
-        ServiceTier,
-    )
     from pydantic import BaseModel
 
     from grasp_agents.tools.base import BaseTool, ToolChoice
@@ -44,16 +52,12 @@ if TYPE_CHECKING:
     from grasp_agents.types.llm_events import LlmEvent
     from grasp_agents.types.response import Response
 
-    from . import (
-        GeminiHttpOptionsDict,
-        GeminiResponse,
-        GeminiSafetySettingDict,
-        GeminiThinkingConfigDict,
-    )
+    from . import GeminiHttpOptionsDict, GeminiResponse
 
 logger = logging.getLogger(__name__)
 
 
+@with_config(ConfigDict(extra="allow"))
 class GeminiLLMSettings(CloudLLMSettings, total=False):
     max_output_tokens: int
     top_k: float
@@ -113,6 +117,8 @@ class GeminiVertexClientConfig(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class GeminiLLM(CloudLLM):
+    _settings_type: ClassVar[Any] = GeminiLLMSettings
+
     litellm_provider: str | None = "vertex_ai"
     llm_settings: GeminiLLMSettings | None = None
     # Per-request HTTP timeout in seconds (``None`` disables).

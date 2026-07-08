@@ -5,15 +5,19 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict
 
 from anthropic import AsyncAnthropic
 from anthropic._types import omit  # type: ignore[import]  # noqa: PLC2701
 from anthropic.types import (
+    MetadataParam,
+    OutputConfigParam,
+    ThinkingConfigParam,
     WebFetchTool20260209Param,
     WebSearchTool20250305Param,
     WebSearchTool20260209Param,
 )
+from pydantic import ConfigDict, with_config
 
 from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
@@ -37,7 +41,6 @@ if TYPE_CHECKING:
         AsyncAnthropicBedrockMantle,  # pyright: ignore[reportPrivateImportUsage]
         AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]
     )
-    from anthropic.types import MetadataParam, OutputConfigParam
     from pydantic import BaseModel
 
     from grasp_agents.tools.base import BaseTool, ToolChoice
@@ -49,7 +52,6 @@ if TYPE_CHECKING:
     from . import (
         AnthropicMessage,
         AnthropicStreamEvent,
-        ThinkingConfigParam,
         ToolChoiceParam,
         ToolParam,
     )
@@ -77,19 +79,20 @@ _VERTEX_INSTALL_HINT = (
 )
 
 
+@with_config(ConfigDict(extra="allow"))
 class AnthropicLLMSettings(CloudLLMSettings, total=False):
     max_tokens: int
     thinking: ThinkingConfigParam | None
     stop_sequences: list[str] | None
     top_k: int | None
 
+    web_search: WebSearchToolParam | None
+    web_fetch: WebFetchToolParam | None
+
     # Structured outputs sent directly (the manual escape hatch). When
     # ``apply_output_schema_via_provider`` is set the schema travels via the
     # separate ``output_schema`` channel (``messages.parse``) instead.
     output_config: OutputConfigParam | None
-
-    web_search: WebSearchToolParam | None
-    web_fetch: WebFetchToolParam | None
 
     metadata: MetadataParam | None
     service_tier: Literal["auto", "standard_only"] | None
@@ -132,6 +135,8 @@ class VertexClientConfig(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class AnthropicLLM(CloudLLM):
+    _settings_type: ClassVar[Any] = AnthropicLLMSettings
+
     litellm_provider: str | None = "anthropic"
     llm_settings: AnthropicLLMSettings | None = None
     # Matches the SDK default. A long generation (large max_tokens, extended

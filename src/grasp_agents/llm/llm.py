@@ -11,7 +11,7 @@ from functools import cached_property
 from typing import Any, Self, TypedDict, final
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents import grasp_logging
 from grasp_agents.tools.base import BaseTool, ToolChoice
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_ERRORS = (LLMToolCallValidationError, LLMResponseValidationError)
 
 
+@with_config(ConfigDict(extra="allow"))
 class LLMSettings(TypedDict, total=False):
     temperature: float | None
     top_p: float | None

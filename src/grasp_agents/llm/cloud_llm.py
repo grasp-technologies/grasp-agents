@@ -3,10 +3,11 @@ import time
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, NoReturn, Required, TypedDict
+from functools import cache
+from typing import Any, ClassVar, NoReturn, Required, TypedDict
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, TypeAdapter, with_config
 
 from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
@@ -38,10 +39,16 @@ class APIProvider(TypedDict, total=False):
     api_key: Required[str | None]
 
 
+@with_config(ConfigDict(extra="allow"))
 class CloudLLMSettings(LLMSettings, total=False):
     extra_headers: dict[str, Any] | None
     extra_body: object | None
     extra_query: dict[str, Any] | None
+
+
+@cache
+def _settings_adapter(settings_type: type) -> TypeAdapter[Any]:
+    return TypeAdapter(settings_type)
 
 
 LLMRateLimiter = RateLimiter[Response | AsyncIterator[LlmEvent]]
@@ -57,6 +64,11 @@ class ApiCallParams(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class CloudLLM(LLM):
+    # Settings TypedDict that ``llm_settings`` is validated against at
+    # construction: declared keys are type-checked; undeclared keys pass
+    # through to the provider untouched. ``None`` disables validation.
+    _settings_type: ClassVar[Any] = CloudLLMSettings
+
     llm_settings: CloudLLMSettings | None = None
     # repr=False: carries the resolved API key — must not leak via repr/str
     # (logs, tracebacks, printed configs).
@@ -68,6 +80,9 @@ class CloudLLM(LLM):
     default_headers: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
+        if self.llm_settings is not None and self._settings_type is not None:
+            _settings_adapter(self._settings_type).validate_python(self.llm_settings)
+
         if self.rate_limiter is not None:
             logger.info(
                 f"[{self.__class__.__name__}] Set rate limit to "
