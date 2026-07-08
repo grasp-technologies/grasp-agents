@@ -25,15 +25,19 @@ from grasp_agents.context.prompt_builder import PromptBuilder
 from grasp_agents.context.untrusted_content import UNTRUSTED_CONTENT_SECTION_NAME
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
+from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.events import (
     Event,
     ToolOutputEvent,
     ToolOutputItemEvent,
+    TurnEndEvent,
+    TurnStartEvent,
 )
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
+    OutputMessageItem,
 )
 from grasp_agents.types.response import Response
 from tests._helpers import (
@@ -550,3 +554,72 @@ class TestNoneInputType:
         )
         msg = builder.build_input_message("hello", in_args=None, exec_id="e")
         assert msg is not None
+
+
+# ---------- Item 8: turn boundary event payloads ----------
+
+
+class TestTurnBoundaryEventPayloads:
+    @pytest.mark.asyncio
+    async def test_turn_start_carries_trailing_input_messages(self) -> None:
+        loop, transcript = _make_loop(
+            [
+                _tool_call_response("echo", '{"text":"x"}', "tc1"),
+                _text_response("done"),
+            ],
+            tools=[EchoTool()],
+        )
+        # A mid-conversation boundary: the trailing input run stops at the
+        # previous answer.
+        transcript.messages = [
+            OutputMessageItem(
+                status="completed",
+                content=[OutputMessageText(text="previous answer")],
+            ),
+            InputMessageItem.from_text("go", role="user"),
+        ]
+        run_input = transcript.messages[-1]
+
+        events = await _drain(loop)
+
+        turn_starts = [e for e in events if isinstance(e, TurnStartEvent)]
+        assert len(turn_starts) == 2
+        assert turn_starts[0].data.input_messages == [run_input]
+        # The tool round's follow-up turn starts with no new input.
+        assert turn_starts[1].data.input_messages == []
+
+    @pytest.mark.asyncio
+    async def test_tool_round_turn_end_carries_tool_outputs(self) -> None:
+        loop, _ = _make_loop(
+            [
+                _tool_call_response("echo", '{"text":"x"}', "tc1"),
+                _text_response("done"),
+            ],
+            tools=[EchoTool()],
+        )
+
+        events = await _drain(loop)
+
+        turn_ends = [e for e in events if isinstance(e, TurnEndEvent)]
+        tool_round, stop = turn_ends[0], turn_ends[-1]
+        assert [o.call_id for o in tool_round.data.tool_outputs] == ["tc1"]
+        # The carried item IS the streamed/persisted one.
+        streamed = next(e for e in events if isinstance(e, ToolOutputItemEvent))
+        assert tool_round.data.tool_outputs[0] == streamed.data
+        assert stop.data.tool_outputs == []
+        assert stop.data.stop_reason is not None
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_end_carries_closures(self) -> None:
+        loop, _ = _make_loop(
+            [_tool_call_response("final_answer", '{"answer": "42"}', "fa1")],
+            tools=None,
+            final_answer_as_tool_call=True,
+            final_answer_type=_Answer,
+        )
+
+        events = await _drain(loop)
+
+        stop = [e for e in events if isinstance(e, TurnEndEvent)][-1]
+        assert [o.call_id for o in stop.data.tool_outputs] == ["fa1"]
+        assert "Final answer recorded." in stop.data.tool_outputs[0].text

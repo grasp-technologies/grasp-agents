@@ -948,24 +948,10 @@ class LLMAgent[InT, OutT, CtxT](
         if pruned.removed_count and self._committed is not None:
             state = self._committed.agent_ctx_state
             # Settling prunes only the trailing response round, never a
-            # delivered completion note (a user-role message before it) — so
-            # every deferred DELIVERED flip's note is still in the kept
-            # transcript. Export the flips BEFORE the restore replaces the
-            # map with the boundary snapshot (which predates the deliveries),
-            # then re-merge; dropping them would leave the records COMPLETED,
-            # and a later resume would re-inject notes the transcript already
-            # holds.
-            delivered = self._agent_ctx.bg_tasks.export_deferred_delivered()
-            self._agent_ctx.restore(state)
-            self._agent_ctx.bg_tasks.restore_deferred_delivered(
-                {**state.deferred_delivered, **delivered}
-            )
-
-            # Tasks launched by the pruned round are orphans — their launching
-            # calls just left the transcript. Cancel them (sync; the durable
-            # CANCELLED flips flush at the next save) so a queued completion
-            # can't inject a note for a call the model never made.
-            self._agent_ctx.bg_tasks.cancel_launched_after(state.task_launch_seq)
+            # delivered completion note (a user-role message before it) — the
+            # kept transcript still holds every unflushed DELIVERED flip's
+            # note, so the flips must survive the boundary restore.
+            self._agent_ctx.restore(state, keep_deferred_delivered=True)
 
         # An in-flight inbox message stays LEASED: the settle keeps its user
         # turn (settling never prunes user messages), so the transcript still
@@ -1137,7 +1123,19 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.restore(
             boundary.agent_ctx_state, rebind_kernels=fs_ref is not None
         )
-        await self._rollback_bg_tasks(boundary, deferred_delivered=deferred_flips)
+        # A completion note delivered after the boundary for a task launched
+        # before it was just truncated away while its durable record stays
+        # DELIVERED (resume skips it): re-inject it at the rewind point and
+        # queue it for the next run to stream. Orphan launches past the
+        # boundary were already cancelled by the restore.
+        self._resume_notifications.extend(
+            await self._agent_ctx.bg_tasks.redeliver_after(
+                message_count=boundary.message_count,
+                task_launch_seq=boundary.agent_ctx_state.task_launch_seq,
+                ctx=self._ctx,
+                deferred_delivered=deferred_flips,
+            )
+        )
         await self._rollback_mailbox(boundary)
         self._committed = boundary
         self._cw.reset_anchor()
@@ -1173,35 +1171,6 @@ class LLMAgent[InT, OutT, CtxT](
             step,
             boundary.message_count,
             boundary.turn,
-        )
-
-    async def _rollback_bg_tasks(
-        self,
-        boundary: StepWatermark,
-        *,
-        deferred_delivered: Mapping[str, dict[str, Any]],
-    ) -> None:
-        """
-        The background-task half of a rollback. Tasks launched after
-        ``boundary`` are orphans — the rewound transcript no longer holds
-        their launching calls — and are cancelled. Inversely, a completion
-        note delivered *after* the boundary for a task launched *before* it
-        was just truncated away while its durable record stays DELIVERED
-        (resume skips it): the note is re-injected at the rewind point and
-        queued for the next run to stream. ``deferred_delivered`` is the
-        pre-restore flip map, so a drained-but-unflushed note counts as
-        delivered too.
-        """
-        self._agent_ctx.bg_tasks.cancel_launched_after(
-            boundary.agent_ctx_state.task_launch_seq
-        )
-        self._resume_notifications.extend(
-            await self._agent_ctx.bg_tasks.redeliver_after(
-                message_count=boundary.message_count,
-                task_launch_seq=boundary.agent_ctx_state.task_launch_seq,
-                ctx=self._ctx,
-                deferred_delivered=deferred_delivered,
-            )
         )
 
     async def _rollback_mailbox(self, boundary: StepWatermark) -> None:

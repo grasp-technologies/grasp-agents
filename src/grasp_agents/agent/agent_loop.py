@@ -41,6 +41,7 @@ from grasp_agents.types.events import (
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     OutputItem,
     OutputMessageItem,
@@ -1149,7 +1150,9 @@ class AgentLoop[CtxT]:
         yield TurnEndEvent(
             source=self.agent_name,
             exec_id=exec_id,
-            data=TurnEndInfo(turn=self.turn, had_tool_calls=True),
+            data=TurnEndInfo(
+                turn=self.turn, had_tool_calls=True, tool_outputs=tool_msgs
+            ),
         )
 
     async def _handle_continue(
@@ -1195,6 +1198,7 @@ class AgentLoop[CtxT]:
                 turn=self.turn,
                 had_tool_calls=False,
                 stop_reason=step.stop_reason,
+                tool_outputs=[msg for _, msg in closures],
             ),
         )
 
@@ -1239,6 +1243,7 @@ class AgentLoop[CtxT]:
                 turn=self.turn,
                 had_tool_calls=False,
                 stop_reason=stop_reason,
+                tool_outputs=[msg for _, msg in closures],
             ),
         )
 
@@ -1318,7 +1323,11 @@ class AgentLoop[CtxT]:
         yield TurnEndEvent(
             source=self.agent_name,
             exec_id=exec_id,
-            data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
+            data=TurnEndInfo(
+                turn=self.turn,
+                had_tool_calls=False,
+                tool_outputs=[msg for _, msg in closures],
+            ),
         )
 
     # --- ACT phase ---
@@ -1429,6 +1438,21 @@ class AgentLoop[CtxT]:
             exec_id=exec_id,
         )
 
+    def _turn_input_messages(self) -> list[InputItem]:
+        """
+        The input messages the upcoming turn responds to: the transcript's
+        trailing run of input items (the step's input message, a resident's
+        drained inbox message, injected background-task notes). Empty when the
+        turn follows a tool round or an answer.
+        """
+        inputs: list[InputItem] = []
+        for item in reversed(self._agent_ctx.transcript.messages):
+            if not isinstance(item, InputMessageItem):
+                break
+            inputs.append(item)
+        inputs.reverse()
+        return inputs
+
     # --- Main execution loop ---
 
     async def execute_stream(
@@ -1501,7 +1525,11 @@ class AgentLoop[CtxT]:
                 yield self._cw.compaction_event(fold, exec_id=exec_id)
 
             yield TurnStartEvent(
-                source=self.agent_name, exec_id=exec_id, data=TurnInfo(turn=self.turn)
+                source=self.agent_name,
+                exec_id=exec_id,
+                data=TurnInfo(
+                    turn=self.turn, input_messages=self._turn_input_messages()
+                ),
             )
 
             # ── ACT: LLM generates response ──
