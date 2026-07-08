@@ -211,7 +211,7 @@ def _output_group_to_content(
             parts.append(_reasoning_to_part(item))
 
         elif isinstance(item, OutputMessageItem):
-            if item.text:
+            if item.text or item.refusal:
                 text_part = _message_to_part(item)
                 parts.append(text_part)
 
@@ -233,7 +233,10 @@ def _reasoning_to_part(item: ReasoningItem) -> GeminiPart:
 
 
 def _message_to_part(item: OutputMessageItem) -> GeminiPart:
-    part = GeminiPart(text=item.text)
+    # Gemini has no refusal part — round-trip refusals as text so the model
+    # sees them on the next turn and can correct course.
+    text = "\n".join(t for t in (item.text, item.refusal) if t)
+    part = GeminiPart(text=text)
     psf = item.provider_specific_fields
     if psf and "thought_signature" in psf:
         part.thought_signature = base64.b64decode(psf["thought_signature"])

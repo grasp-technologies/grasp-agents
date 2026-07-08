@@ -362,7 +362,7 @@ class TestFallbackLLM:
             model_name="fallback", response=_text_response("from fallback")
         )
 
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
         result = await llm._generate_response_once(_USER_MSG)
 
         assert result.output_text == "from primary"
@@ -380,7 +380,7 @@ class TestFallbackLLM:
         )
         fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
 
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
         result = await llm._generate_response_once(_USER_MSG)
 
         assert result.output_text == "recovered"
@@ -401,7 +401,7 @@ class TestFallbackLLM:
             ),
         )
 
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         with pytest.raises(LlmInternalServerError, match="server down"):
             await llm._generate_response_once(_USER_MSG)
@@ -417,7 +417,7 @@ class TestFallbackLLM:
             model_name="fallback", response=_text_response("should not reach")
         )
 
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         with pytest.raises(ValueError, match="bad config"):
             await llm._generate_response_once(_USER_MSG)
@@ -427,7 +427,7 @@ class TestFallbackLLM:
     async def test_model_name_defaults_to_primary(self) -> None:
         """FallbackLLM.model_name inherits from primary when empty."""
         primary = StubLLM(model_name="gpt-4o")
-        llm = FallbackLLM(model_name="", primary=primary)
+        llm = FallbackLLM(primary=primary)
         assert llm.model_name == "gpt-4o"
 
     @pytest.mark.asyncio
@@ -445,7 +445,7 @@ class TestFallbackLLM:
         )
         fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
 
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         events: list[LlmEvent] = []
         async for event in llm._generate_response_stream_once(_USER_MSG):
@@ -482,7 +482,7 @@ class TestFallbackLLM:
             ),
         )
 
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         events: list[LlmEvent] = []
 
@@ -730,7 +730,7 @@ class TestStreamErrorMapping:
         """429 during primary's stream iteration → cascade to the fallback."""
         primary = LazyStreamCloudLLM(model_name="primary", fail_attempts=99)
         fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
-        llm = FallbackLLM(model_name="", primary=primary, fallbacks=(fallback,))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         events: list[LlmEvent] = []
         async for event in llm._generate_response_stream_once(_USER_MSG):

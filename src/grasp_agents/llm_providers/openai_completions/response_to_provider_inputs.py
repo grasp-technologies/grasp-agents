@@ -253,10 +253,15 @@ def _add_output_message_items(
 ) -> list[str]:
     thought_sigs: list[str] = []
     text_parts: list[str] = []
+    refusals: list[str] = []
 
     for item in output_message_items:
         if item.text:
             text_parts.append(item.text)
+
+        refusal = item.refusal
+        if refusal:
+            refusals.append(refusal)
 
         if item.provider_specific_fields:
             msg["provider_specific_fields"] = item.provider_specific_fields
@@ -266,6 +271,10 @@ def _add_output_message_items(
 
     # NOTE: Empty content may not be allowed by some providers
     msg["content"] = "\n".join(text_parts)
+    # Round-trip refusals so the model sees them on the next turn and can
+    # correct course.
+    if refusals:
+        msg["refusal"] = "\n".join(refusals)
 
     return thought_sigs
 

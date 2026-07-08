@@ -36,6 +36,7 @@ from grasp_agents.types.items import (
     FunctionToolOutputItem,
     InputMessageItem,
 )
+from tests._helpers import AddTool
 
 _PDF_B64 = base64.b64encode(b"%PDF-1.4 fake").decode()
 
@@ -162,3 +163,39 @@ class TestGeminiSchemaGate:
         assert applied is not None
         assert applied.response_schema is _Out
         assert applied.response_mime_type == "application/json"
+
+
+class TestGeminiStrictToolsGate:
+    def _llm(self, **kwargs: object):
+        from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+
+        return GeminiLLM(
+            model_name="gemini-2.5-flash",
+            api_provider={"name": "google", "base_url": None, "api_key": "dummy"},
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def _config(self, llm: object, **kwargs: object):
+        params = llm._make_api_input([], tools={"add": AddTool()}, **kwargs)  # type: ignore[attr-defined]
+        return params["extra_settings"]["config"]
+
+    def test_no_tool_config_by_default(self) -> None:
+        config = self._config(self._llm())
+        assert config.tool_config is None
+
+    def test_strict_sets_validated_mode_without_tool_choice(self) -> None:
+        config = self._config(self._llm(apply_tool_call_schema_via_provider=True))
+        assert config.tool_config is not None
+        assert config.tool_config.function_calling_config.mode == "VALIDATED"
+
+    def test_strict_with_auto_tool_choice_uses_validated(self) -> None:
+        config = self._config(
+            self._llm(apply_tool_call_schema_via_provider=True), tool_choice="auto"
+        )
+        assert config.tool_config.function_calling_config.mode == "VALIDATED"
+
+    def test_strict_with_required_tool_choice_stays_any(self) -> None:
+        config = self._config(
+            self._llm(apply_tool_call_schema_via_provider=True), tool_choice="required"
+        )
+        assert config.tool_config.function_calling_config.mode == "ANY"

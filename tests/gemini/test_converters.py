@@ -51,7 +51,7 @@ from grasp_agents.llm_providers.gemini.tool_converters import (
     to_api_tools,
 )
 from grasp_agents.tools.base import BaseTool, NamedToolChoice
-from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -603,6 +603,22 @@ class TestResponseToProviderInputs:
         assert contents[1].parts is not None
         assert contents[1].parts[0].text == "Hello!"
 
+    def test_refusal_round_trips_as_text(self):
+        """A refusal-only assistant message rides back as model text."""
+        items = [
+            InputMessageItem.from_text("Hi"),
+            OutputMessageItem(
+                status="completed",
+                content=[OutputMessageRefusal(refusal="I can't help with that.")],
+            ),
+        ]
+        _system, contents = items_to_provider_inputs(items)
+
+        assert len(contents) == 2
+        assert contents[1].role == "model"
+        assert contents[1].parts is not None
+        assert contents[1].parts[0].text == "I can't help with that."
+
     def test_tool_roundtrip(self):
         """Tool call + tool output → model + user contents."""
         items = [
@@ -736,6 +752,16 @@ class TestToolConverters:
         config = to_api_tool_config("auto")
         assert config.function_calling_config is not None
         assert config.function_calling_config.mode == "AUTO"
+
+    def test_auto_choice_strict_uses_validated_mode(self):
+        config = to_api_tool_config("auto", strict=True)
+        assert config.function_calling_config is not None
+        assert config.function_calling_config.mode == "VALIDATED"
+
+    def test_required_choice_strict_stays_any(self):
+        config = to_api_tool_config("required", strict=True)
+        assert config.function_calling_config is not None
+        assert config.function_calling_config.mode == "ANY"
 
     def test_required_choice(self):
         config = to_api_tool_config("required")

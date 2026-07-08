@@ -16,8 +16,10 @@ from typing import Any
 import pytest
 
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.context.prompt_builder import SystemPromptSection
+from grasp_agents.context.prompt_builder import InputAttachment, SystemPromptSection
 from grasp_agents.types.content import CacheControl, InputText
+from grasp_agents.types.errors import ProcRunError
+from grasp_agents.types.events import SystemMessageEvent
 from grasp_agents.types.items import InputItem, InputMessageItem
 
 # Reuse the hand-rolled MockLLM / text-response helpers.
@@ -176,3 +178,49 @@ class TestPreviewInitialContext:
         assert isinstance(preview[1], InputMessageItem)
         assert preview[1].role == "user"
         assert preview[1].text == "Leading note."
+
+
+class TestResetRunHeaderExposure:
+    @pytest.mark.asyncio
+    async def test_each_reset_conversation_re_exposes_the_header(self) -> None:
+        # A reset run starts a new conversation, so its header surfaces again
+        # even though the transcript is non-empty at entry (the reset clears
+        # it as the step opens).
+        agent = LLMAgent[str, str, None](
+            name="a",
+            llm=MockLLM(responses_queue=[_text_response("one"), _text_response("two")]),
+            env_info=False,
+            sys_prompt="Base.",
+            reset_transcript_on_run=True,
+        )
+        await agent.run("first")
+
+        events = [e async for e in agent.run_stream("second")]
+
+        headers = [e for e in events if isinstance(e, SystemMessageEvent)]
+        assert len(headers) == 1
+        assert headers[0].data.text == "Base."
+
+
+class TestEntryFailure:
+    @pytest.mark.asyncio
+    async def test_entry_failure_leaves_prior_turns_intact(self) -> None:
+        # A failure before this run's input lands (e.g. an attachment) must
+        # propagate with the transcript and rollback anchors untouched —
+        # never settled as if the previous delivery's trailing answer were
+        # the failing run's own output.
+        agent = _agent(sys_prompt="Base.")
+        await agent.run("first")
+        messages_before = list(agent.transcript.messages)
+        steps_before = list(agent.rollback_steps)
+
+        def boom(**_: Any) -> str:
+            raise RuntimeError("attachment exploded")
+
+        agent.add_input_attachment(InputAttachment(name="boom", compute=boom))
+        with pytest.raises(ProcRunError) as err:
+            await agent.run("second")
+        assert isinstance(err.value.__cause__, RuntimeError)
+
+        assert agent.transcript.messages == messages_before
+        assert agent.rollback_steps == steps_before

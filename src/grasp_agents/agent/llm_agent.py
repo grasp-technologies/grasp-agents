@@ -977,41 +977,6 @@ class LLMAgent[InT, OutT, CtxT](
         # that delivery rather than starting a fresh one.
         self._retry_continuation = True
 
-    def _mint_step(self) -> int:
-        """
-        The next auto-minted step. A current step with no recorded boundary is
-        a rollback's parked step (its boundary was just dropped, and every
-        remaining boundary sits below it) — re-mint it, whatever its number.
-        Otherwise mint one past every recorded boundary: a fresh mint never
-        equals a completed head's step (every stepped delivery archives its
-        boundary before it first persists), so it cannot read as an
-        orchestrator redelivery.
-        """
-        recorded = {wm.step for wm in self._step_watermarks if wm.step is not None}
-        if self._step is not None and self._step not in recorded:
-            return self._step
-        return max(recorded, default=0) + 1
-
-    def _anchor_human_turn(self, message: "TeamMessage") -> None:
-        """
-        A resident's rollback anchor: a human message about to be taken from
-        the inbox starts a new step. Runs before the message's consumption seq
-        is minted and before it is appended, so the boundary's high-waters
-        exclude the message — a rollback to it voids the message itself.
-        Peer messages are not anchors.
-        """
-        if message.sender != USER_SENDER:
-            return
-
-        if message.message_id != self._anchored_message_id:
-            self._step = self._mint_step()
-            self._anchored_message_id = message.message_id
-
-        # A re-delivery (a settled turn's re-take) keeps its step and
-        # re-archives at the settled position — one anchor per human message,
-        # not per delivery attempt.
-        self._archive_step_boundary()
-
     def _archive_step_boundary(self) -> None:
         """
         Record the rewind point for the step about to start: the transcript
@@ -1390,6 +1355,97 @@ class LLMAgent[InT, OutT, CtxT](
             )
         return result
 
+    def _mint_step(self) -> int:
+        """
+        The next auto-minted step. A current step with no recorded boundary is
+        a rollback's parked step (its boundary was just dropped, and every
+        remaining boundary sits below it) — re-mint it, whatever its number.
+        Otherwise mint one past every recorded boundary: a fresh mint never
+        equals a completed head's step (every stepped delivery archives its
+        boundary before it first persists), so it cannot read as an
+        orchestrator redelivery.
+        """
+        recorded = {wm.step for wm in self._step_watermarks if wm.step is not None}
+        if self._step is not None and self._step not in recorded:
+            return self._step
+        return max(recorded, default=0) + 1
+
+    def _anchor_human_turn(self, message: "TeamMessage") -> None:
+        """
+        A resident's rollback anchor: a human message about to be taken from
+        the inbox starts a new step. Runs before the message's consumption seq
+        is minted and before it is appended, so the boundary's high-waters
+        exclude the message — a rollback to it voids the message itself.
+        Peer messages are not anchors.
+        """
+        if message.sender != USER_SENDER:
+            return
+
+        if message.message_id != self._anchored_message_id:
+            self._step = self._mint_step()
+            self._anchored_message_id = message.message_id
+
+        # A re-delivery (a settled turn's re-take) keeps its step and
+        # re-archives at the settled position — one anchor per human message,
+        # not per delivery attempt.
+        self._archive_step_boundary()
+
+    async def _start_step(
+        self,
+        chat_inputs: LLMPrompt | Sequence[str | InputImage] | None,
+        *,
+        inp: InT | None,
+        exec_id: str,
+    ) -> list[InputItem]:
+        """
+        Open a delivered step: optionally reset to a fresh conversation,
+        record the step's rollback boundary, and append its input message.
+
+        The boundary is archived before the input lands, so a rewind returns
+        to the prior steps' conversation with no input yet (the header, being
+        ephemeral, is never lost with it). Returns the appended input (as a
+        one-item list, empty when the entry carries none) for the run to
+        surface as an event.
+
+        Runs outside the run's settle guard: everything fallible (input
+        rendering, attachments) happens before the first mutation, so a
+        failure here leaves the session exactly as entered.
+        """
+        input_message = self._prompt_builder.build_input_message(
+            chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
+        )
+        if input_message:
+            # Attachments see the conversation the input will join — none
+            # when this run resets it.
+            context: list[InputItem] = (
+                [] if self.reset_transcript_on_run else list(self.transcript.messages)
+            )
+            input_message = await self._prompt_builder.apply_input_attachments(
+                input_message,
+                ctx=self._ctx,
+                exec_id=exec_id,
+                messages=context,
+                agent_ctx=self._agent_ctx,
+                source=self._current_input_source,
+            )
+
+        # No mutations above this line.
+        if self.reset_transcript_on_run:
+            # A reset run starts a new conversation: drop the log (the system
+            # prompt lives in the ephemeral header, not here).
+            self.transcript.clear()
+            self._cw.reset_anchor()
+
+        self._archive_step_boundary()
+        self._loop.turn = 0
+
+        exposed: list[InputItem] = []
+        if input_message:
+            self.transcript.update([input_message])
+            exposed.append(input_message)
+
+        return exposed
+
     async def _process_stream(
         self,
         chat_inputs: LLMPrompt | Sequence[str | InputImage] | None = None,
@@ -1425,20 +1481,22 @@ class LLMAgent[InT, OutT, CtxT](
         checkpoint = await self.load_checkpoint(exec_id=exec_id)
 
         # Surface messages resume injected into the transcript (re-delivered
-        # background-task notices) — no hidden transcript messages.
-        if self._resume_notifications:
-            self._print_messages(self._resume_notifications, exec_id=exec_id)
-            for message in self._resume_notifications:
-                yield UserMessageEvent(data=message, source=self.name, exec_id=exec_id)
-            self._resume_notifications = []
+        # background-task notices) — no hidden transcript messages, on every
+        # path incl. the cached-output replay below.
+        for event in self._expose_messages(self._resume_notifications, exec_id=exec_id):
+            yield event
+        self._resume_notifications = []
 
-        # A direct run with no inputs at all resumes the session — continue
-        # the loop on the restored (or live) transcript instead of rendering
-        # an input prompt from nothing.
+        # A resident (attached inbox) is driven by its mailbox, not by
+        # delivered inputs; a direct run with no inputs at all resumes the
+        # session
+        resident = self._agent_ctx.inbox is not None
+
+        # --- Validate entry path ---
+
         pure_resume = step is None and chat_inputs is None and inp is None
-        if pure_resume and self.transcript.is_empty and self._agent_ctx.inbox is None:
-            # A resident legitimately starts parked with an empty transcript
-            # (its turns come from the inbox); a non-resident has nothing to do.
+
+        if not resident and pure_resume and self.transcript.is_empty:
             raise ProcInputValidationError(
                 proc_name=self.name,
                 exec_id=exec_id,
@@ -1458,37 +1516,42 @@ class LLMAgent[InT, OutT, CtxT](
             # The retry continues the settled delivery under its original step
             # (possibly auto-minted by the failed attempt).
             step = self._step
+
         elif step is None and chat_inputs is not None:
             # A chat delivery with no explicit step: every human turn is a
             # rollback anchor, so mint the next step. Typed-args deliveries
             # (orchestrators, agents-as-tools) stay unstepped unless the
             # caller steps them.
             step = self._mint_step()
+
+        # A resident gets its step minted via the callback
+        # on_take=self._anchor_human_turn in the inbox
+
         self._step = step
 
-        # A ``step`` matching the persisted head *resumes* it (an
-        # orchestrator's at-least-once redelivery): completed → replay the
+        # A ``step`` matching the persisted head is an orchestrator's
+        # at-least-once *redelivery* of that step: completed → replay the
         # cached output below; interrupted → continue on the restored
-        # transcript. A no-input run resumes the session as a whole (also how
-        # a resident always enters). Everything else starts a new step; a
-        # rolled-back head is parked at its step's start and delivers fresh.
-        resumes_step = (
-            retry_continuation
-            or pure_resume
-            or (
-                step is not None
-                and checkpoint is not None
-                and checkpoint.current.step == step
-                and checkpoint.location is not AgentCheckpointLocation.ROLLED_BACK
-            )
+        # transcript. A rolled-back head doesn't count — it is parked at its
+        # step's start and delivers fresh.
+        redelivers_head_step = (
+            step is not None
+            and checkpoint is not None
+            and checkpoint.current.step == step
+            and checkpoint.location is not AgentCheckpointLocation.ROLLED_BACK
         )
-        starts_step = not resumes_step
+        # Resumes continue the existing conversation (a no-input run resumes
+        # the session as a whole — also how a resident always enters);
+        # everything else starts a new step.
+        resumes_step = retry_continuation or pure_resume or redelivers_head_step
 
         # Resuming an already-completed step: replay the cached output.
         if resumes_step and checkpoint is not None and checkpoint.output is not None:
             output = self.parse_output(checkpoint.output, in_args=inp, exec_id=exec_id)
             yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
             return
+
+        # --- Compose initial context ---
 
         # Compose the ephemeral initial context (system prompt + leading
         # messages) on every entry path. It is never persisted: the loop
@@ -1498,73 +1561,47 @@ class LLMAgent[InT, OutT, CtxT](
             ctx=self._ctx, exec_id=exec_id, agent_ctx=self._agent_ctx
         )
 
-        try:
-            # Step entry for anything that *starts or (re-)parks* a
-            # conversation: new steps and every resident entry. A resumed step
-            # skips this — re-archiving would replace its rollback boundary
-            # with a mid-step one. A retry continuation skips it for residents
-            # too: the boundary was archived at the human-message take, and
-            # re-archiving here would move it past the settled input.
-            messages_to_expose: list[InputItem] = []
-            resident = self._agent_ctx.inbox is not None
+        messages_to_expose: list[InputItem] = []
 
-            if (starts_step or resident) and not retry_continuation:
-                if self.reset_transcript_on_run:
-                    # A reset run starts a new conversation: drop the log (the
-                    # system prompt lives in the ephemeral header, not here).
-                    self.transcript.clear()
-                    self._cw.reset_anchor()
-                # Record the rollback point before the step's input, so a
-                # rewind lands on the prior steps' conversation with no input
-                # yet (the header, being ephemeral, is never lost with it).
-                self._archive_step_boundary()
-                if self.transcript.is_empty:
-                    # Surface the fresh header once, for UI / event parity.
-                    messages_to_expose.extend(self._cw.initial_context)
+        if self.transcript.is_empty or (
+            not resumes_step and self.reset_transcript_on_run
+        ):
+            # Entering an empty conversation — a first delivery (or one about
+            # to reset to fresh), or a resident's first park — surfaces the
+            # header once, for UI / event parity (the model gets it via the
+            # view either way). Resumes never reset, so a reset agent's
+            # retry/resume entry does not re-expose it mid-conversation.
+            messages_to_expose.extend(self._cw.initial_context)
 
-            # New step: reset the turn and memorize the input (a resident's
-            # turns arrive from the inbox instead).
-            if starts_step:
-                self._loop.turn = 0
-                input_message = self._prompt_builder.build_input_message(
-                    chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
-                )
-                if input_message:
-                    input_message = await self._prompt_builder.apply_input_attachments(
-                        input_message,
-                        ctx=self._ctx,
-                        exec_id=exec_id,
-                        messages=list(self.transcript.messages),
-                        agent_ctx=self._agent_ctx,
-                        source=self._current_input_source,
-                    )
-                    self.transcript.update([input_message])
-                    messages_to_expose.append(input_message)
-
-            self._print_messages(messages_to_expose, exec_id=exec_id)
-            for message in messages_to_expose:
-                if isinstance(message, InputMessageItem):
-                    if message.role == "system":
-                        yield SystemMessageEvent(
-                            data=message, source=self.name, exec_id=exec_id
-                        )
-                    # TODO: set source
-                    elif message.role == "user":
-                        yield UserMessageEvent(
-                            data=message,
-                            source=None,
-                            destination=self.name,
-                            exec_id=exec_id,
-                        )
-
-            logger.info(
-                "agent '%s' run started (model=%s, max_turns=%s)",
-                self.name,
-                self._loop.llm.model_name,
-                self._loop.max_turns,
+        if not resumes_step:
+            # Start a fresh step: append the input message to the transcript
+            messages_to_expose.extend(
+                await self._start_step(chat_inputs, inp=inp, exec_id=exec_id)
             )
-            run_t0 = time.monotonic()
 
+        # Surface initial context + input message for a fresh delivery
+        for event in self._expose_messages(
+            messages_to_expose, exec_id=exec_id, source=self._current_input_source
+        ):
+            yield event
+
+        # ---- Run the loop ----
+
+        logger.info(
+            "agent '%s' run started (model=%s, max_turns=%s)",
+            self.name,
+            self._loop.llm.model_name,
+            self._loop.max_turns,
+        )
+        run_t0 = time.monotonic()
+
+        # The settle guard scopes exactly the work that can leave the
+        # transcript and its paired state disagreeing: the loop's generations
+        # and tool rounds, and the final-answer parse. Entry work above needs
+        # no settling — ``_start_step`` mutates only after its fallible steps
+        # — and settling a pre-mutation failure would misread the *previous*
+        # delivery's trailing answer as this run's failed output and prune it.
+        try:
             async for event in self._loop.execute_stream(exec_id=exec_id):
                 yield event
 
@@ -1605,6 +1642,31 @@ class LLMAgent[InT, OutT, CtxT](
             self._ctx.printer.print_messages(
                 messages, agent_name=self.name, exec_id=exec_id
             )
+
+    def _expose_messages(
+        self, messages: Sequence[InputItem], *, exec_id: str, source: str | None = None
+    ) -> list[Event[Any]]:
+        self._print_messages(messages, exec_id=exec_id)
+        events: list[Event[Any]] = []
+        for message in messages:
+            if isinstance(message, InputMessageItem):
+                if message.role == "system":
+                    events.append(
+                        SystemMessageEvent(
+                            data=message, source=self.name, exec_id=exec_id
+                        )
+                    )
+                elif message.role == "user":
+                    events.append(
+                        UserMessageEvent(
+                            data=message,
+                            source=source,
+                            destination=self.name,
+                            exec_id=exec_id,
+                        )
+                    )
+
+        return events
 
     # --- Decorator API ---
     #

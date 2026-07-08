@@ -37,18 +37,24 @@ def to_api_tools(
     return GeminiTool(function_declarations=declarations)
 
 
-def to_api_tool_config(tool_choice: ToolChoice) -> GeminiToolConfig:
+def to_api_tool_config(
+    tool_choice: ToolChoice, strict: bool | None = None
+) -> GeminiToolConfig:
+    """
+    Map a :class:`ToolChoice` to a Gemini function-calling config.
+
+    Gemini has no per-tool ``strict`` flag; provider-side schema enforcement
+    for function-call arguments is a *mode*. ``ANY`` (used for ``"required"``
+    and named tools) already constrains argument decoding; with ``strict``,
+    the free-choice ``"auto"`` mode uses ``VALIDATED`` instead of ``AUTO``
+    (Preview; documented for Gemini 3+ — older models accept the request
+    but enforcement there is not documented).
+    """
     if isinstance(tool_choice, NamedToolChoice):
         return GeminiToolConfig(
             function_calling_config=GeminiFunctionCallingConfig(
                 mode=FunctionCallingConfigMode.ANY,
                 allowed_function_names=[tool_choice.name],
-            )
-        )
-    if tool_choice == "auto":
-        return GeminiToolConfig(
-            function_calling_config=GeminiFunctionCallingConfig(
-                mode=FunctionCallingConfigMode.AUTO,
             )
         )
     if tool_choice == "required":
@@ -63,8 +69,13 @@ def to_api_tool_config(tool_choice: ToolChoice) -> GeminiToolConfig:
                 mode=FunctionCallingConfigMode.NONE,
             )
         )
+    # "auto" and any unrecognized value
     return GeminiToolConfig(
         function_calling_config=GeminiFunctionCallingConfig(
-            mode=FunctionCallingConfigMode.AUTO,
+            mode=(
+                FunctionCallingConfigMode.VALIDATED
+                if strict
+                else FunctionCallingConfigMode.AUTO
+            ),
         )
     )

@@ -27,6 +27,7 @@ from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import InputRenderableModel
+from grasp_agents.types.items import InputMessageItem, OutputMessageItem
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
 from tests._helpers import (
     FailFirstLLM,
@@ -377,6 +378,61 @@ async def test_interrupted_run_resumes_without_reseeding() -> None:
     await team2.aclose()
     assert alice2.llm.call_count == 0  # no duplicate kickoff
     assert result2.activations == 2  # restored, not reset
+
+
+@pytest.mark.asyncio
+async def test_reset_transcript_member_keeps_history_across_interrupt() -> None:
+    # ``reset_transcript_on_run`` means "each *delivered* run starts a new
+    # conversation". A resident's daemon entry delivers nothing — it resumes
+    # the ongoing conversation — so interrupting a team run and re-entering
+    # with a new message must keep the earlier turns.
+    solo = LLMAgent[Any, Any, None](
+        name="solo",
+        llm=MockLLM(
+            responses_queue=[
+                _text_response("first answer"),
+                _text_response("second answer"),
+            ]
+        ),
+        reset_transcript_on_run=True,
+    )
+    team = AgentTeam([solo], entry="solo", ctx=SessionContext[None](state=None))
+
+    async def consume(seed: str | None) -> None:
+        async for _ in team.run_stream(seed, daemon=True, poll_interval=0.01):
+            pass
+
+    run = asyncio.create_task(consume("first question"))
+    try:
+        await _until(lambda: len(solo.transcript.messages) >= 2)  # Q1 answered
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+
+    # New human message while no run is live: queues durably in the mailbox.
+    await team.submit_message("solo", "second question")
+
+    run = asyncio.create_task(consume(None))
+    try:
+        await _until(lambda: len(solo.transcript.messages) >= 4)  # Q2 answered
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+    await team.aclose()
+
+    texts = [
+        m.text
+        for m in solo.transcript.messages
+        if isinstance(m, (InputMessageItem, OutputMessageItem))
+    ]
+    assert texts == [
+        "first question",
+        "first answer",
+        "second question",
+        "second answer",
+    ]
 
 
 @pytest.mark.asyncio

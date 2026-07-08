@@ -16,6 +16,7 @@ from grasp_agents.llm_providers.openai_completions.response_to_provider_inputs i
 from grasp_agents.types.content import (
     InputImage,
     InputText,
+    OutputMessageRefusal,
     OutputMessageText,
     ReasoningContent,
 )
@@ -137,6 +138,18 @@ class TestOutputMessageConversion:
 
         # Should have non-None content to avoid API errors
         assert msgs[0]["content"] is not None
+
+    def test_refusal_round_trips_on_assistant_message(self):
+        """A refusal part rides back as the assistant ``refusal`` field."""
+        item = OutputMessageItem(
+            content=[OutputMessageRefusal(refusal="I can't help with that.")],
+            status="completed",
+        )
+        msgs = items_to_completions_messages([item])
+
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "assistant"
+        assert msgs[0]["refusal"] == "I can't help with that."
 
 
 # ---------- Standalone tool calls ----------

@@ -23,11 +23,16 @@ class FallbackLLM(LLM):
     """
     Tries LLMs in order until one succeeds.
 
-    The primary LLM's model_name is used for logging/cost tracking
-    unless overridden.
+    The public ``generate_response(_stream)`` entrypoints validate and retry
+    (per this instance's ``retry_policy``) around the whole cascade; member
+    retry policies are bypassed — the cascade itself is the API-retry layer.
+    ``model_name`` defaults to the primary's and is used for logging, cost
+    attribution and context-budget resolution. ``llm_settings`` is inert
+    here: settings live on the member LLMs.
     """
 
-    primary: LLM = field(default=None)  # type: ignore[assignment]
+    model_name: str = ""
+    primary: LLM = field(kw_only=True)
     fallbacks: tuple[LLM, ...] = ()
 
     def __post_init__(self) -> None:
