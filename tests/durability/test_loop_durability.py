@@ -36,6 +36,7 @@ from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
+from grasp_agents.types.events import TurnEndEvent, TurnStartEvent
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -167,6 +168,52 @@ class TestPureResume:
         out = await agent2.run()
         assert out.payloads[0] == "done from tool result"
         assert calls == ["once"]  # echo was NOT re-issued on resume
+
+
+# ---------------------------------------------------------------------------
+# Turn boundary events are the post-durability lane
+# ---------------------------------------------------------------------------
+
+
+class TestTurnEndAfterCheckpoint:
+    @pytest.mark.asyncio
+    async def test_tool_round_turn_end_follows_checkpoint_commit(self) -> None:
+        """
+        When a consumer receives the tool round's ``TurnEndEvent``, the round is
+        already committed to the checkpoint store — a side effect keyed on the
+        event's ``tool_outputs`` can never double across a crash-resume.
+        (Item events are the opposite, at-least-once lane.)
+        """
+        store = InMemoryCheckpointStore()
+        agent, _ = _make_agent(
+            [
+                _tool_call_response("echo", '{"text": "x"}', "c1"),
+                _text_response("done"),
+            ],
+            tools=[_EchoTool()],
+            session_key="te1",
+            store=store,
+        )
+
+        turn_end = None
+        async for event in agent.run_stream("go", step=5):
+            if isinstance(event, TurnStartEvent) and event.data.turn == 0:
+                assert [
+                    m.text
+                    for m in event.data.input_messages
+                    if isinstance(m, InputMessageItem)
+                ] == ["go"]
+            if isinstance(event, TurnEndEvent) and event.data.tool_outputs:
+                turn_end = event
+                # Observed mid-stream: the store must already hold the round.
+                persisted = await _persisted_log(store, "te1/agent/test_agent")
+                assert any(
+                    isinstance(m, FunctionToolOutputItem) and m.call_id == "c1"
+                    for m in persisted
+                )
+
+        assert turn_end is not None
+        assert [o.call_id for o in turn_end.data.tool_outputs] == ["c1"]
 
 
 # ---------------------------------------------------------------------------

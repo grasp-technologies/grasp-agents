@@ -1,6 +1,7 @@
 import importlib
 import os
 from logging import getLogger
+from weakref import WeakSet
 
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
@@ -9,6 +10,8 @@ from .exporters import CLOUD_PROVIDERS_NAMES, LLM_PROVIDER_NAMES, FilteringExpor
 from .setup import init_tracing
 
 logger = getLogger(__name__)
+
+_phoenix_attached: WeakSet[TracerProvider] = WeakSet()
 
 
 def _instrument(tracer_provider: TracerProvider, module: str, cls_name: str) -> None:
@@ -32,6 +35,11 @@ def init_phoenix(
     use_llm_provider_instr: bool = True,
     project_name: str = "grasp-agents",
 ) -> None:
+    """
+    Attach the Phoenix exporter (and provider instrumentors) to the tracer
+    provider. Re-entry against the same provider is a no-op — the span
+    processors would otherwise duplicate and double every exported span.
+    """
     # Deferred: these need the optional grasp-agents[phoenix] extra.
     from openinference.instrumentation.openllmetry import (  # noqa: PLC0415
         OpenInferenceSpanProcessor,
@@ -55,6 +63,10 @@ def init_phoenix(
     if not isinstance(tracer_provider, TracerProvider):
         tracer_provider = init_tracing(project_name=project_name)
 
+    if tracer_provider in _phoenix_attached:
+        logger.info("Phoenix already attached to this TracerProvider; skipping")
+        return
+
     # Convert spans to OpenInference format expected by Phoenix
     tracer_provider.add_span_processor(OpenInferenceSpanProcessor())
 
@@ -74,6 +86,7 @@ def init_phoenix(
     else:
         span_processor = SimpleSpanProcessor(span_exporter=exporter)
     tracer_provider.add_span_processor(span_processor)
+    _phoenix_attached.add(tracer_provider)
 
     # Auto-instrument the provider SDKs with OpenInference instrumentors — one
     # per dedicated client (the openai one covers both the Responses and Chat

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
@@ -132,7 +133,17 @@ class BackgroundTaskCompletedEvent(Event[BackgroundTaskInfo], frozen=True):
 
 
 class TurnInfo(BaseModel):
+    """
+    ``input_messages`` holds the input messages this turn responds to — the
+    transcript's trailing input items at the turn's start (the step's input
+    message, a resident's drained inbox message, injected background-task
+    notes). Empty when the turn follows a tool round or an answer. A resumed
+    run whose restored transcript still ends with an unanswered input
+    re-presents that input on its first turn.
+    """
+
     turn: int
+    input_messages: list[InputItem] = Field(default_factory=list[InputItem])
 
 
 class StopReason(StrEnum):
@@ -143,16 +154,47 @@ class StopReason(StrEnum):
 
 
 class TurnEndInfo(BaseModel):
+    """
+    ``tool_outputs`` holds the tool result items recorded during the turn —
+    executed results, rejection outputs, and the synthetic closures paired
+    with calls that will never run.
+    """
+
     turn: int
     had_tool_calls: bool
     stop_reason: StopReason | None = None
+    tool_outputs: list[FunctionToolOutputItem] = Field(
+        default_factory=list[FunctionToolOutputItem]
+    )
 
 
 class TurnStartEvent(Event[TurnInfo], frozen=True):
+    """
+    Start of a loop turn, emitted after the turn's input items are recorded
+    (on a fresh step's first turn, after the input checkpoint). Same
+    post-durability delivery as :class:`TurnEndEvent`.
+    """
+
     type: Literal["agent.turn_start"] = "agent.turn_start"
 
 
 class TurnEndEvent(Event[TurnEndInfo], frozen=True):
+    """
+    End of a loop turn, emitted after the turn's checkpoint is saved.
+
+    Turn boundary events are the post-durability lane: a resumed run never
+    re-emits a persisted turn, so a side effect keyed on one cannot double —
+    but a crash between the checkpoint and the consumer handling the event
+    loses it (at-most-once). Item events are the opposite lane, emitted before
+    the checkpoint: a crash-resume re-generates the unpersisted turn and
+    re-delivers equivalent items (at-least-once), so consumers must
+    deduplicate. Key recoverable, must-not-double effects on turn boundaries;
+    key must-not-lose effects on item events behind a dedup guard. (A turn
+    that persists nothing — no tool round, no final or resident answer — can
+    repeat after a crash like any unpersisted work; such a ``TurnEndEvent``
+    carries no ``tool_outputs`` and no ``stop_reason``.)
+    """
+
     type: Literal["agent.turn_end"] = "agent.turn_end"
 
 

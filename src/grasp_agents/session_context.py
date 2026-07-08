@@ -31,6 +31,8 @@ from .usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MAX_RESPONSES_PER_AGENT = 16
+
 DEFAULT_SESSION_KEY = "default"
 """Sentinel ``session_key`` for an unnamed session.
 
@@ -101,7 +103,7 @@ class SessionContext[CtxT](BaseModel):
     responses: defaultdict[ProcName, list[Response]] = Field(
         default_factory=lambda: defaultdict(list)
     )
-    max_responses_per_agent: int | None = Field(default=None, exclude=True)
+    max_responses_per_agent: int = _DEFAULT_MAX_RESPONSES_PER_AGENT
     usage_tracker: UsageTracker = Field(default_factory=UsageTracker, exclude=True)
     printer: Printer | None = Field(default=None, exclude=True)
     checkpoint_store: CheckpointStore | None = Field(default=None, exclude=True)
@@ -510,7 +512,7 @@ class SessionContext[CtxT](BaseModel):
         bucket = self.responses[agent_name]
         bucket.append(response)
         cap = self.max_responses_per_agent
-        if cap is not None and len(bucket) > cap:
+        if len(bucket) > cap:
             del bucket[: len(bucket) - cap]
 
     @model_validator(mode="after")

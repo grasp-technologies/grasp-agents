@@ -25,7 +25,6 @@ from .decorators import stamp_session_attributes
 logger = getLogger(__name__)
 
 _init_lock = threading.Lock()
-_initialized = False
 
 
 class SessionSpanProcessor(SpanProcessor):
@@ -53,7 +52,6 @@ def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
 
     Returns the TracerProvider so callers can attach exporters/processors.
     """
-    global _initialized
     with _init_lock:
         existing = trace.get_tracer_provider()
         if isinstance(existing, TracerProvider):
@@ -70,7 +68,6 @@ def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
         # Propagates the run's session id onto every span (see the processor).
         provider.add_span_processor(SessionSpanProcessor())
         trace.set_tracer_provider(provider)
-        _initialized = True
         logger.info("Initialized TracerProvider for %s", project_name)
         return provider
 

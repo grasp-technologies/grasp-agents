@@ -595,6 +595,34 @@ class TestTelemetrySetup:
         p2 = init_tracing(project_name="b")
         assert p1 is p2
 
+    def test_init_phoenix_reentry_is_noop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A second init_phoenix against the same provider must not attach the
+        span processors again — each duplicate doubles every exported span.
+        """
+        from grasp_agents.telemetry import phoenix as phoenix_mod
+        from grasp_agents.telemetry.setup import init_tracing
+
+        monkeypatch.setenv(
+            "TELEMETRY_COLLECTOR_HTTP_ENDPOINT", "http://localhost:6006/v1/traces"
+        )
+        provider = init_tracing(project_name="test")
+        try:
+            with patch.object(provider, "add_span_processor") as add_mock:
+                phoenix_mod.init_phoenix(
+                    use_litellm_instr=False, use_llm_provider_instr=False
+                )
+                first_calls = add_mock.call_count
+                phoenix_mod.init_phoenix(
+                    use_litellm_instr=False, use_llm_provider_instr=False
+                )
+            assert first_calls == 2
+            assert add_mock.call_count == first_calls
+        finally:
+            phoenix_mod._phoenix_attached.discard(provider)
+
     def test_add_exporter_attaches_to_provider(self) -> None:
         from grasp_agents.telemetry.setup import add_exporter
 

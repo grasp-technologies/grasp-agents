@@ -909,8 +909,9 @@ class BackgroundTaskManager[CtxT]:
         """
         Cancel every task with ``launch_seq > seq`` — synchronous and I/O-free.
 
-        Called when the transcript is rewound past the tool calls that
-        launched these tasks (a failed-run settle or a step rollback): their
+        Applied by :meth:`AgentContext.restore` whenever the transcript is
+        rewound past the tool calls that launched these tasks (a failed-run
+        settle or a step rollback; vacuous on a cold reload): their
         launches are no longer in the history the model sees, so letting them
         finish would inject completion notes for calls that never happened.
         Cancelled tasks are dropped from tracking immediately, so a completion
@@ -1294,8 +1295,8 @@ class BackgroundTaskManager[CtxT]:
         Restore a :meth:`export_deferred_delivered` snapshot: on a rollback the
         deferred flips are discarded, so records whose notes were rolled back
         stay COMPLETED for a later resume to re-inject. A failed-run settle
-        instead re-merges the flips for the notes it kept (see
-        ``LLMAgent._settle_run``).
+        instead keeps the live flips for the notes it kept (see
+        ``AgentContext.restore``'s ``keep_deferred_delivered``).
         """
         self._deferred_delivered = dict(deferred)
 

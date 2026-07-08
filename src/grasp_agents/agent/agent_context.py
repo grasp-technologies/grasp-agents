@@ -183,7 +183,11 @@ class AgentContext:
         )
 
     def restore(
-        self, state: AgentContextState, *, rebind_kernels: bool = False
+        self,
+        state: AgentContextState,
+        *,
+        rebind_kernels: bool = False,
+        keep_deferred_delivered: bool = False,
     ) -> None:
         """
         Reapply a :meth:`snapshot` snapshot.
@@ -193,7 +197,18 @@ class AgentContext:
         forgets Reads whose results were rolled back, the fresh-``Bash`` cwd
         matches the history the model still sees, and deferred task-record
         flips are discarded (their completion notes were rolled back, so the
-        records stay COMPLETED for a later resume to re-inject).
+        records stay COMPLETED for a later resume to re-inject). In-memory
+        tasks launched past the restored watermark are cancelled — the
+        restored transcript no longer holds their launching calls, so their
+        completions must not deliver (vacuous on a cold reload, which has no
+        in-memory tasks).
+
+        ``keep_deferred_delivered`` marks a restore whose transcript surgery kept
+        the delivered completion notes (a failed-run settle prunes only the
+        trailing response round): the live not-yet-flushed DELIVERED flips are
+        merged over the snapshot's instead of discarded — dropping them would
+        leave the records COMPLETED, and a later resume would re-inject notes
+        the transcript already holds.
 
         ``rebind_kernels`` (step rollback paired with a restored filesystem
         snapshot) additionally seeds the kernels' execution contexts so they
@@ -208,9 +223,18 @@ class AgentContext:
 
         self.shell_state.cwd = state.shell_cwd
 
-        self.bg_tasks.restore_deferred_delivered(state.deferred_delivered)
+        deferred_delivered = state.deferred_delivered
+        if keep_deferred_delivered:
+            deferred_delivered = {
+                **deferred_delivered,
+                **self.bg_tasks.export_deferred_delivered(),
+            }
+        self.bg_tasks.restore_deferred_delivered(deferred_delivered)
         self.bg_tasks.restore_deferred_killed(state.deferred_killed)
         self.bg_tasks.seed_launch_seq(state.task_launch_seq)
+        # After the restore_deferred_* imports: cancelling defers CANCELLED
+        # record updates, which the imports must not clobber.
+        self.bg_tasks.cancel_launched_after(state.task_launch_seq)
 
         # Leases are NOT dropped here: a settle keeps the absorbed-but-unacked
         # message in the transcript, and its lease is what stops the loop from
