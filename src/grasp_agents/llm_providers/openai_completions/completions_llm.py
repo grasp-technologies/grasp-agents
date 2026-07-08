@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Any, ClassVar, Literal, TypedDict
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AsyncStream
 from openai._types import omit  # type: ignore  # noqa: PLC2701
@@ -11,7 +11,7 @@ from openai.lib.streaming.chat import (
     AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
 )
 from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
@@ -75,7 +75,12 @@ _COMPAT_LITELLM_PROVIDERS = {
     "openrouter": "openrouter",
 }
 
+CompletionsReasoningEffort = Literal[
+    "none", "disable", "minimal", "low", "medium", "high"
+]
 
+
+@with_config(ConfigDict(extra="allow"))
 class OpenAILLMSettings(CloudLLMSettings, total=False):
     max_completion_tokens: int | None
     seed: int | None
@@ -86,9 +91,7 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     logprobs: bool | None
     top_logprobs: int | None
 
-    reasoning_effort: (
-        Literal["none", "disable", "minimal", "low", "medium", "high"] | None
-    )
+    reasoning_effort: CompletionsReasoningEffort | None
 
     parallel_tool_calls: bool
 
@@ -139,6 +142,8 @@ class AzureClientConfig(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class OpenAILLM(CloudLLM):
+    _settings_type: ClassVar[Any] = OpenAILLMSettings
+
     litellm_provider: str | None = "openai"
     llm_settings: OpenAILLMSettings | None = None
     openai_client_timeout: float = 600.0
