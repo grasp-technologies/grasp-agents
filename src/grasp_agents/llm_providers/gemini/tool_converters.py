@@ -47,7 +47,8 @@ def to_api_tool_config(
     for function-call arguments is a *mode*. ``ANY`` (used for ``"required"``
     and named tools) already constrains argument decoding; with ``strict``,
     the free-choice ``"auto"`` mode uses ``VALIDATED`` instead of ``AUTO``
-    (Preview; Gemini 3+ models only — older models reject it).
+    (Preview; documented for Gemini 3+ — older models accept the request
+    but enforcement there is not documented).
     """
     if isinstance(tool_choice, NamedToolChoice):
         return GeminiToolConfig(

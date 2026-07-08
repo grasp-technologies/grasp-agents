@@ -160,6 +160,46 @@ class TestAnthropicStrictTools:
         assert isinstance(args["a"], int)
         assert isinstance(args["b"], int)
 
+    @pytest.mark.asyncio
+    async def test_strict_is_validated_server_side(
+        self, anthropic_api_key: str
+    ) -> None:
+        """
+        Negative control pinning the contract our converter relies on:
+        ``strict: true`` with an *untransformed* pydantic schema (no
+        ``additionalProperties: false``) is rejected with a 400, while the
+        identical schema without ``strict`` is accepted — i.e. the flag is
+        processed server-side, and ``transform_schema`` is what makes strict
+        tools work.
+        """
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+
+        class _AddInput(BaseModel):
+            a: int
+            b: int
+
+        raw_schema = _AddInput.model_json_schema()
+        assert "additionalProperties" not in raw_schema
+        tool: dict[str, Any] = {
+            "name": "add",
+            "description": "Add two numbers",
+            "input_schema": raw_schema,
+        }
+        common: dict[str, Any] = {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "What is 17 + 25? Use add."}],
+            "tool_choice": {"type": "any"},
+        }
+
+        with pytest.raises(anthropic.BadRequestError, match="additionalProperties"):
+            await client.messages.create(tools=[{**tool, "strict": True}], **common)
+
+        resp = await client.messages.create(tools=[tool], **common)
+        assert resp.stop_reason == "tool_use"
+
 
 @pytest.mark.integration
 class TestAnthropicReasoningContinuity:

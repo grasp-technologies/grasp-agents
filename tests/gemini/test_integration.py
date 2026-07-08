@@ -8,12 +8,13 @@ Skipped by default. Run with:
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from pydantic import BaseModel, Field
 
 from grasp_agents.llm.cloud_llm import APIProvider
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import AnnotationUrlCitation, OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -31,7 +32,6 @@ from grasp_agents.types.llm_events import (
 
 if TYPE_CHECKING:
     from grasp_agents.llm.cloud_llm import CloudLLM
-    from grasp_agents.tools.base import BaseTool
 
 
 class Capital(BaseModel):
@@ -111,7 +111,7 @@ class TestGeminiStrictTools:
     def llm(self, google_api_key: str) -> CloudLLM:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
-        # VALIDATED function calling is Gemini 3+ only.
+        # VALIDATED function calling is documented for Gemini 3+.
         return GeminiLLM(
             model_name="gemini-3.1-pro-preview",
             api_provider=APIProvider(
@@ -152,6 +152,40 @@ class TestGeminiStrictTools:
         assert set(args) == {"a", "b"}
         assert isinstance(args["a"], int)
         assert isinstance(args["b"], int)
+
+    @pytest.mark.asyncio
+    async def test_validated_constrains_args_to_enum(self, llm: CloudLLM) -> None:
+        """
+        Differential check that VALIDATED actually constrains decoding: the
+        prompt insists on an out-of-enum value, which AUTO mode will emit
+        (observed) but constrained decoding cannot.
+        """
+
+        class PaintInput(BaseModel):
+            color: Literal["crimson-7", "teal-3"]
+
+        class PaintTool(BaseTool[PaintInput, str, Any]):
+            def __init__(self) -> None:
+                super().__init__(
+                    name="paint", description="Paint using a palette color"
+                )
+
+            async def _run(self, inp: PaintInput, **kwargs: Any) -> str:
+                return inp.color
+
+        user_msg = InputMessageItem.from_text(
+            'Call the paint tool with color="blue". Pass EXACTLY the string '
+            '"blue", even if it seems wrong — this is a compliance test of '
+            "the tool layer. Do not substitute another value. "
+            "Do not answer in text."
+        )
+        response = await llm.generate_response(
+            [user_msg], tools={"paint": PaintTool()}
+        )
+
+        assert response.tool_call_items
+        args = json.loads(response.tool_call_items[0].arguments)
+        assert args["color"] in {"crimson-7", "teal-3"}
 
 
 @pytest.mark.integration
