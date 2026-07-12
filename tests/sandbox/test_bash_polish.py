@@ -459,8 +459,8 @@ async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
     assert result_path.suffix == ".result"
     assert result_path.read_text().count("A") >= 5000
 
-    # ...and <output_file> is the streamed .log, which also holds the full output.
-    log_match = _re.search(r"<output_file>(.+?)</output_file>", note, _re.DOTALL)
+    # ...and <log_file> is the streamed .log, which also holds the full output.
+    log_match = _re.search(r"<log_file>(.+?)</log_file>", note, _re.DOTALL)
     assert log_match is not None
     log_text = _Path(log_match.group(1).strip()).read_text()
     assert log_text.count("A") == 5000
@@ -485,7 +485,7 @@ async def test_progress_log_appends_deltas(tmp_path: Path) -> None:
 
     await asyncio.sleep(0.3)  # AAAA emitted, BBBB not yet
     await _flush(mgr, ctx)
-    log = _Path(mgr.get(task_id).log_path or "")
+    log = _Path(mgr._tasks[task_id].log_path or "")  # pyright: ignore[reportPrivateUsage]
     first = log.read_text()
     assert "AAAA" in first
     assert "BBBB" not in first
@@ -516,7 +516,7 @@ async def test_nonblocking_task_bubbles_stream_events(tmp_path: Path) -> None:
         "echo streamed && sleep 0.4",
     )
     assert task_id is not None
-    assert mgr.get(task_id).blocks_final_answer is False  # non-blocking opt-out
+    assert mgr._tasks[task_id].blocks_final_answer is False  # pyright: ignore[reportPrivateUsage]  # non-blocking opt-out
 
     await mgr.wait_idle()
     events = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
@@ -538,11 +538,10 @@ async def test_deadline_note_points_at_log(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    log_path = loop.agent_ctx.bg_tasks.get(task_id).log_path
+    log_path = loop.agent_ctx.bg_tasks._tasks[task_id].log_path  # pyright: ignore[reportPrivateUsage]
     assert log_path is not None  # resolved eagerly at sideline, before any flush
     assert ".grasp/tasks" in log_path
     assert log_path in note  # the note hands the model the exact path
-    assert "Read or Grep" in note
 
     await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
     """
@@ -893,9 +892,9 @@ async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
     assert recs
     assert all(r.status == TaskStatus.COMPLETED for r in recs)
 
-    # flush_delivered (called after the agent checkpoint) flips the records,
+    # flush_flips (called after the agent checkpoint) flips the records,
     # so a resume won't re-inject a result the agent already saw.
-    await loop.agent_ctx.bg_tasks.flush_delivered(ctx=ctx)
+    await loop.agent_ctx.bg_tasks.flush_flips(ctx=ctx)
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
     assert all(r.status == TaskStatus.DELIVERED for r in recs)
 
@@ -978,9 +977,9 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
 
     # Simulate a crash: drop the in-flight task without finalizing the record.
     for pt in list(loop.agent_ctx.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]
-        pt.task.cancel()
+        pt.consumer.cancel()
         with _contextlib.suppress(asyncio.CancelledError):
-            await pt.task
+            await pt.consumer
 
     transcript = LLMAgentTranscript()
     transcript.messages = [InputMessageItem.from_text("sys", role="system")]
@@ -992,7 +991,7 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     joined = "\n".join(str(m) for m in transcript.messages)
     assert "Resumed from a checkpoint" in joined  # framing
     assert "interrupted" in joined
-    assert "output_file" in joined  # points the agent at the log
+    assert "log_file" in joined  # points the agent at the log
     assert ".grasp/tasks" in joined
     assert "ran_for" in joined  # elapsed
 

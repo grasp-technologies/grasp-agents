@@ -5,13 +5,13 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from grasp_agents.durability.context_serialization import ContextKind
-from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent
+from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent, StopReason
 from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 14
+CURRENT_SCHEMA_VERSION: int = 15
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -148,6 +148,22 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "or resave the session); v13 code resuming a v14 session skips the "
         "new guards."
     ),
+    15: (
+        "AgentCheckpoint gained ``stop_reason`` — how the run that saved this "
+        "head ended (final_answer, max_turns, or timeout); None on mid-run, "
+        "resident, and rollback heads. "
+        "AgentCheckpointLocation.AFTER_FORCED_FINAL_ANSWER was collapsed into "
+        "AFTER_FINAL_ANSWER: location now names only the loop save-point, and "
+        "forced-ness moved to stop_reason. "
+        "TaskRecord.delivered_msg_count was renamed to "
+        "note_transcript_pos (the completion note's 1-based transcript position), "
+        "and AgentContextState.deferred_killed to "
+        "deferred_cancelled. v14 records load fine (stop_reason defaults "
+        "None; a v14 DELIVERED task record loses its rewind horizon, so a "
+        "rollback no longer re-injects its note; a v14 head's unflushed "
+        "deferred flips are dropped) EXCEPT a head parked at "
+        "after_forced_final_answer (rerun or resave the session)."
+    ),
 }
 """
 One-line summary per schema version. The current version MUST have an entry.
@@ -177,11 +193,14 @@ class AgentCheckpointLocation(Enum):
     """How a checkpoint head came to be — its loop save-point, or a rollback."""
 
     AFTER_INPUT = "after_input"
+
     AFTER_TOOL_RESULT = "after_tool_result"
+
+    # The run ended with an answer — the model's own stop, or one
+    # force-generated at budget/deadline exhaustion; the head's
+    # ``stop_reason`` records which.
     AFTER_FINAL_ANSWER = "after_final_answer"
-    # A force-generated final answer: the turn budget (MAX_TURNS) or the run's
-    # wall-clock deadline (TIMEOUT) was exhausted.
-    AFTER_FORCED_FINAL_ANSWER = "after_forced_final_answer"
+
     # A resident agent's answer to one inbox message (its tool-loop turns in
     # between checkpoint as AFTER_TOOL_RESULT): the per-message analog of
     # AFTER_FINAL_ANSWER for an agent that never ends its run. Persists the
@@ -189,12 +208,14 @@ class AgentCheckpointLocation(Enum):
     # drives an fs-snapshot so a restored transcript and filesystem stay in
     # step.
     AFTER_RESIDENT_ANSWER = "after_resident_answer"
+
     # Not a loop save-point: the pre-rollback head re-marked by
     # rollback_to_step before its first durable side effect (``current.step``
     # carries the target). A resume finding this completes the rollback —
     # the filesystem/mailbox may already be rewound under the old transcript.
     # Committing the ROLLED_BACK head overwrites (atomically clears) it.
     ROLLING_BACK = "rolling_back"
+
     # Not a loop save-point: a synthetic head written by rollback_to_step,
     # parked at the start of the rolled-back-to step.
     ROLLED_BACK = "rolled_back"
@@ -219,26 +240,34 @@ class AgentContextState(BaseModel):
     read_file_state: dict[str, float] = Field(default_factory=dict[str, float])
     dotfile_overrides: list[str] = Field(default_factory=list[str])
     shell_cwd: str | None = None
+
+    # Deferred DELIVERED flips for task results the transcript holds but no
+    # checkpoint has persisted yet (each value is a ``TaskDeliveredFlip``).
     deferred_delivered: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
-    # Deferred CANCELLED flips for tasks killed by a rewind, persisted so a
-    # crash before their flush cannot resurrect the killed tasks on resume:
-    # the same head that raises ``task_launch_seq`` past a killed launch (which
-    # defeats the resume orphan guard) also carries the kill itself.
-    deferred_killed: dict[str, dict[str, Any]] = Field(
+
+    # Deferred CANCELLED flips for tasks cancelled by a rewind, persisted so a
+    # crash before their flush cannot resurrect the cancelled tasks on resume:
+    # the same head that raises ``task_launch_seq`` past a cancelled launch
+    # (which defeats the resume orphan guard) also carries the cancellation
+    # itself. Each value is a ``TaskCancelledFlip``.
+    deferred_cancelled: dict[str, dict[str, Any]] = Field(
         default_factory=dict[str, dict[str, Any]]
     )
+
     # High-water background-task launch seq at this boundary: every task
     # launched by then has ``launch_seq <= task_launch_seq``. A rewind to this
     # boundary cancels tasks above it (their launching calls left the
     # transcript); resume dead-letters task records above it.
     task_launch_seq: int = 0
+
     # High-water inbox consumption seq at this boundary: every message absorbed
     # by then has ``seq <= mail_consumption_seq``. A step rollback to this
     # boundary voids acked mailbox records above it (their turns left the
     # transcript) — never re-delivered; senders are notified instead.
     mail_consumption_seq: int = 0
+
     ipy_exec_context_id: str | None = None
     nb_exec_context_id: str | None = None
 
@@ -257,16 +286,18 @@ class StepWatermark(BaseModel):
     message_count: int = 0
     # The message-log file ``message_count`` indexes. Meaningful only on a
     # head's ``current`` — stamped by the checkpoint serializers, never by
-    # callers. Rollback boundaries leave it defaulted: the log is append +
-    # suffix-truncate + content-preserving rewrite, so a boundary's
-    # ``message_count`` stays a valid prefix of whatever version is live.
+    # callers (rollback boundaries leave it defaulted).
     log_version: int = 0
+
     turn: int = 0
     step: int | None = None
+
     prompt_cache_key: str | None = None
+
     # Filesystem ref (restored via the environment's SnapshotCapable seam); the
     # rest of the session-resource state rides in ``agent_ctx_state``.
     fs_snapshot_ref: str | None = None
+
     agent_ctx_state: AgentContextState = Field(default_factory=AgentContextState)
 
 
@@ -343,9 +374,10 @@ class AgentCheckpoint(ProcessorCheckpoint):
     rewinds to the *start* of a step (its input not yet present). Both kinds
     carry the read-before-write ledger and kernel-context ids (in their
     ``agent_ctx_state``). ``step_watermarks`` is empty for chat / untracked
-    deliveries. ``output`` and ``location`` describe the current head only —
-    the step's cached answer and where in the loop it was saved — so they live
-    here rather than on the rewind coordinate.
+    deliveries. ``output``, ``location``, and ``stop_reason`` describe the
+    current head only — the step's cached answer, where in the loop it was
+    saved, and how the run ended — so they live here rather than on the
+    rewind coordinate.
     """
 
     # The transcript is persisted out-of-band as an append-only message log
@@ -378,8 +410,14 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # reads it. ``None`` while a step is incomplete.
     output: str | None = None
 
-    # Where in the agent loop this head was saved (diagnostics only).
+    # Where in the agent loop this head was saved, or a rollback-protocol
+    # marker.
     location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT
+
+    # How the run that saved this head ended: the model's own final answer,
+    # or one force-generated at turn-budget/deadline exhaustion. ``None`` on
+    # mid-run, resident, and rollback heads.
+    stop_reason: StopReason | None = None
 
 
 class WorkflowCheckpoint(ProcessorCheckpoint):

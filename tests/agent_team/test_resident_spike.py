@@ -220,7 +220,7 @@ async def test_bg_completion_while_idle_wakes_resident_loop() -> None:
     assert "<task_notification>" in transcript_text
 
 
-async def test_resident_reply_durable_and_message_released() -> None:
+async def test_resident_answer_durable_and_message_released() -> None:
     # A resident's reply turn is checkpointed (so it survives a restart) and the
     # peer message it consumed is released only once that is durable: acked (gone
     # from the inbox) and recorded processed (so a re-delivery would be deduped).

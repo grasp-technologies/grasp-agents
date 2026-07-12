@@ -691,7 +691,7 @@ class TestMessageEvents:
             "<tool_name>Bash</tool_name>\n<status>interrupted</status>\n"
             "<ran_for>2s</ran_for>\n"
             "<error>\nSession restarted before completion\n</error>\n"
-            "<output_file>\n.grasp/tasks/x.log\n</output_file>\n"
+            "<log_file>\n.grasp/tasks/x.log\n</log_file>\n"
             "</task_notification>"
         )
         msg = InputMessageItem.from_text(text, role="user")
@@ -711,10 +711,15 @@ class TestMessageEvents:
 
     @pytest.mark.asyncio
     async def test_resume_framing_shown(self):
+        from grasp_agents.context.system_reminder import (
+            SESSION_RESUMED_SUBJECT,
+            wrap_in_system_reminder,
+        )
+
         ec, buf = _make_console()
-        text = (
-            "<session_resumed>\nSession resumed from a checkpoint — state was "
-            "reconstructed.\n</session_resumed>"
+        text = wrap_in_system_reminder(
+            "Session resumed from a checkpoint — state was reconstructed.",
+            subject=SESSION_RESUMED_SUBJECT,
         )
         msg = InputMessageItem.from_text(text, role="user")
         await _collect(ec, [UserMessageEvent(data=msg, source="agent", exec_id="c")])

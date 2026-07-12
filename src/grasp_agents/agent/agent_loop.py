@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel
 
+from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
@@ -60,8 +61,8 @@ from .loop_state import (
     NextStep,
     NextStepContinue,
     NextStepForceFinalAnswer,
-    NextStepForceResidentReply,
-    NextStepResidentReply,
+    NextStepForceResidentAnswer,
+    NextStepResidentAnswer,
     NextStepRunTools,
     NextStepStop,
     decide_next_step,
@@ -103,6 +104,7 @@ class CheckpointCallback(Protocol):
         turn: int = ...,
         location: AgentCheckpointLocation = ...,
         output: str | None = ...,
+        stop_reason: StopReason | None = ...,
     ) -> None: ...
 
 
@@ -296,11 +298,18 @@ class AgentLoop[CtxT]:
         return self._cw
 
     async def checkpoint(
-        self, *, turn: int, location: AgentCheckpointLocation, output: str | None = None
+        self,
+        *,
+        turn: int,
+        location: AgentCheckpointLocation,
+        output: str | None = None,
+        stop_reason: StopReason | None = None,
     ) -> None:
         """Persist session state if a checkpoint callback is configured."""
         if self.checkpoint_callback:
-            await self.checkpoint_callback(turn=turn, location=location, output=output)
+            await self.checkpoint_callback(
+                turn=turn, location=location, output=output, stop_reason=stop_reason
+            )
 
     # --- Hook dispatch ---
 
@@ -822,7 +831,9 @@ class AgentLoop[CtxT]:
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         user_message = InputMessageItem.from_text(
-            "Exceeded the maximum number of turns: provide a final answer now!",
+            wrap_in_system_reminder(
+                "Exceeded the maximum number of turns: provide a final answer now!"
+            ),
             role="user",
         )
         self._agent_ctx.transcript.update([user_message])
@@ -1189,6 +1200,7 @@ class AgentLoop[CtxT]:
             turn=self.turn,
             location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
             output=self._final_answer,
+            stop_reason=step.stop_reason,
         )
 
         yield TurnEndEvent(
@@ -1232,8 +1244,9 @@ class AgentLoop[CtxT]:
 
         await self.checkpoint(
             turn=self.turn,
-            location=AgentCheckpointLocation.AFTER_FORCED_FINAL_ANSWER,
+            location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
             output=self._final_answer,
+            stop_reason=stop_reason,
         )
 
         yield TurnEndEvent(
@@ -1258,13 +1271,13 @@ class AgentLoop[CtxT]:
                 self.max_turns,
             )
 
-    async def _handle_resident_reply(
-        self, step: NextStepResidentReply, *, exec_id: str
+    async def _handle_resident_answer(
+        self, step: NextStepResidentAnswer, *, exec_id: str
     ) -> AsyncIterator[Event[Any]]:
         """
-        ``NextStepResidentReply``: a resident produced its reply to the current
+        ``NextStepResidentAnswer``: a resident produced its answer to the current
         message and the open inbox recycles the loop instead of stopping. Persist
-        the turn — a resident reply otherwise never checkpoints, so the answer
+        the turn — a resident answer otherwise never checkpoints, so the answer
         would be re-generated on resume — which also releases any message this turn
         absorbed (the ack flush in :meth:`checkpoint`). Non-terminal: the loop
         continues and parks for the next message (the tail is now an answer, so it
@@ -1283,7 +1296,7 @@ class AgentLoop[CtxT]:
             data=TurnEndInfo(turn=self.turn, had_tool_calls=False),
         )
 
-    async def _handle_force_resident_reply(
+    async def _handle_force_resident_answer(
         self,
         response: Response,
         *,
@@ -1291,7 +1304,7 @@ class AgentLoop[CtxT]:
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
         """
-        ``NextStepForceResidentReply``: a resident burned its per-message turn
+        ``NextStepForceResidentAnswer``: a resident burned its per-message turn
         budget without an answer it can return. The resident analog of
         :meth:`_handle_force_final_answer`: close dangling tool calls, force-generate
         a final answer for this message, persist it (``AFTER_RESIDENT_ANSWER``,
@@ -1300,7 +1313,7 @@ class AgentLoop[CtxT]:
         force path).
         """
         logger.warning(
-            "Resident '%s' hit its per-message turn budget (%s) — forcing a reply "
+            "Resident '%s' hit its per-message turn budget (%s) — forcing an answer "
             "and moving on to the next message.",
             self.agent_name,
             self.max_turns,
@@ -1588,12 +1601,12 @@ class AgentLoop[CtxT]:
                     yield event
                 return
 
-            if isinstance(step, NextStepResidentReply):
-                async for event in self._handle_resident_reply(step, exec_id=exec_id):
+            if isinstance(step, NextStepResidentAnswer):
+                async for event in self._handle_resident_answer(step, exec_id=exec_id):
                     yield event
 
-            if isinstance(step, NextStepForceResidentReply):
-                async for event in self._handle_force_resident_reply(
+            if isinstance(step, NextStepForceResidentAnswer):
+                async for event in self._handle_force_resident_answer(
                     response,
                     exec_id=exec_id,
                     extra_llm_settings=extra_llm_settings,

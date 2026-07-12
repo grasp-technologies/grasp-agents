@@ -1,4 +1,5 @@
 from enum import StrEnum, auto
+from typing import NotRequired, TypedDict
 
 from .checkpoints import PersistedRecord
 
@@ -9,6 +10,28 @@ class TaskStatus(StrEnum):
     FAILED = auto()
     CANCELLED = auto()
     DELIVERED = auto()  # Result/error was injected into parent memory
+
+
+class TaskDeliveredFlip(TypedDict):
+    """
+    A deferred DELIVERED update for a ``TaskRecord``: the fields
+    ``BackgroundTaskManager.flush_flips`` writes alongside the DELIVERED
+    status once the transcript carrying the task's note is durable.
+    """
+
+    result: NotRequired[str | None]
+    error: NotRequired[str | None]
+    note_transcript_pos: NotRequired[int]
+
+
+class TaskCancelledFlip(TypedDict):
+    """
+    A deferred CANCELLED update for a task cancelled by a transcript rewind,
+    written alongside the CANCELLED status once the rewound transcript is
+    durable.
+    """
+
+    error: str
 
 
 class TaskRecord(PersistedRecord):
@@ -38,11 +61,12 @@ class TaskRecord(PersistedRecord):
     result: str | None = None
     error: str | None = None
 
-    # Transcript length right after this task's completion note was appended —
-    # the note's rewind horizon: a rollback that truncates below it re-injects
-    # the note (``BackgroundTaskManager.redeliver_after``). Set when the
-    # record flips DELIVERED.
-    delivered_msg_count: int | None = None
+    # 1-based transcript position of this task's completion note (== the
+    # transcript length right after the note was appended) — the note's rewind
+    # horizon: a rollback that cuts the transcript below it re-injects the
+    # note (``BackgroundTaskManager.redeliver_after``). Set when the record
+    # flips DELIVERED.
+    note_transcript_pos: int | None = None
 
     # The agent-readable ``.grasp/tasks`` log file holding this task's full
     # streamed output (the single source of truth for it; ``None`` when no file

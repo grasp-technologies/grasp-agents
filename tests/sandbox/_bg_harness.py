@@ -109,8 +109,8 @@ async def poll_until_done(
     Leaves the task in place so a later ``drain`` still delivers its note.
     """
     for _ in range(tries):
-        pt = mgr.get(task_id)
-        if pt.task.done():
+        pt = mgr._tasks[task_id]  # pyright: ignore[reportPrivateUsage]
+        if pt.consumer.done():
             text = "".join(
                 str(e.data) for e in pt.events if isinstance(e, ToolStreamEvent)
             )

@@ -64,9 +64,13 @@ class AgentInbox:
         # :meth:`LLMAgent.attach_inbox`) instead of building one per run.
         self._leased: dict[str, TeamMessage] = {}
 
-    @property
-    def transport(self) -> Transport[TeamMessage]:
-        return self._transport
+    def is_view_of(self, transport: Transport[TeamMessage]) -> bool:
+        """
+        Whether this inbox is a view over exactly ``transport`` (identity).
+        The transport itself is not exposed — session code reaches it via
+        ``SessionContext.transport``, the one canonical handle.
+        """
+        return self._transport is transport
 
     async def post(self, message: TeamMessage) -> None:
         """Deliver ``message`` through the transport (routed by its recipients)."""
@@ -120,7 +124,7 @@ class AgentInbox:
     async def flush_acks(self) -> None:
         """
         Release every leased message — the inbox counterpart to
-        :meth:`BackgroundTaskManager.flush_delivered`. Called right after the
+        :meth:`BackgroundTaskManager.flush_flips`. Called right after the
         checkpoint that persisted the turn which consumed them: the messages are
         now durably absorbed into the log, so removing them from the mailbox can no
         longer strand them (resume re-derives the owed response from the log). A
@@ -139,7 +143,7 @@ class AgentInbox:
         In-memory only — the messages stay pending in the mailbox. A cold
         reload leaves them there for re-delivery (their takes were never
         checkpointed); a step rollback voids them instead (the caller acks
-        and notifies — see ``LLMAgent._rollback_mailbox``). NOT for a
+        and notifies — see ``AgentContext.rewind``). NOT for a
         failed-run settle: settling keeps the absorbed message's turn, and
         its lease is what prevents a duplicate re-take.
         """

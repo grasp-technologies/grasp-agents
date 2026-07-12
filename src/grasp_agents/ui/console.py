@@ -24,6 +24,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from grasp_agents.context.system_reminder import (
+    SESSION_RESUMED_SUBJECT,
+    match_system_reminder_subject,
+)
 from grasp_agents.printer import render_payload
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
@@ -330,7 +334,10 @@ class EventConsole:
             # Framework notices (task results, resume framing) always show and
             # are rendered specially by render_event; regular user input is on
             # by default but can be turned off.
-            is_notice = "<task_notification>" in text or "<session_resumed>" in text
+            is_notice = (
+                "<task_notification>" in text
+                or match_system_reminder_subject(text) == SESSION_RESUMED_SUBJECT
+            )
             if is_notice or self.show_input_messages:
                 self._on_user_message(event)
 
