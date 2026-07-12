@@ -45,6 +45,7 @@ from grasp_agents.types.events import (
     UserMessageEvent,
 )
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
+from grasp_agents.utils.errors import format_error_chain
 
 from .llm_agent_transcript import LLMAgentTranscript
 from .task_progress import (
@@ -424,8 +425,10 @@ async def _consume(
         # The task errored (e.g. a sub-agent that could not resume). Record it as
         # a clean failure: don't leak a dangling task exception, and don't leave
         # a RUNNING record that a later resume would re-spawn forever.
-        logger.warning("Background task errored: %r", exc)
-        err = ToolErrorEvent(data=ToolErrorInfo(tool_name="", error=f"{exc}"))
+        logger.warning("Background task errored", exc_info=exc)
+        err = ToolErrorEvent(
+            data=ToolErrorInfo(tool_name="", error=format_error_chain(exc))
+        )
         events.append(err)
         error = err.data
 
@@ -545,6 +548,10 @@ class BackgroundTaskManager[CtxT]:
     ) -> None:
         self._agent_name = agent_name
 
+        # Stamped by the owning agent (with ``path``): False opts this
+        # agent's ``TaskRecord``s out of the checkpoint store.
+        self.durability_enabled: bool = True
+
         self._transcript = transcript
         self._tools = tools
         self._tasks: dict[str, BackgroundTask] = {}
@@ -625,7 +632,11 @@ class BackgroundTaskManager[CtxT]:
     def _task_store_key(self, ctx: SessionContext[CtxT], call_id: str) -> str | None:
         """Store key for a backgrounded call's ``TaskRecord`` (``None`` if none)."""
         child_path = make_tool_call_path(self.path, call_id)
-        if ctx.checkpoint_store is None or child_path is None:
+        if (
+            ctx.checkpoint_store is None
+            or child_path is None
+            or not self.durability_enabled
+        ):
             return None
         return make_store_key(ctx.session_key, CheckpointKind.TASK, child_path)
 

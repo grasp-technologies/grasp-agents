@@ -26,6 +26,7 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         path: list[str] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        durability_enabled: bool = True,
     ) -> None:
         super().__init__(
             subprocs=subprocs,
@@ -37,6 +38,7 @@ class SequentialWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
             path=path,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            durability_enabled=durability_enabled,
         )
 
         for prev_proc, proc in pairwise(subprocs):

@@ -1,7 +1,7 @@
 """Tool error handling: timeout, on_error hook, concurrent failure isolation."""
 
 import asyncio
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from pydantic import BaseModel
@@ -51,6 +51,33 @@ class FailingTool(BaseTool[AddInput, int, Any]):
     ) -> int:
         msg = "Intentional failure"
         raise RuntimeError(msg)
+
+
+class ChainedFailureTool(BaseTool[AddInput, int, Any]):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(
+            name="chained", description="Fails with a cause chain", **kwargs
+        )
+
+    async def _run(
+        self,
+        inp: AddInput,
+        *,
+        ctx: SessionContext[Any] | None = None,
+        exec_id: str | None = None,
+        progress_callback: ToolProgressCallback | None = None,
+        path: list[str] | None = None,
+        agent_ctx: Any = None,
+    ) -> int:
+        def boom() -> NoReturn:
+            msg = "bad request"
+            raise ValueError(msg)
+
+        try:
+            boom()
+        except ValueError as err:
+            msg = "run failed"
+            raise RuntimeError(msg) from err
 
 
 class SlowTool(BaseTool[AddInput, int, Any]):
@@ -146,6 +173,15 @@ class TestToolErrorHandling:
         assert result.timed_out is True
         assert "Timed out" in result.error
         assert "0.01s" in result.error
+
+    @pytest.mark.asyncio
+    async def test_error_info_includes_cause_chain(self) -> None:
+        """A wrapper error's root cause survives into ToolErrorInfo.error."""
+        tool = ChainedFailureTool()
+        result = await tool(a=1, b=2)
+        assert isinstance(result, ToolErrorInfo)
+        assert "run failed" in result.error
+        assert "Caused by: ValueError: bad request" in result.error
 
     @pytest.mark.asyncio
     async def test_no_timeout_waits_normally(self) -> None:

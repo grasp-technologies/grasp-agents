@@ -10,6 +10,7 @@ from grasp_agents.types.events import Event, ProcPacketOutEvent, ProcPayloadOutE
 from grasp_agents.types.io import ProcName
 from grasp_agents.types.packet import Packet
 from grasp_agents.utils.callbacks import is_method_overridden
+from grasp_agents.utils.errors import format_error_chain
 from grasp_agents.utils.streaming import stream_concurrent
 
 from .processor import Processor
@@ -40,6 +41,7 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             path=path,
             tracing_enabled=subproc.tracing_enabled,
             tracing_exclude_input_fields=subproc.tracing_exclude_input_fields,
+            durability_enabled=subproc.durability_enabled,
         )
 
         self._in_type = subproc.in_type
@@ -241,7 +243,8 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                     # Failures must surface, not flow downstream as ``None``
                     # payloads; opting into ``drop_failed`` drops them instead.
                     detail = "; ".join(
-                        f"index {pending_indices[e.index]}: {e.exception!r}"
+                        f"index {pending_indices[e.index]}: "
+                        f"{format_error_chain(e.exception)}"
                         for e in merged.errors
                     )
                     raise ProcRunError(
@@ -260,6 +263,13 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
                     len(all_in_args),
                     failed,
                 )
+                for e in merged.errors:
+                    logger.warning(
+                        "ParallelProcessor %s: dropped failed copy %d",
+                        self.name,
+                        pending_indices[e.index],
+                        exc_info=e.exception,
+                    )
 
         # Emit results in input order; failed copies are either raised above
         # (default) or dropped here (drop_failed=True), never ``None`` payloads.

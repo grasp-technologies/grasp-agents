@@ -80,7 +80,9 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
                     raise ProcRunError(
                         proc_name=self.name,
                         exec_id=exec_id,
-                        message=err_message + f" after {n_attempt - 1} retries",
+                        message=err_message
+                        + f" after {n_attempt - 1} retries"
+                        + f" (caused by {type(err).__name__})",
                     ) from err
 
                 logger.warning(
@@ -117,6 +119,7 @@ class Processor[InT, OutT, CtxT](
     recipients: Sequence[ProcName] | None
     tracing_enabled: bool
     tracing_exclude_input_fields: set[str] | None
+    durability_enabled: bool
 
     def __init__(
         self,
@@ -128,6 +131,7 @@ class Processor[InT, OutT, CtxT](
         path: list[str] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        durability_enabled: bool = True,
     ) -> None:
         self._in_type: type[InT]
         self._out_type: type[OutT]
@@ -146,6 +150,7 @@ class Processor[InT, OutT, CtxT](
         self.recipients = recipients
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
+        self.durability_enabled = durability_enabled
 
         self._checkpoint_number: int = 0
         self._ctx: SessionContext[CtxT] = (
@@ -224,8 +229,11 @@ class Processor[InT, OutT, CtxT](
 
     @property
     def is_resumable(self) -> bool:
-        """True if the bound ``ctx`` has a checkpoint store wired up."""
-        return self._ctx.checkpoint_store is not None
+        """
+        True if the bound ``ctx`` has a checkpoint store wired up and this
+        processor participates in it (``durability_enabled``).
+        """
+        return self._ctx.checkpoint_store is not None and self.durability_enabled
 
     def on_adopted(
         self,
@@ -252,6 +260,7 @@ class Processor[InT, OutT, CtxT](
         """
         if parent is not None:
             self._inherit_tracing(parent)
+            self._inherit_durability(parent)
             if ctx is None:
                 ctx = getattr(parent, "ctx", None)
             if path is None:
@@ -286,6 +295,13 @@ class Processor[InT, OutT, CtxT](
             self.tracing_exclude_input_fields = (
                 self.tracing_exclude_input_fields or set()
             ) | set(parent_fields)
+
+    def _inherit_durability(self, parent: Any) -> None:
+        # Same downward restriction as tracing: a parent that opted out of
+        # the checkpoint store forces the same on every descendant (a child
+        # can't re-enable what an ancestor disabled).
+        if not getattr(parent, "durability_enabled", True):
+            self.durability_enabled = False
 
     def _propagate_to_children(self) -> None:
         """

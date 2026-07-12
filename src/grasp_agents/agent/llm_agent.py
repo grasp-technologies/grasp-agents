@@ -201,6 +201,11 @@ class LLMAgent[InT, OutT, CtxT](
         tracing_enabled: bool = True,
         # Fields to exclude from tracing input events
         tracing_exclude_input_fields: set[str] | None = None,
+        # Durable persistence on/off (this agent and its descendants). When
+        # False, the agent writes nothing to the session's checkpoint store:
+        # no transcript log, no checkpoint heads, no task records — e.g. for
+        # throwaway replicas fanned out by a ParallelProcessor.
+        durability_enabled: bool = True,
     ) -> None:
         super().__init__(
             name=name,
@@ -210,6 +215,7 @@ class LLMAgent[InT, OutT, CtxT](
             path=path,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            durability_enabled=durability_enabled,
         )
 
         # Session persistence
@@ -517,6 +523,7 @@ class LLMAgent[InT, OutT, CtxT](
             return
 
         self._agent_ctx.bg_tasks.path = self.path
+        self._agent_ctx.bg_tasks.durability_enabled = self.durability_enabled
         loop.path = self.path
         loop.ctx = self._ctx
 
@@ -847,7 +854,11 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _fs_snapshot_due(self, location: AgentCheckpointLocation) -> bool:
         mode = self._ctx.fs_snapshot_policy
-        if mode == "off" or not self._is_session_writer():
+        if (
+            mode == "off"
+            or not self.durability_enabled
+            or not self._is_session_writer()
+        ):
             return False
 
         if not isinstance(self._ctx.environment, SnapshotCapable):
@@ -889,12 +900,15 @@ class LLMAgent[InT, OutT, CtxT](
         # boundary under ``"final"``); a cold resume detects that and injects
         # a filesystem-restored notice (see ``load_checkpoint``). Written by
         # the session's owner only (see ``_is_session_writer``).
-        if self._is_session_writer():
-            await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
-        elif self._ctx.session_writer is None and self._ctx.session_record_enabled:
-            # Every agent is contained and none has claimed: the enabled
-            # session persistence is silently inert — say so, once.
-            self._ctx.warn_unowned_session_record()
+        if self.durability_enabled:
+            if self._is_session_writer():
+                await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
+            elif (
+                self._ctx.session_writer is None and self._ctx.session_record_enabled
+            ):
+                # Every agent is contained and none has claimed: the enabled
+                # session persistence is silently inert — say so, once.
+                self._ctx.warn_unowned_session_record()
 
         agent_ctx_state = self._agent_ctx.snapshot()
         if fs_snapshot_ref is None:
