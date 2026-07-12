@@ -27,6 +27,7 @@ from grasp_agents.types.events import (
     ToolErrorInfo,
     ToolStreamEvent,
 )
+from grasp_agents.utils.errors import format_error_chain
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 
 if TYPE_CHECKING:
@@ -154,6 +155,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
             self.untrusted_output = untrusted_output
         self.tracing_enabled = tracing_enabled
         self.tracing_exclude_input_fields = tracing_exclude_input_fields
+        self.durability_enabled = True
         self._llm_in_type: type[BaseModel] | None = None
 
     def on_adopted(self, parent: "Any") -> None:
@@ -161,9 +163,11 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         Lifecycle hook fired when this tool is attached to a parent
         :class:`Processor`.
 
-        Inherits the parent's tracing settings (downward restriction): if the
-        parent disables tracing the tool's spans are disabled too, and a field
-        the parent masks stays masked in the tool's spans (union). Subclasses
+        Inherits the parent's tracing and durability settings (downward
+        restriction): if the parent disables tracing the tool's spans are
+        disabled too, a field the parent masks stays masked in the tool's
+        spans (union), and a parent that opted out of the checkpoint store
+        forces the same on any processor this tool dispatches. Subclasses
         like :class:`ProcessorTool` override to additionally forward adoption
         onto a wrapped processor.
         """
@@ -174,6 +178,8 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
             self.tracing_exclude_input_fields = (
                 self.tracing_exclude_input_fields or set()
             ) | set(parent_fields)
+        if not getattr(parent, "durability_enabled", True):
+            self.durability_enabled = False
 
     @property
     def in_type(self) -> type[InT]:
@@ -232,9 +238,11 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
     # --- Error handling ---
 
     def _on_error_impl(self, error: Exception) -> ToolErrorInfo:
-        logger.warning("Tool '%s' failed: %s", self.name, error)
+        logger.warning("Tool '%s' failed: %s", self.name, error, exc_info=error)
 
-        return ToolErrorInfo(tool_name=self.name, error=str(error), timed_out=False)
+        return ToolErrorInfo(
+            tool_name=self.name, error=format_error_chain(error), timed_out=False
+        )
 
     def _on_error(self, error: Exception) -> ToolErrorInfo:
         if isinstance(error, asyncio.TimeoutError):

@@ -20,16 +20,24 @@ class CheckpointPersistMixin:
     Adds checkpoint key composition + load/save to a session-scoped object.
 
     Subclasses set ``_checkpoint_kind`` (``None`` disables persistence)
-    and maintain ``_path`` / ``_checkpoint_number``.
+    and maintain ``_path`` / ``_checkpoint_number``. Setting
+    ``durability_enabled`` to False opts the object out of the checkpoint
+    store entirely — every load/save below no-ops.
     """
 
     _checkpoint_kind: ClassVar[CheckpointKind | None] = None
+
+    durability_enabled: bool = True
 
     _path: list[str]
     _checkpoint_number: int
 
     def _checkpoint_store_key(self, ctx: SessionContext[Any]) -> str | None:
-        if ctx.checkpoint_store is None or self._checkpoint_kind is None:
+        if (
+            ctx.checkpoint_store is None
+            or self._checkpoint_kind is None
+            or not self.durability_enabled
+        ):
             return None
         return make_store_key(ctx.session_key, self._checkpoint_kind, self._path)
 

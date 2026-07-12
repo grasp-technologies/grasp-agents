@@ -54,6 +54,7 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
     ResponseRetrying,
 )
+from grasp_agents.utils.errors import format_error_chain
 from grasp_agents.utils.streaming import stream_concurrent
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
@@ -777,12 +778,15 @@ class AgentLoop[CtxT]:
                 for err in merged.errors:
                     i = immediate[err.index][0]
                     tool_name = immediate[err.index][2].name
-                    outputs[i] = f"Tool '{tool_name}' failed: {err.exception}"
+                    outputs[i] = (
+                        f"Tool '{tool_name}' failed: "
+                        f"{format_error_chain(err.exception)}"
+                    )
                     logger.warning(
-                        "Tool '%s' (call index %d) failed: %r",
+                        "Tool '%s' (call index %d) failed",
                         tool_name,
                         i,
-                        err.exception,
+                        exc_info=err.exception,
                     )
 
             # Collect backgroundable results — each already raced its own

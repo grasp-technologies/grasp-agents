@@ -31,6 +31,7 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
         path: list[str] | None = None,
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
+        durability_enabled: bool = True,
     ) -> None:
         if len(subprocs) < 2:
             raise WorkflowConstructionError("At least two subprocessors are required")
@@ -72,6 +73,7 @@ class WorkflowProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT], ABC):
             path=path,
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
+            durability_enabled=durability_enabled,
         )
 
         self._in_type = start_proc.in_type
