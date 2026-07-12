@@ -31,12 +31,13 @@ from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import InMemoryCheckpointStore
+from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
-from grasp_agents.types.events import TurnEndEvent, TurnStartEvent
+from grasp_agents.types.events import StopReason, TurnEndEvent, TurnStartEvent
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -246,6 +247,76 @@ class TestForceFinalAnswerSingleCommit:
         # each); the forced call must not be double-counted.
         usage = ctx.usage_tracker.total_usage
         assert usage.input_tokens == 20
+
+
+# ---------------------------------------------------------------------------
+# Persisted head records how the run ended
+# ---------------------------------------------------------------------------
+
+
+class TestHeadStopReason:
+    @pytest.mark.asyncio
+    async def test_clean_stop_persists_final_answer_reason(self) -> None:
+        store = InMemoryCheckpointStore()
+        agent, _ = _make_agent(
+            [_text_response("answer")], session_key="sr1", store=store
+        )
+        await agent.run("question")
+
+        head = await load_agent_checkpoint(store, "sr1/agent/test_agent")
+        assert head is not None
+        assert head.location is AgentCheckpointLocation.AFTER_FINAL_ANSWER
+        assert head.stop_reason is StopReason.FINAL_ANSWER
+
+    @pytest.mark.asyncio
+    async def test_forced_stop_persists_max_turns_reason(self) -> None:
+        store = InMemoryCheckpointStore()
+        # The over-budget turn must NOT be a final answer (a clean stop wins
+        # then): a second tool call forces the answer via a third LLM call.
+        agent, _ = _make_agent(
+            [
+                _tool_call_response("echo", '{"text": "x"}', "c1"),
+                _tool_call_response("echo", '{"text": "y"}', "c2"),
+                _text_response("forced final"),
+            ],
+            tools=[_EchoTool()],
+            max_turns=1,
+            session_key="sr2",
+            store=store,
+        )
+        await agent.run("go")
+
+        head = await load_agent_checkpoint(store, "sr2/agent/test_agent")
+        assert head is not None
+        assert head.location is AgentCheckpointLocation.AFTER_FINAL_ANSWER
+        assert head.stop_reason is StopReason.MAX_TURNS
+
+    @pytest.mark.asyncio
+    async def test_mid_run_head_has_no_stop_reason(self) -> None:
+        store = InMemoryCheckpointStore()
+        agent, _ = _make_agent(
+            [
+                _tool_call_response("echo", '{"text": "x"}', "c1"),
+                _text_response("answer"),
+            ],
+            tools=[_EchoTool()],
+            session_key="sr3",
+            store=store,
+        )
+
+        seen: list[tuple[AgentCheckpointLocation, StopReason | None]] = []
+
+        async for event in agent.run_stream("go"):
+            if isinstance(event, TurnEndEvent):
+                head = await load_agent_checkpoint(store, "sr3/agent/test_agent")
+                assert head is not None
+                seen.append((head.location, head.stop_reason))
+
+        assert (AgentCheckpointLocation.AFTER_TOOL_RESULT, None) in seen
+        assert seen[-1] == (
+            AgentCheckpointLocation.AFTER_FINAL_ANSWER,
+            StopReason.FINAL_ANSWER,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +636,7 @@ class TestDeadlineBackgroundedOutcomePersisted:
         # Wait for the sidelined task to finish, without draining.
         pending = list(mgr._tasks.values())
         assert pending
-        await asyncio.gather(*(pt.task for pt in pending))
+        await asyncio.gather(*(pt.consumer for pt in pending))
 
         keys = await store.list_keys("s1/task/")
         assert keys

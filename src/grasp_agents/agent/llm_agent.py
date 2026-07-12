@@ -67,6 +67,7 @@ from grasp_agents.types.errors import ProcInputValidationError
 from grasp_agents.types.events import (
     Event,
     ProcPayloadOutEvent,
+    StopReason,
     SystemMessageEvent,
     UserMessageEvent,
 )
@@ -80,6 +81,7 @@ from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 from .agent_context import AgentContext
 from .agent_loop import AgentLoop
+from .background_tasks import make_background_tasks_section
 from .context_window import ContextWindowManager
 from .llm_agent_transcript import LLMAgentTranscript
 from .tool_decision import ToolCallDecision
@@ -351,6 +353,12 @@ class LLMAgent[InT, OutT, CtxT](
             )
         if enable_skills:
             self._prompt_builder.add_system_prompt_section(make_skills_section())
+
+        # Always registered: the compute reads the toolset live off the call's
+        # agent_ctx and renders nothing while no backgroundable tool is
+        # attached, so tools wired after construction (e.g. by a team) are
+        # picked up at the next run entry.
+        self._prompt_builder.add_system_prompt_section(make_background_tasks_section())
 
         if mcp_clients:
             from grasp_agents.mcp.section import (  # noqa: PLC0415
@@ -651,7 +659,7 @@ class LLMAgent[InT, OutT, CtxT](
 
         transport = self._ctx.transport
         inbox = self._agent_ctx.inbox
-        if inbox is None or inbox.transport is not transport:
+        if inbox is None or not inbox.is_view_of(transport):
             # A resident's human turns are rollback anchors: the boundary is
             # archived at the inbox take, before the message is stamped or
             # appended, so a rollback to it voids the message itself.
@@ -854,7 +862,6 @@ class LLMAgent[InT, OutT, CtxT](
 
         return location in {
             AgentCheckpointLocation.AFTER_FINAL_ANSWER,
-            AgentCheckpointLocation.AFTER_FORCED_FINAL_ANSWER,
             AgentCheckpointLocation.AFTER_RESIDENT_ANSWER,
         }
 
@@ -864,6 +871,7 @@ class LLMAgent[InT, OutT, CtxT](
         turn: int = 0,
         output: str | None = None,
         location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT,
+        stop_reason: StopReason | None = None,
     ) -> None:
         """Persist current conversation state to the store."""
         # Snapshot the filesystem first so the ref describes it as of this
@@ -912,6 +920,7 @@ class LLMAgent[InT, OutT, CtxT](
             folds=list(self._cw.folds),
             output=output,
             location=location,
+            stop_reason=stop_reason,
         )
         await self._serialize_agent_checkpoint(self._ctx, checkpoint)
 
@@ -921,7 +930,7 @@ class LLMAgent[InT, OutT, CtxT](
         # The persisted transcript now contains any delivered background-task
         # notes — only now is it safe to flip their durable records to
         # DELIVERED.
-        await self._agent_ctx.bg_tasks.flush_delivered(ctx=self._ctx)
+        await self._agent_ctx.bg_tasks.flush_flips(ctx=self._ctx)
 
         # Same persist covers a resident's drained inbox message: ack it now
         # (the inbox analog of the bg-task flush) so a crash before the
@@ -948,10 +957,10 @@ class LLMAgent[InT, OutT, CtxT](
         if pruned.removed_count and self._committed is not None:
             state = self._committed.agent_ctx_state
             # Settling prunes only the trailing response round, never a
-            # delivered completion note (a user-role message before it) — the
-            # kept transcript still holds every unflushed DELIVERED flip's
-            # note, so the flips must survive the boundary restore.
-            self._agent_ctx.restore(state, keep_deferred_delivered=True)
+            # delivered completion note (a user-role message before it) — so
+            # the restore's position rule keeps every unflushed DELIVERED
+            # flip.
+            self._agent_ctx.restore(state)
 
         # An in-flight inbox message stays LEASED: the settle keeps its user
         # turn (settling never prunes user messages), so the transcript still
@@ -1015,43 +1024,30 @@ class LLMAgent[InT, OutT, CtxT](
     async def rollback_to_step(self, step: int) -> None:
         """
         Rewind the session to the start of ``step``, discarding it and every
-        later step.
+        later step — the inverse of stepped delivery (``run(..., step=...)``).
+        Truncates the transcript and its durable log to ``step``'s boundary
+        and reapplies the state captured there; afterwards the agent is
+        parked at ``step`` with a ``ROLLED_BACK`` head, so ``run(step=step)``
+        is a fresh delivery, not a cached one.
 
-        The inverse of stepped delivery (``run(..., step=...)``): truncates the
-        transcript and its durable message-log back to ``step``'s boundary,
-        resets the turn counter and cached output, and reapplies the run state
-        captured at that boundary.
-        Afterwards ``self.step`` is ``step`` (parked at its start) and the
-        persisted head is tagged ``ROLLED_BACK``, so ``run(step=step)`` is a
-        fresh delivery rather than a cached re-delivery.
+        A boundary carrying an ``fs_snapshot_ref`` also restores the
+        *session-shared* filesystem (crash-safe via
+        :meth:`SessionContext.restore_fs_snapshot`); a subagent's boundary
+        carries none, so its rollback leaves the shared filesystem — and the
+        kernels living in it — untouched. A resident's mail consumed after
+        the boundary (the anchoring human message included) is voided, never
+        re-delivered: the human supplies new input, dropped peers get a
+        resend note, never-consumed messages stay pending.
 
-        The filesystem (``ctx.environment``) is *session-shared*, so restoring
-        it is a global side effect — meaningful only for the agent that owns
-        the environment (the coordinator) — and goes through
-        :meth:`SessionContext.restore_fs_snapshot`, which re-points the
-        session checkpoint at the restored ref so a crash mid-rollback never
-        cold-resumes into the pre-rollback filesystem. A subagent's boundary
-        carries no ``fs_snapshot_ref``, so rolling one back rewinds its own
-        transcript, turn, and agent context but leaves the shared filesystem
-        (and, since kernel state lives in it, the kernels) untouched.
-
-        A resident's mailbox rewinds with it: messages consumed after the
-        boundary — the anchoring human message included — are voided, never
-        re-delivered (a rollback rewrites history; the human supplies new
-        input, and peers whose messages were dropped are notified so they can
-        resend). Messages never consumed stay pending. Only valid *between
-        runs*: rewinding
-        under a live loop would race the turn cycle, so a mid-run call is
-        refused — cancel or finish the run first.
+        Only valid between runs — a mid-run call is refused.
 
         Raises:
-            KeyError: ``step`` has no recorded boundary — it never started, or
-                an earlier rollback already discarded it.
-            RuntimeError: the agent is mid-run; or a snapshot ref recorded at
-                the boundary must be restored but ``ctx.environment`` is not
-                ``SnapshotCapable``; or another agent holds the session's
-                environment-rewind right
-                (see :meth:`SessionContext.claim_session_writer`).
+            KeyError: no recorded boundary for ``step`` (never started, or
+                discarded by an earlier rollback).
+            RuntimeError: mid-run; or the boundary's snapshot ref needs a
+                ``SnapshotCapable`` environment; or another agent holds the
+                session's environment-rewind right
+                (:meth:`SessionContext.claim_session_writer`).
 
         """
         if self._run_active:
@@ -1114,39 +1110,36 @@ class LLMAgent[InT, OutT, CtxT](
         if fs_ref is not None:
             await self._ctx.restore_fs_snapshot(fs_ref, claimant=self.name)
 
-        self.transcript.messages = self.transcript.messages[: boundary.message_count]
-        self._loop.turn = boundary.turn
-        # Exported before the restore replaces it: a drained-but-unflushed
-        # note's deferred flip is the only trace that the note (now truncated)
-        # was delivered — ``redeliver_after`` overlays it onto the records.
-        deferred_flips = self._agent_ctx.bg_tasks.export_deferred_delivered()
-        self._agent_ctx.restore(
-            boundary.agent_ctx_state, rebind_kernels=fs_ref is not None
-        )
-        # A completion note delivered after the boundary for a task launched
-        # before it was just truncated away while its durable record stays
-        # DELIVERED (resume skips it): re-inject it at the rewind point and
-        # queue it for the next run to stream. Orphan launches past the
-        # boundary were already cancelled by the restore.
+        # Cut the transcript and reconcile the side channels (task-note
+        # re-injection, mail voiding) — :meth:`AgentContext.rewind`. Reads the
+        # pre-rollback ``_committed`` mail high-water, so it must run before
+        # ``boundary`` becomes the head.
         self._resume_notifications.extend(
-            await self._agent_ctx.bg_tasks.redeliver_after(
+            await self._agent_ctx.rewind(
+                boundary.agent_ctx_state,
                 message_count=boundary.message_count,
-                task_launch_seq=boundary.agent_ctx_state.task_launch_seq,
+                committed_mail_seq=(
+                    self._committed.agent_ctx_state.mail_consumption_seq
+                    if self._committed is not None
+                    else 0
+                ),
                 ctx=self._ctx,
-                deferred_delivered=deferred_flips,
+                rebind_kernels=fs_ref is not None,
             )
         )
-        await self._rollback_mailbox(boundary)
+        self._loop.turn = boundary.turn
         self._committed = boundary
         self._cw.reset_anchor()
 
         # Parked at the start of ``step``, ready to (re)deliver it.
         self._step = step
+
         # The step's anchor boundary was just destroyed — invalidate the memo
         # so the human's next (replacement) message re-mints and
         # re-archives it (a memo hit would skip the mint after a pure-resume
         # entry cleared ``_step``, leaving the head unstepped).
         self._anchored_message_id = None
+
         self.prompt_cache_key = boundary.prompt_cache_key
 
         # Drop the rewound step's boundary and every later one — the boundary
@@ -1161,10 +1154,12 @@ class LLMAgent[InT, OutT, CtxT](
         self._cw.drop_folds_after(boundary.message_count)
 
         await self._persist_rollback(boundary, step=step)
+
         # The rolled-back head no longer references the cancelled tasks'
         # launches — safe to flip their records now rather than waiting for
         # the next loop save.
-        await self._agent_ctx.bg_tasks.flush_delivered(ctx=self._ctx)
+        await self._agent_ctx.bg_tasks.flush_flips(ctx=self._ctx)
+
         logger.info(
             "agent '%s' rolled back to step %d (messages=%d, turn=%d)",
             self.name,
@@ -1172,42 +1167,6 @@ class LLMAgent[InT, OutT, CtxT](
             boundary.message_count,
             boundary.turn,
         )
-
-    async def _rollback_mailbox(self, boundary: StepWatermark) -> None:
-        """
-        The mailbox half of a rollback: messages consumed after ``boundary``
-        are VOIDED, never re-delivered — a rollback rewrites history, so the
-        human supplies new input instead of a replay (their dropped messages
-        are discarded silently), while peers whose messages were dropped get
-        a note so they can resend what is still relevant. Messages never
-        consumed stay pending; leased (un-acked) takes are acked-and-voided.
-        Leases are in-memory, so a crash mid-rollback degrades them to crash
-        semantics: the re-driven rollback in a fresh process finds them still
-        pending and they are re-delivered rather than voided. Reads the
-        pre-rollback ``_committed`` high-water, so it must run before
-        ``boundary`` becomes the head.
-        """
-        inbox = self._agent_ctx.inbox
-        leased = inbox.drop_leases() if inbox is not None else []
-
-        mailbox_hw = boundary.agent_ctx_state.mail_consumption_seq
-        committed_hw = (
-            self._committed.agent_ctx_state.mail_consumption_seq
-            if self._committed is not None
-            else 0
-        )
-        if committed_hw <= mailbox_hw and not leased:
-            # No mail was absorbed past the boundary — nothing to void.
-            return
-
-        from grasp_agents.mailbox import void_mail_after  # noqa: PLC0415
-
-        transport = self._ctx.transport
-        # Seed the counter: a cold rollback's fresh transport starts at zero,
-        # and later takes must not re-mint seqs held by voided records
-        # (max-only, so a live transport is unaffected).
-        transport.seed_consumption_seq(self.name, committed_hw)
-        await void_mail_after(transport, self.name, mailbox_hw, leased=leased)
 
     async def _persist_rollback(self, boundary: StepWatermark, *, step: int) -> None:
         """

@@ -254,39 +254,46 @@ class TestBackgroundToolLaunch:
         assert len(user_msgs) >= 1
         assert "slow: research" in str(user_msgs[0].data)
 
-    @pytest.mark.asyncio
-    async def test_launch_note_guidance_is_uniform(self):
+    def test_launch_note_is_metadata_only(self):
         """
-        The launch-note guidance does not depend on ``blocks_final_answer``:
-        every backgrounded task is told it will get a ``<task_notification>``,
-        not to re-call the tool, and — if all that's left is waiting — to reply
-        tool-free (the loop then waits). Only the opening line differs (it names
-        the tool + task id).
+        The launch note is the bare ``<task_notification>`` block (status
+        RUNNING): the waiting/log/kill guidance lives in the auto-attached
+        ``background_tasks`` system-prompt section, not in every note. The
+        two backgrounding modes share everything but the subject line.
         """
-        from grasp_agents.agent.background_tasks import BackgroundTaskManager
-        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
+        from grasp_agents.agent.background_tasks import (
+            _make_launch_note,  # pyright: ignore[reportPrivateUsage]
+        )
 
-        transcript = LLMAgentTranscript()
-        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr = BackgroundTaskManager[None](
-            agent_name="a", transcript=transcript, tools={}, path=[]
+        note_now = _make_launch_note(
+            task_id="bg_1",
+            tool_name="slow",
+            tool_call_id="c1",
+            backgrounded_after=None,
+            log_path=None,
         )
-        blocking, nonblocking = SlowTool(), FireAndForgetTool()
-        assert blocking.blocks_final_answer and not nonblocking.blocks_final_answer
-        note_b = mgr._launch_note(  # pyright: ignore[reportPrivateUsage]
-            blocking, "bg_1", backgrounded_after=None, log_path=None
+        note_deadline = _make_launch_note(
+            task_id="bg_1",
+            tool_name="slow",
+            tool_call_id="c1",
+            backgrounded_after=5.0,
+            log_path=None,
         )
-        note_n = mgr._launch_note(  # pyright: ignore[reportPrivateUsage]
-            nonblocking, "bg_2", backgrounded_after=None, log_path=None
-        )
-        for note in (note_b, note_n):
+        for note in (note_now, note_deadline):
             assert "<task_notification>" in note
-            assert "do NOT call it again" in note
-            assert "WITHOUT calling any tools" in note
-            assert "KillTask" in note
-        # Identical regardless of blocks_final_answer — only the opening line,
-        # which names the tool + id, differs.
-        assert note_b.split("\n", 1)[1] == note_n.split("\n", 1)[1]
+            assert "<status> running </status>" in note
+            assert note.endswith("</task_notification>")
+            assert "KillTask" not in note  # guidance lives in the section
+        # Only the subject line differs between the two modes.
+        diff = [
+            (a, b)
+            for a, b in zip(
+                note_now.split("\n"), note_deadline.split("\n"), strict=True
+            )
+            if a != b
+        ]
+        assert len(diff) == 1
+        assert all("<subject>" in line for line in diff[0])
 
     @pytest.mark.asyncio
     async def test_background_tool_flag_on_base_tool(self):
@@ -295,6 +302,68 @@ class TestBackgroundToolLaunch:
         slow = SlowTool()
         assert echo.auto_background_at is None
         assert slow.auto_background_at == 0
+
+
+class TestBackgroundTasksSection:
+    """
+    The waiting/log/kill guidance is a system-prompt section rendered from the
+    live toolset at prompt-build time — present iff a backgroundable tool is
+    attached, so post-construction tool wiring stays in agreement.
+    """
+
+    @staticmethod
+    def _render(tools: dict[str, BaseTool[Any, Any, Any]]) -> str | None:
+        from grasp_agents.agent.agent_context import AgentContext
+        from grasp_agents.agent.background_tasks import (
+            make_background_tasks_section,
+        )
+
+        agent_ctx = AgentContext.create(transcript=LLMAgentTranscript(), tools=tools)
+        result = make_background_tasks_section().compute(agent_ctx=agent_ctx)
+        assert result is None or isinstance(result, str)
+        return result
+
+    def test_absent_without_backgroundable_tools(self):
+        assert self._render({"echo": EchoTool()}) is None
+
+    def test_present_with_backgroundable_tool(self):
+        text = self._render({"slow": SlowTool()})
+        assert text is not None
+        assert "<background_tasks>" in text
+        assert "do NOT repeat the call" in text
+        assert "WITHOUT calling any tools" in text
+        assert '"interrupted"' in text  # what an interrupted notice means
+        # No KillTask attached → no KillTask guidance to hallucinate on.
+        assert "KillTask" not in text
+
+    def test_kill_task_line_gated_on_tool(self):
+        from grasp_agents.tools.task_tools import KillTask
+
+        text = self._render({"slow": SlowTool(), "KillTask": KillTask()})
+        assert text is not None
+        assert "Stop a task with KillTask" in text
+
+    @pytest.mark.asyncio
+    async def test_agent_prompt_tracks_post_construction_tools(self):
+        # The section is registered unconditionally and computed per run entry
+        # from the live toolset: an agent built without backgroundable tools
+        # renders no guidance, and one wired in afterwards (as a team does
+        # onto its residents) is picked up without re-registration.
+        from grasp_agents.agent.llm_agent import LLMAgent
+
+        agent = LLMAgent[Any, str, None](
+            name="bg_section_agent",
+            llm=MockLLM(model_name="mock", responses_queue=[]),
+            tools=[EchoTool()],
+            sys_prompt="x",
+            env_info=False,
+        )
+        before = str(await agent.preview_initial_context())
+        assert "<background_tasks>" not in before
+
+        agent.tools["slow"] = SlowTool()
+        after = str(await agent.preview_initial_context())
+        assert "<background_tasks>" in after
 
 
 class TestMixedImmediateAndBackground:
@@ -800,7 +869,7 @@ class TestDurableTaskRecords:
 
         # Simulate a crash: drop the in-flight task without finalizing the record.
         for pt in list(mgr._tasks.values()):  # pyright: ignore[reportPrivateUsage]
-            pt.task.cancel()
+            pt.consumer.cancel()
 
         # A fresh manager on the same session = a restart.
         t2 = LLMAgentTranscript()
@@ -826,9 +895,9 @@ class TestDurableTaskRecords:
         recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]
         assert all(r.status == TaskStatus.RUNNING for r in recs)
 
-        # flush_delivered (called after the agent checkpoint) makes the
+        # flush_flips (called after the agent checkpoint) makes the
         # record terminal, so a second resume surfaces nothing.
-        await mgr2.flush_delivered(ctx=ctx)
+        await mgr2.flush_flips(ctx=ctx)
         t3 = LLMAgentTranscript()
         t3.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr3 = BackgroundTaskManager[None](
@@ -860,7 +929,7 @@ class TestDurableTaskRecords:
             call, FailingBgTool(), EchoInput(text="x"), ctx=ctx, exec_id="t"
         )
         # Wait for the task to finish so _consume persists the outcome.
-        await mgr.get(event.data.task_id).task
+        await mgr._tasks[event.data.task_id].consumer  # pyright: ignore[reportPrivateUsage]
 
         # A genuine runtime failure is recorded as FAILED with its error (so a
         # crash before drain leaves a terminal record, not a re-runnable PENDING).
@@ -935,7 +1004,7 @@ class TestDurableTaskRecords:
 
         await mgr.resume_durable(ctx=ctx, exec_id="t")
         # The child was re-spawned; drive it to completion.
-        await mgr.get("bg_1").task
+        await mgr._tasks["bg_1"].consumer  # pyright: ignore[reportPrivateUsage]
 
         rec = TaskRecord.model_validate_json(await store.load(task_key))
         assert rec.status == TaskStatus.COMPLETED, rec.status
@@ -1151,7 +1220,7 @@ class TestFrontTrim:
     """
     Drain front-trims a surviving task's buffer: events consumed by both the
     bubble and flush cursors are dropped, bounding memory for a chatty command,
-    while a terminal result event is preserved for ``_result_of``.
+    while a terminal result event is preserved for ``_outcome_from_events``.
     """
 
     @pytest.mark.asyncio
@@ -1170,8 +1239,9 @@ class TestFrontTrim:
         pt = BackgroundTask(
             task_id="bg_1",
             tool_name="x",
+            tool_call_id="c1",
             exec_id="t",
-            task=task,
+            consumer=task,
             blocks_final_answer=False,
         )
         for i in range(10):
@@ -1192,10 +1262,7 @@ class TestFrontTrim:
 
     @pytest.mark.asyncio
     async def test_trim_stops_before_a_terminal_result(self):
-        from grasp_agents.agent.background_tasks import (
-            BackgroundTask,
-            BackgroundTaskManager,
-        )
+        from grasp_agents.agent.background_tasks import BackgroundTask
         from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
 
         async def _noop() -> None: ...
@@ -1203,16 +1270,18 @@ class TestFrontTrim:
         task = asyncio.create_task(_noop())
         await task
 
-        pt = BackgroundTask(task_id="bg_1", tool_name="x", exec_id="t", task=task)
+        pt = BackgroundTask(
+            task_id="bg_1", tool_name="x", tool_call_id="c1", exec_id="t", consumer=task
+        )
         pt.events.append(ToolStreamEvent(data="s0", source="x"))
         pt.events.append(ToolOutputEvent(data="RESULT", source="x"))  # terminal
         pt.events.append(ToolStreamEvent(data="s2", source="x"))
         pt.cursor = 3
 
-        BackgroundTaskManager._trim_consumed(pt)  # pyright: ignore[reportPrivateUsage]
+        pt.trim_consumed()
 
         # Trim stops before the terminal result at index 1 → only ``s0`` dropped,
-        # so a later ``_result_of`` still finds the result.
+        # so a later ``_outcome_from_events`` still finds the result.
         assert len(pt.events) == 2
         assert isinstance(pt.events[0], ToolOutputEvent)
         assert pt.cursor == 2

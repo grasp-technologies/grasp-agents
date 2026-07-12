@@ -20,8 +20,8 @@ from grasp_agents.agent.loop_state import (
     NextStep,
     NextStepContinue,
     NextStepForceFinalAnswer,
-    NextStepForceResidentReply,
-    NextStepResidentReply,
+    NextStepForceResidentAnswer,
+    NextStepResidentAnswer,
     NextStepRunTools,
     NextStepStop,
     decide_next_step,
@@ -250,11 +250,11 @@ class TestNextStepContinue:
         assert isinstance(step, NextStepRunTools)
 
 
-# ---------- Resident actor: NextStepResidentReply ----------
+# ---------- Resident actor: NextStepResidentAnswer ----------
 
 
-class TestNextStepResidentReply:
-    def test_final_answer_becomes_resident_reply(self) -> None:
+class TestNextStepResidentAnswer:
+    def test_final_answer_becomes_resident_answer(self) -> None:
         # A resident (open inbox) that produced a reply: the analog of Stop, but
         # the loop recycles instead of ending.
         step = decide_next_step(
@@ -265,10 +265,10 @@ class TestNextStepResidentReply:
             blocking_bg_tasks=False,
             inbox_open=True,
         )
-        assert isinstance(step, NextStepResidentReply)
+        assert isinstance(step, NextStepResidentAnswer)
         assert step.final_answer == "reply"
 
-    def test_tool_calls_still_win_over_resident_reply(self) -> None:
+    def test_tool_calls_still_win_over_resident_answer(self) -> None:
         # Final answer AND tool calls under an open inbox: run the tools first
         # (matching a resident's prior behavior), don't release the message yet.
         step = decide_next_step(
@@ -283,7 +283,7 @@ class TestNextStepResidentReply:
 
     def test_reasoning_turn_continues_not_reply(self) -> None:
         # No final answer yet (a reasoning turn): keep going, don't release the
-        # message — only a produced reply is a ResidentReply.
+        # message — only a produced answer is a ResidentAnswer.
         step = decide_next_step(
             final_answer=None,
             tool_calls=[],
@@ -294,9 +294,11 @@ class TestNextStepResidentReply:
         )
         assert isinstance(step, NextStepContinue)
 
-    def test_resident_reply_suppressed_by_bg_tasks(self) -> None:
-        # The message isn't fully handled while answer-blocking bg work is
-        # pending — defer the reply (and the release) like a lone agent's Stop.
+    def test_resident_answers_despite_blocking_bg_tasks(self) -> None:
+        # Answer-blocking bg work gates only a bounded run's final answer
+        # (ending the run would strand the pending result). A resident's loop
+        # outlives its answer and receives the completion on wake, so it
+        # answers now instead of holding the message open.
         step = decide_next_step(
             final_answer="reply",
             tool_calls=[],
@@ -305,7 +307,8 @@ class TestNextStepResidentReply:
             blocking_bg_tasks=True,
             inbox_open=True,
         )
-        assert isinstance(step, NextStepContinue)
+        assert isinstance(step, NextStepResidentAnswer)
+        assert step.final_answer == "reply"
 
     def test_resident_never_force_finalizes_past_budget(self) -> None:
         # A resident past its budget / deadline must never Stop or
@@ -321,7 +324,7 @@ class TestNextStepResidentReply:
             inbox_open=True,
             turns_on_message=99,
         )
-        assert isinstance(step, NextStepResidentReply)
+        assert isinstance(step, NextStepResidentAnswer)
 
     def test_lifetime_turn_does_not_trip_per_message_budget(self) -> None:
         # A long-lived resident (huge lifetime ``turn``) is bounded per message,
@@ -339,11 +342,11 @@ class TestNextStepResidentReply:
         assert isinstance(step, NextStepRunTools)
 
 
-# ---------- Resident actor: NextStepForceResidentReply ----------
+# ---------- Resident actor: NextStepForceResidentAnswer ----------
 
 
-class TestNextStepForceResidentReply:
-    def test_per_message_budget_without_answer_forces_reply(self) -> None:
+class TestNextStepForceResidentAnswer:
+    def test_per_message_budget_without_answer_forces_one(self) -> None:
         # Stuck in a tool loop on one message past the per-message budget, with no
         # answer: force a reply (and move on) rather than spinning forever.
         step = decide_next_step(
@@ -355,7 +358,7 @@ class TestNextStepForceResidentReply:
             inbox_open=True,
             turns_on_message=10,
         )
-        assert isinstance(step, NextStepForceResidentReply)
+        assert isinstance(step, NextStepForceResidentAnswer)
 
     def test_force_reply_preempts_tools(self) -> None:
         # Over the per-message budget, pending tool calls must NOT run — the cap
@@ -369,9 +372,9 @@ class TestNextStepForceResidentReply:
             inbox_open=True,
             turns_on_message=7,
         )
-        assert isinstance(step, NextStepForceResidentReply)
+        assert isinstance(step, NextStepForceResidentAnswer)
 
-    def test_answer_at_budget_replies_not_forces(self) -> None:
+    def test_answer_at_budget_answers_not_forces(self) -> None:
         # Over the per-message budget but the model produced an answer: deliver it
         # as a normal reply (no need to force-generate one).
         step = decide_next_step(
@@ -383,7 +386,7 @@ class TestNextStepForceResidentReply:
             inbox_open=True,
             turns_on_message=10,
         )
-        assert isinstance(step, NextStepResidentReply)
+        assert isinstance(step, NextStepResidentAnswer)
         assert step.final_answer == "done"
 
     def test_under_budget_no_answer_continues_not_forces(self) -> None:

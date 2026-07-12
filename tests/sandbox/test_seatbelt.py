@@ -442,11 +442,11 @@ async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> Non
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "chars omitted" in notes[0]
-    assert "<output_file>" in notes[0]
+    assert "<log_file>" in notes[0]
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
     # The full, untruncated output is in the .grasp log the note points at.
-    match = re.search(r"<output_file>(.+?)</output_file>", notes[0], re.DOTALL)
+    match = re.search(r"<log_file>(.+?)</log_file>", notes[0], re.DOTALL)
     assert match is not None
     log_text, _ = await env.file_backend.read_text(Path(match.group(1).strip()))
     assert log_text.count("A") == 5000

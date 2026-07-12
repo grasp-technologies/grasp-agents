@@ -48,11 +48,11 @@ class NextStepRunTools:
 
 
 @dataclass(frozen=True, slots=True)
-class NextStepResidentReply:
+class NextStepResidentAnswer:
     """
-    Non-terminal: a resident actor (open inbox) produced its reply to the current
+    Non-terminal: a resident actor (open inbox) produced its answer to the current
     inbox message — the resident analog of :class:`NextStepStop`, which would end
-    a lone agent's run. The handler persists the turn (a resident reply otherwise
+    a lone agent's run. The handler persists the turn (a resident answer otherwise
     never checkpoints, so the answer would be re-generated on resume); the loop
     then parks for the next message.
     """
@@ -61,7 +61,7 @@ class NextStepResidentReply:
 
 
 @dataclass(frozen=True, slots=True)
-class NextStepForceResidentReply:
+class NextStepForceResidentAnswer:
     """
     Non-terminal: a resident actor burned its per-message turn budget without
     producing an answer it can return — the resident analog of
@@ -85,8 +85,8 @@ type NextStep = (
     NextStepStop
     | NextStepForceFinalAnswer
     | NextStepRunTools
-    | NextStepResidentReply
-    | NextStepForceResidentReply
+    | NextStepResidentAnswer
+    | NextStepForceResidentAnswer
     | NextStepContinue
 )
 
@@ -116,17 +116,28 @@ def decide_next_step(
     was delivered) is capped at ``max_turns`` rather than the lifetime ``turn``,
     which grows unbounded across messages. A resident never stops or force-ends
     its run; instead, finishing a message recycles the loop to wait for the next
-    one. A satisfied answer becomes a ``NextStepResidentReply``; blowing the
-    per-message budget without one becomes a ``NextStepForceResidentReply`` (force
+    one. A satisfied answer becomes a ``NextStepResidentAnswer``; blowing the
+    per-message budget without one becomes a ``NextStepForceResidentAnswer`` (force
     an answer, then move on) — so a model stuck in a tool loop on one message
-    cannot spin forever.
+    cannot spin forever. A resident also never waits on answer-blocking
+    background work: its loop outlives the answer, so a pending completion
+    wakes the parked loop and is delivered as a new turn.
     """
     # A resident's budget is per message; a lone agent's is the whole run.
     budget_turn = turns_on_message if inbox_open else turn
     over_budget = budget_turn >= max_turns
 
-    # A blown deadline or an exhausted budget overrides waiting on background work.
-    wait_for_bg = blocking_bg_tasks and not over_budget and not deadline_exceeded
+    # Only a bounded run waits on answer-blocking background work: its answer
+    # ends the run, leaving no loop for a pending result to be delivered to. A
+    # resident's loop survives its answer, so it answers now and receives the
+    # completion on wake. A blown deadline or an exhausted budget overrides
+    # the wait.
+    wait_for_bg = (
+        blocking_bg_tasks
+        and not inbox_open
+        and not over_budget
+        and not deadline_exceeded
+    )
 
     if final_answer is not None and not wait_for_bg and not inbox_open:
         return NextStepStop(final_answer=final_answer)
@@ -137,16 +148,16 @@ def decide_next_step(
     if over_budget and not inbox_open:
         return NextStepForceFinalAnswer()
 
-    # The resident's reply for this message, if it has one it can return now.
-    resident_answer = final_answer if (inbox_open and not wait_for_bg) else None
+    # The resident's answer for this message, if it has one it can return now.
+    resident_answer = final_answer if inbox_open else None
 
     if over_budget and inbox_open:
         # Resident past its per-message budget: wrap this message up now —
-        # never run more tools or continue. Reply with the answer if there is
+        # never run more tools or continue. Answer with the one it has if there is
         # one, else force one (closing dangling tool calls), then park.
         if resident_answer is not None:
-            return NextStepResidentReply(final_answer=resident_answer)
-        return NextStepForceResidentReply()
+            return NextStepResidentAnswer(final_answer=resident_answer)
+        return NextStepForceResidentAnswer()
 
     if tool_calls:
         return NextStepRunTools(tool_calls=tool_calls)
@@ -157,6 +168,6 @@ def decide_next_step(
         # ending the run. Checked after tool_calls so a turn that both answers and
         # calls tools still runs the tools first (matching a resident's prior
         # behavior); reasoning turns (no final answer) fall through to Continue.
-        return NextStepResidentReply(final_answer=resident_answer)
+        return NextStepResidentAnswer(final_answer=resident_answer)
 
     return NextStepContinue()

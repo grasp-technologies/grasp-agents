@@ -33,6 +33,10 @@ from rich.text import Text, TextType
 from rich.theme import Theme
 
 from grasp_agents.context.projection import fold_summary_text
+from grasp_agents.context.system_reminder import (
+    SESSION_RESUMED_SUBJECT,
+    match_system_reminder_subject,
+)
 from grasp_agents.context.untrusted_content import unwrap_untrusted
 from grasp_agents.printer import sanitize_terminal_text
 from grasp_agents.skills import match_invocation_wrapper
@@ -244,7 +248,7 @@ def render_event(
             return render_task_notification(
                 text, agent=event.destination or event.source
             )
-        if "<session_resumed>" in text:
+        if match_system_reminder_subject(text) == SESSION_RESUMED_SUBJECT:
             return render_resume_notice(text)
         # A user-invoked skill (slash-command) — show the message verbatim (the
         # ``<system-reminder subject="user invoked skill …">`` wrapper and the

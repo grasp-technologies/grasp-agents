@@ -18,7 +18,7 @@ that inject messages into the transcript between turns, sharing one mirrored
 lifecycle: a monotonic per-item seq (task ``launch_seq`` / mail consumption
 ``seq``) whose high-waters are checkpointed and ``seed_*``-ed back on resume;
 durable effects deferred until the absorbing turn is checkpointed
-(``flush_delivered`` / ``flush_acks``); and rollback keyed on ``seq >`` the
+(``flush_flips`` / ``flush_acks``); and rollback keyed on ``seq >`` the
 boundary's high-water — tasks launched past it are *cancelled*, task notes
 truncated by the cut are *redelivered*, consumed mail is *voided* (senders
 notified, never re-delivered).
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from grasp_agents.tools.bash_session import BashSessionHolder
     from grasp_agents.tools.file_edit.session_state import FileEditSessionState
     from grasp_agents.tools.notebook_exec import KernelHolder
+    from grasp_agents.types.items import InputMessageItem
 
     from .background_tasks import BackgroundTaskManager
     from .llm_agent_transcript import LLMAgentTranscript
@@ -171,7 +172,7 @@ class AgentContext:
             dotfile_overrides=dotfile_overrides,
             shell_cwd=self.shell_state.cwd,
             deferred_delivered=self.bg_tasks.export_deferred_delivered(),
-            deferred_killed=self.bg_tasks.export_deferred_killed(),
+            deferred_cancelled=self.bg_tasks.export_deferred_cancelled(),
             task_launch_seq=self.bg_tasks.last_launch_seq,
             mail_consumption_seq=(
                 self.inbox.last_consumption_seq if self.inbox is not None else 0
@@ -187,35 +188,26 @@ class AgentContext:
         state: AgentContextState,
         *,
         rebind_kernels: bool = False,
-        keep_deferred_delivered: bool = False,
     ) -> None:
         """
-        Reapply a :meth:`snapshot` snapshot.
+        Reapply a :meth:`snapshot` snapshot. Call it only after the caller's
+        transcript surgery (settle prune / rewind truncation / cold reload):
+        the live transcript decides which deferred flips survive. In-memory
+        tasks launched past the restored watermark are cancelled — their
+        launching calls are no longer in the history the model sees.
 
-        Always restores the transactional subset, keeping the context
-        consistent with the rolled-back transcript: the file-read ledger
-        forgets Reads whose results were rolled back, the fresh-``Bash`` cwd
-        matches the history the model still sees, and deferred task-record
-        flips are discarded (their completion notes were rolled back, so the
-        records stay COMPLETED for a later resume to re-inject). In-memory
-        tasks launched past the restored watermark are cancelled — the
-        restored transcript no longer holds their launching calls, so their
-        completions must not deliver (vacuous on a cold reload, which has no
-        in-memory tasks).
-
-        ``keep_deferred_delivered`` marks a restore whose transcript surgery kept
-        the delivered completion notes (a failed-run settle prunes only the
-        trailing response round): the live not-yet-flushed DELIVERED flips are
-        merged over the snapshot's instead of discarded — dropping them would
-        leave the records COMPLETED, and a later resume would re-inject notes
-        the transcript already holds.
+        Live-flip keep-rules: a not-yet-flushed DELIVERED flip survives iff
+        its note is still within the kept transcript
+        (``note_transcript_pos <= len(transcript)``) — dropping a kept note's
+        flip re-injects a duplicate on resume; keeping a cut note's buries
+        the outcome as DELIVERED. CANCELLED flips ALL survive: a cancellation
+        is a physical fact no boundary falsifies — and the snapshot's flips
+        stop a killed task's resurrection when the monotone
+        ``task_launch_seq`` defeats the resume orphan guard.
 
         ``rebind_kernels`` (step rollback paired with a restored filesystem
-        snapshot) additionally seeds the kernels' execution contexts so they
-        re-attach inside the restored sandbox — mirroring resume. A failed run
-        leaves the kernels alone (default): live processes are
-        non-transactional, their side effects can't be unwound, and the
-        kernel-reset notice covers genuine restarts.
+        snapshot) re-attaches the kernels' execution contexts inside the
+        restored sandbox; a failed-run settle leaves the live kernels alone.
         """
         self.file_edit_state.import_state(
             state.read_file_state, state.dotfile_overrides
@@ -223,15 +215,23 @@ class AgentContext:
 
         self.shell_state.cwd = state.shell_cwd
 
-        deferred_delivered = state.deferred_delivered
-        if keep_deferred_delivered:
-            deferred_delivered = {
-                **deferred_delivered,
-                **self.bg_tasks.export_deferred_delivered(),
+        kept = len(self.transcript.messages)
+        live_flips = {
+            key: flip
+            for key, flip in self.bg_tasks.export_deferred_delivered().items()
+            if flip.get("note_transcript_pos", 0) <= kept
+        }
+        self.bg_tasks.restore_deferred_delivered(
+            {**state.deferred_delivered, **live_flips}
+        )
+        self.bg_tasks.restore_deferred_cancelled(
+            {
+                **state.deferred_cancelled,
+                **self.bg_tasks.export_deferred_cancelled(),
             }
-        self.bg_tasks.restore_deferred_delivered(deferred_delivered)
-        self.bg_tasks.restore_deferred_killed(state.deferred_killed)
+        )
         self.bg_tasks.seed_launch_seq(state.task_launch_seq)
+
         # After the restore_deferred_* imports: cancelling defers CANCELLED
         # record updates, which the imports must not clobber.
         self.bg_tasks.cancel_launched_after(state.task_launch_seq)
@@ -239,7 +239,7 @@ class AgentContext:
         # Leases are NOT dropped here: a settle keeps the absorbed-but-unacked
         # message in the transcript, and its lease is what stops the loop from
         # re-taking (duplicating) it. The callers that discard the message's
-        # turn — cold reload and step rollback — drop leases themselves.
+        # turn — cold reload and :meth:`rewind` — drop leases themselves.
         if self.inbox is not None:
             self.inbox.seed_consumption_seq(state.mail_consumption_seq)
 
@@ -248,6 +248,70 @@ class AgentContext:
                 self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)
             if state.nb_exec_context_id is not None:
                 self.nb_kernel_holder.rebind(state.nb_exec_context_id)
+
+    async def rewind(
+        self,
+        state: AgentContextState,
+        *,
+        message_count: int,
+        committed_mail_seq: int,
+        ctx: SessionContext[Any],
+        rebind_kernels: bool = False,
+    ) -> list[InputMessageItem]:
+        """
+        The context half of a step rollback: truncate the transcript to
+        ``message_count``, reapply ``state`` (:meth:`restore`), then reconcile
+        the two side channels' durable halves — where :meth:`restore` is a pure
+        in-memory reset, the channels also have effects the reset cannot
+        express. A delivered task note that sat past the cut while its
+        launching call survived just lost the only live copy of its outcome:
+        re-inject it at the rewind point (returned for the caller to surface
+        as resume notifications). Mail consumed past the boundary was absorbed
+        by turns the truncation dropped: void it.
+
+        ``committed_mail_seq`` is the pre-rollback *persisted* consumption
+        high-water — the head's, captured before the boundary becomes the new
+        head — bounding the seq range of mail to void.
+
+        Runs only at quiescence (no live run); the persisted-head / filesystem
+        crash protocol around it is the caller's.
+        """
+        self.transcript.messages = self.transcript.messages[:message_count]
+
+        # Exported before the restore replaces it: a drained-but-unflushed
+        # note's deferred flip is the only trace that the note (now truncated)
+        # was delivered — ``redeliver_after`` overlays it onto the records.
+        deferred_flips = self.bg_tasks.export_deferred_delivered()
+
+        self.restore(state, rebind_kernels=rebind_kernels)
+
+        injected = await self.bg_tasks.redeliver_after(
+            message_count=message_count,
+            task_launch_seq=state.task_launch_seq,
+            ctx=ctx,
+            pre_restore_deferred_delivered=deferred_flips,
+        )
+
+        # The mailbox half: mail consumed past the boundary is VOIDED, never
+        # re-delivered — a rollback rewrites history, so the human supplies
+        # new input while dropped peers get a resend note (never-consumed
+        # messages stay pending). Leased (un-acked) takes are acked-and-
+        # voided; leases are in-memory, so a crash mid-rollback degrades to
+        # crash semantics — the re-driven rollback finds the messages still
+        # pending and re-delivers instead of voiding.
+        mailbox_hw = state.mail_consumption_seq
+        leased = self.inbox.drop_leases() if self.inbox is not None else []
+        if committed_mail_seq > mailbox_hw or leased:
+            from grasp_agents.mailbox import void_mail_after  # noqa: PLC0415
+
+            transport = ctx.transport
+            # Seed the counter: a cold rollback's fresh transport starts at
+            # zero, and later takes must not re-mint seqs held by voided
+            # records (max-only, so a live transport is unaffected).
+            transport.seed_consumption_seq(self.agent_name, committed_mail_seq)
+            await void_mail_after(transport, self.agent_name, mailbox_hw, leased=leased)
+
+        return injected
 
     async def close(self, *, ctx: SessionContext[Any] | None = None) -> None:
         """

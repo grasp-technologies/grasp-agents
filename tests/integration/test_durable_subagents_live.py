@@ -115,8 +115,8 @@ async def test_two_backgrounded_subagents_respawn_on_resume(
     # them cancelled, and cancelled records are skipped on resume.)
     in_flight = list(manager1._loop.agent_ctx.bg_tasks._tasks.values())
     for pt in in_flight:
-        pt.task.cancel()
-    await asyncio.gather(*(pt.task for pt in in_flight), return_exceptions=True)
+        pt.consumer.cancel()
+    await asyncio.gather(*(pt.consumer for pt in in_flight), return_exceptions=True)
 
     keys = await store.list_keys(task_prefix("subagents"))
     recs = [TaskRecord.model_validate_json(await store.load(k)) for k in keys]

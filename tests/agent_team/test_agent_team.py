@@ -911,7 +911,7 @@ async def test_attach_inbox_uses_session_transport(tmp_path: Path) -> None:
     agent.attach_inbox()
     inbox = agent.agent_ctx.inbox
     assert inbox is not None
-    assert inbox.transport is ctx.transport
+    assert inbox.is_view_of(ctx.transport)
 
 
 @pytest.mark.asyncio

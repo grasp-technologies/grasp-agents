@@ -93,11 +93,12 @@ async def write_result_file(
     except Exception:
         logger.warning("Could not write result file for %r", name)
         return None
+
     return path
 
 
 def excerpt_for_inline(
-    text: str, cap: int | None, *, output_file: str | None = None
+    text: str, cap: int | None, *, log_file: str | None = None
 ) -> tuple[str, bool]:
     """
     Fit a result into the limited inline space (a transcript message or a
@@ -105,7 +106,7 @@ def excerpt_for_inline(
 
     Returns ``text`` unchanged when no cap applies or it already fits. Otherwise
     keeps a head + tail of ``cap`` chars total with a middle marker; when an
-    ``output_file`` is known (a spilled result or a task's ``.grasp`` log), the
+    ``log_file`` is known (a spilled result or a task's ``.grasp`` log), the
     marker points there so the model can ``Read`` / ``Grep`` the full output on
     demand rather than bloating the transcript with it.
     """
@@ -114,8 +115,9 @@ def excerpt_for_inline(
     head = cap // 2
     tail = cap - head
     omitted = len(text) - cap
-    pointer = f" — full output in {output_file}" if output_file else ""
+    pointer = f" — full output in {log_file}" if log_file else ""
     marker = f"\n... [{omitted} chars omitted{pointer}] ...\n"
+
     return text[:head] + marker + text[-tail:], True
 
 
@@ -140,5 +142,5 @@ async def spill_if_large(
     )
     if output_file is None:
         return text
-    excerpt, _ = excerpt_for_inline(text, cap, output_file=output_file)
+    excerpt, _ = excerpt_for_inline(text, cap, log_file=output_file)
     return excerpt

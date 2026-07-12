@@ -78,7 +78,7 @@ class TestExcerptForInline:
 
     def test_over_cap_keeps_head_and_tail_with_pointer(self) -> None:
         text, truncated = excerpt_for_inline(
-            "A" * 1000, 100, output_file="/root/.grasp/tasks/c1.result"
+            "A" * 1000, 100, log_file="/root/.grasp/tasks/c1.result"
         )
         assert truncated is True
         # Head + tail total the cap; the dropped middle is reported.
