@@ -95,7 +95,7 @@ from .llm_events import (
     WebSearchCallInProgress,
     WebSearchCallSearching,
 )
-from .packet import Packet
+from .packet import BranchError, Packet
 from .recovery import (
     RecoveryHint,
     classify_error,
@@ -118,6 +118,7 @@ __all__ = [
     "BackgroundTaskCompletedEvent",
     "BackgroundTaskInfo",
     "BackgroundTaskLaunchedEvent",
+    "BranchError",
     "CompactionEvent",
     "CompactionInfo",
     "Event",

@@ -234,6 +234,12 @@ class LLMAgent[InT, OutT, CtxT](
         # re-memorizing the input. Consumed at the next stream entry.
         self._retry_continuation: bool = False
 
+        # True while the session is parked by a rollback (set on rollback and
+        # on loading a ``ROLLED_BACK`` head): the parked step's input was
+        # discarded, so only a fresh delivery may enter — a no-input resume
+        # would generate with nothing to respond to.
+        self._parked_after_rollback: bool = False
+
         # True while a run's stream is live — the window ``rollback_to_step``
         # refuses (rewinding under the loop would race the turn cycle).
         self._run_active: bool = False
@@ -750,6 +756,7 @@ class LLMAgent[InT, OutT, CtxT](
             # Restore the parked step, so the next chat delivery re-mints it
             # (the mint floor) exactly as it would in the rolling-back process.
             self._step = current.step
+            self._parked_after_rollback = True
 
         logger.info(
             "Loaded session %s for agent %s "
@@ -903,9 +910,7 @@ class LLMAgent[InT, OutT, CtxT](
         if self.durability_enabled:
             if self._is_session_writer():
                 await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
-            elif (
-                self._ctx.session_writer is None and self._ctx.session_record_enabled
-            ):
+            elif self._ctx.session_writer is None and self._ctx.session_record_enabled:
                 # Every agent is contained and none has claimed: the enabled
                 # session persistence is silently inert — say so, once.
                 self._ctx.warn_unowned_session_record()
@@ -1042,7 +1047,9 @@ class LLMAgent[InT, OutT, CtxT](
         Truncates the transcript and its durable log to ``step``'s boundary
         and reapplies the state captured there; afterwards the agent is
         parked at ``step`` with a ``ROLLED_BACK`` head, so ``run(step=step)``
-        is a fresh delivery, not a cached one.
+        is a fresh delivery, not a cached one. The parked step's input was
+        discarded with it, so a no-input resume is rejected until the step is
+        re-delivered.
 
         A boundary carrying an ``fs_snapshot_ref`` also restores the
         *session-shared* filesystem (crash-safe via
@@ -1147,6 +1154,7 @@ class LLMAgent[InT, OutT, CtxT](
 
         # Parked at the start of ``step``, ready to (re)deliver it.
         self._step = step
+        self._parked_after_rollback = True
 
         # The step's anchor boundary was just destroyed — invalidate the memo
         # so the human's next (replacement) message re-mints and
@@ -1346,8 +1354,9 @@ class LLMAgent[InT, OutT, CtxT](
         The boundary is archived before the input lands, so a rewind returns
         to the prior steps' conversation with no input yet (the header, being
         ephemeral, is never lost with it). Returns the appended input (as a
-        one-item list, empty when the entry carries none) for the run to
-        surface as an event.
+        one-item list) for the run to surface as an event; a delivery that
+        renders no input message is rejected — the step would have nothing to
+        respond to.
 
         Runs outside the run's settle guard: everything fallible (input
         rendering, attachments) happens before the first mutation, so a
@@ -1371,6 +1380,18 @@ class LLMAgent[InT, OutT, CtxT](
                 source=self._current_input_source,
             )
 
+        if input_message is None:
+            raise ProcInputValidationError(
+                proc_name=self.name,
+                exec_id=exec_id,
+                message=(
+                    "A new step was delivered without an input: no chat "
+                    "inputs or input arguments were given, and the agent "
+                    "renders no input message. Deliver the input, or resume "
+                    "the session with no step."
+                ),
+            )
+
         # No mutations above this line.
         if self.reset_transcript_on_run:
             # A reset run starts a new conversation: drop the log (the system
@@ -1380,13 +1401,11 @@ class LLMAgent[InT, OutT, CtxT](
 
         self._archive_step_boundary()
         self._loop.turn = 0
+        self._parked_after_rollback = False
 
-        exposed: list[InputItem] = []
-        if input_message:
-            self.transcript.update([input_message])
-            exposed.append(input_message)
+        self.transcript.update([input_message])
 
-        return exposed
+        return [input_message]
 
     async def _process_stream(
         self,
@@ -1445,6 +1464,17 @@ class LLMAgent[InT, OutT, CtxT](
                 message=(
                     "No inputs were provided and there is no session "
                     "(checkpoint or live transcript) to resume."
+                ),
+            )
+
+        if not resident and pure_resume and self._parked_after_rollback:
+            raise ProcInputValidationError(
+                proc_name=self.name,
+                exec_id=exec_id,
+                message=(
+                    f"The session is parked by a rollback at step {self._step} "
+                    "and holds no input for it; re-deliver the step with its "
+                    f"input: run(..., step={self._step})."
                 ),
             )
 

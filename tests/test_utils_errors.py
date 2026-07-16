@@ -1,6 +1,6 @@
 import pytest
 
-from grasp_agents.utils.errors import format_error_chain
+from grasp_agents.utils.errors import format_error_chain, root_cause
 
 
 def _raise_root() -> None:
@@ -83,3 +83,37 @@ def test_cyclic_chain_terminates() -> None:
     a.__cause__ = b
     b.__cause__ = a
     assert format_error_chain(a) == "ValueError: a\nCaused by: RuntimeError: b"
+
+
+def test_root_cause_no_chain_returns_self() -> None:
+    err = ValueError("boom")
+    assert root_cause(err) is err
+
+
+def test_root_cause_walks_to_deepest() -> None:
+    with pytest.raises(RuntimeError) as exc_info:
+        _raise_wrapped()
+    root = root_cause(exc_info.value)
+    assert type(root) is ValueError
+    assert str(root) == "bad request"
+
+
+def test_root_cause_stops_at_suppressed_context() -> None:
+    def raise_clean() -> None:
+        try:
+            _raise_root()
+        except ValueError:
+            msg = "clean"
+            raise RuntimeError(msg) from None
+
+    with pytest.raises(RuntimeError) as exc_info:
+        raise_clean()
+    assert type(root_cause(exc_info.value)) is RuntimeError
+
+
+def test_root_cause_cyclic_chain_terminates() -> None:
+    a = ValueError("a")
+    b = RuntimeError("b")
+    a.__cause__ = b
+    b.__cause__ = a
+    assert root_cause(a) in {a, b}

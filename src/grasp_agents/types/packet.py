@@ -23,11 +23,29 @@ def is_uniform_routing(routing: PacketRouting | None) -> Sequence[ProcName] | No
     return first_recipients
 
 
+class BranchError(BaseModel):
+    """
+    Why a fan-out payload slot failed. Referenced by :attr:`Packet.failed`.
+
+    The message is a formatted string (not the live exception) so the packet
+    stays JSON-serializable through checkpoints and routing.
+    """
+
+    error: str
+    error_type: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Packet[PayloadT](BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     payloads: Sequence[PayloadT]
     sender: ProcName
     routing: PacketRouting | None = None
+    # Payload-slot index -> why it failed. Populated by ``ParallelProcessor`` in
+    # ``on_error="keep"`` mode, where a failed branch leaves a ``None`` at its
+    # slot so ``payloads`` stays aligned 1:1 with the inputs. Empty otherwise.
+    failed: dict[int, BranchError] = Field(default_factory=dict[int, BranchError])
 
     @property
     def uniform_routing(self) -> Sequence[ProcName] | None:

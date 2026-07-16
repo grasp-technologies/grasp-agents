@@ -9,13 +9,39 @@ from pydantic import BaseModel
 
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
-from grasp_agents.types.llm_errors import LlmErrorTuple
+from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
 from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted, ResponseFallback
+from grasp_agents.types.recovery import classify_error, is_retryable
 from grasp_agents.types.response import Response
 
 from .llm import LLM
 
 logger = logging.getLogger(__name__)
+
+
+def _select_cascade_error(errors: Sequence[Exception]) -> Exception:
+    """
+    Choose the error a fully-failed cascade pass raises.
+
+    The outer retry layer keys on this error, and a retry pass needs only
+    one member healthy — so prefer a retryable member error, ensuring the
+    cascade is retried whenever *any* member failed retryably, not just
+    when the last one did. Among retryable errors, prefer one without a
+    server-imposed backoff floor (shortest wait wins); among floored rate
+    limits, the smallest ``retry_after``.
+    """
+    retryable = [e for e in errors if is_retryable(classify_error(e))]
+    if not retryable:
+        return errors[-1]
+    no_floor = [
+        e for e in retryable if not (isinstance(e, LlmRateLimitError) and e.retry_after)
+    ]
+    if no_floor:
+        return no_floor[0]
+    return min(
+        (e for e in retryable if isinstance(e, LlmRateLimitError)),
+        key=lambda e: e.retry_after or 0.0,
+    )
 
 
 @dataclass(frozen=True)
@@ -26,6 +52,9 @@ class FallbackLLM(LLM):
     The public ``generate_response(_stream)`` entrypoints validate and retry
     (per this instance's ``retry_policy``) around the whole cascade; member
     retry policies are bypassed — the cascade itself is the API-retry layer.
+    A pass where every member fails raises the member error most worth
+    retrying, so one member's deterministic failure (e.g. a misconfigured
+    fallback) cannot mask another's transient error.
     ``model_name`` defaults to the primary's and is used for logging, cost
     attribution and context-budget resolution. ``llm_settings`` is inert
     here: settings live on the member LLMs.
@@ -49,7 +78,7 @@ class FallbackLLM(LLM):
         **extra_llm_settings: Any,
     ) -> Response:
         candidates = [self.primary, *self.fallbacks]
-        last_error: Exception | None = None
+        errors: list[Exception] = []
 
         for llm in candidates:
             try:
@@ -68,7 +97,7 @@ class FallbackLLM(LLM):
                 llm._stamp_cost(response)  # noqa: SLF001
                 return response
             except LlmErrorTuple as e:
-                last_error = e
+                errors.append(e)
                 logger.warning(
                     "Model %s failed (%s: %s), trying next fallback",
                     llm.model_name,
@@ -76,8 +105,8 @@ class FallbackLLM(LLM):
                     e,
                 )
 
-        assert last_error is not None
-        raise last_error
+        assert errors
+        raise _select_cascade_error(errors)
 
     async def _generate_response_stream_once(
         self,
@@ -89,7 +118,7 @@ class FallbackLLM(LLM):
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
         candidates = [self.primary, *self.fallbacks]
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         seq = 0
         attempt = 0
 
@@ -109,7 +138,7 @@ class FallbackLLM(LLM):
                 return
 
             except LlmErrorTuple as e:
-                last_error = e
+                errors.append(e)
                 attempt += 1
 
                 idx = candidates.index(llm)
@@ -132,5 +161,5 @@ class FallbackLLM(LLM):
                     e,
                 )
 
-        assert last_error is not None
-        raise last_error
+        assert errors
+        raise _select_cascade_error(errors)
