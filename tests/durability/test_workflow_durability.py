@@ -528,6 +528,69 @@ class TestParallelProcessorCheckpoint:
         assert None not in result
 
     @pytest.mark.asyncio
+    async def test_on_error_drop_matches_drop_failed(self) -> None:
+        """on_error='drop' compacts failures, like the deprecated drop_failed=True."""
+        subproc = InputFailProcessor("worker", fail_input="FAIL")
+        par = ParallelProcessor[str, str, None](subproc=subproc, on_error="drop")
+        ctx: SessionContext[None] = SessionContext(state=None)
+
+        result = await run_parallel(par, ctx, in_args=["ok", "FAIL"])
+
+        assert result == ["ok->worker_0"]
+
+    @pytest.mark.asyncio
+    async def test_on_error_keep_aligns_failed_slots(self) -> None:
+        """on_error='keep' keeps a None at each failed slot and records why."""
+        subproc = InputFailProcessor("worker", fail_input="FAIL")
+        par = ParallelProcessor[str, str, None](subproc=subproc, on_error="keep")
+        ctx: SessionContext[None] = SessionContext(state=None)
+        par.on_adopted(ctx=ctx)
+
+        out_packet: Packet[str] | None = None
+        async for event in par.run_stream(
+            in_args=["ok", "FAIL", "also_ok"], exec_id="test", step=0
+        ):
+            if isinstance(event, ProcPacketOutEvent) and event.source == par.name:
+                out_packet = event.data
+
+        assert out_packet is not None
+        # Payloads stay aligned 1:1 with the inputs; the failed slot is None,
+        # so zip(inputs, payloads, strict=True) still lines up.
+        assert list(out_packet.payloads) == ["ok->worker_0", None, "also_ok->worker_2"]
+        # The failure map travels on the packet.
+        assert set(out_packet.failed) == {1}
+        assert "FAIL" in out_packet.failed[1].error
+        # error_type is the root cause (RuntimeError), not the retry wrapper.
+        assert out_packet.failed[1].error_type == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_on_error_keep_no_failures_has_empty_map(self) -> None:
+        """on_error='keep' with no failures returns aligned payloads, empty map."""
+        subproc = InputFailProcessor("worker", fail_input="FAIL")
+        par = ParallelProcessor[str, str, None](subproc=subproc, on_error="keep")
+        ctx: SessionContext[None] = SessionContext(state=None)
+        par.on_adopted(ctx=ctx)
+
+        out_packet: Packet[str] | None = None
+        async for event in par.run_stream(
+            in_args=["ok", "also_ok"], exec_id="test", step=0
+        ):
+            if isinstance(event, ProcPacketOutEvent) and event.source == par.name:
+                out_packet = event.data
+
+        assert out_packet is not None
+        assert list(out_packet.payloads) == ["ok->worker_0", "also_ok->worker_1"]
+        assert out_packet.failed == {}
+
+    def test_on_error_and_drop_failed_conflict(self) -> None:
+        """Passing both on_error and drop_failed is rejected."""
+        subproc = InputFailProcessor("worker")
+        with pytest.raises(ValueError, match="not both"):
+            ParallelProcessor[str, str, None](
+                subproc=subproc, on_error="keep", drop_failed=True
+            )
+
+    @pytest.mark.asyncio
     async def test_checkpoint_stores_input_packet(self) -> None:
         """Checkpoint correctly round-trips the input packet."""
         store = InMemoryCheckpointStore()

@@ -2,7 +2,7 @@
 Tests for resilience primitives: FallbackLLM, API retry loop, RetryPolicy.
 
 Focuses on real pain points:
-- FallbackLLM: mid-stream failure recovery, error propagation, last-error-wins
+- FallbackLLM: mid-stream failure recovery, cascade error selection
 - API retries: deterministic vs transient classification, retry_after floor
 - RetryPolicy: exponential backoff math, error classification correctness
 """
@@ -18,7 +18,7 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.llm.cloud_llm import ApiCallParams, CloudLLM
-from grasp_agents.llm.fallback_llm import FallbackLLM
+from grasp_agents.llm.fallback_llm import FallbackLLM, _select_cascade_error
 from grasp_agents.llm.llm import LLM
 from grasp_agents.llm.resilience import RetryPolicy
 from grasp_agents.tools.base import BaseTool
@@ -386,24 +386,49 @@ class TestFallbackLLM:
         assert result.output_text == "recovered"
 
     @pytest.mark.asyncio
-    async def test_all_candidates_fail_raises_last_error(self) -> None:
-        """All fail → last error raised, not first. Matters for debugging."""
+    async def test_all_fail_retryable_error_wins_over_deterministic(self) -> None:
+        """
+        Primary fails transiently, last fallback fails deterministically →
+        the transient error is raised, so the outer retry layer still
+        retries the cascade (the primary deserves another shot).
+        """
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LlmRateLimitError(
-                "rate limited", response=_resp(429), body=None
+            error_to_raise=LlmInternalServerError(
+                "overloaded", response=_resp(503), body=None
             ),
         )
         fallback = ErrorLLM(
             model_name="fallback",
-            error_to_raise=LlmInternalServerError(
-                "server down", response=_resp(500), body=None
+            error_to_raise=LlmAuthenticationError(
+                "bad key", response=_resp(401), body=None
             ),
         )
 
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
-        with pytest.raises(LlmInternalServerError, match="server down"):
+        with pytest.raises(LlmInternalServerError, match="overloaded"):
+            await llm._generate_response_once(_USER_MSG)
+
+    @pytest.mark.asyncio
+    async def test_all_fail_deterministically_raises_last_error(self) -> None:
+        """No retryable member error → last error raised, as before."""
+        primary = ErrorLLM(
+            model_name="primary",
+            error_to_raise=LlmAuthenticationError(
+                "bad key", response=_resp(401), body=None
+            ),
+        )
+        fallback = ErrorLLM(
+            model_name="fallback",
+            error_to_raise=LlmContextWindowError(
+                "too long", response=_resp(400), body=None
+            ),
+        )
+
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        with pytest.raises(LlmContextWindowError, match="too long"):
             await llm._generate_response_once(_USER_MSG)
 
     @pytest.mark.asyncio
@@ -468,17 +493,21 @@ class TestFallbackLLM:
 
     @pytest.mark.asyncio
     async def test_stream_all_fail_yields_fallback_events_then_raises(self) -> None:
-        """All candidates fail → ResponseFallback events, then last error raised."""
+        """
+        All candidates fail → ResponseFallback events, then the selected
+        error raised (here the primary's transient error wins over the
+        fallback's deterministic one).
+        """
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LlmRateLimitError(
-                "rate limited", response=_resp(429), body=None
+            error_to_raise=LlmInternalServerError(
+                "overloaded", response=_resp(503), body=None
             ),
         )
         fallback = ErrorLLM(
             model_name="fallback",
-            error_to_raise=LlmInternalServerError(
-                "down", response=_resp(500), body=None
+            error_to_raise=LlmAuthenticationError(
+                "bad key", response=_resp(401), body=None
             ),
         )
 
@@ -490,13 +519,141 @@ class TestFallbackLLM:
             async for event in llm._generate_response_stream_once(_USER_MSG):
                 events.append(event)
 
-        with pytest.raises(LlmInternalServerError, match="down"):
+        with pytest.raises(LlmInternalServerError, match="overloaded"):
             await _collect()
 
         fallbacks = [e for e in events if isinstance(e, ResponseFallback)]
         assert len(fallbacks) == 2
         assert fallbacks[0].fallback_model == "fallback"
         assert fallbacks[1].fallback_model == "none"
+
+
+# ---------- Cascade error selection ----------
+
+
+def _transient(msg: str = "500") -> LlmInternalServerError:
+    return LlmInternalServerError(msg, response=_resp(500), body=None)
+
+
+def _auth(msg: str = "401") -> LlmAuthenticationError:
+    return LlmAuthenticationError(msg, response=_resp(401), body=None)
+
+
+def _rate_limited(retry_after: float | None) -> LlmRateLimitError:
+    return LlmRateLimitError(
+        "429", response=_resp(429), body=None, retry_after=retry_after
+    )
+
+
+class TestCascadeErrorSelection:
+    """_select_cascade_error: which member error a failed pass raises."""
+
+    def test_retryable_wins_over_deterministic_regardless_of_order(self) -> None:
+        transient = _transient()
+        assert _select_cascade_error([transient, _auth()]) is transient
+        assert _select_cascade_error([_auth(), transient]) is transient
+
+    def test_all_deterministic_returns_last(self) -> None:
+        last = _auth("second")
+        assert _select_cascade_error([_auth("first"), last]) is last
+
+    def test_transient_preferred_over_floored_rate_limit(self) -> None:
+        """A retry pass needs one healthy member — don't park on retry_after."""
+        transient = _transient()
+        assert _select_cascade_error([_rate_limited(60.0), transient]) is transient
+
+    def test_rate_limit_without_floor_preferred_over_floored(self) -> None:
+        no_floor = _rate_limited(None)
+        assert _select_cascade_error([_rate_limited(60.0), no_floor]) is no_floor
+
+    def test_smallest_retry_after_among_floored_rate_limits(self) -> None:
+        smallest = _rate_limited(5.0)
+        errors = [_rate_limited(60.0), smallest, _rate_limited(30.0)]
+        assert _select_cascade_error(errors) is smallest
+
+
+class TestFallbackRetryGate:
+    """Cascade + outer retry layer: retry fires if ANY member failed retryably."""
+
+    @pytest.mark.asyncio
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
+    async def test_cascade_retried_when_last_member_fails_deterministically(
+        self, mock_sleep: AsyncMock
+    ) -> None:
+        """
+        Primary blips (503), fallback is misconfigured (401). The 401 from
+        the last member must not suppress the retry pass: the cascade is
+        retried and the primary succeeds on the second pass.
+        """
+        primary = FailThenSucceedLLM(
+            model_name="primary",
+            error=LlmInternalServerError("blip", response=_resp(503), body=None),
+            fail_count=1,
+            success_response=_text_response("recovered"),
+        )
+        fallback = ErrorLLM(model_name="fallback", error_to_raise=_auth("bad key"))
+        llm = FallbackLLM(
+            primary=primary,
+            fallbacks=(fallback,),
+            retry_policy=RetryPolicy(api_retries=1),
+        )
+
+        result = await llm.generate_response(_USER_MSG)
+
+        assert result.output_text == "recovered"
+        assert primary.call_count == 2
+        assert fallback.call_count == 1
+        assert mock_sleep.call_count == 1
+
+    @pytest.mark.asyncio
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
+    async def test_stream_cascade_retried_when_last_member_fails_deterministically(
+        self, mock_sleep: AsyncMock
+    ) -> None:
+        primary = FailThenSucceedLLM(
+            model_name="primary",
+            error=LlmInternalServerError("blip", response=_resp(503), body=None),
+            fail_count=1,
+            success_response=_text_response("recovered"),
+        )
+        fallback = ErrorLLM(model_name="fallback", error_to_raise=_auth("bad key"))
+        llm = FallbackLLM(
+            primary=primary,
+            fallbacks=(fallback,),
+            retry_policy=RetryPolicy(api_retries=1),
+        )
+
+        events: list[LlmEvent] = []
+        async for event in llm.generate_response_stream(_USER_MSG):
+            events.append(event)
+
+        retrying = [e for e in events if isinstance(e, ResponseRetrying)]
+        assert len(retrying) == 1
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert len(completed) == 1
+        assert completed[0].response.output_text == "recovered"
+        assert fallback.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_all_members_fail_deterministically(self) -> None:
+        """Deterministic failures across the board → no retry passes."""
+        primary = ErrorLLM(model_name="primary", error_to_raise=_auth("bad key"))
+        fallback = ErrorLLM(
+            model_name="fallback",
+            error_to_raise=LlmContextWindowError(
+                "too long", response=_resp(400), body=None
+            ),
+        )
+        llm = FallbackLLM(
+            primary=primary,
+            fallbacks=(fallback,),
+            retry_policy=RetryPolicy(api_retries=3),
+        )
+
+        with pytest.raises(LlmContextWindowError, match="too long"):
+            await llm.generate_response(_USER_MSG)
+        assert primary.call_count == 1
+        assert fallback.call_count == 1
 
 
 # ---------- API Retry Loop ----------

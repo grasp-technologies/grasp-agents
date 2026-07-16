@@ -18,14 +18,16 @@ from unittest.mock import patch
 
 import pytest
 
+from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import AgentContextState, InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
-from grasp_agents.inbox import AgentInbox
 from grasp_agents.mailbox import CheckpointMailboxTransport
+from grasp_agents.session_context import SessionContext
+from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.items import InputMessageItem
 from grasp_agents.types.message import TeamMessage
-from tests._helpers import _text_response
+from tests._helpers import MockLLM, _text_response
 from tests.durability.test_sessions import _make_agent, load_agent_checkpoint
 
 _KEY = "s1/agent/test_agent"
@@ -350,8 +352,6 @@ async def test_interrupted_rollback_completes_on_resume() -> None:
     await agent.run("q1", step=1)
     await agent.run("q2", step=2)
 
-    from grasp_agents.agent.llm_agent import LLMAgent
-
     with (
         patch.object(LLMAgent, "_persist_rollback", side_effect=RuntimeError("crash")),
         pytest.raises(RuntimeError, match="crash"),
@@ -373,3 +373,79 @@ async def test_interrupted_rollback_completes_on_resume() -> None:
     blob = str(agent2.transcript.messages)
     assert "q2-new" in blob
     assert "q2'" not in blob  # the rolled-back turn's input is gone
+
+
+# --- Parked-session entry guards ---
+
+
+@pytest.mark.asyncio
+async def test_pure_resume_while_parked_raises() -> None:
+    """
+    A rollback discards the parked step's input, so a no-input resume has
+    nothing to respond to — it is refused (live and cold) instead of
+    generating on a transcript that ends with the previous step's answer.
+    """
+    store = InMemoryCheckpointStore()
+    agent, _ = _make_agent(
+        [_text_response(a) for a in ("a0", "a1")], session_key="s1", store=store
+    )
+    await agent.run("q0", step=0)
+    await agent.run("q1", step=1)
+    await agent.rollback_to_step(1)
+
+    with pytest.raises(ProcRunError) as excinfo:
+        await agent.run()
+    assert "parked by a rollback at step 1" in str(excinfo.value.__cause__)
+
+    # Cold: a fresh instance rehydrates the ROLLED_BACK head and refuses too.
+    agent2, _ = _make_agent([_text_response("a1_new")], session_key="s1", store=store)
+    with pytest.raises(ProcRunError) as excinfo:
+        await agent2.run()
+    assert "parked by a rollback at step 1" in str(excinfo.value.__cause__)
+
+    # Re-delivering the step with its input enters as a fresh delivery.
+    r1b = await agent2.run("q1_edited", step=1)
+    assert r1b.payloads[0] == "a1_new"
+
+    # The delivery un-parked the session: a cold no-input resume is valid
+    # again and replays the completed step's output.
+    agent3, _ = _make_agent([], session_key="s1", store=store)
+    r1c = await agent3.run()
+    assert r1c.payloads[0] == "a1_new"
+
+
+@pytest.mark.asyncio
+async def test_stepped_delivery_without_input_raises() -> None:
+    """
+    A step delivery that renders no input message (``InT=None``, no chat
+    inputs) is refused — onto a parked head and onto a fresh session alike —
+    instead of committing an input-less step and generating.
+    """
+    store = InMemoryCheckpointStore()
+    ctx: SessionContext[None] = SessionContext(session_key="s1", checkpoint_store=store)
+    agent = LLMAgent[None, str, None](
+        name="test_agent",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("a0"), _text_response("a1")]),
+        stream_llm=True,
+    )
+    await agent.run("q0", step=0)
+    await agent.run("q1", step=1)
+    await agent.rollback_to_step(1)
+
+    with pytest.raises(ProcRunError) as excinfo:
+        await agent.run(step=1)
+    assert "delivered without an input" in str(excinfo.value.__cause__)
+
+    # A fresh session: an explicit step bypasses the pure-resume entry, but
+    # the delivery still carries no input — refused before any mutation.
+    ctx2: SessionContext[None] = SessionContext(
+        session_key="s2", checkpoint_store=InMemoryCheckpointStore()
+    )
+    agent2 = LLMAgent[None, str, None](
+        name="test_agent", ctx=ctx2, llm=MockLLM(responses_queue=[]), stream_llm=True
+    )
+    with pytest.raises(ProcRunError) as excinfo:
+        await agent2.run(step=0)
+    assert "delivered without an input" in str(excinfo.value.__cause__)
+    assert agent2.transcript.is_empty  # refused before any mutation
