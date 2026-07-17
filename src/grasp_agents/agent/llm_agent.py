@@ -429,7 +429,7 @@ class LLMAgent[InT, OutT, CtxT](
         # (checkpoint folds, rollback, hook registration) are single-hop rather
         # than reached through the loop.
         self._cw = ContextWindowManager(
-            transcript=self._transcript, model=llm.model_name, source=self.name
+            transcript=self._transcript, llm=llm, source=self.name
         )
 
         # Agent loop

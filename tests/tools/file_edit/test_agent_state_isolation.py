@@ -26,14 +26,17 @@ def _make_loop():
         model_name = "stub"
         litellm_provider = "stub"
 
+    stub_llm = _StubLLM()
     transcript = LLMAgentTranscript()
     agent_ctx = AgentContext.create(transcript=transcript, tools={}, agent_name="A")
     return AgentLoop[BaseModel](
         agent_name="A",
-        llm=_StubLLM(),  # type: ignore[arg-type]
+        llm=stub_llm,  # type: ignore[arg-type]
         agent_ctx=agent_ctx,
         context_window=ContextWindowManager(
-            transcript=transcript, model="stub", source="A"
+            transcript=transcript,
+            llm=stub_llm,  # type: ignore[arg-type]
+            source="A",
         ),
         ctx=SessionContext[BaseModel](),  # type: ignore[call-arg]
         max_turns=1,

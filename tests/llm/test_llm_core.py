@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import anthropic.types as anthropic_types
@@ -54,7 +54,7 @@ from grasp_agents.types.llm_events import (
     ResponseFailed,
     ResponseRetrying,
 )
-from grasp_agents.types.response import ResponseUsage
+from grasp_agents.types.response import Response, ResponseUsage
 from grasp_agents.usage_tracker import add_cost_to_usage
 from tests.llm.test_resilience import (  # type: ignore[attr-defined]
     _USER_MSG,
@@ -218,25 +218,48 @@ class TestApiKeyNotInRepr:
         assert "sk-super-secret-key" not in str(llm)
 
 
+@dataclass(frozen=True)
+class _ServingCloudLLM(LazyStreamCloudLLM):
+    """CloudLLM stub serving a fixed response on the non-stream path."""
+
+    served: Response = field(default_factory=lambda: _text_response("ok"))
+
+    async def _get_api_response(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
+    ) -> Any:
+        return self.served
+
+    def _convert_api_response(self, raw: Any) -> Response:
+        return raw  # type: ignore[no-any-return]
+
+
+def _served_with_usage(text: str) -> Response:
+    return _text_response(text).model_copy(
+        update={
+            "usage": ResponseUsage(input_tokens=100, output_tokens=10, total_tokens=110)
+        }
+    )
+
+
 class TestFallbackCostAttribution:
     @pytest.mark.asyncio
     async def test_fallback_response_costed_with_serving_model(self) -> None:
-        primary = ErrorLLM(model_name="primary")
-        served = _text_response("recovered").model_copy(
-            update={
-                "usage": ResponseUsage(
-                    input_tokens=100, output_tokens=10, total_tokens=110
-                )
-            }
-        )
-        fallback = StubLLM(
+        """The serving CloudLLM member stamps at source with its own identity."""
+        primary = ErrorLLM(model_name="primary", retry_policy=None)
+        fallback = _ServingCloudLLM(
             model_name="gpt-4o-mini",
             litellm_provider="openai",
-            response=served,
+            served=_served_with_usage("recovered"),
         )
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
-        result = await llm._generate_response_once(_USER_MSG)
+        result = await llm.generate_response(_USER_MSG)
 
         usage = result.usage
         assert usage is not None
@@ -244,6 +267,24 @@ class TestFallbackCostAttribution:
         # (an unknown model, which would silently yield no cost at all).
         assert usage.cost is not None
         assert usage.cost > 0
+
+    @pytest.mark.asyncio
+    async def test_non_cloud_member_cost_left_unstamped(self) -> None:
+        """
+        A non-cloud serving member has no pricing identity: cost stays None.
+        Neither the composite (reporting the primary's known name) nor the
+        base LLM layer may price it.
+        """
+        primary = ErrorLLM(model_name="gpt-4o", retry_policy=None)
+        fallback = StubLLM(
+            model_name="my-custom-model", response=_served_with_usage("recovered")
+        )
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        result = await llm.generate_response(_USER_MSG)
+
+        assert result.usage is not None
+        assert result.usage.cost is None
 
 
 class TestAnthropicDefaults:
