@@ -263,9 +263,7 @@ def _make_agent_loop(
     )
     loop_kwargs.setdefault(
         "context_window",
-        ContextWindowManager(
-            transcript=transcript, model=llm.model_name, source=agent_name
-        ),
+        ContextWindowManager(transcript=transcript, llm=llm, source=agent_name),
     )
     return AgentLoop[None](
         agent_name=agent_name,

@@ -243,9 +243,7 @@ class TestRetryPolicyAlignment:
             (lambda: LlmApiTimeoutError(request=_fake_request()), True),
             (lambda: LlmApiConnectionError(request=_fake_request()), True),
             (
-                lambda: LlmRateLimitError(
-                    "x", response=_fake_response(), body=None
-                ),
+                lambda: LlmRateLimitError("x", response=_fake_response(), body=None),
                 True,
             ),
             (
@@ -272,9 +270,7 @@ class TestRetryPolicyAlignment:
                 False,
             ),
             (
-                lambda: LlmBadRequestError(
-                    "x", response=_fake_response(), body=None
-                ),
+                lambda: LlmBadRequestError("x", response=_fake_response(), body=None),
                 False,
             ),
             (

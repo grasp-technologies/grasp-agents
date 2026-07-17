@@ -20,6 +20,7 @@ from grasp_agents.types.llm_errors import (
 )
 from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted, ResponseFailed
 from grasp_agents.types.response import Response
+from grasp_agents.usage_tracker import add_cost_to_usage
 
 from .llm import LLM, LLMSettings
 
@@ -156,6 +157,28 @@ class CloudLLM(LLM):
         if mapped is not None:
             raise mapped from err
         raise err
+
+    # --- Cost stamping ---
+
+    def _stamp_cost(self, response: Response) -> None:
+        """
+        Stamp the response's cost with THIS model's pricing identity.
+
+        Called at response-production time, so cost attribution is correct
+        however the LLM is composed: under a FallbackLLM, the serving
+        member prices its own response — never the ``model_name`` the
+        composite reports. Cost is an API-provider concern, which is why
+        stamping lives here and not on the base ``LLM`` (a local or mock
+        LLM with token usage has no price, and looking one up would warn
+        on every call).
+        """
+        usage = response.usage
+        if usage is not None and usage.cost is None and self.model_name:
+            add_cost_to_usage(
+                usage,
+                model_name=self.model_name,
+                litellm_provider=self.litellm_provider,
+            )
 
     # --- LLM interface implementation ---
 

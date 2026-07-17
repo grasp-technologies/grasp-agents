@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, Self, runtime_checkable
 
 from grasp_agents.llm.llm import LLM
-from grasp_agents.llm.model_info import get_model_capabilities
+from grasp_agents.llm.model_info import ModelCapabilities, get_model_capabilities
 from grasp_agents.llm.token_counting import count_input_tokens
 from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import (
@@ -100,10 +100,31 @@ class ContextBudget:
         token buffer defaults to the model's max output tokens (room for the
         response), or :data:`DEFAULT_BUFFER_TOKENS` when unknown.
         """
-        caps = get_model_capabilities(model, provider)
-        window = caps.max_input_tokens or default_max_input_tokens
+        return cls.from_capabilities(
+            model,
+            get_model_capabilities(model, provider),
+            buffer_tokens=buffer_tokens,
+            default_max_input_tokens=default_max_input_tokens,
+        )
+
+    @classmethod
+    def from_capabilities(
+        cls,
+        model: str,
+        capabilities: ModelCapabilities,
+        *,
+        buffer_tokens: int | None = None,
+        default_max_input_tokens: int | None = DEFAULT_MAX_INPUT_TOKENS,
+    ) -> Self:
+        """
+        Build a budget from already-resolved capabilities — same fallbacks as
+        :meth:`for_model`. Preferred when an :class:`~grasp_agents.llm.llm.LLM`
+        is at hand: ``llm.capabilities`` reflects composition (a fallback
+        cascade reports its conservative merge), a by-name lookup doesn't.
+        """
+        window = capabilities.max_input_tokens or default_max_input_tokens
         if buffer_tokens is None:
-            buffer_tokens = caps.max_output_tokens or DEFAULT_BUFFER_TOKENS
+            buffer_tokens = capabilities.max_output_tokens or DEFAULT_BUFFER_TOKENS
         return cls(model=model, max_input_tokens=window, buffer_tokens=buffer_tokens)
 
     @property

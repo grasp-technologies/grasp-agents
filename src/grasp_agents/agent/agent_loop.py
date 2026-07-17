@@ -1651,12 +1651,7 @@ class AgentLoop[CtxT]:
             # for the view just sent.
             self._cw.note_response_usage(usage.input_tokens)
 
-        self.ctx.usage_tracker.update(
-            agent_name=self.agent_name,
-            responses=[response],
-            model_name=self._llm.model_name,
-            litellm_provider=self._llm.litellm_provider,
-        )
+        self.ctx.usage_tracker.update(agent_name=self.agent_name, responses=[response])
 
         # Mirror generated output (reasoning, text, tool calls) to the raw debug
         # printer (``ctx.printer``), if attached — the counterpart to the input /

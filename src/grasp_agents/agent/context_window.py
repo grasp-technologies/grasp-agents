@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from grasp_agents.hooks import Compactor, ViewProjector
+    from grasp_agents.llm.llm import LLM
     from grasp_agents.types.folds import FoldSpec
     from grasp_agents.types.items import InputItem
 
@@ -42,20 +43,26 @@ class ContextWindowManager:
     """
 
     def __init__(
-        self, *, transcript: LLMAgentTranscript, model: str, source: str
+        self, *, transcript: LLMAgentTranscript, llm: LLM, source: str
     ) -> None:
         self._transcript = transcript
-        self._model = model  # only used to pick the tokenizer for budget sizing
+
+        self._llm = llm  # budget sizing (capabilities) + tokenizer selection
+
         self._source = source  # agent name, stamped on emitted compaction events
+
         # Ephemeral system-prompt header (+ leading messages), rebuilt per step by
         # ``LLMAgent`` and prepended to the view; never written to the log.
         self.initial_context: list[InputItem] = []
+
         # Stacked projector pipeline + single compactor (set via LLMAgent hooks).
         self.view_projectors: list[ViewProjector] = []
         self.compactor: Compactor | None = None
+
         # Summarized log spans applied to the view; persisted, survive resume,
         # dropped past a rollback rewind.
         self.folds: list[FoldSpec] = []
+
         # Budget anchor: the last response's exact reported input_tokens over the
         # first ``_last_counted_len`` log messages; the turn's new messages are
         # counted on top via litellm. ``_pending_view_count`` is the basis of the
@@ -63,6 +70,7 @@ class ContextWindowManager:
         self._last_input_tokens = 0
         self._last_counted_len = 0
         self._pending_view_count = 0
+
         # Model-derived budget, built lazily and shared into registered strategies
         # that don't bring their own (so the agent never has to construct one).
         self._budget: ContextBudget | None = None
@@ -70,9 +78,16 @@ class ContextWindowManager:
     # --- registration (called by LLMAgent's hooks) ---
 
     def default_budget(self) -> ContextBudget:
-        """The agent's model-derived budget (``ContextBudget.for_model``), cached."""
+        """
+        The agent's model-derived budget, cached. Sized from
+        ``llm.capabilities`` so a composed LLM budgets for its conservative
+        merge (e.g. a fallback cascade's smallest member window), not just
+        the name it reports.
+        """
         if self._budget is None:
-            self._budget = ContextBudget.for_model(self._model)
+            self._budget = ContextBudget.from_capabilities(
+                self._llm.model_name, self._llm.capabilities
+            )
         return self._budget
 
     def add_view_projector(self, projector: ViewProjector) -> None:
@@ -141,7 +156,7 @@ class ContextWindowManager:
         anchor — counts the whole current (folded) view via litellm, which itself
         falls back to a chars-per-token estimate when no tokenizer is available.
         """
-        model = self._model
+        model = self._llm.model_name
         messages = self._transcript.messages
         if self._anchor_valid():
             delta = messages[self._last_counted_len :]
@@ -173,7 +188,7 @@ class ContextWindowManager:
         if self._anchor_valid() or not self.view_projectors:
             return self.effective_input_tokens()
         body = await self._build_view_body(exec_id=exec_id)
-        return count_input_tokens(self._model, [*self.initial_context, *body])
+        return count_input_tokens(self._llm.model_name, [*self.initial_context, *body])
 
     def note_response_usage(self, input_tokens: int) -> None:
         """Promote the budget anchor from a response's reported usage."""
