@@ -334,7 +334,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
             if isinstance(result, str):
                 text = result
                 if attachment.wrap_in_system_reminder:
-                    text = wrap_in_system_reminder(text)
+                    text = wrap_in_system_reminder(text, subject=attachment.name)
                 extra_parts.append(InputText(text=text))
             else:
                 extra_parts.extend(result)

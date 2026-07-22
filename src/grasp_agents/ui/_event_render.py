@@ -261,7 +261,14 @@ def render_event(
         # just the recipient.
         dst = event.destination or "agent"
         label = f"{event.source} → {dst}" if event.source else f"→ {dst}"
-        return panel(label, _message_body(text), PALETTE["border_input"])
+        body, attachments = split_input_attachments(event.data)
+        content: RenderableType = _message_body(body or text)
+        if attachments:
+            content = Group(
+                content,
+                Text(f"📎 {', '.join(attachments)}", style=PALETTE["muted"]),
+            )
+        return panel(label, content, PALETTE["border_input"])
 
     if isinstance(event, GenerationEndEvent):
         return usage_line(event)
@@ -1166,6 +1173,27 @@ def extract_input_text(msg: InputMessageItem) -> str:
         elif isinstance(part, InputImage):
             parts.append(part.image_url or "[image]" if part.is_url else "[image]")
     return "\n\n".join(parts)
+
+
+def split_input_attachments(msg: InputMessageItem) -> tuple[str, list[str]]:
+    """
+    Split a built user message into its typed body and the subjects of any
+    subject-tagged ``<system-reminder>`` parts appended by input attachments —
+    so a UI can show "this turn carried X" without dumping the whole
+    model-facing block.
+    """
+    body: list[str] = []
+    subjects: list[str] = []
+    for part in msg.content:
+        if isinstance(part, InputText):
+            subject = match_system_reminder_subject(part.text)
+            if subject:
+                subjects.append(subject)
+            else:
+                body.append(part.text.strip())
+        elif isinstance(part, InputImage):
+            body.append(part.image_url or "[image]" if part.is_url else "[image]")
+    return "\n\n".join(body), subjects
 
 
 def truncate(text: str, limit: int) -> str:

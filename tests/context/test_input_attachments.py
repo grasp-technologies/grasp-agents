@@ -79,7 +79,8 @@ class TestApplyInputAttachments:
         assert len(out.content) == 2
         attached = out.content[1]
         assert isinstance(attached, InputText)
-        assert attached.text.startswith("<system-reminder>")
+        # The subject names the attachment, so UIs can label the turn.
+        assert attached.text.startswith('<system-reminder subject="x">')
         assert "Relevant note here." in attached.text
         assert attached.text.endswith("</system-reminder>")
 
@@ -95,7 +96,7 @@ class TestApplyInputAttachments:
         )
         attached = out.content[1]
         assert isinstance(attached, InputText)
-        assert "<system-reminder>" in attached.text
+        assert '<system-reminder subject="current_time">' in attached.text
         assert "Current time:" in attached.text
 
     @pytest.mark.asyncio
