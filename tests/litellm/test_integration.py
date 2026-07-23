@@ -42,7 +42,7 @@ class TestLiteLLMIntegration:
 
         # LiteLLM reads OPENAI_API_KEY from env automatically
         return LiteLLM(
-            model_name="gpt-4.1-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 100},
         )
 
@@ -100,7 +100,7 @@ class TestLiteLLMStructuredOutput:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(
-            model_name="gpt-4.1-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 200},
             apply_output_schema_via_provider=True,
         )
@@ -152,7 +152,7 @@ class TestLiteLLMParallelToolUse:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(
-            model_name="gpt-4.1-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 256},
         )
 

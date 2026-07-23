@@ -16,10 +16,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self
 
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 from pydantic import BaseModel, Field
 
 from grasp_agents.agent.agent_context import AgentContext
@@ -42,7 +38,12 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
     ResponseCreated,
 )
-from grasp_agents.types.response import Response, ResponseUsage
+from grasp_agents.types.response import (
+    InputTokensDetails,
+    OutputTokensDetails,
+    Response,
+    ResponseUsage,
+)
 
 
 def _make_usage() -> ResponseUsage:

@@ -577,15 +577,15 @@ async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
     """
     from dataclasses import field
 
-    from openai.types.responses.response_usage import (
-        InputTokensDetails,
-        OutputTokensDetails,
-    )
-
     from grasp_agents.tools.base import BaseTool as _BaseTool
     from grasp_agents.types.content import OutputMessageText
     from grasp_agents.types.items import OutputMessageItem
-    from grasp_agents.types.response import Response, ResponseUsage
+    from grasp_agents.types.response import (
+        InputTokensDetails,
+        OutputTokensDetails,
+        Response,
+        ResponseUsage,
+    )
 
     usage = ResponseUsage(
         input_tokens=1,

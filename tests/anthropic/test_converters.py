@@ -66,6 +66,7 @@ from grasp_agents.types.content import (
     OutputMessageText,
 )
 from grasp_agents.types.items import (
+    AssistantMessage,
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
@@ -74,6 +75,7 @@ from grasp_agents.types.items import (
     ReasoningItem,
     SearchAction,
     SearchSource,
+    UserMessage,
     WebSearchCallItem,
 )
 from grasp_agents.types.llm_events import (
@@ -1731,3 +1733,51 @@ class TestWebFetchStream:
         assert (
             wf.provider_specific_fields["anthropic:error_code"] == "url_not_accessible"
         )
+
+
+class TestMidConversationSystemMessages:
+    def test_leading_run_hoisted_rest_positional(self) -> None:
+        from grasp_agents.types.items import SystemMessage
+
+        items = [
+            SystemMessage.from_text("You are helpful.", role="system"),
+            UserMessage.from_text("hi"),
+            AssistantMessage(
+                status="completed", content=[OutputMessageText(text="hello")]
+            ),
+            UserMessage.from_text("ok"),
+            SystemMessage.from_text("Reply only in uppercase.", role="system"),
+        ]
+
+        system, messages = items_to_anthropic_messages(items)
+
+        assert system == "You are helpful."
+        assert [m["role"] for m in messages] == ["user", "assistant", "user", "system"]
+        [block] = messages[3]["content"]
+        assert block["text"] == "Reply only in uppercase."
+
+    def test_mid_conversation_developer_maps_to_system_role(self) -> None:
+        from grasp_agents.types.items import DeveloperMessage
+
+        items = [
+            UserMessage.from_text("hi"),
+            DeveloperMessage(content=[InputText(text="New instructions.")]),
+        ]
+
+        system, messages = items_to_anthropic_messages(items)
+
+        assert system is None
+        assert messages[1]["role"] == "system"
+
+    def test_mid_conversation_system_keeps_cache_control(self) -> None:
+        from grasp_agents.types.content import CacheControl
+        from grasp_agents.types.items import SystemMessage
+
+        msg = SystemMessage(
+            role="system",
+            content=[InputText(text="pinned", cache_control=CacheControl(ttl="1h"))],
+        )
+        _, messages = items_to_anthropic_messages([UserMessage.from_text("hi"), msg])
+
+        [block] = messages[1]["content"]
+        assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

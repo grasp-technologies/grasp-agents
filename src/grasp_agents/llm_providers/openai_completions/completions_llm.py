@@ -11,6 +11,12 @@ from openai.lib.streaming.chat import (
     AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
 )
 from openai.lib.streaming.chat import ChunkEvent as OpenAIChunkEvent
+from openai.types.chat.completion_create_params import (
+    Moderation as CompletionsModeration,
+)
+from openai.types.chat.completion_create_params import (
+    PromptCacheOptions as CompletionsPromptCacheOptions,
+)
 from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents.llm.cloud_llm import (
@@ -76,7 +82,7 @@ _COMPAT_LITELLM_PROVIDERS = {
 }
 
 CompletionsReasoningEffort = Literal[
-    "none", "disable", "minimal", "low", "medium", "high"
+    "none", "disable", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 
 
@@ -116,6 +122,8 @@ class OpenAILLMSettings(CloudLLMSettings, total=False):
     verbosity: Literal["low", "medium", "high"] | None
     prompt_cache_key: str
     prompt_cache_retention: Literal["in_memory", "24h"] | None
+    prompt_cache_options: CompletionsPromptCacheOptions | None
+    moderation: CompletionsModeration | None
     safety_identifier: str
 
     # TODO: support audio

@@ -16,10 +16,6 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
 )
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_status import ResponseStatus
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 from pydantic import TypeAdapter, ValidationError
 
 from grasp_agents.types.content import (
@@ -37,7 +33,12 @@ from grasp_agents.types.items import (
     ReasoningItem,
 )
 from grasp_agents.types.reasoning import OpenRouterReasoningDetails
-from grasp_agents.types.response import Response, ResponseUsage
+from grasp_agents.types.response import (
+    InputTokensDetails,
+    OutputTokensDetails,
+    Response,
+    ResponseUsage,
+)
 
 from .logprob_converters import convert_logprobs
 from .utils import validate_completion
@@ -186,10 +187,14 @@ def _extract_tool_call_items(
 
 def convert_usage(raw_usage: CompletionUsage) -> ResponseUsage:
     cached_tokens = 0
+    cache_write_tokens = 0
     reasoning_tokens = 0
 
     if raw_usage.prompt_tokens_details is not None:
         cached_tokens = raw_usage.prompt_tokens_details.cached_tokens or 0
+        cache_write_tokens = (
+            getattr(raw_usage.prompt_tokens_details, "cache_write_tokens", None) or 0
+        )
 
     if raw_usage.completion_tokens_details is not None:
         reasoning_tokens = raw_usage.completion_tokens_details.reasoning_tokens or 0
@@ -198,7 +203,9 @@ def convert_usage(raw_usage: CompletionUsage) -> ResponseUsage:
         input_tokens=raw_usage.prompt_tokens,
         output_tokens=raw_usage.completion_tokens,
         total_tokens=raw_usage.total_tokens,
-        input_tokens_details=InputTokensDetails(cached_tokens=cached_tokens),
+        input_tokens_details=InputTokensDetails(
+            cached_tokens=cached_tokens, cache_write_tokens=cache_write_tokens
+        ),
         output_tokens_details=OutputTokensDetails(reasoning_tokens=reasoning_tokens),
     )
 

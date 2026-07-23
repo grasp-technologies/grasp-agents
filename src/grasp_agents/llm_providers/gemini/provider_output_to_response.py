@@ -26,10 +26,6 @@ from google.genai.types import GenerateContentResponse as GeminiResponse
 from openai.types.responses import ResponseStatus
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_output_text import Logprob, LogprobTopLogprob
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 
 from grasp_agents.types.content import (
     AnnotationUrlCitation,
@@ -48,6 +44,8 @@ from grasp_agents.types.items import (
     prefixed_id,
 )
 from grasp_agents.types.response import (
+    InputTokensDetails,
+    OutputTokensDetails,
     Response,
     ResponseUsage,
 )

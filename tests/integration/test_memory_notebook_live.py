@@ -39,7 +39,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def _make_llm() -> OpenAILLM:
-    model_name = os.environ.get("MEMORY_TEST_MODEL", "openai/gpt-4o-mini")
+    model_name = os.environ.get("MEMORY_TEST_MODEL", "openai/gpt-5.4-mini")
     retries = int(os.environ.get("MEMORY_TEST_VALIDATION_RETRIES", "3"))
     return OpenAILLM(
         model_name=model_name,

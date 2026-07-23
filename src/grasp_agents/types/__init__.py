@@ -49,6 +49,7 @@ from .items import (
     SearchAction,
     SearchSource,
     ToolCallItem,
+    UnknownItem,
     WebSearchCallItem,
     prefixed_id,
 )
@@ -197,6 +198,7 @@ __all__ = [
     "ToolOutputItemEvent",
     "TurnEndEvent",
     "TurnStartEvent",
+    "UnknownItem",
     "WebSearchCallCompleted",
     "WebSearchCallInProgress",
     "WebSearchCallItem",

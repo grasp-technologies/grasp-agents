@@ -1,14 +1,15 @@
 """Tests for UsageTracker.update."""
 
 import pytest
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import OutputMessageItem
-from grasp_agents.types.response import Response, ResponseUsage
+from grasp_agents.types.response import (
+    InputTokensDetails,
+    OutputTokensDetails,
+    Response,
+    ResponseUsage,
+)
 from grasp_agents.usage_tracker import UsageTracker
 
 
@@ -194,3 +195,35 @@ class TestUpdateFromResponseWithCosts:
         tracker.update("agent_a", [response], model_name="gpt-4o")
 
         assert tracker.usages["agent_a"].cost == pytest.approx(0.42)
+
+
+class TestCacheWriteTokens:
+    def test_defaults_tolerate_missing_field(self):
+        """Serialized usage from before the SDK carried cache writes loads."""
+        usage = ResponseUsage.model_validate(
+            {
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "total_tokens": 110,
+                "input_tokens_details": {"cached_tokens": 20},
+                "output_tokens_details": {"reasoning_tokens": 0},
+            }
+        )
+
+        assert usage.input_tokens_details.cache_write_tokens == 0
+
+    def test_details_addition(self):
+        total = ResponseUsage(
+            input_tokens=1,
+            input_tokens_details=InputTokensDetails(
+                cached_tokens=5, cache_write_tokens=7
+            ),
+        ) + ResponseUsage(
+            input_tokens=2,
+            input_tokens_details=InputTokensDetails(
+                cached_tokens=10, cache_write_tokens=13
+            ),
+        )
+
+        assert total.input_tokens_details.cached_tokens == 15
+        assert total.input_tokens_details.cache_write_tokens == 20

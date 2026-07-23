@@ -10,10 +10,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_loop import AgentLoop
@@ -42,7 +38,12 @@ from grasp_agents.types.llm_events import (
     ResponseCompleted,
     ResponseCreated,
 )
-from grasp_agents.types.response import Response, ResponseUsage
+from grasp_agents.types.response import (
+    InputTokensDetails,
+    OutputTokensDetails,
+    Response,
+    ResponseUsage,
+)
 from tests._helpers import _make_agent_loop
 
 # ---------- Mock LLM ----------

@@ -11,7 +11,7 @@ from openai.types.responses import (
     ResponseOutputMessage,
     ResponseReasoningItem,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import to_jsonable_python
 
 from .content import (
@@ -386,6 +386,43 @@ class WebSearchCallItem(BaseModel):
         return f"{line} @ {action.url}" if action.url else line
 
 
+# Item types with a dedicated model; UnknownItem refuses these so a malformed
+# known item fails validation loudly instead of degrading to a passthrough.
+_KNOWN_ITEM_TYPES = frozenset(
+    {
+        "message",
+        "function_call",
+        "function_call_output",
+        "reasoning",
+        "web_search_call",
+    }
+)
+
+
+class UnknownItem(BaseModel):
+    """
+    A response item of a type this framework doesn't model, preserved
+    verbatim.
+
+    Round-trips new provider item types — e.g. programmatic-tool-calling
+    ``program`` items with their replay ``fingerprint`` — through the
+    transcript without dropping fields. Only the OpenAI Responses provider
+    sends these back; other providers skip them.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+
+    @model_validator(mode="after")
+    def _reject_known_types(self) -> UnknownItem:
+        if self.type in _KNOWN_ITEM_TYPES:
+            raise ValueError(
+                f"item type {self.type!r} must validate as its dedicated model"
+            )
+        return self
+
+
 AssistantMessage = OutputMessageItem
 
 
@@ -408,12 +445,19 @@ type InputItem = (
     | FunctionToolOutputItem
     | ReasoningItem
     | WebSearchCallItem
+    | UnknownItem
 )
 
-type OutputItem = Annotated[
-    OutputMessageItem | FunctionToolCallItem | ReasoningItem | WebSearchCallItem,
-    Field(discriminator="type"),
-]
+# The discriminated union handles the known tags; an unrecognized ``type``
+# falls through to the UnknownItem passthrough (which refuses known tags, so
+# malformed known items still fail loudly).
+type OutputItem = (
+    Annotated[
+        OutputMessageItem | FunctionToolCallItem | ReasoningItem | WebSearchCallItem,
+        Field(discriminator="type"),
+    ]
+    | UnknownItem
+)
 
 ToolCallItem = Annotated[FunctionToolCallItem, Field(discriminator="type")]
 

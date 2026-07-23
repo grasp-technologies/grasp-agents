@@ -29,7 +29,7 @@ def add_cost_to_usage(
             prompt_tokens=usage.input_tokens,
             completion_tokens=usage.output_tokens,
             cache_read_input_tokens=usage.input_tokens_details.cached_tokens,
-            cache_creation_input_tokens=usage.cache_creation_tokens,
+            cache_creation_input_tokens=usage.input_tokens_details.cache_write_tokens,
             custom_llm_provider=litellm_provider,
         )
         usage.cost = prompt_cost + completion_cost
