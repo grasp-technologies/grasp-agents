@@ -47,6 +47,7 @@ from grasp_agents.types.items import (
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    WebSearchCallItem,
 )
 from grasp_agents.types.llm_errors import LlmContextWindowError
 from grasp_agents.types.llm_events import (
@@ -623,13 +624,14 @@ class AgentLoop[CtxT]:
                 yield OutputMessageItemEvent(
                     source=self.agent_name, exec_id=exec_id, data=item
                 )
-            else:
-                # The only remaining OutputItem kind — a server-side web
-                # search/fetch call (web_search_call). Surface it so consoles
+            elif isinstance(item, WebSearchCallItem):
+                # A server-side web search/fetch call — surface it so consoles
                 # show what the model searched, instead of dropping it.
                 yield WebSearchCallItemEvent(
                     source=self.agent_name, exec_id=exec_id, data=item
                 )
+            # UnknownItem: kept in the transcript for round-trip fidelity but
+            # has no dedicated event.
 
     @traced(name="generate")
     async def query_llm(

@@ -794,3 +794,46 @@ class TestAnthropicErrorMappingLive:
 
         with pytest.raises(LlmNotFoundError):
             await _consume()
+
+
+@pytest.mark.integration
+class TestAnthropicMidConversationSystem:
+    """
+    Mid-conversation system items pass through as system-role messages;
+    model support is enforced by the API, not the converter.
+    """
+
+    def _items(self) -> list[Any]:
+        from grasp_agents.types.content import OutputMessageText as _Text
+        from grasp_agents.types.items import AssistantMessage, SystemMessage
+
+        return [
+            InputMessageItem.from_text("Say hello."),
+            AssistantMessage(status="completed", content=[_Text(text="Hello!")]),
+            InputMessageItem.from_text("Say hello again."),
+            SystemMessage.from_text("Reply only in uppercase.", role="system"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_succeeds_on_supporting_model(self, anthropic_api_key: str) -> None:
+        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+        llm = AnthropicLLM(
+            model_name="claude-opus-4-8", llm_settings={"max_tokens": 100}
+        )
+        response = await llm.generate_response(self._items())
+
+        assert response.status == "completed"
+        assert response.output_text
+        assert response.output_text == response.output_text.upper()
+
+    @pytest.mark.asyncio
+    async def test_rejected_on_older_model(self, anthropic_api_key: str) -> None:
+        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+        from grasp_agents.types.llm_errors import LlmBadRequestError
+
+        llm = AnthropicLLM(
+            model_name="claude-haiku-4-5", llm_settings={"max_tokens": 100}
+        )
+        with pytest.raises(LlmBadRequestError):
+            await llm.generate_response(self._items())

@@ -29,6 +29,7 @@ from openai.types.chat.chat_completion_content_part_param import (
 )
 from openai.types.chat.chat_completion_content_part_text_param import (
     ChatCompletionContentPartTextParam,
+    PromptCacheBreakpoint,
 )
 from openai.types.chat.chat_completion_developer_message_param import (
     ChatCompletionDeveloperMessageParam,
@@ -50,7 +51,7 @@ from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
 
-from grasp_agents.types.content import InputImage, InputText
+from grasp_agents.types.content import InputFile, InputImage, InputText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -59,6 +60,7 @@ from grasp_agents.types.items import (
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    UnknownItem,
 )
 from grasp_agents.types.reasoning import (
     OpenRouterReasoningDetails,
@@ -107,6 +109,10 @@ def items_to_provider_inputs(
             messages.append(_tool_output_to_message_param(item))
             i += 1
 
+        elif isinstance(item, UnknownItem):
+            # Only the OpenAI Responses provider can round-trip these.
+            i += 1
+
         else:
             # Collect consecutive assistant-side items into one message
             group: list[OutputItem] = [item]
@@ -123,18 +129,58 @@ def items_to_provider_inputs(
     return messages
 
 
+def _apply_cache_breakpoint(
+    param: ChatCompletionContentPartTextParam
+    | ChatCompletionContentPartImageParam
+    | ChatCompletionContentPartFileParam,
+    part: InputText | InputImage | InputFile,
+) -> None:
+    """
+    Attach an explicit prompt-cache breakpoint (gpt-5.6+) to a content-part
+    param when the source part carries a ``CacheControl``. The TTL comes from
+    the request-level ``prompt_cache_options``, so ``CacheControl.ttl`` is
+    ignored here.
+    """
+    if part.cache_control is not None:
+        param["prompt_cache_breakpoint"] = PromptCacheBreakpoint(mode="explicit")
+
+
+def _text_content(
+    item: InputMessageItem,
+) -> str | list[ChatCompletionContentPartTextParam]:
+    # Text parts carrying a CacheControl stay structured so the explicit
+    # prompt-cache breakpoint reaches the API; otherwise flatten to a string.
+    if all(
+        not isinstance(part, InputText) or part.cache_control is None
+        for part in item.content
+    ):
+        return item.text
+
+    params: list[ChatCompletionContentPartTextParam] = []
+    for part in item.content:
+        if isinstance(part, InputText):
+            param = ChatCompletionContentPartTextParam(type="text", text=part.text)
+            _apply_cache_breakpoint(param, part)
+            params.append(param)
+    return params
+
+
 def _input_message_to_message_param(
     item: InputMessageItem,
 ) -> ChatCompletionMessageParam:
     """Convert an InputMessageItem to a user/system/developer message param."""
     if item.role == "system":
-        return ChatCompletionSystemMessageParam(role="system", content=item.text)
+        return ChatCompletionSystemMessageParam(
+            role="system", content=_text_content(item)
+        )
     if item.role == "developer":
-        return ChatCompletionDeveloperMessageParam(role="developer", content=item.text)
+        return ChatCompletionDeveloperMessageParam(
+            role="developer", content=_text_content(item)
+        )
 
     text_only = all(isinstance(part, InputText) for part in item.content)
     if text_only:
-        return ChatCompletionUserMessageParam(role="user", content=item.text)
+        return ChatCompletionUserMessageParam(role="user", content=_text_content(item))
 
     content: list[
         ChatCompletionContentPartTextParam
@@ -144,16 +190,16 @@ def _input_message_to_message_param(
 
     for part in item.content:
         if isinstance(part, InputText):
-            content.append(
-                ChatCompletionContentPartTextParam(type="text", text=part.text)
-            )
+            text_param = ChatCompletionContentPartTextParam(type="text", text=part.text)
+            _apply_cache_breakpoint(text_param, part)
+            content.append(text_param)
         elif isinstance(part, InputImage):
-            content.append(
-                ChatCompletionContentPartImageParam(
-                    type="image_url",
-                    image_url=ImageURL(url=part.to_str(), detail=part.detail),  # type: ignore[call-arg]
-                )
+            image_param = ChatCompletionContentPartImageParam(
+                type="image_url",
+                image_url=ImageURL(url=part.to_str(), detail=part.detail),  # type: ignore[call-arg]
             )
+            _apply_cache_breakpoint(image_param, part)
+            content.append(image_param)
         else:  # InputFile — the remaining InputPart member
             file_param: ChatCompletionFileFileParam = {}
             if part.file_data:
@@ -162,9 +208,9 @@ def _input_message_to_message_param(
                 file_param["file_id"] = part.file_id
             if part.filename:
                 file_param["filename"] = part.filename
-            content.append(
-                ChatCompletionContentPartFileParam(type="file", file=file_param)
-            )
+            file_part = ChatCompletionContentPartFileParam(type="file", file=file_param)
+            _apply_cache_breakpoint(file_part, part)
+            content.append(file_part)
 
     return ChatCompletionUserMessageParam(role="user", content=content)
 

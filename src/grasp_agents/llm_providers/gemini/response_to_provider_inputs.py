@@ -22,10 +22,12 @@ from grasp_agents.types.content import (
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     OutputItem,
     OutputMessageItem,
     ReasoningItem,
+    UnknownItem,
     WebSearchCallItem,
 )
 
@@ -45,7 +47,7 @@ if TYPE_CHECKING:
 
 
 def items_to_provider_inputs(
-    items: Sequence[InputMessageItem | OutputItem | FunctionToolOutputItem],
+    items: Sequence[InputItem],
 ) -> tuple[str | GeminiContent | None, list[GeminiContent]]:
     """
     Convert response items to Gemini content format.
@@ -78,6 +80,10 @@ def items_to_provider_inputs(
             contents.append(
                 _tool_output_to_content(item, call_id_to_name=call_id_to_name)
             )
+            i += 1
+
+        elif isinstance(item, UnknownItem):
+            # Only the OpenAI Responses provider can round-trip these.
             i += 1
 
         else:

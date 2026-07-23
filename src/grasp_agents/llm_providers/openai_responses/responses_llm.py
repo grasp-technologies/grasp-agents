@@ -24,6 +24,12 @@ from openai.types.responses.response_create_params import (
     Conversation as ResponsesConversation,
 )
 from openai.types.responses.response_create_params import (
+    Moderation as ResponsesModeration,
+)
+from openai.types.responses.response_create_params import (
+    PromptCacheOptions as ResponsesPromptCacheOptions,
+)
+from openai.types.responses.response_create_params import (
     StreamOptions as ResponsesStreamOptionsParam,
 )
 from openai.types.responses.response_create_params import (
@@ -34,6 +40,9 @@ from openai.types.responses.response_input_item_param import (
 )
 from openai.types.responses.tool_param import (
     ToolParam as ResponsesToolParam,
+)
+from openai.types.responses.web_search_preview_tool_param import (
+    WebSearchPreviewToolParam,
 )
 from openai.types.responses.web_search_tool_param import WebSearchToolParam
 from openai.types.shared import Reasoning
@@ -101,6 +110,8 @@ def _items_after_last_response(
 
 VerbosityLevel = Literal["low", "medium", "high"]
 PromptCacheRetention = Literal["in_memory", "24h"]
+Truncation = Literal["auto", "disabled"]
+ServiceTier = Literal["auto", "default", "flex", "scale", "priority"]
 
 
 @with_config(ConfigDict(extra="allow"))
@@ -114,17 +125,19 @@ class OpenAIResponsesLLMSettings(CloudLLMSettings, total=False):
 
     prompt_cache_key: str
     prompt_cache_retention: PromptCacheRetention | None
+    prompt_cache_options: ResponsesPromptCacheOptions | None
 
     context_management: Iterable[ResponsesContextManagement] | None
-    truncation: Literal["auto", "disabled"] | None
+    truncation: Truncation | None
     include: list[ResponseIncludable] | None
 
-    web_search: WebSearchToolParam | None
+    web_search: WebSearchToolParam | WebSearchPreviewToolParam | None
 
     text: ResponseTextConfigParam
     stream_options: ResponsesStreamOptionsParam | None
     safety_identifier: str
-    service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None
+    moderation: ResponsesModeration | None
+    service_tier: ServiceTier | None
     metadata: Metadata | None
     store: bool | None
     user: str

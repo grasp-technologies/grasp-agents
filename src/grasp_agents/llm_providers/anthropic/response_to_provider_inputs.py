@@ -51,6 +51,7 @@ from grasp_agents.types.content import (
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     OpenPageAction,
     OutputItem,
@@ -58,6 +59,7 @@ from grasp_agents.types.items import (
     ReasoningItem,
     SearchAction,
     SearchSource,
+    UnknownItem,
     WebSearchCallItem,
 )
 
@@ -80,17 +82,20 @@ def _to_cache_control(
 
 
 def items_to_provider_inputs(
-    items: Sequence[InputMessageItem | OutputItem | FunctionToolOutputItem],
+    items: Sequence[InputItem],
 ) -> tuple[str | list[TextBlockParam] | None, list[MessageParam]]:
     """
     Convert memory items to Anthropic message format.
 
-    Returns ``(system, messages)`` where *system* is extracted from
-    system/developer role items. Each system-role text part becomes its
-    own :class:`TextBlockParam` (Anthropic accepts a block array for
-    ``system``), so per-block :class:`CacheControl` checkpoints reach the
-    API and multi-part prompts are never flattened. The payload collapses
-    to a plain string only in the trivial single-part, no-cache case.
+    Returns ``(system, messages)`` where *system* holds the leading run of
+    system/developer role items; later ones become system-role messages at
+    their position (the item order is passed through as-is — the API
+    enforces the placement rules and model support). Each system-role text
+    part becomes its own :class:`TextBlockParam` (Anthropic accepts a block
+    array for ``system``), so per-block :class:`CacheControl` checkpoints
+    reach the API and multi-part prompts are never flattened. The payload
+    collapses to a plain string only in the trivial single-part, no-cache
+    case.
     """
     system_blocks: list[TextBlockParam] = []
     messages: list[MessageParam] = []
@@ -102,16 +107,24 @@ def items_to_provider_inputs(
 
         if isinstance(item, InputMessageItem):
             if item.role in {"system", "developer"}:
-                for part in item.content:
-                    if not isinstance(part, InputText):
-                        continue
-                    system_blocks.append(
-                        TextBlockParam(
-                            type="text",
-                            text=part.text,
-                            cache_control=_to_cache_control(part.cache_control),
-                        )
+                blocks = [
+                    TextBlockParam(
+                        type="text",
+                        text=part.text,
+                        cache_control=_to_cache_control(part.cache_control),
                     )
+                    for part in item.content
+                    if isinstance(part, InputText)
+                ]
+                if messages:
+                    # Mid-conversation system/developer instructions become
+                    # system-role messages at their position; only the leading
+                    # run is hoisted into the top-level ``system``. The item
+                    # order is passed through as-is — the API enforces the
+                    # placement rules and model support (Opus 4.8+).
+                    messages.append(MessageParam(role="system", content=blocks))
+                else:
+                    system_blocks.extend(blocks)
                 i += 1
             else:
                 messages.append(
@@ -146,6 +159,10 @@ def items_to_provider_inputs(
                 )
                 i += 1
             messages.append(MessageParam(role="user", content=tool_results))
+
+        elif isinstance(item, UnknownItem):
+            # Only the OpenAI Responses provider can round-trip these.
+            i += 1
 
         else:
             # Collect consecutive assistant-side items into one message
@@ -302,6 +319,10 @@ def _output_group_to_message_param(output_items: Sequence[OutputItem]) -> Messag
                 content.extend(_web_fetch_to_blocks(item))
             else:
                 content.extend(_web_search_to_blocks(item))
+
+        elif isinstance(item, UnknownItem):
+            # Only the OpenAI Responses provider can round-trip these.
+            continue
 
         else:
             # Tolerate empty arguments from older transcripts (a no-arg

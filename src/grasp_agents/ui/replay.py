@@ -86,6 +86,6 @@ def history_events(
             events.append(
                 ToolOutputItemEvent(source=tool, destination=agent, data=item)
             )
-        else:
+        elif isinstance(item, WebSearchCallItem):
             events.append(WebSearchCallItemEvent(source=agent, data=item))
     return events

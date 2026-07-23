@@ -85,7 +85,7 @@ _BASE_RESPONSE: dict[str, Any] = {
         "input_tokens": 10,
         "output_tokens": 20,
         "total_tokens": 30,
-        "input_tokens_details": {"cached_tokens": 0},
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
         "output_tokens_details": {"reasoning_tokens": 0},
     },
 }
@@ -345,3 +345,116 @@ class TestMessageIdNotSent:
         )
         [param2] = items_to_provider_inputs([no_phase])
         assert "phase" not in param2
+
+
+class TestPromptCacheBreakpoints:
+    def test_input_part_cache_control_becomes_breakpoint(self) -> None:
+        from grasp_agents.types.content import CacheControl
+        from grasp_agents.types.items import UserMessage
+
+        msg = UserMessage(
+            content=[
+                InputText(text="stable prefix", cache_control=CacheControl(ttl="1h")),
+                InputText(text="tail"),
+            ]
+        )
+
+        [param] = items_to_provider_inputs([msg])
+        first, second = cast("list[dict[str, Any]]", param["content"])
+
+        assert first["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert "cache_control" not in first
+        assert "prompt_cache_breakpoint" not in second
+
+    def test_output_text_part_gets_no_breakpoint(self) -> None:
+        from grasp_agents.types.content import CacheControl
+
+        msg = OutputMessageItem(
+            status="completed",
+            content=[OutputMessageText(text="reply", cache_control=CacheControl())],
+        )
+
+        [param] = items_to_provider_inputs([msg])
+        [part] = cast("list[dict[str, Any]]", param["content"])
+
+        assert "prompt_cache_breakpoint" not in part
+        assert "cache_control" not in part
+
+    def test_item_level_cache_control_scrubbed(self) -> None:
+        from grasp_agents.types.content import CacheControl
+
+        item = FunctionToolOutputItem(
+            call_id="call_1", output="ok", cache_control=CacheControl()
+        )
+
+        [param] = items_to_provider_inputs([item])
+
+        assert "cache_control" not in param
+
+
+class TestUnknownItemRoundtrip:
+    def test_program_item_fingerprint_round_trips(self) -> None:
+        from grasp_agents.types.items import UnknownItem
+
+        resp = InternalResponse.model_validate(
+            {
+                "object": "response",
+                "model": "gpt-5.6",
+                "output": [
+                    {
+                        "type": "program",
+                        "id": "prog_1",
+                        "call_id": "call_9",
+                        "code": "tools.add({a: 1, b: 2})",
+                        "fingerprint": "fp-opaque-123",
+                    }
+                ],
+            }
+        )
+
+        [item] = resp.output
+        assert isinstance(item, UnknownItem)
+
+        [param] = items_to_provider_inputs([item])
+        assert param == {
+            "type": "program",
+            "id": "prog_1",
+            "call_id": "call_9",
+            "code": "tools.add({a: 1, b: 2})",
+            "fingerprint": "fp-opaque-123",
+        }
+
+    def test_malformed_known_item_still_fails(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            InternalResponse.model_validate(
+                {
+                    "object": "response",
+                    "model": "m",
+                    "output": [{"type": "message", "role": "assistant"}],
+                }
+            )
+
+
+class TestWebSearchActionParams:
+    def test_search_without_queries_omits_query(self) -> None:
+        item = WebSearchCallItem(action=SearchAction())
+
+        [param] = items_to_provider_inputs([item])
+        action = cast("dict[str, Any]", param["action"])
+
+        assert "query" not in action
+
+    def test_find_in_page_action_round_trips(self) -> None:
+        item = WebSearchCallItem(
+            action=FindInPageAction(url="https://x.test", pattern="needle")
+        )
+
+        [param] = items_to_provider_inputs([item])
+        action = cast("dict[str, Any]", param["action"])
+
+        assert action["type"] == "find_in_page"
+        assert action["url"] == "https://x.test"
+        assert action["pattern"] == "needle"

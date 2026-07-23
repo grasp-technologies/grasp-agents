@@ -25,10 +25,6 @@ from anthropic.types.web_search_tool_result_error import (
 )
 from openai.types.responses import ResponseStatus
 from openai.types.responses.response import IncompleteDetails
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 
 from grasp_agents.types.content import (
     Annotation,
@@ -47,6 +43,8 @@ from grasp_agents.types.items import (
     WebSearchCallItem,
 )
 from grasp_agents.types.response import (
+    InputTokensDetails,
+    OutputTokensDetails,
     Response,
     ResponseUsage,
 )
@@ -287,8 +285,10 @@ def convert_usage(usage: AnthropicUsage) -> ResponseUsage:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=input_tokens + output_tokens,
-        input_tokens_details=InputTokensDetails(cached_tokens=cache_read),
-        cache_creation_tokens=cache_write,
+        input_tokens_details=InputTokensDetails(
+            cached_tokens=cache_read, cache_write_tokens=cache_write
+        ),
+        # Anthropic does not report reasoning tokens, so we default to 0.
         output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
     )
 

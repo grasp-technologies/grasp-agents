@@ -47,7 +47,7 @@ class TestOpenAIResponsesIntegration:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-4.1-nano", llm_settings={"max_output_tokens": 100}
+            model_name="gpt-5.4-nano", llm_settings={"max_output_tokens": 100}
         )
 
     @pytest.mark.asyncio
@@ -109,7 +109,7 @@ class TestOpenAIResponsesStructuredOutput:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-4.1-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_output_tokens": 200},
             apply_output_schema_via_provider=True,
         )
@@ -150,7 +150,7 @@ class TestOpenAIResponsesWebSearch:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.2",
+            model_name="gpt-5.4",
             llm_settings={
                 "max_output_tokens": 4096,
                 "web_search": {"type": "web_search_preview"},
@@ -227,7 +227,7 @@ class TestOpenAIResponsesReasoningContinuity:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.2",
+            model_name="gpt-5.4",
             llm_settings={
                 "max_output_tokens": 4096,
                 "reasoning": {"effort": "low", "summary": "auto"},
@@ -329,7 +329,7 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5-mini",
+            model_name="gpt-5.4-mini",
             llm_settings={
                 "max_output_tokens": 4096,
                 "reasoning": {"effort": "low", "summary": "auto"},
@@ -381,10 +381,15 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
             await llm.generate_response(full_input, tools=tools)
 
     @pytest.mark.asyncio
-    async def test_missing_encrypted_content_causes_api_error(
+    async def test_missing_encrypted_content_tolerated(
         self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
     ) -> None:
-        """Stripping encrypted_content from reasoning items must error."""
+        """
+        Reasoning items with *missing* encrypted_content are tolerated.
+
+        The API used to reject them under ``store=False``; it now accepts the
+        request (only corrupted content still errors — see the test above).
+        """
         user_msg = InputMessageItem.from_text(
             "From the set {6, 11, 17, 19, 25, 33}, find the unique pair "
             "whose sum is exactly 42. Work through the combinations, "
@@ -419,8 +424,8 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
 
         full_input = [user_msg, *stripped_items, *tool_outputs]
 
-        with pytest.raises(Exception):
-            await llm.generate_response(full_input, tools=tools)
+        r2 = await llm.generate_response(full_input, tools=tools)
+        assert r2.status == "completed"
 
 
 @pytest.mark.integration
@@ -582,7 +587,7 @@ class TestOpenAIResponsesParallelToolUse:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-4.1-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_output_tokens": 256},
         )
 
@@ -655,3 +660,47 @@ class TestOpenAIResponsesParallelToolUse:
 
         assert r2.status == "completed"
         assert "42" in r2.output_text
+
+
+@pytest.mark.integration
+class TestOpenAIResponsesExplicitPromptCaching:
+    """CacheControl → explicit prompt-cache breakpoints (gpt-5.6+)."""
+
+    @pytest.mark.asyncio
+    async def test_breakpoint_writes_then_reads_cache(
+        self, openai_api_key: str
+    ) -> None:
+        from uuid import uuid4
+
+        from grasp_agents.llm_providers.openai_responses.responses_llm import (
+            OpenAIResponsesLLM,
+        )
+        from grasp_agents.types.content import CacheControl, InputText
+        from grasp_agents.types.items import UserMessage
+
+        llm = OpenAIResponsesLLM(
+            model_name="gpt-5.6-luna",
+            llm_settings={
+                "max_output_tokens": 200,
+                "prompt_cache_options": {"mode": "explicit"},
+                # A fresh key per run so the first call always writes.
+                "prompt_cache_key": f"grasp-cache-test-{uuid4().hex}",
+            },
+        )
+        stable = "You are a precise assistant. " * 200
+        msg = UserMessage(
+            content=[
+                InputText(text=stable, cache_control=CacheControl()),
+                InputText(text="Reply with the single word: ok"),
+            ]
+        )
+
+        r1 = await llm.generate_response([msg])
+        assert r1.status == "completed"
+        assert r1.usage is not None
+        assert r1.usage.input_tokens_details.cache_write_tokens > 0
+
+        r2 = await llm.generate_response([msg])
+        assert r2.status == "completed"
+        assert r2.usage is not None
+        assert r2.usage.input_tokens_details.cached_tokens > 0

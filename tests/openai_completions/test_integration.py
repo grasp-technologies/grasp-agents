@@ -43,7 +43,7 @@ class TestOpenAICompletionsIntegration:
         )
 
         return OpenAILLM(
-            model_name="openai/gpt-4.1-nano",
+            model_name="openai/gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 100},
         )
 
@@ -106,7 +106,7 @@ class TestOpenAICompletionsStructuredOutput:
         )
 
         return OpenAILLM(
-            model_name="openai/gpt-4.1-nano", apply_output_schema_via_provider=True
+            model_name="openai/gpt-5.4-nano", apply_output_schema_via_provider=True
         )
 
     @pytest.mark.asyncio
@@ -158,7 +158,7 @@ class TestOpenAICompletionsParallelToolUse:
         )
 
         return OpenAILLM(
-            model_name="openai/gpt-4.1-nano",
+            model_name="openai/gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 256},
         )
 

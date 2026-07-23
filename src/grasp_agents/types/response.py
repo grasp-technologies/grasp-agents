@@ -15,8 +15,10 @@ from openai.types.responses import (
 )
 from openai.types.responses.response import IncompleteDetails, ToolChoice
 from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
+    InputTokensDetails as _SDKInputTokensDetails,
+)
+from openai.types.responses.response_usage import (
+    OutputTokensDetails as _SDKOutputTokensDetails,
 )
 from openai.types.responses.response_usage import ResponseUsage as _SDKResponseUsage
 from openai.types.shared import Metadata, Reasoning
@@ -32,20 +34,25 @@ from .items import (
 )
 
 
+class InputTokensDetails(_SDKInputTokensDetails):
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+class OutputTokensDetails(_SDKOutputTokensDetails):
+    reasoning_tokens: int = 0
+
+
 class ResponseUsage(_SDKResponseUsage):
     input_tokens: int = 0
-    input_tokens_details: InputTokensDetails = Field(
-        default_factory=lambda: InputTokensDetails(cached_tokens=0)
+    input_tokens_details: InputTokensDetails = Field(  # pyright: ignore[reportIncompatibleVariableOverride] — defaulted fields
+        default_factory=InputTokensDetails
     )
     output_tokens: int = 0
-    output_tokens_details: OutputTokensDetails = Field(
-        default_factory=lambda: OutputTokensDetails(reasoning_tokens=0)
+    output_tokens_details: OutputTokensDetails = Field(  # pyright: ignore[reportIncompatibleVariableOverride] — defaulted fields
+        default_factory=OutputTokensDetails
     )
     total_tokens: int = 0
-    # Input tokens written to the provider's prompt cache this call (a subset
-    # of ``input_tokens``, like ``cached_tokens``). Cache writes are billed at
-    # a premium (e.g. 1.25x on Anthropic), so cost accounting needs the split.
-    cache_creation_tokens: int = 0
     cost: float | None = None
 
     def __add__(self, other: ResponseUsage) -> ResponseUsage:
@@ -55,14 +62,14 @@ class ResponseUsage(_SDKResponseUsage):
             total_tokens=self.total_tokens + other.total_tokens,
             input_tokens_details=InputTokensDetails(
                 cached_tokens=self.input_tokens_details.cached_tokens
-                + other.input_tokens_details.cached_tokens
+                + other.input_tokens_details.cached_tokens,
+                cache_write_tokens=self.input_tokens_details.cache_write_tokens
+                + other.input_tokens_details.cache_write_tokens,
             ),
             output_tokens_details=OutputTokensDetails(
                 reasoning_tokens=self.output_tokens_details.reasoning_tokens
                 + other.output_tokens_details.reasoning_tokens
             ),
-            cache_creation_tokens=self.cache_creation_tokens
-            + other.cache_creation_tokens,
             cost=(self.cost or 0) + (other.cost or 0)
             if self.cost is not None or other.cost is not None
             else None,
@@ -97,8 +104,10 @@ class Response(_SDKResponse):
     frequency_penalty: float | None = None
 
     reasoning: Reasoning | None = None
-    # effort: ["none", "minimal", "low", "medium", "high", "xhigh"] (default=None)
+    # effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     # summary: ["auto", "concise", "detailed"] (default=None)
+    # context: ["auto", "current_turn", "all_turns"] — persisted reasoning
+    # mode: ["standard", "pro"]
 
     text: ResponseTextConfig | None = None
     # one of ResponseFormatText, ResponseFormatTextJSONSchemaConfig,

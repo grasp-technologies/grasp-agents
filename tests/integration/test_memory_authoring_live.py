@@ -69,7 +69,7 @@ async def test_memory_authoring_does_not_clobber(memdir: Path) -> None:
     - MEMORY.md still contains the title line and the original pointer
     - at least one new topic file or index pointer was added
     """
-    model_name = os.environ.get("MEMORY_TEST_MODEL", "openai/gpt-4o-mini")
+    model_name = os.environ.get("MEMORY_TEST_MODEL", "openai/gpt-5.4-mini")
     retries = int(os.environ.get("MEMORY_TEST_VALIDATION_RETRIES", "3"))
     llm = OpenAILLM(
         model_name=model_name,

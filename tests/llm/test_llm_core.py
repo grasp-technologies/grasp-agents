@@ -110,7 +110,7 @@ class TestAnthropicCacheUsage:
         usage = convert_usage(self._usage())
         assert usage.input_tokens == 100 + 5000 + 200
         assert usage.input_tokens_details.cached_tokens == 5000
-        assert usage.cache_creation_tokens == 200
+        assert usage.input_tokens_details.cache_write_tokens == 200
         assert usage.total_tokens == usage.input_tokens + 10
 
     def test_cost_is_positive_and_prices_cache_writes(self) -> None:

@@ -299,7 +299,7 @@ class Printer:
                     text += "\n</response>\n"
                 elif isinstance(item, FunctionToolCallItem):
                     text += "\n</tool call>\n"
-                else:  # WebSearchCallItem
+                elif isinstance(item, WebSearchCallItem):
                     text += f"{item.summary}\n</web search>\n"
 
             elif isinstance(

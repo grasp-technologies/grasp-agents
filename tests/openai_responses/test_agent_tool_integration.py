@@ -39,7 +39,7 @@ class TestAgentToolIntegration:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-4.1-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_output_tokens": 200},
         )
 

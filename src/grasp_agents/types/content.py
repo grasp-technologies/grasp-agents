@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # === Input content parts ===
 
-ImageDetail = Literal["low", "medium", "high", "ultra_high", "auto"]
+ImageDetail = Literal["low", "medium", "high", "ultra_high", "auto", "original"]
 
 
 class CacheControl(BaseModel):
@@ -46,11 +46,12 @@ class CacheControl(BaseModel):
     Set it on a content part to ask the provider to cache the prompt prefix
     *up to and including* that part. Place it on the last stable part of a
     prefix you expect to reuse across turns. Providers with prompt caching
-    honor it (Anthropic emits a cache breakpoint); the rest ignore it.
+    honor it (Anthropic and OpenAI on gpt-5.6+); the rest ignore it.
 
     ``ttl`` selects the cache lifetime where the provider supports tiers
     (Anthropic: ``"5m"`` default, ``"1h"`` extended); ``None`` uses the
-    provider default.
+    provider default. OpenAI ignores it — there the TTL is set per request
+    via the ``prompt_cache_options`` LLM setting.
     """
 
     type: Literal["ephemeral"] = "ephemeral"

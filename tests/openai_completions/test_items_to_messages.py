@@ -666,3 +666,49 @@ class TestResponseToCompletionsMessage:
         assert len(msg["reasoning_details"]) == 1
         assert msg["reasoning_details"][0]["type"] == "reasoning.summary"
         assert msg["reasoning_details"][0]["summary"] == "Thinking"
+
+
+class TestCacheControls:
+    def test_text_part_cache_control_becomes_breakpoint(self) -> None:
+        from grasp_agents.types.content import CacheControl, InputText
+        from grasp_agents.types.items import UserMessage
+
+        msg = UserMessage(
+            content=[
+                InputText(
+                    text="pinned", cache_control=CacheControl()
+                ),
+                InputText(text="tail"),
+            ]
+        )
+
+        [param] = items_to_completions_messages([msg])
+
+        first, second = param["content"]
+        assert first["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert "prompt_cache_breakpoint" not in second
+
+    def test_system_message_stays_structured_with_cache_control(self) -> None:
+        from grasp_agents.types.content import CacheControl, InputText
+        from grasp_agents.types.items import SystemMessage
+
+        msg = SystemMessage(
+            role="system",
+            content=[
+                InputText(
+                    text="pinned", cache_control=CacheControl()
+                )
+            ],
+        )
+
+        [param] = items_to_completions_messages([msg])
+
+        [block] = param["content"]
+        assert block["prompt_cache_breakpoint"] == {"mode": "explicit"}
+
+    def test_plain_text_message_still_flattens(self) -> None:
+        from grasp_agents.types.items import UserMessage
+
+        [param] = items_to_completions_messages([UserMessage.from_text("hi")])
+
+        assert param["content"] == "hi"

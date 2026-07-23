@@ -47,10 +47,12 @@
         "getpgid",
         "Ghostty",
         "halfcell",
+        "Includable",
         "iopub",
         "ipykernel",
         "ipynb",
         "iTerm",
+        "jsonable",
         "jupyter",
         "kernelspec",
         "killpg",
@@ -92,6 +94,7 @@
         "unsandboxed",
         "unwedges",
         "WezTerm",
+        "xhigh",
         "zmq"
     ],
     "patterns": [

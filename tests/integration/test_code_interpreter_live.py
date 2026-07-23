@@ -44,7 +44,7 @@ _SYS_PROMPT = (
 def _make_llm() -> OpenAIResponsesLLM:
     # The Responses API (unlike Chat Completions) supports image tool outputs,
     # which is what lets a displayed plot be fed back to the model.
-    model_name = os.environ.get("CODE_INTERP_TEST_MODEL", "gpt-4o-mini")
+    model_name = os.environ.get("CODE_INTERP_TEST_MODEL", "gpt-5.4-mini")
     return OpenAIResponsesLLM(model_name=model_name)
 
 
