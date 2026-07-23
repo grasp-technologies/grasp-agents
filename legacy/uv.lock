@@ -563,17 +563,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dotenv"
-version = "0.9.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dotenv" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/b7/545d2c10c1fc15e48653c91efde329a790f2eecfbbf2bd16003b5db2bab0/dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9", size = 1892, upload-time = "2025-02-19T22:15:01.647Z" },
-]
-
-[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -809,11 +798,10 @@ wheels = [
 ]
 
 [[package]]
-name = "grasp-agents"
-version = "0.6.51"
+name = "grasp-agents-legacy"
+version = "0.6.54"
 source = { editable = "." }
 dependencies = [
-    { name = "dotenv" },
     { name = "google-genai" },
     { name = "httpx" },
     { name = "litellm" },
@@ -821,6 +809,7 @@ dependencies = [
     { name = "openai" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "tenacity" },
     { name = "termcolor" },
@@ -854,10 +843,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arize-phoenix-otel", marker = "extra == 'observability'", specifier = ">=0.13.1" },
-    { name = "dotenv", specifier = ">=0.9.9" },
     { name = "google-genai", specifier = ">=1.45.0" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
-    { name = "litellm", specifier = "==1.83.10" },
+    { name = "litellm", specifier = ">=1.83.10,<2" },
     { name = "numpy", specifier = "<2" },
     { name = "openai", specifier = ">=1.68.2,<3" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'observability'", specifier = ">=0.1.25" },
@@ -865,6 +853,7 @@ requires-dist = [
     { name = "openinference-instrumentation-openllmetry", marker = "extra == 'observability'", specifier = ">=0.1.2" },
     { name = "opentelemetry-sdk", specifier = ">=1.37.0" },
     { name = "pydantic", specifier = ">=2" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "tenacity", specifier = ">=8.3.0,<9" },
     { name = "termcolor", specifier = ">=2.4.0,<3" },
