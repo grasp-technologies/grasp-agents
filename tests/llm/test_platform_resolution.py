@@ -197,6 +197,17 @@ class TestCompatibleEndpointLitellmProvider:
         )
         assert llm.litellm_provider == "deepinfra"
 
+    def test_aliases_apply_to_api_providers_too(self) -> None:
+        # Aliasing is a property of the provider name, not of being a platform:
+        # an endpoint named like an aliased provider resolves the same way.
+        llm = AnthropicLLM(
+            model_name="claude-sonnet-4-5@20250929",
+            api_provider=APIProvider(
+                name="vertex", base_url="https://aiplatform.test/v1", api_key="k"
+            ),
+        )
+        assert llm.litellm_provider == "vertex_ai"
+
     def test_explicit_litellm_provider_wins(self) -> None:
         llm = OpenAILLM(
             model_name="gpt-5.1",

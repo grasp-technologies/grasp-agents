@@ -138,8 +138,10 @@ class AnthropicLLM(CloudLLM):
 
     _native_provider_name: ClassVar[str] = "anthropic"
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("ANTHROPIC_API_KEY",)
-    _platform_litellm_providers: ClassVar[Mapping[str, str]] = {
-        "bedrock": "bedrock",
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset(
+        {"bedrock", "bedrock_mantle", "vertex"}
+    )
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {
         "bedrock_mantle": "bedrock",
         "vertex": "vertex_ai",
     }

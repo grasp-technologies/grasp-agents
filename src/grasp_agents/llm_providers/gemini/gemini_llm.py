@@ -124,7 +124,8 @@ class GeminiLLM(CloudLLM):
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
     )
-    _platform_litellm_providers: ClassVar[Mapping[str, str]] = {"vertex": "vertex_ai"}
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"vertex"})
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {"vertex": "vertex_ai"}
 
     llm_settings: GeminiLLMSettings | None = None
     # Per-request HTTP timeout in seconds (``None`` disables).

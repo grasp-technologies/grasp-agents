@@ -155,7 +155,7 @@ class OpenAIResponsesLLM(CloudLLM):
 
     _native_provider_name: ClassVar[str] = "openai"
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
-    _platform_litellm_providers: ClassVar[Mapping[str, str]] = {"azure": "azure"}
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure"})
 
     llm_settings: OpenAIResponsesLLMSettings | None = None
     # "azure" builds an ``AsyncAzureOpenAI`` client — its Responses API

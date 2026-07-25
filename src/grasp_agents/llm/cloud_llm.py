@@ -71,15 +71,18 @@ class CloudLLM(LLM):
     # through to the provider untouched. ``None`` disables validation.
     _settings_type: ClassVar[Any] = CloudLLMSettings
 
-    # The vendor's own API: the LiteLLM provider name it prices under, also
-    # used to name the ``api_provider`` entry when the caller supplies none.
+    # The vendor's own API: the name of its endpoint, used for the
+    # ``api_provider`` entry when the caller supplies none.
     _native_provider_name: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
-    # Cloud platforms this provider builds a dedicated client for (configured
-    # through ``platform_config``), mapped to the LiteLLM provider name each
-    # prices under — their model IDs and cost tables differ from the vendor's.
-    _platform_litellm_providers: ClassVar[Mapping[str, str]] = {}
+    # Cloud platforms this provider builds a dedicated client for, configured
+    # through ``platform_config``.
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset()
+    # Provider names that LiteLLM knows under a different one. Applies to every
+    # endpoint — cloud platform or API-compatible provider alike; anything
+    # unlisted prices under its own name.
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {}
 
     llm_settings: CloudLLMSettings | None = None
 
@@ -125,9 +128,9 @@ class CloudLLM(LLM):
                 )
             return
 
-        if self.platform not in self._platform_litellm_providers:
+        if self.platform not in self._cloud_platforms:
             supported = (
-                ", ".join(repr(p) for p in self._platform_litellm_providers) or "none"
+                ", ".join(repr(p) for p in sorted(self._cloud_platforms)) or "none"
             )
             raise ValueError(
                 f"{type(self).__name__} has no client for platform "
@@ -153,21 +156,35 @@ class CloudLLM(LLM):
             name=self._native_provider_name or "", base_url=None, api_key=api_key
         )
 
+    def _resolve_provider_name(self) -> str | None:
+        """
+        Name of the provider actually serving the model.
+
+        The selected cloud platform, else the ``api_provider`` if it points
+        somewhere other than the vendor's own endpoint (an ``api_provider``
+        without a ``base_url`` is credentials for that endpoint, not a different
+        provider), else the vendor itself.
+        """
+        if self.platform is not None:
+            return self.platform
+        if self.api_provider is not None and self.api_provider.get("base_url"):
+            return self.api_provider.get("name") or self._native_provider_name
+        return self._native_provider_name
+
     def _resolve_litellm_provider(self) -> str | None:
         """
         Pricing/capability identity of the endpoint actually serving the model.
 
-        A cloud platform or an API-compatible endpoint has its own model IDs and
-        cost tables, so the vendor's identity holds only for the vendor's own
-        endpoint. Pass ``litellm_provider`` explicitly to pin it.
+        Every provider has its own model IDs and cost tables, so the vendor's
+        identity holds only for the vendor's own endpoint. Pass
+        ``litellm_provider`` explicitly to pin it.
         """
         if self.litellm_provider is not None:
             return self.litellm_provider
-        if self.platform is not None:
-            return self._platform_litellm_providers[self.platform]
-        if self.api_provider is not None and self.api_provider.get("base_url"):
-            return self.api_provider.get("name") or self._native_provider_name
-        return self._native_provider_name
+        name = self._resolve_provider_name()
+        if name is None:
+            return None
+        return self._litellm_provider_aliases.get(name, name)
 
     # --- Provider API layer (abstract) ---
 
