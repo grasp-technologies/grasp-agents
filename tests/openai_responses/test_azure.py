@@ -41,6 +41,11 @@ class TestAzureResponses:
         assert captured["api_version"] == "2025-03-01-preview"
         assert llm.model_name == "my-deployment"
         assert llm.litellm_provider == "azure"
+        assert llm.api_provider == {
+            "name": "azure",
+            "base_url": "https://x.openai.azure.com",
+            "api_key": None,
+        }
 
     def test_shared_client_args_forwarded(
         self, monkeypatch: pytest.MonkeyPatch

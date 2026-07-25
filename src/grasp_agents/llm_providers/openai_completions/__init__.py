@@ -84,7 +84,12 @@ from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
 
-from .completions_llm import AzureClientConfig, OpenAILLM, OpenAILLMSettings
+from .completions_llm import (
+    AzureClientConfig,
+    OpenAICloudPlatform,
+    OpenAILLM,
+    OpenAILLMSettings,
+)
 from .response_to_provider_inputs import (
     items_to_provider_inputs,
     response_to_provider_input,
@@ -92,6 +97,7 @@ from .response_to_provider_inputs import (
 
 __all__ = [
     "AzureClientConfig",
+    "OpenAICloudPlatform",
     "OpenAILLM",
     "OpenAILLMSettings",
     "items_to_provider_inputs",

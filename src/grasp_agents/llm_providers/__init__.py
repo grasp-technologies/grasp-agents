@@ -20,35 +20,41 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .anthropic import (
+        AnthropicCloudPlatform,
         AnthropicLLM,
         AnthropicLLMSettings,
-        AnthropicPlatform,
         BedrockClientConfig,
         VertexClientConfig,
     )
     from .gemini import (
+        GeminiCloudPlatform,
         GeminiLLM,
         GeminiLLMSettings,
-        GeminiPlatform,
         GeminiVertexClientConfig,
     )
     from .litellm import LiteLLM, LiteLLMSettings
-    from .openai_completions import AzureClientConfig, OpenAILLM, OpenAILLMSettings
+    from .openai_completions import (
+        AzureClientConfig,
+        OpenAICloudPlatform,
+        OpenAILLM,
+        OpenAILLMSettings,
+    )
     from .openai_responses import OpenAIResponsesLLM, OpenAIResponsesLLMSettings
 
 _SUBMODULE_BY_NAME: dict[str, str] = {
     "AnthropicLLM": "anthropic",
     "AnthropicLLMSettings": "anthropic",
-    "AnthropicPlatform": "anthropic",
+    "AnthropicCloudPlatform": "anthropic",
     "BedrockClientConfig": "anthropic",
     "VertexClientConfig": "anthropic",
     "GeminiLLM": "gemini",
     "GeminiLLMSettings": "gemini",
-    "GeminiPlatform": "gemini",
+    "GeminiCloudPlatform": "gemini",
     "GeminiVertexClientConfig": "gemini",
     "LiteLLM": "litellm",
     "LiteLLMSettings": "litellm",
     "AzureClientConfig": "openai_completions",
+    "OpenAICloudPlatform": "openai_completions",
     "OpenAILLM": "openai_completions",
     "OpenAILLMSettings": "openai_completions",
     "OpenAIResponsesLLM": "openai_responses",
@@ -83,17 +89,18 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "AnthropicCloudPlatform",
     "AnthropicLLM",
     "AnthropicLLMSettings",
-    "AnthropicPlatform",
     "AzureClientConfig",
     "BedrockClientConfig",
+    "GeminiCloudPlatform",
     "GeminiLLM",
     "GeminiLLMSettings",
-    "GeminiPlatform",
     "GeminiVertexClientConfig",
     "LiteLLM",
     "LiteLLMSettings",
+    "OpenAICloudPlatform",
     "OpenAILLM",
     "OpenAILLMSettings",
     "OpenAIResponsesLLM",

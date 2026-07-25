@@ -92,9 +92,9 @@ from anthropic.types import (
 )
 
 from .anthropic_llm import (
+    AnthropicCloudPlatform,
     AnthropicLLM,
     AnthropicLLMSettings,
-    AnthropicPlatform,
     BedrockClientConfig,
     VertexClientConfig,
 )

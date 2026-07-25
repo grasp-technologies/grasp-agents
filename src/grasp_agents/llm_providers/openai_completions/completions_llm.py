@@ -1,7 +1,5 @@
 import logging
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, TypedDict
 
@@ -52,34 +50,7 @@ from .tool_converters import to_api_tool, to_api_tool_choice
 logger = logging.getLogger(__name__)
 
 
-def get_openai_compatible_providers() -> list[APIProvider]:
-    """Returns a dictionary of available OpenAI-compatible API providers."""
-    return [
-        APIProvider(
-            name="openai",
-            base_url="https://api.openai.com/v1",
-            api_key=os.getenv("OPENAI_API_KEY"),
-        ),
-        APIProvider(
-            name="gemini_openai",
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=os.getenv("GEMINI_API_KEY"),
-        ),
-        # Openrouter does not support structured outputs ATM
-        APIProvider(
-            name="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-        ),
-    ]
-
-
-# Compat-prefix name → litellm provider name for pricing lookups.
-_COMPAT_LITELLM_PROVIDERS = {
-    "openai": "openai",
-    "gemini_openai": "gemini",
-    "openrouter": "openrouter",
-}
+OpenAICloudPlatform = Literal["azure"]
 
 CompletionsReasoningEffort = Literal[
     "none", "disable", "minimal", "low", "medium", "high", "xhigh", "max"
@@ -152,18 +123,23 @@ class AzureClientConfig(TypedDict, total=False):
 class OpenAILLM(CloudLLM):
     _settings_type: ClassVar[Any] = OpenAILLMSettings
 
-    litellm_provider: str | None = "openai"
+    _native_provider_name: ClassVar[str] = "openai"
+    _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
+    _platform_litellm_providers: ClassVar[Mapping[str, str]] = {"azure": "azure"}
+
     llm_settings: OpenAILLMSettings | None = None
+
     openai_client_timeout: float = 600.0
     # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
     # system, and a non-zero value here would multiply with it.
     openai_client_max_retries: int = 0
     extra_openai_client_params: dict[str, Any] | None = None
 
-    # "openai" routes to api.openai.com or any OpenAI-compatible endpoint
-    # (via ``api_provider`` / a ``provider/model`` prefix); "azure" builds an
-    # ``AsyncAzureOpenAI`` client (the Chat Completions surface is identical).
-    platform: Literal["openai", "azure"] = "openai"
+    # "azure" builds an ``AsyncAzureOpenAI`` client (the Chat Completions
+    # surface is identical); ``None`` uses the plain client — pointed by
+    # ``api_provider`` at api.openai.com (the default) or at any
+    # OpenAI-compatible endpoint.
+    platform: OpenAICloudPlatform | None = None
     # Azure client args (see AzureClientConfig). ``model_name`` is the Azure
     # *deployment* name. May carry secrets — kept out of repr.
     platform_config: AzureClientConfig | None = field(default=None, repr=False)
@@ -173,79 +149,44 @@ class OpenAILLM(CloudLLM):
     def __post_init__(self):
         super().__post_init__()
 
+        # Client args common to the OpenAI and Azure clients (so nothing the
+        # caller configured is dropped); ``extra_openai_client_params`` has the
+        # last word on all of them.
+        common: dict[str, Any] = {
+            "timeout": self.openai_client_timeout,
+            "max_retries": self.openai_client_max_retries,
+        }
+        if self.http_client is not None:
+            common["http_client"] = self.http_client
+        if self.default_headers is not None:
+            common["default_headers"] = self.default_headers
+
+        config: dict[str, Any] = dict(self.platform_config or {})
+        extra: dict[str, Any] = dict(self.extra_openai_client_params or {})
+
+        _client: AsyncOpenAI
         if self.platform == "azure":
-            _client, _api_provider = self._build_azure_client()
-            object.__setattr__(self, "api_provider", _api_provider)
-            object.__setattr__(self, "client", _client)
-            # ``model_name`` is the Azure deployment name — left untouched.
-            if self.litellm_provider == "openai":
-                object.__setattr__(self, "litellm_provider", "azure")
-            return
-
-        openai_compatible_providers = get_openai_compatible_providers()
-        _api_provider = self.api_provider
-        model_name_parts = self.model_name.split("/", 1)
-
-        if _api_provider is not None:
-            _model_name = self.model_name
-
-        elif len(model_name_parts) == 2:
-            compat_providers_map = {
-                provider["name"]: provider for provider in openai_compatible_providers
-            }
-            _provider_name, _model_name = model_name_parts
-            if _provider_name not in compat_providers_map:
-                raise ValueError(
-                    f"API provider '{_provider_name}' is not a supported OpenAI "
-                    f"compatible provider. Supported providers are: "
-                    f"{', '.join(compat_providers_map.keys())}"
-                )
-            _api_provider = compat_providers_map[_provider_name]
-            # The prefix selects the real provider; cost lookup must use its
-            # litellm name, not "openai" (the wire protocol).
-            object.__setattr__(
-                self,
-                "litellm_provider",
-                _COMPAT_LITELLM_PROVIDERS.get(_provider_name, _provider_name),
+            # Anything not supplied here is read from the SDK's Azure env vars.
+            _client = AsyncAzureOpenAI(**{**common, **config, **extra})
+            _api_provider = APIProvider(
+                name=self.platform,
+                base_url=config.get("azure_endpoint") or config.get("base_url"),
+                api_key=config.get("api_key"),
             )
-
         else:
-            raise ValueError(
-                "Model name must be in the format 'provider/model_name' or "
-                "you must provide an 'api_provider' argument."
-            )
+            # api.openai.com, or any OpenAI-compatible endpoint.
+            _api_provider = self.api_provider or self._default_api_provider()
+            client_params: dict[str, Any] = {
+                "api_key": _api_provider.get("api_key"),
+                "base_url": _api_provider.get("base_url"),
+                **common,
+                **extra,
+            }
+            _client = AsyncOpenAI(**client_params)
 
-        _client = AsyncOpenAI(
-            base_url=_api_provider.get("base_url"),
-            api_key=_api_provider.get("api_key"),
-            **self._client_params(),
-        )
-
-        object.__setattr__(self, "model_name", _model_name)
+        object.__setattr__(self, "litellm_provider", self._resolve_litellm_provider())
         object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
-
-    def _client_params(self) -> dict[str, Any]:
-        # Client args common to the OpenAI and Azure clients; provider-specific
-        # client args go through ``extra_openai_client_params``.
-        params = deepcopy(self.extra_openai_client_params or {})
-        params["timeout"] = self.openai_client_timeout
-        params["max_retries"] = self.openai_client_max_retries
-        if self.http_client is not None:
-            params["http_client"] = self.http_client
-        if self.default_headers is not None:
-            params.setdefault("default_headers", self.default_headers)
-        return params
-
-    def _build_azure_client(self) -> tuple[AsyncAzureOpenAI, APIProvider]:
-        config: dict[str, Any] = dict(self.platform_config or {})
-        # Anything not supplied here is read from the SDK's Azure env vars.
-        azure_kwargs: dict[str, Any] = {**self._client_params(), **config}
-        client = AsyncAzureOpenAI(**azure_kwargs)
-        api_provider = self.api_provider or APIProvider(
-            name="azure", base_url=config.get("azure_endpoint"), api_key=None
-        )
-        return client, api_provider
 
     # --- Input preparation ---
 
@@ -270,9 +211,7 @@ class OpenAILLM(CloudLLM):
         merged.update(extra_llm_settings)
 
         reasoning_fmt = (
-            "openrouter"
-            if self.api_provider and self.api_provider["name"] == "openrouter"
-            else "anthropic"
+            "openrouter" if self.litellm_provider == "openrouter" else "anthropic"
         )
         api_kwargs: ApiCallParams = {
             "api_input": items_to_provider_inputs(

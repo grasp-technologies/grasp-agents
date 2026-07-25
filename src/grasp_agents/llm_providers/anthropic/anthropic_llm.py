@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict
 
@@ -66,7 +65,7 @@ DEFAULT_MAX_TOKENS = 32768
 WebSearchToolParam = WebSearchTool20260209Param | WebSearchTool20250305Param
 WebFetchToolParam = WebFetchTool20260209Param
 
-AnthropicPlatform = Literal["anthropic", "bedrock", "bedrock_mantle", "vertex"]
+AnthropicCloudPlatform = Literal["bedrock", "bedrock_mantle", "vertex"]
 
 _BEDROCK_INSTALL_HINT = (
     "AWS Bedrock support is unavailable. Install it with "
@@ -102,7 +101,7 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
 
 class BedrockClientConfig(TypedDict, total=False):
     """
-    Client args for ``platform="bedrock"`` / ``"bedrock_mantle"``.
+    Client args for ``platform="bedrock"`` / ``platform="bedrock_mantle"``.
 
     Unset values fall back to the standard AWS credential/region chain (env
     vars, shared config/credentials files, SSO, IMDS). ``api_key`` is a Bedrock
@@ -137,8 +136,16 @@ class VertexClientConfig(TypedDict, total=False):
 class AnthropicLLM(CloudLLM):
     _settings_type: ClassVar[Any] = AnthropicLLMSettings
 
-    litellm_provider: str | None = "anthropic"
+    _native_provider_name: ClassVar[str] = "anthropic"
+    _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("ANTHROPIC_API_KEY",)
+    _platform_litellm_providers: ClassVar[Mapping[str, str]] = {
+        "bedrock": "bedrock",
+        "bedrock_mantle": "bedrock",
+        "vertex": "vertex_ai",
+    }
+
     llm_settings: AnthropicLLMSettings | None = None
+
     # Matches the SDK default. A long generation (large max_tokens, extended
     # thinking) easily exceeds one minute; a short client timeout makes it
     # fail deterministically through every retry and fallback.
@@ -150,13 +157,13 @@ class AnthropicLLM(CloudLLM):
     # (direct / Bedrock / Vertex) for SDK-specific args not in platform_config.
     extra_anthropic_client_params: dict[str, Any] | None = None
 
-    # Which Anthropic-hosting platform to call. The Messages API surface is
-    # identical across all four; only client construction differs.
-    platform: AnthropicPlatform = "anthropic"
-    # Platform-specific client args: a ``BedrockClientConfig`` for
-    # "bedrock"/"bedrock_mantle" or a ``VertexClientConfig`` for "vertex"
-    # (ignored for the direct API, which uses ``api_provider``). May carry
-    # secrets — kept out of repr.
+    # A cloud platform hosting the Messages API, or ``None`` for the direct
+    # client — pointed by ``api_provider`` at api.anthropic.com (the default) or
+    # at any endpoint speaking the Messages API.
+    platform: AnthropicCloudPlatform | None = None
+    # Client args for the selected cloud platform: a ``BedrockClientConfig``
+    # for "bedrock"/"bedrock_mantle", a ``VertexClientConfig`` for "vertex".
+    # May carry secrets — kept out of repr.
     platform_config: BedrockClientConfig | VertexClientConfig | None = field(
         default=None, repr=False
     )
@@ -172,48 +179,13 @@ class AnthropicLLM(CloudLLM):
     def __post_init__(self) -> None:
         super().__post_init__()
 
-        _api_provider = self.api_provider or APIProvider(
-            name=self.platform,
-            base_url=None,
-            api_key=(
-                os.getenv("ANTHROPIC_API_KEY") if self.platform == "anthropic" else None
-            ),
-        )
-
-        _client = self._build_client(_api_provider)
-
-        # On a cloud platform the model IDs and cost tables differ from the
-        # direct API; resolve the pricing identity used for cost lookups
-        # unless the caller pinned ``litellm_provider`` explicitly.
-        litellm_provider = self.litellm_provider
-        if self.platform != "anthropic" and litellm_provider == "anthropic":
-            litellm_provider = "vertex_ai" if self.platform == "vertex" else "bedrock"
-            object.__setattr__(self, "litellm_provider", litellm_provider)
-
-        cap = get_model_capabilities(
-            self.model_name, litellm_provider
-        ).max_output_tokens
-
-        object.__setattr__(self, "api_provider", _api_provider)
-        object.__setattr__(self, "client", _client)
-        object.__setattr__(self, "_default_max_tokens", cap or DEFAULT_MAX_TOKENS)
-
-    def _build_client(
-        self, api_provider: APIProvider
-    ) -> (
-        AsyncAnthropic
-        | AsyncAnthropicBedrock
-        | AsyncAnthropicVertex
-        | AsyncAnthropicBedrockMantle
-    ):
         # Client args whose role is identical across the direct / Bedrock /
-        # Vertex clients (so nothing the caller configured is dropped).
+        # Vertex clients (so nothing the caller configured is dropped);
+        # ``extra_anthropic_client_params`` has the last word on all of them.
         common: dict[str, Any] = {
             "timeout": self.anthropic_client_timeout,
             "max_retries": self.anthropic_client_max_retries,
         }
-        if api_provider.get("base_url"):
-            common["base_url"] = api_provider["base_url"]
         if self.http_client is not None:
             common["http_client"] = self.http_client
         if self.default_headers is not None:
@@ -222,14 +194,12 @@ class AnthropicLLM(CloudLLM):
         config: dict[str, Any] = dict(self.platform_config or {})
         extra: dict[str, Any] = dict(self.extra_anthropic_client_params or {})
 
-        if self.platform == "anthropic":
-            anthropic_kwargs: dict[str, Any] = {
-                **common,
-                "api_key": api_provider.get("api_key"),
-                **extra,
-            }
-            return AsyncAnthropic(**anthropic_kwargs)
-
+        _client: (
+            AsyncAnthropic
+            | AsyncAnthropicBedrock
+            | AsyncAnthropicVertex
+            | AsyncAnthropicBedrockMantle
+        )
         if self.platform in {"bedrock", "bedrock_mantle"}:
             try:
                 from anthropic import (  # noqa: PLC0415
@@ -244,16 +214,48 @@ class AnthropicLLM(CloudLLM):
                 if self.platform == "bedrock_mantle"
                 else AsyncAnthropicBedrock
             )
-            return bedrock_cls(**{**common, **config, **extra})
-
-        try:
-            from anthropic import (  # noqa: PLC0415
-                AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]
+            _client = bedrock_cls(**{**common, **config, **extra})
+            _api_provider = APIProvider(
+                name=self.platform,
+                base_url=config.get("base_url"),
+                api_key=config.get("api_key"),
             )
-        except ImportError as err:
-            raise ImportError(_VERTEX_INSTALL_HINT) from err
 
-        return AsyncAnthropicVertex(**{**common, **config, **extra})
+        elif self.platform == "vertex":
+            try:
+                from anthropic import (  # noqa: PLC0415
+                    AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]
+                )
+            except ImportError as err:
+                raise ImportError(_VERTEX_INSTALL_HINT) from err
+
+            _client = AsyncAnthropicVertex(**{**common, **config, **extra})
+            _api_provider = APIProvider(
+                name=self.platform,
+                base_url=config.get("base_url"),
+                api_key=config.get("access_token"),
+            )
+
+        else:
+            # api.anthropic.com, or any endpoint speaking the Messages API.
+            _api_provider = self.api_provider or self._default_api_provider()
+            client_params: dict[str, Any] = {
+                "api_key": _api_provider.get("api_key"),
+                "base_url": _api_provider.get("base_url"),
+                **common,
+                **extra,
+            }
+            _client = AsyncAnthropic(**client_params)
+
+        _litellm_provider = self._resolve_litellm_provider()
+        cap = get_model_capabilities(
+            self.model_name, _litellm_provider
+        ).max_output_tokens
+
+        object.__setattr__(self, "litellm_provider", _litellm_provider)
+        object.__setattr__(self, "api_provider", _api_provider)
+        object.__setattr__(self, "client", _client)
+        object.__setattr__(self, "_default_max_tokens", cap or DEFAULT_MAX_TOKENS)
 
     # --- Input preparation ---
 

@@ -263,6 +263,34 @@ credential chain and environment variables. The shared `http_client` /
 `default_headers` args and a per-provider `extra_*_client_params` escape hatch
 are available on every provider.
 
+### API-compatible endpoints
+
+`platform` selects a cloud platform with a dedicated client. Leave it unset and
+the provider uses the vendor's own SDK client, which `api_provider` points at
+any endpoint speaking that API — an OpenAI-compatible gateway, an inference host
+serving the Messages API, a self-hosted server. Without an `api_provider` it
+targets the vendor's endpoint and reads the key from the environment
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` / `GEMINI_API_KEY`).
+
+```python
+from grasp_agents.llm.cloud_llm import APIProvider
+from grasp_agents.llm_providers.openai_completions import OpenAILLM
+
+openrouter = OpenAILLM(
+    model_name="google/gemma-4-31b-it",
+    api_provider=APIProvider(
+        name="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+    ),
+)
+```
+
+The `name` is the endpoint's pricing identity: token costs and capability
+lookups resolve against it, so a compatible endpoint is priced as itself rather
+than as the vendor whose wire protocol it speaks. Pass `litellm_provider=` to
+pin that identity explicitly.
+
 ### Server-side conversation state (OpenAI Responses)
 
 By default the loop is stateless toward the provider: it sends the full
