@@ -41,6 +41,24 @@ class TestAzureCompletions:
         # The Azure deployment name must be preserved (NOT prefix-split).
         assert llm.model_name == "my-deployment"
         assert llm.litellm_provider == "azure"
+        # The resolved endpoint is recorded, whichever config key named it.
+        assert llm.api_provider == {
+            "name": "azure",
+            "base_url": "https://x.openai.azure.com",
+            "api_key": None,
+        }
+
+    def test_endpoint_recorded_from_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _capture(monkeypatch)
+        llm = OpenAILLM(
+            model_name="dep",
+            platform="azure",
+            platform_config={"base_url": "https://y.openai.azure.com/openai/v1"},
+        )
+        assert llm.api_provider is not None
+        assert llm.api_provider["base_url"] == "https://y.openai.azure.com/openai/v1"
 
     def test_ad_token_provider_forwarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured = _capture(monkeypatch)

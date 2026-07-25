@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -70,17 +71,40 @@ class CloudLLM(LLM):
     # through to the provider untouched. ``None`` disables validation.
     _settings_type: ClassVar[Any] = CloudLLMSettings
 
+    # The vendor's own API: the name of its endpoint, used for the
+    # ``api_provider`` entry when the caller supplies none.
+    _native_provider_name: ClassVar[str | None] = None
+    # Env vars holding the vendor's API key, in precedence order.
+    _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
+    # Cloud platforms this provider builds a dedicated client for, configured
+    # through ``platform_config``.
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset()
+    # Provider names that LiteLLM knows under a different one. Applies to every
+    # endpoint — cloud platform or API-compatible provider alike; anything
+    # unlisted prices under its own name.
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {}
+
     llm_settings: CloudLLMSettings | None = None
-    # repr=False: carries the resolved API key — must not leak via repr/str
-    # (logs, tracebacks, printed configs).
+
+    # The cloud platform serving the model, or ``None`` to use the vendor's own
+    # SDK client — pointed by ``api_provider`` at either the vendor's endpoint
+    # (the default) or any API-compatible one.
+    platform: str | None = None
+    # repr=False on both: they carry the resolved credentials — these must not
+    # leak via repr/str (logs, tracebacks, printed configs).
     api_provider: APIProvider | None = field(default=None, repr=False)
+    platform_config: Any | None = field(default=None, repr=False)
+
     rate_limiter: LLMRateLimiter | None = None
-    apply_output_schema_via_provider: bool = False
-    apply_tool_call_schema_via_provider: bool = False
     http_client: httpx.AsyncClient | None = None
     default_headers: Mapping[str, str] | None = None
 
+    apply_output_schema_via_provider: bool = False
+    apply_tool_call_schema_via_provider: bool = False
+
     def __post_init__(self) -> None:
+        self._validate_platform()
+
         if self.llm_settings is not None and self._settings_type is not None:
             _settings_adapter(self._settings_type).validate_python(self.llm_settings)
 
@@ -92,6 +116,75 @@ class CloudLLM(LLM):
 
         if self.apply_output_schema_via_provider:
             object.__setattr__(self, "apply_tool_call_schema_via_provider", True)
+
+    # --- Endpoint resolution ---
+
+    def _validate_platform(self) -> None:
+        if self.platform is None:
+            if self.platform_config is not None:
+                raise ValueError(
+                    "platform_config configures a cloud platform's client, but "
+                    "no platform is selected."
+                )
+            return
+
+        if self.platform not in self._cloud_platforms:
+            supported = (
+                ", ".join(repr(p) for p in sorted(self._cloud_platforms)) or "none"
+            )
+            raise ValueError(
+                f"{type(self).__name__} has no client for platform "
+                f"{self.platform!r} (supported: {supported}). An API-compatible "
+                f"endpoint is reached with platform=None and an api_provider "
+                f"carrying its base_url."
+            )
+
+        if self.api_provider is not None:
+            raise ValueError(
+                f"Platform {self.platform!r} has a dedicated client that takes "
+                f"its own credentials through platform_config; it never reads "
+                f"an api_provider."
+            )
+
+    def _default_api_provider(self) -> APIProvider:
+        """The vendor's own endpoint: SDK-default base URL, key from the env."""
+        api_key = next(
+            (key for var in self._native_api_key_env_vars if (key := os.getenv(var))),
+            None,
+        )
+        return APIProvider(
+            name=self._native_provider_name or "", base_url=None, api_key=api_key
+        )
+
+    def _resolve_provider_name(self) -> str | None:
+        """
+        Name of the provider actually serving the model.
+
+        The selected cloud platform, else the ``api_provider`` if it points
+        somewhere other than the vendor's own endpoint (an ``api_provider``
+        without a ``base_url`` is credentials for that endpoint, not a different
+        provider), else the vendor itself.
+        """
+        if self.platform is not None:
+            return self.platform
+        if self.api_provider is not None and self.api_provider.get("base_url"):
+            return self.api_provider.get("name") or self._native_provider_name
+        return self._native_provider_name
+
+    def _resolve_litellm_provider(self) -> str | None:
+        """
+        Pricing/capability identity of the endpoint actually serving the model.
+
+        Every provider has its own model IDs and cost tables, so the vendor's
+        identity holds only for the vendor's own endpoint. Pass
+        ``litellm_provider`` explicitly to pin it.
+        """
+        if self.litellm_provider is not None:
+            return self.litellm_provider
+        name = self._resolve_provider_name()
+        if name is None:
+            return None
+        return self._litellm_provider_aliases.get(name, name)
 
     # --- Provider API layer (abstract) ---
 

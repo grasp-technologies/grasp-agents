@@ -102,7 +102,7 @@ def test_settings_enforce_nested_required_keys() -> None:
 def test_llm_construction_rejects_mistyped_declared_key() -> None:
     with pytest.raises(ValidationError, match="temperature"):
         OpenAILLM(
-            model_name="openai/gpt-5.1",
+            model_name="gpt-5.1",
             llm_settings=cast("OpenAILLMSettings", {"temperature": "hot"}),
         )
 

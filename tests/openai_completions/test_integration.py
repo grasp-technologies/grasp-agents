@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel, Field
 
+from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -43,7 +44,7 @@ class TestOpenAICompletionsIntegration:
         )
 
         return OpenAILLM(
-            model_name="openai/gpt-5.4-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 100},
         )
 
@@ -98,6 +99,52 @@ class TestOpenAICompletionsIntegration:
 
 
 @pytest.mark.integration
+class TestOpenAICompletionsCompatibleEndpoint:
+    """
+    The Chat Completions client aimed at a non-OpenAI endpoint.
+
+    Uses Gemini's OpenAI-compatible surface: an ``api_provider`` carrying the
+    endpoint and key is the only routing mechanism, and its ``name`` is the
+    pricing identity the response is costed under.
+    """
+
+    @pytest.fixture
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.openai_completions.completions_llm import (
+            OpenAILLM,
+        )
+
+        return OpenAILLM(
+            model_name="gemini-2.5-flash",
+            api_provider=APIProvider(
+                name="gemini",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=google_api_key,
+            ),
+            llm_settings={"max_completion_tokens": 100},
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_text(self, llm: CloudLLM) -> None:
+        input_items = [InputMessageItem.from_text("Say 'hello' and nothing else.")]
+        response = await llm.generate_response(input_items)
+
+        assert response.status == "completed"
+        assert "hello" in response.output_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_endpoint_owns_pricing_identity(self, llm: CloudLLM) -> None:
+        assert llm.litellm_provider == "gemini"
+        response = await llm.generate_response(
+            [InputMessageItem.from_text("Say 'hello' and nothing else.")]
+        )
+        # Costed under the endpoint's own table, not the wire protocol's.
+        assert response.usage is not None
+        assert response.usage.cost is not None
+        assert response.usage.cost > 0
+
+
+@pytest.mark.integration
 class TestOpenAICompletionsStructuredOutput:
     @pytest.fixture
     def llm(self, openai_api_key: str) -> CloudLLM:
@@ -106,7 +153,7 @@ class TestOpenAICompletionsStructuredOutput:
         )
 
         return OpenAILLM(
-            model_name="openai/gpt-5.4-nano", apply_output_schema_via_provider=True
+            model_name="gpt-5.4-nano", apply_output_schema_via_provider=True
         )
 
     @pytest.mark.asyncio
@@ -158,7 +205,7 @@ class TestOpenAICompletionsParallelToolUse:
         )
 
         return OpenAILLM(
-            model_name="openai/gpt-5.4-nano",
+            model_name="gpt-5.4-nano",
             llm_settings={"max_completion_tokens": 256},
         )
 

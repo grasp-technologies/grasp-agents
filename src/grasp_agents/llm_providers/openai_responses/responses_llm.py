@@ -1,7 +1,5 @@
 import logging
-import os
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, cast
 
@@ -57,6 +55,7 @@ from grasp_agents.llm.cloud_llm import (
 )
 from grasp_agents.llm_providers.openai_completions.completions_llm import (
     AzureClientConfig,
+    OpenAICloudPlatform,
 )
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
@@ -154,13 +153,16 @@ class ResponsesApiCallParams(ApiCallParams, total=False):
 class OpenAIResponsesLLM(CloudLLM):
     _settings_type: ClassVar[Any] = OpenAIResponsesLLMSettings
 
-    litellm_provider: str | None = "openai"
+    _native_provider_name: ClassVar[str] = "openai"
+    _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure"})
+
     llm_settings: OpenAIResponsesLLMSettings | None = None
-    # "openai" routes to api.openai.com (or an OpenAI-compatible endpoint via
-    # ``api_provider``); "azure" builds an ``AsyncAzureOpenAI`` client. The
-    # Azure Responses API requires ``api_version`` >= "2025-03-01-preview"
-    # (or the version-less v1 surface).
-    platform: Literal["openai", "azure"] = "openai"
+    # "azure" builds an ``AsyncAzureOpenAI`` client — its Responses API
+    # requires ``api_version`` >= "2025-03-01-preview" (or the version-less v1
+    # surface); ``None`` uses the plain client — pointed by ``api_provider`` at
+    # api.openai.com (the default) or at any OpenAI-compatible endpoint.
+    platform: OpenAICloudPlatform | None = None
     # Azure client args (see AzureClientConfig). ``model_name`` is the Azure
     # *deployment* name. May carry secrets — kept out of repr.
     platform_config: AzureClientConfig | None = field(default=None, repr=False)
@@ -174,51 +176,45 @@ class OpenAIResponsesLLM(CloudLLM):
     def __post_init__(self):
         super().__post_init__()
 
+        # Client args common to the OpenAI and Azure clients (so nothing the
+        # caller configured is dropped); ``extra_openai_client_params`` has the
+        # last word on all of them.
+        common: dict[str, Any] = {
+            "timeout": self.openai_client_timeout,
+            "max_retries": self.openai_client_max_retries,
+        }
+        if self.http_client is not None:
+            common["http_client"] = self.http_client
+        if self.default_headers is not None:
+            common["default_headers"] = self.default_headers
+
+        config: dict[str, Any] = dict(self.platform_config or {})
+        extra: dict[str, Any] = dict(self.extra_openai_client_params or {})
+
+        _client: AsyncOpenAI
         if self.platform == "azure":
-            _client, _api_provider = self._build_azure_client()
-            object.__setattr__(self, "api_provider", _api_provider)
-            object.__setattr__(self, "client", _client)
+            # Anything not supplied here is read from the SDK's Azure env vars.
             # ``model_name`` is the Azure deployment name — left untouched.
-            if self.litellm_provider == "openai":
-                object.__setattr__(self, "litellm_provider", "azure")
-            return
+            _client = AsyncAzureOpenAI(**{**common, **config, **extra})
+            _api_provider = APIProvider(
+                name=self.platform,
+                base_url=config.get("azure_endpoint") or config.get("base_url"),
+                api_key=config.get("api_key"),
+            )
+        else:
+            # api.openai.com, or any OpenAI-compatible endpoint.
+            _api_provider = self.api_provider or self._default_api_provider()
+            client_params: dict[str, Any] = {
+                "api_key": _api_provider.get("api_key"),
+                "base_url": _api_provider.get("base_url"),
+                **common,
+                **extra,
+            }
+            _client = AsyncOpenAI(**client_params)
 
-        _api_provider = self.api_provider or APIProvider(
-            name="openai",
-            base_url="https://api.openai.com/v1",
-            api_key=os.getenv("OPENAI_API_KEY"),
-        )
-
-        _client = AsyncOpenAI(
-            base_url=_api_provider.get("base_url"),
-            api_key=_api_provider.get("api_key"),
-            **self._client_params(),
-        )
-
+        object.__setattr__(self, "litellm_provider", self._resolve_litellm_provider())
         object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
-
-    def _client_params(self) -> dict[str, Any]:
-        # Client args common to the OpenAI and Azure clients; provider-specific
-        # client args go through ``extra_openai_client_params``.
-        params = deepcopy(self.extra_openai_client_params or {})
-        params["timeout"] = self.openai_client_timeout
-        params["max_retries"] = self.openai_client_max_retries
-        if self.http_client is not None:
-            params["http_client"] = self.http_client
-        if self.default_headers is not None:
-            params.setdefault("default_headers", self.default_headers)
-        return params
-
-    def _build_azure_client(self) -> tuple[AsyncAzureOpenAI, APIProvider]:
-        config: dict[str, Any] = dict(self.platform_config or {})
-        # Anything not supplied here is read from the SDK's Azure env vars.
-        azure_kwargs: dict[str, Any] = {**self._client_params(), **config}
-        client = AsyncAzureOpenAI(**azure_kwargs)
-        api_provider = self.api_provider or APIProvider(
-            name="azure", base_url=config.get("azure_endpoint"), api_key=None
-        )
-        return client, api_provider
 
     # --- Input preparation ---
 

@@ -74,8 +74,8 @@ from google.genai.types import (
 )
 
 from .gemini_llm import (
+    GeminiCloudPlatform,
     GeminiLLM,
     GeminiLLMSettings,
-    GeminiPlatform,
     GeminiVertexClientConfig,
 )

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict
 
@@ -99,7 +98,7 @@ _CONFIG_KEYS = (
 )
 
 
-GeminiPlatform = Literal["gemini", "vertex"]
+GeminiCloudPlatform = Literal["vertex"]
 
 
 class GeminiVertexClientConfig(TypedDict, total=False):
@@ -119,7 +118,15 @@ class GeminiVertexClientConfig(TypedDict, total=False):
 class GeminiLLM(CloudLLM):
     _settings_type: ClassVar[Any] = GeminiLLMSettings
 
-    litellm_provider: str | None = "vertex_ai"
+    _native_provider_name: ClassVar[str] = "gemini"
+    # The SDK reads both, in this order.
+    _native_api_key_env_vars: ClassVar[tuple[str, ...]] = (
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+    )
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"vertex"})
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {"vertex": "vertex_ai"}
+
     llm_settings: GeminiLLMSettings | None = None
     # Per-request HTTP timeout in seconds (``None`` disables).
     gemini_client_timeout: float | None = 600.0
@@ -127,8 +134,10 @@ class GeminiLLM(CloudLLM):
     # constructor for SDK-specific args (e.g. ``debug_config``).
     extra_gemini_client_params: dict[str, Any] | None = None
 
-    # "gemini" = Gemini Developer API (api_key); "vertex" = Google Vertex AI.
-    platform: GeminiPlatform = "gemini"
+    # "vertex" = Google Vertex AI; ``None`` = the Gemini Developer API, pointed
+    # by ``api_provider`` at generativelanguage.googleapis.com (the default) or
+    # at any endpoint speaking that API.
+    platform: GeminiCloudPlatform | None = None
     platform_config: GeminiVertexClientConfig | None = field(default=None, repr=False)
 
     client: Client = field(init=False)
@@ -139,31 +148,30 @@ class GeminiLLM(CloudLLM):
         extra: dict[str, Any] = dict(self.extra_gemini_client_params or {})
 
         if self.platform == "vertex":
-            _api_provider = self.api_provider or APIProvider(
-                name="vertex", base_url=None, api_key=None
-            )
+            _api_provider = APIProvider(name=self.platform, base_url=None, api_key=None)
             config: dict[str, Any] = dict(self.platform_config or {})
             kwargs: dict[str, Any] = {"vertexai": True, **config, **extra}
             kwargs.setdefault("location", "global")
         else:
-            _api_provider = self.api_provider or APIProvider(
-                name="gemini",
-                base_url=None,
-                api_key=os.getenv("GOOGLE_API_KEY"),
-            )
+            _api_provider = self.api_provider or self._default_api_provider()
             kwargs = {"api_key": _api_provider.get("api_key"), **extra}
 
-        kwargs.setdefault("http_options", self._http_options())
+        kwargs.setdefault(
+            "http_options", self._http_options(_api_provider.get("base_url"))
+        )
         _client = Client(**kwargs)
 
+        object.__setattr__(self, "litellm_provider", self._resolve_litellm_provider())
         object.__setattr__(self, "api_provider", _api_provider)
         object.__setattr__(self, "client", _client)
 
-    def _http_options(self) -> GeminiHttpOptions:
-        # Client args whose role is identical across providers (timeout,
-        # default headers, a shared httpx client) map onto the genai client's
-        # ``http_options``.
+    def _http_options(self, base_url: str | None = None) -> GeminiHttpOptions:
+        # Client args whose role is identical across providers (endpoint,
+        # timeout, default headers, a shared httpx client) map onto the genai
+        # client's ``http_options``.
         opts: dict[str, Any] = {}
+        if base_url is not None:
+            opts["base_url"] = base_url
         if self.gemini_client_timeout is not None:
             opts["timeout"] = int(self.gemini_client_timeout * 1000)  # ms
         if self.default_headers is not None:
@@ -214,8 +222,9 @@ class GeminiLLM(CloudLLM):
         extra_body = merged.pop("extra_body", None)
         merged.pop("extra_query", None)  # no Gemini equivalent
         if extra_headers or extra_body:
-            # Request-level http_options replace the client-level ones, so the
-            # client timeout and default headers must be re-applied here.
+            # Carry the client-level timeout and default headers into the
+            # request-level options, so a per-request override composes with
+            # them rather than relying on how the SDK merges the two.
             http_options: GeminiHttpOptionsDict = {}
             if self.gemini_client_timeout is not None:
                 http_options["timeout"] = int(self.gemini_client_timeout * 1000)
