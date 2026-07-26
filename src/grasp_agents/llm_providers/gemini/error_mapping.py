@@ -9,6 +9,9 @@ from google.genai import errors as genai_errors
 
 from grasp_agents.llm_providers._http_helpers import parse_retry_after
 from grasp_agents.types.llm_errors import (
+    LlmApiConnectionError,
+    LlmApiStatusError,
+    LlmApiTimeoutError,
     LlmAuthenticationError,
     LlmBadRequestError,
     LlmError,
@@ -48,6 +51,15 @@ def _get_response(err: genai_errors.APIError) -> httpx.Response:
 
 
 def map_api_error(err: Exception) -> LlmError | None:
+    # The GenAI SDK inspects httpx transport failures for its own retry
+    # predicate but does not wrap them, so they surface here unchanged.
+    if isinstance(err, httpx.TimeoutException):
+        return LlmApiTimeoutError(request=httpx.Request(*_SYNTHETIC_REQUEST))
+    if isinstance(err, httpx.TransportError):
+        return LlmApiConnectionError(
+            message=str(err), request=httpx.Request(*_SYNTHETIC_REQUEST)
+        )
+
     if not isinstance(err, genai_errors.APIError):
         return None
 
@@ -70,4 +82,4 @@ def map_api_error(err: Exception) -> LlmError | None:
     if code == 400:
         return LlmBadRequestError(msg, response=resp, body=None)
 
-    return None
+    return LlmApiStatusError(msg, response=resp, body=None)

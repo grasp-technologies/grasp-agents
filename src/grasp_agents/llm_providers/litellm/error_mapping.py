@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import httpx
 import litellm
+import openai
 
-from grasp_agents.llm_providers._http_helpers import parse_retry_after
+from grasp_agents.llm_providers._http_helpers import is_quota_error, parse_retry_after
 from grasp_agents.types.errors import CompletionError
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
+    LlmApiError,
+    LlmApiStatusError,
     LlmApiTimeoutError,
     LlmAuthenticationError,
     LlmBadRequestError,
@@ -19,9 +22,19 @@ from grasp_agents.types.llm_errors import (
     LlmInternalServerError,
     LlmNotFoundError,
     LlmPermissionDeniedError,
+    LlmQuotaExceededError,
     LlmRateLimitError,
     LlmUnprocessableEntityError,
 )
+
+_SYNTHETIC_REQUEST = ("POST", "https://api.openai.com/v1")
+
+
+def _synthetic_response(status_code: int) -> httpx.Response:
+    return httpx.Response(
+        status_code=status_code,
+        request=httpx.Request(*_SYNTHETIC_REQUEST),
+    )
 
 
 def map_api_error(err: Exception) -> LlmError | None:
@@ -30,11 +43,14 @@ def map_api_error(err: Exception) -> LlmError | None:
     if isinstance(err, CompletionError):
         # A 200 response carrying an error/invalid body (e.g. OpenRouter's
         # in-body upstream failures) — transient, must reach retry/fallback.
-        synthetic = httpx.Response(
-            status_code=502,
-            request=httpx.Request("POST", "https://api.openai.com/v1"),
-        )
-        return LlmInternalServerError(msg, response=synthetic, body=None)
+        return LlmInternalServerError(msg, response=_synthetic_response(502), body=None)
+
+    # Both mean the account can no longer pay for the call, whatever status
+    # the upstream chose — fail over instead of retrying a dead key.
+    if isinstance(err, litellm.BudgetExceededError) or (
+        isinstance(err, openai.APIError) and is_quota_error(err)
+    ):
+        return LlmQuotaExceededError(msg, response=_synthetic_response(429), body=None)
 
     if isinstance(err, litellm.Timeout):
         return LlmApiTimeoutError(request=err.request)
@@ -75,5 +91,14 @@ def map_api_error(err: Exception) -> LlmError | None:
 
     if isinstance(err, (litellm.InternalServerError, litellm.ServiceUnavailableError)):
         return LlmInternalServerError(msg, response=err.response, body=err.body)
+
+    if isinstance(err, openai.APIStatusError):
+        return LlmApiStatusError(msg, response=err.response, body=err.body)
+
+    if isinstance(err, openai.APIError):
+        # Every litellm exception derives from the OpenAI SDK's, so this
+        # catches the long tail (in-stream error frames, bodies the SDK
+        # could not validate) that the branches above do not name.
+        return LlmApiError(msg, err.request, body=err.body)
 
     return None

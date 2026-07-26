@@ -64,6 +64,7 @@ from .llm_errors import (
     LlmInternalServerError,
     LlmNotFoundError,
     LlmPermissionDeniedError,
+    LlmQuotaExceededError,
     LlmRateLimitError,
 )
 from .llm_events import (
@@ -149,6 +150,7 @@ __all__ = [
     "LlmInternalServerError",
     "LlmNotFoundError",
     "LlmPermissionDeniedError",
+    "LlmQuotaExceededError",
     "LlmRateLimitError",
     "OpenPageAction",
     "OutputContentPart",

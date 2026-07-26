@@ -27,6 +27,7 @@ from grasp_agents.types.llm_errors import (
     LlmInternalServerError,
     LlmNotFoundError,
     LlmPermissionDeniedError,
+    LlmQuotaExceededError,
     LlmRateLimitError,
     LlmUnprocessableEntityError,
 )
@@ -120,6 +121,12 @@ class TestRecoveryHintClassification:
     def test_content_filter_maps_to_refused(self) -> None:
         err = LlmContentFilterError()
         assert classify_error(err) is RecoveryHint.CONTENT_REFUSED
+
+    def test_quota_beats_rate_limit_parent(self) -> None:
+        """A spent account never clears, so it must not inherit RATE_LIMITED."""
+        err = LlmQuotaExceededError("spent", response=_fake_response(), body=None)
+        assert classify_error(err) is RecoveryHint.QUOTA_EXCEEDED
+        assert not is_retryable(classify_error(err))
 
     def test_unknown_exception_maps_to_unknown(self) -> None:
         assert classify_error(RuntimeError("mystery")) is RecoveryHint.UNKNOWN
@@ -223,6 +230,7 @@ class TestIsRetryable:
         assert is_retryable(RecoveryHint.RATE_LIMITED)
 
     def test_non_transient_are_not_retryable(self) -> None:
+        assert not is_retryable(RecoveryHint.QUOTA_EXCEEDED)
         assert not is_retryable(RecoveryHint.NEEDS_COMPACTION)
         assert not is_retryable(RecoveryHint.REAUTH_REQUIRED)
         assert not is_retryable(RecoveryHint.CONTENT_REFUSED)
@@ -279,6 +287,12 @@ class TestRetryPolicyAlignment:
             ),
             (
                 lambda: LlmContextWindowError(
+                    "x", response=_fake_response(), body=None
+                ),
+                False,
+            ),
+            (
+                lambda: LlmQuotaExceededError(
                     "x", response=_fake_response(), body=None
                 ),
                 False,

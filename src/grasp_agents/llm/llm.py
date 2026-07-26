@@ -11,7 +11,7 @@ from functools import cached_property
 from typing import Any, Self, TypedDict, final
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, ValidationError, with_config
+from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents import grasp_logging
 from grasp_agents.tools.base import BaseTool, ToolChoice
@@ -36,12 +36,7 @@ from .resilience import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
-# Plain Pydantic validation errors can be raised by LLM SDKs
-_RETRYABLE_ERRORS = (
-    LLMToolCallValidationError,
-    LLMResponseValidationError,
-    ValidationError,
-)
+_RETRYABLE_ERRORS = (LLMToolCallValidationError, LLMResponseValidationError)
 
 
 @with_config(ConfigDict(extra="allow"))
