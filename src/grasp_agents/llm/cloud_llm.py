@@ -8,11 +8,12 @@ from functools import cache
 from typing import Any, ClassVar, NoReturn, Required, TypedDict
 
 import httpx
-from pydantic import BaseModel, ConfigDict, TypeAdapter, with_config
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, with_config
 
 from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
 from grasp_agents.tools.base import BaseTool, ToolChoice
+from grasp_agents.types.errors import LLMResponseValidationError
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import (
     LlmError,
@@ -239,16 +240,34 @@ class CloudLLM(LLM):
         """
         Map a provider SDK exception to an LlmError subclass.
 
-        Returns None for unrecognized exceptions (passed through as-is).
-        Override in provider subclasses.
+        Override in provider subclasses. An override must return a typed
+        error for *every* exception its SDK can raise — the retry and
+        fallback layers act only on ``LlmErrorTuple``, so anything left
+        unmapped is fatal and skips both. Return None only for exceptions
+        that did not come from the SDK (a bug in our own code), which
+        should propagate untouched rather than be retried.
         """
         del err
         return None
 
-    def _raise_mapped(self, err: Exception) -> NoReturn:
+    def _raise_mapped(
+        self, err: Exception, *, output_schema: Any | None = None
+    ) -> NoReturn:
+        if isinstance(err, LlmErrorTuple):
+            # Already typed — re-mapping is lossy (``LlmContextWindowError``
+            # would degrade to ``LlmBadRequestError``, ``retry_after`` would
+            # be dropped) because our types subclass the OpenAI SDK's.
+            raise err
         mapped = self._map_api_error(err)
         if mapped is not None:
             raise mapped from err
+        if isinstance(err, ValidationError):
+            # Provider-side structured output that did not match the schema.
+            # SDKs validate it outside their own error handling, so it
+            # arrives as a bare pydantic error. Re-sampling the same model is
+            # the recovery, so it must reach the validation-retry layer
+            # rather than the API-retry and fallback layers.
+            raise LLMResponseValidationError(str(err), output_schema) from err
         raise err
 
     # --- Cost stamping ---
@@ -322,10 +341,8 @@ class CloudLLM(LLM):
             # an error body surfaces here (e.g. ``CompletionError``) and must
             # reach retry/fallback as a typed LlmError, not a bare exception.
             response = self._convert_api_response(raw)
-        except LlmErrorTuple:
-            raise
         except Exception as err:
-            self._raise_mapped(err)
+            self._raise_mapped(err, output_schema=output_schema)
 
         self._stamp_cost(response)
         logger.info(
@@ -379,10 +396,8 @@ class CloudLLM(LLM):
         t0 = time.monotonic()
         try:
             api_stream = await self._get_api_stream(**api_kwargs, **extra_settings)
-        except LlmErrorTuple:
-            raise
         except Exception as err:
-            self._raise_mapped(err)
+            self._raise_mapped(err, output_schema=output_schema)
 
         # Provider SDKs typically defer the HTTP request to the first iteration
         # of a lazily-returned stream, so SDK errors can surface here rather
@@ -394,10 +409,8 @@ class CloudLLM(LLM):
                 event = await anext(event_stream)
             except StopAsyncIteration:
                 break
-            except LlmErrorTuple:
-                raise
             except Exception as err:
-                self._raise_mapped(err)
+                self._raise_mapped(err, output_schema=output_schema)
             if isinstance(event, ResponseFailed):
                 # A terminal failure delivered as a stream event, not an
                 # exception — surface it as a typed, retryable error here so

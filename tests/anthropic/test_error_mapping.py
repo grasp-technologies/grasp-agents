@@ -8,6 +8,7 @@ import httpx
 from grasp_agents.llm_providers.anthropic.error_mapping import map_api_error
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
+    LlmApiError,
     LlmApiStatusError,
     LlmApiTimeoutError,
     LlmAuthenticationError,
@@ -15,6 +16,7 @@ from grasp_agents.types.llm_errors import (
     LlmContextWindowError,
     LlmInternalServerError,
     LlmNotFoundError,
+    LlmQuotaExceededError,
     LlmRateLimitError,
 )
 
@@ -61,3 +63,18 @@ class TestAnthropicErrorMapping:
 
     def test_non_anthropic_error_returns_none(self) -> None:
         assert map_api_error(ValueError("nope")) is None
+
+    def test_bare_api_error_maps_to_api_error(self) -> None:
+        # No HTTP status — must still be typed, or it skips retry and fallback.
+        err = anthropic.APIError("no status", request=_REQUEST, body=None)
+        assert isinstance(map_api_error(err), LlmApiError)
+
+    def test_low_credit_balance_maps_to_quota_exceeded(self) -> None:
+        # Anthropic reports a spent account as a 400, not a 429; retrying
+        # will not clear it, so it must fail over instead.
+        err = anthropic.APIStatusError(
+            "Your credit balance is too low to access the Anthropic API",
+            response=httpx.Response(400, request=_REQUEST),
+            body=None,
+        )
+        assert isinstance(map_api_error(err), LlmQuotaExceededError)

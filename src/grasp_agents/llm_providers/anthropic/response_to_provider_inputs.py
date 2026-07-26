@@ -195,7 +195,9 @@ def _image_to_block(img: InputImage) -> ImageBlockParam:
     cc = _to_cache_control(img.cache_control)
 
     if img.is_base64 and img.image_url:
-        data = img.image_url.removeprefix(BASE64_DATA_PREFIX)
+        data = img.image_url.removeprefix(
+            BASE64_DATA_PREFIX.format(mime_type=img.mime_type)
+        )
         if img.mime_type not in SUPPORTED_MIME_TYPES:
             raise ValueError(f"Unsupported MIME type for base64 image: {img.mime_type}")
 

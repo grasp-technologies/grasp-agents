@@ -8,6 +8,7 @@ Uses real Anthropic SDK model objects (not mocks) to ensure type compatibility.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from typing import Any
 
@@ -61,6 +62,7 @@ from grasp_agents.llm_providers.anthropic.tool_converters import (
 )
 from grasp_agents.tools.base import BaseTool, NamedToolChoice
 from grasp_agents.types.content import (
+    InputImage,
     InputText,
     OutputMessageRefusal,
     OutputMessageText,
@@ -559,6 +561,55 @@ class TestResponseToMessage:
         assert isinstance(assistant_content, list)
         assert assistant_content[0]["type"] == "redacted_thinking"
         assert assistant_content[0]["data"] == "encrypted_data"
+
+
+class TestImageBlocks:
+    """
+    Base64 images must reach Anthropic as the raw payload.
+
+    ``InputImage`` stores base64 images as a ``data:<mime>;base64,<payload>``
+    URI; Anthropic's ``source.data`` takes the payload alone and 400s on the
+    full URI.
+    """
+
+    def test_base64_image_strips_data_uri_prefix(self):
+        payload = base64.b64encode(b"\x89PNG\r\n\x1a\nfakepngbytes").decode()
+        items = [
+            InputMessageItem(
+                role="user",
+                content=[
+                    InputText(text="What is this?"),
+                    InputImage.from_base64(payload),
+                ],
+            )
+        ]
+
+        _system, messages = items_to_anthropic_messages(items)
+
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        image_block = content[1]
+        assert image_block["type"] == "image"
+        source = image_block["source"]
+        assert source["type"] == "base64"
+        assert source["media_type"] == "image/png"
+        assert source["data"] == payload
+
+    def test_url_image_passed_through(self):
+        items = [
+            InputMessageItem(
+                role="user",
+                content=[InputImage.from_url("https://example.com/a.png")],
+            )
+        ]
+
+        _system, messages = items_to_anthropic_messages(items)
+
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        source = content[0]["source"]
+        assert source["type"] == "url"
+        assert source["url"] == "https://example.com/a.png"
 
 
 # ==== tool_converters ====

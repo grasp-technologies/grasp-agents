@@ -23,6 +23,9 @@ from grasp_agents.llm.fallback_llm import FallbackLLM, _select_cascade_error
 from grasp_agents.llm.llm import LLM
 from grasp_agents.llm.model_info import ModelCapabilities
 from grasp_agents.llm.resilience import RetryPolicy
+from grasp_agents.llm_providers.openai_completions.error_mapping import (
+    map_api_error as openai_map_api_error,
+)
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.errors import (
@@ -1173,3 +1176,163 @@ class TestStreamErrorMapping:
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
         assert len(completed) == 1
         assert completed[0].response.output_text == "rescued"
+
+
+# ---------- Unmapped-error escape hatch (CloudLLM + real provider mapper) ----------
+
+
+@dataclass(frozen=True)
+class RealMapperCloudLLM(CloudLLM):
+    """
+    A CloudLLM wired to the production OpenAI mapper, so these tests pin the
+    contract end to end rather than against a stub mapping.
+    """
+
+    raw_error: Exception = field(
+        default_factory=lambda: openai.APIError(message="boom", request=_REQ, body=None)
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "_attempts", 0)
+
+    @property
+    def attempts(self) -> int:
+        return self._attempts  # type: ignore[attr-defined]
+
+    def _map_api_error(self, err: Exception) -> LlmError | None:
+        return openai_map_api_error(err)
+
+    def _make_api_input(
+        self,
+        input: Sequence[InputItem],
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        tool_choice: Any | None = None,
+        output_schema: Any | None = None,
+        **extra_llm_settings: Any,
+    ) -> ApiCallParams:
+        return {"api_input": list(input)}
+
+    async def _get_api_response(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
+    ) -> Any:
+        object.__setattr__(self, "_attempts", self._attempts + 1)  # type: ignore[attr-defined]
+        raise self.raw_error
+
+    def _convert_api_response(self, raw: Any) -> Response:
+        raise NotImplementedError
+
+    async def _get_api_stream(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
+    ) -> AsyncIterator[Any]:
+        raise NotImplementedError
+
+    async def _convert_api_stream(
+        self, api_stream: AsyncIterator[Any]
+    ) -> AsyncIterator[LlmEvent]:
+        raise NotImplementedError
+        yield  # pragma: no cover
+
+
+_NO_DELAY = RetryPolicy(api_retries=2, validation_retries=0, initial_delay=0.0)
+
+
+class TestUnmappedErrorReachesCascade:
+    """
+    Every provider SDK error must arrive typed. The retry and fallback
+    layers act only on ``LlmErrorTuple``, and the raw SDK exceptions are
+    that tuple's *parents* — so an unmapped error skips both and kills the
+    run on the primary, however many fallbacks are configured.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_api_error_falls_back(self) -> None:
+        # A bare APIError is what the SDK raises for an error frame inside a
+        # 200 SSE stream; it used to propagate past the whole cascade.
+        primary = RealMapperCloudLLM(model_name="primary", retry_policy=None)
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        response = await llm.generate_response(_USER_MSG)
+
+        assert response.output_text == "rescued"
+        assert primary.attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_quota_error_falls_back_without_retrying(self) -> None:
+        """A spent account never clears, so it must not consume the budget."""
+        primary = RealMapperCloudLLM(
+            model_name="primary",
+            retry_policy=_NO_DELAY,
+            raw_error=openai.APIError(
+                message="You exceeded your current quota",
+                request=_REQ,
+                body={"type": "insufficient_quota", "code": "insufficient_quota"},
+            ),
+        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        response = await llm.generate_response(_USER_MSG)
+
+        assert response.output_text == "rescued"
+        assert primary.attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_transient_unmapped_error_still_retries(self) -> None:
+        """An unclassifiable SDK error stays retryable before the cascade."""
+        primary = RealMapperCloudLLM(model_name="primary", retry_policy=_NO_DELAY)
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        await llm.generate_response(_USER_MSG)
+
+        assert primary.attempts == 3
+
+
+class TestRaiseMappedDoesNotRemap:
+    """
+    An already-typed error must pass through ``_raise_mapped`` untouched:
+    our types subclass the OpenAI SDK's, so re-mapping matches them again
+    and silently downgrades them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_context_window_error_is_not_downgraded(self) -> None:
+        # Re-mapping would match the 400 branch and yield LlmBadRequestError,
+        # losing the NEEDS_COMPACTION signal compaction keys on.
+        llm = RealMapperCloudLLM(
+            model_name="primary",
+            retry_policy=None,
+            raw_error=LlmContextWindowError("too long", response=_resp(400), body=None),
+        )
+
+        with pytest.raises(LlmContextWindowError):
+            await llm.generate_response(_USER_MSG)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retry_after_is_preserved(self) -> None:
+        llm = RealMapperCloudLLM(
+            model_name="primary",
+            retry_policy=None,
+            raw_error=LlmRateLimitError(
+                "slow down", response=_resp(429), body=None, retry_after=30.0
+            ),
+        )
+
+        with pytest.raises(LlmRateLimitError) as excinfo:
+            await llm.generate_response(_USER_MSG)
+
+        assert excinfo.value.retry_after == 30.0

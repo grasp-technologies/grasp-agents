@@ -18,6 +18,9 @@ from google.genai import errors as genai_errors
 
 from grasp_agents.llm_providers.gemini.error_mapping import map_api_error
 from grasp_agents.types.llm_errors import (
+    LlmApiConnectionError,
+    LlmApiStatusError,
+    LlmApiTimeoutError,
     LlmAuthenticationError,
     LlmBadRequestError,
     LlmInternalServerError,
@@ -105,3 +108,23 @@ class TestGeminiErrorMapping:
 
     def test_non_genai_error_returns_none(self):
         assert map_api_error(ValueError("not an API error")) is None
+
+    def test_unlisted_status_maps_to_api_status(self):
+        # Anything left untyped skips retry and fallback, so codes the
+        # branches above do not name must still land on a typed error.
+        err = genai_errors.ClientError(
+            409, {"error": {"message": "conflict", "status": "ABORTED"}}
+        )
+
+        assert isinstance(map_api_error(err), LlmApiStatusError)
+
+    def test_httpx_transport_failures_map(self):
+        # The SDK inspects httpx failures for its own retry predicate but
+        # never wraps them, so they reach the mapper unchanged.
+        request = httpx.Request("POST", "https://generativelanguage.googleapis.com")
+
+        timeout = map_api_error(httpx.ReadTimeout("timed out", request=request))
+        connect = map_api_error(httpx.ConnectError("refused", request=request))
+
+        assert isinstance(timeout, LlmApiTimeoutError)
+        assert isinstance(connect, LlmApiConnectionError)

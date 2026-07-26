@@ -45,6 +45,7 @@ from .llm_errors import (
     LlmInternalServerError,
     LlmNotFoundError,
     LlmPermissionDeniedError,
+    LlmQuotaExceededError,
     LlmRateLimitError,
     LlmUnprocessableEntityError,
 )
@@ -65,6 +66,9 @@ class RecoveryHint(StrEnum):
     RATE_LIMITED = "rate_limited"
     """Server asked us to slow down. Honor ``retry_after`` if present."""
 
+    QUOTA_EXCEEDED = "quota_exceeded"
+    """Account credits/quota are spent. Only another key or model can serve."""
+
     NEEDS_COMPACTION = "needs_compaction"
     """Input exceeded the model's context window; reduce before retrying."""
 
@@ -82,6 +86,9 @@ class RecoveryHint(StrEnum):
 
 
 _HINT_REGISTRY: dict[type[BaseException], RecoveryHint] = {
+    # Quota exhaustion — a RateLimitError subclass, so the MRO walk must find
+    # it first; unlike a rate limit it never clears, so it is not retryable.
+    LlmQuotaExceededError: RecoveryHint.QUOTA_EXCEEDED,
     # Rate limiting — check before the generic status parent.
     LlmRateLimitError: RecoveryHint.RATE_LIMITED,
     # Context-window overflow — specific subclass of BadRequestError; must be

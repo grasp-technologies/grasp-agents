@@ -56,6 +56,15 @@ class LlmRateLimitError(openai.RateLimitError):
         self.retry_after = retry_after
 
 
+class LlmQuotaExceededError(LlmRateLimitError):
+    """
+    Account credits/quota are exhausted.
+
+    Unlike a plain rate limit this does not clear on its own, so it is not
+    retried: only a different key or model can serve the request.
+    """
+
+
 class LlmInternalServerError(openai.InternalServerError):
     pass
 
@@ -96,6 +105,7 @@ type LlmError = (
     | LlmApiStatusError
     | LlmApiTimeoutError
     | LlmRateLimitError
+    | LlmQuotaExceededError
     | LlmInternalServerError
     | LlmAuthenticationError
     | LlmPermissionDeniedError
@@ -113,6 +123,7 @@ LlmErrorTuple = (
     LlmApiStatusError,
     LlmApiTimeoutError,
     LlmRateLimitError,
+    LlmQuotaExceededError,
     LlmInternalServerError,
     LlmAuthenticationError,
     LlmPermissionDeniedError,
