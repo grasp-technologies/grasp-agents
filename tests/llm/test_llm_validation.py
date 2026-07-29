@@ -452,3 +452,93 @@ class TestStreamRetry:
         last_before = events[retrying_idx - 1]
         assert isinstance(last_before, ResponseCompleted)
         assert events[retrying_idx].sequence_number == last_before.sequence_number + 1
+
+
+class TrailingContentModel(BaseModel):
+    capital: str
+    population_millions: int
+
+
+class TestSchemaValidationToleratesTrailingContent:
+    """
+    A provider may close the object and then keep emitting.
+
+    Bedrock's grammar-constrained decoding for Gemma occasionally appends a
+    redundant `}` after a complete, schema-valid object. Rejecting that costs a
+    whole re-sample for output that was already correct, so validation accepts
+    the leading JSON value and ignores what trails it.
+    """
+
+    _GOOD = '{"capital":"Paris","population_millions":68}'
+
+    @pytest.mark.asyncio
+    async def test_stray_closing_brace_validates(self) -> None:
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_text_response(self._GOOD + "}")],
+            retry_policy=RetryPolicy(validation_retries=2),
+        )
+        await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+        assert llm.call_count == 1, "must not spend a retry on recoverable output"
+
+    @pytest.mark.asyncio
+    async def test_recovery_is_logged_with_the_trailing_bytes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_text_response(self._GOOD + "}")],
+            retry_policy=RetryPolicy(validation_retries=2),
+        )
+        with caplog.at_level(logging.WARNING):
+            await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+
+        assert any("trailing" in r.message.lower() for r in caplog.records), (
+            "a silent recovery hides the provider defect"
+        )
+
+    @pytest.mark.asyncio
+    async def test_prose_around_the_object_validates(self) -> None:
+        """Fenced or chatty output is the same defect class."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_text_response(f"Here you go:\n```json\n{self._GOOD}\n```\n")],
+            retry_policy=RetryPolicy(validation_retries=2),
+        )
+        await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+        assert llm.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_genuinely_malformed_output_still_fails(self) -> None:
+        """Leniency must not swallow output with no valid object in it."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[
+                _text_response("I cannot answer that."),
+                _text_response(self._GOOD),
+            ],
+            retry_policy=RetryPolicy(validation_retries=1),
+        )
+        await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+        assert llm.call_count == 2, "unrecoverable output must still be re-sampled"
+
+    @pytest.mark.asyncio
+    async def test_truncated_object_still_fails(self) -> None:
+        """A cut-off object has no complete JSON value — not recoverable."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_text_response('{"capital":"Paris","population_mil')],
+            retry_policy=RetryPolicy(validation_retries=0),
+        )
+        with pytest.raises(LLMResponseValidationError):
+            await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+
+    @pytest.mark.asyncio
+    async def test_tool_call_arguments_tolerate_trailing_content(self) -> None:
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_tool_call_response("add", '{"a":1,"b":2}}')],
+            retry_policy=RetryPolicy(validation_retries=2),
+        )
+        await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
+        assert llm.call_count == 1

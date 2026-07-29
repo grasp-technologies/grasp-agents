@@ -340,13 +340,50 @@ class LLM(ABC):
 
         if output_schema is not None and not response.tool_call_items:
             try:
-                validate_obj_from_json_or_py_string(
-                    response.output_text, schema=output_schema
+                self._validate_json_tolerating_surrounding_content(
+                    response.output_text, output_schema, what="response"
                 )
             except JSONSchemaValidationError as exc:
                 raise LLMResponseValidationError(
                     response.output_text, output_schema
                 ) from exc
+
+    def _validate_json_tolerating_surrounding_content(
+        self,
+        s: str,
+        schema: Any,
+        *,
+        what: str,
+    ) -> None:
+        """
+        Validate `s` against `schema`, ignoring content around the JSON value.
+
+        A grammar-constrained provider can satisfy the schema and then keep
+        emitting: Bedrock's decoder appends a redundant `}` after a complete,
+        schema-valid object for some models. Re-sampling output that was already
+        correct costs a whole extra call, so a strict failure is retried against
+        the leading JSON value before it counts as a validation error.
+
+        Strict stays the first attempt, and the recovery is logged — it is a
+        provider defect, and repairing it silently would hide it.
+        """
+        try:
+            validate_obj_from_json_or_py_string(s, schema=schema)
+            return
+        except JSONSchemaValidationError:
+            pass
+
+        # Raises JSONSchemaValidationError when there is no valid JSON value at
+        # all: that response is genuinely bad and must reach the caller.
+        validate_obj_from_json_or_py_string(s, schema=schema, from_substring=True)
+
+        logger.warning(
+            "llm %s: %s validated only after discarding trailing/leading "
+            "content around the JSON value: %s",
+            self.model_name,
+            what,
+            grasp_logging.body_for_log(s, full=grasp_logging.LOG_LLM_OUTPUT),
+        )
 
     def _validate_tool_calls(
         self,
@@ -370,8 +407,10 @@ class LLM(ABC):
                 continue
             tool = tools[tc.name]
             try:
-                validate_obj_from_json_or_py_string(
-                    tc.arguments, schema=tool.llm_in_type
+                self._validate_json_tolerating_surrounding_content(
+                    tc.arguments,
+                    tool.llm_in_type,
+                    what=f"'{tc.name}' tool call arguments",
                 )
             except JSONSchemaValidationError as exc:
                 failed.append(

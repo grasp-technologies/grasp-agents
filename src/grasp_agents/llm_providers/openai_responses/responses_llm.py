@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Literal, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from openai._types import omit  # noqa: PLC2701
+from openai.lib._pydantic import to_strict_json_schema  # noqa: PLC2701
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
 )
@@ -293,6 +294,34 @@ class OpenAIResponsesLLM(CloudLLM):
         )
 
         if self.apply_output_schema_via_provider:
+            if isinstance(api_output_schema, type) and issubclass(
+                api_output_schema, BaseModel
+            ):
+                # Same strict schema `.parse()` would send, but sent through
+                # `.create()`: `.parse()` also parses the reply and rejects one
+                # whose JSON value is followed by any extra bytes, which some
+                # providers emit (Bedrock's decoder appends a redundant `}` for
+                # certain models). Leaving the parsing to `_validate_response`
+                # keeps provider-side enforcement while letting a recoverable
+                # response through instead of spending a retry on it.
+                text_settings = dict(api_llm_settings.pop("text", None) or {})
+                text_settings["format"] = {
+                    "type": "json_schema",
+                    "name": api_output_schema.__name__,
+                    "schema": to_strict_json_schema(api_output_schema),
+                    "strict": True,
+                }
+                return await self.client.responses.create(
+                    model=self.model_name,
+                    input=input_items,
+                    stream=False,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    text=cast("ResponseTextConfigParam", text_settings),
+                    previous_response_id=previous_response_id or omit,
+                    conversation=conversation or omit,
+                    **api_llm_settings,
+                )
             return await self.client.responses.parse(  # type: ignore[reportUnknownVariableType]
                 text_format=text_format,
                 model=self.model_name,
