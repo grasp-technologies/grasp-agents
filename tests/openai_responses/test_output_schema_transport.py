@@ -29,6 +29,9 @@ class Answer(BaseModel):
 def _empty_response() -> OpenAIResponse:
     return OpenAIResponse.model_construct(
         id="resp_1",
+        created_at=0.0,
+        object="response",
+        status="completed",
         model="m",
         output=[],
         parallel_tool_calls=False,
@@ -72,12 +75,28 @@ class TestOutputSchemaTransport:
         assert set(fmt["schema"]["required"]) == {"capital", "population_millions"}
 
     @pytest.mark.asyncio
-    async def test_existing_text_settings_are_preserved(self) -> None:
-        """A model configured with `text.verbosity` must keep it."""
-        llm = _llm(llm_settings={"text": {"verbosity": "medium"}})
+    async def test_caller_text_settings_are_merged_not_replaced(self) -> None:
+        """`format` is added to the caller's `text`, not swapped in for it."""
+        llm = _llm()
         await llm._get_api_response(
             [], api_output_schema=Answer, text={"verbosity": "medium"}
         )
+
+        text = llm.client.responses.create.await_args.kwargs["text"]  # type: ignore[attr-defined]
+        assert text["verbosity"] == "medium"
+        assert text["format"]["strict"] is True
+
+    @pytest.mark.asyncio
+    async def test_model_level_text_settings_survive_end_to_end(self) -> None:
+        """
+        A model configured with `text.verbosity` keeps it.
+
+        Driven through `_generate_response_once`, because that is where
+        `llm_settings` is merged and forwarded — `_get_api_response` only ever
+        sees settings as keyword arguments.
+        """
+        llm = _llm(llm_settings={"text": {"verbosity": "medium"}})
+        await llm._generate_response_once([], output_schema=Answer)
 
         text = llm.client.responses.create.await_args.kwargs["text"]  # type: ignore[attr-defined]
         assert text["verbosity"] == "medium"
