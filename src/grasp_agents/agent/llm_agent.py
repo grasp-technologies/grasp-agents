@@ -1235,10 +1235,13 @@ class LLMAgent[InT, OutT, CtxT](
         await self._serialize_rollback_checkpoint(self._ctx, checkpoint)
 
     def parse_output_default(self, final_answer: str) -> OutT:
+        # Tracks the LLM's own tolerance: a model whose provider closes the JSON
+        # value and keeps emitting passes `LLM._validate_response` and would
+        # then fail here, turning a recoverable response into a failed run.
         return validate_obj_from_json_or_py_string(
             final_answer,
             schema=self._out_type,
-            from_substring=False,
+            from_substring=self.llm.tolerate_output_around_json,
             strip_language_markdown=True,
         )
 
