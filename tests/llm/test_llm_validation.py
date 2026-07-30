@@ -477,6 +477,7 @@ class TestSchemaValidationToleratesTrailingContent:
             model_name="mock",
             responses=[_text_response(self._GOOD + "}")],
             retry_policy=RetryPolicy(validation_retries=2),
+            tolerate_output_around_json=True,
         )
         await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
         assert llm.call_count == 1, "must not spend a retry on recoverable output"
@@ -489,6 +490,7 @@ class TestSchemaValidationToleratesTrailingContent:
             model_name="mock",
             responses=[_text_response(self._GOOD + "}")],
             retry_policy=RetryPolicy(validation_retries=2),
+            tolerate_output_around_json=True,
         )
         with caplog.at_level(logging.WARNING):
             await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
@@ -504,6 +506,7 @@ class TestSchemaValidationToleratesTrailingContent:
             model_name="mock",
             responses=[_text_response(f"Here you go:\n```json\n{self._GOOD}\n```\n")],
             retry_policy=RetryPolicy(validation_retries=2),
+            tolerate_output_around_json=True,
         )
         await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
         assert llm.call_count == 1
@@ -518,6 +521,7 @@ class TestSchemaValidationToleratesTrailingContent:
                 _text_response(self._GOOD),
             ],
             retry_policy=RetryPolicy(validation_retries=1),
+            tolerate_output_around_json=True,
         )
         await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
         assert llm.call_count == 2, "unrecoverable output must still be re-sampled"
@@ -529,6 +533,7 @@ class TestSchemaValidationToleratesTrailingContent:
             model_name="mock",
             responses=[_text_response('{"capital":"Paris","population_mil')],
             retry_policy=RetryPolicy(validation_retries=0),
+            tolerate_output_around_json=True,
         )
         with pytest.raises(LLMResponseValidationError):
             await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
@@ -539,6 +544,48 @@ class TestSchemaValidationToleratesTrailingContent:
             model_name="mock",
             responses=[_tool_call_response("add", '{"a":1,"b":2}}')],
             retry_policy=RetryPolicy(validation_retries=2),
+            tolerate_output_around_json=True,
         )
         await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
         assert llm.call_count == 1
+
+
+class TestSchemaValidationStrictByDefault:
+    """
+    Without `tolerate_output_around_json`, validation is unchanged.
+
+    The flag is opt-in because leniency accepts the FIRST valid JSON value in
+    the output: a model that narrates a draft before its real answer would have
+    the draft accepted rather than re-sampled.
+    """
+
+    _GOOD = '{"capital":"Paris","population_millions":68}'
+
+    @pytest.mark.asyncio
+    async def test_stray_brace_still_costs_a_retry(self) -> None:
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_text_response(self._GOOD + "}"), _text_response(self._GOOD)],
+            retry_policy=RetryPolicy(validation_retries=1),
+        )
+        await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+        assert llm.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_default_is_strict(self) -> None:
+        assert MockLLM(model_name="mock").tolerate_output_around_json is False
+
+    @pytest.mark.asyncio
+    async def test_a_decoy_first_object_is_rejected(self) -> None:
+        """The risk the flag guards: leniency would accept the decoy."""
+        decoy = '{"capital":"?","population_millions":0}'
+        llm = MockLLM(
+            model_name="mock",
+            responses=[
+                _text_response(f"I will use this shape: {decoy}. Answer: {self._GOOD}"),
+                _text_response(self._GOOD),
+            ],
+            retry_policy=RetryPolicy(validation_retries=1),
+        )
+        await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
+        assert llm.call_count == 2

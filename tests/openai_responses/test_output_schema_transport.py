@@ -40,11 +40,12 @@ def _empty_response() -> OpenAIResponse:
     )
 
 
-def _llm(**kwargs: Any) -> OpenAIResponsesLLM:
+def _llm(*, tolerate: bool = True, **kwargs: Any) -> OpenAIResponsesLLM:
     llm = OpenAIResponsesLLM(
         model_name="google.gemma-4-31b",
         api_provider={"name": "x", "base_url": "https://x/openai/v1", "api_key": "k"},
         apply_output_schema_via_provider=True,
+        tolerate_output_around_json=tolerate,
         **kwargs,
     )
     object.__setattr__(llm.client, "responses", AsyncMock())
@@ -110,6 +111,48 @@ class TestOutputSchemaTransport:
 
         llm.client.responses.parse.assert_awaited_once()  # type: ignore[attr-defined]
         llm.client.responses.create.assert_not_awaited()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_format_is_not_silently_replaced(self) -> None:
+        """`.parse()` raises on this; the create() route must not differ."""
+        llm = _llm()
+        with pytest.raises(TypeError, match="Cannot mix and match"):
+            await llm._get_api_response(
+                [],
+                api_output_schema=Answer,
+                text={"format": {"type": "json_object"}},
+            )
+
+
+class TestTransportUnchangedWhenNotTolerating:
+    """
+    With `tolerate_output_around_json` off — the default — a model must run the
+    exact code path it ran before the flag existed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uses_parse(self) -> None:
+        llm = _llm(tolerate=False)
+        await llm._get_api_response([], api_output_schema=Answer)
+
+        llm.client.responses.parse.assert_awaited_once()  # type: ignore[attr-defined]
+        llm.client.responses.create.assert_not_awaited()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_schema_still_reaches_the_provider(self) -> None:
+        """Enforcement is not what the flag gates — only the transport is."""
+        llm = _llm(tolerate=False)
+        await llm._get_api_response([], api_output_schema=Answer)
+
+        assert llm.client.responses.parse.await_args.kwargs["text_format"] is Answer  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_default_is_not_tolerating(self) -> None:
+        llm = OpenAIResponsesLLM(
+            model_name="m",
+            api_provider={"name": "x", "base_url": "https://x", "api_key": "k"},
+        )
+        assert llm.tolerate_output_around_json is False
 
     @pytest.mark.asyncio
     async def test_gate_off_sends_no_schema(self) -> None:

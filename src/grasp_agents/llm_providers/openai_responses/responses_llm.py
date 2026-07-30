@@ -294,17 +294,29 @@ class OpenAIResponsesLLM(CloudLLM):
         )
 
         if self.apply_output_schema_via_provider:
-            if isinstance(api_output_schema, type) and issubclass(
-                api_output_schema, BaseModel
+            if (
+                self.tolerate_output_around_json
+                and isinstance(api_output_schema, type)
+                and issubclass(api_output_schema, BaseModel)
             ):
-                # Same strict schema `.parse()` would send, but sent through
-                # `.create()`: `.parse()` also parses the reply and rejects one
-                # whose JSON value is followed by any extra bytes, which some
-                # providers emit (Bedrock's decoder appends a redundant `}` for
-                # certain models). Leaving the parsing to `_validate_response`
-                # keeps provider-side enforcement while letting a recoverable
-                # response through instead of spending a retry on it.
+                # The same strict schema `.parse()` would send, sent through
+                # `.create()` instead: `.parse()` also parses the reply and
+                # rejects one whose JSON value is followed by extra bytes, which
+                # is exactly what `tolerate_output_around_json` exists to
+                # forgive — its check runs first, so leniency downstream would
+                # never be reached. Leaving the parsing to `_validate_response`
+                # keeps provider-side enforcement either way.
+                #
+                # Streaming is deliberately not covered: `_get_api_stream` still
+                # hands the schema to `.stream()`, whose parse is equally
+                # strict.
                 text_settings = dict(api_llm_settings.pop("text", None) or {})
+                if "format" in text_settings:
+                    # Mirrors `.parse()`, which refuses to silently replace a
+                    # caller-supplied format.
+                    raise TypeError(
+                        "Cannot mix and match text.format with an output schema"
+                    )
                 text_settings["format"] = {
                     "type": "json_schema",
                     "name": api_output_schema.__name__,

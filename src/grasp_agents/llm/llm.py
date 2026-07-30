@@ -55,6 +55,12 @@ class LLM(ABC):
     # client retries default to 0 so the two never multiply. ``None``
     # disables retries entirely.
     retry_policy: RetryPolicy | None = field(default_factory=RetryPolicy)
+    # Opt in per model when a provider closes the JSON value and keeps
+    # emitting: see ``_validate_json_tolerating_surrounding_content``. Off by
+    # default because it makes validation accept the FIRST valid value in the
+    # output, so a model that emits a draft before its answer would have the
+    # draft accepted instead of re-sampled.
+    tolerate_output_around_json: bool = False
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         # Frozen + non-copyable SDK clients (AsyncOpenAI, etc.) — share by ref
@@ -356,17 +362,27 @@ class LLM(ABC):
         what: str,
     ) -> None:
         """
-        Validate `s` against `schema`, ignoring content around the JSON value.
+        Validate `s` against `schema`, strictly unless this model opts out.
 
         A grammar-constrained provider can satisfy the schema and then keep
         emitting: Bedrock's decoder appends a redundant `}` after a complete,
         schema-valid object for some models. Re-sampling output that was already
-        correct costs a whole extra call, so a strict failure is retried against
-        the leading JSON value before it counts as a validation error.
+        correct costs a whole extra call, so a model with
+        ``tolerate_output_around_json`` set retries a strict failure against the
+        leading JSON value before it counts as a validation error.
 
-        Strict stays the first attempt, and the recovery is logged — it is a
-        provider defect, and repairing it silently would hide it.
+        Field-level validation is unchanged either way — only content *around*
+        the JSON value is forgiven. That is still a trade: the FIRST valid value
+        wins, so a model that narrates a draft before its answer would have the
+        draft accepted. Hence opt-in per model, strict by default.
+
+        The recovery is logged — it is a provider defect, and repairing it
+        silently would hide it.
         """
+        if not self.tolerate_output_around_json:
+            validate_obj_from_json_or_py_string(s, schema=schema)
+            return
+
         try:
             validate_obj_from_json_or_py_string(s, schema=schema)
             return
