@@ -88,6 +88,59 @@ class TestOutputSchemaTransport:
         assert text["format"]["strict"] is True
 
     @pytest.mark.asyncio
+    async def test_top_level_verbosity_is_relocated_not_dropped(self) -> None:
+        """
+        `create()` rejects a top-level `verbosity`; only `parse()` accepts it.
+
+        Forwarding it unchanged would raise `TypeError` for any model that sets
+        it, so it has to move under `text`, where the API reads it from.
+        """
+        llm = _llm()
+        await llm._get_api_response([], api_output_schema=Answer, verbosity="medium")
+
+        kwargs = llm.client.responses.create.await_args.kwargs  # type: ignore[attr-defined]
+        assert "verbosity" not in kwargs, "would be a TypeError against the real SDK"
+        assert kwargs["text"]["verbosity"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_explicit_text_verbosity_wins_over_top_level(self) -> None:
+        llm = _llm()
+        await llm._get_api_response(
+            [], api_output_schema=Answer, verbosity="low", text={"verbosity": "high"}
+        )
+
+        assert llm.client.responses.create.await_args.kwargs["text"]["verbosity"] == (  # type: ignore[attr-defined]
+            "high"
+        )
+
+    @pytest.mark.asyncio
+    async def test_forwarded_kwargs_are_all_accepted_by_the_real_create(self) -> None:
+        """
+        Guards the whole switch, not just `verbosity`.
+
+        The mocked client accepts anything, so a kwarg the real SDK rejects
+        would pass every other test here and fail in production. Bind the
+        captured call against the genuine signature instead.
+        """
+        import inspect
+
+        from openai import AsyncOpenAI
+
+        llm = _llm()
+        await llm._get_api_response(
+            [],
+            api_output_schema=Answer,
+            verbosity="medium",
+            reasoning={"effort": "none"},
+            max_output_tokens=256,
+            store=False,
+        )
+
+        kwargs = llm.client.responses.create.await_args.kwargs  # type: ignore[attr-defined]
+        real = AsyncOpenAI(api_key="x").responses.create
+        inspect.signature(real).bind(**kwargs)
+
+    @pytest.mark.asyncio
     async def test_model_level_text_settings_survive_end_to_end(self) -> None:
         """
         A model configured with `text.verbosity` keeps it.

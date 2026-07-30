@@ -317,6 +317,12 @@ class OpenAIResponsesLLM(CloudLLM):
                     raise TypeError(
                         "Cannot mix and match text.format with an output schema"
                     )
+                # `create()` takes no top-level `verbosity` — only `parse()`
+                # still accepts it — so relocate it to where the API reads it
+                # from. An explicit `text.verbosity` wins.
+                verbosity = api_llm_settings.pop("verbosity", None)
+                if verbosity is not None:
+                    text_settings.setdefault("verbosity", verbosity)
                 text_settings["format"] = {
                     "type": "json_schema",
                     "name": api_output_schema.__name__,
