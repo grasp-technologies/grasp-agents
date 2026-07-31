@@ -5,6 +5,8 @@ from typing import Any, ClassVar, Literal, TypedDict
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AsyncStream
 from openai._types import omit  # type: ignore  # noqa: PLC2701
+from openai.lib._parsing._completions import validate_input_tools  # noqa: PLC2701
+from openai.lib._pydantic import to_strict_json_schema  # noqa: PLC2701
 from openai.lib.streaming.chat import (
     AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
 )
@@ -248,6 +250,44 @@ class OpenAILLM(CloudLLM):
         response_format = api_output_schema or omit
 
         if self.apply_output_schema_via_provider:
+            if (
+                self.tolerate_output_around_json
+                and isinstance(api_output_schema, type)
+                and issubclass(api_output_schema, BaseModel)
+            ):
+                # The same strict schema `.parse()` would send, sent through
+                # `.create()` instead: `.parse()` also parses the reply and
+                # rejects one whose JSON value is followed by extra bytes, which
+                # is exactly what `tolerate_output_around_json` exists to
+                # forgive — its check runs first, so leniency downstream would
+                # never be reached. Leaving the parsing to `_validate_response`
+                # keeps provider-side enforcement either way.
+                #
+                # Streaming is deliberately not covered: `_get_api_stream` still
+                # hands the schema to `.stream()`, whose parse is equally strict.
+                #
+                # `.parse()` also rejects a non-function or non-strict tool up
+                # front; `.create()` does not, so run that check explicitly
+                # rather than lose it.
+                validate_input_tools(tools)
+                schema_format: OpenAIResponseFormatJSONSchema = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": api_output_schema.__name__,
+                        "schema": to_strict_json_schema(api_output_schema),
+                        "strict": True,
+                    },
+                }
+                return await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=api_input,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    stream=False,
+                    response_format=schema_format,
+                    **api_llm_settings,
+                )
+
             return await self.client.beta.chat.completions.parse(  # type: ignore[reportUnknownVariableType]
                 model=self.model_name,
                 messages=api_input,

@@ -463,10 +463,12 @@ class TestSchemaValidationToleratesTrailingContent:
     """
     A provider may close the object and then keep emitting.
 
-    Bedrock's grammar-constrained decoding for Gemma occasionally appends a
-    redundant `}` after a complete, schema-valid object. Rejecting that costs a
-    whole re-sample for output that was already correct, so validation accepts
-    the leading JSON value and ignores what trails it.
+    Grammar-constrained decoding constrains the value, not the stopping: once the
+    closing brace lands the model may append more tokens before it stops. Bedrock
+    does this for Gemma 4 on a few percent of calls — usually the opening of a
+    prose answer (`---`, `**`), sometimes a stray token or a duplicate `}`.
+    Rejecting that costs a whole re-sample for output that was already correct,
+    so validation accepts the leading JSON value and ignores what trails it.
     """
 
     _GOOD = '{"capital":"Paris","population_millions":68}'

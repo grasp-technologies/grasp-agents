@@ -5,8 +5,8 @@ How an output schema reaches the Responses API.
 provider constrains generation, while leaving the parsing of the reply to
 `LLM._validate_response`. Routing it through `responses.parse()` would do both,
 and its parse rejects a reply whose JSON value is followed by extra bytes —
-which some providers emit (Bedrock's decoder appends a redundant `}` for
-certain models), turning a schema-valid response into a wasted re-sample.
+which some providers emit, because a schema constrains the value but not the
+stopping, turning a schema-valid response into a wasted re-sample.
 """
 
 from typing import Any

@@ -56,7 +56,7 @@ class LLM(ABC):
     # disables retries entirely.
     retry_policy: RetryPolicy | None = field(default_factory=RetryPolicy)
     # Opt in per model when a provider closes the JSON value and keeps
-    # emitting: see ``_validate_json_tolerating_surrounding_content``. Off by
+    # emitting: see ``_validate_json_allowing_surrounding_content``. Off by
     # default because it makes validation accept the FIRST valid value in the
     # output, so a model that emits a draft before its answer would have the
     # draft accepted instead of re-sampled.
@@ -346,7 +346,7 @@ class LLM(ABC):
 
         if output_schema is not None and not response.tool_call_items:
             try:
-                self._validate_json_tolerating_surrounding_content(
+                self._validate_json_allowing_surrounding_content(
                     response.output_text, output_schema, what="response"
                 )
             except JSONSchemaValidationError as exc:
@@ -354,7 +354,7 @@ class LLM(ABC):
                     response.output_text, output_schema
                 ) from exc
 
-    def _validate_json_tolerating_surrounding_content(
+    def _validate_json_allowing_surrounding_content(
         self,
         s: str,
         schema: Any,
@@ -365,11 +365,16 @@ class LLM(ABC):
         Validate `s` against `schema`, strictly unless this model opts out.
 
         A grammar-constrained provider can satisfy the schema and then keep
-        emitting: Bedrock's decoder appends a redundant `}` after a complete,
-        schema-valid object for some models. Re-sampling output that was already
-        correct costs a whole extra call, so a model with
-        ``tolerate_output_around_json`` set retries a strict failure against the
-        leading JSON value before it counts as a validation error.
+        emitting: the constraint covers the value, not the stopping, so once the
+        closing brace lands the model is free to append more tokens before it
+        stops. Measured against Bedrock's Gemma 4 this affects a few percent of
+        calls; the appended bytes are usually the start of a prose answer the
+        model was going to write anyway (`---`, `**`), sometimes a stray token or
+        a duplicate `}`. No request-side setting suppresses it.
+
+        Re-sampling output that was already correct costs a whole extra call, so
+        a model with ``tolerate_output_around_json`` set retries a strict failure
+        against the leading JSON value before it counts as a validation error.
 
         Field-level validation is unchanged either way — only content *around*
         the JSON value is forgiven. That is still a trade: the FIRST valid value
@@ -379,15 +384,12 @@ class LLM(ABC):
         The recovery is logged — it is a provider defect, and repairing it
         silently would hide it.
         """
-        if not self.tolerate_output_around_json:
-            validate_obj_from_json_or_py_string(s, schema=schema)
-            return
-
         try:
             validate_obj_from_json_or_py_string(s, schema=schema)
             return
         except JSONSchemaValidationError:
-            pass
+            if not self.tolerate_output_around_json:
+                raise
 
         # Raises JSONSchemaValidationError when there is no valid JSON value at
         # all: that response is genuinely bad and must reach the caller.
@@ -423,7 +425,7 @@ class LLM(ABC):
                 continue
             tool = tools[tc.name]
             try:
-                self._validate_json_tolerating_surrounding_content(
+                self._validate_json_allowing_surrounding_content(
                     tc.arguments,
                     tool.llm_in_type,
                     what=f"'{tc.name}' tool call arguments",
