@@ -104,6 +104,8 @@ class CloudLLM(LLM):
     apply_tool_call_schema_via_provider: bool = False
 
     def __post_init__(self) -> None:
+        super().__post_init__()
+
         self._validate_platform()
 
         if self.llm_settings is not None and self._settings_type is not None:

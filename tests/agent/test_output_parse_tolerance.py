@@ -10,7 +10,7 @@ an agent defaults to `max_retries=0`.
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import BaseModel
@@ -28,6 +28,10 @@ class _StubLLM(LLM):
     """Never called: the agent is built only to reach its output parser."""
 
     model_name: str = "stub"
+
+    # The tolerance is provider-gated; this stub stands in for one that supports
+    # it, since the test targets the agent's parse rather than a transport.
+    _supports_output_around_json_tolerance: ClassVar[bool] = True
 
     async def _generate_response_once(
         self,

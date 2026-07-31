@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, Self, TypedDict, final
+from typing import Any, ClassVar, Self, TypedDict, final
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, with_config
@@ -59,8 +59,28 @@ class LLM(ABC):
     # emitting: see ``_validate_json_allowing_surrounding_content``. Off by
     # default because it makes validation accept the FIRST valid value in the
     # output, so a model that emits a draft before its answer would have the
-    # draft accepted instead of re-sampled.
+    # draft accepted instead of re-sampled. Applies to the final answer only —
+    # tool call arguments stay strict.
     tolerate_output_around_json: bool = False
+
+    # Whether this provider's non-streaming path can actually honour the flag
+    # above. A provider whose SDK parses the reply itself (Anthropic's
+    # ``messages.parse``) rejects trailing bytes before our validation runs, so
+    # setting the flag there would be a silent no-op; subclasses that route
+    # around their SDK's parse set this True and the rest reject the flag.
+    _supports_output_around_json_tolerance: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        if self.tolerate_output_around_json and not (
+            self._supports_output_around_json_tolerance
+        ):
+            raise ValueError(
+                f"{type(self).__name__} cannot honour "
+                "tolerate_output_around_json: its provider SDK parses the "
+                "response itself and rejects content around the JSON value "
+                "before validation runs. Supported on the OpenAI Responses and "
+                "Chat Completions providers."
+            )
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         # Frozen + non-copyable SDK clients (AsyncOpenAI, etc.) — share by ref
@@ -425,10 +445,14 @@ class LLM(ABC):
                 continue
             tool = tools[tc.name]
             try:
-                self._validate_json_allowing_surrounding_content(
-                    tc.arguments,
-                    tool.llm_in_type,
-                    what=f"'{tc.name}' tool call arguments",
+                # Strict regardless of ``tolerate_output_around_json``: the flag
+                # covers the final answer only. ``AgentLoop._convert_tool_input``
+                # re-parses these same arguments strictly before dispatch, so
+                # relaxing here would only move the failure later — and a tool
+                # call is dispatched, not read, which makes accepting the first
+                # of two candidate payloads a worse trade than a re-sample.
+                validate_obj_from_json_or_py_string(
+                    tc.arguments, schema=tool.llm_in_type
                 )
             except JSONSchemaValidationError as exc:
                 failed.append(

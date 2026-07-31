@@ -10,7 +10,7 @@ Focuses on:
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -106,7 +106,11 @@ class MockLLM(LLM):
 
     responses: list[Response] = field(default_factory=list)
 
+    # Stands in for a provider whose reply our own validation parses.
+    _supports_output_around_json_tolerance: ClassVar[bool] = True
+
     def __post_init__(self):
+        super().__post_init__()
         object.__setattr__(self, "_call_count", 0)
 
     @property
@@ -541,15 +545,27 @@ class TestSchemaValidationToleratesTrailingContent:
             await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
 
     @pytest.mark.asyncio
-    async def test_tool_call_arguments_tolerate_trailing_content(self) -> None:
+    async def test_tool_call_arguments_stay_strict(self) -> None:
+        """
+        The flag covers the final answer only.
+
+        `AgentLoop._convert_tool_input` re-parses the same arguments strictly
+        before dispatch, so tolerating them here would move the failure later
+        instead of preventing it. A tool call is also dispatched rather than
+        read, which makes guessing between two candidate payloads a worse trade
+        than a re-sample.
+        """
         llm = MockLLM(
             model_name="mock",
-            responses=[_tool_call_response("add", '{"a":1,"b":2}}')],
+            responses=[
+                _tool_call_response("add", '{"a":1,"b":2}}'),
+                _tool_call_response("add", '{"a":1,"b":2}'),
+            ],
             retry_policy=RetryPolicy(validation_retries=2),
             tolerate_output_around_json=True,
         )
         await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
-        assert llm.call_count == 1
+        assert llm.call_count == 2
 
 
 class TestSchemaValidationStrictByDefault:
@@ -591,3 +607,32 @@ class TestSchemaValidationStrictByDefault:
         )
         await llm.generate_response(_USER_MSG, output_schema=TrailingContentModel)
         assert llm.call_count == 2
+
+
+@dataclass(frozen=True)
+class UnsupportedToleranceLLM(MockLLM):
+    """A provider whose SDK parses the reply itself, so it cannot be lenient."""
+
+    _supports_output_around_json_tolerance: ClassVar[bool] = False
+
+
+class TestToleranceIsProviderGated:
+    """
+    The flag must fail loudly where it cannot work.
+
+    A provider that lets its SDK parse the reply (Anthropic's `messages.parse`,
+    both streaming paths) rejects trailing content before our validation runs,
+    so accepting the flag there would silently do nothing.
+    """
+
+    def test_unsupported_provider_rejects_the_flag(self) -> None:
+        with pytest.raises(ValueError, match="cannot honour"):
+            UnsupportedToleranceLLM(model_name="mock", tolerate_output_around_json=True)
+
+    def test_unsupported_provider_is_fine_with_the_flag_off(self) -> None:
+        llm = UnsupportedToleranceLLM(model_name="mock")
+        assert llm.tolerate_output_around_json is False
+
+    def test_supported_provider_accepts_the_flag(self) -> None:
+        llm = MockLLM(model_name="mock", tolerate_output_around_json=True)
+        assert llm.tolerate_output_around_json is True
