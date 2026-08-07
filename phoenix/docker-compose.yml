@@ -1,6 +1,7 @@
 services:
   phoenix:
-    image: arizephoenix/phoenix:latest
+    # Pinned so local traces are read by the same Phoenix version prod runs.
+    image: arizephoenix/phoenix:version-19.19.0
     ports:
       - "6006:6006"  # UI and OTLP HTTP collector
       - "4317:4317"  # OTLP gRPC collector
