@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import openai
 import pytest
+from openai.types.responses.response import IncompleteDetails
 from pydantic import BaseModel
 
 from grasp_agents.llm.cloud_llm import ApiCallParams, CloudLLM
@@ -27,7 +28,7 @@ from grasp_agents.llm_providers.openai_completions.error_mapping import (
     map_api_error as openai_map_api_error,
 )
 from grasp_agents.tools.base import BaseTool
-from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.content import OutputMessageRefusal, OutputMessageText
 from grasp_agents.types.errors import (
     LLMResponseValidationError,
     LLMToolCallValidationError,
@@ -35,6 +36,7 @@ from grasp_agents.types.errors import (
 from grasp_agents.types.items import InputItem, InputMessageItem, OutputMessageItem
 from grasp_agents.types.llm_errors import (
     LlmAuthenticationError,
+    LlmContentFilterError,
     LlmContextWindowError,
     LlmError,
     LlmInternalServerError,
@@ -71,6 +73,21 @@ def _text_response(text: str, model: str = "mock") -> Response:
             OutputMessageItem(
                 content=[OutputMessageText(text=text)],
                 status="completed",
+            )
+        ],
+    )
+
+
+def _content_filter_response(model: str = "mock") -> Response:
+    """A provider's policy block: a 200 response with nothing usable in it."""
+    return Response(
+        model=model,
+        status="incomplete",
+        incomplete_details=IncompleteDetails(reason="content_filter"),
+        output=[
+            OutputMessageItem(
+                content=[OutputMessageRefusal(refusal="Blocked by policy.")],
+                status="incomplete",
             )
         ],
     )
@@ -731,6 +748,72 @@ class TestFallbackMemberRetries:
 
         with pytest.raises(ValueError, match="member"):
             FallbackLLM(primary=primary, litellm_provider="openai")
+
+
+class TestFallbackContentFilter:
+    """
+    A policy block is the case fallback exists for: another model usually
+    answers. It must reach the cascade whatever shape it arrived in, and
+    must not burn the member's retry budget on the way.
+    """
+
+    @pytest.mark.asyncio
+    @patch("grasp_agents.llm.llm.asyncio.sleep", new_callable=AsyncMock)
+    async def test_blocked_response_fails_over_without_retries(
+        self, mock_sleep: AsyncMock
+    ) -> None:
+        # Arrives as a 200 response, not an exception — the shape that used
+        # to reach the caller as an output-less "success".
+        primary = StubLLM(
+            model_name="primary",
+            response=_content_filter_response(),
+            retry_policy=RetryPolicy(api_retries=3, validation_retries=3),
+        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        result = await llm.generate_response(_USER_MSG)
+
+        assert result.output_text == "rescued"
+        assert primary.call_count == 1
+        assert mock_sleep.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_blocked_error_fails_over(self) -> None:
+        # The other shape: the provider raised instead of responding.
+        primary = ErrorLLM(
+            model_name="primary",
+            error_to_raise=LlmContentFilterError("flagged for cyber risk"),
+        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        assert (await llm.generate_response(_USER_MSG)).output_text == "rescued"
+
+    @pytest.mark.asyncio
+    async def test_every_member_blocked_raises_a_block(self) -> None:
+        """Not a transport error: the caller must see why nothing answered."""
+        primary = StubLLM(model_name="primary", response=_content_filter_response())
+        fallback = StubLLM(model_name="fallback", response=_content_filter_response())
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        with pytest.raises(LlmContentFilterError):
+            await llm.generate_response(_USER_MSG)
+        assert fallback.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_blocked_stream_fails_over(self) -> None:
+        primary = StubLLM(model_name="primary", response=_content_filter_response())
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        events = [e async for e in llm.generate_response_stream(_USER_MSG)]
+
+        assert [
+            e.fallback_model for e in events if isinstance(e, ResponseFallback)
+        ] == ["fallback"]
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert completed[-1].response.output_text == "rescued"
 
 
 class TestFallbackValidationRetries:

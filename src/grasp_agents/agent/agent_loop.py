@@ -1566,6 +1566,13 @@ class AgentLoop[CtxT]:
             assert act.response is not None
             response = act.response
 
+            if not response.output:
+                logger.warning(
+                    "agent '%s' turn %d: LLM returned no output items",
+                    self.agent_name,
+                    self.turn,
+                )
+
             # ── JUDGE: classify next transition ──
 
             step = self._decide_next_step(response, exec_id=exec_id)

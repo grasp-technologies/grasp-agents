@@ -31,7 +31,10 @@ from grasp_agents.types.items import (
     InputMessageItem,
     OutputMessageItem,
 )
-from grasp_agents.types.llm_errors import LlmInternalServerError
+from grasp_agents.types.llm_errors import (
+    LlmContentFilterError,
+    LlmInternalServerError,
+)
 from grasp_agents.types.llm_events import (
     LlmEvent,
     OutputItemAdded,
@@ -40,7 +43,7 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
     ResponseRetrying,
 )
-from grasp_agents.types.response import Response
+from grasp_agents.types.response import REFUSAL_CATEGORY_KEY, Response
 
 # ---------- Mocks ----------
 
@@ -76,14 +79,20 @@ def _refusal_response(text: str = "I can't help with that.") -> Response:
     )
 
 
-def _content_filter_response() -> Response:
+def _content_filter_response(
+    explanation: str | None = None, category: str | None = None
+) -> Response:
+    content: list[Any] = [OutputMessageText(text="")]
+    if explanation is not None:
+        content = [OutputMessageRefusal(refusal=explanation)]
     return Response(
         model="mock",
         status="incomplete",
         incomplete_details=IncompleteDetails(reason="content_filter"),
-        output=[
-            OutputMessageItem(content=[OutputMessageText(text="")], status="incomplete")
-        ],
+        output=[OutputMessageItem(content=content, status="incomplete")],
+        provider_specific_fields=(
+            {REFUSAL_CATEGORY_KEY: category} if category else None
+        ),
     )
 
 
@@ -258,7 +267,10 @@ class TestValidationErrorTypes:
 
 
 class TestRefusalAndContentFilter:
-    """Refusals / content filters log a warning; the response flows through."""
+    """
+    A refusal the model wrote logs a warning and flows through; a content
+    filter that blocked the response raises instead.
+    """
 
     @pytest.mark.asyncio
     async def test_refusal_returns_response_and_warns(
@@ -271,15 +283,49 @@ class TestRefusalAndContentFilter:
         assert any("refusal" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_content_filter_returns_response_and_warns(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+    async def test_content_filter_raises(self):
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_content_filter_response("Blocked: cyber harm.", "cyber")],
+        )
+        with pytest.raises(LlmContentFilterError) as exc_info:
+            await llm.generate_response(_USER_MSG)
+        # The provider's own explanation and category reach the caller.
+        assert "Blocked: cyber harm." in str(exc_info.value)
+        assert exc_info.value.code == "cyber"
+
+    @pytest.mark.asyncio
+    async def test_content_filter_is_not_retried(self):
+        """The same request is blocked again — resampling only burns tokens."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_content_filter_response(), _text_response("ok")],
+            retry_policy=RetryPolicy(api_retries=3, validation_retries=3),
+        )
+        with pytest.raises(LlmContentFilterError):
+            await llm.generate_response(_USER_MSG)
+        assert llm.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_content_filter_beats_schema_validation(self):
+        """
+        A blocked response has no output; reporting it as a schema mismatch
+        would blame the model for the filter's decision.
+        """
+
+        class M(BaseModel):
+            v: int
+
         llm = MockLLM(model_name="mock", responses=[_content_filter_response()])
-        with caplog.at_level(logging.WARNING, logger="grasp_agents.llm.llm"):
-            response = await llm.generate_response(_USER_MSG)
-        assert response.incomplete_details is not None
-        assert response.incomplete_details.reason == "content_filter"
-        assert any("content_filter" in r.getMessage() for r in caplog.records)
+        with pytest.raises(LlmContentFilterError):
+            await llm.generate_response(_USER_MSG, output_schema=M)
+
+    @pytest.mark.asyncio
+    async def test_content_filter_raises_when_streaming(self):
+        llm = MockLLM(model_name="mock", responses=[_content_filter_response()])
+        with pytest.raises(LlmContentFilterError):
+            async for _ in llm.generate_response_stream(_USER_MSG):
+                pass
 
     @pytest.mark.asyncio
     async def test_refusal_with_output_schema_is_resampled(self):

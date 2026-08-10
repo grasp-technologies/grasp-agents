@@ -7,7 +7,12 @@ import httpx
 import litellm
 import openai
 
-from grasp_agents.llm_providers._http_helpers import is_quota_error, parse_retry_after
+from grasp_agents.llm_providers._http_helpers import (
+    content_filter_code,
+    is_content_filter_message,
+    is_quota_error,
+    parse_retry_after,
+)
 from grasp_agents.types.errors import CompletionError
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
@@ -67,7 +72,11 @@ def map_api_error(err: Exception) -> LlmError | None:
         )
 
     if isinstance(err, litellm.ContentPolicyViolationError):
-        return LlmContentFilterError()
+        # The code, if any, is whatever the upstream body carried: LiteLLM
+        # normalizes the exception type across providers but not the code,
+        # and stamping one here would attribute an OpenAI code to whichever
+        # provider actually blocked.
+        return LlmContentFilterError(msg, code=content_filter_code(err))
 
     if isinstance(err, litellm.AuthenticationError):
         return LlmAuthenticationError(msg, response=err.response, body=err.body)
@@ -84,6 +93,11 @@ def map_api_error(err: Exception) -> LlmError | None:
         return LlmContextWindowError(msg, response=err.response, body=err.body)
 
     if isinstance(err, litellm.BadRequestError):
+        # LiteLLM only raises ContentPolicyViolationError for the providers
+        # whose blocks it recognizes; the rest arrive as a plain bad request
+        # that the message alone identifies.
+        if is_content_filter_message(msg):
+            return LlmContentFilterError(msg, code=content_filter_code(err))
         return LlmBadRequestError(msg, response=err.response, body=err.body)
 
     if isinstance(err, litellm.exceptions.UnprocessableEntityError):
@@ -99,6 +113,9 @@ def map_api_error(err: Exception) -> LlmError | None:
         # Every litellm exception derives from the OpenAI SDK's, so this
         # catches the long tail (in-stream error frames, bodies the SDK
         # could not validate) that the branches above do not name.
+        cf_code = content_filter_code(err)
+        if cf_code or is_content_filter_message(msg):
+            return LlmContentFilterError(msg, code=cf_code)
         return LlmApiError(msg, err.request, body=err.body)
 
     return None

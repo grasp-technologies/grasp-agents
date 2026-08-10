@@ -33,6 +33,15 @@ from .items import (
     prefixed_id,
 )
 
+REFUSAL_CATEGORY_KEY = "refusal_category"
+"""
+:attr:`Response.provider_specific_fields` key holding the policy category a
+provider's content filter named for a refusal (e.g. ``"cyber"``), if any.
+
+The refusal's human-readable explanation rides in the message's
+:class:`~grasp_agents.types.content.OutputMessageRefusal` part instead.
+"""
+
 
 class InputTokensDetails(_SDKInputTokensDetails):
     cached_tokens: int = 0

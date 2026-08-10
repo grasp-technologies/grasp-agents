@@ -31,11 +31,12 @@ from grasp_agents.types.items import (
 )
 
 from . import AnthropicStreamEvent
-from .provider_output_to_response import convert_usage
+from .provider_output_to_response import convert_usage, refusal_fields, with_refusal
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from anthropic.types import RefusalStopDetails as AnthropicRefusalStopDetails
     from openai.types.responses import ResponseStatus
 
     from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted
@@ -80,6 +81,8 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         self._server_tool_block_idx: dict[int, str] = {}
         # Accumulated citations for current text block
         self._citations: list[AnnotationUrlCitation] = []
+        # Structured reason for a classifier refusal (stop_reason="refusal")
+        self._stop_details: AnthropicRefusalStopDetails | None = None
 
     def _process_event(self, raw_event: AnthropicStreamEvent) -> Iterator[LlmEvent]:
         event_type = raw_event.type
@@ -249,6 +252,8 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         delta = event.delta
         if delta.stop_reason:
             self._finish_reason = delta.stop_reason
+        if delta.stop_details:
+            self._stop_details = delta.stop_details
 
         # Update usage with final output token count
         msg_usage: Any = event.usage
@@ -356,7 +361,22 @@ class AnthropicStreamConverter(BaseLlmStreamConverter[AnthropicStreamEvent]):
         return list(self._citations)
 
     def _build_response_completed(self) -> ResponseCompleted:
-        return super()._build_response_completed()
+        if self._finish_reason != "refusal":
+            return super()._build_response_completed()
+
+        # Recorded before the base snapshots the items: a refusal carries its
+        # reason only in ``stop_details``, and can land mid-stream, on the
+        # message it interrupted.
+        self._items = with_refusal(self._items, self._stop_details)
+        completed = super()._build_response_completed()
+
+        fields = refusal_fields(self._stop_details)
+        if fields is None:
+            return completed
+        response = completed.response.model_copy(
+            update={"provider_specific_fields": fields}
+        )
+        return completed.model_copy(update={"response": response})
 
     # ==== Hooks ====
 
