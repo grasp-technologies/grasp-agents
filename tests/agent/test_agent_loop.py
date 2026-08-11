@@ -623,3 +623,25 @@ class TestTurnBoundaryEventPayloads:
         stop = [e for e in events if isinstance(e, TurnEndEvent)][-1]
         assert [o.call_id for o in stop.data.tool_outputs] == ["fa1"]
         assert "Final answer recorded." in stop.data.tool_outputs[0].text
+
+
+# ---------- Output-less turns ----------
+
+
+class TestEmptyResponse:
+    @pytest.mark.asyncio
+    async def test_empty_response_is_logged_and_the_loop_continues(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """
+        A response with no output items adds nothing to the transcript, so
+        the next turn re-sends the same request. That is invisible from the
+        outside — a log line is the only trace.
+        """
+        loop, _ = _make_loop([Response(model="mock"), _text_response("recovered")])
+
+        with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.agent_loop"):
+            await _drain(loop)
+
+        assert loop.final_answer == "recovered"
+        assert any("no output items" in r.getMessage() for r in caplog.records)

@@ -3,9 +3,32 @@ from typing import Literal
 import httpx
 import openai
 
+CONTENT_FILTER_DEFAULT_MESSAGE = "The provider's content filter blocked this request."
+
 
 class LlmContentFilterError(openai.ContentFilterFinishReasonError):
-    pass
+    """
+    The provider refused the request on policy grounds, or discarded the
+    output it had already produced.
+
+    Never retried — the same request on the same model is blocked again —
+    but it does advance a ``FallbackLLM``: another model is the recovery
+    both OpenAI and Anthropic recommend for a policy block.
+
+    ``code`` is the provider's own marker when it gave one: an error code
+    (``"invalid_prompt"``) or a policy category (``"cyber"``).
+    """
+
+    message: str
+    code: str | None
+
+    def __init__(self, message: str | None = None, *, code: str | None = None) -> None:
+        message = message or CONTENT_FILTER_DEFAULT_MESSAGE
+        # Bypasses the parent, whose __init__ hardcodes a fixed message, so
+        # the provider's own explanation reaches the caller.
+        openai.OpenAIError.__init__(self, message)
+        self.message = message
+        self.code = code
 
 
 class LlmApiError(openai.APIError):

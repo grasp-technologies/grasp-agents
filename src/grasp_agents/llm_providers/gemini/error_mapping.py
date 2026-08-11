@@ -7,13 +7,17 @@ from typing import Any, cast
 import httpx
 from google.genai import errors as genai_errors
 
-from grasp_agents.llm_providers._http_helpers import parse_retry_after
+from grasp_agents.llm_providers._http_helpers import (
+    is_content_filter_message,
+    parse_retry_after,
+)
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
     LlmApiStatusError,
     LlmApiTimeoutError,
     LlmAuthenticationError,
     LlmBadRequestError,
+    LlmContentFilterError,
     LlmError,
     LlmInternalServerError,
     LlmNotFoundError,
@@ -80,6 +84,11 @@ def map_api_error(err: Exception) -> LlmError | None:
     if code == 404:
         return LlmNotFoundError(msg, response=resp, body=None)
     if code == 400:
+        # A prompt rejected up front comes back as a plain 400; blocked
+        # *candidates* arrive as a normal 200 response and are handled where
+        # the response is validated, not here.
+        if is_content_filter_message(msg):
+            return LlmContentFilterError(msg)
         return LlmBadRequestError(msg, response=resp, body=None)
 
     return LlmApiStatusError(msg, response=resp, body=None)

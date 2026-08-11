@@ -26,6 +26,7 @@ from anthropic.types import (
     RawMessageStartEvent,
     RawMessageStopEvent,
     RedactedThinkingBlock,
+    RefusalStopDetails,
     ServerToolUseBlock,
     SignatureDelta,
     StopReason,
@@ -92,6 +93,7 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.llm_events import (
     OutputMessageTextPartTextDelta as LlmTextDelta,
 )
+from grasp_agents.types.response import Response
 
 # ==== Helpers ====
 
@@ -101,6 +103,7 @@ def _make_message(
     *,
     model: str = "claude-sonnet-4-20250514",
     stop_reason: StopReason = "end_turn",
+    stop_details: RefusalStopDetails | None = None,
     input_tokens: int = 100,
     output_tokens: int = 50,
 ) -> Message:
@@ -111,6 +114,7 @@ def _make_message(
         model=model,
         content=content,
         stop_reason=stop_reason,
+        stop_details=stop_details,
         stop_sequence=None,
         usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens),
     )
@@ -292,6 +296,54 @@ class TestResponseConverters:
         assert response.status == "incomplete"
         assert response.incomplete_details is not None
         assert response.incomplete_details.reason == "max_output_tokens"
+
+
+_BLOCKED = RefusalStopDetails(
+    type="refusal",
+    category="cyber",
+    explanation="Blocked under Anthropic's Usage Policy.",
+)
+
+
+class TestRefusalConversion:
+    """
+    A classifier refusal arrives as a normal message with its reason only in
+    ``stop_details`` — and, before any output, with empty ``content``.
+    Without normalizing it, the response reads as a model that said nothing.
+    """
+
+    def test_refusal_carries_explanation_and_category(self):
+        msg = _make_message([], stop_reason="refusal", stop_details=_BLOCKED)
+        response = from_anthropic_message(msg)
+
+        assert response.incomplete_details is not None
+        assert response.incomplete_details.reason == "content_filter"
+        assert response.refusal == _BLOCKED.explanation
+        assert response.provider_specific_fields == {"refusal_category": "cyber"}
+
+    def test_refusal_without_details_still_carries_a_reason(self):
+        response = from_anthropic_message(_make_message([], stop_reason="refusal"))
+
+        assert response.refusal
+        assert response.provider_specific_fields is None
+
+    def test_mid_stream_refusal_joins_the_message_it_interrupted(self):
+        """
+        One assistant message per turn — text and refusal parts, marked
+        incomplete. The same shape the other providers produce.
+        """
+        msg = _make_message(
+            [TextBlock(type="text", text="Partial answer")],
+            stop_reason="refusal",
+            stop_details=_BLOCKED,
+        )
+        response = from_anthropic_message(msg)
+
+        assert len(response.message_items) == 1
+        item = response.message_items[0]
+        assert item.status == "incomplete"
+        assert item.text == "Partial answer"
+        assert item.refusal == _BLOCKED.explanation
 
 
 # ==== response_to_message ====
@@ -795,10 +847,11 @@ def _block_stop(idx: int) -> RawContentBlockStopEvent:
 def _msg_delta(
     stop_reason: StopReason = "end_turn",
     output_tokens: int = 20,
+    stop_details: RefusalStopDetails | None = None,
 ) -> RawMessageDeltaEvent:
     return RawMessageDeltaEvent(
         type="message_delta",
-        delta=MessageDelta(stop_reason=stop_reason),
+        delta=MessageDelta(stop_reason=stop_reason, stop_details=stop_details),
         usage=MessageDeltaUsage(output_tokens=output_tokens),
     )
 
@@ -810,6 +863,10 @@ def _msg_stop() -> RawMessageStopEvent:
 class TestAnthropicStreamConverter:
     def _run(self, events: list[Any]) -> list[Any]:
         return asyncio.run(_collect_events(events))
+
+    def _completed(self, llm_events: list[Any]) -> Response:
+        [completed] = [e for e in llm_events if isinstance(e, ResponseCompleted)]
+        return completed.response
 
     def test_text_stream(self):
         """Basic text streaming: message_start → text block → deltas → stop."""
@@ -1158,6 +1215,37 @@ class TestAnthropicStreamConverter:
         added_events = [e for e in llm_events if isinstance(e, OutputItemAdded)]
         output_indices = [e.output_index for e in added_events]
         assert output_indices == [0, 1, 2]
+
+    def test_refusal_before_any_output(self):
+        events = [
+            _msg_start_event(),
+            _msg_delta(stop_reason="refusal", stop_details=_BLOCKED),
+            _msg_stop(),
+        ]
+        response = self._completed(self._run(events))
+
+        assert response.incomplete_details is not None
+        assert response.incomplete_details.reason == "content_filter"
+        assert response.refusal == _BLOCKED.explanation
+        assert response.provider_specific_fields == {"refusal_category": "cyber"}
+
+    def test_mid_stream_refusal_joins_the_streamed_message(self):
+        events = [
+            _msg_start_event(),
+            _block_start(0, TextBlock(type="text", text="")),
+            _block_delta(0, TextDelta(type="text_delta", text="Partial answer")),
+            _block_stop(0),
+            _msg_delta(stop_reason="refusal", stop_details=_BLOCKED),
+            _msg_stop(),
+        ]
+        response = self._completed(self._run(events))
+
+        # Same single-message shape as the non-streaming converter.
+        assert len(response.message_items) == 1
+        item = response.message_items[0]
+        assert item.status == "incomplete"
+        assert item.text == "Partial answer"
+        assert item.refusal == _BLOCKED.explanation
 
 
 # ==== Web search: extraction + round-trip + streaming ====

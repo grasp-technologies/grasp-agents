@@ -16,6 +16,15 @@ logger = getLogger(__name__)
 
 _JSON_START_RE = re.compile(r"[{\[]")
 
+# A fence wrapping the *whole* payload — the shape a model produces when it
+# answers a JSON request with ```json ... ```. Anchored at both ends on
+# purpose: a fence mid-message belongs to the content (a code block inside a
+# JSON string value), and stripping it there silently rewrites the answer.
+_WRAPPING_FENCE_RE = re.compile(
+    r"\A\s*```[a-zA-Z0-9]*[ \t]*\r?\n(?P<body>.*?)\r?\n?[ \t]*```\s*\Z",
+    re.DOTALL,
+)
+
 
 def extract_json_substring(text: str) -> str | None:
     decoder = json.JSONDecoder()
@@ -39,7 +48,8 @@ def parse_json_or_py_string(
     s_orig = s
 
     if strip_language_markdown:
-        s = re.sub(r"```[a-zA-Z0-9]*\n|```", "", s).strip()
+        match = _WRAPPING_FENCE_RE.match(s)
+        s = match.group("body").strip() if match else s.strip()
 
     if from_substring:
         s = extract_json_substring(s) or ""

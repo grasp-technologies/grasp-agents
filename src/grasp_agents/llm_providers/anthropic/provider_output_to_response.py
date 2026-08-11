@@ -1,10 +1,12 @@
 """Convert Anthropic Message content blocks → internal item types."""
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import RedactedThinkingBlock as AnthropicRedactedThinkingBlock
+from anthropic.types import RefusalStopDetails as AnthropicRefusalStopDetails
 from anthropic.types import ServerToolUseBlock as AnthropicServerToolUseBlock
 from anthropic.types import StopReason as AnthropicStopReason
 from anthropic.types import TextBlock as AnthropicTextBlock
@@ -29,6 +31,7 @@ from openai.types.responses.response import IncompleteDetails
 from grasp_agents.types.content import (
     Annotation,
     AnnotationUrlCitation,
+    OutputMessageRefusal,
     OutputMessageText,
     ReasoningSummary,
 )
@@ -43,10 +46,15 @@ from grasp_agents.types.items import (
     WebSearchCallItem,
 )
 from grasp_agents.types.response import (
+    REFUSAL_CATEGORY_KEY,
     InputTokensDetails,
     OutputTokensDetails,
     Response,
     ResponseUsage,
+)
+
+DEFAULT_REFUSAL_EXPLANATION = (
+    "A safety classifier declined this request; no explanation was given."
 )
 
 
@@ -308,6 +316,41 @@ def _map_stop_reason(
     return "completed", None
 
 
+def with_refusal(
+    items: Sequence[OutputItem], stop_details: AnthropicRefusalStopDetails | None
+) -> list[OutputItem]:
+    """
+    Record a classifier refusal as a refusal part on the turn's message.
+
+    A refusal arrives as an ordinary message whose reason lives only in
+    ``stop_details`` — and, when it fires before any output, with empty
+    ``content`` — so without this the response reads as a model that said
+    nothing. The part joins the message the classifier interrupted, and
+    marks it incomplete: one assistant message per turn, the same shape the
+    other providers produce for their own content filters.
+    """
+    explanation = (
+        stop_details.explanation if stop_details else None
+    ) or DEFAULT_REFUSAL_EXPLANATION
+    part = OutputMessageRefusal(refusal=explanation)
+
+    if items and isinstance(items[-1], OutputMessageItem):
+        interrupted = items[-1].model_copy(
+            update={"content": [*items[-1].content, part], "status": "incomplete"}
+        )
+        return [*items[:-1], interrupted]
+
+    return [*items, OutputMessageItem(status="incomplete", content=[part])]
+
+
+def refusal_fields(
+    stop_details: AnthropicRefusalStopDetails | None,
+) -> dict[str, Any] | None:
+    """Response-level fields naming the policy category, when there is one."""
+    category = stop_details.category if stop_details else None
+    return {REFUSAL_CATEGORY_KEY: category} if category else None
+
+
 def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
     """Convert an Anthropic ``Message`` to a grasp-agents ``Response``."""
     # NOTE: ignored AnthropicMessage fields: `container`, `model``, `stop_sequence`
@@ -316,6 +359,11 @@ def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
     usage = convert_usage(provider_output.usage)
     status, incomplete_details = _map_stop_reason(provider_output.stop_reason)
 
+    provider_specific_fields: dict[str, Any] | None = None
+    if provider_output.stop_reason == "refusal":
+        output_items = with_refusal(output_items, provider_output.stop_details)
+        provider_specific_fields = refusal_fields(provider_output.stop_details)
+
     return Response(
         id=provider_output.id,
         model=provider_output.model,
@@ -323,4 +371,5 @@ def provider_output_to_response(provider_output: AnthropicMessage) -> Response:
         incomplete_details=incomplete_details,
         output=output_items,
         usage=usage,
+        provider_specific_fields=provider_specific_fields,
     )

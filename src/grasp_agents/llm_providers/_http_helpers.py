@@ -21,6 +21,27 @@ _QUOTA_PHRASES = (
     "credit balance is too low",
 )
 
+# Error-body codes that mean "blocked on policy grounds", as opposed to the
+# same words appearing as a finish reason. ``invalid_prompt`` and
+# ``content_policy_violation`` are OpenAI's; ``content_filter`` is what Azure
+# OpenAI returns for a content-management-policy block.
+_CONTENT_FILTER_CODES = frozenset(
+    {
+        "content_filter",
+        "content_policy_violation",
+        "invalid_prompt",
+    }
+)
+_CONTENT_FILTER_PHRASES = (
+    "content filter",
+    "content policy",
+    "content management policy",
+    "usage policy",
+    "was flagged",
+    "safety system",
+    "responsible ai",
+)
+
 
 def parse_retry_after(response: httpx.Response) -> float | None:
     """
@@ -68,3 +89,30 @@ def is_quota_error(err: openai.APIError) -> bool:
     if err.code in _QUOTA_CODES or err.type in _QUOTA_CODES:
         return True
     return is_quota_message(str(err))
+
+
+def is_content_filter_message(text: str) -> bool:
+    """
+    Detect a content-policy block from an error message.
+
+    The wording is not stable — it varies with the policy category that
+    fired — so this matches the phrases the variants share. Needed
+    because the same block reaches us with no structured marker on
+    several paths: a mid-stream error frame, a gateway that rewrites the
+    body, or an SDK that exposes only the message.
+    """
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _CONTENT_FILTER_PHRASES)
+
+
+def content_filter_code(err: openai.APIError) -> str | None:
+    """
+    The error's own content-filter marker, or ``None`` if it carries none.
+
+    ``code`` and ``type`` are both checked — a mid-stream error frame
+    populates only one of them, depending on the provider.
+    """
+    for marker in (err.code, err.type):
+        if marker in _CONTENT_FILTER_CODES:
+            return marker
+    return None

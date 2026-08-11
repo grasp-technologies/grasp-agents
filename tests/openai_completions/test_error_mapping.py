@@ -147,3 +147,68 @@ class TestOpenAIQuotaDetection:
         )
         assert isinstance(mapped, LlmRateLimitError)
         assert not isinstance(mapped, LlmQuotaExceededError)
+
+
+class TestOpenAIContentFilterDetection:
+    """
+    One policy block reaches the SDK in several shapes. All of them must
+    map to the same type, or the same block behaves differently depending
+    on whether the call was streamed.
+    """
+
+    def test_streamed_block_maps_to_content_filter(self) -> None:
+        # An error frame inside a 200 SSE stream: no status, and the body
+        # carries no code — only the message identifies the block.
+        err = openai.APIError(
+            message=(
+                "This content was flagged for possible cybersecurity risk. "
+                "If this seems wrong, try rephrasing your request."
+            ),
+            request=_REQUEST,
+            body=None,
+        )
+        mapped = map_api_error(err)
+        assert isinstance(mapped, LlmContentFilterError)
+        assert not isinstance(mapped, LlmApiError)
+
+    def test_invalid_prompt_status_maps_to_content_filter(self) -> None:
+        # The non-streamed shape of the same block: a 400 that the generic
+        # mapping would bury as a programmer bug.
+        mapped = map_api_error(
+            _status_error(400, body={"code": "invalid_prompt", "type": None})
+        )
+        assert isinstance(mapped, LlmContentFilterError)
+        assert mapped.code == "invalid_prompt"
+
+    def test_azure_content_management_policy_maps(self) -> None:
+        response = httpx.Response(400, request=_REQUEST)
+        err = openai.APIStatusError(
+            "The response was filtered due to the prompt triggering Azure "
+            "OpenAI's content management policy.",
+            response=response,
+            body=None,
+        )
+        assert isinstance(map_api_error(err), LlmContentFilterError)
+
+    def test_block_message_carries_the_provider_explanation(self) -> None:
+        err = openai.APIError(
+            message="This content was flagged. Join the cyber program.",
+            request=_REQUEST,
+            body=None,
+        )
+        assert "Join the cyber program." in str(map_api_error(err))
+
+    def test_rate_limit_quoting_a_policy_is_not_a_block(self) -> None:
+        # The message is only trusted on codes a block can arrive under.
+        mapped = map_api_error(
+            openai.APIStatusError(
+                "Rate limit reached; see our usage policy.",
+                response=httpx.Response(429, request=_REQUEST),
+                body=None,
+            )
+        )
+        assert isinstance(mapped, LlmRateLimitError)
+        assert not isinstance(mapped, LlmContentFilterError)
+
+    def test_plain_bad_request_is_not_a_block(self) -> None:
+        assert not isinstance(map_api_error(_status_error(400)), LlmContentFilterError)

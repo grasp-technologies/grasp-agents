@@ -21,14 +21,14 @@ from grasp_agents.types.errors import (
     LLMToolCallValidationError,
 )
 from grasp_agents.types.items import InputItem
-from grasp_agents.types.llm_errors import LlmErrorTuple
+from grasp_agents.types.llm_errors import LlmContentFilterError, LlmErrorTuple
 from grasp_agents.types.llm_events import (
     LlmEvent,
     ResponseCompleted,
     ResponseIncomplete,
     ResponseRetrying,
 )
-from grasp_agents.types.response import Response
+from grasp_agents.types.response import REFUSAL_CATEGORY_KEY, Response
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 from .model_info import ModelCapabilities, get_model_capabilities
@@ -269,8 +269,9 @@ class LLM(ABC):
                     if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
                         # Incomplete responses validate exactly like the
                         # non-streaming path (which returns them as response
-                        # objects): a refusal / content filter logs a warning;
-                        # a truncated response reaches the caller.
+                        # objects): a content filter raises, a written refusal
+                        # logs a warning, a truncated response reaches the
+                        # caller.
                         self._validate_response(
                             event.response, tools=tools, output_schema=output_schema
                         )
@@ -295,35 +296,58 @@ class LLM(ABC):
 
     # --- Validation ---
 
+    def _check_content_filter(self, response: Response) -> None:
+        """
+        Raise when the provider blocked this response on policy grounds.
+
+        Every provider normalizes such a block to
+        ``incomplete_details.reason == "content_filter"``, and every one
+        of them directs callers to discard whatever partial output
+        preceded it — so there is nothing for the agent to act on.
+        Returning it would stall the loop on a turn that adds nothing to
+        the transcript, or fail schema validation with an error that
+        blames the model for empty output. Raising skips retries (the
+        same request is blocked again) while still advancing a
+        ``FallbackLLM`` to the next model, which is the recovery
+        providers recommend.
+
+        A refusal the model *wrote* is different, and is not raised on:
+        it carries text the agent can read and correct course from. See
+        :meth:`_warn_refusal`.
+        """
+        details = response.incomplete_details
+        if details is None or details.reason != "content_filter":
+            return
+
+        raw_category = (response.provider_specific_fields or {}).get(
+            REFUSAL_CATEGORY_KEY
+        )
+        category = str(raw_category) if raw_category else None
+        named = f" ({category})" if category else ""
+        explanation = response.refusal or "no explanation given"
+        raise LlmContentFilterError(
+            f"llm {self.model_name}: content filter blocked this response"
+            f"{named}: {explanation}",
+            code=category,
+        )
+
     def _warn_refusal(self, response: Response) -> None:
         """
-        Log a warning when the response is a refusal or was blocked by the
-        provider's content filter.
+        Log a warning when the model declined to answer in its own words.
 
-        Reads the normalized signal both providers populate: an explicit
-        ``refusal`` content part (OpenAI / LiteLLM) or
-        ``incomplete_details.reason == "content_filter"`` (Anthropic maps
-        its ``stop_reason == "refusal"`` to this). Deliberately not an
-        error: the refusal flows into the transcript, so the agent — and
-        the caller — can see it and correct course. Structured-output
-        calls still fail schema validation on the refusal text and
-        re-sample via ``validation_retries``.
+        Deliberately not an error: the refusal text flows into the
+        transcript, so the agent — and the caller — can see it and
+        correct course. Structured-output calls still fail schema
+        validation on the refusal text and re-sample via
+        ``validation_retries``.
         """
         refusal = response.refusal
-        reason = (
-            response.incomplete_details.reason
-            if response.incomplete_details is not None
-            else None
-        )
-        if refusal or reason == "content_filter":
+        if refusal:
             logger.warning(
-                "llm %s: response is a refusal (status=%s, reason=%s): %s",
+                "llm %s: response is a refusal (status=%s): %s",
                 self.model_name,
                 response.status,
-                reason,
-                grasp_logging.body_for_log(
-                    refusal or "", full=grasp_logging.LOG_LLM_OUTPUT
-                ),
+                grasp_logging.body_for_log(refusal, full=grasp_logging.LOG_LLM_OUTPUT),
             )
 
     def _validate_response(
@@ -333,6 +357,9 @@ class LLM(ABC):
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
     ) -> None:
+        # Before any other check: a blocked response has no output to
+        # validate, and a schema failure here would misreport the cause.
+        self._check_content_filter(response)
         self._warn_refusal(response)
 
         if tools is not None:
