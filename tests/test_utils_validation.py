@@ -63,6 +63,27 @@ class TestFenceStripping:
 
         assert parse_json_or_py_string(raw, from_substring=True) == {"a": 1}
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "```python x=1``` ```java y=5```",  # no newline after the tag
+            "```python\nx=1\n```\n```java\ny=5\n```",
+            '```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```',
+        ],
+    )
+    def test_several_sibling_blocks_fail_loudly_quoting_the_original(
+        self, raw: str
+    ) -> None:
+        """
+        Sibling blocks are not one payload, so nothing here is parseable.
+        What matters is that the caller is shown what the model actually
+        said rather than a half-stripped rewrite of it.
+        """
+        with pytest.raises(PyJSONStringParsingError) as exc_info:
+            parse_json_or_py_string(raw)
+
+        assert raw in str(exc_info.value)
+
     def test_stripping_can_be_disabled(self) -> None:
         with pytest.raises(PyJSONStringParsingError):
             parse_json_or_py_string(

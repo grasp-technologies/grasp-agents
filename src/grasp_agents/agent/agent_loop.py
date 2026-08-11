@@ -401,7 +401,7 @@ class AgentLoop[CtxT]:
             call.arguments,
             schema=tool.llm_in_type,
             from_substring=False,
-            strip_language_markdown=False,
+            strip_language_markdown=True,
         )
         converter = self.tool_input_converters.get(tool.name)
 

@@ -18,8 +18,8 @@ _JSON_START_RE = re.compile(r"[{\[]")
 
 # A fence wrapping the *whole* payload — the shape a model produces when it
 # answers a JSON request with ```json ... ```. Anchored at both ends on
-# purpose: a fence anywhere else belongs to the content (a code block inside
-# a JSON string value), and stripping it there silently rewrites the answer.
+# purpose: a fence mid-message belongs to the content (a code block inside a
+# JSON string value), and stripping it there silently rewrites the answer.
 _WRAPPING_FENCE_RE = re.compile(
     r"\A\s*```[a-zA-Z0-9]*[ \t]*\r?\n(?P<body>.*?)\r?\n?[ \t]*```\s*\Z",
     re.DOTALL,
