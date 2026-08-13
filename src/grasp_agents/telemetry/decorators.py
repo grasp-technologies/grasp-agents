@@ -56,6 +56,7 @@ ATTR_ENTITY_VERSION = "grasp.entity.version"
 ATTR_ENTITY_INPUT = "grasp.entity.input"
 ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
+ATTR_RETRY_COUNT = "grasp.processor.retry_count"
 
 # OpenInference compatibility — Phoenix uses this to show span type icons
 ATTR_OI_SPAN_KIND = "openinference.span.kind"
@@ -242,6 +243,49 @@ def set_run_span_attributes(**attributes: str | float | bool) -> None:
     if span.is_recording():
         for key, value in attributes.items():
             span.set_attribute(key, value)
+
+
+def record_retry_exception(instance: Any, err: BaseException, *, attempt: int) -> None:
+    """
+    Record a failed attempt on the currently-active run span.
+
+    A retry loop that swallows its failures leaves an OK-looking span: the
+    wasted attempts (and their causes) are visible only in logs. This adds
+    them as exception *events* — a span may hold many, each timestamped —
+    plus a running :data:`ATTR_RETRY_COUNT`.
+
+    Deliberately does NOT touch the span *status*. The retry loop runs inside
+    one span shared by every attempt, so an ERROR set here would also stick to
+    runs that went on to succeed, making them indistinguishable from genuine
+    failures. A run that exhausts its retries raises, and the ``@traced``
+    wrapper marks the span ERROR as the exception escapes.
+
+    ``instance`` is the traced object owning the retry loop; when tracing is
+    off for it (or an ancestor suppressed instrumentation), ``@traced`` created
+    no span of its own for it, so the current span belongs to an enclosing
+    parent — recording there would misattribute the failure, hence the guard.
+    """
+    if not _tracing_enabled(instance):
+        return
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+
+    span.set_attribute(ATTR_RETRY_COUNT, attempt)
+    # Truncate what the SDK would export verbatim: event attributes are capped
+    # by OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT, not the OTEL_SPAN_* limit
+    # deployments set — and a validation error's message can embed the whole
+    # model output that failed it, once per attempt.
+    stacktrace = "".join(
+        traceback.format_exception(type(err), value=err, tb=err.__traceback__)
+    )
+    span.record_exception(
+        err,
+        attributes={
+            "exception.message": _truncate_if_needed(str(err)),
+            "exception.stacktrace": _truncate_if_needed(stacktrace),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
