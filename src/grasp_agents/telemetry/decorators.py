@@ -263,6 +263,14 @@ def _exception_event_attributes(err: BaseException) -> dict[str, str]:
     }
 
 
+def _exception_status_description(err: BaseException) -> str:
+    # The status description follows the content switch like exception events
+    # do: error text can quote model output or user content.
+    if not _should_send_prompts():
+        return type(err).__name__
+    return _truncate_if_needed(str(err))
+
+
 def capture_run_span(instance: Any) -> trace.Span | None:
     """
     Snapshot the current run span while the ambient context is trustworthy.
@@ -438,7 +446,15 @@ def _run_span(
     parent_context = _resolve_run_span_context(instance)
     token = otel_context.attach(parent_context) if parent_context is not None else None
     try:
-        with trace.get_tracer(_TRACER_NAME).start_as_current_span(span_name) as span:
+        # The wrapper except blocks record escaping exceptions with
+        # content-gated attributes; use_span's defaults would add a second,
+        # ungated exception event and overwrite the status description with
+        # the raw error text.
+        with trace.get_tracer(_TRACER_NAME).start_as_current_span(
+            span_name,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
             yield span
     finally:
         if token is not None:
@@ -566,7 +582,10 @@ def _entity_method[F: Callable[..., Any]](
                                 yield item
                         except Exception as e:
                             span.set_status(
-                                trace.Status(trace.StatusCode.ERROR, str(e))
+                                trace.Status(
+                                    trace.StatusCode.ERROR,
+                                    _exception_status_description(e),
+                                )
                             )
                             span.record_exception(
                                 e, attributes=_exception_event_attributes(e)
@@ -602,7 +621,12 @@ def _entity_method[F: Callable[..., Any]](
                         _handle_span_output(span, res)
                         return res
                     except Exception as e:
-                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                        span.set_status(
+                            trace.Status(
+                                trace.StatusCode.ERROR,
+                                _exception_status_description(e),
+                            )
+                        )
                         span.record_exception(
                             e, attributes=_exception_event_attributes(e)
                         )
@@ -644,7 +668,12 @@ def _entity_method[F: Callable[..., Any]](
                             has_items = True
                             yield item
                     except Exception as e:
-                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                        span.set_status(
+                            trace.Status(
+                                trace.StatusCode.ERROR,
+                                _exception_status_description(e),
+                            )
+                        )
                         span.record_exception(
                             e, attributes=_exception_event_attributes(e)
                         )
@@ -679,7 +708,12 @@ def _entity_method[F: Callable[..., Any]](
                     _handle_span_output(span, res)
                     return res
                 except Exception as e:
-                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    span.set_status(
+                        trace.Status(
+                            trace.StatusCode.ERROR,
+                            _exception_status_description(e),
+                        )
+                    )
                     span.record_exception(e, attributes=_exception_event_attributes(e))
                     raise
 

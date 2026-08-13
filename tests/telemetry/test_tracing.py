@@ -1171,10 +1171,12 @@ class TestRetryExceptionRecording:
     async def test_long_exception_payload_is_truncated(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Event attributes are bounded by OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT,
-        # NOT the OTEL_SPAN_* limit deployments set — so without our own
-        # truncation an error embedding a whole LLM output exports in full,
-        # once per attempt.
+        # The OTel SDK bounds event attributes only by the generic
+        # OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT — the
+        # OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT deployments set does not
+        # apply to them. Without our own truncation (which reuses the SPAN
+        # limit, see _truncate_if_needed) an error embedding a whole LLM
+        # output exports in full, once per attempt.
         monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "200")
         proc = _FlakyProcessor(
             "verbose", fail_times=1, max_retries=1, err_msg="X" * 5000
@@ -1288,3 +1290,39 @@ class TestAbandonedChildStream:
         assert attrs["exception.type"] == "ValueError"
         assert "lesson text" not in str(attrs["exception.message"])
         assert "lesson text" not in str(attrs["exception.stacktrace"])
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_content_off_gates_span_status_description(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+
+        @traced(name="leaky")
+        async def fail() -> None:
+            raise ValueError("whole lesson text here")
+
+        with pytest.raises(ValueError):
+            await fail()
+
+        (span,) = _exporter.get_finished_spans()
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert "lesson text" not in (span.status.description or "")
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_content_off_gates_generator_span_status_description(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+
+        @traced(name="leaky_gen")
+        async def fail_gen() -> AsyncIterator[str]:
+            yield "a"
+            raise ValueError("whole lesson text here")
+
+        with pytest.raises(ValueError):
+            async for _ in fail_gen():
+                pass
+
+        (span,) = _exporter.get_finished_spans()
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert "lesson text" not in (span.status.description or "")

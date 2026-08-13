@@ -59,7 +59,12 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
     async def wrapper(
         self: "Processor[Any, Any, Any]", *args: Any, **kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
-        exec_id: str | None = kwargs.get("exec_id")
+        # Generate the exec id up front and pass it down, so retry/error
+        # telemetry carries the same id the run itself uses — otherwise a
+        # caller omitting exec_id gets exec_id=None in error events while
+        # run_stream mints a real one later.
+        exec_id = self.generate_exec_id(kwargs.get("exec_id"))
+        kwargs["exec_id"] = exec_id
         run_span = capture_run_span(self)
         n_attempt = 0
         while n_attempt <= self.max_retries:
