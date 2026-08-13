@@ -25,7 +25,11 @@ from grasp_agents.session_context import (
     SessionContext,
     current_session_context,
 )
-from grasp_agents.telemetry import record_retry_exception, traced
+from grasp_agents.telemetry import (
+    capture_run_span,
+    record_retry_exception,
+    traced,
+)
 from grasp_agents.types.errors import (
     PacketRoutingError,
     ProcInputValidationError,
@@ -56,7 +60,7 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
         self: "Processor[Any, Any, Any]", *args: Any, **kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
         exec_id: str | None = kwargs.get("exec_id")
-
+        run_span = capture_run_span(self)
         n_attempt = 0
         while n_attempt <= self.max_retries:
             try:
@@ -73,11 +77,7 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
                     source=self.name,
                     exec_id=exec_id,
                 )
-                # Record before the exhaustion check so *every* failed attempt
-                # lands on the run's span — including the terminal one, whose
-                # cause ``@traced`` would otherwise hide behind the wrapping
-                # ``ProcRunError``. Status is left alone (see the helper).
-                record_retry_exception(self, err, attempt=n_attempt)
+                record_retry_exception(run_span, err, attempt=n_attempt)
 
                 err_message = (
                     f"Processor run failed [proc_name={self.name}; exec_id={exec_id}]"

@@ -32,8 +32,8 @@ from grasp_agents.telemetry.decorators import (
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
     ATTR_ENTITY_OUTPUT,
+    ATTR_FAILED_ATTEMPTS,
     ATTR_OI_SPAN_KIND,
-    ATTR_RETRY_COUNT,
     ATTR_SPAN_KIND,
     ATTR_WORKFLOW_NAME,
     _resolve_run_span_context,
@@ -1119,7 +1119,7 @@ class TestRetryExceptionRecording:
             "boom 1",
             "boom 2",
         ]
-        assert (span.attributes or {})[ATTR_RETRY_COUNT] == 2
+        assert (span.attributes or {})[ATTR_FAILED_ATTEMPTS] == 2
 
         # The run ultimately succeeded: flipping the shared processor span to
         # ERROR here would make recovered runs indistinguishable from failures.
@@ -1140,7 +1140,7 @@ class TestRetryExceptionRecording:
         # wrapping ProcRunError.
         assert types_.count("ValueError") == 2
         assert any("ProcRunError" in str(t) for t in types_)
-        assert (span.attributes or {})[ATTR_RETRY_COUNT] == 2
+        assert (span.attributes or {})[ATTR_FAILED_ATTEMPTS] == 2
         # Terminal failure still goes red — set by `@traced`, untouched here.
         assert span.status.status_code is trace.StatusCode.ERROR
 
@@ -1165,7 +1165,7 @@ class TestRetryExceptionRecording:
         )
         parent = _span_by_entity(spans, "outer")
         assert _exception_events(parent) == []
-        assert ATTR_RETRY_COUNT not in (parent.attributes or {})
+        assert ATTR_FAILED_ATTEMPTS not in (parent.attributes or {})
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_long_exception_payload_is_truncated(
@@ -1224,3 +1224,67 @@ class TestRetryExceptionRecording:
         ]
         assert len(gen_spans) == 2
         assert all(not _exception_events(s) for s in gen_spans)
+
+
+class _ParentAbandoningChild(Processor[str, str, None]):
+    """Fails once mid-iteration of a child stream (paused at a yield), then succeeds."""
+
+    def __init__(
+        self, name: str, *, child: Processor[str, str, None], **kwargs: Any
+    ) -> None:
+        super().__init__(name=name, **kwargs)
+        self._child = child
+        self.calls = 0
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        self.calls += 1
+        if self.calls == 1:
+            # The child yields its first event and pauses; raising here
+            # abandons it with its context line still on the whiteboard.
+            async for _ in self._child.run_stream(in_args=["a", "b"]):
+                raise ValueError("parent failed mid-iteration")
+        for inp in in_args or []:
+            yield ProcPayloadOutEvent(data=f"{inp}!", source=self.name, exec_id=exec_id)
+
+
+class TestAbandonedChildStream:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_retry_events_land_on_the_exported_parent_span(self) -> None:
+        child = _FlakyProcessor("child", fail_times=0)
+        parent = _ParentAbandoningChild("parent", child=child, max_retries=1)
+
+        out = await parent.run(in_args="hi", span_name="parent-run")
+        assert out.payloads == ["hi!"]
+
+        # Both processor spans are named "processor.task", so the parent's is
+        # pinned via the span_name override.
+        exported = _exporter.get_finished_spans()
+        parent_span = next(s for s in exported if s.name == "parent-run")
+        events = _exception_events(parent_span)
+        assert [(e.attributes or {})["exception.type"] for e in events] == [
+            "ValueError"
+        ]
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_content_off_hides_message_but_keeps_type(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+        proc = _FlakyProcessor(
+            "gated", fail_times=1, max_retries=1, err_msg="whole lesson text here"
+        )
+        await proc.run(in_args="hi")
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        (event,) = _exception_events(span)
+        attrs = event.attributes or {}
+        assert attrs["exception.type"] == "ValueError"
+        assert "lesson text" not in str(attrs["exception.message"])
+        assert "lesson text" not in str(attrs["exception.stacktrace"])

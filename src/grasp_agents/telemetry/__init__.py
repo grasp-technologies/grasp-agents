@@ -1,5 +1,6 @@
 from .decorators import (
     SpanKind,
+    capture_run_span,
     derive_session_span_context,
     record_retry_exception,
     set_run_span_attributes,
@@ -18,6 +19,7 @@ __all__ = [
     "SpanKind",
     "add_exporter",
     "add_otlp_http_exporter",
+    "capture_run_span",
     "derive_session_span_context",
     "init_tracing",
     "record_retry_exception",

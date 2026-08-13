@@ -56,7 +56,8 @@ ATTR_ENTITY_VERSION = "grasp.entity.version"
 ATTR_ENTITY_INPUT = "grasp.entity.input"
 ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
-ATTR_RETRY_COUNT = "grasp.processor.retry_count"
+ATTR_FAILED_ATTEMPTS = "grasp.processor.failed_attempts"
+_CONTENT_DISABLED_MARKER = "[content tracing disabled]"
 
 # OpenInference compatibility — Phoenix uses this to show span type icons
 ATTR_OI_SPAN_KIND = "openinference.span.kind"
@@ -245,47 +246,57 @@ def set_run_span_attributes(**attributes: str | float | bool) -> None:
             span.set_attribute(key, value)
 
 
-def record_retry_exception(instance: Any, err: BaseException, *, attempt: int) -> None:
-    """
-    Record a failed attempt on the currently-active run span.
-
-    A retry loop that swallows its failures leaves an OK-looking span: the
-    wasted attempts (and their causes) are visible only in logs. This adds
-    them as exception *events* — a span may hold many, each timestamped —
-    plus a running :data:`ATTR_RETRY_COUNT`.
-
-    Deliberately does NOT touch the span *status*. The retry loop runs inside
-    one span shared by every attempt, so an ERROR set here would also stick to
-    runs that went on to succeed, making them indistinguishable from genuine
-    failures. A run that exhausts its retries raises, and the ``@traced``
-    wrapper marks the span ERROR as the exception escapes.
-
-    ``instance`` is the traced object owning the retry loop; when tracing is
-    off for it (or an ancestor suppressed instrumentation), ``@traced`` created
-    no span of its own for it, so the current span belongs to an enclosing
-    parent — recording there would misattribute the failure, hence the guard.
-    """
-    if not _tracing_enabled(instance):
-        return
-    span = trace.get_current_span()
-    if not span.is_recording():
-        return
-
-    span.set_attribute(ATTR_RETRY_COUNT, attempt)
-    # Truncate what the SDK would export verbatim: event attributes are capped
-    # by OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT, not the OTEL_SPAN_* limit
-    # deployments set — and a validation error's message can embed the whole
-    # model output that failed it, once per attempt.
+def _exception_event_attributes(err: BaseException) -> dict[str, str]:
+    # The class name is always safe metadata; the message and stacktrace can
+    # quote model output or user content, so they follow the content switch.
+    if not _should_send_prompts():
+        return {
+            "exception.message": _CONTENT_DISABLED_MARKER,
+            "exception.stacktrace": _CONTENT_DISABLED_MARKER,
+        }
     stacktrace = "".join(
         traceback.format_exception(type(err), value=err, tb=err.__traceback__)
     )
-    span.record_exception(
-        err,
-        attributes={
-            "exception.message": _truncate_if_needed(str(err)),
-            "exception.stacktrace": _truncate_if_needed(stacktrace),
-        },
-    )
+    return {
+        "exception.message": _truncate_if_needed(str(err)),
+        "exception.stacktrace": _truncate_if_needed(stacktrace),
+    }
+
+
+def capture_run_span(instance: Any) -> trace.Span | None:
+    """
+    Snapshot the current run span while the ambient context is trustworthy.
+
+    Call at the START of a retry loop, before any child stream runs: an
+    abandoned child leaves the ambient current-span stale, so a failure-time
+    lookup can point at a span that is never exported. Returns None when
+    tracing is off for ``instance`` — the ambient span then belongs to an
+    enclosing parent, and recording there would misattribute the failure.
+    """
+    if not _tracing_enabled(instance):
+        return None
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return None
+    return span
+
+
+def record_retry_exception(
+    span: trace.Span | None, err: BaseException, *, attempt: int
+) -> None:
+    """
+    Record a failed attempt on ``span`` (from :func:`capture_run_span`).
+
+    Adds the failure as an exception event plus a running
+    :data:`ATTR_FAILED_ATTEMPTS` count. Deliberately does NOT touch the span
+    status: the retry loop shares one span across attempts, so an ERROR set
+    here would stick to runs that went on to succeed. A run that exhausts its
+    retries raises, and ``@traced`` marks the span ERROR as it escapes.
+    """
+    if span is None:
+        return
+    span.set_attribute(ATTR_FAILED_ATTEMPTS, attempt)
+    span.record_exception(err, attributes=_exception_event_attributes(err))
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +569,7 @@ def _entity_method[F: Callable[..., Any]](
                                 trace.Status(trace.StatusCode.ERROR, str(e))
                             )
                             span.record_exception(
-                                e, attributes={"tb": traceback.format_exc()}
+                                e, attributes=_exception_event_attributes(e)
                             )
                             raise
                         finally:
@@ -593,7 +604,7 @@ def _entity_method[F: Callable[..., Any]](
                     except Exception as e:
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(
-                            e, attributes={"tb": traceback.format_exc()}
+                            e, attributes=_exception_event_attributes(e)
                         )
                         raise
 
@@ -635,7 +646,7 @@ def _entity_method[F: Callable[..., Any]](
                     except Exception as e:
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(
-                            e, attributes={"tb": traceback.format_exc()}
+                            e, attributes=_exception_event_attributes(e)
                         )
                         raise
                     finally:
@@ -669,7 +680,7 @@ def _entity_method[F: Callable[..., Any]](
                     return res
                 except Exception as e:
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    span.record_exception(e, attributes={"tb": traceback.format_exc()})
+                    span.record_exception(e, attributes=_exception_event_attributes(e))
                     raise
 
         return cast("F", sync_wrap)
