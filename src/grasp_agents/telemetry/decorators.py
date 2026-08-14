@@ -10,7 +10,6 @@ import inspect
 import json
 import os
 import re
-import traceback
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -243,16 +242,6 @@ def set_run_span_attributes(**attributes: str | float | bool) -> None:
     if span.is_recording():
         for key, value in attributes.items():
             span.set_attribute(key, value)
-
-
-def exception_event_attributes(err: BaseException) -> dict[str, str]:
-    stacktrace = "".join(
-        traceback.format_exception(type(err), value=err, tb=err.__traceback__)
-    )
-    return {
-        "exception.message": _truncate_if_needed(str(err)),
-        "exception.stacktrace": _truncate_if_needed(stacktrace),
-    }
 
 
 def capture_run_span(instance: Any) -> trace.Span | None:
@@ -549,9 +538,7 @@ def _entity_method[F: Callable[..., Any]](
                                     _truncate_if_needed(str(e)),
                                 )
                             )
-                            span.record_exception(
-                                e, attributes=exception_event_attributes(e)
-                            )
+                            span.record_exception(e)
                             raise
                         finally:
                             if has_items:
@@ -589,9 +576,7 @@ def _entity_method[F: Callable[..., Any]](
                                 _truncate_if_needed(str(e)),
                             )
                         )
-                        span.record_exception(
-                            e, attributes=exception_event_attributes(e)
-                        )
+                        span.record_exception(e)
                         raise
 
             return cast("F", async_wrap)
@@ -636,9 +621,7 @@ def _entity_method[F: Callable[..., Any]](
                                 _truncate_if_needed(str(e)),
                             )
                         )
-                        span.record_exception(
-                            e, attributes=exception_event_attributes(e)
-                        )
+                        span.record_exception(e)
                         raise
                     finally:
                         if has_items:
@@ -676,7 +659,7 @@ def _entity_method[F: Callable[..., Any]](
                             _truncate_if_needed(str(e)),
                         )
                     )
-                    span.record_exception(e, attributes=exception_event_attributes(e))
+                    span.record_exception(e)
                     raise
 
         return cast("F", sync_wrap)

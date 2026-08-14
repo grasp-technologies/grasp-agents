@@ -1168,22 +1168,6 @@ class TestRetryExceptionRecording:
         assert ATTR_FAILED_ATTEMPTS not in (parent.attributes or {})
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_long_exception_payload_is_truncated(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "200")
-        proc = _FlakyProcessor(
-            "verbose", fail_times=1, max_retries=1, err_msg="X" * 5000
-        )
-        await proc.run(in_args="hi")
-
-        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
-        (event,) = _exception_events(span)
-        attrs = event.attributes or {}
-        assert len(str(attrs["exception.message"])) <= 200
-        assert len(str(attrs["exception.stacktrace"])) <= 200
-
-    @pytest.mark.asyncio(loop_scope="function")
     async def test_agent_output_parse_failure_lands_on_processor_span(self) -> None:
         # The production shape (a failing output parser): the LLM call itself
         # succeeded, so its `generate` span closed green and the failure has no

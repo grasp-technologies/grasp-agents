@@ -29,7 +29,6 @@ from grasp_agents.session_context import (
 from grasp_agents.telemetry import (
     ATTR_FAILED_ATTEMPTS,
     capture_run_span,
-    exception_event_attributes,
     traced,
 )
 from grasp_agents.types.errors import (
@@ -62,7 +61,7 @@ def _record_retry_exception(
     if span is None:
         return
     span.set_attribute(ATTR_FAILED_ATTEMPTS, attempt)
-    span.record_exception(err, attributes=exception_event_attributes(err))
+    span.record_exception(err)
 
 
 def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
