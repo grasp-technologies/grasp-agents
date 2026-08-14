@@ -13,6 +13,7 @@ from typing import (
 )
 from uuid import uuid4
 
+from opentelemetry import trace
 from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
@@ -26,8 +27,9 @@ from grasp_agents.session_context import (
     current_session_context,
 )
 from grasp_agents.telemetry import (
+    ATTR_FAILED_ATTEMPTS,
     capture_run_span,
-    record_retry_exception,
+    exception_event_attributes,
     traced,
 )
 from grasp_agents.types.errors import (
@@ -54,15 +56,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _record_retry_exception(
+    span: trace.Span | None, err: BaseException, *, attempt: int
+) -> None:
+    if span is None:
+        return
+    span.set_attribute(ATTR_FAILED_ATTEMPTS, attempt)
+    span.record_exception(err, attributes=exception_event_attributes(err))
+
+
 def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
     @wraps(func)
     async def wrapper(
         self: "Processor[Any, Any, Any]", *args: Any, **kwargs: Any
     ) -> AsyncIterator[Event[Any]]:
-        # Generate the exec id up front and pass it down, so retry/error
-        # telemetry carries the same id the run itself uses — otherwise a
-        # caller omitting exec_id gets exec_id=None in error events while
-        # run_stream mints a real one later.
         exec_id = self.generate_exec_id(kwargs.get("exec_id"))
         kwargs["exec_id"] = exec_id
         run_span = capture_run_span(self)
@@ -82,7 +89,7 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
                     source=self.name,
                     exec_id=exec_id,
                 )
-                record_retry_exception(run_span, err, attempt=n_attempt)
+                _record_retry_exception(run_span, err, attempt=n_attempt)
 
                 err_message = (
                     f"Processor run failed [proc_name={self.name}; exec_id={exec_id}]"

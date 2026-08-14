@@ -1171,12 +1171,6 @@ class TestRetryExceptionRecording:
     async def test_long_exception_payload_is_truncated(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The OTel SDK bounds event attributes only by the generic
-        # OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT — the
-        # OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT deployments set does not
-        # apply to them. Without our own truncation (which reuses the SPAN
-        # limit, see _truncate_if_needed) an error embedding a whole LLM
-        # output exports in full, once per attempt.
         monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "200")
         proc = _FlakyProcessor(
             "verbose", fail_times=1, max_retries=1, err_msg="X" * 5000
@@ -1275,7 +1269,7 @@ class TestAbandonedChildStream:
         ]
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_content_off_hides_message_but_keeps_type(
+    async def test_content_off_still_records_exception_details(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
@@ -1288,11 +1282,11 @@ class TestAbandonedChildStream:
         (event,) = _exception_events(span)
         attrs = event.attributes or {}
         assert attrs["exception.type"] == "ValueError"
-        assert "lesson text" not in str(attrs["exception.message"])
-        assert "lesson text" not in str(attrs["exception.stacktrace"])
+        assert "lesson text" in str(attrs["exception.message"])
+        assert "lesson text" in str(attrs["exception.stacktrace"])
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_content_off_gates_span_status_description(
+    async def test_escaping_error_recorded_once_with_full_description(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
@@ -1306,10 +1300,12 @@ class TestAbandonedChildStream:
 
         (span,) = _exporter.get_finished_spans()
         assert span.status.status_code is trace.StatusCode.ERROR
-        assert "lesson text" not in (span.status.description or "")
+        assert "lesson text" in (span.status.description or "")
+        (event,) = _exception_events(span)
+        assert "lesson text" in str((event.attributes or {})["exception.message"])
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_content_off_gates_generator_span_status_description(
+    async def test_escaping_generator_error_recorded_once_with_full_description(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
@@ -1325,4 +1321,6 @@ class TestAbandonedChildStream:
 
         (span,) = _exporter.get_finished_spans()
         assert span.status.status_code is trace.StatusCode.ERROR
-        assert "lesson text" not in (span.status.description or "")
+        assert "lesson text" in (span.status.description or "")
+        (event,) = _exception_events(span)
+        assert "lesson text" in str((event.attributes or {})["exception.message"])

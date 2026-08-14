@@ -1,8 +1,9 @@
 from .decorators import (
+    ATTR_FAILED_ATTEMPTS,
     SpanKind,
     capture_run_span,
     derive_session_span_context,
-    record_retry_exception,
+    exception_event_attributes,
     set_run_span_attributes,
     stamp_session_attributes,
     traced,
@@ -15,14 +16,15 @@ from .setup import (
 )
 
 __all__ = [
+    "ATTR_FAILED_ATTEMPTS",
     "SessionSpanProcessor",
     "SpanKind",
     "add_exporter",
     "add_otlp_http_exporter",
     "capture_run_span",
     "derive_session_span_context",
+    "exception_event_attributes",
     "init_tracing",
-    "record_retry_exception",
     "set_run_span_attributes",
     "stamp_session_attributes",
     "traced",

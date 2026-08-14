@@ -57,7 +57,6 @@ ATTR_ENTITY_INPUT = "grasp.entity.input"
 ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
 ATTR_FAILED_ATTEMPTS = "grasp.processor.failed_attempts"
-_CONTENT_DISABLED_MARKER = "[content tracing disabled]"
 
 # OpenInference compatibility — Phoenix uses this to show span type icons
 ATTR_OI_SPAN_KIND = "openinference.span.kind"
@@ -246,14 +245,7 @@ def set_run_span_attributes(**attributes: str | float | bool) -> None:
             span.set_attribute(key, value)
 
 
-def _exception_event_attributes(err: BaseException) -> dict[str, str]:
-    # The class name is always safe metadata; the message and stacktrace can
-    # quote model output or user content, so they follow the content switch.
-    if not _should_send_prompts():
-        return {
-            "exception.message": _CONTENT_DISABLED_MARKER,
-            "exception.stacktrace": _CONTENT_DISABLED_MARKER,
-        }
+def exception_event_attributes(err: BaseException) -> dict[str, str]:
     stacktrace = "".join(
         traceback.format_exception(type(err), value=err, tb=err.__traceback__)
     )
@@ -261,14 +253,6 @@ def _exception_event_attributes(err: BaseException) -> dict[str, str]:
         "exception.message": _truncate_if_needed(str(err)),
         "exception.stacktrace": _truncate_if_needed(stacktrace),
     }
-
-
-def _exception_status_description(err: BaseException) -> str:
-    # The status description follows the content switch like exception events
-    # do: error text can quote model output or user content.
-    if not _should_send_prompts():
-        return type(err).__name__
-    return _truncate_if_needed(str(err))
 
 
 def capture_run_span(instance: Any) -> trace.Span | None:
@@ -287,24 +271,6 @@ def capture_run_span(instance: Any) -> trace.Span | None:
     if not span.is_recording():
         return None
     return span
-
-
-def record_retry_exception(
-    span: trace.Span | None, err: BaseException, *, attempt: int
-) -> None:
-    """
-    Record a failed attempt on ``span`` (from :func:`capture_run_span`).
-
-    Adds the failure as an exception event plus a running
-    :data:`ATTR_FAILED_ATTEMPTS` count. Deliberately does NOT touch the span
-    status: the retry loop shares one span across attempts, so an ERROR set
-    here would stick to runs that went on to succeed. A run that exhausts its
-    retries raises, and ``@traced`` marks the span ERROR as it escapes.
-    """
-    if span is None:
-        return
-    span.set_attribute(ATTR_FAILED_ATTEMPTS, attempt)
-    span.record_exception(err, attributes=_exception_event_attributes(err))
 
 
 # ---------------------------------------------------------------------------
@@ -446,10 +412,6 @@ def _run_span(
     parent_context = _resolve_run_span_context(instance)
     token = otel_context.attach(parent_context) if parent_context is not None else None
     try:
-        # The wrapper except blocks record escaping exceptions with
-        # content-gated attributes; use_span's defaults would add a second,
-        # ungated exception event and overwrite the status description with
-        # the raw error text.
         with trace.get_tracer(_TRACER_NAME).start_as_current_span(
             span_name,
             record_exception=False,
@@ -584,11 +546,11 @@ def _entity_method[F: Callable[..., Any]](
                             span.set_status(
                                 trace.Status(
                                     trace.StatusCode.ERROR,
-                                    _exception_status_description(e),
+                                    _truncate_if_needed(str(e)),
                                 )
                             )
                             span.record_exception(
-                                e, attributes=_exception_event_attributes(e)
+                                e, attributes=exception_event_attributes(e)
                             )
                             raise
                         finally:
@@ -624,11 +586,11 @@ def _entity_method[F: Callable[..., Any]](
                         span.set_status(
                             trace.Status(
                                 trace.StatusCode.ERROR,
-                                _exception_status_description(e),
+                                _truncate_if_needed(str(e)),
                             )
                         )
                         span.record_exception(
-                            e, attributes=_exception_event_attributes(e)
+                            e, attributes=exception_event_attributes(e)
                         )
                         raise
 
@@ -671,11 +633,11 @@ def _entity_method[F: Callable[..., Any]](
                         span.set_status(
                             trace.Status(
                                 trace.StatusCode.ERROR,
-                                _exception_status_description(e),
+                                _truncate_if_needed(str(e)),
                             )
                         )
                         span.record_exception(
-                            e, attributes=_exception_event_attributes(e)
+                            e, attributes=exception_event_attributes(e)
                         )
                         raise
                     finally:
@@ -711,10 +673,10 @@ def _entity_method[F: Callable[..., Any]](
                     span.set_status(
                         trace.Status(
                             trace.StatusCode.ERROR,
-                            _exception_status_description(e),
+                            _truncate_if_needed(str(e)),
                         )
                     )
-                    span.record_exception(e, attributes=_exception_event_attributes(e))
+                    span.record_exception(e, attributes=exception_event_attributes(e))
                     raise
 
         return cast("F", sync_wrap)
