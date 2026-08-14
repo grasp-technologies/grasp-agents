@@ -533,10 +533,7 @@ def _entity_method[F: Callable[..., Any]](
                                 yield item
                         except Exception as e:
                             span.set_status(
-                                trace.Status(
-                                    trace.StatusCode.ERROR,
-                                    _truncate_if_needed(str(e)),
-                                )
+                                trace.Status(trace.StatusCode.ERROR, str(e))
                             )
                             span.record_exception(e)
                             raise
@@ -570,12 +567,7 @@ def _entity_method[F: Callable[..., Any]](
                         _handle_span_output(span, res)
                         return res
                     except Exception as e:
-                        span.set_status(
-                            trace.Status(
-                                trace.StatusCode.ERROR,
-                                _truncate_if_needed(str(e)),
-                            )
-                        )
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(e)
                         raise
 
@@ -615,12 +607,7 @@ def _entity_method[F: Callable[..., Any]](
                             has_items = True
                             yield item
                     except Exception as e:
-                        span.set_status(
-                            trace.Status(
-                                trace.StatusCode.ERROR,
-                                _truncate_if_needed(str(e)),
-                            )
-                        )
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(e)
                         raise
                     finally:
@@ -653,12 +640,7 @@ def _entity_method[F: Callable[..., Any]](
                     _handle_span_output(span, res)
                     return res
                 except Exception as e:
-                    span.set_status(
-                        trace.Status(
-                            trace.StatusCode.ERROR,
-                            _truncate_if_needed(str(e)),
-                        )
-                    )
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                     span.record_exception(e)
                     raise
 
