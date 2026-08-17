@@ -255,6 +255,38 @@ class SelectableStatic(Static):
         return selection.extract(text), "\n"
 
 
+class FoldableStatic(SelectableStatic):
+    """
+    A tool result shown short, with the whole of it one click away.
+
+    Long output used to be cut and the remainder simply lost from the screen —
+    fine for a log line, wrong for a document the agent just read, where the part
+    worth checking is usually the part that got cut. Both renderings are built up
+    front and swapped in place, so unfolding costs no re-render of the event and
+    folding back is free.
+    """
+
+    def __init__(
+        self,
+        folded: RenderableType,
+        expanded: RenderableType,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(folded, **kwargs)
+        self._folded = folded
+        self._expanded = expanded
+        self._is_expanded = False
+        self.tooltip = "click to show the whole result"
+
+    def on_click(self) -> None:
+        self._is_expanded = not self._is_expanded
+        self.tooltip = (
+            "click to fold" if self._is_expanded else "click to show the whole result"
+        )
+        self._offset_cache.clear()
+        self.update(self._expanded if self._is_expanded else self._folded)
+
+
 class ZoomableImage(Static):
     """Inline symbol-art image; clicking it requests a full-resolution zoom."""
 

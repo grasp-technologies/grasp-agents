@@ -91,6 +91,7 @@ from ._event_render import (
     render_turn_rule,
     render_web_search,
     set_markup_theme,
+    tool_output_overflows,
     usage_line,
 )
 from ._images import ImageZoomScreen, prime_image_protocol
@@ -103,6 +104,7 @@ from ._theme import (
     save_theme,
 )
 from ._widgets import (
+    FoldableStatic,
     PromptArea,
     RollbackScreen,
     SelectableStatic,
@@ -1206,7 +1208,16 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
                 # incoming-message border to the right (the compaction summary is
                 # injected into the agent's context); text inside the panel stays left
                 text = Align.right(text)
-            await pane.mount(SelectableStatic(text, classes=cls))
+            # A result too big for the display budget is mounted foldable rather
+            # than merely cut: the part worth reading is often the part that would
+            # have been dropped. Only tool output overflows, and tool output is
+            # right-aligned above, so the expanded rendering gets the same frame.
+            widget: Widget = SelectableStatic(text, classes=cls)
+            if tool_output_overflows(event):
+                whole = render_event(event, inline_images=False, expanded=True)
+                if whole is not None:
+                    widget = FoldableStatic(text, Align.right(whole), classes=cls)
+            await pane.mount(widget)
         for img in images:
             await pane.mount(self._image_widget(img))
         if (text is not None or images) and at_bottom:

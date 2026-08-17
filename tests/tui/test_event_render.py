@@ -49,6 +49,7 @@ from grasp_agents.ui._event_render import (
     render_event,
     render_image,
     render_tool_stream,
+    tool_output_overflows,
     truncate_lines,
 )
 
@@ -837,3 +838,87 @@ def test_bg_launched_notice_cites_log_only_when_present() -> None:
     )
     assert isinstance(without_log, Text)
     assert "call_c1.log" not in without_log.plain
+
+
+def _tagged_document(sections: int) -> str:
+    body = "\n".join(
+        f"  e{i:02d} Section number {i} with a fairly long title  [{i * 7}w]"
+        for i in range(sections)
+    )
+    return (
+        '<resource url="https://x.test" kind="html" words="601">\n'
+        '<outline source="the page\'s own heading markup" showing="one level">\n'
+        f"{body}\n</outline>\n<opening_words>\n# A Heading\n\n- one\n- two\n"
+        "</opening_words>\n</resource>"
+    )
+
+
+def _tool_event(output: str) -> ToolOutputItemEvent:
+    return ToolOutputItemEvent(
+        data=FunctionToolOutputItem.from_tool_result(call_id="1", output=output),
+        source="open_resource",
+        destination="web-resource-search",
+    )
+
+
+def test_tags_beat_markdown_inside_them() -> None:
+    """
+    A tagged payload is structure; Markdown inside it is the document's own text.
+    Rendering it as Markdown eats the tags and reflows the outline into a
+    paragraph.
+    """
+    from rich.syntax import Syntax
+
+    panel = render_event(_tool_event(_tagged_document(3)))
+
+    assert isinstance(panel, Panel)
+    assert isinstance(panel.renderable, Syntax)
+
+
+def test_a_long_payload_is_still_recognised_as_tagged() -> None:
+    """
+    The format is decided before the display budget is applied. Cutting first
+    removes the closing tag the check anchors on, and the document then rendered
+    as prose.
+    """
+    from rich.syntax import Syntax
+
+    payload = _tagged_document(200)
+    assert len(payload) > 4000, "the fixture must exceed the budget"
+
+    panel = render_event(_tool_event(payload))
+
+    assert isinstance(panel, Panel)
+    assert isinstance(panel.renderable, Syntax)
+
+
+def test_an_oversized_result_is_offered_whole() -> None:
+    ev = _tool_event(_tagged_document(200))
+
+    assert tool_output_overflows(ev)
+    folded = _render_to_text(render_event(ev, inline_images=False), width=200)
+    whole = _render_to_text(
+        render_event(ev, inline_images=False, expanded=True), width=200
+    )
+
+    assert len(whole) > len(folded)
+    assert "e199" in whole, "the expanded rendering holds the part that was cut"
+    assert "e199" not in folded
+
+
+def test_a_small_result_needs_no_fold() -> None:
+    assert not tool_output_overflows(_tool_event(_tagged_document(2)))
+
+
+def test_expanding_still_scrubs_terminal_escapes() -> None:
+    """The cut is a display budget; the sanitizing is not optional."""
+    hostile = (
+        "<log>\n" + "\n".join(f"line {i}" for i in range(200)) + "\n\x1b[2Jgone\n</log>"
+    )
+    ev = _tool_event(hostile)
+
+    whole = _render_to_text(
+        render_event(ev, inline_images=False, expanded=True), width=200
+    )
+
+    assert "\x1b" not in whole, "the escape itself is gone; its inert text may remain"
