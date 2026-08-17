@@ -103,6 +103,7 @@ def render_event(
     inline_images: bool = True,
     hyperlinks: bool = True,
     markdown: bool = True,
+    expanded: bool = False,
 ) -> RenderableType | None:
     """
     Build a Rich renderable for an event, or ``None`` if it has no display.
@@ -120,6 +121,10 @@ def render_event(
     ``markdown=False`` renders Markdown-bearing content (the assistant message,
     markdown tool reports) as plain text instead of formatted Markdown — for a
     linear surface that can't repaint and so streams raw tokens.
+
+    ``expanded=True`` drops the display budget on a tool result, for a surface
+    that can fold it away again (see :func:`tool_output_overflows`). The content
+    is still sanitized; only the cut is lifted.
     """
     if isinstance(event, TurnStartEvent):
         agent = event.source or "agent"
@@ -205,6 +210,7 @@ def render_event(
                     inline_images=inline_images,
                     hyperlinks=hyperlinks,
                     markdown=markdown,
+                    expanded=expanded,
                 ),
                 border,
             )
@@ -216,6 +222,7 @@ def render_event(
                     PALETTE["tool_result"],
                     hyperlinks=hyperlinks,
                     markdown=markdown,
+                    expanded=expanded,
                 )
             )
         for img in images:
@@ -1038,6 +1045,20 @@ def _unwrap_json(value: Any) -> Any:
     return value
 
 
+# The provenance fence, peeled independently at each end. `unwrap_untrusted` is
+# stricter — it accepts only a payload that is *exactly* one fence — because on
+# the model's side a partial match means something is wrong. For display the
+# looser reading is the useful one: whatever else the payload holds, these tags
+# are this framework's framing and not the result's own structure.
+_FENCE_OPEN = re.compile(r"\A\s*<untrusted_content(?:\s[^<>]*)?>\s*", re.IGNORECASE)
+_FENCE_CLOSE = re.compile(r"\s*</untrusted_content\s*>\s*\Z", re.IGNORECASE)
+
+
+def _without_untrusted_fence(text: str) -> str:
+    """The payload as it reads without the wrapper the loop put round it."""
+    return _FENCE_CLOSE.sub("", _FENCE_OPEN.sub("", text))
+
+
 _MD_HEADING = re.compile(r"(?m)^#{1,6} \S")
 _MD_BULLET = re.compile(r"(?m)^\s*[-*] \S")
 _MD_NUMBERED = re.compile(r"(?m)^\s*\d+\. \S")
@@ -1078,6 +1099,7 @@ def _build_result_renderable(
     inline_images: bool = True,
     hyperlinks: bool = True,
     markdown: bool = True,
+    expanded: bool = False,
 ) -> RenderableType:
     raw = _unwrap_json(output)
     if isinstance(raw, dict):
@@ -1092,19 +1114,36 @@ def _build_result_renderable(
             return Group(table, Text(""), render_image(img_path))
         return _kv_table(data, text_color)
     content = _unescape_json_string(str(output))
-    content = truncate(content, _TRUNC)
+    # The untrusted fence is framing, not structure. Left on, it makes every
+    # fenced result a single root element and so renders a Markdown report, a
+    # log and a JSON blob alike as XML. `render_event` already peels it for the
+    # panel title; this covers the other callers and the payloads its stricter
+    # unwrapper declines.
+    content = _without_untrusted_fence(content)
+    # Decide the format from the *whole* payload, before any truncation. The
+    # cut removes the closing tag `_XML_BLOCK` anchors on, so a long tagged
+    # result stopped looking like one and fell through to Markdown or plain
+    # text — which is how a `<resource>` document came out with its tags
+    # reflowed into prose.
+    shown = truncate(content, None if expanded else _TRUNC)
+    if _looks_like_xml(content):
+        # A tagged payload is structure, and Markdown inside it is the document's
+        # own text rather than formatting to apply: rendering it as Markdown eats
+        # the tags and reflows the lines. Tags win wherever both would match.
+        return _code_block(shown, "xml")
     if markdown and _looks_like_markdown(content):
         # agent tools often return markdown reports — render them formatted
         theme = _active_code_theme()
         return _Markdown(
-            content, code_theme=theme, inline_code_theme=theme, hyperlinks=hyperlinks
+            shown, code_theme=theme, inline_code_theme=theme, hyperlinks=hyperlinks
         )
-    if _looks_like_xml(content):
-        # tagged payloads (e.g. background <task_notification>…) as highlighted XML
-        return _code_block(content, "xml")
+    content = shown
     # keep blank lines (output structure is meaningful); only drop the trailing
     # newline so the box hugs its content above the panel's own padding
-    return Text(truncate_lines(content.rstrip("\n"), _MAX_LINES), style=text_color)
+    return Text(
+        truncate_lines(content.rstrip("\n"), None if expanded else _MAX_LINES),
+        style=text_color,
+    )
 
 
 def _kv_table(data: dict[str, Any], text_color: str) -> RenderableType:
@@ -1196,17 +1235,21 @@ def split_input_attachments(msg: InputMessageItem) -> tuple[str, list[str]]:
     return "\n\n".join(body), subjects
 
 
-def truncate(text: str, limit: int) -> str:
+def truncate(text: str, limit: int | None) -> str:
     # Every untrusted body flows through here or truncate_lines — the
     # sanitization point against terminal-escape injection (CSI / OSC in
     # tool output clearing the screen or spoofing what an approver sees).
+    # `limit=None` shows the whole body (an expanded fold) and still sanitizes:
+    # the cut is a display budget, the scrubbing is not optional.
     text = sanitize_terminal_text(text)
-    return text[:limit] + "…" if len(text) > limit else text
+    if limit is None or len(text) <= limit:
+        return text
+    return text[:limit] + "…"
 
 
-def truncate_lines(text: str, max_lines: int) -> str:
+def truncate_lines(text: str, max_lines: int | None) -> str:
     text = sanitize_terminal_text(text)
-    if max_lines <= 0:
+    if max_lines is None or max_lines <= 0:
         return text
     lines = text.split("\n")
     if len(lines) <= max_lines:
@@ -1224,3 +1267,25 @@ def _unescape_json_string(text: str) -> str:
     if isinstance(parsed, str):
         return parsed
     return json.dumps(parsed, indent=2)
+
+
+def tool_output_overflows(event: Event[Any]) -> bool:
+    """
+    Whether this tool result is bigger than the display budget.
+
+    A surface that can fold — the TUI — asks this to decide between mounting the
+    result plain and mounting it foldable. Cheaper and more honest than rendering
+    twice and comparing: the budget is measured on the text, which is what the
+    budget is about.
+    """
+    if not isinstance(event, ToolOutputItemEvent):
+        return False
+    item = event.data
+    text_out: Any = item.output if isinstance(item.output, str) else item.text
+    if not isinstance(text_out, str):
+        return False
+    inner, source = unwrap_untrusted(text_out)
+    if source is not None:
+        text_out = inner
+
+    return len(text_out) > _TRUNC or text_out.count("\n") >= _MAX_LINES
