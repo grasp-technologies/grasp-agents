@@ -17,8 +17,10 @@ from opentelemetry.sdk.trace.export import (
     SpanExporter,
     SpanExportResult,
 )
+from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.llm.resilience import RetryPolicy
 from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import (
@@ -39,6 +41,7 @@ from grasp_agents.telemetry.decorators import (
     ATTR_LLM_MODEL_NAME,
     ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
+    ATTR_VALIDATION_FAILED_ATTEMPTS,
     ATTR_WORKFLOW_NAME,
     _resolve_run_span_context,
     _resolve_span_kind,
@@ -47,8 +50,9 @@ from grasp_agents.telemetry.decorators import (
     _truncate_if_needed,
 )
 from grasp_agents.tools.agent_tool import AgentTool
-from grasp_agents.types.errors import ProcRunError
+from grasp_agents.types.errors import LLMResponseValidationError, ProcRunError
 from grasp_agents.types.events import Event, ProcPayloadOutEvent
+from grasp_agents.types.items import InputMessageItem
 from grasp_agents.types.llm_errors import LlmQuotaExceededError, LlmRateLimitError
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
@@ -1488,6 +1492,98 @@ class TestErrorClassification:
         )
         assert ATTR_ERROR_RECOVERY_HINT not in attrs
         assert ATTR_ERROR_CLASS not in attrs
+
+
+class _StructuredOut(BaseModel):
+    x: int
+
+
+_VALIDATION_INPUT = [InputMessageItem.from_text("go", role="user")]
+
+
+class TestValidationRetryCounter:
+    """
+    A validation retry leaves no red span anywhere — the HTTP call succeeded
+    and its span closed green before the response was found unparseable — so
+    this counter is the only trace such pressure leaves.
+    """
+
+    @staticmethod
+    def _llm(responses: list[Any]) -> MockLLM:
+        return MockLLM(
+            responses_queue=responses,
+            retry_policy=RetryPolicy(api_retries=0, validation_retries=1),
+        )
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_recovered_retry_is_counted_and_leaves_nothing_red(self) -> None:
+        llm = self._llm([_text_response("not json"), _text_response('{"x": 1}')])
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        await generate()
+
+        spans = _exporter.get_finished_spans()
+        assert (_span_by_entity(spans, "generate").attributes or {})[
+            ATTR_VALIDATION_FAILED_ATTEMPTS
+        ] == 1
+        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_streaming_recovered_retry_is_counted(self) -> None:
+        llm = self._llm([_text_response("not json"), _text_response('{"x": 1}')])
+
+        @traced(name="generate")
+        async def generate() -> AsyncIterator[Any]:
+            async for event in llm.generate_response_stream(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            ):
+                yield event
+
+        async for _ in generate():
+            pass
+
+        spans = _exporter.get_finished_spans()
+        assert (_span_by_entity(spans, "generate").attributes or {})[
+            ATTR_VALIDATION_FAILED_ATTEMPTS
+        ] == 1
+        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_exhausted_retries_are_counted_on_the_red_span(self) -> None:
+        llm = self._llm([_text_response("not json"), _text_response("still not json")])
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        with pytest.raises(LLMResponseValidationError):
+            await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_VALIDATION_FAILED_ATTEMPTS] == 2
+        assert (attrs or {})[ATTR_ERROR_RECOVERY_HINT] == "invalid_request"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_clean_call_carries_no_counter(self) -> None:
+        llm = self._llm([_text_response('{"x": 1}')])
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert ATTR_VALIDATION_FAILED_ATTEMPTS not in (attrs or {})
 
 
 class TestGenerateSpanModelName:
