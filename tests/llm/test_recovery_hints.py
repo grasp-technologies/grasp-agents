@@ -16,6 +16,15 @@ import httpx
 import pytest
 
 from grasp_agents.llm.resilience import RetryPolicy
+from grasp_agents.types.errors import (
+    AgentFinalAnswerError,
+    LLMResponseValidationError,
+    LLMToolCallValidationError,
+    PacketRoutingError,
+    ProcInputValidationError,
+    ProcOutputValidationError,
+    ProcRunError,
+)
 from grasp_agents.types.llm_errors import (
     LlmApiConnectionError,
     LlmApiTimeoutError,
@@ -337,3 +346,53 @@ class TestPublicExport:
         assert pkg_classify_error is classify_error
         assert pkg_is_retryable is is_retryable
         assert pkg_register_recovery_hint is register_recovery_hint
+
+
+class TestValidationErrorHints:
+    """
+    Our own validation errors classify as INVALID_REQUEST instead of falling
+    through to UNKNOWN, so a failed run is reported as a request/output bug
+    rather than an unclassified one.
+    """
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            LLMToolCallValidationError("bad tool call"),
+            LLMResponseValidationError("{}", schema=str),
+            ProcOutputValidationError(schema=str, proc_name="writer"),
+            ProcInputValidationError(proc_name="writer"),
+            AgentFinalAnswerError(proc_name="writer"),
+            PacketRoutingError(proc_name="writer"),
+        ],
+        ids=lambda err: type(err).__name__,
+    )
+    def test_validation_errors_classify_as_invalid_request(
+        self, err: Exception
+    ) -> None:
+        assert classify_error(err) is RecoveryHint.INVALID_REQUEST
+
+    def test_proc_run_error_itself_stays_unknown(self) -> None:
+        # Deliberate: a hint on this generic wrapper would be inherited by
+        # every subclass, classifying a run that died of a rate limit as a
+        # request bug, and would stop the span classifier ever consulting
+        # __cause__ (it only walks the chain while the hint is UNKNOWN).
+        assert classify_error(ProcRunError(proc_name="writer")) is RecoveryHint.UNKNOWN
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            LLMToolCallValidationError("bad tool call"),
+            LLMResponseValidationError("{}", schema=str),
+            ProcOutputValidationError(schema=str, proc_name="writer"),
+            ProcInputValidationError(proc_name="writer"),
+            AgentFinalAnswerError(proc_name="writer"),
+            PacketRoutingError(proc_name="writer"),
+        ],
+        ids=lambda err: type(err).__name__,
+    )
+    def test_hints_are_runtime_neutral(self, err: Exception) -> None:
+        # `classify_error` drives real retry behavior through `is_retryable`,
+        # but only TRANSIENT / RATE_LIMITED are retryable — so tagging these
+        # changes how they are *reported* without changing what gets retried.
+        assert is_retryable(classify_error(err)) is False
