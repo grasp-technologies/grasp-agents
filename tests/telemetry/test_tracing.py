@@ -21,6 +21,7 @@ from opentelemetry.sdk.trace.export import (
 from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm.resilience import RetryPolicy
 from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
@@ -40,6 +41,7 @@ from grasp_agents.telemetry.decorators import (
     ATTR_ERROR_CLASS,
     ATTR_ERROR_RECOVERY_HINT,
     ATTR_FAILED_ATTEMPTS,
+    ATTR_FALLBACK_FAILED_ATTEMPTS,
     ATTR_LLM_MODEL_NAME,
     ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
@@ -1514,6 +1516,131 @@ class _FlakyApiLLM(MockLLM):
             object.__setattr__(self, "_call_count", self.call_count + 1)
             raise LlmRateLimitError("slow down", response=_llm_response(), body=None)
         return await super()._generate_response_once(*args, **kwargs)
+
+
+class TestFallbackRecording:
+    """
+    The cascade is one more retry layer ("retry with a different model"), so
+    it records like the others: a counter on the still-green span, and the
+    model name corrected to the member that actually served.
+    """
+
+    @staticmethod
+    def _broken(name: str) -> _FlakyApiLLM:
+        return _FlakyApiLLM(
+            model_name=name,
+            fail_times=99,
+            retry_policy=RetryPolicy(api_retries=0, initial_delay=0.0, jitter=0.0),
+        )
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_fallback_serving_is_a_warning_not_an_error(self) -> None:
+        llm = FallbackLLM(
+            primary=self._broken("primary"),
+            fallbacks=(
+                MockLLM(model_name="backup", responses_queue=[_text_response("hi")]),
+            ),
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(_VALIDATION_INPUT)
+
+        await generate()
+
+        spans = _exporter.get_finished_spans()
+        attrs = _span_by_entity(spans, "generate").attributes or {}
+        assert attrs[ATTR_FALLBACK_FAILED_ATTEMPTS] == 1
+        assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
+        assert attrs[ATTR_API_FAILED_ATTEMPTS] == 1
+        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_streaming_fallback_is_recorded_too(self) -> None:
+        llm = FallbackLLM(
+            primary=self._broken("primary"),
+            fallbacks=(
+                MockLLM(model_name="backup", responses_queue=[_text_response("hi")]),
+            ),
+        )
+
+        @traced(name="generate")
+        async def generate() -> AsyncIterator[Any]:
+            async for event in llm.generate_response_stream(_VALIDATION_INPUT):
+                yield event
+
+        async for _ in generate():
+            pass
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_FALLBACK_FAILED_ATTEMPTS] == 1
+        assert (attrs or {})[ATTR_LLM_MODEL_NAME] == "backup"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_primary_serving_leaves_no_fallback_marker(self) -> None:
+        llm = FallbackLLM(
+            primary=MockLLM(
+                model_name="primary", responses_queue=[_text_response("hi")]
+            ),
+            fallbacks=(MockLLM(model_name="backup"),),
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(_VALIDATION_INPUT)
+
+        await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert ATTR_FALLBACK_FAILED_ATTEMPTS not in (attrs or {})
+        assert (attrs or {})[ATTR_LLM_MODEL_NAME] == "primary"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_exhausted_cascade_is_the_main_failure(self) -> None:
+        llm = FallbackLLM(
+            primary=self._broken("primary"), fallbacks=(self._broken("backup"),)
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(_VALIDATION_INPUT)
+
+        with pytest.raises(LlmRateLimitError):
+            await generate()
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "generate")
+        attrs = span.attributes or {}
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert attrs[ATTR_FALLBACK_FAILED_ATTEMPTS] == 2
+        assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
+        assert attrs[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_member_validation_count_survives_the_wrapper(self) -> None:
+        # Regression: the wrapper's own (retry-less) validation loop used to
+        # re-stamp the member's count with 1 as the exhaustion propagated.
+        llm = FallbackLLM(
+            primary=MockLLM(
+                model_name="primary",
+                responses_queue=[
+                    _text_response("not json"),
+                    _text_response("still not json"),
+                ],
+                retry_policy=RetryPolicy(api_retries=0, validation_retries=1),
+            ),
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        with pytest.raises(LLMResponseValidationError):
+            await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_VALIDATION_FAILED_ATTEMPTS] == 2
 
 
 class TestApiRetryCounter:

@@ -239,7 +239,10 @@ class LLM(ABC):
 
             except _RETRYABLE_ERRORS as err:
                 n_attempt += 1
-                if gen_span is not None:
+                # retry_policy None means this loop is a pass-through wrapper
+                # (FallbackLLM): the serving member already stamped its own
+                # count, which a re-stamp here would clobber with 1.
+                if gen_span is not None and self.retry_policy is not None:
                     gen_span.set_attribute(ATTR_VALIDATION_FAILED_ATTEMPTS, n_attempt)
                 if n_attempt <= max_validation:
                     logger.warning(
@@ -294,7 +297,10 @@ class LLM(ABC):
 
             except _RETRYABLE_ERRORS as err:
                 n_attempt += 1
-                if gen_span is not None:
+                # retry_policy None means this loop is a pass-through wrapper
+                # (FallbackLLM): the serving member already stamped its own
+                # count, which a re-stamp here would clobber with 1.
+                if gen_span is not None and self.retry_policy is not None:
                     gen_span.set_attribute(ATTR_VALIDATION_FAILED_ATTEMPTS, n_attempt)
                 if n_attempt <= max_validation:
                     logger.warning(
