@@ -1,5 +1,4 @@
 from .decorators import (
-    ATTR_API_FAILED_ATTEMPTS,
     ATTR_ERROR_CLASS,
     ATTR_ERROR_RECOVERY_HINT,
     ATTR_FAILED_ATTEMPTS,
@@ -21,7 +20,6 @@ from .setup import (
 )
 
 __all__ = [
-    "ATTR_API_FAILED_ATTEMPTS",
     "ATTR_ERROR_CLASS",
     "ATTR_ERROR_RECOVERY_HINT",
     "ATTR_FAILED_ATTEMPTS",

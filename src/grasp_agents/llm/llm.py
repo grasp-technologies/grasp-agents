@@ -14,11 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents import grasp_logging
-from grasp_agents.telemetry import (
-    ATTR_API_FAILED_ATTEMPTS,
-    ATTR_VALIDATION_FAILED_ATTEMPTS,
-    capture_run_span,
-)
+from grasp_agents.telemetry import ATTR_VALIDATION_FAILED_ATTEMPTS, capture_run_span
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import (
     JSONSchemaValidationError,
@@ -117,7 +113,6 @@ class LLM(ABC):
                 **extra_llm_settings,
             )
 
-        gen_span = capture_run_span(self)
         attempt = 0
         while True:
             try:
@@ -130,8 +125,6 @@ class LLM(ABC):
                 )
             except LlmErrorTuple as err:
                 attempt += 1
-                if gen_span is not None:
-                    gen_span.set_attribute(ATTR_API_FAILED_ATTEMPTS, attempt)
                 if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
                     delay = policy.api_delay_for(attempt - 1, err)
                     logger.warning(
@@ -169,7 +162,6 @@ class LLM(ABC):
                 yield event
             return
 
-        gen_span = capture_run_span(self)
         attempt = 0
         last_seq = 0
 
@@ -187,8 +179,6 @@ class LLM(ABC):
                 return
             except LlmErrorTuple as err:
                 attempt += 1
-                if gen_span is not None:
-                    gen_span.set_attribute(ATTR_API_FAILED_ATTEMPTS, attempt)
                 if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
                     delay = policy.api_delay_for(attempt - 1, err)
                     logger.warning(

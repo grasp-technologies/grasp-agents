@@ -34,7 +34,6 @@ from grasp_agents.telemetry import (
 )
 from grasp_agents.telemetry.decorators import (
     _SUPPRESS_INSTRUMENTATION_KEY,
-    ATTR_API_FAILED_ATTEMPTS,
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
     ATTR_ENTITY_OUTPUT,
@@ -1552,7 +1551,6 @@ class TestFallbackRecording:
         attrs = _span_by_entity(spans, "generate").attributes or {}
         assert attrs[ATTR_FALLBACK_FAILED_ATTEMPTS] == 1
         assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
-        assert attrs[ATTR_API_FAILED_ATTEMPTS] == 1
         assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
 
     @pytest.mark.asyncio(loop_scope="function")
@@ -1641,86 +1639,6 @@ class TestFallbackRecording:
 
         attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
         assert (attrs or {})[ATTR_VALIDATION_FAILED_ATTEMPTS] == 2
-
-
-class TestApiRetryCounter:
-    """
-    In production each failed API attempt also leaves its own red SDK span;
-    the counter makes the generate span self-sufficient — retry pressure is
-    readable without fetching or even having provider-instrumentation spans.
-    """
-
-    @staticmethod
-    def _llm(fail_times: int, api_retries: int) -> _FlakyApiLLM:
-        return _FlakyApiLLM(
-            fail_times=fail_times,
-            responses_queue=[_text_response("fine")],
-            retry_policy=RetryPolicy(
-                api_retries=api_retries, initial_delay=0.0, jitter=0.0
-            ),
-        )
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_recovered_api_retry_is_counted(self) -> None:
-        llm = self._llm(fail_times=1, api_retries=2)
-
-        @traced(name="generate")
-        async def generate() -> Any:
-            return await llm.generate_response(_VALIDATION_INPUT)
-
-        await generate()
-
-        spans = _exporter.get_finished_spans()
-        attrs = _span_by_entity(spans, "generate").attributes or {}
-        assert attrs[ATTR_API_FAILED_ATTEMPTS] == 1
-        assert ATTR_VALIDATION_FAILED_ATTEMPTS not in attrs
-        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_streaming_recovered_api_retry_is_counted(self) -> None:
-        llm = self._llm(fail_times=1, api_retries=2)
-
-        @traced(name="generate")
-        async def generate() -> AsyncIterator[Any]:
-            async for event in llm.generate_response_stream(_VALIDATION_INPUT):
-                yield event
-
-        async for _ in generate():
-            pass
-
-        spans = _exporter.get_finished_spans()
-        attrs = _span_by_entity(spans, "generate").attributes or {}
-        assert attrs[ATTR_API_FAILED_ATTEMPTS] == 1
-        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_exhausted_api_retries_are_counted_on_the_red_span(self) -> None:
-        llm = self._llm(fail_times=99, api_retries=1)
-
-        @traced(name="generate")
-        async def generate() -> Any:
-            return await llm.generate_response(_VALIDATION_INPUT)
-
-        with pytest.raises(LlmRateLimitError):
-            await generate()
-
-        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
-        assert (attrs or {})[ATTR_API_FAILED_ATTEMPTS] == 2
-        assert (attrs or {})[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
-        assert (attrs or {})[ATTR_ERROR_CLASS] == "LlmRateLimitError"
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_clean_call_carries_no_counter(self) -> None:
-        llm = self._llm(fail_times=0, api_retries=2)
-
-        @traced(name="generate")
-        async def generate() -> Any:
-            return await llm.generate_response(_VALIDATION_INPUT)
-
-        await generate()
-
-        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
-        assert ATTR_API_FAILED_ATTEMPTS not in (attrs or {})
 
 
 class TestValidationRetryCounter:
