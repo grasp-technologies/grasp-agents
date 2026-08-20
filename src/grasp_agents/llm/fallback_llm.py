@@ -8,11 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from grasp_agents.telemetry import (
-    ATTR_FALLBACK_FAILED_ATTEMPTS,
-    ATTR_LLM_MODEL_NAME,
-    capture_run_span,
-)
+from grasp_agents.telemetry import ATTR_LLM_MODEL_NAME, capture_run_span
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
@@ -181,8 +177,6 @@ class FallbackLLM(LLM):
 
             except LlmErrorTuple as e:
                 errors.append(e)
-                if gen_span is not None:
-                    gen_span.set_attribute(ATTR_FALLBACK_FAILED_ATTEMPTS, len(errors))
                 logger.warning(
                     "Model %s failed (%s: %s), trying next fallback",
                     llm.model_name,
@@ -228,8 +222,6 @@ class FallbackLLM(LLM):
             except LlmErrorTuple as e:
                 errors.append(e)
                 attempt += 1
-                if gen_span is not None:
-                    gen_span.set_attribute(ATTR_FALLBACK_FAILED_ATTEMPTS, attempt)
 
                 idx = candidates.index(llm)
                 next_model = (

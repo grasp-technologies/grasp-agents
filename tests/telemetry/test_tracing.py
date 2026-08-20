@@ -40,7 +40,6 @@ from grasp_agents.telemetry.decorators import (
     ATTR_ERROR_CLASS,
     ATTR_ERROR_RECOVERY_HINT,
     ATTR_FAILED_ATTEMPTS,
-    ATTR_FALLBACK_FAILED_ATTEMPTS,
     ATTR_LLM_MODEL_NAME,
     ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
@@ -1519,9 +1518,10 @@ class _FlakyApiLLM(MockLLM):
 
 class TestFallbackRecording:
     """
-    The cascade is one more retry layer ("retry with a different model"), so
-    it records like the others: a counter on the still-green span, and the
-    model name corrected to the member that actually served.
+    The cascade corrects ``llm.model_name`` to the member that actually
+    served (or the last that died). Fallback *rate* is deliberately not
+    recorded here — the digest derives it by comparing a red SDK child's
+    model against this attribute, which only works if it names the server.
     """
 
     @staticmethod
@@ -1549,7 +1549,6 @@ class TestFallbackRecording:
 
         spans = _exporter.get_finished_spans()
         attrs = _span_by_entity(spans, "generate").attributes or {}
-        assert attrs[ATTR_FALLBACK_FAILED_ATTEMPTS] == 1
         assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
         assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
 
@@ -1571,7 +1570,6 @@ class TestFallbackRecording:
             pass
 
         attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
-        assert (attrs or {})[ATTR_FALLBACK_FAILED_ATTEMPTS] == 1
         assert (attrs or {})[ATTR_LLM_MODEL_NAME] == "backup"
 
     @pytest.mark.asyncio(loop_scope="function")
@@ -1590,7 +1588,6 @@ class TestFallbackRecording:
         await generate()
 
         attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
-        assert ATTR_FALLBACK_FAILED_ATTEMPTS not in (attrs or {})
         assert (attrs or {})[ATTR_LLM_MODEL_NAME] == "primary"
 
     @pytest.mark.asyncio(loop_scope="function")
@@ -1609,7 +1606,6 @@ class TestFallbackRecording:
         span = _span_by_entity(_exporter.get_finished_spans(), "generate")
         attrs = span.attributes or {}
         assert span.status.status_code is trace.StatusCode.ERROR
-        assert attrs[ATTR_FALLBACK_FAILED_ATTEMPTS] == 2
         assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
         assert attrs[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
 

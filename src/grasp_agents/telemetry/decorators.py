@@ -59,7 +59,6 @@ ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
 ATTR_FAILED_ATTEMPTS = "grasp.processor.failed_attempts"
 ATTR_VALIDATION_FAILED_ATTEMPTS = "grasp.llm.validation_failed_attempts"
-ATTR_FALLBACK_FAILED_ATTEMPTS = "grasp.llm.fallback_failed_attempts"
 ATTR_ERROR_RECOVERY_HINT = "grasp.error.recovery_hint"
 ATTR_ERROR_CLASS = "grasp.error.class"
 ATTR_LLM_MODEL_NAME = "llm.model_name"  # existing OpenInference key, reused
