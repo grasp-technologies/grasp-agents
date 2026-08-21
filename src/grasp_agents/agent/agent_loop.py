@@ -12,7 +12,7 @@ from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
-from grasp_agents.telemetry import traced
+from grasp_agents.telemetry import ATTR_LLM_MODEL_NAME, capture_run_span, traced
 from grasp_agents.tools.base import (
     BaseTool,
     NamedToolChoice,
@@ -641,6 +641,10 @@ class AgentLoop[CtxT]:
         exec_id: str,
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
+        gen_span = capture_run_span(self)
+        if gen_span is not None:
+            gen_span.set_attribute(ATTR_LLM_MODEL_NAME, self._llm.model_name)
+
         try:
             async for event in self._try_query_llm(
                 tool_choice=tool_choice,

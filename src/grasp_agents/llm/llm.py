@@ -14,6 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, with_config
 
 from grasp_agents import grasp_logging
+from grasp_agents.telemetry import ATTR_VALIDATION_FAILED_ATTEMPTS, capture_run_span
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import (
     JSONSchemaValidationError,
@@ -210,6 +211,7 @@ class LLM(ABC):
         max_validation = (
             self.retry_policy.validation_retries if self.retry_policy else 0
         )
+        gen_span = capture_run_span(self)
         n_attempt = 0
         while n_attempt <= max_validation:
             try:
@@ -227,6 +229,11 @@ class LLM(ABC):
 
             except _RETRYABLE_ERRORS as err:
                 n_attempt += 1
+                # retry_policy None means this loop is a pass-through wrapper
+                # (FallbackLLM): the serving member already stamped its own
+                # count, which a re-stamp here would clobber with 1.
+                if gen_span is not None and self.retry_policy is not None:
+                    gen_span.set_attribute(ATTR_VALIDATION_FAILED_ATTEMPTS, n_attempt)
                 if n_attempt <= max_validation:
                     logger.warning(
                         "LLM response failed [%s] (retry %d): %s",
@@ -252,6 +259,7 @@ class LLM(ABC):
         max_validation = (
             self.retry_policy.validation_retries if self.retry_policy else 0
         )
+        gen_span = capture_run_span(self)
         n_attempt = 0
         last_seq = 0
         while n_attempt <= max_validation:
@@ -279,6 +287,11 @@ class LLM(ABC):
 
             except _RETRYABLE_ERRORS as err:
                 n_attempt += 1
+                # retry_policy None means this loop is a pass-through wrapper
+                # (FallbackLLM): the serving member already stamped its own
+                # count, which a re-stamp here would clobber with 1.
+                if gen_span is not None and self.retry_policy is not None:
+                    gen_span.set_attribute(ATTR_VALIDATION_FAILED_ATTEMPTS, n_attempt)
                 if n_attempt <= max_validation:
                     logger.warning(
                         "LLM response failed [%s] (retry %d): %s",

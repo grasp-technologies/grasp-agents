@@ -26,6 +26,8 @@ from opentelemetry.context import (
 from opentelemetry.trace.propagation import set_span_in_context
 from pydantic import BaseModel
 
+from grasp_agents.types.recovery import RecoveryHint, classify_error
+
 logger = getLogger(__name__)
 
 # The plain-string twin of the context-api key above, read by older OTel
@@ -56,6 +58,10 @@ ATTR_ENTITY_INPUT = "grasp.entity.input"
 ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
 ATTR_FAILED_ATTEMPTS = "grasp.processor.failed_attempts"
+ATTR_VALIDATION_FAILED_ATTEMPTS = "grasp.llm.validation_failed_attempts"
+ATTR_ERROR_RECOVERY_HINT = "grasp.error.recovery_hint"
+ATTR_ERROR_CLASS = "grasp.error.class"
+ATTR_LLM_MODEL_NAME = "llm.model_name"  # existing OpenInference key, reused
 
 # OpenInference compatibility — Phoenix uses this to show span type icons
 ATTR_OI_SPAN_KIND = "openinference.span.kind"
@@ -228,6 +234,49 @@ def _apply_caller_span_overrides(span: trace.Span, kwargs: dict[str, Any]) -> No
     if attributes:
         for key, value in attributes.items():
             span.set_attribute(key, value)
+
+
+_MAX_CAUSE_DEPTH = 5
+
+
+def _root_recovery_hint(err: BaseException) -> RecoveryHint:
+    """
+    Classify ``err``, falling back to its ``__cause__`` chain.
+
+    The exception a span sees is often a wrapper that classifies as UNKNOWN
+    while the informative error sits below it: ``with_retry`` re-raises as
+    ``ProcRunError(...) from err``, and a tool may wrap that again. Only
+    ``__cause__`` (explicit ``raise ... from ...``) is followed — an implicit
+    ``__context__`` can be an unrelated ambient exception, which would
+    mislabel the span.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = err
+    for _ in range(_MAX_CAUSE_DEPTH):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        hint = classify_error(current)
+        if hint is not RecoveryHint.UNKNOWN:
+            return hint
+        current = current.__cause__
+
+    return RecoveryHint.UNKNOWN
+
+
+def _record_error_classification(span: trace.Span, err: BaseException) -> None:
+    """
+    Stamp the queryable error facts on a span that is going red.
+
+    ``ATTR_ERROR_CLASS`` names the exception this span actually saw, keeping
+    a ``ProcRunError`` wrapper visible in its own right; the hint describes
+    the root cause, so a run that died of a rate limit stays classified as
+    one however many layers wrapped it.
+    """
+    if not span.is_recording():
+        return
+    span.set_attribute(ATTR_ERROR_CLASS, type(err).__name__)
+    span.set_attribute(ATTR_ERROR_RECOVERY_HINT, str(_root_recovery_hint(err)))
 
 
 def set_run_span_attributes(**attributes: str | float | bool) -> None:
@@ -536,6 +585,7 @@ def _entity_method[F: Callable[..., Any]](
                                 trace.Status(trace.StatusCode.ERROR, str(e))
                             )
                             span.record_exception(e)
+                            _record_error_classification(span, e)
                             raise
                         finally:
                             if has_items:
@@ -569,6 +619,7 @@ def _entity_method[F: Callable[..., Any]](
                     except Exception as e:
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(e)
+                        _record_error_classification(span, e)
                         raise
 
             return cast("F", async_wrap)
@@ -609,6 +660,7 @@ def _entity_method[F: Callable[..., Any]](
                     except Exception as e:
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(e)
+                        _record_error_classification(span, e)
                         raise
                     finally:
                         if has_items:
@@ -642,6 +694,7 @@ def _entity_method[F: Callable[..., Any]](
                 except Exception as e:
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                     span.record_exception(e)
+                    _record_error_classification(span, e)
                     raise
 
         return cast("F", sync_wrap)

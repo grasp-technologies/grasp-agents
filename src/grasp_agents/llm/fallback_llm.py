@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from grasp_agents.telemetry import ATTR_LLM_MODEL_NAME, capture_run_span
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
@@ -156,8 +157,11 @@ class FallbackLLM(LLM):
     ) -> Response:
         candidates = [self.primary, *self.fallbacks]
         errors: list[Exception] = []
+        gen_span = capture_run_span(self)
 
         for llm in candidates:
+            if gen_span is not None:
+                gen_span.set_attribute(ATTR_LLM_MODEL_NAME, llm.model_name)
             try:
                 # The member's full pipeline: its own API retries,
                 # validation, and validation retries. The cascade advances
@@ -196,8 +200,11 @@ class FallbackLLM(LLM):
         errors: list[Exception] = []
         seq = 0
         attempt = 0
+        gen_span = capture_run_span(self)
 
         for llm in candidates:
+            if gen_span is not None:
+                gen_span.set_attribute(ATTR_LLM_MODEL_NAME, llm.model_name)
             try:
                 # Member-internal retries (API and validation) surface as
                 # ResponseRetrying events within this member's segment.

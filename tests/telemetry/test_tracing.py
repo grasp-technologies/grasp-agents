@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -16,8 +18,11 @@ from opentelemetry.sdk.trace.export import (
     SpanExporter,
     SpanExportResult,
 )
+from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.llm.fallback_llm import FallbackLLM
+from grasp_agents.llm.resilience import RetryPolicy
 from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import (
@@ -32,9 +37,13 @@ from grasp_agents.telemetry.decorators import (
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
     ATTR_ENTITY_OUTPUT,
+    ATTR_ERROR_CLASS,
+    ATTR_ERROR_RECOVERY_HINT,
     ATTR_FAILED_ATTEMPTS,
+    ATTR_LLM_MODEL_NAME,
     ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
+    ATTR_VALIDATION_FAILED_ATTEMPTS,
     ATTR_WORKFLOW_NAME,
     _resolve_run_span_context,
     _resolve_span_kind,
@@ -43,8 +52,10 @@ from grasp_agents.telemetry.decorators import (
     _truncate_if_needed,
 )
 from grasp_agents.tools.agent_tool import AgentTool
-from grasp_agents.types.errors import ProcRunError
+from grasp_agents.types.errors import LLMResponseValidationError, ProcRunError
 from grasp_agents.types.events import Event, ProcPayloadOutEvent
+from grasp_agents.types.items import InputMessageItem
+from grasp_agents.types.llm_errors import LlmQuotaExceededError, LlmRateLimitError
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 if TYPE_CHECKING:
@@ -1067,11 +1078,13 @@ class _FlakyProcessor(Processor[str, str, None]):
         *,
         fail_times: int,
         err_msg: str | None = None,
+        error: Callable[[], BaseException] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(name=name, **kwargs)
         self._fail_times = fail_times
         self._err_msg = err_msg
+        self._error = error
         self.calls = 0
 
     async def _process_stream(
@@ -1084,6 +1097,8 @@ class _FlakyProcessor(Processor[str, str, None]):
     ) -> AsyncIterator[Event[Any]]:
         self.calls += 1
         if self.calls <= self._fail_times:
+            if self._error is not None:
+                raise self._error()
             raise ValueError(self._err_msg or f"boom {self.calls}")
         for inp in in_args or []:
             yield ProcPayloadOutEvent(data=f"{inp}!", source=self.name, exec_id=exec_id)
@@ -1308,3 +1323,432 @@ class TestAbandonedChildStream:
         assert "lesson text" in (span.status.description or "")
         (event,) = _exception_events(span)
         assert "lesson text" in str((event.attributes or {})["exception.message"])
+
+
+# ========================================================================= #
+#  Error classification — the queryable twin of the recorded exception       #
+# ========================================================================= #
+
+
+def _llm_response(status_code: int = 429) -> httpx.Response:
+    return httpx.Response(
+        status_code, request=httpx.Request("POST", "https://api.example.test/v1")
+    )
+
+
+async def _span_of_failing_call(err: BaseException) -> ReadableSpan:
+    """Raise ``err`` inside a traced call and return its (red) span."""
+
+    @traced(name="failing")
+    async def failing() -> None:
+        raise err
+
+    with pytest.raises(type(err)):
+        await failing()
+
+    return _span_by_entity(_exporter.get_finished_spans(), "failing")
+
+
+class TestErrorClassification:
+    """
+    A red span must carry its cause as *attributes*: the exception recorded
+    by ``record_exception`` is a span event, which Phoenix can display but
+    cannot filter, count, or group on.
+    """
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_provider_error_records_hint_and_class(self) -> None:
+        span = await _span_of_failing_call(
+            LlmRateLimitError("slow down", response=_llm_response(), body=None)
+        )
+        attrs = span.attributes or {}
+
+        assert attrs[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
+        assert attrs[ATTR_ERROR_CLASS] == "LlmRateLimitError"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_unclassified_error_records_unknown(self) -> None:
+        span = await _span_of_failing_call(ValueError("who knows"))
+        attrs = span.attributes or {}
+
+        assert attrs[ATTR_ERROR_RECOVERY_HINT] == "unknown"
+        assert attrs[ATTR_ERROR_CLASS] == "ValueError"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_hint_comes_from_the_cause_and_class_from_the_wrapper(self) -> None:
+        wrapper = ProcRunError(proc_name="writer")
+        wrapper.__cause__ = LlmQuotaExceededError(
+            "out of credits", response=_llm_response(), body=None
+        )
+
+        attrs = (await _span_of_failing_call(wrapper)).attributes or {}
+
+        # The wrapper stays visible in its own right — `with_retry` raises one
+        # for every exhausted run — while the hint describes what actually
+        # went wrong beneath it.
+        assert attrs[ATTR_ERROR_CLASS] == "ProcRunError"
+        assert attrs[ATTR_ERROR_RECOVERY_HINT] == "quota_exceeded"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_cause_chain_is_walked_not_single_hopped(self) -> None:
+        # A tool wraps the provider error and `with_retry` wraps that again,
+        # leaving the informative error two hops down.
+        middle = RuntimeError("tool failed")
+        middle.__cause__ = LlmQuotaExceededError(
+            "out of credits", response=_llm_response(), body=None
+        )
+        outer = ProcRunError(proc_name="writer")
+        outer.__cause__ = middle
+
+        span = await _span_of_failing_call(outer)
+
+        assert (span.attributes or {})[ATTR_ERROR_RECOVERY_HINT] == "quota_exceeded"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_cause_cycle_terminates(self) -> None:
+        first = ValueError("a")
+        second = ValueError("b")
+        first.__cause__ = second
+        second.__cause__ = first
+
+        span = await _span_of_failing_call(first)
+
+        assert (span.attributes or {})[ATTR_ERROR_RECOVERY_HINT] == "unknown"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_successful_span_carries_no_error_attributes(self) -> None:
+        @traced(name="fine")
+        async def fine() -> str:
+            return "ok"
+
+        await fine()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "fine").attributes or {}
+        assert ATTR_ERROR_RECOVERY_HINT not in attrs
+        assert ATTR_ERROR_CLASS not in attrs
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_generator_path_classifies_too(self) -> None:
+        @traced(name="failing_gen")
+        async def fail_gen() -> AsyncIterator[str]:
+            yield "a"
+            raise LlmRateLimitError("slow down", response=_llm_response(), body=None)
+
+        with pytest.raises(LlmRateLimitError):
+            async for _ in fail_gen():
+                pass
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "failing_gen")
+        assert (span.attributes or {})[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
+
+    def test_sync_paths_classify_too(self) -> None:
+        @traced(name="failing_sync")
+        def fail_sync() -> None:
+            raise ValueError("nope")
+
+        with pytest.raises(ValueError):
+            fail_sync()
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "failing_sync")
+        assert (span.attributes or {})[ATTR_ERROR_CLASS] == "ValueError"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_exhausted_run_classifies_from_the_real_wrapper_chain(self) -> None:
+        # The production shape, end to end: `with_retry` raises
+        # `ProcRunError(...) from err`, so the hint must come from the cause
+        # that `@traced` never sees directly.
+        proc = _FlakyProcessor(
+            "throttled",
+            fail_times=99,
+            max_retries=1,
+            error=lambda: LlmRateLimitError(
+                "slow down", response=_llm_response(), body=None
+            ),
+        )
+
+        with pytest.raises(ProcRunError):
+            await proc.run(in_args="hi")
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        attrs = span.attributes or {}
+
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert attrs[ATTR_ERROR_CLASS] == "ProcRunError"
+        assert attrs[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_disabled_processor_does_not_classify_on_enclosing_span(self) -> None:
+        proc = _FlakyProcessor(
+            "quiet", fail_times=99, max_retries=0, tracing_enabled=False
+        )
+
+        @traced(name="outer_ok")
+        async def outer() -> None:
+            with pytest.raises(ProcRunError):
+                await proc.run(in_args="hi")
+
+        await outer()
+
+        attrs = (
+            _span_by_entity(_exporter.get_finished_spans(), "outer_ok").attributes or {}
+        )
+        assert ATTR_ERROR_RECOVERY_HINT not in attrs
+        assert ATTR_ERROR_CLASS not in attrs
+
+
+class _StructuredOut(BaseModel):
+    x: int
+
+
+_VALIDATION_INPUT = [InputMessageItem.from_text("go", role="user")]
+
+
+@dataclass(frozen=True)
+class _FlakyApiLLM(MockLLM):
+    """Raises a rate limit for the first ``fail_times`` calls, then delegates."""
+
+    fail_times: int = 0
+
+    async def _generate_response_once(self, *args: Any, **kwargs: Any) -> Any:
+        if self.call_count < self.fail_times:
+            object.__setattr__(self, "_call_count", self.call_count + 1)
+            raise LlmRateLimitError("slow down", response=_llm_response(), body=None)
+        return await super()._generate_response_once(*args, **kwargs)
+
+
+class TestFallbackRecording:
+    """
+    The cascade corrects ``llm.model_name`` to the member that actually
+    served (or the last that died). Fallback *rate* is deliberately not
+    recorded here — the digest derives it by comparing a red SDK child's
+    model against this attribute, which only works if it names the server.
+    """
+
+    @staticmethod
+    def _broken(name: str) -> _FlakyApiLLM:
+        return _FlakyApiLLM(
+            model_name=name,
+            fail_times=99,
+            retry_policy=RetryPolicy(api_retries=0, initial_delay=0.0, jitter=0.0),
+        )
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_fallback_serving_is_a_warning_not_an_error(self) -> None:
+        llm = FallbackLLM(
+            primary=self._broken("primary"),
+            fallbacks=(
+                MockLLM(model_name="backup", responses_queue=[_text_response("hi")]),
+            ),
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(_VALIDATION_INPUT)
+
+        await generate()
+
+        spans = _exporter.get_finished_spans()
+        attrs = _span_by_entity(spans, "generate").attributes or {}
+        assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
+        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_streaming_fallback_is_recorded_too(self) -> None:
+        llm = FallbackLLM(
+            primary=self._broken("primary"),
+            fallbacks=(
+                MockLLM(model_name="backup", responses_queue=[_text_response("hi")]),
+            ),
+        )
+
+        @traced(name="generate")
+        async def generate() -> AsyncIterator[Any]:
+            async for event in llm.generate_response_stream(_VALIDATION_INPUT):
+                yield event
+
+        async for _ in generate():
+            pass
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_LLM_MODEL_NAME] == "backup"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_primary_serving_leaves_no_fallback_marker(self) -> None:
+        llm = FallbackLLM(
+            primary=MockLLM(
+                model_name="primary", responses_queue=[_text_response("hi")]
+            ),
+            fallbacks=(MockLLM(model_name="backup"),),
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(_VALIDATION_INPUT)
+
+        await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_LLM_MODEL_NAME] == "primary"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_exhausted_cascade_is_the_main_failure(self) -> None:
+        llm = FallbackLLM(
+            primary=self._broken("primary"), fallbacks=(self._broken("backup"),)
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(_VALIDATION_INPUT)
+
+        with pytest.raises(LlmRateLimitError):
+            await generate()
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "generate")
+        attrs = span.attributes or {}
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert attrs[ATTR_LLM_MODEL_NAME] == "backup"
+        assert attrs[ATTR_ERROR_RECOVERY_HINT] == "rate_limited"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_member_validation_count_survives_the_wrapper(self) -> None:
+        # Regression: the wrapper's own (retry-less) validation loop used to
+        # re-stamp the member's count with 1 as the exhaustion propagated.
+        llm = FallbackLLM(
+            primary=MockLLM(
+                model_name="primary",
+                responses_queue=[
+                    _text_response("not json"),
+                    _text_response("still not json"),
+                ],
+                retry_policy=RetryPolicy(api_retries=0, validation_retries=1),
+            ),
+        )
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        with pytest.raises(LLMResponseValidationError):
+            await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_VALIDATION_FAILED_ATTEMPTS] == 2
+
+
+class TestValidationRetryCounter:
+    """
+    A validation retry leaves no red span anywhere — the HTTP call succeeded
+    and its span closed green before the response was found unparseable — so
+    this counter is the only trace such pressure leaves.
+    """
+
+    @staticmethod
+    def _llm(responses: list[Any]) -> MockLLM:
+        return MockLLM(
+            responses_queue=responses,
+            retry_policy=RetryPolicy(api_retries=0, validation_retries=1),
+        )
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_recovered_retry_is_counted_and_leaves_nothing_red(self) -> None:
+        llm = self._llm([_text_response("not json"), _text_response('{"x": 1}')])
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        await generate()
+
+        spans = _exporter.get_finished_spans()
+        assert (_span_by_entity(spans, "generate").attributes or {})[
+            ATTR_VALIDATION_FAILED_ATTEMPTS
+        ] == 1
+        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_streaming_recovered_retry_is_counted(self) -> None:
+        llm = self._llm([_text_response("not json"), _text_response('{"x": 1}')])
+
+        @traced(name="generate")
+        async def generate() -> AsyncIterator[Any]:
+            async for event in llm.generate_response_stream(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            ):
+                yield event
+
+        async for _ in generate():
+            pass
+
+        spans = _exporter.get_finished_spans()
+        assert (_span_by_entity(spans, "generate").attributes or {})[
+            ATTR_VALIDATION_FAILED_ATTEMPTS
+        ] == 1
+        assert all(s.status.status_code is not trace.StatusCode.ERROR for s in spans)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_exhausted_retries_are_counted_on_the_red_span(self) -> None:
+        llm = self._llm([_text_response("not json"), _text_response("still not json")])
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        with pytest.raises(LLMResponseValidationError):
+            await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert (attrs or {})[ATTR_VALIDATION_FAILED_ATTEMPTS] == 2
+        assert (attrs or {})[ATTR_ERROR_RECOVERY_HINT] == "invalid_request"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_clean_call_carries_no_counter(self) -> None:
+        llm = self._llm([_text_response('{"x": 1}')])
+
+        @traced(name="generate")
+        async def generate() -> Any:
+            return await llm.generate_response(
+                _VALIDATION_INPUT, output_schema=_StructuredOut
+            )
+
+        await generate()
+
+        attrs = _span_by_entity(_exporter.get_finished_spans(), "generate").attributes
+        assert ATTR_VALIDATION_FAILED_ATTEMPTS not in (attrs or {})
+
+
+class TestGenerateSpanModelName:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_generate_span_records_the_model(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="writer", llm=MockLLM(responses_queue=[_text_response("hi")])
+        )
+        await agent.run(chat_inputs="hi")
+
+        gen_span = _span_by_entity(_exporter.get_finished_spans(), "generate")
+
+        # Grouping a failed generate by model must not require fetching the
+        # provider spans nested below it.
+        assert (gen_span.attributes or {})[ATTR_LLM_MODEL_NAME] == "mock"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_disabled_agent_does_not_stamp_enclosing_span(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="quiet",
+            llm=MockLLM(responses_queue=[_text_response("hi")]),
+            tracing_enabled=False,
+        )
+
+        @traced(name="outer_model")
+        async def outer() -> None:
+            await agent.run(chat_inputs="hi")
+
+        await outer()
+
+        parent = _span_by_entity(_exporter.get_finished_spans(), "outer_model")
+        assert ATTR_LLM_MODEL_NAME not in (parent.attributes or {})

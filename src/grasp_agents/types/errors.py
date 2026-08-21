@@ -1,9 +1,13 @@
 from typing import Any
 
+from .recovery import RecoveryHint
+
 # --- Processor errors ---
 
 
 class ProcRunError(Exception):
+    # No recovery_hint: subclasses inherit it, and this wrapper is raised for
+    # every exhausted run — a hint here would mislabel rate limits as bugs.
     def __init__(
         self, proc_name: str, exec_id: str | None = None, message: str | None = None
     ) -> None:
@@ -16,10 +20,12 @@ class ProcRunError(Exception):
 
 
 class ProcInputValidationError(ProcRunError):
-    pass
+    recovery_hint = RecoveryHint.INVALID_REQUEST
 
 
 class ProcOutputValidationError(ProcRunError):
+    recovery_hint = RecoveryHint.INVALID_REQUEST
+
     def __init__(
         self,
         schema: object,
@@ -40,6 +46,8 @@ class ProcOutputValidationError(ProcRunError):
 
 
 class AgentFinalAnswerError(ProcRunError):
+    recovery_hint = RecoveryHint.INVALID_REQUEST
+
     def __init__(
         self, proc_name: str, exec_id: str | None = None, message: str | None = None
     ) -> None:
@@ -70,6 +78,8 @@ class WorkflowConstructionError(Exception):
 
 
 class PacketRoutingError(ProcRunError):
+    recovery_hint = RecoveryHint.INVALID_REQUEST
+
     def __init__(
         self,
         proc_name: str,
@@ -161,6 +171,8 @@ class LLMToolCallValidationError(Exception):
     ``(call_id, tool_name, error_message)``; ``message`` summarizes them.
     """
 
+    recovery_hint = RecoveryHint.INVALID_REQUEST
+
     def __init__(
         self,
         message: str,
@@ -174,6 +186,8 @@ class LLMToolCallValidationError(Exception):
 
 
 class LLMResponseValidationError(JSONSchemaValidationError):
+    recovery_hint = RecoveryHint.INVALID_REQUEST
+
     def __init__(self, s: str, schema: object, message: str | None = None) -> None:
         super().__init__(
             s,
