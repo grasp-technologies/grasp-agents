@@ -19,6 +19,7 @@ _QUOTA_PHRASES = (
     "insufficient_quota",
     "exceeded your current quota",
     "credit balance is too low",
+    "no credits remaining",
 )
 
 # Error-body codes that mean "blocked on policy grounds", as opposed to the
