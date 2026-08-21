@@ -10,7 +10,6 @@ import inspect
 import json
 import os
 import re
-import traceback
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -56,6 +55,7 @@ ATTR_ENTITY_VERSION = "grasp.entity.version"
 ATTR_ENTITY_INPUT = "grasp.entity.input"
 ATTR_ENTITY_OUTPUT = "grasp.entity.output"
 ATTR_WORKFLOW_NAME = "grasp.workflow.name"
+ATTR_FAILED_ATTEMPTS = "grasp.processor.failed_attempts"
 
 # OpenInference compatibility — Phoenix uses this to show span type icons
 ATTR_OI_SPAN_KIND = "openinference.span.kind"
@@ -244,6 +244,24 @@ def set_run_span_attributes(**attributes: str | float | bool) -> None:
             span.set_attribute(key, value)
 
 
+def capture_run_span(instance: Any) -> trace.Span | None:
+    """
+    Snapshot the current run span while the ambient context is trustworthy.
+
+    Call at the START of a retry loop, before any child stream runs: an
+    abandoned child leaves the ambient current-span stale, so a failure-time
+    lookup can point at a span that is never exported. Returns None when
+    tracing is off for ``instance`` — the ambient span then belongs to an
+    enclosing parent, and recording there would misattribute the failure.
+    """
+    if not _tracing_enabled(instance):
+        return None
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return None
+    return span
+
+
 # ---------------------------------------------------------------------------
 # Session trace grouping + session attributes
 # ---------------------------------------------------------------------------
@@ -383,7 +401,11 @@ def _run_span(
     parent_context = _resolve_run_span_context(instance)
     token = otel_context.attach(parent_context) if parent_context is not None else None
     try:
-        with trace.get_tracer(_TRACER_NAME).start_as_current_span(span_name) as span:
+        with trace.get_tracer(_TRACER_NAME).start_as_current_span(
+            span_name,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
             yield span
     finally:
         if token is not None:
@@ -513,9 +535,7 @@ def _entity_method[F: Callable[..., Any]](
                             span.set_status(
                                 trace.Status(trace.StatusCode.ERROR, str(e))
                             )
-                            span.record_exception(
-                                e, attributes={"tb": traceback.format_exc()}
-                            )
+                            span.record_exception(e)
                             raise
                         finally:
                             if has_items:
@@ -548,9 +568,7 @@ def _entity_method[F: Callable[..., Any]](
                         return res
                     except Exception as e:
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                        span.record_exception(
-                            e, attributes={"tb": traceback.format_exc()}
-                        )
+                        span.record_exception(e)
                         raise
 
             return cast("F", async_wrap)
@@ -590,9 +608,7 @@ def _entity_method[F: Callable[..., Any]](
                             yield item
                     except Exception as e:
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                        span.record_exception(
-                            e, attributes={"tb": traceback.format_exc()}
-                        )
+                        span.record_exception(e)
                         raise
                     finally:
                         if has_items:
@@ -625,7 +641,7 @@ def _entity_method[F: Callable[..., Any]](
                     return res
                 except Exception as e:
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    span.record_exception(e, attributes={"tb": traceback.format_exc()})
+                    span.record_exception(e)
                     raise
 
         return cast("F", sync_wrap)

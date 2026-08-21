@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import (
     SessionSpanProcessor,
@@ -31,6 +32,7 @@ from grasp_agents.telemetry.decorators import (
     ATTR_ENTITY_INPUT,
     ATTR_ENTITY_NAME,
     ATTR_ENTITY_OUTPUT,
+    ATTR_FAILED_ATTEMPTS,
     ATTR_OI_SPAN_KIND,
     ATTR_SPAN_KIND,
     ATTR_WORKFLOW_NAME,
@@ -41,6 +43,8 @@ from grasp_agents.telemetry.decorators import (
     _truncate_if_needed,
 )
 from grasp_agents.tools.agent_tool import AgentTool
+from grasp_agents.types.errors import ProcRunError
+from grasp_agents.types.events import Event, ProcPayloadOutEvent
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 if TYPE_CHECKING:
@@ -1047,3 +1051,260 @@ class TestSessionAttributes:
         spans = _exporter.get_finished_spans()
         assert spans
         assert all(_session_attr(s) is None for s in spans)
+
+
+# ========================================================================= #
+#  Retry visibility (with_retry records every failed attempt)                #
+# ========================================================================= #
+
+
+class _FlakyProcessor(Processor[str, str, None]):
+    """Fails its first ``fail_times`` attempts, then yields an output."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        fail_times: int,
+        err_msg: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(name=name, **kwargs)
+        self._fail_times = fail_times
+        self._err_msg = err_msg
+        self.calls = 0
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise ValueError(self._err_msg or f"boom {self.calls}")
+        for inp in in_args or []:
+            yield ProcPayloadOutEvent(data=f"{inp}!", source=self.name, exec_id=exec_id)
+
+
+def _span_by_entity(spans: Sequence[ReadableSpan], entity: str) -> ReadableSpan:
+    return next(
+        s for s in spans if (s.attributes or {}).get(ATTR_ENTITY_NAME) == entity
+    )
+
+
+def _exception_events(span: ReadableSpan) -> list[Any]:
+    return [e for e in (span.events or []) if e.name == "exception"]
+
+
+class TestRetryExceptionRecording:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_recovered_retry_records_events_without_error_status(self) -> None:
+        proc = _FlakyProcessor("flaky", fail_times=2, max_retries=2)
+        out = await proc.run(in_args="hi")
+        assert out.payloads == ["hi!"]
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        events = _exception_events(span)
+
+        # Each swallowed attempt is visible, in order, with its own cause.
+        assert len(events) == 2
+        assert [(e.attributes or {})["exception.type"] for e in events] == [
+            "ValueError",
+            "ValueError",
+        ]
+        assert [(e.attributes or {})["exception.message"] for e in events] == [
+            "boom 1",
+            "boom 2",
+        ]
+        assert (span.attributes or {})[ATTR_FAILED_ATTEMPTS] == 2
+
+        # The run ultimately succeeded: flipping the shared processor span to
+        # ERROR here would make recovered runs indistinguishable from failures.
+        assert span.status.status_code is not trace.StatusCode.ERROR
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_exhausted_retries_record_cause_and_keep_error_status(self) -> None:
+        proc = _FlakyProcessor("doomed", fail_times=99, max_retries=1)
+        with pytest.raises(ProcRunError):
+            await proc.run(in_args="hi")
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        events = _exception_events(span)
+        types_ = [(e.attributes or {})["exception.type"] for e in events]
+
+        # Both attempts recorded by with_retry — including the terminal one,
+        # whose underlying cause `@traced` would otherwise hide behind the
+        # wrapping ProcRunError.
+        assert types_.count("ValueError") == 2
+        assert any("ProcRunError" in str(t) for t in types_)
+        assert (span.attributes or {})[ATTR_FAILED_ATTEMPTS] == 2
+        # Terminal failure still goes red — set by `@traced`, untouched here.
+        assert span.status.status_code is trace.StatusCode.ERROR
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_disabled_processor_does_not_record_on_enclosing_span(self) -> None:
+        proc = _FlakyProcessor(
+            "quiet", fail_times=1, max_retries=1, tracing_enabled=False
+        )
+
+        @traced(name="outer")
+        async def outer() -> None:
+            await proc.run(in_args="hi")
+
+        await outer()
+        spans = _exporter.get_finished_spans()
+
+        # A tracing-disabled processor emits no span of its own, so the current
+        # span inside its retry loop belongs to the enclosing (recording)
+        # parent — its retries must not be attributed there.
+        assert all(
+            (s.attributes or {}).get(ATTR_ENTITY_NAME) != "processor" for s in spans
+        )
+        parent = _span_by_entity(spans, "outer")
+        assert _exception_events(parent) == []
+        assert ATTR_FAILED_ATTEMPTS not in (parent.attributes or {})
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_agent_output_parse_failure_lands_on_processor_span(self) -> None:
+        # The production shape (a failing output parser): the LLM call itself
+        # succeeded, so its `generate` span closed green and the failure has no
+        # child span of its own — the processor span is the only one still open
+        # when `parse_output` raises.
+        agent = LLMAgent[str, str, None](
+            name="writer",
+            llm=MockLLM(
+                responses_queue=[_text_response("bad"), _text_response("good")]
+            ),
+            max_retries=1,
+        )
+
+        @agent.add_output_parser
+        def _parse(final_answer: str, **_: Any) -> str:
+            if final_answer == "bad":
+                raise ValueError("resource block did not resolve")
+            return final_answer
+
+        await agent.run(chat_inputs="hi")
+
+        spans = _exporter.get_finished_spans()
+        proc_span = _span_by_entity(spans, "processor")
+        (event,) = _exception_events(proc_span)
+        assert (event.attributes or {})["exception.message"] == (
+            "resource block did not resolve"
+        )
+        assert proc_span.status.status_code is not trace.StatusCode.ERROR
+
+        # The model answered fine on both attempts, so no `generate` span is
+        # red — without this change the wasted attempt is invisible in the trace.
+        gen_spans = [
+            s for s in spans if (s.attributes or {}).get(ATTR_ENTITY_NAME) == "generate"
+        ]
+        assert len(gen_spans) == 2
+        assert all(not _exception_events(s) for s in gen_spans)
+
+
+class _ParentAbandoningChild(Processor[str, str, None]):
+    """Fails once mid-iteration of a child stream (paused at a yield), then succeeds."""
+
+    def __init__(
+        self, name: str, *, child: Processor[str, str, None], **kwargs: Any
+    ) -> None:
+        super().__init__(name=name, **kwargs)
+        self._child = child
+        self.calls = 0
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[str] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        self.calls += 1
+        if self.calls == 1:
+            # The child yields its first event and pauses; raising here
+            # abandons it with its context line still on the whiteboard.
+            async for _ in self._child.run_stream(in_args=["a", "b"]):
+                raise ValueError("parent failed mid-iteration")
+        for inp in in_args or []:
+            yield ProcPayloadOutEvent(data=f"{inp}!", source=self.name, exec_id=exec_id)
+
+
+class TestAbandonedChildStream:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_retry_events_land_on_the_exported_parent_span(self) -> None:
+        child = _FlakyProcessor("child", fail_times=0)
+        parent = _ParentAbandoningChild("parent", child=child, max_retries=1)
+
+        out = await parent.run(in_args="hi", span_name="parent-run")
+        assert out.payloads == ["hi!"]
+
+        # Both processor spans are named "processor.task", so the parent's is
+        # pinned via the span_name override.
+        exported = _exporter.get_finished_spans()
+        parent_span = next(s for s in exported if s.name == "parent-run")
+        events = _exception_events(parent_span)
+        assert [(e.attributes or {})["exception.type"] for e in events] == [
+            "ValueError"
+        ]
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_content_off_still_records_exception_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+        proc = _FlakyProcessor(
+            "gated", fail_times=1, max_retries=1, err_msg="whole lesson text here"
+        )
+        await proc.run(in_args="hi")
+
+        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        (event,) = _exception_events(span)
+        attrs = event.attributes or {}
+        assert attrs["exception.type"] == "ValueError"
+        assert "lesson text" in str(attrs["exception.message"])
+        assert "lesson text" in str(attrs["exception.stacktrace"])
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_escaping_error_recorded_once_with_full_description(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+
+        @traced(name="leaky")
+        async def fail() -> None:
+            raise ValueError("whole lesson text here")
+
+        with pytest.raises(ValueError):
+            await fail()
+
+        (span,) = _exporter.get_finished_spans()
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert "lesson text" in (span.status.description or "")
+        (event,) = _exception_events(span)
+        assert "lesson text" in str((event.attributes or {})["exception.message"])
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_escaping_generator_error_recorded_once_with_full_description(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+
+        @traced(name="leaky_gen")
+        async def fail_gen() -> AsyncIterator[str]:
+            yield "a"
+            raise ValueError("whole lesson text here")
+
+        with pytest.raises(ValueError):
+            async for _ in fail_gen():
+                pass
+
+        (span,) = _exporter.get_finished_spans()
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert "lesson text" in (span.status.description or "")
+        (event,) = _exception_events(span)
+        assert "lesson text" in str((event.attributes or {})["exception.message"])
