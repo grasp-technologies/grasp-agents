@@ -196,7 +196,7 @@ class _StreamStampingLLM(CloudLLM):
     event grammar.
     """
 
-    _native_provider_name: ClassVar[str] = "openai"
+    _reasoning_origin: ClassVar[str] = "openai"
 
     served: Response = field(default_factory=lambda: Response(model="mock", output=[]))
 
@@ -456,17 +456,17 @@ class TestOriginResolution:
         assert responses._resolve_reasoning_origin() == "openai"
         assert completions._resolve_reasoning_origin() == "openai"
 
-    def test_custom_endpoint_does_not_claim_the_vendor_origin(self) -> None:
+    def test_origin_is_the_model_company_regardless_of_endpoint(self) -> None:
         llm = OpenAILLM(
-            model_name="anthropic/claude-opus-5",
+            model_name="gpt-5.6-luna",
             api_provider=APIProvider(
-                name="openrouter",
-                base_url="https://openrouter.ai/api/v1",
-                api_key="or-key",
+                name="proxy",
+                base_url="https://proxy.example.com/v1",
+                api_key="proxy-key",
             ),
         )
 
-        assert llm._resolve_reasoning_origin() == "openrouter"
+        assert llm._resolve_reasoning_origin() == "openai"
 
     def test_litellm_origin_is_backend_prefixed(self) -> None:
         llm = LiteLLM(

@@ -119,6 +119,7 @@ class GeminiLLM(CloudLLM):
     _settings_type: ClassVar[Any] = GeminiLLMSettings
 
     _native_provider_name: ClassVar[str] = "gemini"
+    _reasoning_origin: ClassVar[str] = "gemini"
     # The SDK reads both, in this order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = (
         "GOOGLE_API_KEY",

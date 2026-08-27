@@ -137,6 +137,7 @@ class AnthropicLLM(CloudLLM):
     _settings_type: ClassVar[Any] = AnthropicLLMSettings
 
     _native_provider_name: ClassVar[str] = "anthropic"
+    _reasoning_origin: ClassVar[str] = "anthropic"
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("ANTHROPIC_API_KEY",)
     _cloud_platforms: ClassVar[frozenset[str]] = frozenset(
         {"bedrock", "bedrock_mantle", "vertex"}
