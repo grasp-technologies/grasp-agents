@@ -75,9 +75,6 @@ class CloudLLM(LLM):
     # The vendor's own API: the name of its endpoint, used for the
     # ``api_provider`` entry when the caller supplies none.
     _native_provider_name: ClassVar[str | None] = None
-    # The format identity of this provider's reasoning items; None means this
-    # LLM never stamps or filters on origin.
-    _reasoning_origin: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
     # Cloud platforms this provider builds a dedicated client for, configured
@@ -176,8 +173,17 @@ class CloudLLM(LLM):
         return self._native_provider_name
 
     def _resolve_reasoning_origin(self) -> str | None:
-        """Format identity to stamp on and filter reasoning items by."""
-        return self._reasoning_origin
+        """
+        Format identity to stamp on and filter reasoning items by.
+
+        The serving endpoint decides the reasoning wire format — the same
+        class serializes reasoning differently per backend (see
+        ``OpenAILLM``'s ``reasoning_block_format``) — so the endpoint's
+        identity is the format's identity. Two dialects of one endpoint
+        (Responses and Chat Completions) share it: their reasoning is
+        interchangeable, unlike two endpoints behind one class.
+        """
+        return self._resolve_provider_name()
 
     def _resolve_litellm_provider(self) -> str | None:
         """

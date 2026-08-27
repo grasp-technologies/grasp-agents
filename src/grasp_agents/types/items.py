@@ -235,10 +235,11 @@ class ReasoningItem(ResponseReasoningItem):
     """
     Model reasoning/thinking output.
 
-    ``origin`` is the format identity of the API dialect that produced the
-    item ("openai_responses", "anthropic", "gemini", "openai_completions",
-    "litellm:<backend>"); a reasoning item is only replayable to its origin.
-    ``None`` means a legacy item from before origins existed.
+    ``origin`` names the endpoint that produced the item ("openai",
+    "anthropic", "gemini", a custom endpoint's name, "litellm:<backend>");
+    a reasoning item is only replayable to that endpoint, which alone can
+    verify its payload. ``None`` means a legacy item from before origins
+    existed.
     """
 
     # OpenResponses fields (ReasoningBody):

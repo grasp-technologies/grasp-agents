@@ -40,6 +40,9 @@ from grasp_agents.llm.cloud_llm import ApiCallParams, APIProvider, CloudLLM
 from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
+from grasp_agents.llm_providers.openai_completions.completions_llm import (
+    OpenAILLM,
+)
 from grasp_agents.llm_providers.openai_responses.responses_llm import OpenAIResponsesLLM
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
 from grasp_agents.types.items import (
@@ -193,7 +196,7 @@ class _StreamStampingLLM(CloudLLM):
     event grammar.
     """
 
-    _reasoning_origin: ClassVar[str] = "openai_responses"
+    _native_provider_name: ClassVar[str] = "openai"
 
     served: Response = field(default_factory=lambda: Response(model="mock", output=[]))
 
@@ -270,7 +273,7 @@ class TestStamping:
         assert message_item.text == "answer"
 
     @pytest.mark.asyncio
-    async def test_openai_responses_reasoning_item_stamped_openai_responses_origin(
+    async def test_openai_responses_reasoning_item_stamped_openai_origin(
         self,
     ) -> None:
         raw = _openai_response(
@@ -283,7 +286,7 @@ class TestStamping:
         response = await llm.generate_response(_USER_MSG)
 
         reasoning = next(i for i in response.output if isinstance(i, ReasoningItem))
-        assert reasoning.origin == "openai_responses"
+        assert reasoning.origin == "openai"
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
@@ -303,7 +306,7 @@ class TestStamping:
         reasoning = next(
             i for i in completed.response.output if isinstance(i, ReasoningItem)
         )
-        assert reasoning.origin == "openai_responses"
+        assert reasoning.origin == "openai"
 
     @pytest.mark.asyncio
     async def test_pretagged_origin_never_overwritten(self) -> None:
@@ -343,7 +346,7 @@ class TestFiltering:
         )
         history: list[InputItem] = [
             InputMessageItem.from_text("hi"),
-            ReasoningItem(origin="openai_responses", encrypted_content="foreign"),
+            ReasoningItem(origin="openai", encrypted_content="foreign"),
             ReasoningItem(
                 origin="anthropic",
                 encrypted_content="own-sig",
@@ -379,7 +382,7 @@ class TestFiltering:
             InputMessageItem.from_text("hi"),
             ReasoningItem(origin="anthropic", encrypted_content="foreign"),
             ReasoningItem(
-                origin="openai_responses",
+                origin="openai",
                 encrypted_content="own-sig",
                 summary=[ReasoningSummary(text="own")],
             ),
@@ -429,7 +432,7 @@ class TestFallbackRescue:
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
         history: list[InputItem] = [
             InputMessageItem.from_text("hi"),
-            ReasoningItem(origin="openai_responses", encrypted_content="foreign"),
+            ReasoningItem(origin="openai", encrypted_content="foreign"),
         ]
 
         result = await llm.generate_response(history)
@@ -438,10 +441,33 @@ class TestFallbackRescue:
         assert _anthropic_thinking_blocks(fallback.captured_api_input) == []
 
 
-# ---------- 4. LiteLLM origin resolution ----------
+# ---------- 4. Origin resolution ----------
 
 
 class TestOriginResolution:
+    def test_openai_dialects_share_one_origin(self) -> None:
+        responses = OpenAIResponsesLLM(
+            model_name="gpt-5.6-luna", api_provider=_OPENAI_PROVIDER
+        )
+        completions = OpenAILLM(
+            model_name="gpt-5.6-luna", api_provider=_OPENAI_PROVIDER
+        )
+
+        assert responses._resolve_reasoning_origin() == "openai"
+        assert completions._resolve_reasoning_origin() == "openai"
+
+    def test_custom_endpoint_does_not_claim_the_vendor_origin(self) -> None:
+        llm = OpenAILLM(
+            model_name="anthropic/claude-opus-5",
+            api_provider=APIProvider(
+                name="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="or-key",
+            ),
+        )
+
+        assert llm._resolve_reasoning_origin() == "openrouter"
+
     def test_litellm_origin_is_backend_prefixed(self) -> None:
         llm = LiteLLM(
             model_name="openai/some-proxy-model",
