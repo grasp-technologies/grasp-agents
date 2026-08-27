@@ -14,7 +14,7 @@ from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import LLMResponseValidationError
-from grasp_agents.types.items import InputItem
+from grasp_agents.types.items import InputItem, ReasoningItem
 from grasp_agents.types.llm_errors import (
     LlmError,
     LlmErrorTuple,
@@ -75,6 +75,9 @@ class CloudLLM(LLM):
     # The vendor's own API: the name of its endpoint, used for the
     # ``api_provider`` entry when the caller supplies none.
     _native_provider_name: ClassVar[str | None] = None
+    # The format identity of this provider's reasoning items; None means this
+    # LLM never stamps or filters on origin.
+    _reasoning_origin: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
     # Cloud platforms this provider builds a dedicated client for, configured
@@ -171,6 +174,10 @@ class CloudLLM(LLM):
         if self.api_provider is not None and self.api_provider.get("base_url"):
             return self.api_provider.get("name") or self._native_provider_name
         return self._native_provider_name
+
+    def _resolve_reasoning_origin(self) -> str | None:
+        """Format identity to stamp on and filter reasoning items by."""
+        return self._reasoning_origin
 
     def _resolve_litellm_provider(self) -> str | None:
         """
@@ -292,6 +299,48 @@ class CloudLLM(LLM):
                 litellm_provider=self.litellm_provider,
             )
 
+    # --- Origin stamping ---
+
+    def _stamp_origin(self, response: Response) -> None:
+        """Stamp untagged reasoning items in the response with THIS model's origin."""
+        origin = self._resolve_reasoning_origin()
+        if origin is None:
+            return
+        for item in response.output:
+            if isinstance(item, ReasoningItem) and item.origin is None:
+                item.origin = origin
+
+    def _finalize_response(self, response: Response) -> None:
+        self._stamp_cost(response)
+        self._stamp_origin(response)
+
+    # --- Foreign reasoning filtering ---
+
+    def _filter_foreign_reasoning(
+        self,
+        input: Sequence[InputItem],  # noqa: A002
+    ) -> Sequence[InputItem]:
+        """
+        Drop reasoning items tagged with an origin other than THIS model's.
+
+        Foreign reasoning can never be sanitized into acceptance — both
+        OpenAI and Anthropic cryptographically verify reasoning payloads
+        (see notebooks/reasoning_compat_*) — so dropping is the only option.
+        Untagged (``origin=None``) items are always kept.
+        """
+        origin = self._resolve_reasoning_origin()
+        if origin is None:
+            return input
+        return [
+            item
+            for item in input
+            if not (
+                isinstance(item, ReasoningItem)
+                and item.origin is not None
+                and item.origin != origin
+            )
+        ]
+
     # --- LLM interface implementation ---
 
     def __init_subclass__(cls, **kwargs: Any):
@@ -312,6 +361,8 @@ class CloudLLM(LLM):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
+        input = self._filter_foreign_reasoning(input)  # noqa: A001
+
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -344,7 +395,7 @@ class CloudLLM(LLM):
         except Exception as err:
             self._raise_mapped(err, output_schema=output_schema)
 
-        self._stamp_cost(response)
+        self._finalize_response(response)
         logger.info(
             "llm %s → %s in %.2fs",
             self.model_name,
@@ -370,6 +421,8 @@ class CloudLLM(LLM):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
+        input = self._filter_foreign_reasoning(input)  # noqa: A001
+
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -427,7 +480,7 @@ class CloudLLM(LLM):
                     body=None,
                 )
             if isinstance(event, ResponseCompleted):
-                self._stamp_cost(event.response)
+                self._finalize_response(event.response)
                 logger.info(
                     "llm %s → %s in %.2fs (streamed)",
                     self.model_name,

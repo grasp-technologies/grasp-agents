@@ -232,7 +232,14 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
 
 
 class ReasoningItem(ResponseReasoningItem):
-    """Model reasoning/thinking output."""
+    """
+    Model reasoning/thinking output.
+
+    ``origin`` is the format identity of the API dialect that produced the
+    item ("openai_responses", "anthropic", "gemini", "openai_completions",
+    "litellm:<backend>"); a reasoning item is only replayable to its origin.
+    ``None`` means a legacy item from before origins existed.
+    """
 
     # OpenResponses fields (ReasoningBody):
 
@@ -249,6 +256,7 @@ class ReasoningItem(ResponseReasoningItem):
     # grasp-agents fields:
 
     redacted: bool = False
+    origin: str | None = None
 
     @property
     def content_text(self) -> str | None:

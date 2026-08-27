@@ -154,6 +154,7 @@ class OpenAIResponsesLLM(CloudLLM):
     _settings_type: ClassVar[Any] = OpenAIResponsesLLMSettings
 
     _native_provider_name: ClassVar[str] = "openai"
+    _reasoning_origin: ClassVar[str] = "openai_responses"
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
     _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure"})
 
