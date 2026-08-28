@@ -143,6 +143,38 @@ class TestFallbackDiscardsPartials:
         assert _output_items(transcript) == [served_message]
         assert loop.final_answer == "recovered"
 
+    @pytest.mark.asyncio
+    async def test_superseded_response_is_not_answered_with(self) -> None:
+        """
+        A fallback voids the failed member's already-delivered Response. If the
+        next member's stream then ends without a terminal event, the turn has no
+        response at all and must fail loudly instead of answering with the
+        superseded one.
+        """
+        dead_message = _message_item("from A")
+        dead = Response(model="primary", output=[dead_message], usage=_make_usage())
+        served_message = _message_item("from B")
+
+        loop, _ = _make_loop(
+            [
+                OutputItemDone(item=dead_message, output_index=0, sequence_number=1),
+                ResponseCompleted(response=dead, sequence_number=2),
+                ResponseFallback(
+                    failed_model="primary",
+                    fallback_model="fallback",
+                    error_type="LlmInternalServerError",
+                    attempt=1,
+                    sequence_number=3,
+                ),
+                OutputItemDone(item=served_message, output_index=0, sequence_number=4),
+            ]
+        )
+
+        with pytest.raises(AssertionError):
+            await _drain(loop)
+
+        assert loop.final_answer != "from A"
+
 
 # ---------- Truncated (incomplete) streams ----------
 

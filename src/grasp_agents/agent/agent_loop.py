@@ -124,13 +124,14 @@ class ResponseCapture:
 
     async def _iterate(self) -> AsyncIterator[Event[Any]]:
         async for event in self._stream:
-            # A truncated response (max tokens, content filter) is terminal too
-            # and carries a final Response — the loop must see it, or the turn
-            # ends without a response at all.
-            if isinstance(event, LLMStreamEvent) and isinstance(
-                event.data, (ResponseCompleted, ResponseIncomplete)
-            ):
-                self.response = event.data.response
+            if isinstance(event, LLMStreamEvent):
+                if isinstance(event.data, (ResponseRetrying, ResponseFallback)):
+                    self.response = None
+                # A truncated response (max tokens, content filter) is terminal
+                # too and carries a final Response — the loop must see it, or
+                # the turn ends without a response at all.
+                elif isinstance(event.data, (ResponseCompleted, ResponseIncomplete)):
+                    self.response = event.data.response
             yield event
 
 
@@ -476,6 +477,7 @@ class AgentLoop[CtxT]:
                         # a fresh attempt that re-streams the whole turn.
                         # Discard them so they don't pile on top.
                         pending = []
+                        response = None
                     if isinstance(se, OutputItemDone):
                         # Mirror the non-streaming commit: every output item —
                         # including server-tool records (web search) — enters
