@@ -53,6 +53,8 @@ from grasp_agents.types.llm_errors import LlmContextWindowError
 from grasp_agents.types.llm_events import (
     OutputItemDone,
     ResponseCompleted,
+    ResponseFallback,
+    ResponseIncomplete,
     ResponseRetrying,
 )
 from grasp_agents.utils.errors import format_error_chain
@@ -122,8 +124,11 @@ class ResponseCapture:
 
     async def _iterate(self) -> AsyncIterator[Event[Any]]:
         async for event in self._stream:
+            # A truncated response (max tokens, content filter) is terminal too
+            # and carries a final Response — the loop must see it, or the turn
+            # ends without a response at all.
             if isinstance(event, LLMStreamEvent) and isinstance(
-                event.data, ResponseCompleted
+                event.data, (ResponseCompleted, ResponseIncomplete)
             ):
                 self.response = event.data.response
             yield event
@@ -464,11 +469,12 @@ class AgentLoop[CtxT]:
 
             try:
                 async for se in self._llm.generate_response_stream(**llm_params):
-                    if isinstance(se, ResponseRetrying):
-                        # Validation or transient API retry just fired —
-                        # the previous attempt's items are about to be
-                        # superseded by a fresh attempt. Discard them so
-                        # the next attempt's items don't pile on top.
+                    if isinstance(se, (ResponseRetrying, ResponseFallback)):
+                        # A retry (validation / transient API error) or a
+                        # fallback to the next cascade member just fired — the
+                        # failed attempt's items are about to be superseded by
+                        # a fresh attempt that re-streams the whole turn.
+                        # Discard them so they don't pile on top.
                         pending = []
                     if isinstance(se, OutputItemDone):
                         # Mirror the non-streaming commit: every output item —
@@ -476,7 +482,7 @@ class AgentLoop[CtxT]:
                         # the transcript, or the histories diverge and
                         # citation round-trips break.
                         pending.append(se.item)
-                    elif isinstance(se, ResponseCompleted):
+                    elif isinstance(se, (ResponseCompleted, ResponseIncomplete)):
                         response = se.response
 
                     # Only LLMStream events are yielded immediately. The

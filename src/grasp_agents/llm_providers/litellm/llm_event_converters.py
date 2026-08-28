@@ -223,6 +223,12 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
 
     def _close_response(self) -> Iterator[LlmEvent]:
         """Close open items, patch thought signatures, emit ResponseCompleted."""
+        # Signatures are distributed between the two closes: a trailing
+        # reasoning item must already be in ``_items`` to be signed, while
+        # tool-call items are still built from their states by ``super()``.
+        if self._reasoning_open:
+            yield from self._close_reasoning()
+
         thought_sigs = self._provider_specific_fields.get("thought_signatures", [])
         if thought_sigs:
             patch_thought_signatures(thought_sigs, self._items, self._tool_calls)

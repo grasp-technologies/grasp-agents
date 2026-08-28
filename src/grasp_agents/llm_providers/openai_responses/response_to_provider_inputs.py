@@ -28,6 +28,7 @@ from grasp_agents.types.items import (
     FunctionToolOutputItem,
     InputItem,
     InputMessageItem,
+    ReasoningItem,
     SearchAction,
     WebSearchCallItem,
 )
@@ -43,6 +44,10 @@ _GRASP_EXTENSION_FIELDS = {
     "is_error",
     "cache_control",
 }
+
+# The API rejects ``status`` on a reasoning input item ("Unknown parameter"),
+# and it is output-only bookkeeping, so a replayed reasoning item drops it.
+_REASONING_EXCLUDED_FIELDS = _GRASP_EXTENSION_FIELDS | {"status"}
 
 # Same, on content/output/summary parts and their annotations — the API rejects
 # unknown parameters (e.g. ``mime_type`` on a base64 image part).
@@ -101,9 +106,12 @@ def items_to_provider_inputs(
         if isinstance(item, WebSearchCallItem):
             result.append(_web_search_item_to_param(item))
             continue
-        dumped = item.model_dump(
-            exclude=_GRASP_EXTENSION_FIELDS, exclude_none=True, mode="json"
+        exclude = (
+            _REASONING_EXCLUDED_FIELDS
+            if isinstance(item, ReasoningItem)
+            else _GRASP_EXTENSION_FIELDS
         )
+        dumped = item.model_dump(exclude=exclude, exclude_none=True, mode="json")
         _scrub_part_fields(dumped)
         _reapply_part_cache_breakpoints(item, dumped)
         # The Responses API reads a client-sent message ``id`` as a reference to a
@@ -128,8 +136,7 @@ def _web_search_item_to_param(
             api_action["queries"] = action.queries
         if action.sources:
             api_action["sources"] = [
-                ActionSearchSourceParam(type="url", url=s.url)
-                for s in action.sources
+                ActionSearchSourceParam(type="url", url=s.url) for s in action.sources
             ]
 
     elif isinstance(action, FindInPageAction):

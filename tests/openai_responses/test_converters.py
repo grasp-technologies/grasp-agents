@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any, cast
 
 from openai.types.responses import Response as OAIResponse
+from pydantic import BaseModel
 
 from grasp_agents.llm_providers.openai_responses.response_to_provider_inputs import (
+    _GRASP_EXTENSION_FIELDS,
     items_to_provider_inputs,
 )
 from grasp_agents.llm_providers.openai_responses.tool_converters import (
@@ -17,10 +19,12 @@ from grasp_agents.tools.base import NamedToolChoice
 from grasp_agents.types.content import InputImage, InputText, OutputMessageText
 from grasp_agents.types.items import (
     FindInPageAction,
+    FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
     OpenPageAction,
     OutputMessageItem,
+    ReasoningItem,
     SearchAction,
     WebSearchCallItem,
 )
@@ -436,6 +440,79 @@ class TestUnknownItemRoundtrip:
                     "output": [{"type": "message", "role": "assistant"}],
                 }
             )
+
+
+class TestGraspExtensionFieldsAreScrubbed:
+    def test_every_grasp_only_field_is_registered_for_exclusion(self) -> None:
+        """
+        Every field we add to an OpenAI SDK item model must be registered in
+        ``_GRASP_EXTENSION_FIELDS``, or it silently reaches the wire and the
+        API rejects the request as an unknown parameter.
+        """
+        from grasp_agents.types import items as items_module
+
+        checked: set[str] = set()
+        for cls in items_module.__dict__.values():
+            if not isinstance(cls, type) or not issubclass(cls, BaseModel):
+                continue
+            if not cls.__module__.endswith("types.items"):
+                continue
+            base = cls.__mro__[1]
+            if not issubclass(base, BaseModel) or not base.__module__.startswith(
+                "openai."
+            ):
+                continue
+            checked.add(cls.__name__)
+            grasp_only = set(cls.model_fields) - set(base.model_fields)
+            assert grasp_only <= _GRASP_EXTENSION_FIELDS, (
+                f"{cls.__name__} declares "
+                f"{sorted(grasp_only - _GRASP_EXTENSION_FIELDS)} beyond "
+                f"{base.__name__}; add it to _GRASP_EXTENSION_FIELDS"
+            )
+
+        assert checked == {
+            "InputMessageItem",
+            "OutputMessageItem",
+            "FunctionToolCallItem",
+            "FunctionToolOutputItem",
+            "ReasoningItem",
+        }
+
+    def test_origin_never_reaches_the_wire(self) -> None:
+        items = [
+            ReasoningItem(origin="openai", encrypted_content="enc"),
+            OutputMessageItem(
+                status="completed",
+                origin="gemini",
+                content=[OutputMessageText(text="hi")],
+                provider_specific_fields={"thought_signature": "sig"},
+            ),
+            FunctionToolCallItem(
+                call_id="call_1",
+                name="add",
+                arguments="{}",
+                origin="gemini",
+                provider_specific_fields={"thought_signature": "sig"},
+            ),
+        ]
+
+        for param in items_to_provider_inputs(items):
+            assert "origin" not in param
+            assert "provider_specific_fields" not in param
+
+    def test_reasoning_status_not_sent_back(self) -> None:
+        """The API rejects ``status`` on a reasoning input item."""
+        reasoning = ReasoningItem(status="completed", encrypted_content="enc")
+        message = OutputMessageItem(
+            status="completed", content=[OutputMessageText(text="hi")]
+        )
+
+        reasoning_param, message_param = items_to_provider_inputs([reasoning, message])
+
+        assert "status" not in reasoning_param
+        assert reasoning_param["encrypted_content"] == "enc"
+        # Only reasoning is affected; message items declare a required status.
+        assert message_param["status"] == "completed"
 
 
 class TestWebSearchActionParams:

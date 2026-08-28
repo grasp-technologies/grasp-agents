@@ -14,13 +14,25 @@ from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import LLMResponseValidationError
-from grasp_agents.types.items import InputItem, ReasoningItem
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    InputItem,
+    OutputItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
 from grasp_agents.types.llm_errors import (
     LlmError,
     LlmErrorTuple,
     LlmInternalServerError,
 )
-from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted, ResponseFailed
+from grasp_agents.types.llm_events import (
+    LlmEvent,
+    OutputItemDone,
+    ResponseCompleted,
+    ResponseFailed,
+    ResponseIncomplete,
+)
 from grasp_agents.types.response import Response
 from grasp_agents.usage_tracker import add_cost_to_usage
 
@@ -54,6 +66,24 @@ def _settings_adapter(settings_type: type) -> TypeAdapter[Any]:
     return TypeAdapter(settings_type)
 
 
+# ``provider_specific_fields`` key holding a reasoning payload the producing
+# company's backend signed and re-verifies on replay (Gemini attaches it to
+# message and tool-call items rather than to reasoning items).
+_THOUGHT_SIGNATURE_KEY = "thought_signature"
+
+
+def _has_thought_signature(item: OutputMessageItem | FunctionToolCallItem) -> bool:
+    return _THOUGHT_SIGNATURE_KEY in (item.provider_specific_fields or {})
+
+
+def _without_thought_signature(
+    item: OutputMessageItem | FunctionToolCallItem,
+) -> OutputMessageItem | FunctionToolCallItem:
+    psf = dict(item.provider_specific_fields or {})
+    psf.pop(_THOUGHT_SIGNATURE_KEY, None)
+    return item.model_copy(update={"provider_specific_fields": psf or None})
+
+
 LLMRateLimiter = RateLimiter[Response | AsyncIterator[LlmEvent]]
 
 
@@ -75,9 +105,6 @@ class CloudLLM(LLM):
     # The vendor's own API: the name of its endpoint, used for the
     # ``api_provider`` entry when the caller supplies none.
     _native_provider_name: ClassVar[str | None] = None
-    # The company whose models this class speaks for; reasoning items are
-    # stamped with it and replayed only to it. None disables both.
-    _reasoning_origin: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
     # Cloud platforms this provider builds a dedicated client for, configured
@@ -179,12 +206,15 @@ class CloudLLM(LLM):
         """
         Identity to stamp on and filter reasoning items by.
 
-        The company whose models the class speaks for: its backend signs and
-        verifies reasoning payloads, wherever it is hosted — the two OpenAI
-        dialects exchange reasoning freely (see notebook B, X1/X5/X6) while
-        no two companies do. ``None`` disables stamping and filtering.
+        The vendor of the client's own API family ("openai", "anthropic",
+        "gemini"), whatever endpoint or platform serves the model: a signed
+        reasoning payload travels with the API dialect that produced it, so the
+        two OpenAI dialects exchange reasoning freely while no two vendors do.
+        A class with no vendor of its own (``LiteLLM``, which manages
+        signature compatibility itself) returns ``None``, which leaves its
+        items untagged and stamps and filters nothing.
         """
-        return self._reasoning_origin
+        return self._native_provider_name
 
     def _resolve_litellm_provider(self) -> str | None:
         """
@@ -308,45 +338,70 @@ class CloudLLM(LLM):
 
     # --- Origin stamping ---
 
-    def _stamp_origin(self, response: Response) -> None:
-        """Stamp untagged reasoning items in the response with THIS model's origin."""
-        origin = self._resolve_reasoning_origin()
-        if origin is None:
+    def _stamp_item_origin(self, item: OutputItem) -> None:
+        """
+        Stamp an untagged item with THIS model's origin.
+
+        Only items whose payload the producing company's backend verifies are
+        stamped: reasoning items always, message and tool-call items when they
+        carry a thought signature.
+        """
+        if isinstance(item, (OutputMessageItem, FunctionToolCallItem)):
+            if not _has_thought_signature(item):
+                return
+        elif not isinstance(item, ReasoningItem):
             return
+        if item.origin is None:
+            item.origin = self._resolve_reasoning_origin()
+
+    def _stamp_origin(self, response: Response) -> None:
+        """Stamp untagged items in the response with THIS model's origin."""
         for item in response.output:
-            if isinstance(item, ReasoningItem) and item.origin is None:
-                item.origin = origin
+            self._stamp_item_origin(item)
 
     def _finalize_response(self, response: Response) -> None:
         self._stamp_cost(response)
         self._stamp_origin(response)
 
-    # --- Foreign reasoning filtering ---
+    # --- Foreign reasoning ---
 
-    def _filter_foreign_reasoning(
+    def _drop_foreign_reasoning(
         self,
         input: Sequence[InputItem],  # noqa: A002
     ) -> Sequence[InputItem]:
         """
-        Drop reasoning items tagged with an origin other than THIS model's.
+        Keep out of the request any reasoning payload only a foreign backend
+        can verify.
 
-        Foreign reasoning can never be sanitized into acceptance — both
-        OpenAI and Anthropic cryptographically verify reasoning payloads
-        (see notebooks/reasoning_compat_*) — so dropping is the only option.
-        Untagged (``origin=None``) items are always kept.
+        A reasoning item tagged with an origin other than THIS model's is
+        dropped whole: providers verify reasoning payloads server-side, so a
+        foreign one is rejected at the wire and nothing is left of the item
+        once its payload is gone. A foreign-tagged message or tool call is
+        instead forwarded as a copy without its thought signature — dropping it
+        would break tool-call pairing and lose the text. The caller's items are
+        never modified, so the signature is still there if a later turn goes
+        back to the model that produced it. Untagged (``origin=None``) items
+        pass through as they are.
         """
         origin = self._resolve_reasoning_origin()
         if origin is None:
             return input
-        return [
-            item
-            for item in input
-            if not (
-                isinstance(item, ReasoningItem)
-                and item.origin is not None
-                and item.origin != origin
-            )
-        ]
+
+        kept: list[InputItem] = []
+        for item in input:
+            if isinstance(item, ReasoningItem):
+                if item.origin in {None, origin}:
+                    kept.append(item)
+            elif (
+                isinstance(item, (OutputMessageItem, FunctionToolCallItem))
+                and item.origin not in {None, origin}
+                and _has_thought_signature(item)
+            ):
+                kept.append(_without_thought_signature(item))
+            else:
+                kept.append(item)
+
+        return kept
 
     # --- LLM interface implementation ---
 
@@ -368,7 +423,7 @@ class CloudLLM(LLM):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
-        input = self._filter_foreign_reasoning(input)  # noqa: A001
+        input = self._drop_foreign_reasoning(input)  # noqa: A001
 
         api_kwargs = self._make_api_input(
             input,
@@ -428,7 +483,7 @@ class CloudLLM(LLM):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
-        input = self._filter_foreign_reasoning(input)  # noqa: A001
+        input = self._drop_foreign_reasoning(input)  # noqa: A001
 
         api_kwargs = self._make_api_input(
             input,
@@ -486,7 +541,13 @@ class CloudLLM(LLM):
                     ),
                     body=None,
                 )
-            if isinstance(event, ResponseCompleted):
+            if isinstance(event, OutputItemDone):
+                # Streamed items are consumed as they arrive, and a converter
+                # is free to hand out objects distinct from the ones in the
+                # terminal response, so each item is stamped where it flows
+                # rather than only on the response it ends up in.
+                self._stamp_item_origin(event.item)
+            if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
                 self._finalize_response(event.response)
                 logger.info(
                     "llm %s → %s in %.2fs (streamed)",

@@ -124,14 +124,6 @@ class LiteLLM(CloudLLM):
 
         object.__setattr__(self, "api_provider", _api_provider)
 
-    def _resolve_reasoning_origin(self) -> str | None:
-        """
-        LiteLLM normalizes reasoning its own way, so the same backend reached
-        through LiteLLM and through its native class are different formats.
-        """
-        name = self._resolve_provider_name()
-        return f"litellm:{name}" if name else None
-
     def get_supported_openai_params(self) -> list[Any] | None:
         return get_supported_openai_params(  # type: ignore[no-untyped-call]
             model=self.model_name, request_type="chat_completion"
