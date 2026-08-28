@@ -72,14 +72,18 @@ def patch_thought_signatures(
     thinking_blocks.  Signatures are matched positionally: first to
     ReasoningItems that lack encrypted_content, then to ToolCallStates
     that lack provider_specific_fields.
+
+    Items are patched in place: on streaming paths they have already been
+    handed to the consumer inside ``OutputItemDone``, so replacing a list
+    slot would leave that consumer holding an unsigned item.
     """
     sig_iter = iter(thought_signatures)
-    for i, item in enumerate(items):
+    for item in items:
         if isinstance(item, ReasoningItem) and not item.encrypted_content:
             sig = next(sig_iter, None)
             if sig is None:
                 return
-            items[i] = item.model_copy(update={"encrypted_content": sig})
+            item.encrypted_content = sig
     for state in tool_calls.values():
         if not state.provider_specific_fields:
             sig = next(sig_iter, None)

@@ -94,7 +94,16 @@ class InputMessageItem(ResponseInputMessageItem):
 
 
 class OutputMessageItem(ResponseOutputMessage):
-    """Assistant message produced by the model."""
+    """
+    Assistant message produced by the model.
+
+    ``origin`` names the vendor of the client/provider family that produced the
+    item ("openai", "anthropic", "gemini"), and is set only when
+    ``provider_specific_fields`` carries a payload signed by that vendor's
+    backend — such a payload is replayable only through that vendor's API.
+    ``None`` means the producing vendor is not known (a LiteLLM-served or
+    pre-existing item); such items are never dropped.
+    """
 
     # OpenResponses fields (Message):
 
@@ -110,6 +119,7 @@ class OutputMessageItem(ResponseOutputMessage):
     # Provider-specific opaque data for round-trip fidelity
     # (e.g. Gemini thought_signature on regular text parts)
     provider_specific_fields: dict[str, Any] | None = None
+    origin: str | None = None
 
     @property
     def text(self) -> str:
@@ -146,7 +156,16 @@ class OutputMessageItem(ResponseOutputMessage):
 
 
 class FunctionToolCallItem(ResponseFunctionToolCall):
-    """A tool call issued by the model (name + JSON arguments)."""
+    """
+    A tool call issued by the model (name + JSON arguments).
+
+    ``origin`` names the vendor of the client/provider family that produced the
+    item ("openai", "anthropic", "gemini"), and is set only when
+    ``provider_specific_fields`` carries a payload signed by that vendor's
+    backend — such a payload is replayable only through that vendor's API.
+    ``None`` means the producing vendor is not known (a LiteLLM-served or
+    pre-existing item); such items are never dropped.
+    """
 
     # OpenResponses fields (FunctionCall):
 
@@ -161,6 +180,7 @@ class FunctionToolCallItem(ResponseFunctionToolCall):
     # (e.g. Gemini thought_signature on function_call parts)
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
+    origin: str | None = None
 
 
 class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
@@ -232,7 +252,16 @@ class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
 
 
 class ReasoningItem(ResponseReasoningItem):
-    """Model reasoning/thinking output."""
+    """
+    Model reasoning/thinking output.
+
+    ``origin`` names the vendor of the client/provider family that produced the
+    item ("openai", "anthropic", "gemini"), whatever endpoint or platform
+    served it — a reasoning payload is verified by that vendor's backend, so
+    the item is only replayable through that vendor's API. ``None`` means the
+    producing vendor is not known (a LiteLLM-served item, or one from before
+    origins existed); such items are never dropped.
+    """
 
     # OpenResponses fields (ReasoningBody):
 
@@ -249,6 +278,7 @@ class ReasoningItem(ResponseReasoningItem):
     # grasp-agents fields:
 
     redacted: bool = False
+    origin: str | None = None
 
     @property
     def content_text(self) -> str | None:
