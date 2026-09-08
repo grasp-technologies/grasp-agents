@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from grasp_agents.tools.base import BaseTool
     from grasp_agents.types.response import Response
 
+from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
@@ -32,7 +33,7 @@ from grasp_agents.tools.bash import Bash, BashInput, bash_tools
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput
 from grasp_agents.types.events import BackgroundTaskLaunchedEvent, UserMessageEvent
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
-from tests._helpers import _make_agent_loop
+from tests._helpers import _make_agent_ctx, _make_agent_loop
 
 pytestmark = pytest.mark.asyncio
 
@@ -124,26 +125,24 @@ async def _flush(
     manager: BackgroundTaskManager[None], ctx: SessionContext[None]
 ) -> None:
     """
-    Drive one ``drain`` pass for its log-mirroring side effect, discarding the
-    bubbled events — ``drain`` owns flushing (there is no ``flush_progress``).
+    Drive one ``bubble_events`` pass for its log-mirroring side effect,
+    discarding the bubbled events.
     """
-    async for _ in manager.drain(exec_id="t", ctx=ctx):
+    async for _ in manager.bubble_events(ctx=ctx):
         pass
 
 
-async def _drain_notes(
-    manager: BackgroundTaskManager[None], ctx: SessionContext[None]
-) -> list[str]:
+async def _drain_notes(agent_ctx: AgentContext, ctx: SessionContext[None]) -> list[str]:
     """
-    The completion notes a single turn-boundary ``drain`` injects. ``drain``
-    also mirrors progress to the ``.grasp`` logs, so a truncated note can point
-    at the log.
+    The completion notes one turn boundary delivers into ``agent_ctx``'s
+    transcript, as the model sees them. Bubbles first (mirroring progress to the
+    ``.grasp`` logs) so a truncated note can point at a complete log.
     """
-    return [
-        e.data.text  # the rendered note text, as the model sees it (not a repr)
-        async for e in manager.drain(exec_id="t", ctx=ctx)
-        if isinstance(e, UserMessageEvent)
-    ]
+    mgr = agent_ctx.bg_tasks
+    await _flush(mgr, ctx)
+    completions = await mgr.pop_completions(ctx=ctx)
+    agent_ctx.deliver_task_notes([c.note for c in completions])
+    return [c.note.message.text for c in completions]
 
 
 class _ProgressRecorder:
@@ -314,7 +313,7 @@ async def test_long_command_backgrounds_and_completes(tmp_path: Path) -> None:
     # Block until it finishes (the loop's idle wait), then drain its completion
     # note — the result is delivered there; there is no polling.
     await loop.agent_ctx.bg_tasks.wait_idle()
-    notes = await _drain_notes(loop.agent_ctx.bg_tasks, ctx)
+    notes = await _drain_notes(loop.agent_ctx, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "early" in notes[0]  # output produced before backgrounding
@@ -404,11 +403,11 @@ async def test_completion_note_inlines_small_result_once(tmp_path: Path) -> None
     assert task_id is not None
 
     # Still running — drain emits no completion note yet.
-    assert await _drain_notes(mgr, ctx) == []
+    assert await _drain_notes(loop.agent_ctx, ctx) == []
 
     # Block until it finishes (mirrors the loop's idle wait), then drain once.
     await mgr.wait_idle()
-    notes = await _drain_notes(mgr, ctx)
+    notes = await _drain_notes(loop.agent_ctx, ctx)
     assert len(notes) == 1
     assert task_id in notes[0]
     assert "completed" in notes[0]
@@ -418,7 +417,7 @@ async def test_completion_note_inlines_small_result_once(tmp_path: Path) -> None
     assert "omitted" not in notes[0]
     # Announced exactly once, and a fully-delivered task is dropped (the result
     # already reached the model; the full output remains in the log).
-    assert await _drain_notes(mgr, ctx) == []
+    assert await _drain_notes(loop.agent_ctx, ctx) == []
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]
 
 
@@ -443,7 +442,7 @@ async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
     assert task_id is not None
 
     await mgr.wait_idle()
-    notes = await _drain_notes(mgr, ctx)
+    notes = await _drain_notes(loop.agent_ctx, ctx)
     assert len(notes) == 1
     note = notes[0]
     assert "completed" in note
@@ -519,7 +518,7 @@ async def test_nonblocking_task_bubbles_stream_events(tmp_path: Path) -> None:
     assert mgr._tasks[task_id].blocks_final_answer is False  # pyright: ignore[reportPrivateUsage]  # non-blocking opt-out
 
     await mgr.wait_idle()
-    events = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
+    events = [e async for e in mgr.bubble_events(ctx=ctx)]
     streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
     assert streamed  # bubbled despite blocks_final_answer=False
     assert any("streamed" in str(e.data) for e in streamed)
@@ -558,14 +557,14 @@ async def test_deadline_note_points_at_log(tmp_path: Path) -> None:
 
     # Block until completion — no polling — then drain exactly one note.
     await mgr.wait_idle()
-    notes = await _drain_notes(mgr, ctx)
+    notes = await _drain_notes(loop.agent_ctx, ctx)
     assert len(notes) == 1
     assert task_id in notes[0]
 
     # Announced once: nothing left pending, so wait_idle returns at once and a
     # second drain yields nothing.
     await mgr.wait_idle()
-    assert await _drain_notes(mgr, ctx) == []
+    assert await _drain_notes(loop.agent_ctx, ctx) == []
 
 
 async def test_loop_injects_bash_note_after_idle_wait(tmp_path: Path) -> None:
@@ -857,13 +856,10 @@ async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
     assert all(r.status == TaskStatus.CANCELLED for r in recs)
 
     # A later resume must NOT report a deliberately-killed task as interrupted.
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    mgr2 = BackgroundTaskManager(
-        agent_name="t", transcript=transcript, tools={}, path=[]
-    )
-    await mgr2.resume_durable(ctx=ctx, exec_id="t")
-    assert not any("interrupted" in str(m) for m in transcript.messages)
+    mgr2 = BackgroundTaskManager(agent_name="t", tools={}, path=[])
+    agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
+    agent_ctx2.deliver_task_notes(await mgr2.resume_durable(ctx=ctx, exec_id="t"))
+    assert not any("interrupted" in str(m) for m in agent_ctx2.transcript.messages)
 
 
 async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
@@ -880,7 +876,7 @@ async def test_drain_marks_record_delivered(tmp_path: Path) -> None:
     assert task_id is not None
 
     await loop.agent_ctx.bg_tasks.wait_idle()
-    notes = await _drain_notes(loop.agent_ctx.bg_tasks, ctx)
+    notes = await _drain_notes(loop.agent_ctx, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
 
@@ -981,14 +977,11 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
         with _contextlib.suppress(asyncio.CancelledError):
             await pt.consumer
 
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    mgr2 = BackgroundTaskManager(
-        agent_name="t", transcript=transcript, tools={}, path=[]
-    )
-    await mgr2.resume_durable(ctx=ctx, exec_id="t")
+    mgr2 = BackgroundTaskManager(agent_name="t", tools={}, path=[])
+    agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
+    agent_ctx2.deliver_task_notes(await mgr2.resume_durable(ctx=ctx, exec_id="t"))
 
-    joined = "\n".join(str(m) for m in transcript.messages)
+    joined = "\n".join(str(m) for m in agent_ctx2.transcript.messages)
     assert "Resumed from a checkpoint" in joined  # framing
     assert "interrupted" in joined
     assert "log_file" in joined  # points the agent at the log
@@ -1005,7 +998,7 @@ async def test_completion_note_reports_elapsed(tmp_path: Path) -> None:
     assert task_id is not None
 
     await loop.agent_ctx.bg_tasks.wait_idle()
-    notes = await _drain_notes(loop.agent_ctx.bg_tasks, ctx)
+    notes = await _drain_notes(loop.agent_ctx, ctx)
     assert len(notes) == 1
     assert "ran_for" in notes[0]  # elapsed is surfaced in the completion note
 

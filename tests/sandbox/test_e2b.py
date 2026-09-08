@@ -1142,7 +1142,7 @@ async def test_e2b_live_background_small_result_inlined() -> None:
         assert task_id is not None
 
         await mgr.wait_idle()
-        notes = await drain_notes(mgr, ctx)
+        notes = await drain_notes(agent_ctx, ctx)
         assert len(notes) == 1
         assert "completed" in notes[0]
         assert "hello" in notes[0]  # inlined directly
@@ -1172,7 +1172,7 @@ async def test_e2b_live_background_large_result_excerpted() -> None:
         assert task_id is not None
 
         await mgr.wait_idle()
-        notes = await drain_notes(mgr, ctx)
+        notes = await drain_notes(agent_ctx, ctx)
         assert len(notes) == 1
         assert "completed" in notes[0]
         assert "chars omitted" in notes[0]  # excerpted

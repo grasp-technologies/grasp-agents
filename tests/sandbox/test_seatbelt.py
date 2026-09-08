@@ -411,7 +411,7 @@ async def test_seatbelt_background_small_result_inlined(tmp_path: Path) -> None:
     assert task_id is not None
 
     await mgr.wait_idle()
-    notes = await drain_notes(mgr, ctx)
+    notes = await drain_notes(agent_ctx, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "hello" in notes[0]
@@ -438,7 +438,7 @@ async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> Non
     assert task_id is not None
 
     await mgr.wait_idle()
-    notes = await drain_notes(mgr, ctx)
+    notes = await drain_notes(agent_ctx, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "chars omitted" in notes[0]

@@ -34,7 +34,6 @@ from grasp_agents.durability.task_record import (
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.events import (
-    BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
     BackgroundTaskLaunchedEvent,
     Event,
@@ -42,12 +41,10 @@ from grasp_agents.types.events import (
     ToolErrorInfo,
     ToolOutputEvent,
     ToolStreamEvent,
-    UserMessageEvent,
 )
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 from grasp_agents.utils.errors import format_error_chain
 
-from .llm_agent_transcript import LLMAgentTranscript
 from .task_progress import (
     append_task_log,
     excerpt_for_inline,
@@ -316,6 +313,29 @@ _cancelled_map_adapter: TypeAdapter[dict[str, TaskCancelledFlip]] = TypeAdapter(
 )
 
 
+@dataclass(frozen=True)
+class TaskNote:
+    """
+    A background-task notice ready to enter the transcript. The owner appends
+    ``message`` and reports where it landed via
+    :meth:`BackgroundTaskManager.record_delivery`; when ``task_key`` names a
+    durable record, that stamps the note's position onto the record's deferred
+    DELIVERED ``flip``.
+    """
+
+    message: InputMessageItem
+    task_key: str | None = None
+    flip: TaskDeliveredFlip = field(default_factory=TaskDeliveredFlip)
+
+
+@dataclass(frozen=True)
+class TaskCompletion:
+    """A finished task taken off the manager: its identity and completion note."""
+
+    info: BackgroundTaskInfo
+    note: TaskNote
+
+
 def _serialize_result(result: Any) -> str:
     """
     Serialize a task result the way the foreground transcript does
@@ -400,7 +420,7 @@ async def _consume(
     On finish, persist the outcome to the ``TaskRecord`` *before* the
     done-callback fires — ``COMPLETED`` (carrying the result) or ``FAILED``
     (carrying the error). This closes the window between a task finishing and
-    :meth:`BackgroundTaskManager.drain` delivering it: a crash in that window
+    :meth:`BackgroundTaskManager.pop_completions` taking it: a crash in that window
     leaves a terminal record that resume re-injects (see
     :meth:`resume_durable`), instead of a ``RUNNING`` record that would force a
     re-run or lose the outcome.
@@ -442,9 +462,10 @@ class BackgroundTask:
     A backgrounded unit of work — kind-agnostic.
 
     The manager drives ``tool.run_stream`` in ``consumer`` and appends every
-    event to ``events`` (the buffer). ``cursor`` tracks how far :meth:`drain` has
-    consumed that buffer at the turn boundary — in one pass it re-emits each new
-    event to the parent stream (live progress) and mirrors stream text to the
+    event to ``events`` (the buffer). ``cursor`` tracks how far
+    :meth:`bubble_events` has consumed that buffer at the turn boundary — in one
+    pass it re-emits each new event to the parent stream (live progress) and
+    mirrors stream text to the
     on-disk progress log. ``task_key`` is set only for a *resumable* tool (its
     ``TaskRecord`` is persisted so a restart can re-spawn it); a backgrounded
     shell command is not resumable, so it has none.
@@ -474,8 +495,8 @@ class BackgroundTask:
     max_inline_result_chars: int | None = None
 
     task_key: str | None = None
-    cursor: int = 0  # events consumed by drain (bubbled to parent + flushed to log)
-    delivered: bool = False  # completion note reached the transcript
+    cursor: int = 0  # events bubbled to the parent + flushed to the log
+    delivered: bool = False  # completion note taken for delivery
 
     log_path: str | None = None  # resolved .grasp/tasks log file, once written
     log_bytes: int = 0  # bytes appended to the log so far (for the size cap)
@@ -540,7 +561,6 @@ class BackgroundTaskManager[CtxT]:
         self,
         *,
         agent_name: str,
-        transcript: LLMAgentTranscript,
         tools: dict[str, BaseTool[BaseModel, Any, CtxT]] | None,
         path: list[str] | None = None,
         max_background: int = 16,
@@ -552,7 +572,6 @@ class BackgroundTaskManager[CtxT]:
         # agent's ``TaskRecord``s out of the checkpoint store.
         self.durability_enabled: bool = True
 
-        self._transcript = transcript
         self._tools = tools
         self._tasks: dict[str, BackgroundTask] = {}
 
@@ -562,7 +581,7 @@ class BackgroundTaskManager[CtxT]:
         self._max_task_log_bytes = max_task_log_bytes
 
         # Completed task ids, pushed by each task's done-callback (single
-        # completion seam): :meth:`drain` pops them to deliver notes, and
+        # completion seam): :meth:`pop_completions` pops them into notes, and
         # :meth:`wait_idle` blocks on the next one — one queue, every task kind.
         self._completions: asyncio.Queue[str] = asyncio.Queue()
 
@@ -613,12 +632,13 @@ class BackgroundTaskManager[CtxT]:
     @property
     def has_undelivered_completions(self) -> bool:
         """
-        True when a task has finished but :meth:`drain` has not yet delivered its
-        note — a completion is waiting to be surfaced at the next turn boundary.
+        True when a task has finished but :meth:`pop_completions` has not yet
+        taken it — a completion is waiting to be surfaced at the next turn
+        boundary.
 
         A level-triggered readiness signal: a caller that lets the agent idle between
         runs can read it to know a finished task's result is pending delivery, and run
-        another turn so :meth:`drain` surfaces it.
+        another turn so the turn boundary delivers it.
         """
         return not self._completions.empty()
 
@@ -972,7 +992,8 @@ class BackgroundTaskManager[CtxT]:
         Returns immediately if a completion is already queued, or if every
         tracked task has delivered (so the loop never blocks with no work
         outstanding). The awaited
-        id is requeued so :meth:`drain` still delivers it. ``timeout`` bounds the
+        id is requeued so :meth:`pop_completions` still returns it. ``timeout``
+        bounds the
         wait (the caller passes the remaining run-deadline budget) so an idle
         wait on a task that never completes cannot sail past ``run_timeout`` — on
         expiry it returns and the loop's next deadline check stops the run.
@@ -995,9 +1016,10 @@ class BackgroundTaskManager[CtxT]:
         """
         Mirror new stream ``text`` to the task's ``.grasp/tasks/<call_id>.log``
         so a crash leaves a recoverable, Grep-able trace and a running task can
-        be inspected with ``Read`` / ``Grep``. Called from :meth:`drain` with the
-        delta bubbled this turn, so only new output is appended (O(new output),
-        not a rewrite). No-op for a task with no log (``has_progress_log`` false →
+        be inspected with ``Read`` / ``Grep``. Called from :meth:`bubble_events`
+        with the delta bubbled this turn, so only new output is appended (O(new
+        output), not a rewrite). No-op for a task with no log
+        (``has_progress_log`` false →
         no resolved ``log_path``) or once ``max_task_log_bytes`` is hit (a final
         marker is appended, then output is dropped). Best-effort — never raises.
         """
@@ -1015,33 +1037,26 @@ class BackgroundTaskManager[CtxT]:
 
         await append_task_log(backend, bt.log_path, chunk)
 
-    async def drain(
-        self, *, exec_id: str, ctx: SessionContext[CtxT]
+    async def bubble_events(
+        self, *, ctx: SessionContext[CtxT]
     ) -> AsyncIterator[Event[Any]]:
         """
-        The turn-boundary pass over every tracked task: in one sweep re-emit
-        each task's new buffered events as live progress *and* mirror their
-        stream text to the ``.grasp`` log, then deliver one completion
-        notification per finished task.
+        The turn-boundary pass over every tracked task: re-emit each task's new
+        buffered events as live progress *and* mirror their stream text to the
+        ``.grasp`` log, in one sweep.
 
         Bubbling and log-mirroring share a single ``cursor`` — the log is
         written from the very events being bubbled — so there is no separate
         flush step. The mirroring stays here (consumer-side, batched one append
         per task per turn) rather than in the producing task, so it is cheap
         even on a remote backend where a per-event write would be a round-trip.
-
-        Delivery is uniform regardless of how the task was backgrounded
-        (immediate vs deadline): the note inlines the task's result (or error)
-        and the task is dropped. A result larger than the tool's
-        ``max_inline_result_chars`` is excerpted in the note with a pointer to
-        its ``.grasp`` log, which holds the full streamed output for ``Read`` /
-        ``Grep``. Either way the task is ``delivered`` once, so it stops gating
-        the final answer.
+        Runs before :meth:`pop_completions` at each turn boundary, so a finished
+        task's last output reaches the parent stream ahead of its completion
+        note.
         """
-        # Bubble each task's new events to the parent stream (pure
-        # observability — live progress for a backgrounded shell command just as
-        # for a sub-agent; ``blocks_final_answer`` governs only the JUDGE gate)
-        # and mirror this pass's stream text to its ``.grasp`` log in one append.
+        # Pure observability — live progress for a backgrounded shell command
+        # just as for a sub-agent; ``blocks_final_answer`` governs only the
+        # JUDGE gate.
         backend = ctx.file_backend
 
         for bt in list(self._tasks.values()):
@@ -1059,11 +1074,45 @@ class BackgroundTaskManager[CtxT]:
                     bt, _stream_text(bt.events[start : bt.cursor]), backend
                 )
 
+        # Front-trim each task's buffer: leading events consumed by BOTH the
+        # bubble (parent stream) and flush (.grasp log) cursors are durable
+        # elsewhere, so drop them to bound memory for a long, chatty
+        # backgrounded command. Stops before any terminal result event so
+        # ``_outcome_from_events`` / ``kill_task`` still find it.
+        for bt in self._tasks.values():
+            bt.trim_consumed()
+
+    async def pop_completions(
+        self, *, ctx: SessionContext[CtxT]
+    ) -> list[TaskCompletion]:
+        """
+        Take every finished task off the manager, one completion note each, for
+        the owner to write into the transcript
+        (:meth:`AgentContext.deliver_task_notes`).
+
+        Delivery is uniform regardless of how the task was backgrounded
+        (immediate vs deadline): the note inlines the task's result (or error).
+        A result larger than the tool's ``max_inline_result_chars`` is excerpted
+        in the note with a pointer to its ``.grasp`` log, which holds the full
+        streamed output for ``Read`` / ``Grep``. Either way the task is
+        ``delivered`` once, so it stops gating the final answer. Output not yet
+        mirrored by :meth:`bubble_events` is written to the log first, so the
+        note never points at an incomplete log.
+        """
+        completions: list[TaskCompletion] = []
+
         while not self._completions.empty():
             task_id = self._completions.get_nowait()
             bt = self._tasks.get(task_id)
             if bt is None or bt.delivered:
                 continue
+
+            backend = ctx.file_backend
+            if backend is not None and bt.cursor < len(bt.events):
+                await self._append_log(
+                    bt, _stream_text(bt.events[bt.cursor :]), backend
+                )
+                bt.cursor = len(bt.events)
 
             result, error = _outcome_from_events(bt.events)
             failed = error is not None
@@ -1072,14 +1121,16 @@ class BackgroundTaskManager[CtxT]:
             cap = bt.max_inline_result_chars
 
             log_file: str | None = None
-            if cap is not None and len(full) > cap and ctx.file_backend is not None:
+            if cap is not None and len(full) > cap and backend is not None:
                 log_file = await write_result_file(
-                    ctx.file_backend, name=bt.tool_call_id or bt.task_id, text=full
+                    backend, name=bt.tool_call_id or bt.task_id, text=full
                 )
 
             body, _ = excerpt_for_inline(full, cap, log_file=log_file or bt.log_path)
             note_result = None if failed else body
             note_error = body if failed else None
+
+            # NOTE: How do we distinguish between .log and .result in the note?
 
             notification = InputMessageItem.from_text(
                 _make_outcome_note(
@@ -1094,37 +1145,33 @@ class BackgroundTaskManager[CtxT]:
                 ),
                 role="user",
             )
-            self._transcript.update([notification])
 
-            # Durable record → DELIVERED (resumable tasks only). Deferred to
+            # Durable record → DELIVERED (resumable tasks only), deferred to
             # :meth:`flush_flips` after the next checkpoint persists the
             # transcript holding this note: flipping now would lose the
             # outcome on a crash before that checkpoint (resume skips
-            # DELIVERED records). The note's transcript position rides along —
+            # DELIVERED records). ``record_delivery`` stamps the note's
+            # transcript position onto the flip once the owner has placed it —
             # a step rollback that truncates below it re-injects the note
             # (:meth:`redeliver_after`). Records are kept for post-hoc
             # observability; reclaim with ``prune_delivered``.
-            if ctx.checkpoint_store is not None and bt.task_key is not None:
-                self._deferred_delivered[bt.task_key] = {
-                    "result": None if failed else _serialize_result(result),
-                    "error": _serialize_result(error) if failed else None,
-                    "note_transcript_pos": len(self._transcript.messages),
-                }
-
-            yield BackgroundTaskCompletedEvent(
-                source=self._agent_name,
-                exec_id=exec_id,
-                data=BackgroundTaskInfo(
-                    task_id=bt.task_id,
-                    tool_name=bt.tool_name,
-                    tool_call_id=bt.tool_call_id,
-                ),
-            )
-            yield UserMessageEvent(
-                source=bt.tool_name,
-                destination=self._agent_name,
-                exec_id=exec_id,
-                data=notification,
+            durable = ctx.checkpoint_store is not None and bt.task_key is not None
+            completions.append(
+                TaskCompletion(
+                    info=BackgroundTaskInfo(
+                        task_id=bt.task_id,
+                        tool_name=bt.tool_name,
+                        tool_call_id=bt.tool_call_id,
+                    ),
+                    note=TaskNote(
+                        message=notification,
+                        task_key=bt.task_key if durable else None,
+                        flip={
+                            "result": None if failed else _serialize_result(result),
+                            "error": _serialize_result(error) if failed else None,
+                        },
+                    ),
+                )
             )
 
             bt.delivered = True  # no longer gates the final answer
@@ -1132,13 +1179,19 @@ class BackgroundTaskManager[CtxT]:
             # poll, so always drop the finished task.
             self._tasks.pop(task_id, None)
 
-        # Front-trim each surviving task's buffer: leading events consumed by
-        # BOTH the bubble (parent stream) and flush (.grasp log) cursors are
-        # durable elsewhere, so drop them to bound memory for a long, chatty
-        # backgrounded command. Stops before any terminal result event so
-        # ``_outcome_from_events`` / ``kill_task`` still find it.
-        for bt in self._tasks.values():
-            bt.trim_consumed()
+        return completions
+
+    def record_delivery(self, note: TaskNote, *, note_pos: int) -> None:
+        """
+        Register that ``note`` now sits at 1-based transcript position
+        ``note_pos``: its durable record's DELIVERED flip is deferred to
+        :meth:`flush_flips`, stamped with the position a later rollback needs
+        (:meth:`redeliver_after`). No-op for a note without a durable record.
+        """
+        if note.task_key is None:
+            return
+        flip: TaskDeliveredFlip = {**note.flip, "note_transcript_pos": note_pos}
+        self._deferred_delivered[note.task_key] = flip
 
     # --- Cancellation / kill ---
     #
@@ -1296,7 +1349,7 @@ class BackgroundTaskManager[CtxT]:
         exec_id: str | None = None,
         agent_ctx: "AgentContext | None" = None,
         task_launch_seq: int | None = None,
-    ) -> list[InputMessageItem]:
+    ) -> list[TaskNote]:
         """
         On resume, re-spawn or notify about interrupted background tasks.
 
@@ -1312,8 +1365,9 @@ class BackgroundTaskManager[CtxT]:
         dead-lettered — flipped CANCELLED, never re-spawned or reported.
         ``None`` disables the guard.
 
-        Returns the notification messages injected into the transcript so the
-        caller can stream them as events (no transcript message stays hidden).
+        Returns the notices — framing line first — for the owner to write into
+        the transcript (:meth:`AgentContext.deliver_task_notes`) and surface as
+        events, so no notice stays hidden.
         """
         store = ctx.checkpoint_store if ctx else None
         if store is None or ctx is None:
@@ -1323,8 +1377,7 @@ class BackgroundTaskManager[CtxT]:
         prefix = make_store_key(ctx.session_key, CheckpointKind.TASK, self.path) + "/"
         keys = [k for k in await store.list_keys(prefix) if is_direct_child(k, prefix)]
 
-        notifications: list[InputMessageItem] = []
-        deferred_keys: list[str] = []
+        notes: list[TaskNote] = []
 
         for key in keys:
             record = await store.load_json(key, TaskRecord, subject="task record")
@@ -1336,8 +1389,8 @@ class BackgroundTaskManager[CtxT]:
             self._reserve_task_id(record.task_id)
 
             # Terminal + already surfaced — nothing to do. (FAILED is NOT here:
-            # a FAILED record is an errored task that the crash kept ``drain``
-            # from delivering, so it still needs re-injecting below.)
+            # a FAILED record is an errored task whose note the crash kept from
+            # being delivered, so it still needs re-injecting below.)
             if record.status in {TaskStatus.CANCELLED, TaskStatus.DELIVERED}:
                 continue
 
@@ -1411,8 +1464,8 @@ class BackgroundTaskManager[CtxT]:
                 }
 
             elif record.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
-                # Finished (ok or errored) but the crash kept ``drain`` from
-                # delivering it — re-inject the outcome, then mark it delivered
+                # Finished (ok or errored) but the crash landed before its note
+                # was delivered — re-inject the outcome, then mark it delivered
                 # (the record already carries it, so the flip adds nothing).
                 notification = _task_record_to_input_message(
                     record,
@@ -1423,14 +1476,13 @@ class BackgroundTaskManager[CtxT]:
             else:
                 continue
 
-            # Deferred to ``flush_flips`` (after the checkpoint that
-            # persists the notice) — same loss-window reasoning as ``drain``.
-            self._deferred_delivered[key] = update
-            deferred_keys.append(key)
-            notifications.append(notification)
+            # The DELIVERED flip is deferred to ``flush_flips`` (after the
+            # checkpoint that persists the notice) — same loss-window reasoning
+            # as ``pop_completions``; ``record_delivery`` stamps it with the
+            # notice's position once the owner has placed it.
+            notes.append(TaskNote(message=notification, task_key=key, flip=update))
 
-        injected: list[InputMessageItem] = []
-        if notifications:
+        if notes:
             # One framing line so the agent understands the per-task notices
             # that follow: it was resumed, in-memory state was reconstructed
             # (not continued), and interrupted tasks may need redoing.
@@ -1447,24 +1499,13 @@ class BackgroundTaskManager[CtxT]:
                 role="user",
             )
 
-            injected = [framing, *notifications]
-            self._transcript.update(injected)
-
-            # Stamp each re-injected note's transcript position on its
-            # deferred flip (mirrors ``drain``): a later rollback truncating
-            # below the note must know to re-inject it. The notices sit at
-            # the tail of ``injected``, after the framing line.
-            total = len(self._transcript.messages)
-            for offset, key in enumerate(deferred_keys):
-                self._deferred_delivered[key]["note_transcript_pos"] = (
-                    total - len(deferred_keys) + offset + 1
-                )
+            notes.insert(0, TaskNote(message=framing))
 
         logger.info(
             "Handled %d task records for session %s", len(keys), ctx.session_key
         )
 
-        return injected
+        return notes
 
     async def redeliver_after(
         self,
@@ -1473,7 +1514,7 @@ class BackgroundTaskManager[CtxT]:
         task_launch_seq: int,
         ctx: SessionContext[CtxT],
         pre_restore_deferred_delivered: Mapping[str, Mapping[str, Any]],
-    ) -> list[InputMessageItem]:
+    ) -> list[TaskNote]:
         """
         The bg-task half of a step rollback, called after the transcript is
         truncated to ``message_count``: a delivered record whose completion
@@ -1482,8 +1523,10 @@ class BackgroundTaskManager[CtxT]:
         lost the only live copy of its outcome — the finished task is no
         longer tracked in memory, and resume skips DELIVERED records, so
         nothing else would ever re-surface it and the agent would wait on it
-        forever. Re-inject each such note at the rewind point and re-defer its
-        DELIVERED flip with the new position.
+        forever. Returns one note per such record for the owner to write at
+        the rewind point (:meth:`AgentContext.deliver_task_notes`);
+        :meth:`record_delivery` then re-defers its DELIVERED flip with the new
+        position.
 
         ``pre_restore_deferred_delivered`` overlays not-yet-flushed DELIVERED
         flips onto the stored records: a drained-but-unflushed note (its
@@ -1493,8 +1536,7 @@ class BackgroundTaskManager[CtxT]:
         holds the boundary's flips, whose positions all sit at or before the
         cut. Records launched *after* the boundary are
         ``cancel_launched_after``'s business — their launching calls are
-        gone, so their outcomes stay buried. Returns the injected messages
-        for the caller to surface as events.
+        gone, so their outcomes stay buried.
         """
         store = ctx.checkpoint_store
         if store is None:
@@ -1527,17 +1569,11 @@ class BackgroundTaskManager[CtxT]:
         # truncation (completion order, which can differ from launch order).
         matches.sort(key=operator.itemgetter(2))
 
-        injected: list[InputMessageItem] = []
+        notes: list[TaskNote] = []
         for key, record, _note_pos in matches:
             is_fail = record.result is None and record.error is not None
             notification = _task_record_to_input_message(record, failed=is_fail)
-
-            self._transcript.update([notification])
-            self._deferred_delivered[key] = {
-                "note_transcript_pos": len(self._transcript.messages),
-            }
-
-            injected.append(notification)
+            notes.append(TaskNote(message=notification, task_key=key))
 
             logger.info(
                 "Re-injected background task %s (%s): its completion note was "
@@ -1545,7 +1581,7 @@ class BackgroundTaskManager[CtxT]:
                 record.task_id,
                 record.tool_name,
             )
-        return injected
+        return notes
 
     def cancel_launched_after(self, task_launch_seq: int) -> None:
         """
@@ -1557,7 +1593,8 @@ class BackgroundTaskManager[CtxT]:
         launches are no longer in the history the model sees, so letting them
         finish would inject completion notes for calls that never happened.
         Cancelled tasks are dropped from tracking immediately, so a completion
-        already queued for :meth:`drain` is suppressed rather than delivered.
+        already queued for :meth:`pop_completions` is suppressed rather than
+        delivered.
         Tasks at or below ``task_launch_seq`` keep running — their launches are still in
         the kept transcript, and their notes deliver normally later.
 
@@ -1667,7 +1704,7 @@ class BackgroundTaskManager[CtxT]:
         """
         Delete ``DELIVERED`` task records older than ``older_than``.
 
-        :meth:`drain` marks a task ``DELIVERED`` and keeps the record for
+        Delivery marks a task ``DELIVERED`` and keeps the record for
         post-hoc observability; this offline sweep reclaims the old ones.
         Returns the number pruned. Short-circuits with ``0`` when no store
         is attached.

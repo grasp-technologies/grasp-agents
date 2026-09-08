@@ -29,7 +29,6 @@ from grasp_agents.agent.approval_store import (
 )
 from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
@@ -617,11 +616,7 @@ class TestDeadlineBackgroundedOutcomePersisted:
         ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s1"
         )
-        transcript = LLMAgentTranscript()
-        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr = BackgroundTaskManager[None](
-            agent_name="t", transcript=transcript, tools={}, path=[]
-        )
+        mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
 
         tool = SlowTool(delay=0.3)
         tool.auto_background_at = 0.05  # sideline after 50ms, finish at 300ms

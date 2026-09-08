@@ -15,13 +15,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools import FileToolkit
-from grasp_agents.tools.bash_common import ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import (
     FileEditSessionState,
     NullRedactor,
@@ -29,8 +25,8 @@ from grasp_agents.tools.file_edit import (
     WriteInput,
     WriteResult,
 )
-from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.events import ToolErrorInfo
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,18 +43,7 @@ def _error_message(result: Any) -> str:
 
 def _agent_ctx(state: FileEditSessionState) -> AgentContext:
     """An ``AgentContext`` wrapping ``state`` — the field the file tools read."""
-    transcript = LLMAgentTranscript()
-    return AgentContext(
-        transcript=transcript,
-        tools={},
-        file_edit_state=state,
-        bg_tasks=BackgroundTaskManager(
-            agent_name="test", transcript=transcript, tools={}
-        ),
-        session_holder=BashSessionHolder(),
-        nb_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
-    )
+    return _make_agent_ctx(file_edit_state=state)
 
 
 async def test_tools_share_state_within_activation(tmp_path: Path) -> None:

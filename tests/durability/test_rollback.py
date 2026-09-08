@@ -209,8 +209,8 @@ async def test_rollback_to_first_step_empties_log_keeps_ephemeral_prompt() -> No
     r0b = await agent.run("q0_edited", step=0)
     assert r0b.payloads[0] == "a0_new"
     assert agent.step == 0
-    assert isinstance(agent._cw.initial_context[0], InputMessageItem)
-    assert agent._cw.initial_context[0].role == "system"
+    assert isinstance(agent.agent_ctx.cw.initial_context[0], InputMessageItem)
+    assert agent.agent_ctx.cw.initial_context[0].role == "system"
 
 
 @pytest.mark.asyncio

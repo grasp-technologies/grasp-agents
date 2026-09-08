@@ -17,17 +17,15 @@ from typing import Any
 import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
+from grasp_agents.agent.background_tasks import BackgroundTaskManager, TaskCompletion
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.store_keys import task_prefix
 from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
-from grasp_agents.types.events import BackgroundTaskCompletedEvent, UserMessageEvent
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
-from tests._helpers import MockLLM, _text_response, _tool_call_response
+from tests._helpers import MockLLM, _make_agent_ctx, _text_response, _tool_call_response
 from tests.agent.test_background_tools import (
     EchoInput,
     FireAndForgetTool,
@@ -36,13 +34,25 @@ from tests.agent.test_background_tools import (
 )
 
 
-def _make_manager() -> tuple[BackgroundTaskManager[None], LLMAgentTranscript]:
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    mgr = BackgroundTaskManager[None](
-        agent_name="t", transcript=transcript, tools={}, path=[]
-    )
-    return mgr, transcript
+def _make_manager() -> tuple[BackgroundTaskManager[None], AgentContext]:
+    """A manager and its owning context, transcript seeded with one system message."""
+    mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+    agent_ctx = _make_agent_ctx(agent_name="t", bg_tasks=mgr)
+    agent_ctx.transcript.update([InputMessageItem.from_text("sys", role="system")])
+    return mgr, agent_ctx
+
+
+async def _drain(
+    mgr: BackgroundTaskManager[None],
+    agent_ctx: AgentContext,
+    ctx: SessionContext[None],
+) -> list[TaskCompletion]:
+    """The loop's turn-boundary delivery: bubble, pop, write notes into the log."""
+    async for _ in mgr.bubble_events(ctx=ctx):
+        pass
+    completions = await mgr.pop_completions(ctx=ctx)
+    agent_ctx.deliver_task_notes([c.note for c in completions])
+    return completions
 
 
 async def _launch(
@@ -95,10 +105,11 @@ class TestCancelLaunchedAfter:
 
     @pytest.mark.asyncio
     async def test_queued_completion_is_suppressed_not_delivered(self) -> None:
-        # The task finished (completion queued for drain) but its launching
-        # call was rolled back: drain must stay silent — no ghost note.
+        # The task finished (completion queued for delivery) but its launching
+        # call was rolled back: the turn boundary must stay silent — no ghost
+        # note.
         ctx = SessionContext[None](state=None)
-        mgr, transcript = _make_manager()
+        mgr, agent_ctx = _make_manager()
 
         await _launch(mgr, ctx, "c1", delay=0.01)
         await mgr.wait_idle()
@@ -106,10 +117,8 @@ class TestCancelLaunchedAfter:
 
         mgr.cancel_launched_after(0)
 
-        events = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
-        assert not any(isinstance(e, UserMessageEvent) for e in events)
-        assert not any(isinstance(e, BackgroundTaskCompletedEvent) for e in events)
-        assert len(transcript.messages) == 1  # only the seeded system message
+        assert await _drain(mgr, agent_ctx, ctx) == []
+        assert len(agent_ctx.transcript.messages) == 1  # only the seeded system message
         assert not mgr.has_undelivered_completions
 
     @pytest.mark.asyncio
@@ -159,13 +168,12 @@ class TestLaunchSeqWatermark:
     @pytest.mark.asyncio
     async def test_snapshot_carries_high_water_and_restore_never_lowers(self) -> None:
         ctx = SessionContext[None](state=None)
-        mgr, transcript = _make_manager()
+        mgr, agent_ctx = _make_manager()
         assert mgr.last_launch_seq == 0
 
         await _launch(mgr, ctx, "c1")
         assert mgr.last_launch_seq == 1
 
-        agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
         state = agent_ctx.snapshot()
         assert state.task_launch_seq == 1
 
@@ -205,12 +213,12 @@ class TestResumeOrphanGuard:
                 .encode(),
             )
 
-        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
+        notes = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
 
         # bg_1's launch is inside the restored transcript → interrupted
         # notice as usual; bg_2's launching call was never persisted → dead-
         # lettered silently, terminal on disk, never re-spawned or reported.
-        joined = "\n".join(str(m) for m in injected)
+        joined = "\n".join(str(n.message) for n in notes)
         assert "bg_1" in joined
         assert "bg_2" not in joined
 
@@ -301,13 +309,9 @@ class TestAgentRewindsTaskPlane:
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.RUNNING
 
-        t2 = LLMAgentTranscript()
-        t2.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr2 = BackgroundTaskManager[None](
-            agent_name="a", transcript=t2, tools={}, path=[]
-        )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=0)
-        assert injected == []  # no "interrupted" ghost for the orphan
+        mgr2 = BackgroundTaskManager[None](agent_name="a", tools={}, path=[])
+        notes = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=0)
+        assert notes == []  # no "interrupted" ghost for the orphan
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.CANCELLED
 
@@ -404,13 +408,9 @@ class TestUndeliverAfter:
         assert record.note_transcript_pos == len(agent.transcript.messages)
 
         # A cold resume injects nothing extra (no duplicate note).
-        t2 = LLMAgentTranscript()
-        t2.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr2 = BackgroundTaskManager[None](
-            agent_name="a", transcript=t2, tools={}, path=[]
-        )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
-        assert injected == []
+        mgr2 = BackgroundTaskManager[None](agent_name="a", tools={}, path=[])
+        notes = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
+        assert notes == []
 
     @pytest.mark.asyncio
     async def test_note_of_task_launched_after_the_boundary_stays_buried(self) -> None:
@@ -441,8 +441,7 @@ class TestUndeliverAfter:
         )
         assert event is not None
         await mgr.wait_idle()
-        async for _ in mgr.drain(exec_id="t", ctx=ctx):
-            pass
+        await _drain(mgr, agent.agent_ctx, ctx)
         await agent.save_checkpoint(turn=1)
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.DELIVERED
@@ -462,7 +461,7 @@ class TestUndeliverOverlay:
         # flushed one — re-injected, not silently lost until a cold resume.
         store = InMemoryCheckpointStore()
         ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
-        mgr, transcript = _make_manager()
+        mgr, agent_ctx = _make_manager()
 
         key = mgr._task_store_key(ctx, "c1")  # pyright: ignore[reportPrivateUsage]
         assert key is not None
@@ -492,15 +491,22 @@ class TestUndeliverOverlay:
             == []
         )
 
-        injected = await mgr.redeliver_after(
+        notes = await mgr.redeliver_after(
             message_count=4,
             task_launch_seq=1,
             ctx=ctx,
             pre_restore_deferred_delivered={key: {"note_transcript_pos": 6}},
         )
-        assert len(injected) == 1
-        assert "the outcome" in str(injected[0])
-        assert str(transcript.messages).count("<status> completed </status>") == 1
+        assert len(notes) == 1
+        assert "the outcome" in str(notes[0].message)
+
+        # Delivery writes the note and re-defers the flip at its new position.
+        agent_ctx.deliver_task_notes(notes)
+        transcript = agent_ctx.transcript.messages
+        assert str(transcript).count("<status> completed </status>") == 1
+        assert mgr.export_deferred_delivered()[key]["note_transcript_pos"] == len(
+            transcript
+        )
 
 
 class TestRestoreFlipPositionRule:
@@ -511,11 +517,10 @@ class TestRestoreFlipPositionRule:
         # flip survives (else a later resume re-injects a duplicate), a cut
         # note's flip is dropped (else the flush buries the outcome as
         # DELIVERED while the model no longer has the note).
-        mgr, transcript = _make_manager()
-        agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
+        mgr, agent_ctx = _make_manager()
         state = agent_ctx.snapshot()
 
-        transcript.update(
+        agent_ctx.transcript.update(
             [InputMessageItem.from_text(f"m{i}", role="user") for i in range(2)]
         )  # 3 messages
         mgr.restore_deferred_delivered(
@@ -536,8 +541,7 @@ class TestRestoreFlipPositionRule:
         # even one whose task was launched after the restored boundary.
         store = InMemoryCheckpointStore()
         ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
-        mgr, transcript = _make_manager()
-        agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
+        mgr, agent_ctx = _make_manager()
         state = agent_ctx.snapshot()
 
         await _launch(mgr, ctx, "c1")
@@ -560,30 +564,25 @@ class TestKillsSurviveCrashBeforeFlush:
         # the (defeated) orphan guard.
         store = InMemoryCheckpointStore()
         ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
-        mgr, transcript = _make_manager()
+        mgr, agent_ctx = _make_manager()
 
         await _launch(mgr, ctx, "c1")  # PENDING record, launch_seq=1
         mgr.cancel_launched_after(0)  # deferred kill, never flushed
 
         # The head snapshot carries both the raised counter and the kill.
-        agent_ctx = AgentContext.create(transcript=transcript, tools={}, bg_tasks=mgr)
         state = agent_ctx.snapshot()
         assert state.task_launch_seq == 1
         assert state.deferred_cancelled
 
         # Cold resume: fresh manager, state restored from the head.
-        t2 = LLMAgentTranscript()
-        t2.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr2 = BackgroundTaskManager[None](
-            agent_name="t", transcript=t2, tools={}, path=[]
-        )
-        agent_ctx2 = AgentContext.create(transcript=t2, tools={}, bg_tasks=mgr2)
+        mgr2 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
         agent_ctx2.restore(state)
 
-        injected = await mgr2.resume_durable(
+        notes = await mgr2.resume_durable(
             ctx=ctx, exec_id="t", task_launch_seq=state.task_launch_seq
         )
-        assert injected == []  # no phantom "interrupted" notice, no re-spawn
+        assert notes == []  # no phantom "interrupted" notice, no re-spawn
 
         # The re-armed kill lands at the next flush.
         await mgr2.flush_flips(ctx=ctx)
@@ -623,14 +622,14 @@ class TestResumeSkipsRestoredFlips:
         # The restored head carried this deferred flip.
         mgr.restore_deferred_delivered({key: {"note_transcript_pos": 2}})
 
-        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
-        assert injected == []
+        notes = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
+        assert notes == []
 
         # Without the restored flip the same record IS re-injected.
         mgr.restore_deferred_delivered({})
-        injected = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
-        assert len(injected) == 2  # framing + the note
-        assert "the outcome" in str(injected[1])
+        notes = await mgr.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
+        assert len(notes) == 2  # framing + the note
+        assert "the outcome" in str(notes[1].message)
 
 
 class TestUndeliverOrder:
@@ -641,7 +640,7 @@ class TestUndeliverOrder:
         # from launch order.
         store = InMemoryCheckpointStore()
         ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
-        mgr, transcript = _make_manager()
+        mgr, agent_ctx = _make_manager()
 
         for call_id, task_id, seq, delivered_at in [
             ("c1", "bg_1", 1, 6),  # launched first, delivered second
@@ -665,17 +664,18 @@ class TestUndeliverOrder:
                 .encode(),
             )
 
-        injected = await mgr.redeliver_after(
+        notes = await mgr.redeliver_after(
             message_count=4,
             task_launch_seq=2,
             ctx=ctx,
             pre_restore_deferred_delivered={},
         )
+        agent_ctx.deliver_task_notes(notes)
 
-        assert len(injected) == 2
-        assert "bg_2" in str(injected[0])  # delivered first → re-injected first
-        assert "bg_1" in str(injected[1])
-        assert len(transcript.messages) == 3  # seeded system message + 2 notes
+        assert len(notes) == 2
+        assert "bg_2" in str(notes[0].message)  # delivered first → re-injected first
+        assert "bg_1" in str(notes[1].message)
+        assert len(agent_ctx.transcript.messages) == 3  # seeded system + 2 notes
 
 
 class TestFlushDeliveredRetry:
@@ -743,10 +743,9 @@ class TestSettleKeepsDeliveredFlips:
         assert event is not None
         await agent.save_checkpoint(turn=0)  # boundary covers the launch
 
-        # …completes and its note is drained into the transcript.
+        # …completes and its note is delivered into the transcript.
         await mgr.wait_idle()
-        async for _ in mgr.drain(exec_id="t", ctx=ctx):
-            pass
+        await _drain(mgr, agent.agent_ctx, ctx)
         notes_before = str(agent.transcript.messages).count("task_notification")
         assert notes_before  # launch + completion notes
         assert mgr.export_deferred_delivered()  # the deferred DELIVERED flip
@@ -767,10 +766,6 @@ class TestSettleKeepsDeliveredFlips:
         assert record.status == TaskStatus.DELIVERED
 
         # …so a cold resume injects nothing (no duplicate note).
-        t2 = LLMAgentTranscript()
-        t2.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr2 = BackgroundTaskManager[None](
-            agent_name="a", transcript=t2, tools={}, path=[]
-        )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
-        assert injected == []
+        mgr2 = BackgroundTaskManager[None](agent_name="a", tools={}, path=[])
+        notes = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
+        assert notes == []

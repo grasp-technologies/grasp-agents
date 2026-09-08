@@ -1000,13 +1000,14 @@ class TestFallbackCapabilities:
     def test_default_budget_sized_to_smallest_member(self) -> None:
         """The agent's context budget holds for whichever member serves."""
         from grasp_agents.agent.context_window import ContextWindowManager
-        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 
         primary = CapsStubLLM(model_name="big", caps=_caps(1_000_000, 64_000))
         fallback = CapsStubLLM(model_name="small", caps=_caps(200_000, 8_192))
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
-        cw = ContextWindowManager(transcript=LLMAgentTranscript(), llm=llm, source="A")
+        cw = ContextWindowManager(
+            model_name=llm.model_name, capabilities=llm.capabilities, source="A"
+        )
         budget = cw.default_budget()
 
         assert budget.max_input_tokens == 200_000

@@ -38,6 +38,7 @@ from grasp_agents.types.items import (
 from grasp_agents.types.response import Response
 from tests._helpers import (
     MockLLM,
+    _make_agent_ctx,
     _make_agent_loop,
     _make_usage,
     _text_response,
@@ -318,7 +319,7 @@ class TestBackgroundTasksSection:
             make_background_tasks_section,
         )
 
-        agent_ctx = AgentContext.create(transcript=LLMAgentTranscript(), tools=tools)
+        agent_ctx = AgentContext.create(model_name="mock", tools=tools)
         result = make_background_tasks_section().compute(agent_ctx=agent_ctx)
         assert result is None or isinstance(result, str)
         return result
@@ -769,11 +770,7 @@ class TestCapAndDeferDelivery:
         task_id = event.data.task_id
 
         await mgr.wait_idle()
-        notes = [
-            str(e.data)
-            async for e in mgr.drain(exec_id="t", ctx=ctx)
-            if isinstance(e, UserMessageEvent)
-        ]
+        notes = [str(c.note.message) for c in await mgr.pop_completions(ctx=ctx)]
         assert len(notes) == 1
         # Excerpted — the full output belongs in the .grasp log, not the
         # transcript (this tool streams nothing, so there is no pointer here).
@@ -787,7 +784,7 @@ class TestCapAndDeferDelivery:
     async def test_truncated_result_written_to_sidecar_file(self, tmp_path):
         """
         A non-streaming tool's over-cap result has no streamed ``.log`` to point
-        at, so drain persists the full result to a ``.result`` sidecar and the
+        at, so delivery persists the full result to a ``.result`` sidecar and the
         excerpt marker points there — recoverable with ``Read`` / ``Grep``.
         """
         import re
@@ -813,11 +810,7 @@ class TestCapAndDeferDelivery:
         task_id = event.data.task_id
 
         await mgr.wait_idle()
-        notes = [
-            str(e.data)
-            async for e in mgr.drain(exec_id="t", ctx=ctx)
-            if isinstance(e, UserMessageEvent)
-        ]
+        notes = [str(c.note.message) for c in await mgr.pop_completions(ctx=ctx)]
         assert len(notes) == 1
         assert "chars omitted" in notes[0]
 
@@ -838,7 +831,6 @@ class TestDurableTaskRecords:
     @pytest.mark.asyncio
     async def test_nonresumable_spawn_persists_record_and_resume_interrupts(self):
         from grasp_agents.agent.background_tasks import BackgroundTaskManager
-        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
         from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
         from grasp_agents.durability.store_keys import task_prefix
         from grasp_agents.durability.task_record import TaskRecord, TaskStatus
@@ -848,11 +840,7 @@ class TestDurableTaskRecords:
 
         # A non-None path is required for a backgrounded call to be keyed +
         # persisted (``make_tool_call_path(None, ...)`` is ``None``).
-        transcript = LLMAgentTranscript()
-        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr = BackgroundTaskManager[None](
-            agent_name="t", transcript=transcript, tools={}, path=[]
-        )
+        mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
 
         # A non-resumable, long-running spawned task.
         tool = SlowTool(delay=10.0)
@@ -871,24 +859,25 @@ class TestDurableTaskRecords:
         for pt in list(mgr._tasks.values()):  # pyright: ignore[reportPrivateUsage]
             pt.consumer.cancel()
 
-        # A fresh manager on the same session = a restart.
-        t2 = LLMAgentTranscript()
-        t2.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr2 = BackgroundTaskManager[None](
-            agent_name="t", transcript=t2, tools={}, path=[]
-        )
-        injected = await mgr2.resume_durable(ctx=ctx, exec_id="t")
+        # A fresh manager on the same session = a restart; the owning context
+        # writes the notices it returns into the transcript.
+        mgr2 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
+        agent_ctx2.transcript.update([InputMessageItem.from_text("sys", role="system")])
+        notes = await mgr2.resume_durable(ctx=ctx, exec_id="t")
+        agent_ctx2.deliver_task_notes(notes)
 
+        t2 = agent_ctx2.transcript
         joined = "\n".join(str(m) for m in t2.messages)
         assert "Resumed from a checkpoint" in joined  # the framing line
         assert "interrupted" in joined
         assert "slow" in joined
 
-        # resume_durable RETURNS exactly the messages it injected, so the caller
-        # (LLMAgent._process_stream) can stream them — no transcript message
-        # stays hidden from the event stream.
-        assert injected
-        assert t2.messages[-len(injected) :] == injected
+        # resume_durable RETURNS exactly the notices the owner delivers, so the
+        # caller (LLMAgent) can stream them — no transcript message stays hidden
+        # from the event stream.
+        assert notes
+        assert t2.messages[-len(notes) :] == [n.message for n in notes]
 
         # The record stays PENDING until a checkpoint persists the notice —
         # a crash before that must re-surface it on the next resume.
@@ -898,29 +887,19 @@ class TestDurableTaskRecords:
         # flush_flips (called after the agent checkpoint) makes the
         # record terminal, so a second resume surfaces nothing.
         await mgr2.flush_flips(ctx=ctx)
-        t3 = LLMAgentTranscript()
-        t3.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr3 = BackgroundTaskManager[None](
-            agent_name="t", transcript=t3, tools={}, path=[]
-        )
-        await mgr3.resume_durable(ctx=ctx, exec_id="t")
-        assert not any("interrupted" in str(m) for m in t3.messages)
+        mgr3 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        assert await mgr3.resume_durable(ctx=ctx, exec_id="t") == []
 
     @pytest.mark.asyncio
     async def test_failed_spawn_persists_failed_record(self):
         from grasp_agents.agent.background_tasks import BackgroundTaskManager
-        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
         from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
         from grasp_agents.durability.store_keys import task_prefix
         from grasp_agents.durability.task_record import TaskRecord, TaskStatus
 
         store = InMemoryCheckpointStore()
         ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
-        transcript = LLMAgentTranscript()
-        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-        mgr = BackgroundTaskManager[None](
-            agent_name="t", transcript=transcript, tools={}, path=[]
-        )
+        mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
 
         call = FunctionToolCallItem(
             call_id="c1", name="failing_bg", arguments='{"text":"x"}'
@@ -932,7 +911,7 @@ class TestDurableTaskRecords:
         await mgr._tasks[event.data.task_id].consumer  # pyright: ignore[reportPrivateUsage]
 
         # A genuine runtime failure is recorded as FAILED with its error (so a
-        # crash before drain leaves a terminal record, not a re-runnable PENDING).
+        # crash before delivery leaves a terminal record, not a re-runnable PENDING).
         keys = await store.list_keys(task_prefix("s1"))
         rec = TaskRecord.model_validate_json(await store.load(keys[0]))
         assert rec.status == TaskStatus.FAILED
@@ -952,7 +931,6 @@ class TestDurableTaskRecords:
         from datetime import UTC, datetime
 
         from grasp_agents.agent.background_tasks import BackgroundTaskManager
-        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
         from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
         from grasp_agents.durability.task_record import TaskRecord, TaskStatus
         from grasp_agents.tools.agent_tool import AgentTool
@@ -973,13 +951,8 @@ class TestDurableTaskRecords:
             auto_background_at=0,
         )
 
-        transcript = LLMAgentTranscript()
-        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
-            agent_name="coordinator",
-            transcript=transcript,
-            tools={"researcher": researcher},
-            path=[],
+            agent_name="coordinator", tools={"researcher": researcher}, path=[]
         )
 
         # A PENDING record with the original args but NO child checkpoint on
@@ -1029,7 +1002,6 @@ class TestDurableTaskRecords:
         from datetime import UTC, datetime
 
         from grasp_agents.agent.background_tasks import BackgroundTaskManager
-        from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
         from grasp_agents.durability.checkpoint_store import InMemoryCheckpointStore
         from grasp_agents.durability.task_record import TaskRecord, TaskStatus
         from grasp_agents.tools.agent_tool import AgentTool
@@ -1044,13 +1016,8 @@ class TestDurableTaskRecords:
             sys_prompt="Answer.",
             auto_background_at=0,
         )
-        transcript = LLMAgentTranscript()
-        transcript.messages = [InputMessageItem.from_text("sys", role="system")]
         mgr = BackgroundTaskManager[None](
-            agent_name="coordinator",
-            transcript=transcript,
-            tools={"researcher": researcher},
-            path=[],
+            agent_name="coordinator", tools={"researcher": researcher}, path=[]
         )
 
         # Two interrupted tasks with the original run's ids bg_1, bg_2.
@@ -1135,10 +1102,10 @@ class _BgStreamingTool(BaseTool[EchoInput, Any, Any]):
 
 
 class TestBackgroundStreamTaskStamping:
-    """Drain stamps a task's own stream deltas with its task identity."""
+    """Bubbling stamps a task's own stream deltas with its task identity."""
 
     @pytest.mark.asyncio
-    async def test_drain_stamps_task_id_and_keeps_subclass(self):
+    async def test_bubble_stamps_task_id_and_keeps_subclass(self):
         from grasp_agents.tools.bash_common import ExecStreamEvent
         from grasp_agents.types.events import ToolStreamEvent
 
@@ -1160,7 +1127,7 @@ class TestBackgroundStreamTaskStamping:
         task_id = event.data.task_id
 
         await mgr.wait_idle()
-        bubbled = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
+        bubbled = [e async for e in mgr.bubble_events(ctx=ctx)]
         streams = [e for e in bubbled if isinstance(e, ToolStreamEvent)]
 
         own = [e for e in streams if e.source == "bg_streamer"]
@@ -1218,13 +1185,13 @@ class TestToolStreamDestinationStamping:
 
 class TestFrontTrim:
     """
-    Drain front-trims a surviving task's buffer: events consumed by both the
+    Bubbling front-trims a surviving task's buffer: events consumed by both the
     bubble and flush cursors are dropped, bounding memory for a chatty command,
     while a terminal result event is preserved for ``_outcome_from_events``.
     """
 
     @pytest.mark.asyncio
-    async def test_drain_trims_running_task_buffer(self):
+    async def test_bubble_trims_running_task_buffer(self):
         from grasp_agents.agent.background_tasks import BackgroundTask
         from grasp_agents.types.events import ToolStreamEvent
 
@@ -1248,9 +1215,9 @@ class TestFrontTrim:
             pt.events.append(ToolStreamEvent(data=f"s{i}", source="x"))
         mgr._tasks["bg_1"] = pt  # pyright: ignore[reportPrivateUsage]
 
-        # drain bubbles + flushes the 10 events (cursor → 10) in one pass then
-        # trims the consumed prefix → buffer emptied, cursor reset.
-        _ = [e async for e in mgr.drain(exec_id="t", ctx=ctx)]
+        # bubble_events bubbles + flushes the 10 events (cursor → 10) in one
+        # pass then trims the consumed prefix → buffer emptied, cursor reset.
+        _ = [e async for e in mgr.bubble_events(ctx=ctx)]
         assert pt.events == []
         assert pt.cursor == 0
 

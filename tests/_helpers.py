@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.context_window import ContextWindowManager
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend.local import LocalFileBackend
@@ -240,6 +239,26 @@ class FailFirstLLM(MockLLM):
         return await super()._generate_response_once(*args, **kwargs)
 
 
+# --- AgentContext construction (tool tests need agent-scope state, no loop) ---
+
+
+def _make_agent_ctx(
+    *,
+    agent_name: str = "test",
+    tools: Mapping[str, BaseTool[Any, Any, Any]] | None = None,
+    transcript: LLMAgentTranscript | None = None,
+    **create_kwargs: Any,
+) -> AgentContext:
+    """A fresh ``AgentContext`` for a stub model (capabilities resolve by name)."""
+    return AgentContext.create(
+        model_name="mock",
+        tools=dict(tools or {}),
+        agent_name=agent_name,
+        transcript=transcript,
+        **create_kwargs,
+    )
+
+
 # --- AgentLoop construction (loop tests drive the loop directly) ---
 
 
@@ -256,15 +275,13 @@ def _make_agent_loop(
 ) -> AgentLoop[None]:
     """An ``AgentLoop`` over a fresh ``AgentContext`` built from flat parts."""
     agent_ctx = AgentContext.create(
+        model_name=llm.model_name,
+        capabilities=llm.capabilities,
         transcript=transcript,
         tools={t.name: t for t in (tools or [])},
         agent_name=agent_name,
         path=path,
         max_background=max_background,
-    )
-    loop_kwargs.setdefault(
-        "context_window",
-        ContextWindowManager(transcript=transcript, llm=llm, source=agent_name),
     )
     return AgentLoop[None](
         agent_name=agent_name,

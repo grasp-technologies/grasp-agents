@@ -21,7 +21,6 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
@@ -31,11 +30,7 @@ from grasp_agents.tools.agent_tool import (
     AgentToolInput,
 )
 from grasp_agents.tools.base import BaseTool
-from grasp_agents.tools.bash_common import ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
-from grasp_agents.tools.file_edit import FileEditSessionState
 from grasp_agents.tools.function_tool import function_tool
-from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
@@ -52,6 +47,7 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
@@ -175,21 +171,14 @@ def _agent_ctx(
     explicitly-given, hence inheritable); pass ``frozenset()`` to simulate
     auto-attached tools that must NOT be inherited.
     """
-    transcript = transcript or LLMAgentTranscript()
     tool_map = {t.name: t for t in (tools or [])}
     if explicit_tool_names is None:
         explicit_tool_names = frozenset(tool_map)
-    return AgentContext(
-        transcript=transcript,
+    return _make_agent_ctx(
+        agent_name="parent",
         tools=tool_map,
+        transcript=transcript,
         explicit_tool_names=explicit_tool_names,
-        file_edit_state=FileEditSessionState(),
-        bg_tasks=BackgroundTaskManager(
-            agent_name="parent", transcript=transcript, tools=tool_map
-        ),
-        session_holder=BashSessionHolder(),
-        nb_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
     )
 
 
@@ -654,7 +643,7 @@ class TestAgentToolPromptBuilders:
             name="parent", llm=parent_llm, tools=[agent_tool]
         )
 
-        assert parent._loop.agent_ctx.transcript is parent._transcript
+        assert parent._loop.agent_ctx.transcript is parent.transcript
 
 
 class TestToolCopy:

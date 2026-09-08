@@ -17,14 +17,13 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput, _human_size
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,14 +52,7 @@ def _error_message(result: Any) -> str:
 
 
 def _agent_ctx() -> AgentContext:
-    transcript = LLMAgentTranscript()
-    return AgentContext.create(
-        transcript=transcript,
-        tools={},
-        bg_tasks=BackgroundTaskManager(
-            agent_name="test", transcript=transcript, tools={}
-        ),
-    )
+    return _make_agent_ctx()
 
 
 def _text(parts: list[InputText | InputImage]) -> str:

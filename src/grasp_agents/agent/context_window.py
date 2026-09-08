@@ -15,39 +15,53 @@ from typing import TYPE_CHECKING
 
 from grasp_agents.context.compaction import Budgeted, ContextBudget, count_turns
 from grasp_agents.context.projection import apply_folds, repair_tool_call_pairing
+from grasp_agents.llm.model_info import get_model_capabilities
 from grasp_agents.llm.token_counting import count_input_tokens
 from grasp_agents.types.events import CompactionEvent, CompactionInfo
+
+from .llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from grasp_agents.hooks import Compactor, ViewProjector
-    from grasp_agents.llm.llm import LLM
+    from grasp_agents.llm.model_info import ModelCapabilities
     from grasp_agents.types.folds import FoldSpec
     from grasp_agents.types.items import InputItem
-
-    from .llm_agent_transcript import LLMAgentTranscript
 
 logger = logging.getLogger(__name__)
 
 
 class ContextWindowManager:
     """
-    Owns the model-facing view derived from the transcript log.
+    Owns the transcript log and the model-facing view derived from it.
 
-    Composes the view (ephemeral ``initial_context`` header + summary folds + the
-    view-projector pipeline over the log), tracks its input-token cost against the
-    budget, and records compaction folds under pressure. Projections and folds
-    shape only the view, never the log, so step rollback and resume keep the full
-    history. Held by :class:`AgentLoop`; configured by ``LLMAgent`` hooks.
+    The transcript is created here (or adopted once, at construction) and
+    exposed as a shared read/append handle (:attr:`transcript`) — re-exposed by
+    ``AgentContext`` to tools, and held by the background-task manager to
+    deliver completion notes. Composes the view (ephemeral ``initial_context``
+    header + summary folds + the view-projector pipeline over the log), tracks
+    its input-token cost against the budget, and records compaction folds under
+    pressure. Projections and folds shape only the view, never the log, so step
+    rollback and resume keep the full history. Held by :class:`AgentContext`;
+    configured by ``LLMAgent`` hooks.
     """
 
     def __init__(
-        self, *, transcript: LLMAgentTranscript, llm: LLM, source: str
+        self,
+        *,
+        model_name: str,
+        source: str,
+        capabilities: ModelCapabilities | None = None,
+        transcript: LLMAgentTranscript | None = None,
     ) -> None:
-        self._transcript = transcript
+        self._transcript = transcript or LLMAgentTranscript()
 
-        self._llm = llm  # budget sizing (capabilities) + tokenizer selection
+        # Tokenizer selection + budget sizing. ``capabilities`` should be the
+        # LLM's own (a composed LLM reports its conservative merge — a fallback
+        # cascade's smallest member window); omitted, they are looked up by name.
+        self._model_name = model_name
+        self._capabilities = capabilities
 
         self._source = source  # agent name, stamped on emitted compaction events
 
@@ -75,19 +89,24 @@ class ContextWindowManager:
         # that don't bring their own (so the agent never has to construct one).
         self._budget: ContextBudget | None = None
 
+    @property
+    def transcript(self) -> LLMAgentTranscript:
+        """
+        The owned transcript log — the shared read/append handle every other
+        holder (``agent.transcript``, ``AgentContext``, background tasks)
+        works on. Destructive ops go through the surgery methods below.
+        """
+        return self._transcript
+
     # --- registration (called by LLMAgent's hooks) ---
 
     def default_budget(self) -> ContextBudget:
-        """
-        The agent's model-derived budget, cached. Sized from
-        ``llm.capabilities`` so a composed LLM budgets for its conservative
-        merge (e.g. a fallback cascade's smallest member window), not just
-        the name it reports.
-        """
+        """The agent's model-derived budget, cached."""
         if self._budget is None:
-            self._budget = ContextBudget.from_capabilities(
-                self._llm.model_name, self._llm.capabilities
-            )
+            caps = self._capabilities
+            if caps is None:
+                caps = get_model_capabilities(self._model_name)
+            self._budget = ContextBudget.from_capabilities(self._model_name, caps)
         return self._budget
 
     def add_view_projector(self, projector: ViewProjector) -> None:
@@ -156,7 +175,7 @@ class ContextWindowManager:
         anchor — counts the whole current (folded) view via litellm, which itself
         falls back to a chars-per-token estimate when no tokenizer is available.
         """
-        model = self._llm.model_name
+        model = self._model_name
         messages = self._transcript.messages
         if self._anchor_valid():
             delta = messages[self._last_counted_len :]
@@ -188,7 +207,7 @@ class ContextWindowManager:
         if self._anchor_valid() or not self.view_projectors:
             return self.effective_input_tokens()
         body = await self._build_view_body(exec_id=exec_id)
-        return count_input_tokens(self._llm.model_name, [*self.initial_context, *body])
+        return count_input_tokens(self._model_name, [*self.initial_context, *body])
 
     def note_response_usage(self, input_tokens: int) -> None:
         """Promote the budget anchor from a response's reported usage."""
@@ -203,6 +222,43 @@ class ContextWindowManager:
         """
         self._last_input_tokens = 0
         self._last_counted_len = 0
+
+    # --- transcript surgery ---
+    # The single writer of destructive transcript operations. Cutting or
+    # replacing the transcript here repairs everything keyed to it — summary
+    # folds and the token anchor — in the same step; assigning
+    # ``transcript.messages`` directly leaves them out of sync.
+
+    def truncate_transcript(self, message_count: int) -> None:
+        """
+        Cut the transcript to its first ``message_count`` messages (rollback
+        rewind, interrupt settling). Folds whose span extends past the cut are
+        dropped (those messages are gone; the view falls back to the
+        originals); the token anchor survives unless the cut falls below its
+        counted prefix.
+        """
+        self._transcript.truncate(message_count)
+        self.folds = [f for f in self.folds if f.end <= message_count]
+        if self._last_counted_len > message_count:
+            self.reset_anchor()
+        self._pending_view_count = min(self._pending_view_count, message_count)
+
+    def replace_transcript(
+        self, messages: Sequence[InputItem], *, folds: Sequence[FoldSpec] = ()
+    ) -> None:
+        """
+        Replace the transcript wholesale (resume from a checkpoint) together
+        with its folds — lossy summaries are carried so resume doesn't
+        re-summarize — and recount the budget anchor.
+        """
+        self._transcript.messages = list(messages)
+        self.folds = list(folds)
+        self.reset_anchor()
+        self._pending_view_count = 0
+
+    def clear_transcript(self) -> None:
+        """Start a fresh conversation: empty transcript, no folds, anchor reset."""
+        self.replace_transcript([])
 
     # --- compaction ---
 
@@ -253,14 +309,6 @@ class ContextWindowManager:
                 summary=fold.summary,
             ),
         )
-
-    def load_folds(self, folds: Sequence[FoldSpec]) -> None:
-        """Replace folds from a restored checkpoint."""
-        self.folds = list(folds)
-
-    def drop_folds_after(self, message_count: int) -> None:
-        """Drop folds whose span extends past a rollback rewind point."""
-        self.folds = [f for f in self.folds if f.end <= message_count]
 
     @property
     def context_window(self) -> int | None:

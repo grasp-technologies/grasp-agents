@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.session_context import SessionContext
 from grasp_agents.skills import (
     Skill,
@@ -55,9 +54,7 @@ def _registry() -> SkillRegistry:
 
 
 def _agent_ctx(skill_filter: SkillFilter | None) -> AgentContext:
-    return AgentContext.create(
-        transcript=LLMAgentTranscript(), tools={}, skill_filter=skill_filter
-    )
+    return AgentContext.create(model_name="mock", tools={}, skill_filter=skill_filter)
 
 
 def _make_agent(

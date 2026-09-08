@@ -146,15 +146,20 @@ def decide_next_step(
         return NextStepForceFinalAnswer(stop_reason=StopReason.TIMEOUT)
 
     if over_budget and not inbox_open:
-        return NextStepForceFinalAnswer()
+        return NextStepForceFinalAnswer(stop_reason=StopReason.MAX_TURNS)
 
     # The resident's answer for this message, if it has one it can return now.
     resident_answer = final_answer if inbox_open else None
 
+    # NOTE: let's be clear why deadline_exceeded is not applied to residents
     if over_budget and inbox_open:
         # Resident past its per-message budget: wrap this message up now —
         # never run more tools or continue. Answer with the one it has if there is
         # one, else force one (closing dangling tool calls), then park.
+
+        # NOTE: can we change the condition to
+        # (over_budget and inbox_open and resident_answer is None) and skip
+        # the resident answer check here?
         if resident_answer is not None:
             return NextStepResidentAnswer(final_answer=resident_answer)
         return NextStepForceResidentAnswer()

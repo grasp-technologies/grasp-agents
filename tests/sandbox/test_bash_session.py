@@ -13,14 +13,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
-from grasp_agents.tools.bash_common import BashInput, ShellState
+from grasp_agents.tools.bash_common import BashInput
 from grasp_agents.tools.bash_session import BashSession, BashSessionHolder
-from grasp_agents.tools.file_edit.session_state import FileEditSessionState
-from grasp_agents.tools.notebook_exec import KernelHolder
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,18 +32,9 @@ def _ctx(tmp_path: Path) -> SessionContext[None]:
 
 def _agent_ctx(holder: BashSessionHolder) -> AgentContext:
     """A minimal AgentContext carrying ``holder`` — the field BashSession reads."""
-    transcript = LLMAgentTranscript()
-    return AgentContext(
-        transcript=transcript,
-        tools={},
-        file_edit_state=FileEditSessionState(),
-        bg_tasks=BackgroundTaskManager(
-            agent_name="test", transcript=transcript, tools={}
-        ),
-        session_holder=holder,
-        nb_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
-    )
+    agent_ctx = _make_agent_ctx()
+    agent_ctx.session_holder = holder
+    return agent_ctx
 
 
 async def test_shell_keeps_state_across_calls(tmp_path: Path) -> None:

@@ -239,7 +239,7 @@ async def test_compaction_gate_measures_post_projection_view() -> None:
     agent = LLMAgent[str, str, None](
         name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
-    cw = agent._cw
+    cw = agent.agent_ctx.cw
     cw.initial_context = []
     agent.transcript.messages = [
         _user("q"),
@@ -282,8 +282,8 @@ def test_add_compaction_no_arg_auto_configures_from_agent() -> None:
         name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
     compaction = agent.add_compaction()  # no budget, no model name passed
-    assert compaction.collapse in agent._cw.view_projectors
-    assert agent._cw.compactor is compaction.summarize
+    assert compaction.collapse in agent.agent_ctx.cw.view_projectors
+    assert agent.agent_ctx.cw.compactor is compaction.summarize
     # budgets were injected from the agent's model, not constructed by the caller
     assert compaction.collapse.budget is not None
     assert compaction.summarize is not None
@@ -390,7 +390,7 @@ async def test_summary_fold_reaches_view_log_keeps_originals() -> None:
     out = await agent.run("go")
     assert out.payloads[0] == "done"
 
-    assert agent._cw.folds  # a fold was recorded
+    assert agent.agent_ctx.cw.folds  # a fold was recorded
     final_view = agent_llm.views[-1]  # type: ignore[attr-defined]
     assert any(
         isinstance(m, InputMessageItem) and "SUMMARY-OF-EARLIER" in m.text
@@ -500,7 +500,7 @@ async def test_folds_restored_on_resume_without_resummarizing() -> None:
         )
     )
     await agent.run("go")
-    saved = [f.summary for f in agent._cw.folds]
+    saved = [f.summary for f in agent.agent_ctx.cw.folds]
     assert saved  # folded during the run
 
     # Fresh instance, same store → resume restores folds. The summarizer's LLM
@@ -519,7 +519,7 @@ async def test_folds_restored_on_resume_without_resummarizing() -> None:
         )
     )
     await agent2.run("again")
-    assert [f.summary for f in agent2._cw.folds][: len(saved)] == saved
+    assert [f.summary for f in agent2.agent_ctx.cw.folds][: len(saved)] == saved
 
 
 # --- Rollback drops folds past the rewind point ---
@@ -540,13 +540,13 @@ async def test_rollback_drops_folds_past_rewind() -> None:
     n_after_1 = len(agent.transcript.messages)
     await agent.run("q2", step=2)
 
-    agent._cw.folds = [
+    agent.agent_ctx.cw.folds = [
         FoldSpec(start=0, end=1, summary="early"),  # within step 0
         FoldSpec(start=n_after_1, end=n_after_1 + 1, summary="late"),  # in step 2
     ]
     await agent.rollback_to_step(1)
 
-    summaries = [f.summary for f in agent._cw.folds]
+    summaries = [f.summary for f in agent.agent_ctx.cw.folds]
     assert "late" not in summaries  # past the rewind → dropped
     assert "early" in summaries  # within the kept prefix → survives
 
@@ -579,4 +579,4 @@ async def test_context_window_error_compacts_and_retries() -> None:
 
     out = await agent.run("go")
     assert out.payloads[0] == "recovered"  # recovered via compact + retry
-    assert agent._cw.folds  # the forced fold was recorded
+    assert agent.agent_ctx.cw.folds  # the forced fold was recorded

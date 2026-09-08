@@ -18,15 +18,12 @@ from typing import TYPE_CHECKING, Any
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.background_tasks import BackgroundTaskManager, KillTaskResult
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.tools.bash import Bash
-from grasp_agents.tools.bash_common import BashInput, ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
-from grasp_agents.tools.file_edit.session_state import FileEditSessionState
-from grasp_agents.tools.notebook_exec import KernelHolder
+from grasp_agents.tools.bash_common import BashInput
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput
 from grasp_agents.types.events import ToolErrorEvent, ToolOutputEvent, ToolStreamEvent
 from grasp_agents.types.items import FunctionToolCallItem
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from grasp_agents.sandbox.environment import ExecutionEnvironment
@@ -40,19 +37,10 @@ def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
     ``path=[]`` so a store-backed ctx persists task records + progress logs
     (``make_tool_call_path(None, ...)`` would otherwise yield ``None``).
     """
-    transcript = LLMAgentTranscript()
     mgr: BackgroundTaskManager[Any] = BackgroundTaskManager(
-        agent_name="t", transcript=transcript, tools={}, path=[]
+        agent_name="t", tools={}, path=[]
     )
-    agent_ctx = AgentContext(
-        transcript=transcript,
-        tools={},
-        file_edit_state=FileEditSessionState(),
-        bg_tasks=mgr,
-        session_holder=BashSessionHolder(),
-        nb_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
-    )
+    agent_ctx = _make_agent_ctx(agent_name="t", bg_tasks=mgr)
     return agent_ctx, mgr
 
 
@@ -105,8 +93,9 @@ async def poll_until_done(
     Wait until the backgrounded task finishes; return (streamed_output, final).
 
     With the polling tool gone, a finished task's output is read straight off
-    its buffered events (the same source ``drain`` and the ``.grasp`` log use).
-    Leaves the task in place so a later ``drain`` still delivers its note.
+    its buffered events (the same source ``bubble_events`` and the ``.grasp`` log
+    use). Leaves the task in place so a later ``pop_completions`` still returns
+    its note.
     """
     for _ in range(tries):
         pt = mgr._tasks[task_id]  # pyright: ignore[reportPrivateUsage]
@@ -139,30 +128,25 @@ async def kill(mgr: BackgroundTaskManager[Any], task_id: str) -> KillTaskResult:
 
 async def flush(mgr: BackgroundTaskManager[Any], ctx: SessionContext[Any]) -> None:
     """
-    Drive one ``drain`` pass for its log-mirroring side effect, discarding the
-    bubbled events. ``drain`` now owns flushing (there is no standalone
-    ``flush_progress``); used by tests that just want a running task's output
-    written to its ``.grasp`` log.
+    Drive one ``bubble_events`` pass for its log-mirroring side effect,
+    discarding the bubbled events; used by tests that just want a running task's
+    output written to its ``.grasp`` log.
     """
-    async for _ in mgr.drain(exec_id="t", ctx=ctx):
+    async for _ in mgr.bubble_events(ctx=ctx):
         pass
 
 
-async def drain_notes(
-    mgr: BackgroundTaskManager[Any], ctx: SessionContext[Any]
-) -> list[str]:
+async def drain_notes(agent_ctx: AgentContext, ctx: SessionContext[Any]) -> list[str]:
     """
-    The completion notes a single turn-boundary ``drain`` injects. ``drain``
-    also mirrors progress to the ``.grasp`` logs, so a truncated note points at
-    the task's log.
+    The completion notes one turn boundary delivers into ``agent_ctx``'s
+    transcript, as the model sees them. Bubbles first (mirroring progress to the
+    ``.grasp`` logs) so a truncated note points at a complete log.
     """
-    from grasp_agents.types.events import UserMessageEvent
-
-    return [
-        e.data.text  # the rendered note text, as the model sees it (not a repr)
-        async for e in mgr.drain(exec_id="t", ctx=ctx)
-        if isinstance(e, UserMessageEvent)
-    ]
+    mgr = agent_ctx.bg_tasks
+    await flush(mgr, ctx)
+    completions = await mgr.pop_completions(ctx=ctx)
+    agent_ctx.deliver_task_notes([c.note for c in completions])
+    return [c.note.message.text for c in completions]
 
 
 async def marker_size(env: ExecutionEnvironment, marker: str) -> int:

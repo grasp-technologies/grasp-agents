@@ -20,6 +20,13 @@ class LLMAgentTranscript(BaseModel):
     :class:`SessionContext.memory` (the memdir-backed knowledge store). The system
     prompt is not stored here — it lives in the ephemeral header
     (``initial_context``) the agent prepends to the model-facing view each turn.
+
+    Appending (:meth:`update`) is always safe. Destructive ops on an agent's
+    live transcript (``clear`` / ``truncate`` / assigning ``messages``) must go
+    through the agent — ``LLMAgent.reset_transcript()`` or the
+    ``ContextWindowManager`` transcript surgery — so the view state derived
+    from the transcript (summary folds, token accounting) is repaired in the
+    same step.
     """
 
     messages: list[InputItem] = Field(default_factory=list[InputItem])
