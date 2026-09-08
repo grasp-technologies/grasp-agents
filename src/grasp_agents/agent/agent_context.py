@@ -26,16 +26,17 @@ tasks launched past it are *cancelled*, task notes truncated by the cut are
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
 from grasp_agents.durability.checkpoints import AgentContextState
+from grasp_agents.types.items import FunctionToolCallItem
 
 from .context_window import ContextWindowManager
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.model_info import ModelCapabilities
@@ -52,6 +53,14 @@ if TYPE_CHECKING:
     from .llm_agent_transcript import LLMAgentTranscript
 
 logger = getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DeferredEffect:
+    """A tool's durable side effect, held for the checkpoint that persists its call."""
+
+    call_id: str | None
+    run: Callable[[], Awaitable[None]]
 
 
 @dataclass
@@ -106,10 +115,79 @@ class AgentContext:
     # backgrounded / bubbled) output to the right agent's pane.
     agent_name: str = ""
 
+    # The tool call this context copy was handed to (see :meth:`for_tool_call`);
+    # ``None`` outside a tool invocation.
+    tool_call_id: str | None = None
+
+    # Tool effects deferred to the next checkpoint (:meth:`defer_effect`). One
+    # list shared by every per-call copy.
+    pending_effects: list[DeferredEffect] = field(default_factory=list[DeferredEffect])
+
     @property
     def transcript(self) -> LLMAgentTranscript:
         """The agent's transcript log, read-only; writes go through :attr:`cw`."""
         return self.cw.transcript
+
+    def for_tool_call(self, call_id: str) -> AgentContext:
+        """
+        This context bound to one tool call — the same shared state with
+        ``tool_call_id`` set. The loop and the task manager hand each tool
+        invocation one, so a deferred effect knows the call it belongs to.
+        """
+        return replace(self, tool_call_id=call_id)
+
+    def defer_effect(self, effect: Callable[[], Awaitable[None]]) -> None:
+        """
+        Run ``effect`` inside the next checkpoint instead of now.
+
+        For a tool whose result the model sees at once but whose durable side
+        effect — a business row, an artifact — must exist exactly when the
+        transcript records the call: the effect runs in the checkpoint that
+        persists the tool result, inside the store's
+        :meth:`~grasp_agents.durability.CheckpointStore.transaction`, so on a
+        transactional store the two commit atomically and a crash on either
+        side re-runs nothing twice. A failed run prunes its in-flight tool
+        round and drops that round's pending effects with it; a rollback drops
+        those of the tasks it cancels. An effect deferred outside a tool call
+        is never dropped. The effect must be self-contained (a closure over
+        what it writes); a failure aborts the checkpoint.
+        """
+        self.pending_effects.append(
+            DeferredEffect(call_id=self.tool_call_id, run=effect)
+        )
+
+    async def run_effects(self) -> int:
+        """
+        Run every pending effect in registration order; returns how many ran.
+        They stay pending until :meth:`commit_effects` drops them once the
+        checkpoint they ran in has landed, so a failure anywhere in that unit
+        of work — an effect, the head write, a record flip — leaves them for
+        the next checkpoint (a transactional store rolled their writes back
+        with it).
+        """
+        batch = list(self.pending_effects)
+        for effect in batch:
+            await effect.run()
+        return len(batch)
+
+    def commit_effects(self, count: int) -> None:
+        """
+        Drop the ``count`` effects :meth:`run_effects` ran, once the checkpoint
+        they ran in is durable.
+        """
+        del self.pending_effects[:count]
+
+    def drop_orphaned_effects(self) -> None:
+        """
+        Drop pending effects whose tool call is no longer in the transcript —
+        a pruned round, a cancelled task's launch, a reset conversation.
+        """
+        live = {
+            m.call_id for m in self.transcript if isinstance(m, FunctionToolCallItem)
+        }
+        self.pending_effects[:] = [
+            e for e in self.pending_effects if e.call_id is None or e.call_id in live
+        ]
 
     @classmethod
     def create(
@@ -257,6 +335,9 @@ class AgentContext:
         # After the restore_deferred_* imports: cancelling defers CANCELLED
         # record updates, which the imports must not clobber.
         self.bg_tasks.cancel_launched_after(state.task_launch_seq)
+
+        # Like the flips: the live transcript decides which effects survive.
+        self.drop_orphaned_effects()
 
         # Leases are NOT dropped here: a settle keeps the absorbed-but-unacked
         # message in the transcript, and its lease is what stops the loop from

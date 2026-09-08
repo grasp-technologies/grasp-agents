@@ -1,6 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import asynccontextmanager
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -47,6 +48,20 @@ class CheckpointStore(ABC):
     :meth:`append_messages` / :meth:`read_messages` / :meth:`rewrite_messages`;
     :meth:`load_json` is provided.
     """
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[None]:
+        """
+        Scope one checkpoint's writes — the session record, the message log,
+        the head, task-record flips, and the agent's deferred tool effects —
+        as a unit. The default is a no-op: each write stands alone. A store
+        over a transactional backend opens a transaction here and runs its
+        methods inside it for the duration (e.g. on a bound connection), so a
+        crash mid-checkpoint persists all of it or none — and a deferred
+        effect that writes through the same backend commits together with
+        the transcript that records its tool call.
+        """
+        yield
 
     @abstractmethod
     async def save(self, key: str, data: bytes) -> None: ...

@@ -762,7 +762,7 @@ class AgentLoop[CtxT]:
                         ctx=self.ctx,
                         exec_id=exec_id,
                         path=make_tool_call_path(self.path, call.call_id),
-                        agent_ctx=self._agent_ctx,
+                        agent_ctx=self._agent_ctx.for_tool_call(call.call_id),
                     )
                     for _, call, tool, inp in immediate
                 ]

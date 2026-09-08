@@ -867,7 +867,15 @@ class BackgroundTaskManager[CtxT]:
             # Create and register the task
 
             stream = tool.run_stream(
-                inp, ctx=ctx, exec_id=exec_id, path=child_path, agent_ctx=agent_ctx
+                inp,
+                ctx=ctx,
+                exec_id=exec_id,
+                path=child_path,
+                agent_ctx=(
+                    agent_ctx.for_tool_call(call.call_id)
+                    if agent_ctx is not None
+                    else None
+                ),
             )
             started_at = time.monotonic()
             consumer = asyncio.create_task(
@@ -1337,7 +1345,11 @@ class BackgroundTaskManager[CtxT]:
             ctx=ctx,
             exec_id=exec_id,
             path=child_path,
-            agent_ctx=agent_ctx,
+            agent_ctx=(
+                agent_ctx.for_tool_call(record.tool_call_id)
+                if agent_ctx is not None
+                else None
+            ),
             tool_call_arguments=record.tool_call_arguments,
         )
         consumer = asyncio.create_task(
