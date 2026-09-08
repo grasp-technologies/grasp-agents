@@ -108,7 +108,7 @@ class AgentContext:
 
     @property
     def transcript(self) -> LLMAgentTranscript:
-        """The agent's transcript log — the shared read/append handle."""
+        """The agent's transcript log, read-only; writes go through :attr:`cw`."""
         return self.cw.transcript
 
     @classmethod
@@ -118,7 +118,6 @@ class AgentContext:
         model_name: str,
         tools: dict[str, BaseTool[Any, Any, Any]],
         capabilities: ModelCapabilities | None = None,
-        transcript: LLMAgentTranscript | None = None,
         bg_tasks: BackgroundTaskManager[Any] | None = None,
         agent_name: str = "",
         file_edit_state: FileEditSessionState | None = None,
@@ -134,8 +133,7 @@ class AgentContext:
 
         Creates the context-window manager for ``model_name`` (``capabilities``
         sizes its budget — pass the LLM's own so a composed model budgets
-        conservatively; omitted, they are looked up by name — over a fresh
-        transcript unless ``transcript`` seeds one), the session holders (the
+        conservatively; omitted, they are looked up by name), the session holders (the
         Bash session, the ``RunCell`` and ``RunPython`` kernels, the shell
         cwd), the background-task manager (unless one is supplied — ``path`` /
         ``max_background`` configure the built-in one), and an empty file-edit
@@ -164,7 +162,6 @@ class AgentContext:
             model_name=model_name,
             capabilities=capabilities,
             source=agent_name,
-            transcript=transcript,
         )
 
         if bg_tasks is None:
@@ -240,7 +237,7 @@ class AgentContext:
 
         self.shell_state.cwd = state.shell_cwd
 
-        kept = len(self.cw.transcript.messages)
+        kept = len(self.cw.transcript)
         live_flips = {
             key: flip
             for key, flip in self.bg_tasks.export_deferred_delivered().items()
@@ -282,10 +279,8 @@ class AgentContext:
         where the task side channel enters the conversation log.
         """
         for note in notes:
-            self.cw.transcript.update([note.message])
-            self.bg_tasks.record_delivery(
-                note, note_pos=len(self.cw.transcript.messages)
-            )
+            note_pos = self.cw.add_messages([note.message])
+            self.bg_tasks.record_delivery(note, note_pos=note_pos)
 
     async def rewind(
         self,

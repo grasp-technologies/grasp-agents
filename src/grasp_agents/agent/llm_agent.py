@@ -603,10 +603,18 @@ class LLMAgent[InT, OutT, CtxT](
     def reset_transcript(self) -> None:
         """
         Start a fresh conversation: clear the log together with the view state
-        derived from it (summary folds, token-budget anchor). Prefer this over
-        ``transcript.clear()``, which leaves that derived state behind.
+        derived from it (summary folds, token-budget anchor).
         """
         self._agent_ctx.cw.clear_transcript()
+
+    def replace_transcript(self, messages: Sequence[InputItem]) -> None:
+        """
+        Replace the conversation wholesale — the seeding surface for a session
+        whose history comes from outside the checkpoint store — together with
+        the view state derived from it (summary folds dropped, token-budget
+        anchor reset). The next checkpoint persists the new log in full.
+        """
+        self._agent_ctx.cw.replace_transcript(messages)
 
     async def aclose(self) -> None:
         """
@@ -819,7 +827,7 @@ class LLMAgent[InT, OutT, CtxT](
                 ),
                 role="user",
             )
-            self.transcript.update([skew_notice])
+            self._agent_ctx.cw.add_messages([skew_notice])
             self._resume_notifications.append(skew_notice)
 
         committed = self._committed
@@ -926,7 +934,7 @@ class LLMAgent[InT, OutT, CtxT](
         checkpoint = AgentCheckpoint(
             processor_name=self.name,
             session_key=self._ctx.session_key,
-            messages=list(self.transcript.messages),
+            messages=list(self.transcript),
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._agent_ctx.cw.folds),
@@ -963,7 +971,7 @@ class LLMAgent[InT, OutT, CtxT](
         last checkpoint boundary, which matches the kept transcript exactly.
         """
         pruned = prepare_messages_for_resume(
-            self.transcript.messages, drop_trailing_response=failed
+            list(self.transcript), drop_trailing_response=failed
         )
         # ``pruned.messages`` is a strict prefix of the live log.
         self._agent_ctx.cw.truncate_transcript(len(pruned.messages))
@@ -1026,7 +1034,7 @@ class LLMAgent[InT, OutT, CtxT](
         self._step_watermarks.append(
             StepWatermark(
                 step=self._step,
-                message_count=len(self.transcript.messages),
+                message_count=len(self.transcript),
                 turn=prior.turn if prior else 0,
                 prompt_cache_key=self.prompt_cache_key,
                 fs_snapshot_ref=fs_snapshot_ref,
@@ -1088,11 +1096,11 @@ class LLMAgent[InT, OutT, CtxT](
         # only; view-layer compaction never touches it), so a committed
         # boundary stays a valid prefix. A count past the live transcript
         # means the log was mutated under the boundary map — a framework bug.
-        if boundary.message_count > len(self.transcript.messages):
+        if boundary.message_count > len(self.transcript):
             raise RuntimeError(
                 f"Agent {self.name!r}: rollback boundary for step {step} "
                 f"({boundary.message_count} messages) exceeds the live transcript "
-                f"({len(self.transcript.messages)}) — the log diverged from the "
+                f"({len(self.transcript)}) — the log diverged from the "
                 "boundary map."
             )
 
@@ -1109,7 +1117,7 @@ class LLMAgent[InT, OutT, CtxT](
             marker = AgentCheckpoint(
                 session_key=self._ctx.session_key,
                 processor_name=self.name,
-                messages=list(self.transcript.messages),
+                messages=list(self.transcript),
                 current=self._committed.model_copy(update={"step": step}),
                 step_watermarks=list(self._step_watermarks),
                 folds=list(self._agent_ctx.cw.folds),
@@ -1216,7 +1224,7 @@ class LLMAgent[InT, OutT, CtxT](
         checkpoint = AgentCheckpoint(
             session_key=self._ctx.session_key,
             processor_name=self.name,
-            messages=list(self.transcript.messages),
+            messages=list(self.transcript),
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._agent_ctx.cw.folds),
@@ -1359,7 +1367,7 @@ class LLMAgent[InT, OutT, CtxT](
             # Attachments see the conversation the input will join — none
             # when this run resets it.
             context: list[InputItem] = (
-                [] if self.reset_transcript_on_run else list(self.transcript.messages)
+                [] if self.reset_transcript_on_run else list(self.transcript)
             )
             input_message = await self._prompt_builder.apply_input_attachments(
                 input_message,
@@ -1392,7 +1400,7 @@ class LLMAgent[InT, OutT, CtxT](
         self._loop.turn = 0
         self._parked_after_rollback = False
 
-        self.transcript.update([input_message])
+        self._agent_ctx.cw.add_messages([input_message])
 
         return [input_message]
 

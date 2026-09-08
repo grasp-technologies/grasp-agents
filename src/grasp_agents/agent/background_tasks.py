@@ -137,6 +137,11 @@ def make_background_tasks_section(
                 "reflects the read, not the task)."
             ),
             (
+                "- A completion note whose <result> is an excerpt carries a "
+                "<result_file> tag naming the file with the full result; the "
+                "<log_file> is the streamed output, which may hold less."
+            ),
+            (
                 '- A notification with status "interrupted" means the task '
                 "was stopped before finishing (e.g. by a restart): check any "
                 "partial output it produced, then continue from where it "
@@ -243,10 +248,15 @@ def _make_outcome_note(
     interrupted: bool = False,
     result: str | None = None,
     error: str | None = None,
+    result_file: str | None = None,
     log_path: str | None = None,
     elapsed_s: float | None = None,
 ) -> str:
-    """Build an XML-tagged task notification for LLM consumption."""
+    """
+    Build an XML-tagged task notification for LLM consumption. ``result_file``
+    is the full result when the inline one is an excerpt; ``log_path`` is the
+    task's streamed-output log, which is a different file.
+    """
     status = "interrupted" if interrupted else "failed" if failed else "completed"
     subject = f"Task {status}"
 
@@ -268,6 +278,9 @@ def _make_outcome_note(
     if error is not None:
         parts.append(f"<error>\n{error}\n</error>")
 
+    if result_file is not None:
+        parts.append(f"<result_file>\n{result_file}\n</result_file>")
+
     if log_path is not None:
         parts.append(f"<log_file>\n{log_path}\n</log_file>")
 
@@ -284,7 +297,10 @@ def _task_record_to_input_message(
     body: str | None = None
     if raw is not None:
         body, _ = excerpt_for_inline(
-            raw, _DEFAULT_INLINE_CAP, log_file=record.output_path
+            raw,
+            _DEFAULT_INLINE_CAP,
+            log_file=record.output_path,
+            log_kind="streamed output",
         )
 
     return InputMessageItem.from_text(
@@ -1120,17 +1136,22 @@ class BackgroundTaskManager[CtxT]:
             full = _serialize_result(error) if failed else _serialize_result(result)
             cap = bt.max_inline_result_chars
 
-            log_file: str | None = None
+            result_file: str | None = None
             if cap is not None and len(full) > cap and backend is not None:
-                log_file = await write_result_file(
+                result_file = await write_result_file(
                     backend, name=bt.tool_call_id or bt.task_id, text=full
                 )
 
-            body, _ = excerpt_for_inline(full, cap, log_file=log_file or bt.log_path)
+            # The excerpt's marker names the full result when it was spilled,
+            # else the streamed log — a different file, which may hold less.
+            body, _ = excerpt_for_inline(
+                full,
+                cap,
+                log_file=result_file or bt.log_path,
+                log_kind="full result" if result_file else "streamed output",
+            )
             note_result = None if failed else body
             note_error = body if failed else None
-
-            # NOTE: How do we distinguish between .log and .result in the note?
 
             notification = InputMessageItem.from_text(
                 _make_outcome_note(
@@ -1140,6 +1161,7 @@ class BackgroundTaskManager[CtxT]:
                     failed=failed,
                     result=note_result,
                     error=note_error,
+                    result_file=result_file,
                     log_path=bt.log_path,
                     elapsed_s=time.monotonic() - bt.started_at,
                 ),

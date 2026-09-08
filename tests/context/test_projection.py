@@ -38,9 +38,8 @@ def _result(call_id: str, output: str = "ok") -> FunctionToolOutputItem:
 
 
 def _assert_valid(messages: Sequence[InputItem]) -> None:
-    transcript = LLMAgentTranscript()
-    transcript.messages = list(messages)
-    transcript.validate_tool_call_pairing()  # raises if the view is invalid
+    # raises if the view is invalid
+    LLMAgentTranscript(list(messages)).validate_tool_call_pairing()
 
 
 def _output_call_ids(messages: Sequence[InputItem]) -> list[str]:

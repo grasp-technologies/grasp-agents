@@ -179,21 +179,20 @@ def _make_executor(
     ctx: SessionContext[None] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
-    memory = LLMAgentTranscript()
-    memory.messages = [InputMessageItem.from_text("sys", role="system")]
-    memory.update([InputMessageItem.from_text("go", role="user")])
-
     ctx = ctx if ctx is not None else SessionContext[None](state=None)
     executor = _make_agent_loop(
         agent_name="test",
         llm=llm,
-        transcript=memory,
         ctx=ctx,
+        messages=[
+            InputMessageItem.from_text("sys", role="system"),
+            InputMessageItem.from_text("go", role="user"),
+        ],
         tools=tools,
         max_turns=max_turns,
         stream_llm=False,
     )
-    return executor, memory, llm
+    return executor, executor.cw.transcript, llm
 
 
 async def _collect_events(
@@ -810,16 +809,19 @@ class TestCapAndDeferDelivery:
         task_id = event.data.task_id
 
         await mgr.wait_idle()
-        notes = [str(c.note.message) for c in await mgr.pop_completions(ctx=ctx)]
+        notes = [c.note.message.text for c in await mgr.pop_completions(ctx=ctx)]
         assert len(notes) == 1
         assert "chars omitted" in notes[0]
 
         # The marker points at a .result sidecar holding the full result, even
-        # though no .log was streamed.
-        match = re.search(r"full output in (.+?)\]", notes[0])
+        # though no .log was streamed — and the note names it in <result_file>.
+        match = re.search(r"full result in (.+?)\]", notes[0])
         assert match is not None
         result_path = Path(match.group(1).strip())
         assert result_path.suffix == ".result"
+        tag = re.search(r"<result_file>\n(.+?)\n</result_file>", notes[0])
+        assert tag is not None
+        assert Path(tag.group(1).strip()) == result_path
         assert result_path.read_text().count("X") == 1000
         assert not list((tmp_path / ".grasp" / "tasks").glob("*.log"))
         assert task_id not in mgr._tasks  # pyright: ignore[reportPrivateUsage]
@@ -862,8 +864,11 @@ class TestDurableTaskRecords:
         # A fresh manager on the same session = a restart; the owning context
         # writes the notices it returns into the transcript.
         mgr2 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
-        agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
-        agent_ctx2.transcript.update([InputMessageItem.from_text("sys", role="system")])
+        agent_ctx2 = _make_agent_ctx(
+            agent_name="t",
+            bg_tasks=mgr2,
+            messages=[InputMessageItem.from_text("sys", role="system")],
+        )
         notes = await mgr2.resume_durable(ctx=ctx, exec_id="t")
         agent_ctx2.deliver_task_notes(notes)
 
@@ -1226,6 +1231,38 @@ class TestFrontTrim:
             await task
         except asyncio.CancelledError:
             pass
+
+    @pytest.mark.asyncio
+    async def test_bubble_then_pop_keeps_the_outcome(self):
+        # Bubbling trims a finished task's consumed prefix before it is popped;
+        # the trim keeps the terminal result event, so the completion note still
+        # carries the outcome.
+        tool = _BgStreamingTool()
+        executor, _, _ = _make_executor([], tools=[tool])
+        mgr = executor.agent_ctx.bg_tasks
+        ctx = executor.ctx
+
+        call = FunctionToolCallItem(
+            call_id="c1", name="bg_streamer", arguments='{"text": "x"}'
+        )
+        await mgr.run_backgroundable(
+            call,
+            tool,
+            EchoInput(text="x"),
+            ctx=ctx,
+            exec_id="t",
+            agent_ctx=executor.agent_ctx,
+        )
+        await mgr.wait_idle()
+
+        async for _ in mgr.bubble_events(ctx=ctx):
+            pass
+
+        completions = await mgr.pop_completions(ctx=ctx)
+        assert len(completions) == 1
+        note = str(completions[0].note.message)
+        assert "<status> completed </status>" in note
+        assert "done" in note
 
     @pytest.mark.asyncio
     async def test_trim_stops_before_a_terminal_result(self):

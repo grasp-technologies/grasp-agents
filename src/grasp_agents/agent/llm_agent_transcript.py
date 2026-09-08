@@ -1,6 +1,5 @@
-from collections.abc import Sequence
-
-from pydantic import BaseModel, Field
+from collections.abc import Iterator, Sequence
+from typing import overload
 
 from grasp_agents.types.errors import TranscriptInvariantError
 from grasp_agents.types.items import (
@@ -11,35 +10,47 @@ from grasp_agents.types.items import (
 )
 
 
-class LLMAgentTranscript(BaseModel):
+class LLMAgentTranscript(Sequence[InputItem]):
     """
-    Per-run message history for :class:`LLMAgent` — the pure conversation log.
+    Per-run message history for :class:`LLMAgent` — the pure conversation log,
+    read-only.
 
-    Owned by the agent (``agent.transcript``), persisted via the agent's
-    checkpoint, and rebuilt on resume. Distinct from cross-session memory on
-    :class:`SessionContext.memory` (the memdir-backed knowledge store). The system
-    prompt is not stored here — it lives in the ephemeral header
-    (``initial_context``) the agent prepends to the model-facing view each turn.
-
-    Appending (:meth:`update`) is always safe. Destructive ops on an agent's
-    live transcript (``clear`` / ``truncate`` / assigning ``messages``) must go
-    through the agent — ``LLMAgent.reset_transcript()`` or the
-    ``ContextWindowManager`` transcript surgery — so the view state derived
-    from the transcript (summary folds, token accounting) is repaired in the
-    same step.
+    A sequence view over the messages the agent's ``ContextWindowManager`` owns:
+    index, slice, iterate, ``len``. Every write goes through the manager
+    (``add_messages`` / ``truncate_transcript`` / ``replace_transcript``, or
+    ``LLMAgent.reset_transcript`` / ``replace_transcript``), so the view state
+    derived from the log (summary folds, token accounting) is repaired in the
+    same step. Persisted via the agent's checkpoint and rebuilt on resume.
+    Distinct from cross-session memory on :class:`SessionContext.memory` (the
+    memdir-backed knowledge store). The system prompt is not stored here — it
+    lives in the ephemeral header (``initial_context``) the agent prepends to
+    the model-facing view each turn.
     """
 
-    messages: list[InputItem] = Field(default_factory=list[InputItem])
+    __slots__ = ("_messages",)
 
-    def clear(self) -> None:
-        self.messages = []
+    def __init__(self, messages: list[InputItem] | None = None) -> None:
+        # Shared with the owner, which mutates it in place and never rebinds it.
+        self._messages: list[InputItem] = messages if messages is not None else []
 
-    def truncate(self, message_count: int) -> None:
-        if 0 <= message_count < len(self.messages):
-            del self.messages[message_count:]
+    @property
+    def messages(self) -> Sequence[InputItem]:
+        return self._messages
 
-    def update(self, new_messages: Sequence[InputItem]) -> None:
-        self.messages.extend(new_messages)
+    def __len__(self) -> int:
+        return len(self._messages)
+
+    @overload
+    def __getitem__(self, index: int) -> InputItem: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[InputItem]: ...
+
+    def __getitem__(self, index: int | slice) -> InputItem | list[InputItem]:
+        return self._messages[index]
+
+    def __iter__(self) -> Iterator[InputItem]:
+        return iter(self._messages)
 
     def validate_tool_call_pairing(self) -> None:
         """
@@ -58,7 +69,7 @@ class LLMAgentTranscript(BaseModel):
 
         """
         open_calls: list[str] = []
-        for item in self.messages:
+        for item in self._messages:
             if isinstance(item, FunctionToolCallItem):
                 open_calls.append(item.call_id)
             elif isinstance(item, FunctionToolOutputItem):
@@ -77,7 +88,7 @@ class LLMAgentTranscript(BaseModel):
 
     @property
     def is_empty(self) -> bool:
-        return len(self.messages) == 0
+        return not self._messages
 
     @property
     def owes_response(self) -> bool:
@@ -91,12 +102,12 @@ class LLMAgentTranscript(BaseModel):
         not — so a message absorbed into a checkpointed log is always answered,
         even across a crash and resume, with nothing tracked outside the log.
         """
-        if not self.messages:
+        if not self._messages:
             return False
         return isinstance(
-            self.messages[-1],
+            self._messages[-1],
             (InputMessageItem, FunctionToolOutputItem, FunctionToolCallItem),
         )
 
     def __repr__(self) -> str:
-        return f"LLMAgentTranscript(len={len(self.messages)})"
+        return f"LLMAgentTranscript(len={len(self._messages)})"

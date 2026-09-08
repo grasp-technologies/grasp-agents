@@ -180,7 +180,9 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         parent_transcript: LLMAgentTranscript | None,
     ) -> tuple[str | None, str]:
         """Resolve sys_prompt and user message via builders or defaults."""
-        transcript = parent_transcript or LLMAgentTranscript()
+        transcript = (
+            parent_transcript if parent_transcript is not None else LLMAgentTranscript()
+        )
         sys_prompt = self._sys_prompt
         in_prompt = prompt
 

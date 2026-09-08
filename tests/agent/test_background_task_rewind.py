@@ -37,8 +37,11 @@ from tests.agent.test_background_tools import (
 def _make_manager() -> tuple[BackgroundTaskManager[None], AgentContext]:
     """A manager and its owning context, transcript seeded with one system message."""
     mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
-    agent_ctx = _make_agent_ctx(agent_name="t", bg_tasks=mgr)
-    agent_ctx.transcript.update([InputMessageItem.from_text("sys", role="system")])
+    agent_ctx = _make_agent_ctx(
+        agent_name="t",
+        bg_tasks=mgr,
+        messages=[InputMessageItem.from_text("sys", role="system")],
+    )
     return mgr, agent_ctx
 
 
@@ -520,7 +523,7 @@ class TestRestoreFlipPositionRule:
         mgr, agent_ctx = _make_manager()
         state = agent_ctx.snapshot()
 
-        agent_ctx.transcript.update(
+        agent_ctx.cw.add_messages(
             [InputMessageItem.from_text(f"m{i}", role="user") for i in range(2)]
         )  # 3 messages
         mgr.restore_deferred_delivered(
@@ -751,7 +754,7 @@ class TestSettleKeepsDeliveredFlips:
         assert mgr.export_deferred_delivered()  # the deferred DELIVERED flip
 
         # A later round is interrupted in flight → settle prunes only it.
-        agent.transcript.update(
+        agent.agent_ctx.cw.add_messages(
             [FunctionToolCallItem(call_id="c2", name="foo", arguments="{}")]
         )
         agent._settle_run(failed=True)  # pyright: ignore[reportPrivateUsage]

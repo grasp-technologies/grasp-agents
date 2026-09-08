@@ -13,7 +13,6 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
@@ -220,22 +219,22 @@ class TestExecutorTextResponse:
         """Single LLM call returns text → final answer."""
         response = _make_text_response("The answer is 42.")
         llm = MockLLM(model_name="mock", responses_queue=[response])
-        memory = LLMAgentTranscript()
-        memory.messages = [InputMessageItem.from_text("Be helpful.", role="system")]
-
         executor = _make_agent_loop(
             agent_name="test_agent",
             llm=llm,
-            transcript=memory,
+            messages=[InputMessageItem.from_text("Be helpful.", role="system")],
             ctx=SessionContext[None](),
             tools=None,
             max_turns=3,
             stream_llm=False,
         )
 
+        memory = executor.cw.transcript
         ctx = SessionContext[None]()
         executor.ctx = ctx
-        memory.update([InputMessageItem.from_text("What is 42?", role="user")])
+        executor.cw.add_messages(
+            [InputMessageItem.from_text("What is 42?", role="user")]
+        )
 
         events, last_response = await _collect_events(executor, ctx)
 
@@ -258,13 +257,10 @@ class TestExecutorTextResponse:
         """Streaming mode also produces LLMStreamEvents."""
         response = _make_text_response("Hello!")
         llm = MockLLM(model_name="mock", responses_queue=[response])
-        memory = LLMAgentTranscript()
-        memory.messages = [InputMessageItem.from_text("sys", role="system")]
-
         executor = _make_agent_loop(
             agent_name="agent",
             llm=llm,
-            transcript=memory,
+            messages=[InputMessageItem.from_text("sys", role="system")],
             ctx=SessionContext[None](),
             tools=None,
             max_turns=1,
@@ -273,7 +269,7 @@ class TestExecutorTextResponse:
 
         ctx = SessionContext[None]()
         executor.ctx = ctx
-        memory.update([InputMessageItem.from_text("Hi", role="user")])
+        executor.cw.add_messages([InputMessageItem.from_text("Hi", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
         llm_events = [e for e in events if isinstance(e, LLMStreamEvent)]
@@ -300,17 +296,14 @@ class TestExecutorToolCalling:
             model_name="mock",
             responses_queue=[tool_response, final_response],
         )
-        memory = LLMAgentTranscript()
-        memory.messages = [
-            InputMessageItem.from_text("You can add numbers.", role="system")
-        ]
-
         tool = AddTool()
         executor = _with_final_answer_extractor(
             _make_agent_loop(
                 agent_name="calc",
                 llm=llm,
-                transcript=memory,
+                messages=[
+                    InputMessageItem.from_text("You can add numbers.", role="system")
+                ],
                 ctx=SessionContext[None](),
                 tools=[tool],
                 max_turns=3,
@@ -318,8 +311,11 @@ class TestExecutorToolCalling:
             )
         )
 
+        memory = executor.cw.transcript
         ctx = SessionContext[None]()
-        memory.update([InputMessageItem.from_text("Add 2 and 3", role="user")])
+        executor.cw.add_messages(
+            [InputMessageItem.from_text("Add 2 and 3", role="user")]
+        )
 
         events, last_response = await _collect_events(executor, ctx)
 
@@ -371,14 +367,11 @@ class TestExecutorToolCalling:
         responses.append(_make_text_response("Forced answer"))
 
         llm = MockLLM(model_name="mock", responses_queue=responses)
-        memory = LLMAgentTranscript()
-        memory.messages = [InputMessageItem.from_text("sys", role="system")]
-
         tool = AddTool()
         executor = _make_agent_loop(
             agent_name="agent",
             llm=llm,
-            transcript=memory,
+            messages=[InputMessageItem.from_text("sys", role="system")],
             ctx=SessionContext[None](),
             tools=[tool],
             max_turns=2,
@@ -387,7 +380,7 @@ class TestExecutorToolCalling:
 
         ctx = SessionContext[None]()
         executor.ctx = ctx
-        memory.update([InputMessageItem.from_text("loop", role="user")])
+        executor.cw.add_messages([InputMessageItem.from_text("loop", role="user")])
         events, last_response = await _collect_events(executor, ctx)
 
         # 4 LLM calls: first generate + 2 loop generates + force_generate
@@ -410,13 +403,10 @@ class TestExecutorUsageTracking:
         """Response usage is tracked in SessionContext.usage_tracker."""
         response = _make_text_response("answer")
         llm = MockLLM(model_name="mock", responses_queue=[response])
-        memory = LLMAgentTranscript()
-        memory.messages = [InputMessageItem.from_text("sys", role="system")]
-
         executor = _make_agent_loop(
             agent_name="test_agent",
             llm=llm,
-            transcript=memory,
+            messages=[InputMessageItem.from_text("sys", role="system")],
             ctx=SessionContext[None](),
             tools=None,
             max_turns=1,
@@ -425,7 +415,7 @@ class TestExecutorUsageTracking:
 
         ctx = SessionContext[None]()
         executor.ctx = ctx
-        memory.update([InputMessageItem.from_text("q", role="user")])
+        executor.cw.add_messages([InputMessageItem.from_text("q", role="user")])
         await _collect_events(executor, ctx)
 
         # Usage should be tracked
@@ -453,14 +443,11 @@ class TestExecutorMemoryIntegrity:
             model_name="mock",
             responses_queue=[tool_response, final_response],
         )
-        memory = LLMAgentTranscript()
-        memory.messages = [InputMessageItem.from_text("calc", role="system")]
-
         executor = _with_final_answer_extractor(
             _make_agent_loop(
                 agent_name="agent",
                 llm=llm,
-                transcript=memory,
+                messages=[InputMessageItem.from_text("calc", role="system")],
                 ctx=SessionContext[None](),
                 tools=[AddTool()],
                 max_turns=3,
@@ -468,8 +455,9 @@ class TestExecutorMemoryIntegrity:
             )
         )
 
+        memory = executor.cw.transcript
         ctx = SessionContext[None]()
-        memory.update([InputMessageItem.from_text("1+2", role="user")])
+        executor.cw.add_messages([InputMessageItem.from_text("1+2", role="user")])
         await _collect_events(executor, ctx)
 
         # Verify each message type

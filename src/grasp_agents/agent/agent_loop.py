@@ -503,7 +503,7 @@ class AgentLoop[CtxT]:
                 # can correct itself. The dispatcher will skip these
                 # call_ids via ``_skip_call_ids``.
                 if pending:
-                    self.cw.transcript.update(pending)
+                    self.cw.add_messages(pending)
                     for ev in self._item_events(pending, exec_id=exec_id):
                         yield ev
 
@@ -524,19 +524,19 @@ class AgentLoop[CtxT]:
 
             # Clean completion → commit pending items, then surface their
             # item events (post-write, per the convention above).
-            self.cw.transcript.update(pending)
+            self.cw.add_messages(pending)
             for ev in self._item_events(pending, exec_id=exec_id):
                 yield ev
 
         else:
             try:
                 response = await self._llm.generate_response(**llm_params)
-                self.cw.transcript.update(response.output)
+                self.cw.add_messages(response.output)
 
             except LLMToolCallValidationError as exc:
                 response = exc.response
                 if response is not None:
-                    self.cw.transcript.update(response.output)
+                    self.cw.add_messages(response.output)
                     for ev in self._item_events(response.output, exec_id=exec_id):
                         yield ev
 
@@ -600,7 +600,7 @@ class AgentLoop[CtxT]:
             msg = FunctionToolOutputItem.from_tool_result(
                 call_id=item.call_id, output=err_info
             )
-            self.cw.transcript.update([msg])
+            self.cw.add_messages([msg])
             self._skip_call_ids.add(item.call_id)
             yield ToolOutputItemEvent(
                 source=item.name, destination=self.agent_name, exec_id=exec_id, data=msg
@@ -825,7 +825,7 @@ class AgentLoop[CtxT]:
                 continue
             msg = await self._convert_tool_output(output, call, exec_id=exec_id)
             tool_messages.append(msg)
-            self.cw.transcript.update([msg])
+            self.cw.add_messages([msg])
             yield ToolOutputItemEvent(
                 source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
@@ -851,7 +851,7 @@ class AgentLoop[CtxT]:
             ),
             role="user",
         )
-        self.cw.transcript.update([user_message])
+        self.cw.add_messages([user_message])
         # TODO: set source
         yield UserMessageEvent(
             source=None,
@@ -928,7 +928,7 @@ class AgentLoop[CtxT]:
             return []
         answered = {
             m.call_id
-            for m in self.cw.transcript.messages
+            for m in self.cw.transcript
             if isinstance(m, FunctionToolOutputItem)
         }
         for tc in tool_calls:
@@ -957,7 +957,7 @@ class AgentLoop[CtxT]:
             for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self.cw.transcript.update([msg for _, msg in closures])
+            self.cw.add_messages([msg for _, msg in closures])
 
         return closures
 
@@ -989,7 +989,7 @@ class AgentLoop[CtxT]:
             for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self.cw.transcript.update([msg for _, msg in closures])
+            self.cw.add_messages([msg for _, msg in closures])
 
         return closures
 
@@ -1130,7 +1130,7 @@ class AgentLoop[CtxT]:
                 )
                 tool_msgs.append(msg)
                 rejection_msgs.append(msg)
-                self.cw.transcript.update([msg])
+                self.cw.add_messages([msg])
                 yield ToolOutputItemEvent(
                     source=call.name,
                     destination=self.agent_name,
@@ -1461,9 +1461,7 @@ class AgentLoop[CtxT]:
         # A new message resets the per-message turn budget (see decide_next_step).
         self._message_start_turn = self.turn
         item = message.to_input_message()
-        self.cw.transcript.update([item])
-
-        # NOTE: Do we want a checkpoint here?
+        self.cw.add_messages([item])
 
         # ``source`` names the mailbox sender (a peer, or "user" for human
         # input), so a UI can tell queued human turns from peer hand-offs.
@@ -1485,8 +1483,6 @@ class AgentLoop[CtxT]:
         for done in await self.bg_tasks.pop_completions(ctx=self.ctx):
             self._agent_ctx.deliver_task_notes([done.note])
 
-            # NOTE: Do we want a checkpoint here?
-
             yield BackgroundTaskCompletedEvent(
                 source=self.agent_name, exec_id=exec_id, data=done.info
             )
@@ -1505,7 +1501,7 @@ class AgentLoop[CtxT]:
         turn follows a tool round or an answer.
         """
         inputs: list[InputItem] = []
-        for item in reversed(self.cw.transcript.messages):
+        for item in reversed(self.cw.transcript):
             if not isinstance(item, InputMessageItem):
                 break
             inputs.append(item)
@@ -1540,8 +1536,6 @@ class AgentLoop[CtxT]:
                 location=AgentCheckpointLocation.AFTER_INPUT,
             )
 
-        # NOTE: We may need checkpoints after recording BG/inbox input messages as well?
-
         extra_llm_settings = deepcopy(extra_llm_settings or {})
 
         # A resident agent (inbox attached) loops until its task is cancelled from
@@ -1572,6 +1566,7 @@ class AgentLoop[CtxT]:
             # Turn-boundary delivery: the next resident inbox message as a user
             # turn, then the background tasks' live progress (bubbled events,
             # mirrored to the .grasp logs) and any completions.
+            delivered_from = len(self.cw.transcript)
             async for event in self._drain_inbox(exec_id=exec_id):
                 yield event
 
@@ -1581,6 +1576,14 @@ class AgentLoop[CtxT]:
 
             async for event in self._drain_bg_completions(exec_id=exec_id):
                 yield event
+
+            if len(self.cw.transcript) > delivered_from:
+                # Side-channel input is made durable before the turn responds to
+                # it, exactly like a step's input; the save also acks the inbox
+                # message and flips the delivered tasks' records.
+                await self.checkpoint(
+                    turn=self.turn, location=AgentCheckpointLocation.AFTER_INPUT
+                )
 
             # Compaction: fold an old span before generating if the view
             # approaches the budget (no-op without a compactor / under budget).

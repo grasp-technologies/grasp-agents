@@ -508,9 +508,12 @@ async def test_lease_survives_detach_reattach() -> None:
 
 @pytest.mark.asyncio
 async def test_rebuilt_agent_neither_wedges_nor_duplicates() -> None:
-    # A fresh agent instance (same session) starts from the persisted log —
-    # which never absorbed the message — and a fresh inbox: the message is
-    # re-delivered once, not blocked by the dead instance's lease.
+    # The delivery checkpoint persisted the absorbed human message — and acked
+    # it — before agent1's LLM call failed. A fresh instance (same session)
+    # resumes from that log, which holds the message exactly once; its fresh
+    # inbox skips the already-processed message instead of re-delivering it,
+    # and the log still owes a response, so the instance answers rather than
+    # parking.
     store = InMemoryCheckpointStore()
     agent1, transport = _resident(FailFirstLLM(responses_queue=[]), store)
     human = _human("human task")
@@ -519,6 +522,7 @@ async def test_rebuilt_agent_neither_wedges_nor_duplicates() -> None:
     with pytest.raises(ProcRunError):
         async for _ in agent1.run_stream():
             pass
+    assert await transport.was_processed("test_agent", human.message_id)
 
     ctx2 = SessionContext[None](checkpoint_store=store, session_key="s1")
     ctx2.transport = transport
@@ -530,5 +534,20 @@ async def test_rebuilt_agent_neither_wedges_nor_duplicates() -> None:
     )
     agent2.attach_inbox()
 
-    await _run_until_processed(agent2, transport, human)
-    assert str(agent2.transcript.messages).count("human task") == 1
+    async def drain() -> None:
+        async for _ in agent2.run_stream():
+            pass
+
+    run = asyncio.create_task(drain())
+    try:
+        for _ in range(500):
+            if "handled" in str(agent2.transcript.messages):
+                break
+            await asyncio.sleep(0.01)
+        blob = str(agent2.transcript.messages)
+        assert blob.count("human task") == 1
+        assert "handled" in blob
+    finally:
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run

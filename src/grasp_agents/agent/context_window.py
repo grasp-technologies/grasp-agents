@@ -36,15 +36,15 @@ class ContextWindowManager:
     """
     Owns the transcript log and the model-facing view derived from it.
 
-    The transcript is created here (or adopted once, at construction) and
-    exposed as a shared read/append handle (:attr:`transcript`) — re-exposed by
-    ``AgentContext`` to tools, and held by the background-task manager to
-    deliver completion notes. Composes the view (ephemeral ``initial_context``
-    header + summary folds + the view-projector pipeline over the log), tracks
-    its input-token cost against the budget, and records compaction folds under
-    pressure. Projections and folds shape only the view, never the log, so step
-    rollback and resume keep the full history. Held by :class:`AgentContext`;
-    configured by ``LLMAgent`` hooks.
+    The log is created here and exposed as a read-only view
+    (:attr:`transcript`), re-exposed by ``AgentContext`` to tools; every write
+    — appends included — is a method of this class, so the view state derived
+    from the log is repaired alongside. Composes the view (ephemeral
+    ``initial_context`` header + summary folds + the view-projector pipeline over
+    the log), tracks its input-token cost against the budget, and records
+    compaction folds under pressure. Projections and folds shape only the view,
+    never the log, so step rollback and resume keep the full history. Held by
+    :class:`AgentContext`; configured by ``LLMAgent`` hooks.
     """
 
     def __init__(
@@ -53,9 +53,11 @@ class ContextWindowManager:
         model_name: str,
         source: str,
         capabilities: ModelCapabilities | None = None,
-        transcript: LLMAgentTranscript | None = None,
     ) -> None:
-        self._transcript = transcript or LLMAgentTranscript()
+        # The log. Mutated in place only — ``transcript`` is a read-only view
+        # sharing this list, so it is never rebound.
+        self._messages: list[InputItem] = []
+        self._transcript = LLMAgentTranscript(self._messages)
 
         # Tokenizer selection + budget sizing. ``capabilities`` should be the
         # LLM's own (a composed LLM reports its conservative merge — a fallback
@@ -91,12 +93,17 @@ class ContextWindowManager:
 
     @property
     def transcript(self) -> LLMAgentTranscript:
-        """
-        The owned transcript log — the shared read/append handle every other
-        holder (``agent.transcript``, ``AgentContext``, background tasks)
-        works on. Destructive ops go through the surgery methods below.
-        """
+        """Read-only view of the log (also ``agent.transcript``)."""
         return self._transcript
+
+    def add_messages(self, messages: Sequence[InputItem]) -> int:
+        """
+        Append ``messages`` to the log; returns its new length (the 1-based
+        position of the last message appended). Appends need no view repair:
+        folds and the token anchor index a prefix the append leaves intact.
+        """
+        self._messages.extend(messages)
+        return len(self._messages)
 
     # --- registration (called by LLMAgent's hooks) ---
 
@@ -137,11 +144,11 @@ class ContextWindowManager:
         so the final view is repaired once before the call. The view is never
         written back to the transcript.
         """
-        self._pending_view_count = len(self._transcript.messages)
+        self._pending_view_count = len(self._messages)
         if not self.folds and not self.view_projectors:
             # No compaction: the log is pairing-valid and the header adds no tool
             # calls, so the prepended view needs no repair.
-            return [*self.initial_context, *self._transcript.messages]
+            return [*self.initial_context, *self._messages]
         body = await self._build_view_body(exec_id=exec_id)
         return repair_tool_call_pairing([*self.initial_context, *body])
 
@@ -152,7 +159,7 @@ class ContextWindowManager:
         first; projectors then trim what remains. Both shape the view, never the
         log.
         """
-        body: Sequence[InputItem] = self._transcript.messages
+        body: Sequence[InputItem] = self._messages
         if self.folds:
             body = apply_folds(body, self.folds)
         if self.view_projectors:
@@ -176,7 +183,7 @@ class ContextWindowManager:
         falls back to a chars-per-token estimate when no tokenizer is available.
         """
         model = self._model_name
-        messages = self._transcript.messages
+        messages = self._messages
         if self._anchor_valid():
             delta = messages[self._last_counted_len :]
             if not delta:
@@ -190,7 +197,7 @@ class ContextWindowManager:
         # (the log is append + suffix-truncate only). A rollback / resume that
         # cut below it falls through to a full recount rather than mis-slicing.
         return self._last_input_tokens > 0 and self._last_counted_len <= len(
-            self._transcript.messages
+            self._messages
         )
 
     async def projected_input_tokens(self, *, exec_id: str) -> int:
@@ -224,10 +231,8 @@ class ContextWindowManager:
         self._last_counted_len = 0
 
     # --- transcript surgery ---
-    # The single writer of destructive transcript operations. Cutting or
-    # replacing the transcript here repairs everything keyed to it — summary
-    # folds and the token anchor — in the same step; assigning
-    # ``transcript.messages`` directly leaves them out of sync.
+    # Cutting or replacing the log repairs everything keyed to it — summary
+    # folds and the token anchor — in the same step.
 
     def truncate_transcript(self, message_count: int) -> None:
         """
@@ -237,7 +242,7 @@ class ContextWindowManager:
         originals); the token anchor survives unless the cut falls below its
         counted prefix.
         """
-        self._transcript.truncate(message_count)
+        del self._messages[max(message_count, 0) :]
         self.folds = [f for f in self.folds if f.end <= message_count]
         if self._last_counted_len > message_count:
             self.reset_anchor()
@@ -251,7 +256,7 @@ class ContextWindowManager:
         with its folds — lossy summaries are carried so resume doesn't
         re-summarize — and recount the budget anchor.
         """
-        self._transcript.messages = list(messages)
+        self._messages[:] = list(messages)
         self.folds = list(folds)
         self.reset_anchor()
         self._pending_view_count = 0
@@ -277,7 +282,7 @@ class ContextWindowManager:
         if self.compactor is None:
             return None
         fold = await self.compactor(
-            self._transcript.messages,
+            self._messages,
             input_tokens=await self.projected_input_tokens(exec_id=exec_id),
             folds=self.folds,
             exec_id=exec_id,
@@ -296,7 +301,7 @@ class ContextWindowManager:
 
     def compaction_event(self, fold: FoldSpec, *, exec_id: str) -> CompactionEvent:
         """The event announcing a recorded fold (the reduced view size + summary)."""
-        messages = self._transcript.messages
+        messages = self._messages
         budget = getattr(self.compactor, "budget", None)
         return CompactionEvent(
             source=self._source,

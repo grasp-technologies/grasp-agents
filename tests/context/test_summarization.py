@@ -241,12 +241,14 @@ async def test_compaction_gate_measures_post_projection_view() -> None:
     )
     cw = agent.agent_ctx.cw
     cw.initial_context = []
-    agent.transcript.messages = [
-        _user("q"),
-        FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
-        FunctionToolOutputItem.from_tool_result(call_id="c1", output="Z" * 40_000),
-        _user("next"),
-    ]
+    agent.replace_transcript(
+        [
+            _user("q"),
+            FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
+            FunctionToolOutputItem.from_tool_result(call_id="c1", output="Z" * 40_000),
+            _user("next"),
+        ]
+    )
     cw.add_view_projector(
         CollapseToolOutputsProjector(
             proactive=True, keep_recent_turns=1, head_chars=100, tail_chars=50

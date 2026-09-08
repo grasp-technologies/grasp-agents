@@ -2,7 +2,8 @@
 Step rollback (``LLMAgent.rollback_to_step``) and its primitives.
 
 Verifies:
-- ``LLMAgentTranscript.truncate`` and ``CheckpointStore.truncate_messages``
+- ``ContextWindowManager.truncate_transcript`` and
+  ``CheckpointStore.truncate_messages``
 - a live session rewinds to a step boundary: transcript, durable log, turn,
   cached output, and the boundary map are all cut back
 - after rollback the discarded step is a *fresh* delivery, not a cached one
@@ -18,8 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
+from grasp_agents.agent.context_window import ContextWindowManager
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.durability import AgentContextState, InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.mailbox import CheckpointMailboxTransport
@@ -37,16 +38,16 @@ _KEY = "s1/agent/test_agent"
 
 
 def test_transcript_truncate() -> None:
-    transcript = LLMAgentTranscript()
-    transcript.update(
+    cw = ContextWindowManager(model_name="mock", source="t")
+    cw.add_messages(
         [InputMessageItem.from_text(f"m{i}", role="user") for i in range(5)]
     )
-    transcript.truncate(2)
-    assert len(transcript.messages) == 2
-    transcript.truncate(10)  # count >= len → no-op
-    assert len(transcript.messages) == 2
-    transcript.truncate(0)
-    assert transcript.messages == []
+    cw.truncate_transcript(2)
+    assert len(cw.transcript) == 2
+    cw.truncate_transcript(10)  # count >= len → no-op
+    assert len(cw.transcript) == 2
+    cw.truncate_transcript(0)
+    assert list(cw.transcript) == []
 
 
 @pytest.mark.asyncio

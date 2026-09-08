@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -38,7 +39,7 @@ from grasp_agents.types.events import (
     ToolOutputEvent,
     UserMessageEvent,
 )
-from grasp_agents.types.items import OutputMessageItem
+from grasp_agents.types.items import InputItem, OutputMessageItem
 from grasp_agents.types.llm_events import (
     LlmEvent,
     OutputItemAdded,
@@ -50,7 +51,7 @@ from grasp_agents.types.response import Response, ResponseUsage
 from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Mapping
 
 # ------------------------------------------------------------------ #
 #  Test helpers                                                        #
@@ -158,7 +159,7 @@ def _make_child_llm(*texts: str) -> MockLLM:
 
 def _agent_ctx(
     *,
-    transcript: LLMAgentTranscript | None = None,
+    messages: Sequence[InputItem] | None = None,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     explicit_tool_names: frozenset[str] | None = None,
 ) -> AgentContext:
@@ -177,7 +178,7 @@ def _agent_ctx(
     return _make_agent_ctx(
         agent_name="parent",
         tools=tool_map,
-        transcript=transcript,
+        messages=messages,
         explicit_tool_names=explicit_tool_names,
     )
 
@@ -552,21 +553,22 @@ class TestAgentToolPromptBuilders:
         )
 
         # The parent transcript reaches the builder via the call's AgentContext.
-        parent_mem = LLMAgentTranscript()
         from grasp_agents.types.items import InputMessageItem
 
-        parent_mem.update([InputMessageItem.from_text("user said hi", role="user")])
+        parent_ctx = _agent_ctx(
+            messages=[InputMessageItem.from_text("user said hi", role="user")]
+        )
 
         ctx: SessionContext[None] = SessionContext()
         await agent_tool._run(
             AgentToolInput(prompt="go"),
             ctx=ctx,
             exec_id="x",
-            agent_ctx=_agent_ctx(transcript=parent_mem),
+            agent_ctx=parent_ctx,
         )
         assert len(received_memory) == 1
-        assert received_memory[0] is parent_mem
-        assert len(received_memory[0].messages) == 1
+        assert received_memory[0] is parent_ctx.transcript
+        assert len(received_memory[0]) == 1
 
     @pytest.mark.asyncio
     async def test_async_builder(self) -> None:
