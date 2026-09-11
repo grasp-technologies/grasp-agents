@@ -14,13 +14,25 @@ from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import LLMResponseValidationError
-from grasp_agents.types.items import InputItem
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    InputItem,
+    OutputItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
 from grasp_agents.types.llm_errors import (
     LlmError,
     LlmErrorTuple,
     LlmInternalServerError,
 )
-from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted, ResponseFailed
+from grasp_agents.types.llm_events import (
+    LlmEvent,
+    OutputItemDone,
+    ResponseCompleted,
+    ResponseFailed,
+    ResponseIncomplete,
+)
 from grasp_agents.types.response import Response
 from grasp_agents.usage_tracker import add_cost_to_usage
 
@@ -54,6 +66,24 @@ def _settings_adapter(settings_type: type) -> TypeAdapter[Any]:
     return TypeAdapter(settings_type)
 
 
+# ``provider_specific_fields`` key holding a reasoning payload the producing
+# company's backend signed and re-verifies on replay (Gemini attaches it to
+# message and tool-call items rather than to reasoning items).
+_THOUGHT_SIGNATURE_KEY = "thought_signature"
+
+
+def _has_thought_signature(item: OutputMessageItem | FunctionToolCallItem) -> bool:
+    return _THOUGHT_SIGNATURE_KEY in (item.provider_specific_fields or {})
+
+
+def _without_thought_signature(
+    item: OutputMessageItem | FunctionToolCallItem,
+) -> OutputMessageItem | FunctionToolCallItem:
+    psf = dict(item.provider_specific_fields or {})
+    psf.pop(_THOUGHT_SIGNATURE_KEY, None)
+    return item.model_copy(update={"provider_specific_fields": psf or None})
+
+
 LLMRateLimiter = RateLimiter[Response | AsyncIterator[LlmEvent]]
 
 
@@ -72,8 +102,9 @@ class CloudLLM(LLM):
     # through to the provider untouched. ``None`` disables validation.
     _settings_type: ClassVar[Any] = CloudLLMSettings
 
-    # The vendor's own API: the name of its endpoint, used for the
-    # ``api_provider`` entry when the caller supplies none.
+    # The vendor of the client's own API family ("openai", "anthropic",
+    # "gemini"): names the endpoint for the ``api_provider`` entry when the
+    # caller supplies none, and is the default ``native_provider_name``.
     _native_provider_name: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
@@ -227,7 +258,7 @@ class CloudLLM(LLM):
     @abstractmethod
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
@@ -292,6 +323,84 @@ class CloudLLM(LLM):
                 litellm_provider=self.litellm_provider,
             )
 
+    @property
+    def native_provider_name(self) -> str | None:
+        """
+        Vendor whose backend verifies this model's reasoning payloads
+        ("openai", "anthropic", "gemini"), whatever endpoint or platform serves
+        the model. Stamped on the items this model produces and used to keep
+        another vendor's signed reasoning out of its requests; ``None`` stamps
+        and drops nothing.
+        """
+        return self._native_provider_name
+
+    # --- Native provider name stamping ---
+
+    def _stamp_item_native_provider_name(self, item: OutputItem) -> None:
+        """
+        Stamp an untagged item with THIS model's native provider name.
+
+        Only items whose payload the producing company's backend verifies are
+        stamped: reasoning items always, message and tool-call items when they
+        carry a thought signature.
+        """
+        if isinstance(item, (OutputMessageItem, FunctionToolCallItem)):
+            if not _has_thought_signature(item):
+                return
+        elif not isinstance(item, ReasoningItem):
+            return
+        if item.native_provider_name is None:
+            item.native_provider_name = self.native_provider_name
+
+    def _stamp_native_provider_name(self, response: Response) -> None:
+        """Stamp untagged response items with THIS model's native provider name."""
+        for item in response.output:
+            self._stamp_item_native_provider_name(item)
+
+    def _finalize_response(self, response: Response) -> None:
+        self._stamp_cost(response)
+        self._stamp_native_provider_name(response)
+
+    # --- Foreign reasoning ---
+
+    def _drop_foreign_reasoning(
+        self,
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
+    ) -> Sequence[InputItem]:
+        """
+        Keep out of the request any reasoning payload only a foreign backend
+        can verify.
+
+        A reasoning item tagged with a native provider name other than THIS model's is
+        dropped whole: providers verify reasoning payloads server-side, so a
+        foreign one is rejected at the wire and nothing is left of the item
+        once its payload is gone. A foreign-tagged message or tool call is
+        instead forwarded as a copy without its thought signature — dropping it
+        would break tool-call pairing and lose the text. The caller's items are
+        never modified, so the signature is still there if a later turn goes
+        back to the model that produced it. Untagged items (name ``None``)
+        pass through as they are.
+        """
+        native_provider_name = self.native_provider_name
+        if native_provider_name is None:
+            return input
+
+        kept: list[InputItem] = []
+        for item in input:
+            if isinstance(item, ReasoningItem):
+                if item.native_provider_name in {None, native_provider_name}:
+                    kept.append(item)
+            elif (
+                isinstance(item, (OutputMessageItem, FunctionToolCallItem))
+                and item.native_provider_name not in {None, native_provider_name}
+                and _has_thought_signature(item)
+            ):
+                kept.append(_without_thought_signature(item))
+            else:
+                kept.append(item)
+
+        return kept
+
     # --- LLM interface implementation ---
 
     def __init_subclass__(cls, **kwargs: Any):
@@ -305,13 +414,15 @@ class CloudLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
+        input = self._drop_foreign_reasoning(input)  # ruff: ignore[builtin-variable-shadowing]
+
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -344,7 +455,7 @@ class CloudLLM(LLM):
         except Exception as err:
             self._raise_mapped(err, output_schema=output_schema)
 
-        self._stamp_cost(response)
+        self._finalize_response(response)
         logger.info(
             "llm %s → %s in %.2fs",
             self.model_name,
@@ -363,13 +474,15 @@ class CloudLLM(LLM):
 
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
+        input = self._drop_foreign_reasoning(input)  # ruff: ignore[builtin-variable-shadowing]
+
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -426,8 +539,14 @@ class CloudLLM(LLM):
                     ),
                     body=None,
                 )
-            if isinstance(event, ResponseCompleted):
-                self._stamp_cost(event.response)
+            if isinstance(event, OutputItemDone):
+                # Streamed items are consumed as they arrive, and a converter
+                # is free to hand out objects distinct from the ones in the
+                # terminal response, so each item is stamped where it flows
+                # rather than only on the response it ends up in.
+                self._stamp_item_native_provider_name(event.item)
+            if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                self._finalize_response(event.response)
                 logger.info(
                     "llm %s → %s in %.2fs (streamed)",
                     self.model_name,

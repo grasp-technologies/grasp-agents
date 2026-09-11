@@ -13,13 +13,17 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import BaseModel, Field
 
+from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
+    OutputItem,
     OutputMessageItem,
+    ReasoningItem,
 )
 from grasp_agents.types.llm_events import (
+    OutputItemDone,
     OutputMessageTextPartTextDelta,
     ResponseCompleted,
 )
@@ -27,6 +31,7 @@ from grasp_agents.types.llm_events import (
 if TYPE_CHECKING:
     from grasp_agents.llm.cloud_llm import CloudLLM
     from grasp_agents.tools.base import BaseTool
+    from grasp_agents.types.response import Response
 
 
 class Capital(BaseModel):
@@ -225,3 +230,101 @@ class TestLiteLLMParallelToolUse:
 
         assert r2.status == "completed"
         assert "42" in r2.output_text
+
+
+async def _stream_with_snapshots(
+    llm: CloudLLM, input_items: list[Any], **kwargs: Any
+) -> tuple[Response, list[OutputItem]]:
+    """Stream a response; copy every item at the moment it is emitted."""
+    emitted: list[OutputItem] = []
+    response: Response | None = None
+    async for event in llm.generate_response_stream(input_items, **kwargs):
+        if isinstance(event, OutputItemDone):
+            emitted.append(event.item.model_copy(deep=True))
+        elif isinstance(event, ResponseCompleted):
+            response = event.response
+    assert response is not None
+    return response, emitted
+
+
+@pytest.mark.integration
+class TestLiteLLMGeminiThoughtSignatures:
+    """
+    Gemini signs the first non-thought part of a turn and rejects a replay that
+    lacks the signature. A signed item must carry its signature the moment it
+    is streamed out, and the signature must reach the wire on the next turn.
+    """
+
+    @pytest.fixture
+    def llm(self, google_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
+
+        return LiteLLM(
+            model_name="gemini/gemini-3.1-flash-lite",
+            api_provider=APIProvider(
+                name="gemini", base_url=None, api_key=google_api_key
+            ),
+            llm_settings={"reasoning_effort": "low", "max_completion_tokens": 1024},
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_call_signature_round_trip(
+        self, llm: CloudLLM, parallel_tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        user_msg = InputMessageItem.from_text("What is 17 + 25? Use the add tool.")
+        r1, emitted = await _stream_with_snapshots(
+            llm, [user_msg], tools=parallel_tools, tool_choice="required"
+        )
+
+        calls = [i for i in emitted if isinstance(i, FunctionToolCallItem)]
+        assert calls
+        assert calls[0].provider_specific_fields
+        assert calls[0].provider_specific_fields["thought_signature"]
+        assert all(
+            i.encrypted_content is None for i in emitted if isinstance(i, ReasoningItem)
+        )
+        assert [i.model_dump() for i in emitted] == [i.model_dump() for i in r1.output]
+
+        tool_outputs = _execute_parallel_tools(r1.tool_call_items)
+        r2, _ = await _stream_with_snapshots(
+            llm, [user_msg, *r1.output, *tool_outputs], tools=parallel_tools
+        )
+        assert r2.status == "completed"
+        assert "42" in r2.output_text
+
+    @pytest.mark.asyncio
+    async def test_tool_call_signature_round_trip(
+        self, llm: CloudLLM, parallel_tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        user_msg = InputMessageItem.from_text("What is 17 + 25? Use the add tool.")
+        r1 = await llm.generate_response(
+            [user_msg], tools=parallel_tools, tool_choice="required"
+        )
+
+        assert r1.tool_call_items
+        assert r1.tool_call_items[0].provider_specific_fields
+        assert r1.tool_call_items[0].provider_specific_fields["thought_signature"]
+
+        tool_outputs = _execute_parallel_tools(r1.tool_call_items)
+        r2 = await llm.generate_response(
+            [user_msg, *r1.output, *tool_outputs], tools=parallel_tools
+        )
+        assert r2.status == "completed"
+        assert "42" in r2.output_text
+
+    @pytest.mark.asyncio
+    async def test_stream_text_answer_signature_round_trip(self, llm: CloudLLM) -> None:
+        user_msg = InputMessageItem.from_text(
+            "Why is the sky blue? Answer in one sentence."
+        )
+        r1, emitted = await _stream_with_snapshots(llm, [user_msg])
+
+        (message,) = [i for i in emitted if isinstance(i, OutputMessageItem)]
+        assert message.provider_specific_fields
+        assert len(message.provider_specific_fields["thought_signatures"]) == 1
+        assert [i.model_dump() for i in emitted] == [i.model_dump() for i in r1.output]
+
+        follow_up = InputMessageItem.from_text("Now say it in three words.")
+        r2, _ = await _stream_with_snapshots(llm, [user_msg, *r1.output, follow_up])
+        assert r2.status == "completed"
+        assert r2.output_text

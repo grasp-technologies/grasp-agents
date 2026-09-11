@@ -65,7 +65,8 @@ class TestEmptyToolCallArgs:
     def test_gemini_request_build_tolerates_empty_args(self) -> None:
         for raw in ("", "null"):
             part = _tool_call_to_part(
-                FunctionToolCallItem(call_id="c1", name="t", arguments=raw)
+                FunctionToolCallItem(call_id="c1", name="t", arguments=raw),
+                sign_unsigned=False,
             )
             assert part.function_call is not None
             assert part.function_call.args == {}

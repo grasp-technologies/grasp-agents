@@ -48,13 +48,18 @@ if TYPE_CHECKING:
 
 def items_to_provider_inputs(
     items: Sequence[InputItem],
+    *,
+    model: str | None = None,
 ) -> tuple[str | GeminiContent | None, list[GeminiContent]]:
     """
     Convert response items to Gemini content format.
 
     Returns ``(system_instruction, contents)`` where *system_instruction*
-    is extracted from system/developer role items.
+    is extracted from system/developer role items. Pass *model* so a function
+    call without a thought signature (one produced by another model) gets the
+    placeholder Gemini 3 requires instead of a request rejection.
     """
+    sign_unsigned_calls = requires_thought_signatures(model)
     system_parts: list[str] = []
     contents: list[GeminiContent] = []
     call_id_to_name: dict[str, str] = {
@@ -101,7 +106,9 @@ def items_to_provider_inputs(
             ):
                 group.append(items[i])  # type: ignore[arg-type]
                 i += 1
-            contents.append(_output_group_to_content(group))
+            contents.append(
+                _output_group_to_content(group, sign_unsigned_calls=sign_unsigned_calls)
+            )
 
     system: str | GeminiContent | None = None
     if system_parts:
@@ -209,6 +216,8 @@ def _tool_output_to_content(
 
 def _output_group_to_content(
     group: Sequence[OutputItem],
+    *,
+    sign_unsigned_calls: bool,
 ) -> GeminiContent:
     parts: list[GeminiPart] = []
 
@@ -222,7 +231,7 @@ def _output_group_to_content(
                 parts.append(text_part)
 
         elif isinstance(item, FunctionToolCallItem):
-            fc_part = _tool_call_to_part(item)
+            fc_part = _tool_call_to_part(item, sign_unsigned=sign_unsigned_calls)
             parts.append(fc_part)
 
         # WebSearchCallItem: no Gemini equivalent, skip
@@ -250,7 +259,9 @@ def _message_to_part(item: OutputMessageItem) -> GeminiPart:
     return part
 
 
-def _tool_call_to_part(item: FunctionToolCallItem) -> GeminiPart:
+def _tool_call_to_part(
+    item: FunctionToolCallItem, *, sign_unsigned: bool
+) -> GeminiPart:
     # Tolerate empty/None-ish arguments; they mean a no-arg call and must
     # not crash the request build.
     raw = item.arguments.strip()
@@ -264,5 +275,16 @@ def _tool_call_to_part(item: FunctionToolCallItem) -> GeminiPart:
     psf = item.provider_specific_fields
     if psf and "thought_signature" in psf:
         part.thought_signature = base64.b64decode(psf["thought_signature"])
+    elif sign_unsigned:
+        part.thought_signature = PLACEHOLDER_THOUGHT_SIGNATURE
 
     return part
+
+
+# Gemini 3 rejects a function call without a thought signature; Google's
+# documented placeholder skips the check for calls produced by another model.
+PLACEHOLDER_THOUGHT_SIGNATURE = b"skip_thought_signature_validator"
+
+
+def requires_thought_signatures(model: str | None) -> bool:
+    return model is not None and "gemini-3" in model
