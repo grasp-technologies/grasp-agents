@@ -1,20 +1,20 @@
 """
-Item origin: stamp and drop origin-bound items by the vendor of the client that
-produced them.
+Native provider name: stamp and drop provider-bound items by the vendor of the
+client that produced them.
 
-* stamping — an untagged reasoning item gets this client's origin on the
-  non-stream and stream paths alike, as does a message or tool call carrying a
-  thought signature; items without a signature and a pre-existing origin are
-  left untouched
-* dropping — a foreign-origin reasoning item never reaches the wire; a
-  foreign-origin signed message or tool call is forwarded without its
+* stamping — an untagged reasoning item gets this client's native provider
+  name on the non-stream and stream paths alike, as does a message or tool
+  call carrying a thought signature; items without a signature and items
+  already tagged are left untouched
+* dropping — a reasoning item tagged for a foreign provider never reaches the
+  wire; a foreign-tagged signed message or tool call is forwarded without its
   signature; own and untagged items pass through verbatim, and neither the
   caller's input list nor its items are ever mutated
-* fallback rescue — a reasoning item tagged for the failed primary's origin
+* fallback rescue — a reasoning item tagged for the failed primary's provider
   does not poison the fallback member's request
-* resolution — the origin is the client class's vendor, whatever model name,
-  endpoint or platform is in play; a class with no vendor of its own has none,
-  which stamps and drops nothing
+* resolution — the native provider name is the client class's vendor, whatever
+  model name, endpoint or platform is in play; LiteLLM takes the provider it
+  routes to, so its items stay with the backend that can verify them
 """
 
 from __future__ import annotations
@@ -163,26 +163,26 @@ def _first_reasoning(items: Iterable[Any]) -> ReasoningItem:
     return next(i for i in items if isinstance(i, ReasoningItem))
 
 
-def _signed_message(origin: str | None) -> OutputMessageItem:
+def _signed_message(native_provider_name: str | None) -> OutputMessageItem:
     return OutputMessageItem(
         status="completed",
-        origin=origin,
+        native_provider_name=native_provider_name,
         content=[OutputMessageText(text="calling add")],
         provider_specific_fields={"thought_signature": "msg-sig", "other": 1},
     )
 
 
-def _signed_tool_call(origin: str | None) -> FunctionToolCallItem:
+def _signed_tool_call(native_provider_name: str | None) -> FunctionToolCallItem:
     return FunctionToolCallItem(
         call_id="call_1",
         name="add",
         arguments='{"a": 1, "b": 2}',
-        origin=origin,
+        native_provider_name=native_provider_name,
         provider_specific_fields={"thought_signature": "fc-sig"},
     )
 
 
-def _signed_turn(origin: str | None) -> list[InputItem]:
+def _signed_turn(native_provider_name: str | None) -> list[InputItem]:
     """
     An assistant turn whose message and tool call carry a thought signature.
 
@@ -191,8 +191,8 @@ def _signed_turn(origin: str | None) -> list[InputItem]:
     """
     return [
         InputMessageItem.from_text("hi"),
-        _signed_message(origin),
-        _signed_tool_call(origin),
+        _signed_message(native_provider_name),
+        _signed_tool_call(native_provider_name),
         FunctionToolOutputItem(call_id="call_1", output="3"),
     ]
 
@@ -206,12 +206,12 @@ def _signatures(items: Iterable[Any]) -> list[Any]:
 
 
 def _history_with_reasoning(*, foreign: str, own: str) -> list[InputItem]:
-    """A turn carrying foreign, own-origin and untagged reasoning."""
+    """A turn carrying foreign, own-native_provider_name and untagged reasoning."""
     return [
         InputMessageItem.from_text("hi"),
-        ReasoningItem(origin=foreign, encrypted_content="foreign-sig"),
+        ReasoningItem(native_provider_name=foreign, encrypted_content="foreign-sig"),
         ReasoningItem(
-            origin=own,
+            native_provider_name=own,
             encrypted_content="own-sig",
             summary=[ReasoningSummary(text="own")],
         ),
@@ -341,7 +341,7 @@ class TestStamping:
 
         response = await llm.generate_response(_USER_MSG)
 
-        assert _first_reasoning(response.output).origin == "anthropic"
+        assert _first_reasoning(response.output).native_provider_name == "anthropic"
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
@@ -360,7 +360,7 @@ class TestStamping:
 
         response = await llm.generate_response(_USER_MSG)
 
-        assert _first_reasoning(response.output).origin == "openai"
+        assert _first_reasoning(response.output).native_provider_name == "openai"
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
@@ -373,9 +373,11 @@ class TestStamping:
         events = [e async for e in llm.generate_response_stream(_USER_MSG)]
 
         streamed = next(e for e in events if isinstance(e, OutputItemDone))
-        assert _first_reasoning([streamed.item]).origin == "openai"
+        assert _first_reasoning([streamed.item]).native_provider_name == "openai"
         completed = next(e for e in events if isinstance(e, ResponseCompleted))
-        assert _first_reasoning(completed.response.output).origin == "openai"
+        assert (
+            _first_reasoning(completed.response.output).native_provider_name == "openai"
+        )
 
     @pytest.mark.asyncio
     async def test_incomplete_stream_is_finalized_like_a_completed_one(self) -> None:
@@ -386,9 +388,12 @@ class TestStamping:
         events = [e async for e in llm.generate_response_stream(_USER_MSG)]
 
         incomplete = next(e for e in events if isinstance(e, ResponseIncomplete))
-        assert _first_reasoning(incomplete.response.output).origin == "openai"
+        assert (
+            _first_reasoning(incomplete.response.output).native_provider_name
+            == "openai"
+        )
         streamed = next(e for e in events if isinstance(e, OutputItemDone))
-        assert _first_reasoning([streamed.item]).origin == "openai"
+        assert _first_reasoning([streamed.item]).native_provider_name == "openai"
 
     def test_pretagged_origin_never_overwritten(self) -> None:
         llm = AnthropicLLM(
@@ -398,15 +403,19 @@ class TestStamping:
             model="claude-sonnet-4-5",
             output=[
                 ReasoningItem(
-                    origin="gemini", summary=[ReasoningSummary(text="pre-tagged")]
+                    native_provider_name="gemini",
+                    summary=[ReasoningSummary(text="pre-tagged")],
                 ),
                 ReasoningItem(summary=[ReasoningSummary(text="untagged")]),
             ],
         )
 
-        llm._stamp_origin(response)
+        llm._stamp_native_provider_name(response)
 
-        assert [i.origin for i in response.output] == ["gemini", "anthropic"]
+        assert [i.native_provider_name for i in response.output] == [
+            "gemini",
+            "anthropic",
+        ]
 
 
 # ---------- 2. Dropping foreign reasoning ----------
@@ -451,7 +460,9 @@ class TestDroppingForeignReasoning:
             "own-sig",
             "untagged-sig",
         ]
-        assert not any("origin" in d for d in captured if isinstance(d, dict))
+        assert not any(
+            "native_provider_name" in d for d in captured if isinstance(d, dict)
+        )
         assert len(history) == before_len
 
 
@@ -461,33 +472,33 @@ class TestDroppingForeignReasoning:
 class TestThoughtSignatures:
     def test_signed_message_and_tool_call_are_stamped(self) -> None:
         llm = GeminiLLM(model_name="gemini-3-pro", api_provider=_GEMINI_PROVIDER)
-        message = _signed_message(origin=None)
-        tool_call = _signed_tool_call(origin=None)
+        message = _signed_message(native_provider_name=None)
+        tool_call = _signed_tool_call(native_provider_name=None)
         unsigned = OutputMessageItem(
             status="completed", content=[OutputMessageText(text="plain")]
         )
 
-        llm._stamp_origin(
+        llm._stamp_native_provider_name(
             Response(model="gemini-3-pro", output=[message, tool_call, unsigned])
         )
 
-        assert message.origin == "gemini"
-        assert tool_call.origin == "gemini"
+        assert message.native_provider_name == "gemini"
+        assert tool_call.native_provider_name == "gemini"
         # An unsigned item has nothing a backend must verify, so it stays free
         # to replay anywhere.
-        assert unsigned.origin is None
+        assert unsigned.native_provider_name is None
 
     def test_signed_item_origin_never_overwritten(self) -> None:
         llm = OpenAILLM(model_name="gpt-5.1", api_provider=_OPENAI_PROVIDER)
-        message = _signed_message(origin="gemini")
+        message = _signed_message(native_provider_name="gemini")
 
-        llm._stamp_origin(Response(model="gpt-5.1", output=[message]))
+        llm._stamp_native_provider_name(Response(model="gpt-5.1", output=[message]))
 
-        assert message.origin == "gemini"
+        assert message.native_provider_name == "gemini"
 
     def test_foreign_signatures_stripped_without_touching_history(self) -> None:
         llm = OpenAILLM(model_name="gpt-5.1", api_provider=_OPENAI_PROVIDER)
-        history = _signed_turn(origin="gemini")
+        history = _signed_turn(native_provider_name="gemini")
 
         filtered = llm._drop_foreign_reasoning(history)
 
@@ -505,7 +516,7 @@ class TestThoughtSignatures:
 
     def test_own_origin_keeps_signatures(self) -> None:
         llm = GeminiLLM(model_name="gemini-3-pro", api_provider=_GEMINI_PROVIDER)
-        history = _signed_turn(origin="gemini")
+        history = _signed_turn(native_provider_name="gemini")
 
         filtered = llm._drop_foreign_reasoning(history)
 
@@ -514,7 +525,7 @@ class TestThoughtSignatures:
 
     def test_untagged_signatures_are_kept(self) -> None:
         llm = OpenAILLM(model_name="gpt-5.1", api_provider=_OPENAI_PROVIDER)
-        history = _signed_turn(origin=None)
+        history = _signed_turn(native_provider_name=None)
 
         filtered = llm._drop_foreign_reasoning(history)
 
@@ -528,7 +539,7 @@ class TestThoughtSignatures:
             api_provider=_OPENAI_PROVIDER,
             served=_chat_completion("ok"),
         )
-        history = _signed_turn(origin="gemini")
+        history = _signed_turn(native_provider_name="gemini")
 
         await llm.generate_response(history)
 
@@ -560,7 +571,7 @@ class TestFallbackRescue:
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
         history: list[InputItem] = [
             InputMessageItem.from_text("hi"),
-            ReasoningItem(origin="openai", encrypted_content="foreign"),
+            ReasoningItem(native_provider_name="openai", encrypted_content="foreign"),
         ]
 
         result = await llm.generate_response(history)
@@ -581,8 +592,8 @@ class TestOriginResolution:
             model_name="gpt-5.6-luna", api_provider=_OPENAI_PROVIDER
         )
 
-        assert responses._resolve_reasoning_origin() == "openai"
-        assert completions._resolve_reasoning_origin() == "openai"
+        assert responses.native_provider_name == "openai"
+        assert completions.native_provider_name == "openai"
 
     def test_origin_is_the_client_vendor_regardless_of_endpoint(self) -> None:
         llm = OpenAILLM(
@@ -594,22 +605,23 @@ class TestOriginResolution:
             ),
         )
 
-        assert llm._resolve_reasoning_origin() == "openai"
+        assert llm.native_provider_name == "openai"
 
     def test_gateway_served_model_takes_the_client_vendor(self) -> None:
         llm = OpenAILLM(
             model_name="google/gemma-4-31b-it", api_provider=_OPENROUTER_PROVIDER
         )
 
-        assert llm._resolve_reasoning_origin() == "openai"
+        assert llm.native_provider_name == "openai"
 
-    def test_litellm_leaves_every_model_untagged(self) -> None:
-        for model_name in (
-            "anthropic/claude-sonnet-4-5",
-            "gemini/gemini-2.5-pro",
-            "gpt-5.1",
-        ):
-            assert LiteLLM(model_name=model_name)._resolve_reasoning_origin() is None
+    def test_litellm_tags_with_the_provider_it_routes_to(self) -> None:
+        expected = {
+            "anthropic/claude-sonnet-4-5": "anthropic",
+            "gemini/gemini-2.5-pro": "gemini",
+            "gpt-5.1": "openai",
+        }
+        for model_name, provider in expected.items():
+            assert LiteLLM(model_name=model_name).native_provider_name == provider
 
         proxied = LiteLLM(
             model_name="openai/some-proxy-model",
@@ -620,13 +632,31 @@ class TestOriginResolution:
             ),
         )
 
-        assert proxied._resolve_reasoning_origin() is None
+        assert proxied.native_provider_name == "custom-proxy"
 
     def test_llm_without_reasoning_origin_drops_nothing(self) -> None:
         llm = LazyStreamCloudLLM(model_name="mock")
         tagged = [
-            ReasoningItem(origin="anthropic", summary=[ReasoningSummary(text="x")])
+            ReasoningItem(
+                native_provider_name="anthropic", summary=[ReasoningSummary(text="x")]
+            )
         ]
 
-        assert llm._resolve_reasoning_origin() is None
+        assert llm.native_provider_name is None
         assert llm._drop_foreign_reasoning(tagged) is tagged
+
+
+class TestLiteLLMDropsForeignReasoning:
+    def test_reasoning_from_another_provider_is_dropped(self) -> None:
+        llm = LiteLLM(model_name="gemini/gemini-2.5-pro")
+        own = ReasoningItem(
+            native_provider_name="gemini", summary=[ReasoningSummary(text="own")]
+        )
+        foreign = ReasoningItem(
+            native_provider_name="anthropic", encrypted_content="anthropic-sig"
+        )
+        untagged = ReasoningItem(summary=[ReasoningSummary(text="untagged")])
+
+        kept = llm._drop_foreign_reasoning([own, foreign, untagged])
+
+        assert list(kept) == [own, untagged]

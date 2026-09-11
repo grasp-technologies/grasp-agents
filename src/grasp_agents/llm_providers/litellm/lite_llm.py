@@ -124,6 +124,13 @@ class LiteLLM(CloudLLM):
 
         object.__setattr__(self, "api_provider", _api_provider)
 
+    @property
+    def native_provider_name(self) -> str | None:
+        # The provider LiteLLM routes to ("gemini", "anthropic", "openai", or a
+        # gateway such as "openrouter"): its backend is the one that can verify
+        # the reasoning payloads it returns.
+        return self.api_provider.get("name") if self.api_provider else None
+
     def get_supported_openai_params(self) -> list[Any] | None:
         return get_supported_openai_params(  # type: ignore[no-untyped-call]
             model=self.model_name, request_type="chat_completion"

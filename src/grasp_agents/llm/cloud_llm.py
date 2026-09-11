@@ -102,8 +102,9 @@ class CloudLLM(LLM):
     # through to the provider untouched. ``None`` disables validation.
     _settings_type: ClassVar[Any] = CloudLLMSettings
 
-    # The vendor's own API: the name of its endpoint, used for the
-    # ``api_provider`` entry when the caller supplies none.
+    # The vendor of the client's own API family ("openai", "anthropic",
+    # "gemini"): names the endpoint for the ``api_provider`` entry when the
+    # caller supplies none, and is the default ``native_provider_name``.
     _native_provider_name: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
@@ -202,20 +203,6 @@ class CloudLLM(LLM):
             return self.api_provider.get("name") or self._native_provider_name
         return self._native_provider_name
 
-    def _resolve_reasoning_origin(self) -> str | None:
-        """
-        Identity to stamp on and filter reasoning items by.
-
-        The vendor of the client's own API family ("openai", "anthropic",
-        "gemini"), whatever endpoint or platform serves the model: a signed
-        reasoning payload travels with the API dialect that produced it, so the
-        two OpenAI dialects exchange reasoning freely while no two vendors do.
-        A class with no vendor of its own (``LiteLLM``, which manages
-        signature compatibility itself) returns ``None``, which leaves its
-        items untagged and stamps and filters nothing.
-        """
-        return self._native_provider_name
-
     def _resolve_litellm_provider(self) -> str | None:
         """
         Pricing/capability identity of the endpoint actually serving the model.
@@ -271,7 +258,7 @@ class CloudLLM(LLM):
     @abstractmethod
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
@@ -336,11 +323,22 @@ class CloudLLM(LLM):
                 litellm_provider=self.litellm_provider,
             )
 
-    # --- Origin stamping ---
-
-    def _stamp_item_origin(self, item: OutputItem) -> None:
+    @property
+    def native_provider_name(self) -> str | None:
         """
-        Stamp an untagged item with THIS model's origin.
+        Vendor whose backend verifies this model's reasoning payloads
+        ("openai", "anthropic", "gemini"), whatever endpoint or platform serves
+        the model. Stamped on the items this model produces and used to keep
+        another vendor's signed reasoning out of its requests; ``None`` stamps
+        and drops nothing.
+        """
+        return self._native_provider_name
+
+    # --- Native provider name stamping ---
+
+    def _stamp_item_native_provider_name(self, item: OutputItem) -> None:
+        """
+        Stamp an untagged item with THIS model's native provider name.
 
         Only items whose payload the producing company's backend verifies are
         stamped: reasoning items always, message and tool-call items when they
@@ -351,50 +349,50 @@ class CloudLLM(LLM):
                 return
         elif not isinstance(item, ReasoningItem):
             return
-        if item.origin is None:
-            item.origin = self._resolve_reasoning_origin()
+        if item.native_provider_name is None:
+            item.native_provider_name = self.native_provider_name
 
-    def _stamp_origin(self, response: Response) -> None:
-        """Stamp untagged items in the response with THIS model's origin."""
+    def _stamp_native_provider_name(self, response: Response) -> None:
+        """Stamp untagged response items with THIS model's native provider name."""
         for item in response.output:
-            self._stamp_item_origin(item)
+            self._stamp_item_native_provider_name(item)
 
     def _finalize_response(self, response: Response) -> None:
         self._stamp_cost(response)
-        self._stamp_origin(response)
+        self._stamp_native_provider_name(response)
 
     # --- Foreign reasoning ---
 
     def _drop_foreign_reasoning(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
     ) -> Sequence[InputItem]:
         """
         Keep out of the request any reasoning payload only a foreign backend
         can verify.
 
-        A reasoning item tagged with an origin other than THIS model's is
+        A reasoning item tagged with a native provider name other than THIS model's is
         dropped whole: providers verify reasoning payloads server-side, so a
         foreign one is rejected at the wire and nothing is left of the item
         once its payload is gone. A foreign-tagged message or tool call is
         instead forwarded as a copy without its thought signature — dropping it
         would break tool-call pairing and lose the text. The caller's items are
         never modified, so the signature is still there if a later turn goes
-        back to the model that produced it. Untagged (``origin=None``) items
+        back to the model that produced it. Untagged items (name ``None``)
         pass through as they are.
         """
-        origin = self._resolve_reasoning_origin()
-        if origin is None:
+        native_provider_name = self.native_provider_name
+        if native_provider_name is None:
             return input
 
         kept: list[InputItem] = []
         for item in input:
             if isinstance(item, ReasoningItem):
-                if item.origin in {None, origin}:
+                if item.native_provider_name in {None, native_provider_name}:
                     kept.append(item)
             elif (
                 isinstance(item, (OutputMessageItem, FunctionToolCallItem))
-                and item.origin not in {None, origin}
+                and item.native_provider_name not in {None, native_provider_name}
                 and _has_thought_signature(item)
             ):
                 kept.append(_without_thought_signature(item))
@@ -416,14 +414,14 @@ class CloudLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
-        input = self._drop_foreign_reasoning(input)  # noqa: A001
+        input = self._drop_foreign_reasoning(input)  # ruff: ignore[builtin-variable-shadowing]
 
         api_kwargs = self._make_api_input(
             input,
@@ -476,14 +474,14 @@ class CloudLLM(LLM):
 
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
-        input = self._drop_foreign_reasoning(input)  # noqa: A001
+        input = self._drop_foreign_reasoning(input)  # ruff: ignore[builtin-variable-shadowing]
 
         api_kwargs = self._make_api_input(
             input,
@@ -546,7 +544,7 @@ class CloudLLM(LLM):
                 # is free to hand out objects distinct from the ones in the
                 # terminal response, so each item is stamped where it flows
                 # rather than only on the response it ends up in.
-                self._stamp_item_origin(event.item)
+                self._stamp_item_native_provider_name(event.item)
             if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
                 self._finalize_response(event.response)
                 logger.info(

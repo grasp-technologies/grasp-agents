@@ -4,8 +4,8 @@ Gemini thought signatures across providers.
 Gemini attaches its signed reasoning payload to regular text and function-call
 parts, so it lands on ``OutputMessageItem`` / ``FunctionToolCallItem`` rather
 than on ``ReasoningItem``. These tests pin the round trip end to end: the items
-are stamped with Gemini's origin, Gemini gets its signatures back, and a
-foreign-origin signature never reaches a Gemini request.
+are stamped with Gemini's native provider name, Gemini gets its signatures
+back, and a signature from a foreign provider never reaches a Gemini request.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ from google.genai.types import (
 
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
+from grasp_agents.llm_providers.gemini.response_to_provider_inputs import (
+    PLACEHOLDER_THOUGHT_SIGNATURE,
+    items_to_provider_inputs,
+)
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -82,12 +86,12 @@ def _signed_gemini_response() -> GenerateContentResponse:
     )
 
 
-def _signed_history(origin: str | None) -> list[InputItem]:
+def _signed_history(native_provider_name: str | None) -> list[InputItem]:
     return [
         InputMessageItem.from_text("add 1 and 2"),
         OutputMessageItem(
             status="completed",
-            origin=origin,
+            native_provider_name=native_provider_name,
             content=[OutputMessageText(text="calling add")],
             provider_specific_fields={
                 "thought_signature": base64.b64encode(_MSG_SIG).decode()
@@ -97,7 +101,7 @@ def _signed_history(origin: str | None) -> list[InputItem]:
             call_id="call_1",
             name="add",
             arguments='{"a": 1, "b": 2}',
-            origin=origin,
+            native_provider_name=native_provider_name,
             provider_specific_fields={
                 "thought_signature": base64.b64encode(_FC_SIG).decode()
             },
@@ -127,8 +131,8 @@ async def test_signed_items_are_stamped_with_gemini_origin() -> None:
 
     message = next(i for i in response.output if isinstance(i, OutputMessageItem))
     tool_call = next(i for i in response.output if isinstance(i, FunctionToolCallItem))
-    assert message.origin == "gemini"
-    assert tool_call.origin == "gemini"
+    assert message.native_provider_name == "gemini"
+    assert tool_call.native_provider_name == "gemini"
     assert (message.provider_specific_fields or {})["thought_signature"] == (
         base64.b64encode(_MSG_SIG).decode()
     )
@@ -142,7 +146,7 @@ async def test_gemini_gets_its_own_signatures_back() -> None:
         served=_signed_gemini_response(),
     )
 
-    await llm.generate_response(_signed_history(origin="gemini"))
+    await llm.generate_response(_signed_history(native_provider_name="gemini"))
 
     assert _model_part_signatures(llm.captured_api_input) == [_MSG_SIG, _FC_SIG]
 
@@ -154,11 +158,16 @@ async def test_foreign_signatures_never_reach_a_gemini_request() -> None:
         api_provider=_GEMINI_PROVIDER,
         served=_signed_gemini_response(),
     )
-    history = _signed_history(origin="openai")
+    history = _signed_history(native_provider_name="openai")
 
     await llm.generate_response(history)
 
-    assert _model_part_signatures(llm.captured_api_input) == [None, None]
+    # The foreign signatures are gone; the tool call carries Gemini's
+    # placeholder instead, since Gemini 3 rejects an unsigned function call.
+    assert _model_part_signatures(llm.captured_api_input) == [
+        None,
+        PLACEHOLDER_THOUGHT_SIGNATURE,
+    ]
     # The message and the tool call still go out, so tool-call pairing holds.
     model_parts = [
         part
@@ -187,6 +196,25 @@ async def test_untagged_signatures_reach_gemini() -> None:
         served=_signed_gemini_response(),
     )
 
-    await llm.generate_response(_signed_history(origin=None))
+    await llm.generate_response(_signed_history(native_provider_name=None))
 
     assert _model_part_signatures(llm.captured_api_input) == [_MSG_SIG, _FC_SIG]
+
+
+def test_unsigned_tool_call_gets_placeholder_only_on_gemini_3() -> None:
+    unsigned = FunctionToolCallItem(call_id="call_1", name="add", arguments="{}")
+    signed = FunctionToolCallItem(
+        call_id="call_2",
+        name="add",
+        arguments="{}",
+        provider_specific_fields={
+            "thought_signature": base64.b64encode(_FC_SIG).decode()
+        },
+    )
+    items: list[InputItem] = [InputMessageItem.from_text("add"), unsigned, signed]
+
+    _, contents = items_to_provider_inputs(items, model="gemini-3.1-flash-lite")
+    assert _model_part_signatures(contents) == [PLACEHOLDER_THOUGHT_SIGNATURE, _FC_SIG]
+
+    _, contents = items_to_provider_inputs(items, model="gemini-2.5-flash")
+    assert _model_part_signatures(contents) == [None, _FC_SIG]

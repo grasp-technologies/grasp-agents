@@ -6,35 +6,38 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from litellm.types.llms.openai import (
+    ChatCompletionAnnotation,
     ChatCompletionRedactedThinkingBlock,
     ChatCompletionThinkingBlock,
 )
+from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
-from openai.types.chat import ChatCompletionChunk
 
-from grasp_agents.llm_providers.openai_completions.llm_event_converters import (
-    CompletionsStreamConverter,
-)
+from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs,
 )
 from grasp_agents.llm_providers.openai_completions.provider_output_to_response import (
+    convert_annotations,
     convert_usage,
 )
 from grasp_agents.types.llm_events import ResponseCompleted
 from grasp_agents.types.response import Response
 
-from .utils import patch_thought_signatures, validate_chunk
+from .utils import tool_call_id_and_fields, validate_chunk
 
 LiteLLMThinkingBlock = ChatCompletionThinkingBlock | ChatCompletionRedactedThinkingBlock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from openai.types.completion_usage import CompletionUsage
+
+    from grasp_agents.types.content import Annotation
     from grasp_agents.types.llm_events import LlmEvent
 
 
-class LiteLLMStreamConverter(CompletionsStreamConverter):
+class LiteLLMStreamConverter(BaseLlmStreamConverter[LiteLLMCompletionChunk]):
     """Converts a LiteLLM ModelResponseStream async stream into a LlmEvent stream."""
 
     def __init__(self) -> None:
@@ -47,24 +50,15 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
 
     # ==== Per-chunk dispatch ====
 
-    def _process_event(
-        self, raw_event: ChatCompletionChunk | LiteLLMCompletionChunk
-    ) -> Iterator[LlmEvent]:
+    def _process_event(self, raw_event: LiteLLMCompletionChunk) -> Iterator[LlmEvent]:
         chunk = raw_event
-
-        if not isinstance(chunk, LiteLLMCompletionChunk):
-            raise TypeError(
-                f"Unsupported chunk type: {type(chunk)}. "
-                f"Expected LiteLLMCompletionChunk."
-            )
-
         validate_chunk(chunk)
 
-        # Metadata (all dynamic on chunk)
+        # Chunk-level extras LiteLLM attaches with ``setattr`` (never declared).
 
-        raw_usage: Any = getattr(chunk, "usage", None)
-        if raw_usage is not None:
-            self._usage = convert_usage(raw_usage)
+        usage: CompletionUsage | None = getattr(chunk, "usage", None)
+        if usage is not None:
+            self._usage = convert_usage(usage)
 
         service_tier: str | None = getattr(chunk, "service_tier", None)
         if service_tier:
@@ -77,7 +71,7 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
             if cost is not None:
                 self._cost = cost
 
-        response_ms: Any = getattr(chunk, "_response_ms", None)
+        response_ms: float | None = getattr(chunk, "_response_ms", None)
         if response_ms is not None:
             self._response_ms = response_ms
 
@@ -93,9 +87,12 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
         if delta.provider_specific_fields:
             self._provider_specific_fields.update(delta.provider_specific_fields)
 
-        # Annotations (deleted from Delta when None)
+        # LiteLLM deletes an optional Delta field it did not fill rather than
+        # leaving it ``None``, so those are read with ``getattr``.
 
-        annotations: list[Any] | None = getattr(delta, "annotations", None)
+        annotations: list[ChatCompletionAnnotation] | None = getattr(
+            delta, "annotations", None
+        )
         if annotations:
             self._annotations.extend(annotations)
 
@@ -106,7 +103,7 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
                 created_at=float(chunk.created),
             )
 
-        # Thinking blocks (deleted from Delta when None)
+        # Thinking blocks
 
         thinking_blocks: list[LiteLLMThinkingBlock] | None = getattr(
             delta, "thinking_blocks", None
@@ -117,8 +114,7 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
             self._has_thinking_blocks = True
             yield from self._process_thinking_blocks(thinking_blocks)
 
-        # Reasoning (deleted from Delta when None —
-        # only if no thinking_blocks, they carry the same data)
+        # Reasoning (only if no thinking_blocks, they carry the same data)
 
         if reasoning_content and not self._has_thinking_blocks:
             if not self._reasoning_open:
@@ -127,9 +123,9 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
                 yield from self._open_reasoning_summary_part()
             yield from self._on_reasoning_content(reasoning_content)
 
-        # Output message (deleted from Delta when None)
+        # Output message
 
-        text_content: str | None = getattr(delta, "content", None)
+        text_content = delta.content
         refusal: str | None = getattr(delta, "refusal", None)
 
         if text_content or refusal:
@@ -157,9 +153,13 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
 
             yield from self._on_refusal(refusal)
 
-        # Tool calls (deleted from Delta when None)
+        # Tool calls (custom tool calls have no function and are not supported)
 
-        tool_calls: list[Any] | None = getattr(delta, "tool_calls", None)
+        tool_calls = [
+            tc
+            for tc in delta.tool_calls or []
+            if isinstance(tc, ChatCompletionDeltaToolCall)
+        ]
         if tool_calls:
             if self._reasoning_open:
                 yield from self._close_reasoning()
@@ -167,22 +167,48 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
                 yield from self._close_message()
 
             for tc in tool_calls:
-                idx: int = getattr(tc, "index", 0)
+                idx = tc.index
                 if idx not in self._tool_calls:
-                    call_id: str = getattr(tc, "id", None) or str(uuid4())
+                    # An extra LiteLLM sets on the call, not a declared field.
+                    tc_fields: dict[str, Any] | None = getattr(
+                        tc, "provider_specific_fields", None
+                    )
+                    call_id, fields = tool_call_id_and_fields(
+                        tc.id or str(uuid4()), tc_fields
+                    )
                     yield from self._open_tool_call(call_id=call_id, name="", idx=idx)
+                    self._tool_calls[idx].provider_specific_fields = fields
 
-                fn = getattr(tc, "function", None)
-                if fn:
-                    name: str | None = getattr(fn, "name", None)
-                    if name:
-                        self._tool_calls[idx].name += name
-                    args: str | None = getattr(fn, "arguments", None)
-                    if args:
-                        yield from self._on_tool_call_args(idx, args)
+                state = self._tool_calls[idx]
+                if tc.function.name:
+                    state.name += tc.function.name
+                if tc.function.arguments:
+                    yield from self._on_tool_call_args(idx, tc.function.arguments)
+
+        # Gemini signs the first non-thought part. A tool call's signature was
+        # taken from the call above; a text answer's arrives in a trailing chunk
+        # after the text, while the message is still open. Attaching it here,
+        # before the message closes, keeps every OutputItemDone final.
+
+        thought_sigs: list[str] | None = (delta.provider_specific_fields or {}).get(
+            "thought_signatures"
+        )
+        if thought_sigs and not tool_calls:
+            self._attach_thought_signatures(thought_sigs)
 
         if choice.finish_reason:
             self._finish_reason = choice.finish_reason
+
+    def _attach_thought_signatures(self, sigs: list[str]) -> None:
+        if self._message_open:
+            fields = dict(self._message_provider_specific_fields or {})
+            fields["thought_signatures"] = [
+                *fields.get("thought_signatures", []),
+                *sigs,
+            ]
+            self._message_provider_specific_fields = fields
+        elif self._reasoning_open:
+            self._reasoning_encrypted_content = sigs[-1]
 
     # ==== Thinking blocks ====
 
@@ -219,21 +245,12 @@ class LiteLLMStreamConverter(CompletionsStreamConverter):
                 if text:
                     yield from self._on_reasoning_content(text)
 
+    # ==== Hooks ====
+
+    def _build_text_annotations(self) -> list[Annotation]:
+        return convert_annotations(self._annotations)
+
     # ==== Close response ====
-
-    def _close_response(self) -> Iterator[LlmEvent]:
-        """Close open items, patch thought signatures, emit ResponseCompleted."""
-        # Signatures are distributed between the two closes: a trailing
-        # reasoning item must already be in ``_items`` to be signed, while
-        # tool-call items are still built from their states by ``super()``.
-        if self._reasoning_open:
-            yield from self._close_reasoning()
-
-        thought_sigs = self._provider_specific_fields.get("thought_signatures", [])
-        if thought_sigs:
-            patch_thought_signatures(thought_sigs, self._items, self._tool_calls)
-
-        yield from super()._close_response()
 
     def _build_response_completed(self) -> ResponseCompleted:
         completed = super()._build_response_completed()

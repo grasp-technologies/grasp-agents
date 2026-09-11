@@ -480,10 +480,10 @@ class TestGraspExtensionFieldsAreScrubbed:
 
     def test_origin_never_reaches_the_wire(self) -> None:
         items = [
-            ReasoningItem(origin="openai", encrypted_content="enc"),
+            ReasoningItem(native_provider_name="openai", encrypted_content="enc"),
             OutputMessageItem(
                 status="completed",
-                origin="gemini",
+                native_provider_name="gemini",
                 content=[OutputMessageText(text="hi")],
                 provider_specific_fields={"thought_signature": "sig"},
             ),
@@ -491,13 +491,13 @@ class TestGraspExtensionFieldsAreScrubbed:
                 call_id="call_1",
                 name="add",
                 arguments="{}",
-                origin="gemini",
+                native_provider_name="gemini",
                 provider_specific_fields={"thought_signature": "sig"},
             ),
         ]
 
         for param in items_to_provider_inputs(items):
-            assert "origin" not in param
+            assert "native_provider_name" not in param
             assert "provider_specific_fields" not in param
 
     def test_reasoning_status_not_sent_back(self) -> None:
