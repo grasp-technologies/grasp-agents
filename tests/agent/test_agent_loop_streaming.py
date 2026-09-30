@@ -6,6 +6,7 @@ capture when a stream ends truncated instead of completed.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +21,7 @@ from grasp_agents.llm.llm import LLM
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.errors import MissingLLMResponseError
 from grasp_agents.types.events import Event, GenerationEndEvent
 from grasp_agents.types.items import (
     InputItem,
@@ -170,7 +172,7 @@ class TestFallbackDiscardsPartials:
             ]
         )
 
-        with pytest.raises(AssertionError):
+        with pytest.raises(MissingLLMResponseError):
             await _drain(loop)
 
         assert loop.final_answer != "from A"
@@ -181,12 +183,16 @@ class TestFallbackDiscardsPartials:
 
 class TestIncompleteStreamIsTerminal:
     @pytest.mark.asyncio
-    async def test_response_captured_and_usage_recorded(self) -> None:
+    async def test_response_captured_and_usage_recorded(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """
         ``response.incomplete`` ends a stream just as ``response.completed``
         does, carrying the final Response — the turn must finish on it and its
-        usage must reach the tracker.
+        usage must reach the tracker. The truncation is logged, and the text
+        handed back as the final answer says so.
         """
+        caplog.set_level(logging.WARNING)
         truncated_message = _message_item("truncated answ")
         truncated = Response(
             model="mock",
@@ -212,4 +218,10 @@ class TestIncompleteStreamIsTerminal:
         assert [e.data.status for e in generation_ends] == ["incomplete"]
         assert ctx.usage_tracker.usages["test"].input_tokens == 10
         assert _output_items(transcript) == [truncated_message]
-        assert loop.final_answer == "truncated answ"
+        # The transcript keeps the text as the model produced it; only the
+        # answer handed back carries the notice.
+        assert (
+            loop.final_answer
+            == "truncated answ\n\n[Response truncated: max_output_tokens]"
+        )
+        assert "LLM response is incomplete (max_output_tokens)" in caplog.text

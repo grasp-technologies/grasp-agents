@@ -53,6 +53,19 @@ class AgentFinalAnswerError(ProcRunError):
         self.message = message
 
 
+class MissingLLMResponseError(ProcRunError):
+    def __init__(
+        self, proc_name: str, exec_id: str | None = None, message: str | None = None
+    ) -> None:
+        super().__init__(
+            proc_name=proc_name,
+            exec_id=exec_id,
+            message=message
+            or "LLM stream ended without a final response "
+            f"[proc_name={proc_name}; exec_id={exec_id}]",
+        )
+
+
 class TranscriptInvariantError(Exception):
     """
     A tool call in the transcript isn't resolved by its result in place.

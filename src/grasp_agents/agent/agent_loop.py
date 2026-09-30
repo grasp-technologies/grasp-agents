@@ -19,7 +19,11 @@ from grasp_agents.tools.base import (
     ToolChoice,
     batch_has_concurrency_conflict,
 )
-from grasp_agents.types.errors import AgentFinalAnswerError, LLMToolCallValidationError
+from grasp_agents.types.errors import (
+    AgentFinalAnswerError,
+    LLMToolCallValidationError,
+    MissingLLMResponseError,
+)
 from grasp_agents.types.events import (
     Event,
     GenerationEndEvent,
@@ -100,6 +104,8 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
+_TRUNCATION_NOTICE = "\n\n[Response truncated: {reason}]"
+
 
 class CheckpointCallback(Protocol):
     async def __call__(
@@ -115,9 +121,24 @@ class CheckpointCallback(Protocol):
 class ResponseCapture:
     """Wraps an event stream, capturing the final Response."""
 
-    def __init__(self, stream: AsyncIterator[Event[Any]]) -> None:
+    def __init__(
+        self,
+        stream: AsyncIterator[Event[Any]],
+        *,
+        proc_name: str | None = None,
+        exec_id: str | None = None,
+    ) -> None:
         self._stream = stream
+        self._proc_name = proc_name
+        self._exec_id = exec_id
         self.response: Response | None = None
+
+    def result(self) -> Response:
+        if self.response is None:
+            raise MissingLLMResponseError(
+                proc_name=self._proc_name or "unknown", exec_id=self._exec_id
+            )
+        return self.response
 
     def __aiter__(self) -> AsyncIterator[Event[Any]]:
         return self._iterate()
@@ -437,7 +458,13 @@ class AgentLoop[CtxT]:
         if response.tool_call_items:
             return None
 
-        return response.output_text or None
+        text = response.output_text or None
+        if text and response.status == "incomplete" and self.llm_output_schema is None:
+            details = response.incomplete_details
+            text += _TRUNCATION_NOTICE.format(
+                reason=details.reason if details else "unknown reason"
+            )
+        return text
 
     # --- LLM generation ---
 
@@ -500,7 +527,9 @@ class AgentLoop[CtxT]:
                 # the bad assistant items + synthesize matching
                 # tool_results so the next turn sees the failure and
                 # can correct itself. The dispatcher will skip these
-                # call_ids via ``_skip_call_ids``.
+                # call_ids via ``_skip_call_ids``. The LLM layer withholds
+                # the terminal event of a response that fails validation,
+                # so the ``ResponseCompleted`` below is this turn's only one.
                 if pending:
                     self._agent_ctx.transcript.update(pending)
                     for ev in self._item_events(pending, exec_id=exec_id):
@@ -566,6 +595,15 @@ class AgentLoop[CtxT]:
 
         if not response:
             return
+
+        if response.status == "incomplete":
+            details = response.incomplete_details
+            logger.warning(
+                "agent '%s' turn %d: LLM response is incomplete (%s)",
+                self.agent_name,
+                self.turn,
+                details.reason if details else "unknown reason",
+            )
 
         self._record_llm_response(response, exec_id=exec_id)
 
@@ -668,6 +706,16 @@ class AgentLoop[CtxT]:
             logger.warning(
                 "agent '%s' hit the context window; compacted and retrying",
                 self.agent_name,
+            )
+            # Anything streamed for the failed attempt is superseded, exactly
+            # as after an LLM-layer retry. Each retry layer counts its own
+            # attempts, and this one retries once.
+            yield LLMStreamEvent(
+                data=ResponseRetrying(
+                    attempt=1, error="context window exceeded; compacted and retrying"
+                ),
+                source=self.agent_name,
+                exec_id=exec_id,
             )
             async for event in self._try_query_llm(
                 tool_choice=tool_choice,
@@ -883,21 +931,23 @@ class AgentLoop[CtxT]:
                 extra_llm_settings=settings,
                 exec_id=exec_id,
             ),
+            proc_name=self.agent_name,
+            exec_id=exec_id,
         )
         async for event in stream:
             yield event
 
-        assert stream.response is not None
+        response = stream.result()
 
-        await self.on_after_llm(stream.response, turn=self.turn, exec_id=exec_id)
+        await self.on_after_llm(response, turn=self.turn, exec_id=exec_id)
 
         self._final_answer = self._extract_final_answer(
-            response=stream.response, exec_id=exec_id
+            response=response, exec_id=exec_id
         )
         if self._final_answer is None:
             raise AgentFinalAnswerError(proc_name=self.agent_name, exec_id=exec_id)
 
-        closures = self._close_stop_tool_calls(stream.response)
+        closures = self._close_stop_tool_calls(response)
         for closure_event in self._closure_events(closures, exec_id=exec_id):
             yield closure_event
 
@@ -1392,12 +1442,13 @@ class AgentLoop[CtxT]:
             self.query_llm(
                 tool_choice=tool_choice, extra_llm_settings=settings, exec_id=exec_id
             ),
+            proc_name=self.agent_name,
+            exec_id=exec_id,
         )
         async for event in stream:
             yield event
 
-        response = stream.response
-        assert response is not None
+        response = stream.result()
 
         await self.on_after_llm(response, turn=self.turn, exec_id=exec_id)
 
@@ -1567,12 +1618,13 @@ class AgentLoop[CtxT]:
                     extra_llm_settings=extra_llm_settings,
                     had_tool_calls=had_tool_calls,
                 ),
+                proc_name=self.agent_name,
+                exec_id=exec_id,
             )
             async for event in act:
                 yield event
 
-            assert act.response is not None
-            response = act.response
+            response = act.result()
 
             if not response.output:
                 logger.warning(
