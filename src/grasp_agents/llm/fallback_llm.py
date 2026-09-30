@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from grasp_agents.tools.base import BaseTool, ToolChoice
+from grasp_agents.types.errors import LLMResponseValidationError
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
 from grasp_agents.types.llm_events import LlmEvent, ResponseFallback
@@ -18,6 +19,8 @@ from grasp_agents.types.response import Response
 from .llm import LLM
 from .model_info import ModelCapabilities
 from .resilience import RetryPolicy
+
+_FALLBACK_ERRORS = (*LlmErrorTuple, LLMResponseValidationError)
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +58,10 @@ class FallbackLLM(LLM):
     ``retry_policy``, response validation, and validation retries that
     re-sample the same member — before the cascade advances. A transient
     blip on the primary is retried on the primary, and a malformed response
-    is re-sampled from the member that produced it: models are never
-    swapped over a validation failure (validation errors propagate instead
-    of cascading). Deterministic member errors (auth, bad request, context
-    window) skip that member's retries and advance the cascade immediately.
+    is re-sampled from the member that produced it; once that member's
+    validation retries run out, the cascade advances. Deterministic member
+    errors (auth, bad request, context window) skip that member's retries
+    and advance the cascade immediately.
 
     ``retry_policy`` must be ``None`` here: all retry behavior (API and
     validation) is member-level, and a composite policy would silently
@@ -161,8 +164,8 @@ class FallbackLLM(LLM):
             try:
                 # The member's full pipeline: its own API retries,
                 # validation, and validation retries. The cascade advances
-                # only on exhausted or deterministic API errors; validation
-                # errors are not LlmErrorTuple and propagate.
+                # on exhausted or deterministic API errors, and on
+                # validation errors once the member's retries run out.
                 return await llm.generate_response(
                     input,
                     tools=tools,
@@ -171,7 +174,7 @@ class FallbackLLM(LLM):
                     **extra_llm_settings,
                 )
 
-            except LlmErrorTuple as e:
+            except _FALLBACK_ERRORS as e:
                 errors.append(e)
                 logger.warning(
                     "Model %s failed (%s: %s), trying next fallback",
@@ -212,7 +215,7 @@ class FallbackLLM(LLM):
                     yield event
                 return
 
-            except LlmErrorTuple as e:
+            except _FALLBACK_ERRORS as e:
                 errors.append(e)
                 attempt += 1
 
