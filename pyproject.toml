@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "1.0.31"
+version = "1.0.33"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
@@ -48,6 +48,7 @@ dev = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.84,<1"]
 gemini = ["google-genai>=1.65,<2"]
+typesafe = ["typesafe-sdk>=0.7.2,<1"]
 # Claude via AWS Bedrock: the SDK signs requests with botocore SigV4 (pulled in
 # by anthropic's own `bedrock` extra). Not needed when authenticating with a
 # Bedrock API key / bearer token. The 'bedrock_mantle' endpoint needs a recent

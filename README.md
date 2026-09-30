@@ -148,6 +148,7 @@ uv add grasp_agents          # or: pip install grasp_agents
 | `grasp_agents` | Core: OpenAI + LiteLLM, file/shell/code tools, memory, skills, durability, console |
 | `grasp_agents[anthropic]` | Native Anthropic provider |
 | `grasp_agents[gemini]` | Native Gemini provider |
+| `grasp_agents[typesafe]` | TypeSafe Jev provider (typed judgments, no text) |
 | `grasp_agents[all-llm-providers]` | Anthropic + Gemini + Bedrock/Vertex auth deps |
 | `grasp_agents[bedrock]` | Claude on AWS Bedrock (adds `boto3` for SigV4) |
 | `grasp_agents[vertex]` | Claude + Gemini on Google Vertex AI (adds `google-auth`) |
@@ -314,6 +315,47 @@ async def _chain(*, exec_id, turn, extra_llm_settings):
 
 Pair it with `llm_settings={"store": True}` (the provider-side persistence
 toggle); `store=False` keeps responses unstored.
+
+### Typed judgments (TypeSafe Jev)
+
+[Jev](https://docs.typesafe.ai) does not write text: it answers questions
+about a text with probabilities. With `TypeSafeLLM` the output schema is the
+question list — each field is one question, its description is the question
+text — and the single user message is the text judged. All fields go out in
+one request.
+
+```python
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
+
+from grasp_agents.llm_providers.typesafe import JevChoice, JevNoul, JevScore, TypeSafeLLM
+
+
+class Ticket(BaseModel):
+    """A support ticket."""
+
+    urgent: bool = Field(description="Does this need a reply within the hour?")
+    area: Literal["billing", "bug"] = Field(description="Which team owns it?")
+    churn_risk: Annotated[float, JevNoul()] = Field(description="Will they cancel?")
+    product: Annotated[str, JevChoice({"app": "the mobile app", "web": "the website"})] = (
+        Field(description="Which product is it about?")
+    )
+    anger: Annotated[float, JevScore(["calm", "annoyed", "furious"])] = Field(
+        description="How angry is the customer?"
+    )
+
+
+agent = LLMAgent[str, Ticket, None](name="triage", llm=TypeSafeLLM(model_name="jev-latest"))
+```
+
+`bool` is answered `True` at a probability of 0.5 or more; a `JevNoul` float is
+the probability itself; a `JevScore` float is the expected level. The full
+answers — every option's probability and Jev's confidence — are on
+`response.provider_specific_fields["answers"]`. Shared framing comes from
+`llm_settings={"instructions": ...}`, the system prompt and the schema's
+docstring, and is prefixed to every question. Tools, images and multi-turn
+history are refused before a request is sent.
 
 ## More examples
 
