@@ -53,6 +53,7 @@ from grasp_agents.types.llm_errors import LlmContextWindowError
 from grasp_agents.types.llm_events import (
     OutputItemDone,
     ResponseCompleted,
+    ResponseIncomplete,
     ResponseRetrying,
 )
 from grasp_agents.utils.errors import format_error_chain
@@ -123,7 +124,7 @@ class ResponseCapture:
     async def _iterate(self) -> AsyncIterator[Event[Any]]:
         async for event in self._stream:
             if isinstance(event, LLMStreamEvent) and isinstance(
-                event.data, ResponseCompleted
+                event.data, (ResponseCompleted, ResponseIncomplete)
             ):
                 self.response = event.data.response
             yield event
@@ -476,7 +477,7 @@ class AgentLoop[CtxT]:
                         # the transcript, or the histories diverge and
                         # citation round-trips break.
                         pending.append(se.item)
-                    elif isinstance(se, ResponseCompleted):
+                    elif isinstance(se, (ResponseCompleted, ResponseIncomplete)):
                         response = se.response
 
                     # Only LLMStream events are yielded immediately. The

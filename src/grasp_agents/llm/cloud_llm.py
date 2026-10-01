@@ -20,13 +20,32 @@ from grasp_agents.types.llm_errors import (
     LlmErrorTuple,
     LlmInternalServerError,
 )
-from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted, ResponseFailed
+from grasp_agents.types.llm_events import (
+    LlmError as LlmErrorEvent,
+)
+from grasp_agents.types.llm_events import (
+    LlmEvent,
+    ResponseCompleted,
+    ResponseFailed,
+    ResponseIncomplete,
+)
 from grasp_agents.types.response import Response
 from grasp_agents.usage_tracker import add_cost_to_usage
 
 from .llm import LLM, LLMSettings
 
 logger = logging.getLogger(__name__)
+
+
+def _streamed_failure(message: str) -> LlmInternalServerError:
+    return LlmInternalServerError(
+        message,
+        response=httpx.Response(
+            status_code=502,
+            request=httpx.Request("POST", "https://api.openai.com/v1"),
+        ),
+        body=None,
+    )
 
 
 def _format_usage(response: Response) -> str:
@@ -404,6 +423,8 @@ class CloudLLM(LLM):
         # than at acquisition — map them too, or the retry/fallback layers
         # (which catch only LlmErrorTuple) never see streaming failures.
         event_stream = self._convert_api_stream(api_stream)
+        terminal_seen = False
+        stream_error: LlmErrorEvent | None = None
         while True:
             try:
                 event = await anext(event_stream)
@@ -418,14 +439,11 @@ class CloudLLM(LLM):
                 # up with no final response at all).
                 error = event.response.error
                 message = error.message if error else "response failed"
-                raise LlmInternalServerError(
-                    f"Streamed response failed: {message}",
-                    response=httpx.Response(
-                        status_code=502,
-                        request=httpx.Request("POST", "https://api.openai.com/v1"),
-                    ),
-                    body=None,
-                )
+                raise _streamed_failure(f"Streamed response failed: {message}")
+            if isinstance(event, LlmErrorEvent):
+                stream_error = event
+            if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                terminal_seen = True
             if isinstance(event, ResponseCompleted):
                 self._stamp_cost(event.response)
                 logger.info(
@@ -444,3 +462,18 @@ class CloudLLM(LLM):
                         ),
                     )
             yield event
+
+        if not terminal_seen:
+            # Providers can end a stream after an ``error`` event, or drop it
+            # with no terminal event at all. Neither raises in the SDK, and a
+            # caller that only recognizes ``response.completed`` would be left
+            # with no response — raise a typed error so retries and fallback
+            # engage, exactly as for ``response.failed``.
+            detail = (
+                f"{stream_error.code or 'error'}: {stream_error.message}"
+                if stream_error is not None
+                else "no error event received"
+            )
+            raise _streamed_failure(
+                f"Stream ended without a terminal response event ({detail})"
+            )
