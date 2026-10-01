@@ -350,9 +350,19 @@ agent = LLMAgent[str, Ticket, None](name="triage", llm=TypeSafeLLM(model_name="j
 ```
 
 `bool` is answered `True` at a probability of 0.5 or more; a `JevNoul` float is
-the probability itself; a `JevScore` float is the expected level. The full
-answers — every option's probability and Jev's confidence — are on
-`response.provider_specific_fields["answers"]`. Shared framing comes from
+the probability itself; a `JevScore` float is the expected level.
+
+Called directly, `TypeSafeLLM` returns a `TypeSafeResponse`: the schema object
+is ready on `output_parsed`, and the full answers — every option's probability
+and Jev's confidence — on `answers`:
+
+```python
+response = cast(TypeSafeResponse, await llm.generate_response(input, output_schema=Ticket))
+response.output_parsed            # Ticket(urgent=True, area="billing", ...)
+response.answers["area"].probabilities
+```
+
+Shared framing comes from
 `llm_settings={"instructions": ...}`, the system prompt and the schema's
 docstring, and is prefixed to every question. Tools, images and multi-turn
 history are refused before a request is sent.

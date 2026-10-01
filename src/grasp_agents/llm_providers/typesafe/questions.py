@@ -63,6 +63,7 @@ AnswerReader = Callable[[Answer], Any]
 
 @dataclass(frozen=True)
 class QuestionPlan:
+    schema: type[BaseModel]
     questions: dict[str, JevQuestion]
     readers: dict[str, AnswerReader]
 
@@ -86,7 +87,7 @@ def build_question_plan(schema: Any, instructions: str | None = None) -> Questio
     readers: dict[str, AnswerReader] = {}
     for name, field in schema.model_fields.items():
         questions[name], readers[name] = _field_question(name, field, framing)
-    return QuestionPlan(questions=questions, readers=readers)
+    return QuestionPlan(schema=schema, questions=questions, readers=readers)
 
 
 def _field_question(

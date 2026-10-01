@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from typesafe_sdk import Noul, SystemOneResponse
 
 from grasp_agents.llm.cloud_llm import APIProvider
-from grasp_agents.llm_providers.typesafe import TypeSafeLLM
+from grasp_agents.llm_providers.typesafe import TypeSafeLLM, TypeSafeResponse
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.items import InputMessageItem
 from grasp_agents.types.llm_errors import LlmInternalServerError
@@ -151,6 +151,21 @@ async def test_stream_yields_the_whole_answer_as_one_completed_event() -> None:
     assert len(events) == 1
     assert isinstance(events[0], ResponseCompleted)
     assert Learnable.model_validate_json(events[0].response.output_text).learnable
+    assert isinstance(events[0].response, TypeSafeResponse)
+    assert events[0].response.output_parsed == Learnable(learnable=True)
+
+
+@pytest.mark.asyncio
+async def test_generate_response_returns_the_parsed_schema() -> None:
+    llm = make_llm(FakeClient(learnable_response()))
+
+    response = await llm.generate_response(
+        [InputMessageItem.from_text(TREND)], output_schema=Learnable
+    )
+
+    assert isinstance(response, TypeSafeResponse)
+    assert response.output_parsed == Learnable(learnable=True)
+    assert response.answers["learnable"].noul == pytest.approx(0.93)
 
 
 @pytest.mark.asyncio
