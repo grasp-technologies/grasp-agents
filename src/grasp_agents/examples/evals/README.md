@@ -52,12 +52,13 @@ grasp-evals push latest:grader_v1
 grasp-evals push latest                        # the test run: aggregates only
 ```
 
-Every command takes `--json` (one JSON document on stdout, also for errors;
-progress on stderr). Exit codes: 0 done, 1 a gate failed (invalid or incomplete
-run, missed `--fail-under`, significant regression, invalid dataset), 2 usage
-error, 3 unexpected or Phoenix error. Runs are addressed by id, unique id prefix,
-run directory, `latest`, or `latest:<name>` where the name is the run's name or
-the spec attribute (`latest:grader_v1`).
+Every command takes `--json` (one JSON document on stdout, also for errors).
+Progress goes to stderr; `--progress json` makes it one JSON object per finished
+trial. Exit codes: 0 done, 1 a gate failed (invalid or incomplete run, missed
+`--fail-under`, significant regression, invalid dataset), 2 usage error, 3
+unexpected or Phoenix error. Runs are addressed by id, unique id prefix, run
+directory, `latest`, or `latest:<name>` where the name is the run's name or the
+spec attribute (`latest:grader_v1`).
 
 ## What to look for
 

@@ -282,3 +282,18 @@ def test_argument_errors_are_json_documents_under_json(
     assert code == 2
     assert payload["error"]["exit"] == 2
     assert "repetitions" in payload["error"]["message"]
+
+
+def test_progress_can_be_json_lines(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        ["--root", str(tmp_path), "run", f"{module}:buggy", "--progress", "json"]
+    )
+    assert code == 0
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines()[:6]]
+    assert [e["done"] for e in events] == [1, 2, 3, 4, 5, 6]
+    assert all(e["event"] == "trial" and e["total"] == 6 for e in events)
+    shown = {e["trial"].get("example_id") for e in events}
+    assert shown == {"x0", "x1", "x2", "x3", None}  # sealed trials are redacted
+    assert events[-1]["task_errors"] == 0

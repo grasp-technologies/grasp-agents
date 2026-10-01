@@ -2,8 +2,9 @@
 ``grasp-evals`` — run, inspect and compare evaluations from the shell.
 
 Designed for coding agents as much as for people: every command accepts
-``--json`` (one JSON document on stdout, also for errors; progress goes to
-stderr), runs are addressed by id, unique id prefix, run directory,
+``--json`` (one JSON document on stdout, also for errors), progress goes to
+stderr (``--progress json``: one JSON object per finished trial), runs are
+addressed by id, unique id prefix, run directory,
 ``latest`` or ``latest:<name>`` (a run name or the spec attribute), and the
 exit code says what happened:
 
@@ -84,12 +85,26 @@ def _print_markdown(text: str) -> None:
         sys.stdout.write(text)
 
 
-def _progress_printer(quiet: bool) -> ProgressCallback | None:
-    if quiet:
+def _progress_printer(mode: str) -> ProgressCallback | None:
+    if mode == "none":
         return None
 
     def report(progress: TrialProgress) -> None:
         trial = progress.trial
+        if mode == "json":
+            # Sealed trials are redacted as in ``show``.
+            event = {
+                "event": "trial",
+                "run_id": progress.run_id,
+                "done": progress.done,
+                "total": progress.total,
+                "task_errors": progress.task_errors,
+                "cost_usd": progress.cost_usd,
+                "trial": trial_summary(trial, include_output=False),
+            }
+            sys.stderr.write(json.dumps(event, default=str, ensure_ascii=False) + "\n")
+            sys.stderr.flush()
+            return
         outcome = (
             "ok" if trial.ok else f"error {trial.error.type if trial.error else ''}"
         )
@@ -211,7 +226,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
         resume=resume,
         force=args.force,
         tags=args.tag,
-        progress=_progress_printer(args.quiet),
+        progress=_progress_printer(args.progress),
         phoenix_url=args.base_url,
     )
     comparison = compare(baseline, run) if baseline is not None else None
@@ -288,7 +303,7 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
         )
     evaluation = load_evaluation(spec)
     child = await evaluation.rescore(
-        parent, rerun=args.rerun, store=store, progress=_progress_printer(args.quiet)
+        parent, rerun=args.rerun, store=store, progress=_progress_printer(args.progress)
     )
     if args.json:
         _print_json({**run_summary(child), "path": str(store.run_dir(child.id))})
@@ -374,7 +389,7 @@ async def _cmd_pairwise(args: argparse.Namespace) -> int:
         both_orders=not args.one_order,
         **types,
         store=base_store,
-        progress=_progress_printer(args.quiet),
+        progress=_progress_printer(args.progress),
     )
     if args.json:
         _print_json({**run_summary(run), "path": str(base_store.run_dir(run.id))})
@@ -562,6 +577,23 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_progress(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--progress",
+        choices=["text", "json", "none"],
+        default="text",
+        help="progress on stderr: lines, one JSON object per trial, or nothing",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        dest="progress",
+        action="store_const",
+        const="none",
+        help="no progress (--progress none)",
+    )
+
+
 def _add_gate(parser: argparse.ArgumentParser, *, needs: str) -> None:
     parser.add_argument(
         "--fail-on-regression",
@@ -637,7 +669,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--name")
     run.add_argument("--tag", action="append", default=[])
     _add_json(run)
-    run.add_argument("-q", "--quiet", action="store_true", help="no progress lines")
+    _add_progress(run)
 
     push = sub.add_parser("push", help="mirror a finished run to Phoenix")
     push.add_argument("run")
@@ -651,7 +683,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rerun", action="store_true", help="re-run unchanged evaluators too"
     )
     _add_json(rescore)
-    rescore.add_argument("-q", "--quiet", action="store_true")
+    _add_progress(rescore)
 
     show = sub.add_parser("show", help="show a run")
     show.add_argument("run")
@@ -681,7 +713,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--spec", help="Evaluation whose types to validate with (default: the base's)"
     )
     _add_json(pair)
-    pair.add_argument("-q", "--quiet", action="store_true")
+    _add_progress(pair)
 
     runs = sub.add_parser("runs", help="list runs, newest first")
     runs.add_argument("--name", help="run name or evaluation spec attribute")
