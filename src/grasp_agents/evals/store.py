@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -9,8 +10,11 @@ from grasp_agents.types.events import Event
 from ._util import to_jsonable
 from .types import EvaluationRun, Example, Trial
 
+logger = logging.getLogger(__name__)
+
 EVALS_DIR_ENV = "GRASP_EVALS_DIR"
 DEFAULT_EVALS_DIR = ".evals"
+_TAIL_BLOCK = 1 << 16
 
 
 class RunNotFoundError(LookupError):
@@ -52,7 +56,10 @@ class RunStore(Protocol):
         ...
 
     def resolve(self, ref: str) -> str:
-        """Run id for an id, unique id prefix, ``latest`` or ``latest:<name>``."""
+        """
+        Run id for an id, unique id prefix, ``latest`` or ``latest:<name>``
+        (a run name, or the attribute of the evaluation spec it came from).
+        """
         ...
 
 
@@ -67,12 +74,84 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    """
+    Records of an append-only JSONL file. A last line cut short by a crash is
+    skipped (and trimmed before the next append) rather than making the whole
+    file unreadable.
+    """
     if not path.exists():
         return
     with path.open(encoding="utf-8") as fh:
-        for line in fh:
-            if line.strip():
+        for lineno, line in enumerate(fh, start=1):
+            if not line.strip():
+                continue
+            try:
                 yield json.loads(line)
+            except json.JSONDecodeError as exc:
+                if not line.endswith("\n"):
+                    logger.warning(
+                        "Skipping the incomplete last record of %s (line %d)",
+                        path,
+                        lineno,
+                    )
+                    return
+                raise ValueError(f"{path}:{lineno}: corrupt record ({exc})") from exc
+
+
+def _trim_partial_tail(path: Path) -> None:
+    """
+    Repair a file whose last write was cut short by a crash: a complete record
+    that only lacks its newline is kept, anything else after the last newline
+    is dropped.
+    """
+    if not path.exists():
+        return
+    with path.open("rb+") as fh:
+        end = fh.seek(0, os.SEEK_END)
+        if end == 0:
+            return
+        fh.seek(end - 1)
+        if fh.read(1) == b"\n":
+            return
+        tail = 0
+        position = end
+        while position > 0:
+            start = max(0, position - _TAIL_BLOCK)
+            fh.seek(start)
+            newline = fh.read(position - start).rfind(b"\n")
+            if newline >= 0:
+                tail = start + newline + 1
+                break
+            position = start
+        fh.seek(tail)
+        try:
+            json.loads(fh.read(end - tail))
+        except ValueError:
+            fh.truncate(tail)
+        else:
+            fh.seek(end)
+            fh.write(b"\n")
+
+
+def _example_line(example: Example[Any, Any]) -> dict[str, Any]:
+    # Examples are kept as stored in their dataset, so the run can be matched
+    # with that dataset (e.g. in Phoenix) by content.
+    content = example.record
+    return {
+        "id": example.id,
+        "input": content.input,
+        "reference": content.reference,
+        "metadata": content.metadata,
+        "splits": list(example.splits),
+        "content_hash": example.content_hash,
+    }
+
+
+def _append_line(path: Path, line: str) -> None:
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 class LocalRunStore:
@@ -101,7 +180,7 @@ class LocalRunStore:
         _atomic_write(directory / "run.json", run.model_dump_json(indent=2))
         with (directory / "examples.jsonl").open("w", encoding="utf-8") as fh:
             for example in run.examples:
-                fh.write(json.dumps(to_jsonable(example), ensure_ascii=False) + "\n")
+                fh.write(json.dumps(_example_line(example), ensure_ascii=False) + "\n")
 
     def save(self, run: EvaluationRun) -> None:
         _atomic_write(self.run_dir(run.id) / "run.json", run.model_dump_json(indent=2))
@@ -113,16 +192,20 @@ class LocalRunStore:
         events: Sequence[Event[Any]] | None = None,
     ) -> None:
         directory = self.run_dir(run_id)
-        with (directory / "trials.jsonl").open("a", encoding="utf-8") as fh:
-            fh.write(trial.model_dump_json() + "\n")
+        self._append(directory / "trials.jsonl", trial.model_dump_json())
         if events:
             record = {
                 "example_id": trial.example_id,
                 "repetition": trial.repetition,
                 "events": to_jsonable(list(events)),
             }
-            with (directory / "transcripts.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._append(
+                directory / "transcripts.jsonl", json.dumps(record, ensure_ascii=False)
+            )
+
+    def _append(self, path: Path, line: str) -> None:
+        _trim_partial_tail(path)
+        _append_line(path, line)
 
     def write_report(self, run_id: str, text: str) -> None:
         _atomic_write(self.run_dir(run_id) / "report.md", text)
@@ -135,6 +218,11 @@ class LocalRunStore:
         if not header.exists():
             raise RunNotFoundError(f"No run {run_id!r} in {self.runs_dir}")
         run = EvaluationRun.model_validate_json(header.read_text(encoding="utf-8"))
+        if run.id != directory.name:
+            raise RunNotFoundError(
+                f"{directory} holds run {run.id!r}: a run directory must be named "
+                "after its run id (copying a run under another name is not supported)"
+            )
         if trials:
             latest: dict[tuple[str, int], Trial] = {}
             for record in _iter_jsonl(directory / "trials.jsonl"):
@@ -171,7 +259,7 @@ class LocalRunStore:
             for run_id in self._run_ids()
         ]
         if name is not None:
-            headers = [h for h in headers if h.name == name]
+            headers = [h for h in headers if _matches(h, name)]
         headers.sort(key=lambda r: r.created_at, reverse=True)
         return headers if limit is None else headers[:limit]
 
@@ -192,6 +280,13 @@ class LocalRunStore:
         if matches:
             raise RunNotFoundError(f"Ambiguous run reference {ref!r}: {matches[:5]}")
         raise RunNotFoundError(f"No run matching {ref!r} in {self.runs_dir}")
+
+
+def _matches(run: EvaluationRun, name: str) -> bool:
+    if run.name == name:
+        return True
+    spec = run.evaluation or ""
+    return bool(spec) and spec.rpartition(":")[2] == name
 
 
 def store_for_ref(

@@ -1,8 +1,11 @@
 import inspect
+import math
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_type_hints
+
+from pydantic import TypeAdapter
 
 from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
@@ -15,7 +18,7 @@ from grasp_agents.types.events import (
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-from ._util import qualified_name
+from ._util import canonical_json, qualified_name, short_hash, to_jsonable
 from .types import ComponentInfo, Example, Usage
 
 
@@ -38,7 +41,10 @@ class TrialContext:
 
     def record(self, name: str, value: float) -> None:
         """Record a custom per-trial measurement (usable as a metric target)."""
-        self.measurements[name] = float(value)
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"Measurement {name!r} must be finite, got {value!r}")
+        self.measurements[name] = number
 
     @property
     def usage(self) -> Usage:
@@ -77,6 +83,10 @@ class Task[InT, OutT](ABC):
             config=self.config(),
         )
 
+    def source_objects(self) -> list[Any]:
+        """Classes and functions whose source files define this task."""
+        return [type(self)]
+
     @abstractmethod
     async def run(self, input: InT, trial: TrialContext) -> OutT: ...  # noqa: A002
 
@@ -86,8 +96,28 @@ type TaskFn[InT, OutT] = (
 )
 
 
+def _trial_passing(fn: Callable[..., Any]) -> Literal["keyword", "positional"] | None:
+    parameters = list(inspect.signature(fn).parameters.values())
+    if any(
+        p.name == "trial" and p.kind != inspect.Parameter.POSITIONAL_ONLY
+        for p in parameters
+    ):
+        return "keyword"
+    positional = [
+        p
+        for p in parameters
+        if p.kind in {p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD}
+        and p.default is p.empty
+    ]
+    return "positional" if len(positional) >= 2 else None
+
+
 class FunctionTask[InT, OutT](Task[InT, OutT]):
-    """Wraps ``async def fn(input)`` or ``async def fn(input, trial)``."""
+    """
+    Wraps ``async def fn(input)`` or ``async def fn(input, trial)``; the trial
+    is passed when ``fn`` takes a second required positional parameter or a
+    parameter named ``trial``.
+    """
 
     def __init__(
         self,
@@ -103,7 +133,7 @@ class FunctionTask[InT, OutT](Task[InT, OutT]):
         self.version = version
         self._config = dict(config or {})
         parameters = list(inspect.signature(fn).parameters)
-        self._takes_trial = len(parameters) >= 2
+        self._trial_passing = _trial_passing(fn)
         try:
             hints = get_type_hints(fn)
         except Exception:
@@ -129,12 +159,16 @@ class FunctionTask[InT, OutT](Task[InT, OutT]):
         info.kind = qualified_name(self._fn)
         return info
 
+    def source_objects(self) -> list[Any]:
+        return [self._fn]
+
     async def run(self, input: InT, trial: TrialContext) -> OutT:  # noqa: A002
-        if self._takes_trial:
-            fn = cast("Callable[[InT, TrialContext], Awaitable[OutT]]", self._fn)
-            return await fn(input, trial)
-        fn = cast("Callable[[InT], Awaitable[OutT]]", self._fn)
-        return await fn(input)
+        call = cast("Callable[..., Awaitable[OutT]]", self._fn)
+        if self._trial_passing == "keyword":
+            return await call(input, trial=trial)
+        if self._trial_passing == "positional":
+            return await call(input, trial)
+        return await call(input)
 
 
 type ProcessorSource[InT, OutT] = (
@@ -167,6 +201,119 @@ def _to_usage(usage: ResponseUsage) -> Usage:
     )
 
 
+def iter_processors(
+    root: Processor[Any, Any, Any],
+) -> Iterator[Processor[Any, Any, Any]]:
+    """
+    ``root`` and every processor inside it: workflow steps, a parallel
+    processor's worker, and processors that agents use as tools.
+    """
+    seen: set[int] = set()
+    stack: list[Processor[Any, Any, Any]] = [root]
+    while stack:
+        proc = stack.pop()
+        if id(proc) in seen:
+            continue
+        seen.add(id(proc))
+        yield proc
+        children: list[Any] = []
+        subprocs = getattr(proc, "subprocs", None)
+        if isinstance(subprocs, Sequence):
+            children.extend(cast("Sequence[Any]", subprocs))
+        children.append(getattr(proc, "subproc", None))
+        tools = getattr(proc, "tools", None)
+        if isinstance(tools, Mapping):
+            for tool in cast("Mapping[str, Any]", tools).values():
+                children.append(getattr(tool, "processor", None))
+        for child in reversed(children):
+            if isinstance(child, Processor):
+                stack.append(cast("Processor[Any, Any, Any]", child))
+
+
+def _public_settings(obj: Any) -> dict[str, Any]:
+    # Plain public attributes are a processor's construction-time settings
+    # (a custom subclass's thresholds, a declared variant).
+    return {
+        key: value
+        for key, value in cast("dict[str, Any]", vars(obj)).items()
+        if not key.startswith("_") and isinstance(value, str | int | float | bool)
+    }
+
+
+def _type_identity(tp: Any) -> str:
+    try:
+        return short_hash(canonical_json(TypeAdapter(tp).json_schema()))
+    except Exception:
+        return qualified_name(tp) if isinstance(tp, type) else str(tp)
+
+
+def _describe_processor(proc: Processor[Any, Any, Any]) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "type": qualified_name(type(proc)),
+        "name": proc.name,
+        "settings": _public_settings(proc),
+    }
+    llm = getattr(proc, "llm", None)
+    if llm is not None:
+        entry["llm"] = {
+            "type": qualified_name(type(llm)),
+            "model": getattr(llm, "model_name", None),
+            "settings": to_jsonable(getattr(llm, "llm_settings", None)),
+        }
+    for prompt in ("sys_prompt", "in_prompt"):
+        text = getattr(proc, prompt, None)
+        if text:
+            entry[prompt] = short_hash(str(text))
+    max_turns = getattr(proc, "max_turns", None)
+    if isinstance(max_turns, int):
+        entry["max_turns"] = max_turns
+    entry["output"] = _type_identity(getattr(proc, "out_type", Any))
+    tools = getattr(proc, "tools", None)
+    if isinstance(tools, Mapping):
+        entry["tools"] = sorted(str(k) for k in cast("Mapping[Any, Any]", tools))
+    return entry
+
+
+def processor_fingerprint(root: Processor[Any, Any, Any]) -> str | None:
+    """
+    Hash of what a processor tree is made of: types, names, models and their
+    settings, system and input prompts, turn limits, output schemas, tools
+    and plain public settings. ``None`` when it cannot be read.
+    """
+    try:
+        return short_hash(
+            canonical_json([_describe_processor(p) for p in iter_processors(root)])
+        )
+    except Exception:
+        return None
+
+
+def _reset_transcripts(root: Processor[Any, Any, Any]) -> None:
+    # A copy of an agent that already ran would start each trial with that
+    # conversation; trials must start from scratch.
+    from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
+
+    for proc in iter_processors(root):
+        if isinstance(proc, LLMAgent):
+            proc.transcript.clear()
+
+
+def _declared_output_type(factory: Callable[[], Any]) -> Any:
+    # ``def build() -> Processor[In, Out, Ctx]`` (or an agent/workflow class
+    # specialized the same way) declares the output type.
+    try:
+        returned = get_type_hints(factory).get("return")
+    except Exception:
+        return Any
+    if not (isinstance(returned, type) and issubclass(returned, Processor)):
+        return Any
+    declared = cast("Any", returned)
+    resolved = cast(
+        "dict[str, Any]", getattr(declared, "_resolved_instance_attr_types", {})
+    )
+    return resolved.get("_out_type", Any)
+
+
 class ProcessorTask[InT, OutT](Task[InT, OutT]):
     """
     Runs any grasp-agents :class:`Processor` — an agent, a workflow, a parallel
@@ -176,17 +323,29 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
 
     - a template is copied for every trial and the copy is rebound to the
       trial's own :class:`SessionContext` (containers cascade it to their
-      children). The template itself is never run — build it fresh;
-    - a factory is called inside ``with trial_ctx:``, so everything it builds
-      binds to the trial's session.
+      children). The template itself is never run, and agents in the copy
+      start with an empty transcript;
+    - a factory is called inside the trial's session, so everything it builds
+      binds to it.
+
+    The whole trial runs with its session ambient, so processors built while
+    it runs (inside tools, custom processors) bind to it too — their usage is
+    counted and their state isolated.
 
     ``ctx_factory(example)`` builds that session (e.g. to seed ``state`` or an
     execution environment); by default each trial gets an empty one. The
     example input is passed as ``in_args`` (or as ``chat_inputs`` with
     ``input_mode="chat"``), optionally transformed by ``input_fn``. The output
     is the run's single payload (a list when there are several), or whatever
-    ``output_fn(packet, ctx)`` derives — e.g. from ``ctx.state`` for pipelines
-    whose result is a state mutation.
+    ``output_fn(packet, ctx)`` derives — e.g. ``list(packet.payloads)`` for a
+    list in every case, or a value from ``ctx.state`` for pipelines whose
+    result is a state mutation.
+
+    ``output_type`` re-validates stored outputs when a run is rescored or
+    resumed; it defaults to the template's output type or the factory's
+    declared return type (``-> Processor[In, Out, Ctx]``). Set it whenever an
+    ``output_fn`` is used or the factory is unannotated, or evaluators receive
+    stored outputs as plain JSON.
     """
 
     def __init__(
@@ -200,28 +359,36 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
         input_mode: Literal["in_args", "chat"] = "in_args",
         input_fn: Callable[[InT], Any] | None = None,
         output_fn: Callable[[Packet[Any], SessionContext[Any]], OutT] | None = None,
+        output_type: Any = None,
         capture_events: bool = True,
     ) -> None:
         self._template: Processor[InT, OutT, Any] | None
         self._factory: Callable[[], Processor[InT, OutT, Any]] | None
-        kind_cls: type[Any]
         if isinstance(processor, Processor):
             template = cast("Processor[InT, OutT, Any]", processor)
             self._template, self._factory = template, None
             default_name = template.name
             self._in_type: Any = template.in_type
-            self._out_type: Any = template.out_type
-            kind_cls = type(template)
+            declared: Any = template.out_type
+            self._kind = qualified_name(type(template))
+            self._fingerprint = processor_fingerprint(template)
         else:
-            self._template, self._factory = None, processor
-            default_name = getattr(processor, "__name__", "processor")
+            factory = processor
+            self._template, self._factory = None, factory
+            default_name = getattr(factory, "__name__", "processor")
             self._in_type = Any
+            declared = _declared_output_type(factory)
+            self._kind = qualified_name(factory)
+            self._fingerprint = None
+        if output_type is not None:
+            self._out_type: Any = output_type
+        elif output_fn is not None:
             self._out_type = Any
-            kind_cls = type(processor)
+        else:
+            self._out_type = declared
         self.name = name or default_name
         self.version = version
         self._config = dict(config or {})
-        self._kind = qualified_name(kind_cls)
         self._ctx_factory = ctx_factory
         self._input_mode = input_mode
         self._input_fn = input_fn
@@ -234,7 +401,7 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
 
     @property
     def output_type(self) -> Any:
-        return Any if self._output_fn is not None else self._out_type
+        return self._out_type
 
     def config(self) -> dict[str, Any]:
         return dict(self._config)
@@ -242,15 +409,22 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
     def describe(self) -> ComponentInfo:
         info = super().describe()
         info.kind = self._kind
+        info.fingerprint = self._fingerprint
         return info
+
+    def source_objects(self) -> list[Any]:
+        if self._factory is not None:
+            return [self._factory]
+        assert self._template is not None
+        return [type(p) for p in iter_processors(self._template)]
 
     def _instantiate(self, ctx: SessionContext[Any]) -> Processor[InT, OutT, Any]:
         if self._template is not None:
             proc = self._template.copy()
+            _reset_transcripts(proc)
         else:
             assert self._factory is not None
-            with ctx:
-                proc = self._factory()
+            proc = self._factory()
         proc.on_adopted(ctx=ctx)
         return proc
 
@@ -261,29 +435,32 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             else SessionContext()
         )
         trial.session = ctx
-        proc = self._instantiate(ctx)
-        arg: Any = self._input_fn(input) if self._input_fn is not None else input
-        if self._input_mode == "in_args":
-            arg = _as_in_args(arg)
         packet: Packet[Any] | None = None
-        try:
-            stream = (
-                proc.run_stream(chat_inputs=arg)
-                if self._input_mode == "chat"
-                else proc.run_stream(in_args=arg)
-            )
-            async for event in stream:
-                if (
-                    packet is None
-                    and isinstance(event, ProcPacketOutEvent)
-                    and event.source == proc.name
-                ):
-                    packet = event.data
-                if self._capture_events and _keep_event(event):
-                    trial.events.append(event)
-        finally:
-            await proc.aclose()
-            self._collect_session_facts(ctx, trial)
+        with ctx:
+            proc = self._instantiate(ctx)
+            try:
+                arg: Any = (
+                    self._input_fn(input) if self._input_fn is not None else input
+                )
+                if self._input_mode == "in_args":
+                    arg = _as_in_args(arg)
+                stream = (
+                    proc.run_stream(chat_inputs=arg)
+                    if self._input_mode == "chat"
+                    else proc.run_stream(in_args=arg)
+                )
+                async for event in stream:
+                    if (
+                        packet is None
+                        and isinstance(event, ProcPacketOutEvent)
+                        and event.source == proc.name
+                    ):
+                        packet = event.data
+                    if self._capture_events and _keep_event(event):
+                        trial.events.append(event)
+            finally:
+                await proc.aclose()
+                self._collect_session_facts(ctx, trial)
         if packet is None:
             raise RuntimeError(f"Processor {proc.name!r} produced no output packet")
         if self._output_fn is not None:

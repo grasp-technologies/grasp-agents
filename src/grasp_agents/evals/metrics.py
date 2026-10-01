@@ -6,12 +6,13 @@ recorded by the task, or a built-in :class:`Measure` — and aggregates it.
 Example-level metrics (the default) first reduce each example's repetitions
 to one value, so the statistical unit is the example and repetitions never
 inflate ``n``. Trial-level metrics (latency percentiles, error rates) use
-every trial.
+every trial, with uncertainty clustered on the example.
 """
 
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from statistics import median as _median
 from typing import Any, Literal, override
@@ -19,6 +20,7 @@ from typing import Any, Literal, override
 from .stats import (
     Estimate,
     bootstrap_estimate,
+    bounded_mean_estimate,
     mean_estimate,
     percentile,
     proportion_estimate,
@@ -26,6 +28,10 @@ from .stats import (
 from .types import Example, MetricResult, Trial
 
 type Unit = Literal["example", "trial"]
+
+# A percentile's interval needs this many units beyond the quantile on each
+# side; below it the bootstrap cannot reach past the observed extremes.
+_MIN_TAIL_UNITS = 5
 
 
 class Measure(StrEnum):
@@ -40,6 +46,15 @@ class Measure(StrEnum):
 
 
 type Target = str | Measure
+
+_MEASURES = {m.value: m for m in Measure}
+
+
+def as_target(of: Target) -> Target:
+    """``of`` with built-in measure names (``"duration_s"``) as :class:`Measure`."""
+    if isinstance(of, Measure):
+        return of
+    return _MEASURES.get(of, of)
 
 
 def trial_value(trial: Trial, of: Target) -> float | None:
@@ -66,7 +81,24 @@ def trial_value(trial: Trial, of: Target) -> float | None:
     score = trial.score(of)
     if score is not None:
         return score.as_float()
-    return trial.measurements.get(of)
+    value = trial.measurements.get(of)
+    return value if value is None or math.isfinite(value) else None
+
+
+class ThresholdRequiredError(ValueError):
+    pass
+
+
+def pass_value(value: float, threshold: float | None) -> float:
+    """
+    1.0 / 0.0 for one value: at or above ``threshold``, or for pass/fail
+    values (bools read as 1/0) themselves. Any other value needs a threshold.
+    """
+    if threshold is not None:
+        return 1.0 if value >= threshold else 0.0
+    if value in {0.0, 1.0}:
+        return value
+    raise ThresholdRequiredError(value)
 
 
 # --- Reducers (per-example aggregation of repetitions) ---
@@ -132,6 +164,19 @@ def _not_applicable(trial: Trial, target: Target | None) -> bool:
     return trial.score(target) is None
 
 
+@dataclass
+class _Collected:
+    values: list[float]
+    # Example id of each value (the cluster key for trial-level values).
+    keys: list[str]
+    missing: int = 0
+    na: int = 0
+    # Examples with a value whose repetitions were only partly usable.
+    partial: int = 0
+    # Trial values behind ``values``.
+    observations: int = 0
+
+
 def _collect(
     trials: Sequence[Trial],
     value_of: Callable[[Trial], float | None],
@@ -139,32 +184,35 @@ def _collect(
     unit: Unit,
     reduce: Reducer,
     target: Target | None = None,
-) -> tuple[list[float], list[str], int, int]:
-    """``(values, example_ids, n_missing, n_na)`` at the requested unit."""
-    values: list[float] = []
-    keys: list[str] = []
-    missing = na = 0
+) -> _Collected:
+    collected = _Collected(values=[], keys=[])
     if unit == "trial":
         for trial in trials:
             value = value_of(trial)
             if value is not None:
-                values.append(value)
-                keys.append(trial.example_id)
+                collected.values.append(value)
+                collected.keys.append(trial.example_id)
+                collected.observations += 1
             elif _not_applicable(trial, target):
-                na += 1
+                collected.na += 1
             else:
-                missing += 1
-        return values, keys, missing, na
+                collected.missing += 1
+        return collected
     for example_id, group in _group_by_example(trials).items():
-        found = [v for t in group if (v := value_of(t)) is not None]
+        per_trial = [(t, value_of(t)) for t in group]
+        found = [v for _, v in per_trial if v is not None]
         if found:
-            values.append(reduce(found))
-            keys.append(example_id)
+            collected.values.append(reduce(found))
+            collected.keys.append(example_id)
+            collected.observations += len(found)
+            unusable = [t for t, v in per_trial if v is None]
+            if unusable and not all(_not_applicable(t, target) for t in unusable):
+                collected.partial += 1
         elif all(_not_applicable(t, target) for t in group):
-            na += 1
+            collected.na += 1
         else:
-            missing += 1
-    return values, keys, missing, na
+            collected.missing += 1
+    return collected
 
 
 def _clusters_for(
@@ -181,21 +229,39 @@ def _clusters_for(
     return None
 
 
+def _share_estimate(
+    values: Sequence[float],
+    keys: Sequence[str],
+    clusters: Mapping[str, Hashable] | None,
+    *,
+    unit: Unit,
+    confidence: float,
+    observations: int | None = None,
+) -> Estimate:
+    # Shares of independent pass/fail units get the exact Wilson interval;
+    # fractional or clustered ones the effective-sample-size Wilson.
+    cluster_keys = _clusters_for(keys, clusters, unit=unit)
+    if cluster_keys is None and all(v in {0.0, 1.0} for v in values):
+        passes = sum(1 for v in values if v > 0.5)
+        return proportion_estimate(passes, len(values), confidence=confidence)
+    return bounded_mean_estimate(
+        values,
+        clusters=cluster_keys,
+        observations=observations,
+        confidence=confidence,
+    )
+
+
 def _result(
     name: str,
     estimate: Estimate,
     *,
     missing: int,
     na: int = 0,
-    bounded: bool = False,
+    confidence: float = 0.95,
     **details: Any,
 ) -> MetricResult:
     value = None if math.isnan(estimate.value) else estimate.value
-    low, high = estimate.ci_low, estimate.ci_high
-    if bounded:
-        # Shares live in [0, 1]; a small-sample t-interval can overshoot.
-        low = None if low is None else max(0.0, low)
-        high = None if high is None else min(1.0, high)
     return MetricResult(
         name=name,
         value=value,
@@ -203,14 +269,31 @@ def _result(
         n_missing=missing,
         n_na=na,
         stderr=estimate.stderr,
-        ci_low=low,
-        ci_high=high,
-        details={k: v for k, v in details.items() if v is not None},
+        ci_low=estimate.ci_low,
+        ci_high=estimate.ci_high,
+        confidence=confidence,
+        details={k: v for k, v in details.items() if v},
+    )
+
+
+def _threshold_error(name: str, of: Target) -> MetricResult:
+    return MetricResult(
+        name=name,
+        value=None,
+        n=0,
+        details={
+            "error": (
+                f"{of} has values other than pass/fail; set threshold= to "
+                "say what counts as a pass"
+            )
+        },
     )
 
 
 class Metric(ABC):
     name: str
+    # Whether ``n`` counts examples (repetitions reduced first) or trials.
+    unit: Unit = "example"
 
     @abstractmethod
     def compute(
@@ -235,11 +318,11 @@ class Mean(Metric):
         name: str | None = None,
         confidence: float = 0.95,
     ) -> None:
-        self.of = of
+        self.of = as_target(of)
         self.reduce = reduce
-        self.unit: Unit = unit
+        self.unit = unit
         self.confidence = confidence
-        self.name = name or f"mean({of}){_reducer_suffix(reduce)}"
+        self.name = name or f"mean({self.of}){_reducer_suffix(reduce)}"
 
     @override
     def compute(
@@ -248,7 +331,7 @@ class Mean(Metric):
         *,
         clusters: Mapping[str, Hashable] | None = None,
     ) -> MetricResult:
-        values, keys, missing, na = _collect(
+        c = _collect(
             trials,
             lambda t: trial_value(t, self.of),
             unit=self.unit,
@@ -256,18 +339,30 @@ class Mean(Metric):
             target=self.of,
         )
         estimate = mean_estimate(
-            values,
-            clusters=_clusters_for(keys, clusters, unit=self.unit),
+            c.values,
+            clusters=_clusters_for(c.keys, clusters, unit=self.unit),
             confidence=self.confidence,
         )
-        return _result(self.name, estimate, missing=missing, na=na)
+        return _result(
+            self.name,
+            estimate,
+            missing=c.missing,
+            na=c.na,
+            confidence=self.confidence,
+            partial_examples=c.partial,
+        )
 
 
 class PassRate(Metric):
     """
-    Share of passing units. Bool scores pass when ``True``; numeric scores
-    pass at or above ``threshold``. Trials whose task failed have no score and
-    are excluded unless ``errors_as_failures`` counts them as failures.
+    Share of passing examples. Bool scores pass when ``True``; numeric scores
+    pass at or above ``threshold`` (required for them). Repetitions are
+    reduced per example (``reduce``, the mean by default).
+
+    Trials whose task failed have no score; they count as failures unless
+    ``errors_as_failures=False`` excludes them (then a system that crashes on
+    hard examples would look better). The error rate is reported separately
+    either way.
     """
 
     def __init__(
@@ -275,28 +370,24 @@ class PassRate(Metric):
         of: Target,
         *,
         threshold: float | None = None,
-        errors_as_failures: bool = False,
+        errors_as_failures: bool = True,
         reduce: Reducer = mean,
         name: str | None = None,
         confidence: float = 0.95,
     ) -> None:
-        self.of = of
+        self.of = as_target(of)
         self.threshold = threshold
         self.errors_as_failures = errors_as_failures
         self.reduce = reduce
         self.confidence = confidence
         bar = "" if threshold is None else f">={threshold:g}"
-        self.name = name or f"pass_rate({of}{bar}){_reducer_suffix(reduce)}"
+        self.name = name or f"pass_rate({self.of}{bar}){_reducer_suffix(reduce)}"
 
     def _passed(self, trial: Trial) -> float | None:
-        if not trial.ok and self.errors_as_failures:
-            return 0.0
         value = trial_value(trial, self.of)
         if value is None:
-            return None
-        if self.threshold is not None:
-            return 1.0 if value >= self.threshold else 0.0
-        return value
+            return 0.0 if not trial.ok and self.errors_as_failures else None
+        return pass_value(value, self.threshold)
 
     @override
     def compute(
@@ -305,22 +396,29 @@ class PassRate(Metric):
         *,
         clusters: Mapping[str, Hashable] | None = None,
     ) -> MetricResult:
-        values, keys, missing, na = _collect(
-            trials, self._passed, unit="example", reduce=self.reduce, target=self.of
+        try:
+            c = _collect(
+                trials, self._passed, unit="example", reduce=self.reduce, target=self.of
+            )
+        except ThresholdRequiredError:
+            return _threshold_error(self.name, self.of)
+        estimate = _share_estimate(
+            c.values,
+            c.keys,
+            clusters,
+            unit="example",
+            confidence=self.confidence,
+            # A mean over repetitions rests on every repetition's outcome.
+            observations=c.observations if self.reduce is mean else None,
         )
-        non_binary = any(v not in {0.0, 1.0} for v in values)
-        if non_binary or clusters is not None:
-            estimate = mean_estimate(
-                values,
-                clusters=_clusters_for(keys, clusters, unit="example"),
-                confidence=self.confidence,
-            )
-        else:
-            passes = sum(1 for v in values if v > 0.5)
-            estimate = proportion_estimate(
-                passes, len(values), confidence=self.confidence
-            )
-        return _result(self.name, estimate, missing=missing, na=na, bounded=True)
+        return _result(
+            self.name,
+            estimate,
+            missing=c.missing,
+            na=c.na,
+            confidence=self.confidence,
+            partial_examples=c.partial,
+        )
 
 
 class _KMetric(Metric):
@@ -330,14 +428,16 @@ class _KMetric(Metric):
         k: int,
         *,
         threshold: float | None,
+        errors_as_failures: bool,
         name: str,
         confidence: float,
     ) -> None:
         if k < 1:
             raise ValueError("k must be >= 1")
-        self.of = of
+        self.of = as_target(of)
         self.k = k
         self.threshold = threshold
+        self.errors_as_failures = errors_as_failures
         self.confidence = confidence
         self.name = name
 
@@ -346,12 +446,11 @@ class _KMetric(Metric):
         for trial in group:
             value = trial_value(trial, self.of)
             if value is None:
+                if not trial.ok and self.errors_as_failures:
+                    n += 1
                 continue
             n += 1
-            passed = (
-                value >= self.threshold if self.threshold is not None else value >= 1.0
-            )
-            c += int(passed)
+            c += int(pass_value(value, self.threshold) > 0.5)
         return n, c
 
     @abstractmethod
@@ -366,12 +465,16 @@ class _KMetric(Metric):
     ) -> MetricResult:
         values: list[float] = []
         keys: list[str] = []
+        observations = 0
         missing = na = 0
         for example_id, group in _group_by_example(trials).items():
-            n, c = self._counts(group)
+            try:
+                n, c = self._counts(group)
+            except ThresholdRequiredError:
+                return _threshold_error(self.name, self.of)
             if n < self.k:
                 # Too few repetitions for k is a configuration matter, not
-                # missing data; too few *usable* ones (errors) is missing.
+                # missing data; too few *usable* ones (failed scoring) is missing.
                 if len(group) < self.k or all(
                     _not_applicable(t, self.of) for t in group
                 ):
@@ -381,18 +484,28 @@ class _KMetric(Metric):
                 continue
             values.append(self._per_example(n, c))
             keys.append(example_id)
-        estimate = mean_estimate(
+            observations += n
+        estimate = bounded_mean_estimate(
             values,
             clusters=_clusters_for(keys, clusters, unit="example"),
+            observations=observations,
             confidence=self.confidence,
         )
         return _result(
-            self.name, estimate, missing=missing, na=na, bounded=True, k=self.k
+            self.name,
+            estimate,
+            missing=missing,
+            na=na,
+            confidence=self.confidence,
+            k=self.k,
         )
 
 
 class PassAtK(_KMetric):
-    """Unbiased pass@k: chance that at least one of k repetitions passes."""
+    """
+    Unbiased pass@k: chance that at least one of k repetitions passes. Failed
+    repetitions count as failures unless ``errors_as_failures=False``.
+    """
 
     def __init__(
         self,
@@ -400,6 +513,7 @@ class PassAtK(_KMetric):
         k: int,
         *,
         threshold: float | None = None,
+        errors_as_failures: bool = True,
         name: str | None = None,
         confidence: float = 0.95,
     ) -> None:
@@ -407,7 +521,8 @@ class PassAtK(_KMetric):
             of,
             k,
             threshold=threshold,
-            name=name or f"pass@{k}({of})",
+            errors_as_failures=errors_as_failures,
+            name=name or f"pass@{k}({as_target(of)})",
             confidence=confidence,
         )
 
@@ -418,7 +533,8 @@ class PassAtK(_KMetric):
 class PassHatK(_KMetric):
     """
     Unbiased pass^k: chance that all of k repetitions pass — the reliability
-    a user experiences when the same request must work every time.
+    a user experiences when the same request must work every time. Failed
+    repetitions count as failures unless ``errors_as_failures=False``.
     """
 
     def __init__(
@@ -427,6 +543,7 @@ class PassHatK(_KMetric):
         k: int,
         *,
         threshold: float | None = None,
+        errors_as_failures: bool = True,
         name: str | None = None,
         confidence: float = 0.95,
     ) -> None:
@@ -434,7 +551,8 @@ class PassHatK(_KMetric):
             of,
             k,
             threshold=threshold,
-            name=name or f"pass^{k}({of})",
+            errors_as_failures=errors_as_failures,
+            name=name or f"pass^{k}({as_target(of)})",
             confidence=confidence,
         )
 
@@ -443,7 +561,11 @@ class PassHatK(_KMetric):
 
 
 class Percentile(Metric):
-    """A percentile (0-100) with a bootstrap interval; trial-level by default."""
+    """
+    A percentile (0-100) with a bootstrap interval that resamples examples
+    (keeping their repetitions together); trial-level by default. With too
+    few units beyond the quantile to bound it, no interval is reported.
+    """
 
     def __init__(
         self,
@@ -457,14 +579,18 @@ class Percentile(Metric):
         seed: int = 0,
         confidence: float = 0.95,
     ) -> None:
-        self.of = of
+        if not 0.0 <= q <= 100.0:
+            raise ValueError("q must be in [0, 100]")
+        if n_resamples < 2:
+            raise ValueError("n_resamples must be >= 2")
+        self.of = as_target(of)
         self.q = q
-        self.unit: Unit = unit
+        self.unit = unit
         self.reduce = reduce
         self.n_resamples = n_resamples
         self.seed = seed
         self.confidence = confidence
-        self.name = name or f"p{q:g}({of})"
+        self.name = name or f"p{q:g}({self.of})"
 
     @override
     def compute(
@@ -473,25 +599,46 @@ class Percentile(Metric):
         *,
         clusters: Mapping[str, Hashable] | None = None,
     ) -> MetricResult:
-        values, _, missing, na = _collect(
+        c = _collect(
             trials,
             lambda t: trial_value(t, self.of),
             unit=self.unit,
             reduce=self.reduce,
             target=self.of,
         )
-        estimate = bootstrap_estimate(
-            values,
-            lambda v: percentile(v, self.q),
-            n_resamples=self.n_resamples,
-            seed=self.seed,
+        cluster_keys = _clusters_for(c.keys, clusters, unit=self.unit)
+        units = len(set(cluster_keys)) if cluster_keys is not None else len(c.values)
+        share = self.q / 100.0
+        tail = units * min(share, 1.0 - share)
+        note: str | None = None
+        if c.values and tail < _MIN_TAIL_UNITS:
+            estimate = Estimate(
+                value=percentile(c.values, self.q), n=len(c.values), units=units
+            )
+            note = f"too few units ({units}) for a p{self.q:g} interval"
+        else:
+            estimate = bootstrap_estimate(
+                c.values,
+                lambda v: percentile(v, self.q),
+                clusters=cluster_keys,
+                n_resamples=self.n_resamples,
+                seed=self.seed,
+                confidence=self.confidence,
+            )
+        return _result(
+            self.name,
+            estimate,
+            missing=c.missing,
+            na=c.na,
             confidence=self.confidence,
+            note=note,
         )
-        return _result(self.name, estimate, missing=missing, na=na)
 
 
 class ErrorRate(Metric):
-    """Share of trials whose task raised or timed out (Wilson interval)."""
+    """Share of trials whose task raised or timed out (clustered on the example)."""
+
+    unit: Unit = "trial"
 
     def __init__(self, *, name: str = "error_rate", confidence: float = 0.95) -> None:
         self.name = name
@@ -504,19 +651,30 @@ class ErrorRate(Metric):
         *,
         clusters: Mapping[str, Hashable] | None = None,
     ) -> MetricResult:
-        errors = sum(1 for t in trials if not t.ok)
-        estimate = proportion_estimate(errors, len(trials), confidence=self.confidence)
+        values = [0.0 if t.ok else 1.0 for t in trials]
+        keys = [t.example_id for t in trials]
+        estimate = _share_estimate(
+            values, keys, clusters, unit="trial", confidence=self.confidence
+        )
         types: dict[str, int] = {}
         for trial in trials:
             if trial.error is not None:
                 types[trial.error.type] = types.get(trial.error.type, 0) + 1
-        return _result(self.name, estimate, missing=0, by_type=types or None)
+        return _result(
+            self.name,
+            estimate,
+            missing=0,
+            confidence=self.confidence,
+            by_type=types,
+        )
 
 
 class Total(Metric):
+    unit: Unit = "trial"
+
     def __init__(self, of: Target, *, name: str | None = None) -> None:
-        self.of = of
-        self.name = name or f"total({of})"
+        self.of = as_target(of)
+        self.name = name or f"total({self.of})"
 
     @override
     def compute(
@@ -547,6 +705,8 @@ def _label(trial: Trial, of: str) -> str | None:
 
 class Distribution(Metric):
     """Counts and shares of a categorical score's labels across trials."""
+
+    unit: Unit = "trial"
 
     def __init__(self, of: str, *, name: str | None = None) -> None:
         self.of = of
@@ -582,7 +742,7 @@ class Distribution(Metric):
 
 
 class Proportion(Metric):
-    """Share of scored units carrying one label (per-example mean, Wilson CI)."""
+    """Share of scored examples carrying one label (per-example mean, Wilson CI)."""
 
     def __init__(
         self,
@@ -608,22 +768,18 @@ class Proportion(Metric):
             label = _label(trial, self.of)
             return None if label is None else float(label == self.label)
 
-        values, keys, missing, na = _collect(
-            trials, indicator, unit="example", reduce=mean, target=self.of
+        c = _collect(trials, indicator, unit="example", reduce=mean, target=self.of)
+        estimate = _share_estimate(
+            c.values,
+            c.keys,
+            clusters,
+            unit="example",
+            confidence=self.confidence,
+            observations=c.observations,
         )
-        if clusters is None and all(v in {0.0, 1.0} for v in values):
-            estimate = proportion_estimate(
-                sum(1 for v in values if v > 0.5),
-                len(values),
-                confidence=self.confidence,
-            )
-        else:
-            estimate = mean_estimate(
-                values,
-                clusters=_clusters_for(keys, clusters, unit="example"),
-                confidence=self.confidence,
-            )
-        return _result(self.name, estimate, missing=missing, na=na, bounded=True)
+        return _result(
+            self.name, estimate, missing=c.missing, na=c.na, confidence=self.confidence
+        )
 
 
 # --- Computing a run's metrics ---
@@ -667,7 +823,13 @@ def compute_metrics(
     examples: Iterable[Example[Any, Any]] = (),
     group_by: Sequence[str] = (),
     cluster_by: str | None = None,
+    expected: Sequence[tuple[str, int]] | None = None,
 ) -> list[MetricResult]:
+    """
+    Compute ``metrics`` (defaults from the scores when ``None``) over
+    ``trials``. ``expected`` lists the trials that should exist: those that
+    never ran (e.g. the budget ran out) count as missing.
+    """
     selected = list(metrics) if metrics is not None else default_metrics(trials)
     by_id = {e.id: e for e in examples}
     clusters: dict[str, Hashable] | None = None
@@ -676,9 +838,16 @@ def compute_metrics(
             example_id: _hashable(example.metadata.get(cluster_by, example_id))
             for example_id, example in by_id.items()
         }
+    present = {t.key for t in trials}
+    present_examples = {key[0] for key in present}
+    never_ran = [key for key in expected or () if key not in present]
+    never_ran_examples = {key[0] for key in never_ran} - present_examples
     results: list[MetricResult] = []
     for metric in selected:
         result = metric.compute(trials, clusters=clusters)
+        result.n_missing += (
+            len(never_ran) if metric.unit == "trial" else len(never_ran_examples)
+        )
         for key in group_by:
             buckets: dict[str, list[Trial]] = {}
             for trial in trials:

@@ -22,6 +22,7 @@ from grasp_agents.evals import (
     default_metrics,
 )
 from grasp_agents.evals.metrics import all_pass, max_
+from grasp_agents.evals.stats import bounded_mean_estimate
 from grasp_agents.evals.types import ErrorInfo
 
 _T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -111,12 +112,12 @@ class TestPassRate:
         assert result.name == "pass_rate(s>=0.5)"
         assert result.value == pytest.approx(0.5)
 
-    def test_errors_as_failures(self) -> None:
+    def test_errors_count_as_failures(self) -> None:
         trials = [_trial("a", scores={"ok": True}), _trial("b", error=True)]
-        assert PassRate("ok").compute(trials).value == pytest.approx(1.0)
-        assert PassRate("ok", errors_as_failures=True).compute(
-            trials
-        ).value == pytest.approx(0.5)
+        assert PassRate("ok").compute(trials).value == pytest.approx(0.5)
+        excluded = PassRate("ok", errors_as_failures=False).compute(trials)
+        assert excluded.value == pytest.approx(1.0)
+        assert excluded.n_missing == 1
 
     def test_all_pass_reducer(self) -> None:
         trials = [
@@ -154,12 +155,15 @@ class TestPassAtK:
         assert result.n_na == 2
         assert result.n_missing == 0
 
-    def test_errored_repetitions_are_missing(self) -> None:
+    def test_errored_repetitions_count_as_failures(self) -> None:
         trials = [_trial("a", r, scores={"ok": True}) for r in range(2)]
         trials.append(_trial("a", 2, error=True))
         result = PassHatK("ok", 3).compute(trials)
-        assert result.n_missing == 1
-        assert result.n_na == 0
+        assert result.value == pytest.approx(0.0)
+        assert result.n_missing == 0
+        excluded = PassHatK("ok", 3, errors_as_failures=False).compute(trials)
+        assert excluded.n_missing == 1
+        assert excluded.n_na == 0
 
 
 class TestOtherMetrics:
@@ -236,3 +240,120 @@ class TestComputeMetrics:
             "p95(duration_s)",
             "total(cost_usd)",
         ]
+
+
+class TestPassRules:
+    def test_pass_hat_k_counts_partial_passes(self) -> None:
+        trials = [_trial("a", r, scores={"ok": r != 3}) for r in range(4)]
+        # 3 of 4 pass: C(3,2)/C(4,2) = 0.5
+        assert PassHatK("ok", 2).compute(trials).value == pytest.approx(0.5)
+
+    def test_numeric_scores_need_a_threshold(self) -> None:
+        trials = [_trial("a", scores={"s": 3.0}), _trial("b", scores={"s": 5.0})]
+        result = PassRate("s").compute(trials)
+        assert result.value is None
+        assert "threshold" in result.details["error"]
+        assert PassHatK("s", 1).compute(trials).value is None
+        assert PassRate("s", threshold=4.0).compute(trials).value == pytest.approx(0.5)
+
+    def test_rates_and_k_metrics_agree_on_passes(self) -> None:
+        trials = [
+            _trial(str(i), scores={"q": q}) for i, q in enumerate([0.95, 0.4, 0.9])
+        ]
+        rate = PassRate("q", threshold=0.9).compute(trials).value
+        at_1 = PassAtK("q", 1, threshold=0.9).compute(trials).value
+        assert rate == pytest.approx(at_1)  # type: ignore[arg-type]
+
+    def test_measure_names_are_measures(self) -> None:
+        trials = [_trial(str(i), duration=float(i)) for i in range(1, 5)]
+        assert Mean("duration_s").compute(trials).value == pytest.approx(2.5)
+
+
+class TestIntervals:
+    def test_percentile_needs_enough_units_beyond_the_quantile(self) -> None:
+        few = [_trial(str(i), duration=float(i)) for i in range(20)]
+        result = Percentile(Measure.DURATION, 95).compute(few)
+        assert result.value is not None
+        assert result.ci_low is None
+        assert "too few" in result.details["note"]
+        many = [_trial(str(i), duration=float(i)) for i in range(200)]
+        assert Percentile(Measure.DURATION, 95).compute(many).ci_low is not None
+
+    def test_error_rate_clusters_repetitions_by_example(self) -> None:
+        trials = [
+            _trial(f"e{e}", r, error=e == 0) for e in range(10) for r in range(10)
+        ]
+        clustered = ErrorRate().compute(trials)
+        independent = ErrorRate().compute(
+            [_trial(f"t{i}", error=i < 10) for i in range(100)]
+        )
+        assert clustered.value == pytest.approx(independent.value)  # type: ignore[arg-type]
+        width = clustered.ci_high - clustered.ci_low  # type: ignore[operator]
+        naive = independent.ci_high - independent.ci_low  # type: ignore[operator]
+        assert width > naive
+
+    def test_one_cluster_per_group_gives_no_fake_certainty(self) -> None:
+        examples = [
+            Example(id=str(i), input=i, metadata={"course": "x" if i < 4 else "y"})
+            for i in range(8)
+        ]
+        trials = [_trial(str(i), scores={"ok": i % 2 == 0}) for i in range(8)]
+        (result,) = compute_metrics(
+            trials,
+            [PassRate("ok")],
+            examples=examples,
+            group_by=["course"],
+            cluster_by="course",
+        )
+        group = result.groups["course=x"]
+        assert group.value == pytest.approx(0.5)
+        assert group.ci_low is not None
+        assert group.ci_high - group.ci_low > 0.5  # type: ignore[operator]
+
+
+class TestAccounting:
+    def test_not_applicable_is_not_missing(self) -> None:
+        trials = [
+            _trial("a", scores={"ok": True}),
+            _trial("b"),  # the evaluator returned nothing for b
+        ]
+        result = PassRate("ok").compute(trials)
+        assert result.n == 1
+        assert result.n_na == 1
+        assert result.n_missing == 0
+
+    def test_trials_that_never_ran_are_missing(self) -> None:
+        trials = [_trial("a", scores={"ok": True})]
+        (rate, errors) = compute_metrics(
+            trials,
+            [PassRate("ok"), ErrorRate()],
+            expected=[("a", 0), ("b", 0), ("b", 1)],
+        )
+        assert rate.n_missing == 1  # example b
+        assert errors.n_missing == 2  # two trials of b
+
+    def test_partly_failed_examples_are_reported(self) -> None:
+        trials = [
+            _trial("a", 0, scores={"ok": True}),
+            _trial("a", 1, scores={"ok": None}),
+        ]
+        result = PassRate("ok").compute(trials)
+        assert result.details["partial_examples"] == 1
+
+
+def test_repetitions_count_towards_share_intervals() -> None:
+    # 20 examples that behave alike, 3 repetitions each: the interval rests on
+    # 60 outcomes, not 20.
+    values = [2 / 3] * 10 + [1.0] * 10
+    by_examples = bounded_mean_estimate(values)
+    by_trials = bounded_mean_estimate(values, observations=60)
+    assert by_trials.ci_low is not None
+    assert by_trials.ci_high is not None
+    assert by_examples.ci_low is not None
+    assert by_examples.ci_high is not None
+    assert (
+        by_trials.ci_high - by_trials.ci_low < by_examples.ci_high - by_examples.ci_low
+    )
+    # When every unit passes, each example still counts once.
+    saturated = bounded_mean_estimate([1.0] * 20, observations=60)
+    assert saturated.ci_low == pytest.approx(bounded_mean_estimate([1.0] * 20).ci_low)

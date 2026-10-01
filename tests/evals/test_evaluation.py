@@ -13,9 +13,11 @@ from grasp_agents.evals import (
     Example,
     FunctionTask,
     LocalRunStore,
+    SpecError,
     evaluator,
     list_evaluations,
     load_evaluation,
+    load_object,
 )
 
 
@@ -137,7 +139,7 @@ class TestEvaluation:
         assert load_evaluation(f"{module}:second").name == "second"
         assert load_evaluation(str(module)).name == "first"
         assert set(list_evaluations(str(module))) == {"first"}
-        with pytest.raises(LookupError):
+        with pytest.raises(SpecError, match="no attribute 'missing'"):
             load_evaluation(f"{module}:missing")
 
 
@@ -182,3 +184,111 @@ async def test_rescore_from_disk_sees_typed_examples(tmp_path: Path) -> None:
     child = await second.rescore(run.id, store=store)
     assert child.counts.evaluator_failures == 0
     assert child.metric("pass_rate(typed)").value == pytest.approx(1.0)  # type: ignore[union-attr]
+
+
+class TestSpecFiles:
+    def test_files_inside_packages_load_as_their_module(self) -> None:
+        import sys
+
+        import grasp_agents.examples.evals.grader_evals as module_form
+
+        spec = "src/grasp_agents/examples/evals/grader_evals.py:grader_v1"
+        by_path = load_evaluation(spec)
+        assert by_path is module_form.grader_v1
+        assert by_path.spec is not None
+        assert Path(by_path.spec.rpartition(":")[0]).is_absolute()
+        assert not any(
+            name.startswith("_grasp_evals_grader_evals") for name in sys.modules
+        )
+
+    def test_standalone_specs_import_their_siblings_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        folder = tmp_path / "specs"
+        folder.mkdir()
+        (folder / "helpers_for_spec.py").write_text("VALUE = 7\n")
+        (folder / "spec_module.py").write_text(
+            textwrap.dedent(
+                """
+                from grasp_agents.evals import Dataset, Evaluation, Example
+                import helpers_for_spec
+
+                LOADS = []
+                LOADS.append(1)
+
+                async def task(x: int) -> int:
+                    return x + helpers_for_spec.VALUE
+
+                spec = Evaluation(
+                    name="sibling",
+                    task=task,
+                    dataset=Dataset([Example(id="a", input=1)]),
+                )
+                """
+            )
+        )
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        first = load_object(f"{folder / 'spec_module.py'}:LOADS")
+        again = load_object(f"{folder / 'spec_module.py'}:LOADS")
+        assert first is again
+        assert first == [1]
+        evaluation = load_evaluation(f"{folder / 'spec_module.py'}:spec")
+        assert evaluation.name == "sibling"
+
+
+_SPEC = """
+from grasp_agents.evals import Dataset, Evaluation, Example
+
+{imports}
+
+async def task(x: int) -> int:
+    return x
+
+spec = Evaluation(name="spec", task=task, dataset=Dataset([Example(id="a", input=1)]))
+"""
+
+
+class TestSpecNames:
+    def test_package_specs_keep_their_package_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import uuid
+
+        package = f"pkg_{uuid.uuid4().hex[:8]}"
+        root = tmp_path / package
+        (root / "specs").mkdir(parents=True)
+        (root / "__init__.py").write_text("")
+        (root / "specs" / "__init__.py").write_text("")
+        (root / "models.py").write_text("VALUE = 7\n")
+        spec_file = root / "specs" / "spec.py"
+        spec_file.write_text(_SPEC.format(imports="from ..models import VALUE"))
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        # Run from inside the package: its directory is on sys.path too.
+        sys.path[:0] = [str(root / "specs"), str(tmp_path)]
+        evaluation = load_evaluation(f"{spec_file}:spec")
+        assert evaluation is sys.modules[f"{package}.specs.spec"].spec
+        assert "spec" not in sys.modules or sys.modules["spec"].__file__ != str(
+            spec_file
+        )
+
+    def test_loose_specs_are_imported_under_their_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import importlib
+        import sys
+        import uuid
+
+        stem = f"loose_spec_{uuid.uuid4().hex[:8]}"
+        (tmp_path / f"{stem}.py").write_text(
+            _SPEC.format(imports="class Grade:\n    pass")
+        )
+        (tmp_path / f"judges_{stem}.py").write_text(f"from {stem} import Grade\n")
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        evaluation = load_evaluation(f"{tmp_path / f'{stem}.py'}:spec")
+        spec_module = sys.modules[stem]
+        assert evaluation is spec_module.spec
+        judges = importlib.import_module(f"judges_{stem}")
+        assert judges.Grade is spec_module.Grade

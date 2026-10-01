@@ -73,6 +73,7 @@ code-exec = [
 notebook = ["grasp-agents[code-exec,notebook-edit]"]
 phoenix = [
     "arize-phoenix-otel>=0.13.1,<1",
+    "arize-phoenix-client>=3.5,<4",
     "openinference-instrumentation-openllmetry>=0.1.2,<1",
     "openinference-instrumentation-openai>=0.1.32,<1",
     "openinference-instrumentation-litellm>=0.1.25,<1",

@@ -1,18 +1,36 @@
+import hashlib
 import json
-import random
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import cached_property
 from pathlib import Path
 from typing import Any, cast, overload
 
 import yaml
-from pydantic import BaseModel, TypeAdapter, create_model
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    ValidationError,
+    create_model,
+)
 
-from ._util import short_hash, to_jsonable
-from .types import DatasetRef, Example
+from ._util import short_hash
+from .types import (
+    DatasetRef,
+    Example,
+    ExampleRecord,
+    content_digest,
+    input_digest,
+    with_record,
+)
 
-_RECORD_KEYS = frozenset({"id", "input", "reference", "metadata", "splits"})
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+_SUFFIXES = frozenset({".jsonl", ".json", *_YAML_SUFFIXES})
 
 
 class DatasetError(ValueError):
@@ -27,6 +45,62 @@ class DatasetProblem(BaseModel):
 
 type DatasetCheck = Callable[[Example[Any, Any]], str | Sequence[str] | None]
 """Returns the problems found in one example (``None`` / empty when it is fine)."""
+
+
+class _Record(BaseModel):
+    """One dataset record as written in a file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: StrictStr | StrictInt | None = None
+    input: Any
+    reference: Any = None
+    metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
+    splits: list[StrictStr] = Field(default_factory=list[StrictStr])
+
+
+def _is_model(tp: Any) -> bool:
+    return isinstance(tp, type) and issubclass(tp, BaseModel)
+
+
+def _alias_keys(alias: str | AliasPath | AliasChoices | None) -> list[str]:
+    if alias is None:
+        return []
+    if isinstance(alias, str):
+        return [alias]
+    if isinstance(alias, AliasPath):
+        first = alias.path[0] if alias.path else None
+        return [first] if isinstance(first, str) else []
+    return [key for choice in alias.choices for key in _alias_keys(choice)]
+
+
+def _field_names(model: type[BaseModel]) -> set[str]:
+    names: set[str] = set()
+    for name, info in model.model_fields.items():
+        names.add(name)
+        if info.alias:
+            names.add(info.alias)
+        names.update(_alias_keys(info.validation_alias))
+    return names
+
+
+def _unknown_fields(tp: Any, raw: Any) -> list[str]:
+    # Models that set ``extra`` decide for themselves; for the rest an unknown
+    # key is almost always a typo that pydantic would silently drop.
+    if not _is_model(tp) or not isinstance(raw, Mapping):
+        return []
+    model = cast("type[BaseModel]", tp)
+    if model.model_config.get("extra") is not None:
+        return []
+    known = _field_names(model)
+    return sorted(str(k) for k in cast("Mapping[Any, Any]", raw) if str(k) not in known)
+
+
+def _explain(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(str(p) for p in error['loc']) or 'record'}: {error['msg']}"
+        for error in exc.errors()
+    )
 
 
 class Dataset[InT, RefT]:
@@ -110,7 +184,7 @@ class Dataset[InT, RefT]:
     @cached_property
     def fingerprint(self) -> str:
         """Content hash of the examples, independent of their order."""
-        parts = sorted(f"{e.id}:{e.content_hash()}" for e in self._examples)
+        parts = sorted(f"{e.id}:{e.content_hash}" for e in self._examples)
         return short_hash(*parts)
 
     @property
@@ -155,10 +229,20 @@ class Dataset[InT, RefT]:
         wanted = list(dict.fromkeys(ids))
         missing = [i for i in wanted if i not in self._by_id]
         if missing:
+            elsewhere = [i for i in missing if i in self.origin]
+            if elsewhere and self._selection:
+                raise DatasetError(
+                    f"Example ids {elsewhere} exist in {self.name!r} but are not in "
+                    f"the selected subset ({', '.join(self._selection)})"
+                )
             raise DatasetError(f"Unknown example ids in {self.name!r}: {missing}")
         return self._derive((self._by_id[i] for i in wanted), f"ids={len(wanted)}")
 
     def split(self, name: str) -> "Dataset[InT, RefT]":
+        if name not in self.splits:
+            raise DatasetError(
+                f"No split {name!r} in {self.name!r}; splits: {self.splits or 'none'}"
+            )
         return self._derive(
             (e for e in self._examples if name in e.splits), f"split={name}"
         )
@@ -180,17 +264,24 @@ class Dataset[InT, RefT]:
         )
 
     def head(self, n: int) -> "Dataset[InT, RefT]":
+        if n < 0:
+            raise ValueError("head: n must be >= 0")
         return self._derive(self._examples[:n], f"head={n}")
 
     def sample(self, n: int, *, seed: int = 0) -> "Dataset[InT, RefT]":
-        """``n`` examples drawn without replacement; deterministic for a seed."""
-        if n >= len(self._examples):
-            return self._derive(self._examples, f"sample={n} seed={seed}")
-        rng = random.Random(seed)  # noqa: S311
-        chosen = set(rng.sample(range(len(self._examples)), n))
+        """
+        ``n`` examples drawn without replacement. The draw depends only on the
+        seed and the example ids — not on their order or the Python version.
+        """
+        if n < 0:
+            raise ValueError("sample: n must be >= 0")
+
+        def rank(example: Example[InT, RefT]) -> str:
+            return hashlib.sha256(f"{seed}:{example.id}".encode()).hexdigest()
+
+        chosen = {e.id for e in sorted(self._examples, key=rank)[:n]}
         return self._derive(
-            (e for i, e in enumerate(self._examples) if i in chosen),
-            f"sample={n} seed={seed}",
+            (e for e in self._examples if e.id in chosen), f"sample={n} seed={seed}"
         )
 
     # --- Checks ---
@@ -198,11 +289,16 @@ class Dataset[InT, RefT]:
     def check(
         self, checks: Mapping[str, DatasetCheck] | Sequence[DatasetCheck]
     ) -> list[DatasetProblem]:
-        named: Mapping[str, DatasetCheck] = (
-            checks
-            if isinstance(checks, Mapping)
-            else {getattr(c, "__name__", f"check_{i}"): c for i, c in enumerate(checks)}
-        )
+        named: dict[str, DatasetCheck] = {}
+        if isinstance(checks, Mapping):
+            named = dict(checks)
+        else:
+            for index, check in enumerate(checks):
+                base = getattr(check, "__name__", "") or f"check_{index}"
+                key, copy = base, 2
+                while key in named:
+                    key, copy = f"{base}#{copy}", copy + 1
+                named[key] = check
         problems: list[DatasetProblem] = []
         for example in self._examples:
             for check_name, check in named.items():
@@ -223,7 +319,11 @@ class Dataset[InT, RefT]:
         return [_to_record(e) for e in self._examples]
 
     def save(self, path: str | Path) -> Path:
-        """Write as JSONL, or as YAML/JSON (``{name, description, examples}``)."""
+        """
+        Write as JSONL, or as YAML/JSON (``{name, description, examples}``).
+        Each example is written as :attr:`Example.record` — loaded ones as they
+        were read — so reloading keeps every content hash.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         records = self.to_records()
@@ -248,10 +348,51 @@ class Dataset[InT, RefT]:
             )
         return path
 
+    @overload
+    @classmethod
+    def from_records[I, R](
+        cls,
+        records: Iterable[Any],
+        *,
+        input_type: type[I],
+        reference_type: type[R],
+        name: str = ...,
+        version: str | None = ...,
+        source: str | None = ...,
+        description: str | None = ...,
+        locations: Sequence[str] | None = ...,
+    ) -> "Dataset[I, R]": ...
+    @overload
+    @classmethod
+    def from_records[I](
+        cls,
+        records: Iterable[Any],
+        *,
+        input_type: type[I],
+        name: str = ...,
+        version: str | None = ...,
+        source: str | None = ...,
+        description: str | None = ...,
+        locations: Sequence[str] | None = ...,
+    ) -> "Dataset[I, Any]": ...
+    @overload
     @classmethod
     def from_records(
         cls,
-        records: Iterable[Mapping[str, Any]],
+        records: Iterable[Any],
+        *,
+        input_type: Any = ...,
+        reference_type: Any = ...,
+        name: str = ...,
+        version: str | None = ...,
+        source: str | None = ...,
+        description: str | None = ...,
+        locations: Sequence[str] | None = ...,
+    ) -> "Dataset[Any, Any]": ...
+    @classmethod
+    def from_records(
+        cls,
+        records: Iterable[Any],
         *,
         input_type: Any = Any,
         reference_type: Any = Any,
@@ -259,39 +400,36 @@ class Dataset[InT, RefT]:
         version: str | None = None,
         source: str | None = None,
         description: str | None = None,
+        locations: Sequence[str] | None = None,
     ) -> "Dataset[Any, Any]":
+        """
+        Build a dataset from plain records (``{id, input, reference,
+        metadata, splits}``), validating inputs and references as the given
+        types. Ids and content hashes come from the records as written.
+        """
         input_adapter: TypeAdapter[Any] = TypeAdapter(input_type)
         reference_adapter: TypeAdapter[Any] = TypeAdapter(reference_type)
         examples: list[Example[Any, Any]] = []
-        for index, record in enumerate(records):
-            unknown = set(record) - _RECORD_KEYS
-            if unknown:
-                raise DatasetError(
-                    f"{name}: record {index} has unknown keys {sorted(unknown)}; "
-                    f"expected a subset of {sorted(_RECORD_KEYS)}"
+        first_seen: dict[str, str] = {}
+        for index, raw in enumerate(records):
+            where = locations[index] if locations is not None else f"record {index}"
+            examples.append(
+                _parse_record(
+                    raw,
+                    where=f"{name}: {where}" if locations is None else where,
+                    input_type=input_type,
+                    reference_type=reference_type,
+                    input_adapter=input_adapter,
+                    reference_adapter=reference_adapter,
                 )
-            if "input" not in record:
-                raise DatasetError(f"{name}: record {index} has no 'input'")
-            try:
-                reference = record.get("reference")
-                examples.append(
-                    Example[Any, Any](
-                        id=str(record.get("id") or ""),
-                        input=input_adapter.validate_python(record["input"]),
-                        reference=(
-                            None
-                            if reference is None
-                            else reference_adapter.validate_python(reference)
-                        ),
-                        metadata=dict(record.get("metadata") or {}),
-                        splits=list(record.get("splits") or []),
-                    )
-                )
-            except ValueError as exc:
+            )
+            example_id = examples[-1].id
+            if example_id in first_seen:
                 raise DatasetError(
-                    f"{name}: record {index} (id={record.get('id')!r}) is invalid: "
-                    f"{exc}"
-                ) from exc
+                    f"{where}: duplicate example id {example_id!r} "
+                    f"(first at {first_seen[example_id]})"
+                )
+            first_seen[example_id] = where
         return Dataset(
             examples,
             name=name,
@@ -300,6 +438,31 @@ class Dataset[InT, RefT]:
             description=description,
         )
 
+    @overload
+    @classmethod
+    def load[I, R](
+        cls,
+        path: str | Path,
+        *,
+        input_type: type[I],
+        reference_type: type[R],
+        name: str | None = ...,
+    ) -> "Dataset[I, R]": ...
+    @overload
+    @classmethod
+    def load[I](
+        cls, path: str | Path, *, input_type: type[I], name: str | None = ...
+    ) -> "Dataset[I, Any]": ...
+    @overload
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        input_type: Any = ...,
+        reference_type: Any = ...,
+        name: str | None = ...,
+    ) -> "Dataset[Any, Any]": ...
     @classmethod
     def load(
         cls,
@@ -311,33 +474,54 @@ class Dataset[InT, RefT]:
     ) -> "Dataset[Any, Any]":
         """Load a ``.jsonl``, ``.json`` or ``.yaml`` dataset file."""
         path = Path(path)
-        text = path.read_text(encoding="utf-8")
+        if path.suffix not in _SUFFIXES:
+            raise DatasetError(
+                f"{path}: unsupported dataset format (use .jsonl, .json or .yaml)"
+            )
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise DatasetError(f"{path}: cannot read ({exc.strerror or exc})") from exc
         document_name: str | None = None
         description: str | None = None
-        records: list[Mapping[str, Any]]
+        records: list[Any] = []
+        locations: list[str] = []
         if path.suffix == ".jsonl":
-            records = [
-                json.loads(line)
-                for line in text.splitlines()
-                if line.strip() and not line.lstrip().startswith("//")
-            ]
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("//"):
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    raise DatasetError(
+                        f"{path}:{lineno}: invalid JSON ({exc.msg}, column {exc.colno})"
+                    ) from exc
+                locations.append(f"{path}:{lineno}")
         else:
-            loaded: Any = (
-                yaml.safe_load(text)
-                if path.suffix in _YAML_SUFFIXES
-                else json.loads(text)
-            )
+            try:
+                loaded: Any = (
+                    yaml.safe_load(text)
+                    if path.suffix in _YAML_SUFFIXES
+                    else json.loads(text)
+                )
+            except (yaml.YAMLError, json.JSONDecodeError) as exc:
+                raise DatasetError(f"{path}: cannot parse ({exc})") from exc
             if isinstance(loaded, list):
-                records = cast("list[Mapping[str, Any]]", loaded)
+                records = cast("list[Any]", loaded)
             elif isinstance(loaded, dict) and "examples" in loaded:
                 document = cast("dict[str, Any]", loaded)
                 document_name = document.get("name")
                 description = document.get("description")
-                records = document["examples"]
+                examples = document["examples"]
+                if not isinstance(examples, list):
+                    raise DatasetError(f"{path}: 'examples' must be a list")
+                records = cast("list[Any]", examples)
             else:
                 raise DatasetError(
                     f"{path}: expected a list of examples or an object with 'examples'"
                 )
+            locations = [f"{path}: examples[{i}]" for i in range(len(records))]
         return cls.from_records(
             records,
             input_type=input_type,
@@ -345,30 +529,108 @@ class Dataset[InT, RefT]:
             name=name or document_name or path.stem,
             source=str(path),
             description=description,
+            locations=locations,
         )
 
 
+def _parse_record(
+    raw: Any,
+    *,
+    where: str,
+    input_type: Any,
+    reference_type: Any,
+    input_adapter: TypeAdapter[Any],
+    reference_adapter: TypeAdapter[Any],
+) -> Example[Any, Any]:
+    if not isinstance(raw, Mapping):
+        raise DatasetError(
+            f"{where}: expected an object with 'input', got {type(raw).__name__}"
+        )
+    try:
+        record = _Record.model_validate(raw)
+    except ValidationError as exc:
+        raise DatasetError(f"{where}: {_explain(exc)}") from exc
+    label = f"{where} (id={record.id!r})" if record.id is not None else where
+    for field, tp, value in (
+        ("input", input_type, record.input),
+        ("reference", reference_type, record.reference),
+    ):
+        unknown = _unknown_fields(tp, value)
+        if unknown:
+            known = sorted(_field_names(cast("type[BaseModel]", tp)))
+            raise DatasetError(
+                f"{label}: {field} has unknown fields {unknown}; expected {known}"
+            )
+    try:
+        value = input_adapter.validate_python(record.input)
+        reference = (
+            None
+            if record.reference is None
+            else reference_adapter.validate_python(record.reference)
+        )
+    except ValidationError as exc:
+        raise DatasetError(f"{label}: {_explain(exc)}") from exc
+    try:
+        example_id = (
+            str(record.id)
+            if record.id not in {None, ""}
+            else input_digest(record.input)
+        )
+        content_hash = content_digest(record.input, record.reference, record.metadata)
+    except TypeError as exc:
+        raise DatasetError(f"{label}: {exc}") from exc
+    example = Example[Any, Any](
+        id=example_id,
+        input=value,
+        reference=reference,
+        metadata=record.metadata,
+        splits=list(record.splits),
+        content_hash=content_hash,
+    )
+    return with_record(
+        example, ExampleRecord(record.input, record.reference, record.metadata)
+    )
+
+
 def _to_record(example: Example[Any, Any]) -> dict[str, Any]:
-    record: dict[str, Any] = {"id": example.id, "input": to_jsonable(example.input)}
-    if example.reference is not None:
-        record["reference"] = to_jsonable(example.reference)
-    if example.metadata:
-        record["metadata"] = to_jsonable(example.metadata)
+    content = example.record
+    record: dict[str, Any] = {"id": example.id, "input": content.input}
+    if content.reference is not None:
+        record["reference"] = content.reference
+    if content.metadata:
+        record["metadata"] = content.metadata
     if example.splits:
         record["splits"] = list(example.splits)
     return record
 
 
+def _closed(tp: Any) -> Any:
+    # The schema mirrors the loader, which rejects unknown keys of models that
+    # leave ``extra`` unset.
+    if not _is_model(tp):
+        return tp
+    model = cast("type[BaseModel]", tp)
+    if model.model_config.get("extra") is not None:
+        return model
+    config = cast("ConfigDict", {**model.model_config, "extra": "forbid"})
+    return type(
+        model.__name__,
+        (model,),
+        {"model_config": config, "__module__": model.__module__},
+    )
+
+
 def example_json_schema(
     input_type: Any = Any, reference_type: Any = Any
 ) -> dict[str, Any]:
-    """JSON Schema of one dataset record, for authoring and validating files."""
+    """JSON Schema of one dataset record: exactly what the loader accepts."""
     model = create_model(
         "ExampleRecord",
-        id=(str, ""),
-        input=(input_type, ...),
-        reference=(reference_type | None, None),
-        metadata=(dict[str, Any], {}),
-        splits=(list[str], []),
+        __config__=ConfigDict(extra="forbid"),
+        id=(StrictStr | StrictInt | None, None),
+        input=(_closed(input_type), ...),
+        reference=(_closed(reference_type) | None, None),
+        metadata=(dict[str, Any], Field(default_factory=dict[str, Any])),
+        splits=(list[StrictStr], Field(default_factory=list[StrictStr])),
     )
     return model.model_json_schema()

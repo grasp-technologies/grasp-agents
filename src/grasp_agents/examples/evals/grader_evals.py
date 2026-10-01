@@ -218,7 +218,9 @@ class FeedbackWriter(Processor[Analysis, Grade, None]):
         return Grade(verdict=verdict, feedback=feedback)
 
 
-def build_grader(version: str = "v1", *, noise: float = 0.15) -> Processor[Submission, Grade, None]:
+def build_grader(
+    version: str = "v1", *, noise: float = 0.15
+) -> Processor[Submission, Grade, None]:
     return SequentialWorkflow[Submission, Grade, None](
         name="grader",
         subprocs=[
@@ -281,19 +283,24 @@ def feedback_concise(ctx: Ctx) -> bool:
     return len(ctx.output.feedback) <= 160
 
 
-@evaluator(name="feedback_quality", version="1", annotator="LLM")
+@evaluator(name="feedback_quality", version="1")
 def feedback_quality_v1(ctx: Ctx) -> Score:
-    """A lenient stand-in judge: any non-trivial feedback passes."""
+    """
+    A lenient stand-in for an LLM judge (code, so it is recorded as such):
+    any non-trivial feedback passes.
+    """
     ok = len(ctx.output.feedback.split()) >= 3
     return Score(name="feedback_quality", value=ok, explanation=ctx.output.feedback)
 
 
-@evaluator(name="feedback_quality", version="2", annotator="LLM")
+@evaluator(name="feedback_quality", version="2")
 def feedback_quality_v2(ctx: Ctx) -> Score:
-    """A stricter judge: feedback on an imperfect answer must be specific."""
+    """A stricter stand-in judge: feedback on an imperfect answer must be specific."""
     assert ctx.reference is not None
     if ctx.reference.verdict == "correct":
-        return Score(name="feedback_quality", value=True, explanation="answer was correct")
+        return Score(
+            name="feedback_quality", value=True, explanation="answer was correct"
+        )
     words = set(_tokens(ctx.output.feedback))
     points = set(_key_points(ctx.input.reference_answer))
     specific = bool(words & points)
@@ -304,12 +311,16 @@ def feedback_quality_v2(ctx: Ctx) -> Score:
     )
 
 
-def _specificity(ctx: PairwiseContext[Submission, Any, TeacherGrade], grade: Any) -> int:
+def _specificity(
+    ctx: PairwiseContext[Submission, Any, TeacherGrade], grade: Any
+) -> int:
     feedback = grade["feedback"] if isinstance(grade, dict) else grade.feedback
     return len(set(_tokens(feedback)) & set(_key_points(ctx.input.reference_answer)))
 
 
-def _more_specific(ctx: PairwiseContext[Submission, Any, TeacherGrade]) -> PairwiseVerdict:
+def _more_specific(
+    ctx: PairwiseContext[Submission, Any, TeacherGrade],
+) -> PairwiseVerdict:
     first, second = _specificity(ctx, ctx.first), _specificity(ctx, ctx.second)
     if first == second:
         return PairwiseVerdict(winner="tie")
@@ -376,5 +387,8 @@ grader_v2_strict = _grader_evaluation("v2", feedback_quality_v2)
 def llm_grader_evaluation(llm: Any) -> Evaluation:
     """The same evaluation with the grader replaced by an LLM agent on ``llm``."""
     return _grader_evaluation(
-        "llm", feedback_quality_v1, grader=llm_grader(llm), name="short-answer-grader-llm"
+        "llm",
+        feedback_quality_v1,
+        grader=llm_grader(llm),
+        name="short-answer-grader-llm",
     )

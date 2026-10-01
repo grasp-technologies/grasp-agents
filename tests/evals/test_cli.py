@@ -114,7 +114,8 @@ def test_run_show_compare_rescore(
         capsys, "--root", root, "show", base["id"], "--failures", "--json"
     )
     assert code == 0
-    assert shown["trials"] == []  # wrong answers are scores, not failures
+    # Failures are errors and failed scores: x3 is answered wrongly.
+    assert [t["example_id"] for t in shown["trials"]] == ["x3"]
 
     code, detail = _run_json(
         capsys, "--root", root, "show", base["id"], "--example", "x3"
@@ -170,3 +171,114 @@ def test_usage_errors_exit_2(
 ) -> None:
     assert main(["--root", str(tmp_path), "show", "nope"]) == 2
     assert "No run matching" in capsys.readouterr().err
+
+
+def test_baseline_latest_is_the_previous_run(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    code, base = _run_json(
+        capsys, "--root", root, "run", f"{module}:fixed", "--json", "-q"
+    )
+    assert code == 0
+    code, candidate = _run_json(
+        capsys,
+        "--root",
+        root,
+        "run",
+        f"{module}:buggy",
+        "--json",
+        "-q",
+        "--baseline",
+        "latest",
+        "--fail-on-regression",
+    )
+    assert candidate["comparison"]["base_run"] == base["id"]
+    assert candidate["comparison"]["candidate_run"] == candidate["id"]
+
+
+def test_gate_flags_need_a_baseline(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, payload = _run_json(
+        capsys,
+        "--root",
+        str(tmp_path),
+        "run",
+        f"{module}:buggy",
+        "--fail-on-regression",
+        "--json",
+    )
+    assert code == 2
+    assert "--baseline" in payload["error"]["message"]
+
+
+def test_errors_are_json_documents_with_usage_codes(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    for args, expected in [
+        (["run", str(tmp_path / "missing.py:spec")], "No spec file"),
+        (["run", f"{module}:nope"], "no attribute"),
+        (["run", f"{module}:buggy", "--split", "tset"], "No split 'tset'"),
+        (["run", f"{module}:buggy", "--ids", "x4"], "sealed split"),
+    ]:
+        code, payload = _run_json(capsys, "--root", root, *args, "--json", "-q")
+        assert code == 2, args
+        assert expected in payload["error"]["message"], args
+
+
+def test_a_failed_push_still_reports_the_run(
+    tmp_path: Path,
+    module: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOENIX_BASE_URL", raising=False)
+    code, payload = _run_json(
+        capsys,
+        "--root",
+        str(tmp_path),
+        "run",
+        f"{module}:buggy",
+        "--push",
+        "--json",
+        "-q",
+    )
+    assert code == 2  # a configuration problem, not a Phoenix failure
+    assert payload["id"]
+    assert "PHOENIX_BASE_URL" in payload["push_error"]
+
+
+def test_listing_and_dataset_commands_take_json(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json", "-q")
+    code, runs = _run_json(capsys, "--root", root, "runs", "--json")
+    assert code == 0
+    assert runs[0]["kind"] == "evaluation"
+    assert runs[0]["evaluation"].endswith(":buggy")
+    code, latest = _run_json(capsys, "--root", root, "show", "latest:buggy", "--json")
+    assert latest["id"] == runs[0]["id"]
+    code, schema = _run_json(capsys, "datasets", "schema", f"{module}:buggy", "--json")
+    assert code == 0
+    assert schema["additionalProperties"] is False
+
+
+def test_counts_must_be_positive(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--root", str(tmp_path), "run", f"{module}:buggy", "-r", "0"]) == 2
+    assert "must be >= 1" in capsys.readouterr().err
+
+
+def test_argument_errors_are_json_documents_under_json(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, payload = _run_json(
+        capsys, "--root", str(tmp_path), "run", f"{module}:buggy", "-r", "0", "--json"
+    )
+    assert code == 2
+    assert payload["error"]["exit"] == 2
+    assert "repetitions" in payload["error"]["message"]

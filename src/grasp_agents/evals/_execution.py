@@ -1,23 +1,33 @@
 import asyncio
+import json
 import logging
+import operator
 import platform
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
+from itertools import starmap
 from pathlib import Path
 from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ConfigDict, PydanticUserError, TypeAdapter, ValidationError
 
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.events import Event
 
-from ._util import canonical_json, git_state, short_hash, to_jsonable, utc_now
-from .evaluator import EvalContext, Evaluator, run_evaluator
+from ._util import (
+    canonical_json,
+    git_state,
+    short_hash,
+    source_hash,
+    to_jsonable,
+    utc_now,
+)
+from .evaluator import EvalContext, Evaluator, FunctionEvaluator, run_evaluator
 from .metrics import Metric, compute_metrics
 from .report import render_run_markdown
 from .store import LocalRunStore, RunStore
@@ -35,6 +45,7 @@ from .types import (
     Score,
     Trial,
     Usage,
+    with_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,8 +68,15 @@ class TrialProgress:
 type ProgressCallback = Callable[[TrialProgress], None]
 
 
+def evaluator_sources(evaluators: Iterable[Evaluator[Any, Any, Any]]) -> list[Any]:
+    """Classes and functions whose source files define ``evaluators``."""
+    return [e.fn if isinstance(e, FunctionEvaluator) else type(e) for e in evaluators]
+
+
 def capture_provenance(
     observed_models: Mapping[str, list[str]] | None = None,
+    *,
+    sources: Iterable[Any] = (),
 ) -> Provenance:
     commit, branch, dirty, diff_hash = git_state(Path.cwd())
     try:
@@ -70,6 +88,7 @@ def capture_provenance(
         git_branch=branch,
         git_dirty=dirty,
         git_diff_hash=diff_hash,
+        source_hash=source_hash(sources),
         python=platform.python_version(),
         grasp_agents=grasp_version,
         observed_models=dict(observed_models or {}),
@@ -87,7 +106,10 @@ def config_hash(
         canonical_json(
             {
                 "task": task,
-                "evaluators": sorted(evaluators, key=lambda e: e.name),
+                "evaluators": sorted(
+                    (e.model_dump(exclude={"source"}) for e in evaluators),
+                    key=operator.itemgetter("name"),
+                ),
                 "dataset": dataset.selected_fingerprint,
                 "repetitions": repetitions,
             }
@@ -106,26 +128,51 @@ def retype_examples(
         return list(examples)
     inputs: TypeAdapter[Any] = TypeAdapter(input_type)
     references: TypeAdapter[Any] = TypeAdapter(reference_type)
+    # Same stored content, now typed: the identity and record are unchanged.
     return [
-        e.model_copy(
-            update={
-                "input": inputs.validate_python(e.input),
-                "reference": None
-                if e.reference is None
-                else references.validate_python(e.reference),
-            }
+        with_record(
+            e.model_copy(
+                update={
+                    "input": inputs.validate_python(e.input),
+                    "reference": None
+                    if e.reference is None
+                    else references.validate_python(e.reference),
+                    "content_hash": e.content_hash,
+                }
+            ),
+            e.record,
         )
         for e in examples
     ]
 
 
+def output_adapter(output_type: Any) -> TypeAdapter[Any]:
+    """Validator of stored outputs: plain JSON, with bytes base64-encoded."""
+    try:
+        return TypeAdapter(output_type, config=ConfigDict(val_json_bytes="base64"))
+    except PydanticUserError:
+        # Models, dataclasses and TypedDicts carry their own configuration.
+        return TypeAdapter(output_type)
+
+
 def rehydrate_output(adapter: TypeAdapter[Any], output: Any) -> Any:
     """Typed form of a stored output; the stored JSON if it no longer validates."""
     try:
-        return adapter.validate_python(output)
+        return adapter.validate_json(json.dumps(output))
     except ValidationError:
         logger.warning("Stored output no longer matches the task's output type")
         return output
+
+
+def warn_if_untyped(output_type: Any, outputs: Iterable[Any]) -> None:
+    """Warn once when stored outputs reach evaluators as plain JSON objects."""
+    if output_type is not Any:
+        return
+    if any(isinstance(o, dict | list) for o in outputs):
+        logger.warning(
+            "The task's output type is unknown, so evaluators receive stored "
+            "outputs as plain JSON; pass output_type= to re-validate them"
+        )
 
 
 def _trace_id(span: trace.Span) -> str | None:
@@ -150,6 +197,7 @@ async def execute_trial(
     started_at = utc_now()
     start = time.perf_counter()
     output: Any = None
+    stored: Any = None
     error: ErrorInfo | None = None
     attributes = {
         "grasp.eval.run_id": run.id,
@@ -176,14 +224,25 @@ async def execute_trial(
             )
         except Exception as exc:
             error = ErrorInfo.from_exception(exc)
+        if error is None:
+            try:
+                stored = to_jsonable(output)
+            except Exception as exc:
+                error = ErrorInfo(
+                    type="OutputNotSerializable",
+                    message=(
+                        "OutputNotSerializable: the task's output cannot be stored "
+                        f"as JSON ({type(exc).__name__}: {exc})"
+                    ),
+                )
         if error is not None:
             span.set_status(Status(StatusCode.ERROR, error.message))
         trace_id = _trace_id(span)
     trial = Trial(
         example_id=example.id,
         repetition=repetition,
-        example_hash=example.content_hash(),
-        output=None if error is not None else to_jsonable(output),
+        example_hash=example.content_hash,
+        output=None if error is not None else stored,
         error=error,
         started_at=started_at,
         duration_s=time.perf_counter() - start,
@@ -199,7 +258,7 @@ async def execute_trial(
 
 
 class Executor:
-    """Scores, persists and finalizes the trials of one run."""
+    """Scores, persists, budgets and finalizes the trials of one run."""
 
     def __init__(
         self,
@@ -209,6 +268,7 @@ class Executor:
         evaluators: Sequence[Evaluator[Any, Any, Any]],
         capture_events: bool = True,
         max_cost_usd: float | None = None,
+        evaluator_timeout_s: float | None = None,
         progress: ProgressCallback | None = None,
         total: int = 0,
     ) -> None:
@@ -217,26 +277,70 @@ class Executor:
         self.evaluators = list(evaluators)
         self.capture_events = capture_events
         self.max_cost_usd = max_cost_usd
+        self.evaluator_timeout_s = evaluator_timeout_s
         self.progress = progress
         self.total = total
         self.budget_exhausted = False
         self._lock = asyncio.Lock()
+        self._admission = asyncio.Condition()
+        self._in_flight = 0
         self._trials: dict[TrialKey, Trial] = {t.key: t for t in run.trials}
-        self._costs: dict[TrialKey, float] = {
-            t.key: t.total_usage.cost_usd or 0.0 for t in run.trials
-        }
+        # What this run has spent so far, including attempts later superseded
+        # (a resumed run continues its own total).
+        self._base_usage = run.usage
+        self._new_usage = Usage()
+        self._trial_costs: list[float] = [
+            t.total_usage.cost_usd or 0.0 for t in run.trials
+        ]
+        self._unpriced: set[str] = set()
 
     @property
     def spent_usd(self) -> float:
-        return sum(self._costs.values())
+        return (self._base_usage + self._new_usage).cost_usd or 0.0
 
     def get(self, key: TrialKey) -> Trial | None:
         return self._trials.get(key)
 
-    def over_budget(self) -> bool:
-        if self.max_cost_usd is not None and self.spent_usd >= self.max_cost_usd:
-            self.budget_exhausted = True
-        return self.budget_exhausted
+    def add_task_usage(self, trial: Trial) -> None:
+        self._new_usage += trial.usage
+        for agent, usage in trial.usage_by_agent.items():
+            if usage.total_tokens and usage.cost_usd is None:
+                self._unpriced.add(agent)
+
+    async def admit(self) -> bool:
+        """
+        Whether another trial may start under ``max_cost_usd``. Trials already
+        running count at the highest cost a trial has had so far. Until a
+        trial has cost anything, one runs at first and the number running
+        doubles with each finished trial, so a quick failure does not open
+        the whole batch.
+        """
+        if self.max_cost_usd is None:
+            return True
+        async with self._admission:
+            while True:
+                if self.spent_usd >= self.max_cost_usd:
+                    self.budget_exhausted = True
+                    return False
+                if self._in_flight == 0:
+                    break
+                highest = max(self._trial_costs, default=0.0)
+                if highest > 0.0:
+                    committed = self.spent_usd + (self._in_flight + 1) * highest
+                    if committed <= self.max_cost_usd:
+                        break
+                elif self._in_flight < 1 << min(len(self._trial_costs), 30):
+                    break
+                await self._admission.wait()
+            self._in_flight += 1
+            return True
+
+    async def release(self) -> None:
+        if self.max_cost_usd is None:
+            return
+        async with self._admission:
+            self._in_flight -= 1
+            self._admission.notify_all()
 
     async def score(
         self,
@@ -253,15 +357,28 @@ class Executor:
         ]
         if not pending:
             return
-        ctx = EvalContext(
-            example=example, output=output, trial=trial, events=events, session=session
+        contexts = [
+            EvalContext(
+                example=example,
+                output=output,
+                trial=trial,
+                events=events,
+                session=session,
+            )
+            for _ in pending
+        ]
+        outcomes = await asyncio.gather(
+            *starmap(self._run_one, zip(pending, contexts, strict=True))
         )
-        outcomes = await asyncio.gather(*(self._run_one(e, ctx) for e in pending))
         names = {s.name for s in trial.scores}
-        for evaluator, outcome in zip(pending, outcomes, strict=True):
+        for evaluator, ctx, outcome in zip(pending, contexts, outcomes, strict=True):
             trial.evaluator_failures = [
                 f for f in trial.evaluator_failures if f.evaluator != evaluator.name
             ]
+            if ctx.usage:
+                usage = sum(ctx.usage, Usage())
+                trial.evaluator_usage[evaluator.name] = usage
+                self._new_usage += usage
             if isinstance(outcome, ErrorInfo):
                 trial.evaluator_failures.append(
                     EvaluatorFailure(evaluator=evaluator.name, error=outcome)
@@ -282,15 +399,22 @@ class Executor:
             trial.scores.extend(outcome)
             names.update(s.name for s in outcome)
             trial.evaluated.append(evaluator.name)
-        if ctx.usage:
-            trial.evaluator_usage = sum(ctx.usage, trial.evaluator_usage)
 
-    @staticmethod
     async def _run_one(
-        evaluator: Evaluator[Any, Any, Any], ctx: EvalContext[Any, Any, Any]
+        self, evaluator: Evaluator[Any, Any, Any], ctx: EvalContext[Any, Any, Any]
     ) -> list[Score] | ErrorInfo:
         try:
-            return await run_evaluator(evaluator, ctx)
+            return await run_evaluator(
+                evaluator, ctx, timeout_s=self.evaluator_timeout_s
+            )
+        except TimeoutError:
+            return ErrorInfo(
+                type="TimeoutError",
+                message=(
+                    "TimeoutError: evaluator exceeded its "
+                    f"{self.evaluator_timeout_s:g}s timeout"
+                ),
+            )
         except Exception as exc:
             logger.debug(
                 "Evaluator %s failed on example %s: %s",
@@ -305,7 +429,7 @@ class Executor:
     ) -> None:
         async with self._lock:
             self._trials[trial.key] = trial
-            self._costs[trial.key] = trial.total_usage.cost_usd or 0.0
+            self._trial_costs.append(trial.total_usage.cost_usd or 0.0)
             if self.store is not None:
                 self.store.append_trial(
                     self.run.id, trial, events if self.capture_events else None
@@ -322,13 +446,25 @@ class Executor:
                     )
                 )
 
+    def _invalid_reason(self, trials: Sequence[Trial], expected: int) -> str | None:
+        if expected and not trials:
+            return "no trial ran"
+        errors = sum(1 for t in trials if not t.ok)
+        if trials and errors == len(trials):
+            return "every trial failed"
+        limit = self.run.config.max_error_rate
+        if limit is not None and trials:
+            rate = errors / len(trials)
+            if rate > limit:
+                return f"task error rate {rate:.1%} exceeds max_error_rate {limit:.1%}"
+        return None
+
     def finalize(
         self,
         status: RunStatus,
         *,
         metrics: Sequence[Metric] | None,
         order: Sequence[TrialKey],
-        max_error_rate: float | None,
     ) -> EvaluationRun:
         run = self.run
         index = {key: i for i, key in enumerate(order)}
@@ -344,7 +480,7 @@ class Executor:
             evaluator_failures=sum(len(t.evaluator_failures) for t in trials),
             unscored=sum(1 for t in trials for s in t.scores if not s.scored),
         )
-        run.usage = sum((t.total_usage for t in trials), Usage())
+        run.usage = self._base_usage + self._new_usage
         observed: dict[str, list[str]] = {
             agent: list(models)
             for agent, models in run.provenance.observed_models.items()
@@ -354,23 +490,33 @@ class Executor:
                 known = observed.setdefault(agent, [])
                 known.extend(m for m in models if m not in known)
         run.provenance.observed_models = observed
-        run.metrics = compute_metrics(
-            trials,
-            metrics,
-            examples=run.examples,
-            group_by=run.config.group_by,
-            cluster_by=run.config.cluster_by,
-        )
-        run.invalid_reason = None
-        if max_error_rate is not None and trials:
-            rate = run.counts.task_errors / len(trials)
-            if rate > max_error_rate:
-                run.invalid_reason = (
-                    f"task error rate {rate:.1%} exceeds max_error_rate "
-                    f"{max_error_rate:.1%}"
-                )
+        if self._unpriced and self.max_cost_usd is not None:
+            agents = sorted(self._unpriced)
+            logger.warning(
+                "No price is known for the models of %s: max_cost_usd cannot "
+                "limit their spend",
+                ", ".join(agents),
+            )
+            run.metadata = {**run.metadata, "unpriced_agents": agents}
+        run.invalid_reason = self._invalid_reason(trials, len(order))
         run.status = status
         run.finished_at = utc_now()
+        try:
+            run.metrics = compute_metrics(
+                trials,
+                metrics,
+                examples=run.examples,
+                group_by=run.config.group_by,
+                cluster_by=run.config.cluster_by,
+                expected=order,
+            )
+        except Exception as exc:
+            run.metrics = []
+            run.status = RunStatus.FAILED
+            run.invalid_reason = f"computing metrics failed: {exc}"
+            if self.store is not None:
+                self.store.save(run)
+            raise
         if self.store is not None:
             self.store.save(run)
             self.store.write_report(run.id, render_run_markdown(run))
@@ -399,29 +545,29 @@ async def run_all(
     *,
     metrics: Sequence[Metric] | None,
     order: Sequence[TrialKey],
-    max_error_rate: float | None,
 ) -> EvaluationRun:
+    """
+    Run the trial coroutines and finalize the run: ``completed`` when every
+    expected trial exists, ``partial`` when some never ran.
+    """
     try:
         async with asyncio.TaskGroup() as group:
             for coroutine in coroutines:
                 group.create_task(coroutine)
     except asyncio.CancelledError:
-        executor.finalize(
-            RunStatus.CANCELLED,
-            metrics=metrics,
-            order=order,
-            max_error_rate=max_error_rate,
-        )
+        executor.finalize(RunStatus.CANCELLED, metrics=metrics, order=order)
+        raise
+    except BaseExceptionGroup as failures:
+        executor.finalize(RunStatus.FAILED, metrics=metrics, order=order)
+        errors = [
+            e for e in failures.exceptions if not isinstance(e, asyncio.CancelledError)
+        ]
+        if errors and len({type(e) for e in errors}) == 1:
+            raise errors[0] from failures
         raise
     except BaseException:
-        executor.finalize(
-            RunStatus.FAILED,
-            metrics=metrics,
-            order=order,
-            max_error_rate=max_error_rate,
-        )
+        executor.finalize(RunStatus.FAILED, metrics=metrics, order=order)
         raise
-    status = RunStatus.PARTIAL if executor.budget_exhausted else RunStatus.COMPLETED
-    return executor.finalize(
-        status, metrics=metrics, order=order, max_error_rate=max_error_rate
-    )
+    done = sum(1 for key in order if executor.get(key) is not None)
+    status = RunStatus.COMPLETED if done >= len(order) else RunStatus.PARTIAL
+    return executor.finalize(status, metrics=metrics, order=order)

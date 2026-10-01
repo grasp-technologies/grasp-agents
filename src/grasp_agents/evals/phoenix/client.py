@@ -1,13 +1,23 @@
-"""Minimal async client for the parts of Phoenix's REST API that evals use."""
+"""
+Connection to a Phoenix server: the official ``phoenix.client`` SDK on an
+HTTP client that only retries requests that are safe to repeat.
+"""
 
 import asyncio
+import email.utils
 import logging
+import math
 import os
-from collections.abc import Mapping, Sequence
-from datetime import datetime
-from typing import Any, Literal, Self, cast
+import re
+import time
+from collections.abc import Awaitable, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Self, cast, override
 
 import httpx
+
+if TYPE_CHECKING:
+    from phoenix.client import AsyncClient
+    from phoenix.client.resources.datasets import Dataset as PhoenixDataset
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +27,12 @@ API_KEY_ENV = "PHOENIX_API_KEY"
 type ServerVersion = tuple[int, int, int]
 type AnnotatorKind = Literal["LLM", "CODE", "HUMAN"]
 
-# Server releases that changed what the client may send.
-EXTERNAL_EXAMPLE_IDS: ServerVersion = (15, 0, 0)
+MIN_SERVER_VERSION: ServerVersion = (20, 0, 0)
 
-_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_IDEMPOTENT = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+_GATEWAY_ERRORS = frozenset({502, 503, 504})
+_MAX_DELAY_S = 60.0
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)\S*")
 
 
 class PhoenixError(RuntimeError):
@@ -30,26 +42,129 @@ class PhoenixError(RuntimeError):
         self.detail = detail
 
 
-class PhoenixConflictError(PhoenixError):
+class PhoenixCompatibilityError(RuntimeError):
     pass
 
 
-def _parse_version(text: str) -> ServerVersion:
-    parts = [
-        int("".join(c for c in p if c.isdigit()) or 0) for p in text.split(".")[:3]
-    ]
-    while len(parts) < 3:
-        parts.append(0)
-    return (parts[0], parts[1], parts[2])
+def normalize_base_url(url: str) -> str:
+    """Canonical spelling of a server URL (lowercase scheme/host, no trailing /)."""
+    parsed = httpx.URL(url.strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.host:
+        raise ValueError(f"Not an http(s) server URL: {url!r}")
+    if parsed.userinfo:
+        raise ValueError(
+            "Put Phoenix credentials in PHOENIX_API_KEY, not in the server URL"
+        )
+    host = parsed.host.lower()
+    if ":" in host:  # IPv6
+        host = f"[{host}]"
+    port = parsed.port
+    default = {"http": 80, "https": 443}.get(parsed.scheme.lower())
+    netloc = host + (f":{port}" if port and port != default else "")
+    path = parsed.path.rstrip("/")
+    return f"{parsed.scheme.lower()}://{netloc}{path}"
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    value = response.headers.get("retry-after", "").strip()
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        seconds = when.timestamp() - time.time()
+    if not math.isfinite(seconds):
+        return None
+    return min(max(0.0, seconds), _MAX_DELAY_S)
+
+
+class _RetryingClient(httpx.AsyncClient):
+    """
+    Retries a request only when repeating it cannot duplicate a write: it
+    never reached the server, the server rate-limited it (429), or it is
+    idempotent and failed on a gateway error or timeout.
+    """
+
+    def __init__(self, *, retries: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._retries = retries
+
+    @override
+    async def send(
+        self,
+        request: httpx.Request,
+        *,
+        stream: bool = False,
+        auth: Any = httpx.USE_CLIENT_DEFAULT,
+        follow_redirects: Any = httpx.USE_CLIENT_DEFAULT,
+    ) -> httpx.Response:
+        attempt = 0
+        while True:
+            delay = min(2.0**attempt, 10.0)
+            try:
+                response = await super().send(
+                    request,
+                    stream=stream,
+                    auth=auth,
+                    follow_redirects=follow_redirects,
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if attempt >= self._retries:
+                    raise
+            except (httpx.TimeoutException, httpx.NetworkError):
+                if request.method not in _IDEMPOTENT or attempt >= self._retries:
+                    raise
+            else:
+                status = response.status_code
+                retryable = status == 429 or (
+                    status in _GATEWAY_ERRORS and request.method in _IDEMPOTENT
+                )
+                if not retryable or attempt >= self._retries:
+                    return response
+                requested = _retry_after(response)
+                delay = requested if requested is not None else delay
+                await response.aclose()
+            attempt += 1
+            logger.warning(
+                "Phoenix %s %s failed; retrying in %.1fs",
+                request.method,
+                request.url.path,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+
+def _phoenix_error(
+    exc: httpx.HTTPStatusError, detail: str | None = None
+) -> PhoenixError:
+    return PhoenixError(
+        exc.response.status_code,
+        exc.request.method,
+        exc.request.url.path,
+        detail or exc.response.text[:500],
+    )
+
+
+def _same_server(url: str, base_url: str) -> bool:
+    try:
+        return normalize_base_url(url) == base_url
+    except ValueError:
+        return False
 
 
 class PhoenixClient:
     """
-    Async client for a (self-hosted) Phoenix server.
+    A Phoenix server (20.0 or later). Defaults come from ``PHOENIX_BASE_URL``
+    and ``PHOENIX_API_KEY``; that key is never sent to another server.
+    Proxies are taken from the environment (``HTTPS_PROXY`` etc.) unless a
+    ``transport`` is given.
 
-    Defaults come from ``PHOENIX_BASE_URL`` and ``PHOENIX_API_KEY``. Transient
-    failures (429/5xx, timeouts) are retried; anything else raises
-    :class:`PhoenixError`.
+    ``sdk`` is the official async client (``phoenix.client.AsyncClient``) on
+    this connection; failed requests surface as :class:`PhoenixError`.
     """
 
     def __init__(
@@ -59,25 +174,40 @@ class PhoenixClient:
         api_key: str | None = None,
         timeout_s: float = 60.0,
         retries: int = 3,
-        http_client: httpx.AsyncClient | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        resolved = base_url or os.environ.get(BASE_URL_ENV)
+        env_url = os.environ.get(BASE_URL_ENV)
+        resolved = base_url or env_url
         if not resolved:
             raise ValueError(
                 f"Phoenix base URL not given and ${BASE_URL_ENV} is not set"
             )
-        self.base_url = resolved.rstrip("/")
-        key = api_key if api_key is not None else os.environ.get(API_KEY_ENV)
+        try:
+            import phoenix.client as phoenix_client  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError(
+                "Phoenix support needs the phoenix extra: "
+                "pip install 'grasp-agents[phoenix]'"
+            ) from exc
+        self.base_url = normalize_base_url(resolved)
+        self.timeout_s = timeout_s
+        key = api_key
+        if key is None and (not env_url or _same_server(env_url, self.base_url)):
+            key = os.environ.get(API_KEY_ENV)
         headers = {"Authorization": f"Bearer {key}"} if key else {}
-        self._owns_client = http_client is None
-        self._http = http_client or httpx.AsyncClient(timeout=timeout_s)
-        self._headers = headers
-        self._retries = retries
+        self.http = _RetryingClient(
+            retries=retries,
+            base_url=f"{self.base_url}/",
+            headers=headers,
+            timeout=timeout_s,
+            transport=transport,
+            follow_redirects=False,
+        )
+        self.sdk: AsyncClient = phoenix_client.AsyncClient(http_client=self.http)
         self._version: ServerVersion | None = None
 
     async def aclose(self) -> None:
-        if self._owns_client:
-            await self._http.aclose()
+        await self.http.aclose()
 
     async def __aenter__(self) -> Self:
         return self
@@ -85,49 +215,17 @@ class PhoenixClient:
     async def __aexit__(self, *exc: object) -> None:
         await self.aclose()
 
-    # --- Transport ---
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        json: Any = None,
-    ) -> httpx.Response:
-        url = f"{self.base_url}{path}"
-        attempt = 0
-        while True:
-            try:
-                response = await self._http.request(
-                    method, url, params=params, json=json, headers=self._headers
-                )
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                if attempt >= self._retries:
-                    raise
-                logger.warning("Phoenix %s %s failed (%s); retrying", method, path, exc)
-            else:
-                if response.status_code < 400:
-                    return response
-                if (
-                    response.status_code not in _RETRY_STATUSES
-                    or attempt >= self._retries
-                ):
-                    detail = response.text[:500]
-                    error_cls = (
-                        PhoenixConflictError
-                        if response.status_code == 409
-                        else PhoenixError
-                    )
-                    raise error_cls(response.status_code, method, path, detail)
-                logger.warning(
-                    "Phoenix %s %s returned %s; retrying",
-                    method,
-                    path,
-                    response.status_code,
-                )
-            attempt += 1
-            await asyncio.sleep(min(2.0**attempt, 10.0))
+    async def call[T](self, request: Awaitable[T]) -> T:
+        """Await an SDK call, reporting HTTP failures as :class:`PhoenixError`."""
+        try:
+            return await request
+        except httpx.HTTPStatusError as exc:
+            raise _phoenix_error(exc) from exc
+        except Exception as exc:
+            # The SDK wraps some failures (e.g. ``DatasetUploadError``).
+            if isinstance(exc.__cause__, httpx.HTTPStatusError):
+                raise _phoenix_error(exc.__cause__, str(exc)) from exc
+            raise
 
     async def _json(
         self,
@@ -137,187 +235,65 @@ class PhoenixClient:
         params: Mapping[str, Any] | None = None,
         json: Any = None,
     ) -> dict[str, Any]:
-        response = await self._request(method, path, params=params, json=json)
+        response = await self.http.request(method, path, params=params, json=json)
+        if not response.is_success:
+            raise PhoenixError(response.status_code, method, path, response.text[:500])
         return cast("dict[str, Any]", response.json())
-
-    # --- Server ---
 
     async def server_version(self) -> ServerVersion:
         if self._version is None:
-            response = await self._request("GET", "/arize_phoenix_version")
-            self._version = _parse_version(response.text.strip())
+            response = await self.http.get("arize_phoenix_version")
+            text = response.text.strip()
+            match = _VERSION_RE.fullmatch(text) if response.is_success else None
+            if match is None:
+                raise PhoenixCompatibilityError(
+                    f"{self.base_url} did not answer like a Phoenix server "
+                    f"(HTTP {response.status_code}: {text[:80]!r})"
+                )
+            major, minor, patch = (int(g) for g in match.groups())
+            self._version = (major, minor, patch)
         return self._version
 
-    async def supports(self, minimum: ServerVersion) -> bool:
-        return await self.server_version() >= minimum
+    async def check_server(self) -> None:
+        version = await self.server_version()
+        if version < MIN_SERVER_VERSION:
+            raise PhoenixCompatibilityError(
+                f"Phoenix {'.'.join(map(str, version))} at {self.base_url} is older "
+                f"than {'.'.join(map(str, MIN_SERVER_VERSION))}; upgrade the server"
+            )
 
-    # --- Datasets ---
+    async def upsert_dataset(
+        self,
+        *,
+        name: str,
+        examples: list[dict[str, Any]],
+        description: str | None = None,
+    ) -> "PhoenixDataset":
+        """
+        Create dataset ``name``, or make it hold exactly ``examples`` (a new
+        version when anything changed; examples carrying an ``id`` keep their
+        identity).
+        """
+        create = self.sdk.datasets.create_dataset  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        return await self.call(
+            create(
+                name=name,
+                examples=examples,
+                dataset_description=description,
+                timeout=int(self.timeout_s),
+            )
+        )
 
     async def find_dataset(self, name: str) -> dict[str, Any] | None:
-        body = await self._json(
-            "GET", "/v1/datasets", params={"name": name, "limit": 1}
-        )
+        body = await self._json("GET", "v1/datasets", params={"name": name})
         found = cast("list[dict[str, Any]]", body.get("data") or [])
         return found[0] if found else None
 
-    async def latest_version_id(self, dataset_id: str) -> str | None:
-        body = await self._json(
-            "GET", f"/v1/datasets/{dataset_id}/versions", params={"limit": 1}
-        )
-        versions = cast("list[dict[str, Any]]", body.get("data") or [])
-        return str(versions[0]["version_id"]) if versions else None
-
-    async def dataset_examples(
-        self, dataset_id: str, version_id: str | None = None
-    ) -> tuple[str, list[dict[str, Any]]]:
-        """``(version_id, examples)`` of a dataset version (latest when omitted)."""
-        params = {"version_id": version_id} if version_id else None
-        body = await self._json(
-            "GET", f"/v1/datasets/{dataset_id}/examples", params=params
-        )
-        data = cast("dict[str, Any]", body["data"])
-        return str(data["version_id"]), cast("list[dict[str, Any]]", data["examples"])
-
-    async def upload_dataset(
-        self,
-        *,
-        action: Literal["create", "append", "update"],
-        name: str,
-        inputs: Sequence[Mapping[str, Any]],
-        outputs: Sequence[Mapping[str, Any]],
-        metadata: Sequence[Mapping[str, Any]],
-        description: str | None = None,
-        splits: Sequence[Sequence[str] | None] | None = None,
-        example_ids: Sequence[str] | None = None,
-    ) -> tuple[str, str]:
-        """Upload examples synchronously; returns ``(dataset_id, version_id)``."""
-        payload: dict[str, Any] = {
-            "action": action,
-            "name": name,
-            "inputs": list(inputs),
-            "outputs": list(outputs),
-            "metadata": list(metadata),
-        }
-        if description:
-            payload["description"] = description
-        if splits is not None:
-            payload["splits"] = [list(s) if s else None for s in splits]
-        if example_ids is not None:
-            payload["example_ids"] = list(example_ids)
-        body = await self._json(
-            "POST", "/v1/datasets/upload", params={"sync": "true"}, json=payload
-        )
-        data = cast("dict[str, Any]", body["data"])
-        return str(data["dataset_id"]), str(data["version_id"])
-
-    # --- Experiments ---
-
-    async def create_experiment(
-        self,
-        dataset_id: str,
-        *,
-        version_id: str | None = None,
-        name: str | None = None,
-        description: str | None = None,
-        metadata: Mapping[str, Any] | None = None,
-        repetitions: int = 1,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"repetitions": repetitions}
-        if version_id:
-            payload["version_id"] = version_id
-        if name:
-            payload["name"] = name
-        if description:
-            payload["description"] = description
-        if metadata:
-            payload["metadata"] = dict(metadata)
-        body = await self._json(
-            "POST", f"/v1/datasets/{dataset_id}/experiments", json=payload
-        )
-        return cast("dict[str, Any]", body["data"])
-
-    async def create_run(
-        self,
-        experiment_id: str,
-        *,
-        dataset_example_id: str,
-        output: Any,
-        repetition_number: int,
-        start_time: datetime,
-        end_time: datetime,
-        trace_id: str | None = None,
-        error: str | None = None,
-    ) -> str | None:
-        """
-        Log one externally executed run. Returns its id, or ``None`` when a
-        successful run already exists for this (example, repetition).
-        """
-        payload = {
-            "dataset_example_id": dataset_example_id,
-            "output": output,
-            "repetition_number": repetition_number,
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
-            "trace_id": trace_id,
-            "error": error,
-        }
-        try:
-            body = await self._json(
-                "POST", f"/v1/experiments/{experiment_id}/runs", json=payload
-            )
-        except PhoenixConflictError:
-            return None
-        return str(cast("dict[str, Any]", body["data"])["id"])
-
-    async def list_runs(self, experiment_id: str) -> list[dict[str, Any]]:
-        body = await self._json("GET", f"/v1/experiments/{experiment_id}/runs")
-        return cast("list[dict[str, Any]]", body.get("data") or [])
-
-    async def upsert_evaluation(
-        self,
-        *,
-        experiment_run_id: str,
-        name: str,
-        annotator_kind: AnnotatorKind,
-        start_time: datetime,
-        end_time: datetime,
-        score: float | None = None,
-        label: str | None = None,
-        explanation: str | None = None,
-        error: str | None = None,
-        metadata: Mapping[str, Any] | None = None,
-        trace_id: str | None = None,
-    ) -> str:
-        payload: dict[str, Any] = {
-            "experiment_run_id": experiment_run_id,
-            "name": name,
-            "annotator_kind": annotator_kind,
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
-            "trace_id": trace_id,
-        }
-        if error is not None:
-            payload["error"] = error
-        else:
-            payload["result"] = {
-                "score": score,
-                "label": label,
-                "explanation": explanation,
-            }
-        if metadata:
-            payload["metadata"] = dict(metadata)
-        body = await self._json("POST", "/v1/experiment_evaluations", json=payload)
-        return str(cast("dict[str, Any]", body["data"])["id"])
-
-    # --- Annotations ---
-
-    async def log_span_annotations(
-        self, annotations: Sequence[Mapping[str, Any]]
+    async def update_experiment_metadata(
+        self, experiment_id: str, metadata: Mapping[str, Any]
     ) -> None:
-        """Upsert span annotations, keyed by name, span and ``identifier``."""
         await self._json(
-            "POST",
-            "/v1/span_annotations",
-            params={"sync": "true"},
-            json={"data": list(annotations)},
+            "PATCH",
+            f"v1/experiments/{experiment_id}",
+            json={"metadata": dict(metadata)},
         )

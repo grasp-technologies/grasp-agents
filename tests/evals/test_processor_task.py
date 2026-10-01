@@ -205,3 +205,116 @@ class TestLLMAgent:
         assert run.provenance.observed_models == {"shouter": ["echo-1"]}
         # The template agent itself never ran.
         assert len(agent.transcript.messages) == 0
+
+
+@dataclass(frozen=True)
+class CountingLLM(MockLLM):
+    """Answers with how many user messages the conversation holds."""
+
+    async def _generate_response_once(self, input: Sequence[Any], **_: Any) -> Response:
+        users = sum(
+            1
+            for item in input
+            if isinstance(item, InputMessageItem) and item.role == "user"
+        )
+        return Response(
+            model="count-1",
+            output=[
+                OutputMessageItem(
+                    content=[OutputMessageText(text=str(users))], status="completed"
+                )
+            ],
+            usage=_make_usage(),
+        )
+
+
+class TestTrialIsolation:
+    @pytest.mark.asyncio
+    async def test_processors_built_during_a_trial_join_its_session(self) -> None:
+        bindings: list[tuple[SessionContext[Any], SessionContext[Any]]] = []
+
+        class Builder(_AddOne):
+            async def _process_stream(
+                self,
+                chat_inputs: Any | None = None,
+                *,
+                in_args: list[int] | None = None,
+                exec_id: str,
+                step: int | None = None,
+            ) -> AsyncIterator[Event[Any]]:
+                helper = _AddOne(name="helper")  # built while the trial runs
+                bindings.append((helper.ctx, self.ctx))
+                async for event in super()._process_stream(
+                    chat_inputs, in_args=in_args, exec_id=exec_id, step=step
+                ):
+                    yield event
+
+        run = await evaluate(
+            ProcessorTask(Builder(name="builder")),
+            _ints(2),
+            [matches],
+            concurrency=2,
+            persist=False,
+        )
+        assert run.counts.task_errors == 0
+        assert all(helper is trial for helper, trial in bindings)
+        assert len({id(trial) for _, trial in bindings}) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_used_template_does_not_leak_its_conversation(self) -> None:
+        agent = LLMAgent[str, str, None](name="counter", llm=CountingLLM())
+        await agent.run(chat_inputs="warm up")
+        dataset = Dataset([Example[str, str](id=w, input=w) for w in ["a", "b"]])
+        run = await evaluate(
+            ProcessorTask(agent, input_mode="chat"), dataset, persist=False
+        )
+        assert [t.output for t in run.trials] == ["1", "1"]
+
+    @pytest.mark.asyncio
+    async def test_input_fn_failures_still_close_the_processor(self) -> None:
+        closed: list[str] = []
+
+        class Tracked(_AddOne):
+            async def aclose(self) -> None:
+                closed.append(self.name)
+                await super().aclose()
+
+        def explode(value: int) -> int:
+            raise ValueError("bad input")
+
+        task = ProcessorTask(lambda: Tracked(name="t"), input_fn=explode)
+        run = await evaluate(task, _ints(2), persist=False)
+        assert run.counts.task_errors == 2
+        assert closed == ["t", "t"]
+
+
+class TestTaskIdentity:
+    def test_fingerprint_follows_models_and_settings(self) -> None:
+        def task(model: str) -> ProcessorTask[str, str]:
+            return ProcessorTask(
+                LLMAgent[str, str, None](name="a", llm=EchoLLM(model_name=model))
+            )
+
+        assert task("m1").describe().fingerprint == task("m1").describe().fingerprint
+        assert task("m1").describe().fingerprint != task("m2").describe().fingerprint
+
+    def test_fingerprint_follows_prompts_and_turn_limits(self) -> None:
+        def task(**options: Any) -> str | None:
+            agent = LLMAgent[str, str, None](
+                name="a", llm=EchoLLM(model_name="m"), **options
+            )
+            return ProcessorTask(agent).describe().fingerprint
+
+        base = task(in_prompt="Grade: {answer}")
+        assert base == task(in_prompt="Grade: {answer}")
+        assert base != task(in_prompt="Score: {answer}")
+        assert base != task(in_prompt="Grade: {answer}", max_turns=3)
+
+    def test_factories_are_named_and_typed_by_their_declaration(self) -> None:
+        def build_adder() -> Processor[int, int, Any]:
+            return _AddOne(name="adder")
+
+        task = ProcessorTask(build_adder)
+        assert task.describe().kind.endswith("build_adder")
+        assert task.output_type is int
+        assert ProcessorTask(build_adder, output_type=str).output_type is str

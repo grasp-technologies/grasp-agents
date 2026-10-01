@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from grasp_agents.evals import Dataset, DatasetError, Example, example_json_schema
 
@@ -43,8 +43,8 @@ class TestExample:
         a = Example[str, str](id="x", input="i", reference="r")
         b = Example[str, str](id="x", input="i", reference="r", splits=["test"])
         c = Example[str, str](id="x", input="i", reference="changed")
-        assert a.content_hash() == b.content_hash()
-        assert a.content_hash() != c.content_hash()
+        assert a.content_hash == b.content_hash
+        assert a.content_hash != c.content_hash
 
 
 class TestDataset:
@@ -147,7 +147,7 @@ class TestFiles:
     def test_unknown_keys_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.jsonl"
         path.write_text(json.dumps({"input": "x", "expected": "y"}) + "\n")
-        with pytest.raises(DatasetError, match="unknown keys"):
+        with pytest.raises(DatasetError, match="expected: Extra inputs"):
             Dataset.load(path)
 
     def test_untyped_load_keeps_json(self, tmp_path: Path) -> None:
@@ -160,3 +160,167 @@ class TestFiles:
         schema = example_json_schema(Question, str)
         assert schema["required"] == ["input"]
         assert "Question" in json.dumps(schema)
+
+
+def _write_jsonl(path: Path, records: list[Any]) -> Path:
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return path
+
+
+class TestStrictRecords:
+    def test_splits_must_be_a_list(self, tmp_path: Path) -> None:
+        path = _write_jsonl(tmp_path / "d.jsonl", [{"input": "x", "splits": "test"}])
+        with pytest.raises(DatasetError, match="splits"):
+            Dataset.load(path)
+
+    def test_integer_ids_are_kept_and_floats_refused(self, tmp_path: Path) -> None:
+        ok = _write_jsonl(tmp_path / "ok.jsonl", [{"id": 0, "input": "a"}])
+        assert Dataset.load(ok).ids == ["0"]
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("- id: 1.10\n  input: a\n")
+        with pytest.raises(DatasetError, match="id"):
+            Dataset.load(bad)
+
+    def test_misspelled_input_fields_are_refused(self, tmp_path: Path) -> None:
+        path = _write_jsonl(
+            tmp_path / "d.jsonl", [{"id": "x", "input": {"text": "q", "levle": 2}}]
+        )
+        with pytest.raises(DatasetError, match="unknown fields \\['levle'\\]"):
+            Dataset.load(path, input_type=Question)
+
+    def test_models_that_allow_extras_keep_them(self, tmp_path: Path) -> None:
+        class Open(BaseModel, extra="allow"):
+            text: str
+
+        path = _write_jsonl(
+            tmp_path / "d.jsonl", [{"id": "x", "input": {"text": "q", "more": 1}}]
+        )
+        assert Dataset.load(path, input_type=Open)["x"].input.more == 1  # type: ignore[attr-defined]
+
+    def test_errors_point_at_the_line(self, tmp_path: Path) -> None:
+        path = tmp_path / "d.jsonl"
+        path.write_text('{"input": "a"}\n{"input": "b"\n')
+        with pytest.raises(DatasetError, match=r"d\.jsonl:2: invalid JSON"):
+            Dataset.load(path)
+        dup = _write_jsonl(tmp_path / "dup.jsonl", [{"input": "a"}, {"input": "a"}])
+        with pytest.raises(
+            DatasetError, match=r"dup\.jsonl:2: duplicate.*first at .*:1"
+        ):
+            Dataset.load(dup)
+
+    def test_schema_matches_the_loader(self, tmp_path: Path) -> None:
+        jsonschema = pytest.importorskip("jsonschema")
+        schema = example_json_schema(Question, str)
+        valid = {"id": 3, "input": {"text": "q"}, "splits": ["dev"]}
+        invalid = [
+            {"input": {"text": "q"}, "expected": "y"},
+            {"input": {"text": "q"}, "splits": "dev"},
+            {"input": {"text": "q", "levle": 1}},
+        ]
+        jsonschema.validate(valid, schema)
+        Dataset.load(_write_jsonl(tmp_path / "v.jsonl", [valid]), input_type=Question)
+        for i, record in enumerate(invalid):
+            with pytest.raises(jsonschema.ValidationError):
+                jsonschema.validate(record, schema)
+            with pytest.raises(DatasetError):
+                Dataset.load(
+                    _write_jsonl(tmp_path / f"i{i}.jsonl", [record]),
+                    input_type=Question,
+                )
+
+
+class TestIdentity:
+    def test_new_defaulted_input_fields_keep_ids_and_hashes(
+        self, tmp_path: Path
+    ) -> None:
+        class Before(BaseModel):
+            text: str
+
+        class After(BaseModel):
+            text: str
+            hint: str | None = None
+
+        path = _write_jsonl(tmp_path / "d.jsonl", [{"input": {"text": "q"}}])
+        old = Dataset.load(path, input_type=Before)
+        new = Dataset.load(path, input_type=After)
+        assert old.ids == new.ids
+        assert old.fingerprint == new.fingerprint
+
+    def test_hashing_is_canonical(self) -> None:
+        from grasp_agents.evals._util import canonical_json
+
+        assert canonical_json({"s": {3, 1, 2}}) == canonical_json({"s": {2, 3, 1}})
+        assert canonical_json(float("nan")) != canonical_json(None)
+        with pytest.raises(TypeError):
+            canonical_json(object())
+
+    def test_examples_are_immutable_and_copies_rehash(self) -> None:
+        example = Example[str, str](id="x", input="q", reference="a")
+        with pytest.raises(ValueError, match="frozen"):
+            example.reference = "b"  # type: ignore[misc]
+        changed = example.model_copy(update={"reference": "b"})
+        assert changed.content_hash != example.content_hash
+        assert changed.id == "x"
+
+
+class TestSelectionRules:
+    def test_sample_ignores_example_order(self) -> None:
+        ds = Dataset([Example(id=f"e{i}", input=i) for i in range(30)])
+        reordered = Dataset(list(reversed(ds.examples)))
+        assert sorted(ds.sample(7, seed=3).ids) == sorted(
+            reordered.sample(7, seed=3).ids
+        )
+
+    def test_negative_sizes_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="n must be"):
+            _dataset().head(-1)
+        with pytest.raises(ValueError, match="n must be"):
+            _dataset().sample(-1)
+
+    def test_unknown_split_lists_the_known_ones(self) -> None:
+        with pytest.raises(DatasetError, match="splits: \\['dev', 'test'\\]"):
+            _dataset().split("tset")
+
+    def test_ids_outside_the_subset_are_explained(self) -> None:
+        with pytest.raises(DatasetError, match="not in the selected subset"):
+            _dataset().split("dev").select(["q3"])
+
+    def test_checks_with_the_same_name_all_run(self) -> None:
+        problems = _dataset().check([lambda e: "first", lambda e: "second"])
+        assert {p.message for p in problems} == {"first", "second"}
+
+
+class Draft(BaseModel):
+    text: str
+    weight: float = 1.0
+    tags: set[str] = Field(default_factory=set[str])
+
+
+def test_saving_keeps_content_hashes(tmp_path: Path) -> None:
+    source = tmp_path / "drafts.jsonl"
+    source.write_text(
+        # An explicit default, and an int coerced to float on loading.
+        '{"id": "a", "input": {"text": "x", "weight": 1.0}}\n'
+        '{"id": "b", "input": {"text": "y", "weight": 2}}\n',
+        encoding="utf-8",
+    )
+    loaded = Dataset.load(source, input_type=Draft)
+    built = Dataset(
+        [Example(id="c", input=Draft(text="z", tags={"q", "p"}))], name="built"
+    )
+    for original in (loaded, built):
+        for suffix in (".jsonl", ".yaml", ".json"):
+            path = original.save(tmp_path / "copies" / f"{original.name}{suffix}")
+            copy = Dataset.load(path, input_type=Draft)
+            assert [e.content_hash for e in copy] == [e.content_hash for e in original]
+            assert copy.fingerprint == original.fingerprint
+
+
+class Aliased(BaseModel):
+    question: str = Field(validation_alias=AliasChoices("q", "question"))
+
+
+def test_alias_keys_are_known_fields(tmp_path: Path) -> None:
+    path = tmp_path / "aliased.jsonl"
+    path.write_text('{"id": "a", "input": {"q": "why?"}}\n', encoding="utf-8")
+    assert Dataset.load(path, input_type=Aliased)[0].input.question == "why?"

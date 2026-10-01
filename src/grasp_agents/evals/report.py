@@ -8,6 +8,10 @@ from .compare import Comparison, TargetComparison
 from .types import EvaluationRun, MetricResult, Score, Trial
 
 _MAX_TEXT = 300
+# Groups holding fewer held-out examples than this are not reported: their
+# aggregates (minus the visible members' results) would come close to
+# per-example results.
+MIN_SEALED_GROUP = 5
 
 
 def _num(value: float | None, digits: int = 3) -> str:
@@ -38,12 +42,40 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
-def _metric_rows(metric: MetricResult, label: str | None = None) -> list[str]:
+def _confidence_label(metrics: Iterable[MetricResult]) -> str:
+    levels = {m.confidence for m in metrics}
+    if len(levels) == 1:
+        return f"{next(iter(levels)):.0%} CI"
+    return "CI"
+
+
+def sealed_groups(run: EvaluationRun) -> set[str]:
+    """Group labels not to report: some, but too few, held-out examples."""
+    by_id = {e.id: e for e in run.examples}
+    sealed_ids = {t.example_id for t in run.trials if t.sealed}
+    hidden: set[str] = set()
+    for key in run.config.group_by:
+        members: dict[str, set[str]] = {}
+        for example_id, example in by_id.items():
+            members.setdefault(f"{key}={example.metadata.get(key)}", set()).add(
+                example_id
+            )
+        for label, ids in members.items():
+            if 0 < len(ids & sealed_ids) < MIN_SEALED_GROUP:
+                hidden.add(label)
+    return hidden
+
+
+def _metric_rows(
+    metric: MetricResult, hidden: set[str], label: str | None = None
+) -> list[str]:
     name = label or metric.name
     value = _num(metric.value)
     if metric.value is None and metric.details.get("shares"):
         shares: dict[str, float] = metric.details["shares"]
         value = ", ".join(f"{k}: {v:.0%}" for k, v in list(shares.items())[:6])
+    if metric.value is None and metric.details.get("error"):
+        value = f"error: {metric.details['error']}"
     cells = [
         _cell(name),
         _cell(value),
@@ -54,7 +86,8 @@ def _metric_rows(metric: MetricResult, label: str | None = None) -> list[str]:
     ]
     rows = ["| " + " | ".join(cells) + " |"]
     for group, result in metric.groups.items():
-        rows.extend(_metric_rows(result, label=f"  ↳ {group}"))
+        if group not in hidden:
+            rows.extend(_metric_rows(result, hidden, label=f"  ↳ {group}"))
     return rows
 
 
@@ -131,6 +164,17 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
             f"- **Usage:** {usage.input_tokens} in / {usage.output_tokens} out "
             f"tokens{cost}"
         )
+    budget = run.config.max_cost_usd
+    if budget is not None:
+        spent = usage.cost_usd or 0.0
+        over = f" (${spent - budget:.4f} over)" if spent > budget else ""
+        lines.append(f"- **Budget:** ${spent:.4f} of ${budget:.4f}{over}")
+    unpriced = run.metadata.get("unpriced_agents")
+    if unpriced:
+        lines.append(
+            f"- **Unpriced:** no model price for {', '.join(unpriced)}; the budget "
+            "did not limit them"
+        )
     sealed = sum(1 for t in run.trials if t.sealed)
     if sealed:
         lines.append(
@@ -139,15 +183,17 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         )
 
     if run.metrics:
+        hidden = sealed_groups(run)
+        ci = _confidence_label(run.metrics)
         lines += [
             "",
             "## Metrics",
             "",
-            "| metric | value | 95% CI | n | missing | n/a |",
+            f"| metric | value | {ci} | n | missing | n/a |",
             "|---|---|---|---|---|---|",
         ]
         for metric in run.metrics:
-            lines.extend(_metric_rows(metric))
+            lines.extend(_metric_rows(metric, hidden))
 
     errors = [t for t in run.trials if t.error is not None]
     if errors:
@@ -227,16 +273,19 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
             f"{c.n_candidate_only})"
         ),
     ]
-    for warning in c.warnings:
-        lines.append(f"- ⚠ {warning}")
+    if c.cluster_by:
+        lines.append(f"- **Clustered by:** `{c.cluster_by}`")
+    lines.extend(f"- ⚠ {warning}" for warning in c.warnings)
     lines += [
         "",
         (
-            "Δ = candidate - base on paired examples; ✱ = 95% CI excludes 0; "
-            "MDE = smallest true Δ detectable at 80% power."
+            "Δ = candidate - base on paired examples; ✱ = significant at "
+            f"alpha = {c.alpha:g} after Holm correction (outcomes and resources "
+            "separately; p is unadjusted); MDE = smallest true Δ detectable at 80% "
+            "power."
         ),
         "",
-        ("| target | base | candidate | Δ | 95% CI | p | MDE | n | +/- |"),
+        "| target | base | candidate | Δ | CI | p | MDE | n | +/- |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     lines.extend(_target_row(t) for t in c.targets)
@@ -247,7 +296,7 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
             "",
             f"## Regressions in `{target.target}`",
             "",
-            "| example | base | candidate | candidate explanation |",
+            "| example | base | candidate | candidate explanation (worst repetition) |",
             "|---|---|---|---|",
         ]
         for delta in target.top_regressions[:max_rows]:
@@ -259,27 +308,31 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
     return "\n".join(lines) + "\n"
 
 
-def _metric_summary(metric: MetricResult) -> dict[str, Any]:
+def _metric_summary(metric: MetricResult, hidden: set[str]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "value": metric.value,
         "ci": None if metric.ci_low is None else [metric.ci_low, metric.ci_high],
+        "confidence": metric.confidence,
         "n": metric.n,
         "missing": metric.n_missing,
         "na": metric.n_na,
     }
     if metric.details:
         summary["details"] = metric.details
-    if metric.groups:
-        summary["groups"] = {k: _metric_summary(v) for k, v in metric.groups.items()}
+    groups = {k: v for k, v in metric.groups.items() if k not in hidden}
+    if groups:
+        summary["groups"] = {k: _metric_summary(v, hidden) for k, v in groups.items()}
     return summary
 
 
 def run_summary(run: EvaluationRun) -> dict[str, Any]:
     """Compact machine-readable summary (what ``--json`` prints)."""
+    hidden = sealed_groups(run)
     return {
         "id": run.id,
         "name": run.name,
         "kind": run.kind,
+        "evaluation": run.evaluation,
         "status": str(run.status),
         "invalid_reason": run.invalid_reason,
         "parent_run_id": run.parent_run_id,
@@ -295,7 +348,7 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
         "evaluators": {e.name: e.version for e in run.evaluators},
         "counts": run.counts.model_dump(),
         "cost_usd": run.usage.cost_usd,
-        "metrics": {m.name: _metric_summary(m) for m in run.metrics},
+        "metrics": {m.name: _metric_summary(m, hidden) for m in run.metrics},
         "config_hash": run.config_hash,
         "git_commit": run.provenance.git_commit,
         "git_dirty": run.provenance.git_dirty,
@@ -303,7 +356,12 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
 
 
 def trial_summary(trial: Trial, *, include_output: bool = True) -> dict[str, Any]:
-    """One trial for ``show --json``; sealed trials never expose outputs."""
+    """
+    One trial for ``show --json``. Sealed trials expose only that they ran:
+    no example id, scores, outputs or trace id (which leads to the trace).
+    """
+    if trial.sealed:
+        return {"sealed": True, "repetition": trial.repetition, "ok": trial.ok}
     data: dict[str, Any] = {
         "example_id": trial.example_id,
         "repetition": trial.repetition,
@@ -311,10 +369,8 @@ def trial_summary(trial: Trial, *, include_output: bool = True) -> dict[str, Any
         "duration_s": trial.duration_s,
         "cost_usd": trial.total_usage.cost_usd,
         "trace_id": trial.trace_id,
-        "sealed": trial.sealed,
+        "sealed": False,
     }
-    if trial.sealed:
-        return data
     data["scores"] = {
         s.name: {"value": s.value, "explanation": s.explanation, "reason": s.reason}
         for s in trial.scores
