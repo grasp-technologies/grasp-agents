@@ -480,6 +480,41 @@ class TestFallbackLLM:
         assert fallback.call_count == 0
 
     @pytest.mark.asyncio
+    async def test_response_validation_error_advances_to_fallback(self) -> None:
+        """Primary returns unparsable output (e.g. truncated JSON) → fallback serves."""
+        primary = ErrorLLM(
+            model_name="primary",
+            error_to_raise=LLMResponseValidationError('{"summary": "cut', dict),
+        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
+
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+        result = await llm._generate_response_once(_USER_MSG)
+
+        assert result.output_text == "recovered"
+        assert fallback.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_response_validation_error_advances_to_fallback(
+        self,
+    ) -> None:
+        """Streaming path: a validation failure also hands over to the fallback."""
+        primary = ErrorLLM(
+            model_name="primary",
+            error_to_raise=LLMResponseValidationError('{"summary": "cut', dict),
+        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("recovered"))
+
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        events = [e async for e in llm._generate_response_stream_once(_USER_MSG)]
+
+        fb = next(e for e in events if isinstance(e, ResponseFallback))
+        assert fb.error_type == "LLMResponseValidationError"
+        completed = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert completed[-1].response.output_text == "recovered"
+
+    @pytest.mark.asyncio
     async def test_model_name_defaults_to_primary(self) -> None:
         """model_name inherits from the primary; explicit override wins."""
         primary = StubLLM(model_name="gpt-4o", litellm_provider="openai")
@@ -869,7 +904,7 @@ class TestFallbackValidationRetries:
         assert fallback.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_validation_exhaustion_raises_without_model_swap(self) -> None:
+    async def test_validation_exhaustion_advances_to_fallback(self) -> None:
         class M(BaseModel):
             x: int
 
@@ -881,10 +916,10 @@ class TestFallbackValidationRetries:
         fallback = StubLLM(model_name="fallback", response=_text_response('{"x": 9}'))
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
-        with pytest.raises(LLMResponseValidationError):
-            await llm.generate_response(_USER_MSG, output_schema=M)
+        result = await llm.generate_response(_USER_MSG, output_schema=M)
+        assert result.output_text == '{"x": 9}'
         assert primary.call_count == 2
-        assert fallback.call_count == 0
+        assert fallback.call_count == 1
 
 
 class TestFallbackToolCallValidation:
