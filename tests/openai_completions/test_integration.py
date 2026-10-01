@@ -115,7 +115,7 @@ class TestOpenAICompletionsCompatibleEndpoint:
         )
 
         return OpenAILLM(
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="gemini",
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",

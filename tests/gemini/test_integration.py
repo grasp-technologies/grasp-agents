@@ -46,7 +46,7 @@ class TestGeminiIntegration:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
@@ -417,7 +417,7 @@ class TestGeminiWebSearch:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
@@ -488,7 +488,7 @@ class TestGeminiStructuredOutput:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
@@ -535,7 +535,7 @@ class TestGeminiUrlContext:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
@@ -628,7 +628,7 @@ class TestGeminiParallelToolUse:
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="google",
                 base_url=None,
