@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "1.0.31"
+version = "1.0.32"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
@@ -102,8 +102,9 @@ testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = ["integration: requires real API keys (skipped by default)"]
 # tests/kits needs the standalone grasp_kits package (not a dependency here);
-# skipped until it is wired back in.
-addopts = "-m 'not integration' --ignore=tests/kits"
+# skipped until it is wired back in. `.env` is ignored because a sandbox that
+# denies reading it makes pytest's root-dir scan fail.
+addopts = "-m 'not integration' --ignore=tests/kits --ignore=.env"
 
 [tool.coverage.run]
 source = ["src/grasp_agents"]
