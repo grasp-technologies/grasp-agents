@@ -27,8 +27,14 @@ from ._util import (
     to_jsonable,
     utc_now,
 )
-from .evaluator import EvalContext, Evaluator, FunctionEvaluator, run_evaluator
-from .metrics import Metric, compute_metrics
+from .evaluator import (
+    EvalContext,
+    Evaluator,
+    FunctionEvaluator,
+    merge_models,
+    run_evaluator,
+)
+from .metrics import MetricsSpec, compute_metrics
 from .report import render_run_markdown
 from .store import LocalRunStore, RunStore
 from .task import Task, TrialContext
@@ -375,10 +381,13 @@ class Executor:
             trial.evaluator_failures = [
                 f for f in trial.evaluator_failures if f.evaluator != evaluator.name
             ]
-            if ctx.usage:
-                usage = sum(ctx.usage, Usage())
+            usage = sum(ctx.usage, Usage())
+            if not usage.is_empty:
                 trial.evaluator_usage[evaluator.name] = usage
                 self._new_usage += usage
+                if usage.total_tokens and usage.cost_usd is None:
+                    self._unpriced.add(f"evaluator {evaluator.name}")
+            merge_models(trial.models, ctx.models)
             if isinstance(outcome, ErrorInfo):
                 trial.evaluator_failures.append(
                     EvaluatorFailure(evaluator=evaluator.name, error=outcome)
@@ -463,7 +472,7 @@ class Executor:
         self,
         status: RunStatus,
         *,
-        metrics: Sequence[Metric] | None,
+        metrics: MetricsSpec,
         order: Sequence[TrialKey],
     ) -> EvaluationRun:
         run = self.run
@@ -543,7 +552,7 @@ async def run_all(
     executor: Executor,
     coroutines: Sequence[Any],
     *,
-    metrics: Sequence[Metric] | None,
+    metrics: MetricsSpec,
     order: Sequence[TrialKey],
 ) -> EvaluationRun:
     """

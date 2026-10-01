@@ -278,9 +278,9 @@ def percentile(values: Sequence[float], q: float) -> float:
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
 
-def bootstrap_estimate(
-    values: Sequence[float],
-    statistic: Callable[[Sequence[float]], float],
+def bootstrap_estimate[T](
+    values: Sequence[T],
+    statistic: Callable[[Sequence[T]], float],
     *,
     clusters: Sequence[Hashable] | None = None,
     n_resamples: int = 2000,
@@ -288,9 +288,11 @@ def bootstrap_estimate(
     confidence: float = 0.95,
 ) -> Estimate:
     """
-    Percentile-bootstrap interval for an arbitrary statistic (e.g. p95).
-    With ``clusters`` whole clusters are resampled, keeping correlated values
-    (repetitions of one example) together.
+    Percentile-bootstrap interval for an arbitrary statistic of ``values``
+    (e.g. p95 of numbers, κ of label pairs). With ``clusters`` whole clusters
+    are resampled, keeping correlated values (repetitions of one example)
+    together. Resamples on which the statistic is undefined (NaN) are
+    dropped.
     """
     if n_resamples < 2:
         raise ValueError("n_resamples must be >= 2")
@@ -298,26 +300,29 @@ def bootstrap_estimate(
     if n == 0:
         return Estimate(value=math.nan, n=0)
     point = statistic(values)
-    groups: list[list[float]]
+    groups: list[list[T]]
     if clusters is None:
         groups = [[v] for v in values]
     else:
         if len(clusters) != n:
             raise ValueError("clusters must align with values")
-        by_key: dict[Hashable, list[float]] = {}
+        by_key: dict[Hashable, list[T]] = {}
         for value, key in zip(values, clusters, strict=True):
             by_key.setdefault(key, []).append(value)
         groups = list(by_key.values())
     if len(groups) < 2:
         return Estimate(value=point, n=n, units=len(groups))
     rng = random.Random(seed)  # noqa: S311
-    resampled = sorted(
+    draws = (
         statistic([v for g in rng.choices(groups, k=len(groups)) for v in g])
         for _ in range(n_resamples)
     )
+    resampled = sorted(v for v in draws if math.isfinite(v))
+    if len(resampled) < 2:
+        return Estimate(value=point, n=n, units=len(groups))
     alpha = (1.0 - confidence) / 2.0
     mean = _mean(resampled)
-    se = math.sqrt(math.fsum((v - mean) ** 2 for v in resampled) / (n_resamples - 1))
+    se = math.sqrt(math.fsum((v - mean) ** 2 for v in resampled) / (len(resampled) - 1))
     return Estimate(
         value=point,
         n=n,

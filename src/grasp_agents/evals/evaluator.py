@@ -4,7 +4,7 @@ import inspect
 import math
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast, overload
 
@@ -43,10 +43,18 @@ class EvalContext[InT, OutT, RefT]:
     session: SessionContext[Any] | None = None
     # Usage reported by evaluators that call models (see ``record_usage``).
     usage: list[Usage] = field(default_factory=list[Usage])
+    # Models those calls used, per agent.
+    models: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
 
-    def record_usage(self, usage: Usage) -> None:
-        """Attribute an evaluator's own model usage (cost) to this trial."""
+    def record_usage(
+        self, usage: Usage, *, models: Mapping[str, Sequence[str]] | None = None
+    ) -> None:
+        """
+        Attribute an evaluator's own model usage (cost) to this trial, and
+        the models it used per agent (recorded with the trial's models).
+        """
         self.usage.append(usage)
+        merge_models(self.models, models or {})
 
     @property
     def input(self) -> InT:
@@ -310,6 +318,33 @@ def _scalar_score(name: str, value: ScalarScore) -> Score:
     if not math.isfinite(number):
         return Score.unscored(name, reason=ScoreReason.NON_FINITE_VALUE)
     return Score(name=name, value=number)
+
+
+async def run_all_or_cancel[T](calls: Iterable[Coroutine[Any, Any, T]]) -> list[T]:
+    """
+    Await ``calls`` together; when one fails, the others are cancelled and
+    awaited (so their usage is still recorded) and its error is raised.
+    """
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(call) for call in calls]
+    except BaseExceptionGroup as failures:
+        errors = [
+            exc
+            for exc in failures.exceptions
+            if not isinstance(exc, asyncio.CancelledError)
+        ]
+        raise (errors or list(failures.exceptions))[0] from None
+    return [task.result() for task in tasks]
+
+
+def merge_models(
+    into: dict[str, list[str]], models: Mapping[str, Sequence[str]]
+) -> None:
+    """Add ``models`` (per agent) to ``into``, keeping each name once."""
+    for agent, names in models.items():
+        known = into.setdefault(agent, [])
+        known.extend(name for name in names if name not in known)
 
 
 def snake_case(name: str) -> str:

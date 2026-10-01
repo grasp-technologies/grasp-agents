@@ -9,6 +9,14 @@ whose results never change once completed; retrying, rescoring (:func:`rescore`)
 and pairwise judging (:func:`pairwise`) create new runs from stored outputs.
 Package an evaluation as an :class:`Evaluation` to run it from the
 ``grasp-evals`` CLI.
+
+Judges are evaluators too: :class:`ProcessorEvaluator` turns any processor
+(an ``LLMAgent`` with a structured verdict) into one, and
+:func:`judge_validation` / :func:`judge_probes` measure a judge with the same
+machinery — agreement with labels collected by :func:`sample_for_labeling` and
+:func:`import_labels`, and sensitivity to :class:`Perturbation` s. A
+:class:`ValidationGate` keeps an evaluation from using a judge that has not
+passed validation.
 """
 
 from ._execution import TrialProgress
@@ -34,7 +42,19 @@ from .evaluator import (
     FunctionEvaluator,
     evaluator,
 )
+from .judge import (
+    JudgedPair,
+    ProcessorEvaluator,
+    ProcessorPairwiseJudge,
+    judge_probes,
+    judge_validation,
+)
+from .labeling import import_labels, judged_outputs, sample_for_labeling
 from .metrics import (
+    ClassRecall,
+    CohenKappa,
+    ConfusionMatrix,
+    Consistency,
     Distribution,
     ErrorRate,
     Mean,
@@ -69,6 +89,7 @@ from .types import (
     EvaluationRun,
     EvaluatorFailure,
     Example,
+    JudgedOutput,
     MetricResult,
     Provenance,
     RunStatus,
@@ -77,10 +98,23 @@ from .types import (
     Trial,
     Usage,
 )
+from .validation import (
+    CorrectedPassRate,
+    JudgeErrorRates,
+    JudgeValidation,
+    Perturbation,
+    UnvalidatedJudgeError,
+    ValidationGate,
+)
 
 __all__ = [
+    "ClassRecall",
+    "CohenKappa",
     "Comparison",
     "ComponentInfo",
+    "ConfusionMatrix",
+    "Consistency",
+    "CorrectedPassRate",
     "Dataset",
     "DatasetCheck",
     "DatasetError",
@@ -100,6 +134,10 @@ __all__ = [
     "FunctionEvaluator",
     "FunctionPairwiseJudge",
     "FunctionTask",
+    "JudgeErrorRates",
+    "JudgeValidation",
+    "JudgedOutput",
+    "JudgedPair",
     "LocalRunStore",
     "Mean",
     "Measure",
@@ -113,6 +151,9 @@ __all__ = [
     "PassHatK",
     "PassRate",
     "Percentile",
+    "Perturbation",
+    "ProcessorEvaluator",
+    "ProcessorPairwiseJudge",
     "ProcessorTask",
     "Proportion",
     "Provenance",
@@ -130,7 +171,9 @@ __all__ = [
     "Trial",
     "TrialContext",
     "TrialProgress",
+    "UnvalidatedJudgeError",
     "Usage",
+    "ValidationGate",
     "WinRate",
     "compare",
     "compute_metrics",
@@ -138,6 +181,10 @@ __all__ = [
     "evaluate",
     "evaluator",
     "example_json_schema",
+    "import_labels",
+    "judge_probes",
+    "judge_validation",
+    "judged_outputs",
     "list_evaluations",
     "load_evaluation",
     "load_object",
@@ -146,4 +193,5 @@ __all__ = [
     "render_run_markdown",
     "rescore",
     "run_summary",
+    "sample_for_labeling",
 ]

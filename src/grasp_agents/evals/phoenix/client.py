@@ -227,7 +227,7 @@ class PhoenixClient:
                 raise _phoenix_error(exc.__cause__, str(exc)) from exc
             raise
 
-    async def _json(
+    async def request_json(
         self,
         method: str,
         path: str,
@@ -285,14 +285,14 @@ class PhoenixClient:
         )
 
     async def find_dataset(self, name: str) -> dict[str, Any] | None:
-        body = await self._json("GET", "v1/datasets", params={"name": name})
+        body = await self.request_json("GET", "v1/datasets", params={"name": name})
         found = cast("list[dict[str, Any]]", body.get("data") or [])
         return found[0] if found else None
 
     async def update_experiment_metadata(
         self, experiment_id: str, metadata: Mapping[str, Any]
     ) -> None:
-        await self._json(
+        await self.request_json(
             "PATCH",
             f"v1/experiments/{experiment_id}",
             json={"metadata": dict(metadata)},

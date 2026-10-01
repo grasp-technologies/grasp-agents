@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import combinations
 from statistics import median as _median
 from typing import Any, Literal, override
 
@@ -21,6 +22,7 @@ from .stats import (
     Estimate,
     bootstrap_estimate,
     bounded_mean_estimate,
+    cohens_kappa,
     mean_estimate,
     percentile,
     proportion_estimate,
@@ -692,15 +694,20 @@ class Total(Metric):
         )
 
 
+def label_text(value: bool | float | str) -> str:
+    """A score value as a label: ``true``/``false``, the label, or the number."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return value
+    return f"{value:g}"
+
+
 def _label(trial: Trial, of: str) -> str | None:
     score = trial.score(of)
     if score is None or score.value is None:
         return None
-    if isinstance(score.value, bool):
-        return "true" if score.value else "false"
-    if isinstance(score.value, str):
-        return score.value
-    return f"{score.value:g}"
+    return label_text(score.value)
 
 
 class Distribution(Metric):
@@ -782,6 +789,251 @@ class Proportion(Metric):
         )
 
 
+class Consistency(Metric):
+    """
+    Share of examples whose repetitions all give the same value of ``of``
+    (a judge's or a task's self-consistency), with the mean agreement of
+    repetition pairs in ``details``. Examples with fewer than two scored
+    repetitions do not count.
+    """
+
+    def __init__(
+        self, of: str, *, name: str | None = None, confidence: float = 0.95
+    ) -> None:
+        self.of = of
+        self.confidence = confidence
+        self.name = name or f"consistency({of})"
+
+    @override
+    def compute(
+        self,
+        trials: Sequence[Trial],
+        *,
+        clusters: Mapping[str, Hashable] | None = None,
+    ) -> MetricResult:
+        values: list[float] = []
+        keys: list[str] = []
+        pair_agreement: list[float] = []
+        missing = na = 0
+        for example_id, group in _group_by_example(trials).items():
+            labels = [label for t in group if (label := _label(t, self.of)) is not None]
+            if len(labels) < 2:
+                if len(group) < 2 or all(_not_applicable(t, self.of) for t in group):
+                    na += 1
+                else:
+                    missing += 1
+                continue
+            values.append(1.0 if len(set(labels)) == 1 else 0.0)
+            keys.append(example_id)
+            pairs = list(combinations(labels, 2))
+            pair_agreement.append(sum(a == b for a, b in pairs) / len(pairs))
+        estimate = _share_estimate(
+            values, keys, clusters, unit="example", confidence=self.confidence
+        )
+        result = _result(
+            self.name, estimate, missing=missing, na=na, confidence=self.confidence
+        )
+        if pair_agreement:
+            result.details["pair_agreement"] = math.fsum(pair_agreement) / len(
+                pair_agreement
+            )
+        return result
+
+
+# --- Agreement between two labels (judge validation) ---
+
+
+def _label_pairs(
+    trials: Sequence[Trial], of: str, truth: str
+) -> tuple[list[tuple[str, str]], list[str], int, int]:
+    """``(truth, judged)`` label pairs, their example ids, missing and n/a."""
+    pairs: list[tuple[str, str]] = []
+    keys: list[str] = []
+    missing = na = 0
+    for trial in trials:
+        expected, judged = _label(trial, truth), _label(trial, of)
+        if expected is not None and judged is not None:
+            pairs.append((expected, judged))
+            keys.append(trial.example_id)
+        elif _not_applicable(trial, truth) or _not_applicable(trial, of):
+            na += 1
+        else:
+            missing += 1
+    return pairs, keys, missing, na
+
+
+class CohenKappa(Metric):
+    """
+    Cohen's κ between two labels of each trial — a judge's verdict ``of``
+    and the ``truth`` it is validated against (e.g. a human label). κ is
+    agreement beyond what the two label distributions produce by chance: 0 is
+    chance, 1 perfect. Its interval is the observed agreement's (Wilson, on
+    examples, clustered like other example-level metrics) mapped through the
+    chance agreement, so it stays wide on a few labels even when they all
+    agree.
+    """
+
+    def __init__(
+        self,
+        of: str,
+        truth: str,
+        *,
+        name: str | None = None,
+        confidence: float = 0.95,
+    ) -> None:
+        self.of = of
+        self.truth = truth
+        self.confidence = confidence
+        self.name = name or f"kappa({of}, {truth})"
+
+    @override
+    def compute(
+        self,
+        trials: Sequence[Trial],
+        *,
+        clusters: Mapping[str, Hashable] | None = None,
+    ) -> MetricResult:
+        pairs, keys, missing, na = _label_pairs(trials, self.of, self.truth)
+        per_example: dict[str, list[float]] = {}
+        for (expected, judged), key in zip(pairs, keys, strict=True):
+            per_example.setdefault(key, []).append(float(expected == judged))
+        examples = list(per_example)
+        agreement = _share_estimate(
+            [mean(v) for v in per_example.values()],
+            examples,
+            clusters,
+            unit="example",
+            confidence=self.confidence,
+            observations=len(pairs),
+        )
+        kappa = cohens_kappa(pairs)
+        result = MetricResult(
+            name=self.name,
+            value=kappa,
+            n=len(examples),
+            n_missing=missing,
+            n_na=na,
+            confidence=self.confidence,
+            details={"judgments": len(pairs)},
+        )
+        if kappa is None or not pairs:
+            return result
+        chance = _chance_agreement(pairs)
+        scale = 1.0 - chance
+        result.details["observed_agreement"] = sum(1 for a, b in pairs if a == b) / len(
+            pairs
+        )
+        result.details["chance_agreement"] = chance
+        if agreement.ci_low is not None and agreement.ci_high is not None:
+            result.ci_low = max(-1.0, (agreement.ci_low - chance) / scale)
+            result.ci_high = min(1.0, (agreement.ci_high - chance) / scale)
+        if agreement.stderr is not None:
+            result.stderr = agreement.stderr / scale
+        return result
+
+
+def _chance_agreement(pairs: Sequence[tuple[str, str]]) -> float:
+    n = len(pairs)
+    left: dict[str, int] = {}
+    right: dict[str, int] = {}
+    for a, b in pairs:
+        left[a] = left.get(a, 0) + 1
+        right[b] = right.get(b, 0) + 1
+    return sum(left[k] * right.get(k, 0) for k in left) / (n * n)
+
+
+class ClassRecall(Metric):
+    """
+    Among examples whose ``truth`` is ``label``, the share of trials where
+    ``of`` is ``label`` too: a judge's true positive rate (``label`` the
+    passing label) or true negative rate (the failing one). Each example's
+    repetitions are averaged first.
+    """
+
+    def __init__(
+        self,
+        of: str,
+        truth: str,
+        label: str | bool,
+        *,
+        name: str | None = None,
+        confidence: float = 0.95,
+    ) -> None:
+        self.of = of
+        self.truth = truth
+        self.label = label_text(label)
+        self.confidence = confidence
+        self.name = name or f"recall({of}={self.label} | {truth})"
+
+    @override
+    def compute(
+        self,
+        trials: Sequence[Trial],
+        *,
+        clusters: Mapping[str, Hashable] | None = None,
+    ) -> MetricResult:
+        in_class = [t for t in trials if _label(t, self.truth) == self.label]
+
+        def hit(trial: Trial) -> float | None:
+            judged = _label(trial, self.of)
+            return None if judged is None else float(judged == self.label)
+
+        c = _collect(in_class, hit, unit="example", reduce=mean, target=self.of)
+        estimate = _share_estimate(
+            c.values,
+            c.keys,
+            clusters,
+            unit="example",
+            confidence=self.confidence,
+            observations=c.observations,
+        )
+        return _result(
+            self.name,
+            estimate,
+            missing=c.missing,
+            na=c.na,
+            confidence=self.confidence,
+            label=self.label,
+        )
+
+
+class ConfusionMatrix(Metric):
+    """Counts of ``truth`` → ``of`` label pairs across trials (no single value)."""
+
+    unit: Unit = "trial"
+
+    def __init__(self, of: str, truth: str, *, name: str | None = None) -> None:
+        self.of = of
+        self.truth = truth
+        self.name = name or f"confusion({of}, {truth})"
+
+    @override
+    def compute(
+        self,
+        trials: Sequence[Trial],
+        *,
+        clusters: Mapping[str, Hashable] | None = None,
+    ) -> MetricResult:
+        pairs, _, missing, na = _label_pairs(trials, self.of, self.truth)
+        labels = sorted({label for pair in pairs for label in pair})
+        counts = {expected: dict.fromkeys(labels, 0) for expected in labels}
+        for expected, judged in pairs:
+            counts[expected][judged] += 1
+        return MetricResult(
+            name=self.name,
+            value=None,
+            n=len(pairs),
+            n_missing=missing,
+            n_na=na,
+            details={
+                "labels": labels,
+                "counts": counts,
+                "truth": self.truth,
+                "judged": self.of,
+            },
+        )
+
+
 # --- Computing a run's metrics ---
 
 
@@ -816,9 +1068,19 @@ def default_metrics(trials: Sequence[Trial]) -> list[Metric]:
     return metrics
 
 
+type MetricsSpec = (
+    Sequence[Metric] | Callable[[Sequence[Trial]], Sequence[Metric]] | None
+)
+"""
+Metrics for a run: a list, a function of the finished trials returning one
+(e.g. ``lambda trials: [*default_metrics(trials), extra]``), or ``None`` for
+:func:`default_metrics`.
+"""
+
+
 def compute_metrics(
     trials: Sequence[Trial],
-    metrics: Sequence[Metric] | None,
+    metrics: MetricsSpec,
     *,
     examples: Iterable[Example[Any, Any]] = (),
     group_by: Sequence[str] = (),
@@ -826,11 +1088,16 @@ def compute_metrics(
     expected: Sequence[tuple[str, int]] | None = None,
 ) -> list[MetricResult]:
     """
-    Compute ``metrics`` (defaults from the scores when ``None``) over
-    ``trials``. ``expected`` lists the trials that should exist: those that
-    never ran (e.g. the budget ran out) count as missing.
+    Compute ``metrics`` (see :data:`MetricsSpec`) over ``trials``.
+    ``expected`` lists the trials that should exist: those that never ran
+    (e.g. the budget ran out) count as missing.
     """
-    selected = list(metrics) if metrics is not None else default_metrics(trials)
+    if metrics is None:
+        selected = default_metrics(trials)
+    elif callable(metrics):
+        selected = list(metrics(trials))
+    else:
+        selected = list(metrics)
     by_id = {e.id: e for e in examples}
     clusters: dict[str, Hashable] | None = None
     if cluster_by is not None:
@@ -852,12 +1119,19 @@ def compute_metrics(
             buckets: dict[str, list[Trial]] = {}
             for trial in trials:
                 example = by_id.get(trial.example_id)
-                value = None if example is None else example.metadata.get(key)
+                value = None if example is None else _group_value(example, key)
                 buckets.setdefault(f"{key}={value}", []).append(trial)
             for label, bucket in sorted(buckets.items()):
                 result.groups[label] = metric.compute(bucket, clusters=clusters)
         results.append(result)
     return results
+
+
+def _group_value(example: Example[Any, Any], key: str) -> Any:
+    # ``split`` groups by the example's splits unless its metadata has one.
+    if key == "split" and key not in example.metadata:
+        return "+".join(example.splits) or None
+    return example.metadata.get(key)
 
 
 def _hashable(value: Any) -> Hashable:
