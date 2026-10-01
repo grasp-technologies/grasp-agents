@@ -1,6 +1,6 @@
 """Provider LLM classes are re-exported lazily at grasp_agents.llm_providers."""
 
-import subprocess  # noqa: S404
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 from importlib import import_module
 
@@ -23,6 +23,8 @@ REEXPORTED_NAMES = [
     "OpenAILLMSettings",
     "OpenAIResponsesLLM",
     "OpenAIResponsesLLMSettings",
+    "TypeSafeLLM",
+    "TypeSafeLLMSettings",
     "VertexClientConfig",
 ]
 
@@ -56,9 +58,9 @@ def test_provider_packages_not_imported_eagerly() -> None:
     script = (
         "import sys\n"
         "import grasp_agents.llm_providers\n"
-        "for sub in ('anthropic', 'gemini', 'litellm'):\n"
+        "for sub in ('anthropic', 'gemini', 'litellm', 'typesafe'):\n"
         "    assert f'grasp_agents.llm_providers.{sub}' not in sys.modules, sub\n"
         "from grasp_agents.llm_providers import AnthropicLLM\n"
         "assert 'grasp_agents.llm_providers.anthropic' in sys.modules\n"
     )
-    subprocess.run([sys.executable, "-c", script], check=True)  # noqa: S603
+    subprocess.run([sys.executable, "-c", script], check=True)  # ruff: ignore[subprocess-without-shell-equals-true]

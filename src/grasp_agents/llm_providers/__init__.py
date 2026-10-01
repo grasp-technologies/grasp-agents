@@ -13,6 +13,7 @@ installed — a provider's dependencies load only when its class is accessed.
 * :mod:`.anthropic` — ``AnthropicLLM`` (needs the ``anthropic`` extra)
 * :mod:`.gemini` — ``GeminiLLM`` (needs the ``gemini`` extra)
 * :mod:`.litellm` — ``LiteLLM`` (long-tail providers via ``litellm``)
+* :mod:`.typesafe` — ``TypeSafeLLM`` (Jev judgments; needs the ``typesafe`` extra)
 """
 
 from importlib import import_module
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         OpenAILLMSettings,
     )
     from .openai_responses import OpenAIResponsesLLM, OpenAIResponsesLLMSettings
+    from .typesafe import TypeSafeLLM, TypeSafeLLMSettings
 
 _SUBMODULE_BY_NAME: dict[str, str] = {
     "AnthropicLLM": "anthropic",
@@ -59,11 +61,14 @@ _SUBMODULE_BY_NAME: dict[str, str] = {
     "OpenAILLMSettings": "openai_completions",
     "OpenAIResponsesLLM": "openai_responses",
     "OpenAIResponsesLLMSettings": "openai_responses",
+    "TypeSafeLLM": "typesafe",
+    "TypeSafeLLMSettings": "typesafe",
 }
 
 _EXTRA_BY_SUBMODULE: dict[str, str] = {
     "anthropic": "anthropic",
     "gemini": "gemini",
+    "typesafe": "typesafe",
 }
 
 
@@ -105,5 +110,7 @@ __all__ = [
     "OpenAILLMSettings",
     "OpenAIResponsesLLM",
     "OpenAIResponsesLLMSettings",
+    "TypeSafeLLM",
+    "TypeSafeLLMSettings",
     "VertexClientConfig",
 ]
