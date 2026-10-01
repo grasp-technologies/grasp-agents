@@ -340,6 +340,14 @@ def _phoenix(missing_traces: bool = False) -> httpx.MockTransport:
                             updated="2026-10-01T11:00:00Z",
                             span_id="s-t1",
                         ),
+                        # Newer still, but a model's: not a label.
+                        _annotation(
+                            "q",
+                            kind="LLM",
+                            label="pass",
+                            updated="2026-10-01T13:00:00Z",
+                            span_id="s-t1",
+                        ),
                         _annotation(
                             "q",
                             label="yes",
