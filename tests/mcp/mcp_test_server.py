@@ -1,9 +1,14 @@
 """Simple MCP server for testing. Run via stdio transport."""
 
 import asyncio
+import os
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
+
+# FastMCP probes ./.env on init, which fails where reading the repo's .env is denied.
+os.chdir(Path(__file__).parent)
 
 mcp = FastMCP("test-server")
 
