@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
-from openai._types import omit  # noqa: PLC2701
+from openai._types import omit  # ruff: ignore[import-private-name]
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
 )
@@ -223,7 +223,7 @@ class OpenAIResponsesLLM(CloudLLM):
 
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,

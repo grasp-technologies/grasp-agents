@@ -216,8 +216,8 @@ def provider_output_to_response(provider_output: LiteLLMCompletion) -> Response:
     model = provider_output.model or "unspecified-model"
     _ = provider_output.system_fingerprint
 
-    hidden_params: dict[str, Any] = provider_output._hidden_params  # type: ignore # noqa: SLF001
-    response_headers: dict[str, Any] = provider_output._response_headers  # type: ignore # noqa: SLF001
+    hidden_params: dict[str, Any] = provider_output._hidden_params  # type: ignore # ruff: ignore[private-member-access]
+    response_headers: dict[str, Any] = provider_output._response_headers  # type: ignore # ruff: ignore[private-member-access]
     # request_id = provider_output._request_id
 
     response_ms: float | None = getattr(provider_output, "_response_ms", None)

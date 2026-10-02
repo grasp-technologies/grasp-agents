@@ -205,7 +205,7 @@ class LiteLLM(CloudLLM):
 
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
@@ -260,7 +260,7 @@ class LiteLLM(CloudLLM):
         )
         # Unmapped models raise here — never fail a successful response over pricing.
         try:
-            completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]  # noqa: SLF001
+            completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]  # ruff: ignore[private-member-access]
                 completion
             )
         except Exception:
