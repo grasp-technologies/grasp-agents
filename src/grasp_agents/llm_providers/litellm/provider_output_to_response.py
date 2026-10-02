@@ -1,9 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from litellm.litellm_core_utils.prompt_templates.factory import (
-    _get_thought_signature_from_tool,  # type: ignore  # noqa: PLC2701
-)
 from litellm.types.llms.openai import (
     ChatCompletionAnnotation as LiteLLMChatCompletionAnnotation,
 )
@@ -14,6 +11,7 @@ from litellm.types.llms.openai import (
     ChatCompletionThinkingBlock as LiteLLMChatCompletionThinkingBlock,
 )
 from litellm.types.llms.openai import OpenAIChatCompletionFinishReason
+from litellm.types.utils import ChatCompletionMessageToolCall as LiteLLMToolCall
 from litellm.types.utils import Choices as LiteLLMChoice
 from litellm.types.utils import Message as LiteLLMChatCompletionMessage
 from litellm.types.utils import ModelResponse as LiteLLMCompletion
@@ -48,7 +46,7 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.response import Response, ResponseUsage
 
-from .utils import validate_completion
+from .utils import tool_call_id_and_fields, validate_completion
 
 LiteLLMThinkingBlock = (
     LiteLLMChatCompletionThinkingBlock | LiteLLMChatCompletionRedactedThinkingBlock
@@ -58,7 +56,6 @@ LiteLLMThinkingBlock = (
 def _litellm_chat_completion_message_to_items(
     raw_message: LiteLLMChatCompletionMessage,
     output_message_status: ItemStatus,
-    model: str,
     raw_logprobs: ChatCompletionChoiceLogprobs | None = None,
 ) -> list[OutputItem]:
     output_items: list[OutputItem] = []
@@ -69,9 +66,7 @@ def _litellm_chat_completion_message_to_items(
         status=output_message_status,
     )
 
-    tool_call_items, tool_thought_sigs = _extract_tool_call_items(
-        raw_message=raw_message, model=model
-    )
+    tool_call_items, tool_thought_sigs = _extract_tool_call_items(raw_message)
 
     reasoning_items = _extract_reasoning_items(
         raw_message=raw_message,
@@ -154,30 +149,31 @@ def _extract_output_message_item(
 
 
 def _extract_tool_call_items(
-    raw_message: LiteLLMChatCompletionMessage, model: str
+    raw_message: LiteLLMChatCompletionMessage,
 ) -> tuple[list[FunctionToolCallItem], list[str]]:
     tool_call_items: list[FunctionToolCallItem] = []
     thought_sigs: list[str] = []
 
     if raw_message.tool_calls:
         for tc in raw_message.tool_calls:
+            if not isinstance(tc, LiteLLMToolCall):
+                # Custom tool calls are not supported yet
+                continue
             if tc.function.name is not None:  # can be None for chunks
-                tc_dict = tc.model_dump()
-                provider_specific_fields = tc_dict.get("provider_specific_fields")
-
-                tc_signature = _get_thought_signature_from_tool(
-                    tool=tc_dict, model=model
+                call_id, provider_specific_fields = tool_call_id_and_fields(
+                    tc.id, tc.model_dump().get("provider_specific_fields")
                 )
 
                 tool_call_items.append(
                     FunctionToolCallItem(
-                        call_id=tc.id,
+                        call_id=call_id,
                         name=tc.function.name,
                         arguments=tc.function.arguments,
                         status="completed",
                         provider_specific_fields=provider_specific_fields,
                     )
                 )
+                tc_signature = (provider_specific_fields or {}).get("thought_signature")
                 if tc_signature:
                     thought_sigs.append(tc_signature)
 
@@ -263,7 +259,6 @@ def provider_output_to_response(provider_output: LiteLLMCompletion) -> Response:
     output_items = _litellm_chat_completion_message_to_items(
         raw_message=raw_choice.message,
         raw_logprobs=raw_logprobs,
-        model=model,
         output_message_status=status,
     )
 

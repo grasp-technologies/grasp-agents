@@ -190,7 +190,9 @@ class GeminiLLM(CloudLLM):
         output_schema: type | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
-        system_instruction, contents = items_to_provider_inputs(input)
+        system_instruction, contents = items_to_provider_inputs(
+            input, model=self.model_name
+        )
 
         # Merge settings: base llm_settings + per-call overrides
         merged: dict[str, Any] = dict(self.llm_settings or {})
