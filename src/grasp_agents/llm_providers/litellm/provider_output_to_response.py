@@ -23,6 +23,7 @@ from openai.types.chat.chat_completion import ChoiceLogprobs as CompletionLogpro
 from openai.types.responses.response import IncompleteDetails
 from openai.types.responses.response_status import ResponseStatus
 
+from grasp_agents.llm.thought_signatures import tool_call_id_and_fields
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs,
 )
@@ -46,7 +47,7 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.response import Response, ResponseUsage
 
-from .utils import tool_call_id_and_fields, validate_completion
+from .utils import validate_completion
 
 LiteLLMThinkingBlock = (
     LiteLLMChatCompletionThinkingBlock | LiteLLMChatCompletionRedactedThinkingBlock

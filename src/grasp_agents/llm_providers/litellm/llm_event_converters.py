@@ -14,6 +14,7 @@ from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 
 from grasp_agents.llm.llm_stream_converter import BaseLlmStreamConverter
+from grasp_agents.llm.thought_signatures import tool_call_id_and_fields
 from grasp_agents.llm_providers.openai_completions.logprob_converters import (
     convert_logprobs,
 )
@@ -24,7 +25,7 @@ from grasp_agents.llm_providers.openai_completions.provider_output_to_response i
 from grasp_agents.types.llm_events import ResponseCompleted
 from grasp_agents.types.response import Response
 
-from .utils import tool_call_id_and_fields, validate_chunk
+from .utils import validate_chunk
 
 LiteLLMThinkingBlock = ChatCompletionThinkingBlock | ChatCompletionRedactedThinkingBlock
 

@@ -634,6 +634,34 @@ class TestOriginResolution:
 
         assert proxied.native_provider_name == "custom-proxy"
 
+    @pytest.mark.parametrize(
+        ("model_name", "vendor"),
+        [
+            ("azure/my-gpt-deployment", "openai"),
+            ("bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", "anthropic"),
+            (
+                "bedrock/converse/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "anthropic",
+            ),
+            ("vertex_ai/claude-sonnet-4-5@20250929", "anthropic"),
+            ("vertex_ai/gemini-3-flash-preview", "gemini"),
+            ("vertex_ai_beta/gemini-3-flash-preview", "gemini"),
+            ("vertex_ai/publishers/google/models/gemini-3-flash-preview", "gemini"),
+            ("bedrock/meta.llama3-70b-instruct-v1:0", "bedrock"),
+            ("bedrock/openai.gpt-oss-120b-1:0", "bedrock"),
+            ("vertex_ai/meta/llama-4-maverick", "vertex_ai"),
+            ("vertex_ai/openai/gpt-oss-120b-maas", "vertex_ai"),
+            ("azure_ai/claude-sonnet-4-5", "azure_ai"),
+            ("openrouter/anthropic/claude-sonnet-4.5", "openrouter"),
+        ],
+    )
+    def test_litellm_on_a_cloud_platform_takes_the_model_vendor(
+        self, model_name: str, vendor: str
+    ) -> None:
+        # Open-weight models a platform serves keep the platform's name: their
+        # reasoning is not signed by the vendor whose name they carry.
+        assert LiteLLM(model_name=model_name).native_provider_name == vendor
+
     def test_llm_without_reasoning_origin_drops_nothing(self) -> None:
         llm = LazyStreamCloudLLM(model_name="mock")
         tagged = [
@@ -660,3 +688,40 @@ class TestLiteLLMDropsForeignReasoning:
         kept = llm._drop_foreign_reasoning([own, foreign, untagged])
 
         assert list(kept) == [own, untagged]
+
+
+class TestSameVendorAcrossClients:
+    @pytest.mark.asyncio
+    async def test_claude_thinking_from_litellm_on_bedrock_reaches_anthropic(
+        self,
+    ) -> None:
+        producer = LiteLLM(
+            model_name="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        thinking = ReasoningItem(
+            summary=[ReasoningSummary(text="plan")], encrypted_content="bedrock-sig"
+        )
+        producer._stamp_item_native_provider_name(thinking)
+        consumer = _StubAnthropicLLM(
+            model_name="claude-sonnet-4-5",
+            api_provider=_ANTHROPIC_PROVIDER,
+            served=_anthropic_message([TextBlock(type="text", text="ok")]),
+        )
+
+        await consumer.generate_response([InputMessageItem.from_text("hi"), thinking])
+
+        signatures = [
+            b["signature"]
+            for b in _anthropic_thinking_blocks(consumer.captured_api_input)
+        ]
+        assert signatures == ["bedrock-sig"]
+
+    def test_litellm_on_bedrock_keeps_native_anthropic_thinking(self) -> None:
+        consumer = LiteLLM(
+            model_name="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        native = ReasoningItem(
+            native_provider_name="anthropic", encrypted_content="api-sig"
+        )
+
+        assert list(consumer._drop_foreign_reasoning([native])) == [native]

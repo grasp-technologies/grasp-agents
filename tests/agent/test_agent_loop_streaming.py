@@ -146,36 +146,21 @@ class TestFallbackDiscardsPartials:
         assert loop.final_answer == "recovered"
 
     @pytest.mark.asyncio
-    async def test_superseded_response_is_not_answered_with(self) -> None:
+    async def test_stream_without_a_final_response_fails(self) -> None:
         """
-        A fallback voids the failed member's already-delivered Response. If the
-        next member's stream then ends without a terminal event, the turn has no
-        response at all and must fail loudly instead of answering with the
-        superseded one.
+        A stream that ends without a terminal event leaves the turn with no
+        response, which is an error rather than a silent empty turn.
         """
-        dead_message = _message_item("from A")
-        dead = Response(model="primary", output=[dead_message], usage=_make_usage())
-        served_message = _message_item("from B")
-
         loop, _ = _make_loop(
             [
-                OutputItemDone(item=dead_message, output_index=0, sequence_number=1),
-                ResponseCompleted(response=dead, sequence_number=2),
-                ResponseFallback(
-                    failed_model="primary",
-                    fallback_model="fallback",
-                    error_type="LlmInternalServerError",
-                    attempt=1,
-                    sequence_number=3,
+                OutputItemDone(
+                    item=_message_item("from B"), output_index=0, sequence_number=1
                 ),
-                OutputItemDone(item=served_message, output_index=0, sequence_number=4),
             ]
         )
 
         with pytest.raises(MissingLLMResponseError):
             await _drain(loop)
-
-        assert loop.final_answer != "from A"
 
 
 # ---------- Truncated (incomplete) streams ----------
@@ -189,8 +174,8 @@ class TestIncompleteStreamIsTerminal:
         """
         ``response.incomplete`` ends a stream just as ``response.completed``
         does, carrying the final Response — the turn must finish on it and its
-        usage must reach the tracker. The truncation is logged, and the text
-        handed back as the final answer says so.
+        usage must reach the tracker. The truncation is logged, and the
+        text handed back as the final answer says so.
         """
         caplog.set_level(logging.WARNING)
         truncated_message = _message_item("truncated answ")
@@ -218,8 +203,6 @@ class TestIncompleteStreamIsTerminal:
         assert [e.data.status for e in generation_ends] == ["incomplete"]
         assert ctx.usage_tracker.usages["test"].input_tokens == 10
         assert _output_items(transcript) == [truncated_message]
-        # The transcript keeps the text as the model produced it; only the
-        # answer handed back carries the notice.
         assert (
             loop.final_answer
             == "truncated answ\n\n[Response truncated: max_output_tokens]"

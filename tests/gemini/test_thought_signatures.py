@@ -29,6 +29,7 @@ from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 from grasp_agents.llm_providers.gemini.response_to_provider_inputs import (
     PLACEHOLDER_THOUGHT_SIGNATURE,
     items_to_provider_inputs,
+    requires_thought_signatures,
 )
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import (
@@ -218,3 +219,26 @@ def test_unsigned_tool_call_gets_placeholder_only_on_gemini_3() -> None:
 
     _, contents = items_to_provider_inputs(items, model="gemini-2.5-flash")
     assert _model_part_signatures(contents) == [None, _FC_SIG]
+
+
+@pytest.mark.parametrize(
+    ("model", "required"),
+    [
+        ("gemini-3.1-flash-lite", True),
+        ("gemini-3-pro-preview", True),
+        ("gemini-3", True),
+        ("models/gemini-3-flash", True),
+        ("publishers/google/models/gemini-3-flash-preview", True),
+        ("gemini-10-ultra", True),
+        ("gemini-2.5-flash", False),
+        ("gemini-2.0-flash-001", False),
+        ("gemini-live-2.5-flash-preview", False),
+        ("gemini-exp-1206", False),
+        ("gemini-3b-tuned", False),
+        (None, False),
+    ],
+)
+def test_thought_signatures_required_from_gemini_3(
+    model: str | None, required: bool
+) -> None:
+    assert requires_thought_signatures(model) is required

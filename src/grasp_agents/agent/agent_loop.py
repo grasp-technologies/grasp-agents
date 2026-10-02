@@ -63,7 +63,10 @@ from grasp_agents.types.llm_events import (
 )
 from grasp_agents.utils.errors import format_error_chain
 from grasp_agents.utils.streaming import stream_concurrent
-from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
+from grasp_agents.utils.validation import (
+    is_str_type,
+    validate_obj_from_json_or_py_string,
+)
 
 from .loop_state import (
     NextStep,
@@ -104,7 +107,13 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-_TRUNCATION_NOTICE = "\n\n[Response truncated: {reason}]"
+
+def _truncation_notice(response: Response) -> str:
+    if response.status != "incomplete":
+        return ""
+    details = response.incomplete_details
+    reason = details.reason if details and details.reason else "unknown reason"
+    return f"\n\n[Response truncated: {reason}]"
 
 
 class CheckpointCallback(Protocol):
@@ -145,14 +154,11 @@ class ResponseCapture:
 
     async def _iterate(self) -> AsyncIterator[Event[Any]]:
         async for event in self._stream:
-            if isinstance(event, LLMStreamEvent):
-                if isinstance(event.data, (ResponseRetrying, ResponseFallback)):
-                    self.response = None
-                # A truncated response (max tokens, content filter) is terminal
-                # too and carries a final Response — the loop must see it, or
-                # the turn ends without a response at all.
-                elif isinstance(event.data, (ResponseCompleted, ResponseIncomplete)):
-                    self.response = event.data.response
+            # A truncated response ends a stream too, with a final Response.
+            if isinstance(event, LLMStreamEvent) and isinstance(
+                event.data, (ResponseCompleted, ResponseIncomplete)
+            ):
+                self.response = event.data.response
             yield event
 
 
@@ -459,11 +465,10 @@ class AgentLoop[CtxT]:
             return None
 
         text = response.output_text or None
-        if text and response.status == "incomplete" and self.llm_output_schema is None:
-            details = response.incomplete_details
-            text += _TRUNCATION_NOTICE.format(
-                reason=details.reason if details else "unknown reason"
-            )
+        schema = self.llm_output_schema
+        # An answer parsed against a structured schema would break on a notice.
+        if text and (schema is None or is_str_type(schema)):
+            text += _truncation_notice(response)
         return text
 
     # --- LLM generation ---
@@ -504,7 +509,6 @@ class AgentLoop[CtxT]:
                         # a fresh attempt that re-streams the whole turn.
                         # Discard them so they don't pile on top.
                         pending = []
-                        response = None
                     if isinstance(se, OutputItemDone):
                         # Mirror the non-streaming commit: every output item —
                         # including server-tool records (web search) — enters

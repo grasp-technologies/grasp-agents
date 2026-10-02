@@ -85,7 +85,7 @@ class LLM(ABC):
     @abstractmethod
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -96,7 +96,7 @@ class LLM(ABC):
     @abstractmethod
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -109,7 +109,7 @@ class LLM(ABC):
 
     async def _generate_with_api_retries(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -155,7 +155,7 @@ class LLM(ABC):
 
     async def _generate_stream_with_api_retries(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -164,21 +164,10 @@ class LLM(ABC):
     ) -> AsyncIterator[LlmEvent]:
         """
         Streaming variant of API retry loop. Yields ResponseRetrying on retry;
-        ``attempt`` counts this layer's own retries.
+        ``attempt`` counts this layer's own retries. An attempt ends at its final
+        response: a failure after it neither retries nor raises.
         """
         policy = self.retry_policy
-
-        if not policy:
-            async for event in self._generate_response_stream_once(
-                input,
-                tools=tools,
-                output_schema=output_schema,
-                tool_choice=tool_choice,
-                **extra_llm_settings,
-            ):
-                yield event
-            return
-
         attempt = 0
         last_seq = 0
 
@@ -190,14 +179,32 @@ class LLM(ABC):
                 tool_choice=tool_choice,
                 **extra_llm_settings,
             )
+            delivered = False
             try:
                 async for event in stream:
                     last_seq = event.sequence_number
                     yield event
+                    if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                        delivered = True
                 return
             except LlmErrorTuple as err:
+                if delivered:
+                    # Retrying or falling back would replace a complete response
+                    # and bill it again.
+                    logger.warning(
+                        "Model %s: stream failed after its final response "
+                        "(%s: %s); keeping the response",
+                        self.model_name,
+                        type(err).__name__,
+                        err,
+                    )
+                    return
                 attempt += 1
-                if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
+                if (
+                    policy is not None
+                    and policy.is_retryable_api_error(err)
+                    and attempt <= policy.api_retries
+                ):
                     delay = policy.api_delay_for(attempt - 1, err)
                     logger.warning(
                         "Model %s: %s (attempt %d/%d, retrying in %.1fs)",
@@ -221,7 +228,7 @@ class LLM(ABC):
     @final
     async def generate_response(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -267,7 +274,7 @@ class LLM(ABC):
     @final
     async def generate_response_stream(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -293,11 +300,9 @@ class LLM(ABC):
                 async for event in stream:
                     if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
                         attempt_response = event.response
-                        self._admit_terminal_response(
-                            attempt_response,
-                            tools=tools,
-                            output_schema=output_schema,
-                            superseded=superseded,
+                        attempt_response.superseded_usage = superseded
+                        self._validate_response(
+                            attempt_response, tools=tools, output_schema=output_schema
                         )
                     yield event
                     last_seq = event.sequence_number
@@ -326,25 +331,6 @@ class LLM(ABC):
                 # The attempt's stream is abandoned when validation raises
                 # above; close it before the next attempt opens another.
                 await _aclose(stream)
-
-    def _admit_terminal_response(
-        self,
-        response: Response,
-        *,
-        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None,
-        output_schema: Any | None,
-        superseded: ResponseUsage | None,
-    ) -> None:
-        """
-        Validate a streamed final response before its terminal event goes out,
-        so a consumer never sees a final response that a retry then replaces.
-
-        Incomplete responses validate like the non-streaming path: a content
-        filter raises, a written refusal logs a warning, a truncated response
-        reaches the caller.
-        """
-        response.superseded_usage = superseded
-        self._validate_response(response, tools=tools, output_schema=output_schema)
 
     # --- Validation ---
 

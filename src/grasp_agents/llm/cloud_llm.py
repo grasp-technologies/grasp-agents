@@ -37,6 +37,11 @@ from grasp_agents.types.response import Response
 from grasp_agents.usage_tracker import add_cost_to_usage
 
 from .llm import LLM, LLMSettings
+from .thought_signatures import (
+    has_thought_signature,
+    normalize_litellm_gemini_items,
+    without_thought_signature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,24 +69,6 @@ class CloudLLMSettings(LLMSettings, total=False):
 @cache
 def _settings_adapter(settings_type: type) -> TypeAdapter[Any]:
     return TypeAdapter(settings_type)
-
-
-# ``provider_specific_fields`` key holding a reasoning payload the producing
-# company's backend signed and re-verifies on replay (Gemini attaches it to
-# message and tool-call items rather than to reasoning items).
-_THOUGHT_SIGNATURE_KEY = "thought_signature"
-
-
-def _has_thought_signature(item: OutputMessageItem | FunctionToolCallItem) -> bool:
-    return _THOUGHT_SIGNATURE_KEY in (item.provider_specific_fields or {})
-
-
-def _without_thought_signature(
-    item: OutputMessageItem | FunctionToolCallItem,
-) -> OutputMessageItem | FunctionToolCallItem:
-    psf = dict(item.provider_specific_fields or {})
-    psf.pop(_THOUGHT_SIGNATURE_KEY, None)
-    return item.model_copy(update={"provider_specific_fields": psf or None})
 
 
 LLMRateLimiter = RateLimiter[Response | AsyncIterator[LlmEvent]]
@@ -345,7 +332,7 @@ class CloudLLM(LLM):
         carry a thought signature.
         """
         if isinstance(item, (OutputMessageItem, FunctionToolCallItem)):
-            if not _has_thought_signature(item):
+            if not has_thought_signature(item):
                 return
         elif not isinstance(item, ReasoningItem):
             return
@@ -393,9 +380,9 @@ class CloudLLM(LLM):
             elif (
                 isinstance(item, (OutputMessageItem, FunctionToolCallItem))
                 and item.native_provider_name not in {None, native_provider_name}
-                and _has_thought_signature(item)
+                and has_thought_signature(item)
             ):
-                kept.append(_without_thought_signature(item))
+                kept.append(without_thought_signature(item))
             else:
                 kept.append(item)
 
@@ -421,7 +408,9 @@ class CloudLLM(LLM):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
-        input = self._drop_foreign_reasoning(input)  # ruff: ignore[builtin-variable-shadowing]
+        input = self._drop_foreign_reasoning(  # ruff: ignore[builtin-variable-shadowing]
+            normalize_litellm_gemini_items(input)
+        )
 
         api_kwargs = self._make_api_input(
             input,
@@ -481,7 +470,9 @@ class CloudLLM(LLM):
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
-        input = self._drop_foreign_reasoning(input)  # ruff: ignore[builtin-variable-shadowing]
+        input = self._drop_foreign_reasoning(  # ruff: ignore[builtin-variable-shadowing]
+            normalize_litellm_gemini_items(input)
+        )
 
         api_kwargs = self._make_api_input(
             input,

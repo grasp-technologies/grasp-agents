@@ -5,9 +5,11 @@ A turn produced by one provider (reasoning + tool call, with whatever signed
 payload that vendor attaches) must continue on every other provider. The
 framework drops reasoning items tagged for another vendor and strips foreign
 thought signatures; Gemini 3 additionally needs a placeholder signature on a
-function call it did not produce.
+function call it did not produce. Transcripts can also hold LiteLLM-Gemini
+turns without a native provider name, their signature encoded in the call id.
 
-Run with: uv run pytest tests/integration/test_foreign_reasoning_live.py -m integration
+Run with:
+uv run --no-sync pytest tests/integration/test_foreign_reasoning_live.py -m integration
 """
 
 from __future__ import annotations
@@ -18,10 +20,14 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from grasp_agents.llm.cloud_llm import APIProvider, CloudLLM
+from grasp_agents.types.content import ReasoningSummary
 from grasp_agents.types.items import (
+    FunctionToolCallItem,
     FunctionToolOutputItem,
     InputMessageItem,
     OutputItem,
+    OutputMessageItem,
+    ReasoningItem,
 )
 from grasp_agents.types.llm_errors import LlmBadRequestError, LlmNotFoundError
 
@@ -250,3 +256,109 @@ class TestForeignReasoningIsRejectedAtTheWire:
             await _llm(consumer, keys).generate_response(
                 [user_msg, *output, *tool_outputs], tools=parallel_tools
             )
+
+
+def _untagged_with_signed_reasoning(
+    output: list[OutputItem], signature: str
+) -> list[OutputItem]:
+    """A turn as stored without native provider names, reasoning signed."""
+    untagged: list[OutputItem] = [
+        item.model_copy(update={"native_provider_name": None})
+        if isinstance(item, (ReasoningItem, OutputMessageItem, FunctionToolCallItem))
+        else item
+        for item in output
+    ]
+    if not any(isinstance(i, ReasoningItem) for i in untagged):
+        untagged.insert(0, ReasoningItem(summary=[ReasoningSummary(text="thinking")]))
+    return [
+        item.model_copy(update={"encrypted_content": signature})
+        if isinstance(item, ReasoningItem)
+        else item
+        for item in untagged
+    ]
+
+
+def _legacy_tool_turn(turn: _SignedTurn) -> list[Any]:
+    user_msg, output, tool_outputs = turn
+    encoded: dict[str, str] = {}
+    signed_output: list[OutputItem] = []
+    for item in output:
+        if isinstance(item, FunctionToolCallItem) and item.provider_specific_fields:
+            signature = item.provider_specific_fields["thought_signature"]
+            encoded[item.call_id] = f"{item.call_id}__thought__{signature}"
+            signed_output.append(
+                item.model_copy(update={"call_id": encoded[item.call_id]})
+            )
+        else:
+            signed_output.append(item)
+    signature = next(iter(encoded.values())).partition("__thought__")[2]
+    outputs = [
+        o.model_copy(update={"call_id": encoded.get(o.call_id, o.call_id)})
+        for o in tool_outputs
+    ]
+    return [
+        user_msg,
+        *_untagged_with_signed_reasoning(signed_output, signature),
+        *outputs,
+    ]
+
+
+_TEXT_TURNS: dict[str, list[Any]] = {}
+
+
+async def _legacy_text_turn(keys: dict[str, str]) -> list[Any]:
+    if "litellm_gemini" not in _TEXT_TURNS:
+        user_msg = InputMessageItem.from_text(
+            "Why is the sky blue? Answer in one sentence."
+        )
+        response = await _llm("litellm_gemini", keys).generate_response([user_msg])
+        (message,) = [i for i in response.output if isinstance(i, OutputMessageItem)]
+        assert message.provider_specific_fields
+        signature = message.provider_specific_fields["thought_signatures"][0]
+        _TEXT_TURNS["litellm_gemini"] = [
+            user_msg,
+            *_untagged_with_signed_reasoning(list(response.output), signature),
+            InputMessageItem.from_text("Now say it in three words."),
+        ]
+    return _TEXT_TURNS["litellm_gemini"]
+
+
+@pytest.mark.integration
+class TestUntaggedLiteLLMGeminiTurns:
+    """
+    LiteLLM-Gemini turns stored without native provider names: the tool call
+    id carries the signature and the reasoning item a Gemini signature. Other
+    providers reject both, so every consumer must get plain ids and no Gemini
+    signatures.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("consumer", CONSUMERS)
+    async def test_tool_call_turn_continues_on_any_provider(
+        self,
+        consumer: str,
+        keys: dict[str, str],
+        parallel_tools: dict[str, BaseTool[Any, Any, Any]],
+    ) -> None:
+        history = _legacy_tool_turn(
+            await _signed_turn("litellm_gemini", keys, parallel_tools)
+        )
+
+        response = await _llm(consumer, keys).generate_response(
+            history, tools=parallel_tools
+        )
+
+        assert response.status == "completed"
+        assert response.output_text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("consumer", CONSUMERS)
+    async def test_text_turn_continues_on_any_provider(
+        self, consumer: str, keys: dict[str, str]
+    ) -> None:
+        history = await _legacy_text_turn(keys)
+
+        response = await _llm(consumer, keys).generate_response(history)
+
+        assert response.status == "completed"
+        assert response.output_text
