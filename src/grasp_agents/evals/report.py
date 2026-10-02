@@ -1,11 +1,12 @@
 """Human- and agent-readable views of runs and comparisons."""
 
 from collections.abc import Iterable
+from datetime import UTC
 from operator import itemgetter
 from typing import Any, cast
 
 from .compare import Comparison, TargetComparison
-from .types import EvaluationRun, MetricResult, Score, Trial
+from .types import EvaluationRun, MetricResult, Score, TraceWindow, Trial
 
 _MAX_TEXT = 300
 # Groups holding fewer held-out examples than this are not reported: their
@@ -135,6 +136,26 @@ def _confusion_table(metric: MetricResult) -> list[str]:
     return lines
 
 
+def _traces_lines(run: EvaluationRun, window: TraceWindow) -> list[str]:
+    config = run.task.config
+    filters = "".join(
+        f" · `{k}={v}`"
+        for k, v in cast("dict[str, Any]", config.get("attributes") or {}).items()
+    )
+    status = f" · status {config['status']}" if config.get("status") else ""
+    ds = run.dataset
+    start, end = window.start.astimezone(UTC), window.end.astimezone(UTC)
+    traces = (
+        f"- **Traces:** project `{config.get('project')}` ({ds.source}){filters}"
+        f"{status} · one trial per {config.get('scope')}"
+    )
+    span = (
+        f"- **Window:** {start:%Y-%m-%d %H:%M:%S} to {end:%Y-%m-%d %H:%M:%S} UTC"
+        f" · {ds.size} found, {ds.selected_size} scored"
+    )
+    return [traces, span]
+
+
 def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
     """Summary of a run: identity, metrics, failures and the weakest examples."""
     lines = [f"# {run.name} — {run.status}"]
@@ -150,21 +171,38 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         lines.append(f"- **Parent run:** `{run.parent_run_id}`")
     if run.description:
         lines.append(f"- **Question:** {run.description}")
-    task_version = f"@{run.task.version}" if run.task.version else ""
-    lines.append(f"- **Task:** {run.task.name}{task_version} (`{run.task.kind}`)")
+    if run.window is None:
+        task_version = f"@{run.task.version}" if run.task.version else ""
+        lines.append(f"- **Task:** {run.task.name}{task_version} (`{run.task.kind}`)")
+    else:
+        lines.extend(_traces_lines(run, run.window))
     if run.provenance.observed_models:
         models = "; ".join(
             f"{agent}: {', '.join(m)}"
             for agent, m in run.provenance.observed_models.items()
         )
         lines.append(f"- **Models:** {models}")
-    ds = run.dataset
-    version = f"@{ds.version}" if ds.version else ""
-    selection = f" — {', '.join(ds.selection)}" if ds.selection else ""
-    lines.append(
-        f"- **Dataset:** {ds.name}{version} `{ds.fingerprint}` · "
-        f"{ds.selected_size}/{ds.size} examples{selection}"
-    )
+    if run.window is None:
+        ds = run.dataset
+        version = f"@{ds.version}" if ds.version else ""
+        selection = f" — {', '.join(ds.selection)}" if ds.selection else ""
+        lines.append(
+            f"- **Dataset:** {ds.name}{version} `{ds.fingerprint}` · "
+            f"{ds.selected_size}/{ds.size} examples{selection}"
+        )
+    annotations = run.metadata.get("annotations")
+    if isinstance(annotations, dict):
+        record = cast("dict[str, Any]", annotations)
+        if "pending" in record:
+            lines.append(
+                f"- **Annotations:** {record['pending']} not written "
+                f"({record.get('error')}); push the run to retry"
+            )
+        else:
+            lines.append(
+                f"- **Annotations:** {record.get('written', 0)} written to "
+                f"{record.get('location')}"
+            )
     if run.evaluators:
         evaluators = ", ".join(
             f"{e.name}@{e.version}" + (f" ({e.annotator})" if e.annotator else "")
@@ -370,6 +408,8 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
             "size": run.dataset.size,
             "selection": run.dataset.selection,
         },
+        "window": None if run.window is None else run.window.model_dump(mode="json"),
+        "annotations": run.metadata.get("annotations"),
         "task": {"name": run.task.name, "version": run.task.version},
         "evaluators": {e.name: e.version for e in run.evaluators},
         "counts": run.counts.model_dump(),

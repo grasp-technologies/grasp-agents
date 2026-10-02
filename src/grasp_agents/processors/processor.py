@@ -27,10 +27,15 @@ from grasp_agents.session_context import (
     current_session_context,
 )
 from grasp_agents.telemetry import (
-    ATTR_FAILED_ATTEMPTS,
+    CALL_ARGUMENTS,
+    NO_PAYLOAD,
+    SpanKind,
+    SpanResult,
+    SpanStart,
     capture_run_span,
     traced,
 )
+from grasp_agents.telemetry import attributes as span_attrs
 from grasp_agents.types.errors import (
     PacketRoutingError,
     ProcInputValidationError,
@@ -54,13 +59,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The traced entity of a processor run.
+_RUN_ENTITY = "processor"
+
 
 def _record_retry_exception(
     span: trace.Span | None, err: BaseException, *, attempt: int
 ) -> None:
     if span is None:
         return
-    span.set_attribute(ATTR_FAILED_ATTEMPTS, attempt)
+    span.set_attribute(span_attrs.ATTR_FAILED_ATTEMPTS, attempt)
     span.record_exception(err)
 
 
@@ -72,6 +80,8 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
         exec_id = self.generate_exec_id(kwargs.get("exec_id"))
         kwargs["exec_id"] = exec_id
         run_span = capture_run_span(self)
+        if run_span is not None:
+            run_span.set_attribute(span_attrs.ATTR_PROCESSOR_EXEC_ID, exec_id)
         n_attempt = 0
         while n_attempt <= self.max_retries:
             try:
@@ -129,8 +139,10 @@ class Processor[InT, OutT, CtxT](
     # ``None`` and ``_checkpoint_store_key`` returns ``None``. Subclasses
     # that support resuming override this with a ``CheckpointKind`` value.
     _checkpoint_kind: ClassVar[CheckpointKind | None] = None
+    _span_kind: ClassVar[SpanKind] = SpanKind.PROCESSOR
 
     name: str
+    version: str | None
 
     max_retries: int
     recipients: Sequence[ProcName] | None
@@ -149,6 +161,7 @@ class Processor[InT, OutT, CtxT](
         tracing_enabled: bool = True,
         tracing_exclude_input_fields: set[str] | None = None,
         durability_enabled: bool = True,
+        version: str | None = None,
     ) -> None:
         self._in_type: type[InT]
         self._out_type: type[OutT]
@@ -162,6 +175,14 @@ class Processor[InT, OutT, CtxT](
                 "becomes a store-key path segment (recipient / checkpoint path)."
             )
         self.name = name
+        # Declared by the application (a prompt or release version), here or
+        # as a class attribute; recorded on the processor's spans and in
+        # evaluation fingerprints.
+        self.version = (
+            version if version is not None else getattr(self, "version", None)
+        )
+        # (template name, index) for a parallel replica.
+        self._replica: tuple[str, int] | None = None
 
         self.max_retries = max_retries
         self.recipients = recipients
@@ -241,6 +262,56 @@ class Processor[InT, OutT, CtxT](
         if ctx.session_key == DEFAULT_SESSION_KEY:
             return None
         return ctx.session_key, ctx.session_trace_grouping
+
+    def _span_attributes(self) -> dict[str, Any]:
+        """Identity attributes of this processor's run spans."""
+        name = self._replica[0] if self._replica is not None else self.name
+        attributes: dict[str, Any] = {
+            span_attrs.ATTR_PROCESSOR_NAME: name,
+            # Without type arguments: ``LLMAgent``, not ``LLMAgent[str, str, None]``.
+            span_attrs.ATTR_PROCESSOR_CLASS: type(self).__name__.split("[", 1)[0],
+            span_attrs.ATTR_PROCESSOR_PATH: "/".join(self._path),
+        }
+        if self.version is not None:
+            attributes[span_attrs.ATTR_PROCESSOR_VERSION] = str(self.version)
+        if self._replica is not None:
+            attributes[span_attrs.ATTR_PROCESSOR_REPLICA] = self._replica[1]
+        return attributes
+
+    def _trace_span_start(
+        self, entity: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> SpanStart | None:
+        if entity != _RUN_ENTITY:
+            # Another traced method of a subclass: not a run of the processor.
+            return SpanStart(
+                name=f"{self.name}.{entity}", kind=SpanKind.TASK, input=CALL_ARGUMENTS
+            )
+        chat_inputs = args[0] if args else kwargs.get("chat_inputs")
+        in_args = kwargs.get("in_args")
+        in_packet = kwargs.get("in_packet")
+        payload: Any = NO_PAYLOAD
+        if in_args is not None:
+            payload = in_args
+        elif in_packet is not None:
+            payloads = list(cast("Packet[Any]", in_packet).payloads)
+            payload = payloads[0] if len(payloads) == 1 else payloads
+        elif chat_inputs is not None:
+            payload = chat_inputs
+        attributes = self._span_attributes()
+        return SpanStart(
+            name=attributes[span_attrs.ATTR_PROCESSOR_NAME],
+            kind=self._span_kind,
+            attributes=attributes,
+            input=payload,
+        )
+
+    def _trace_span_result(self, entity: str, item: Any) -> SpanResult | None:
+        if entity != _RUN_ENTITY:
+            return SpanResult(output=item)
+        if not (isinstance(item, ProcPacketOutEvent) and item.source == self.name):
+            return None
+        payloads = list(item.data.payloads)
+        return SpanResult(output=payloads[0] if len(payloads) == 1 else payloads)
 
     # --- Session persistence ---
 
@@ -568,7 +639,7 @@ class Processor[InT, OutT, CtxT](
         return deepcopy(self)
 
     @final
-    @traced(name="processor")
+    @traced(name=_RUN_ENTITY)
     @with_retry
     async def run_stream(
         self,

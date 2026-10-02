@@ -523,3 +523,252 @@ async def test_labels_come_back_from_human_annotations(
     assert pulled[trace_ids[0]]["reference"] == {"q": True}
     assert pulled[trace_ids[1]]["reference"] == {"q": False}
     assert pulled[trace_ids[0]]["metadata"]["labeler"]["q"]
+
+
+@pytest.mark.asyncio
+async def test_online_evaluation_reads_scores_and_annotates_production(
+    base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from opentelemetry import trace  # noqa: PLC0415
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+        OTLPSpanExporter,
+    )
+    from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
+    from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: PLC0415
+
+    from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
+    from grasp_agents.evals import (  # noqa: PLC0415
+        Evaluation,
+        ProcessorTask,
+        TraceQuery,
+        _execution,
+    )
+    from grasp_agents.session_context import SessionContext  # noqa: PLC0415
+    from grasp_agents.telemetry import InheritedAttributesSpanProcessor  # noqa: PLC0415
+    from tests._helpers import MockLLM, _text_response  # noqa: PLC0415
+
+    project = f"grasp-evals-online-{uuid.uuid4().hex[:8]}"
+    provider = TracerProvider(
+        resource=Resource({"openinference.project.name": project})
+    )
+    provider.add_span_processor(InheritedAttributesSpanProcessor())
+    provider.add_span_processor(
+        SimpleSpanProcessor(OTLPSpanExporter(endpoint=f"{base_url}/v1/traces"))
+    )
+    monkeypatch.setattr(
+        trace, "get_tracer", lambda name, *_, **__: provider.get_tracer(name)
+    )
+    monkeypatch.setattr(_execution, "_tracer", provider.get_tracer("live-test"))
+
+    def tutor(*answers: str) -> LLMAgent[str, str, None]:
+        return LLMAgent[str, str, None](
+            name="tutor",
+            llm=MockLLM(responses_queue=[_text_response(a) for a in answers]),
+            version="v2",
+        )
+
+    started = datetime.now(UTC) - timedelta(seconds=1)
+    with SessionContext[None](session_key=f"conv-{project}"):
+        agent = tutor("4", "wrong")
+        await agent.run(chat_inputs="2+2")
+        await agent.run(chat_inputs="3+3")
+    # An evaluation of the same agent: its spans are not production traffic.
+    await evaluate(
+        ProcessorTask(tutor("4"), input_mode="chat"),
+        Dataset([Example(id="e1", input="2+2")]),
+        persist=False,
+    )
+    provider.force_flush()
+
+    @evaluator(version="2", annotator="LLM")
+    def numeric(ctx: EvalContext[Any, Any, Any]) -> bool:
+        return str(ctx.output).isdigit()
+
+    store = LocalRunStore(tmp_path)
+    async with PhoenixClient(base_url) as client:
+        for _ in range(100):
+            try:
+                found = await client.sdk.spans.get_spans(
+                    project_identifier=project, limit=100
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                found = []
+            if len(found) >= 3:
+                break
+            await asyncio.sleep(0.2)
+
+        now = datetime.now(UTC)
+        turns = Evaluation(
+            name=f"tutor-{project}",
+            evaluators=[numeric],
+            traces=TraceQuery(
+                project=project, processor="tutor", completion_buffer_s=0
+            ),
+        )
+        run = await turns.run_online(
+            phoenix_url=base_url, start=started, now=now, store=store
+        )
+        assert run is not None
+        assert sorted(t.output for t in run.trials) == ["4", "wrong"]
+        assert {e.metadata["version"] for e in run.examples} == {"v2"}
+        assert {e.metadata["session_id"] for e in run.examples} == {f"conv-{project}"}
+        assert run.metadata["annotations"]["written"] == 2
+        annotations = await client.sdk.spans.get_span_annotations(
+            span_ids=[t.example_id for t in run.trials],
+            project_identifier=project,
+        )
+        assert sorted(
+            (a["result"].get("label"), a["identifier"], a["annotator_kind"])
+            for a in annotations
+            if a["name"] == "numeric"
+        ) == [
+            ("fail", "grasp-evals:numeric@2", "LLM"),
+            ("pass", "grasp-evals:numeric@2", "LLM"),
+        ]
+
+        conversations = Evaluation(
+            name=f"conversations-{project}",
+            evaluators=[numeric],
+            traces=TraceQuery(
+                project=project,
+                processor="tutor",
+                scope="session",
+                session_idle_s=0,
+                completion_buffer_s=0,
+            ),
+        )
+        session_run = await conversations.run_online(
+            phoenix_url=base_url, start=started, now=datetime.now(UTC), store=store
+        )
+        assert session_run is not None
+        (trial,) = session_run.trials
+        assert trial.example_id == f"conv-{project}"
+        assert trial.output == ["4", "wrong"]
+        body = await client.request_json(
+            "GET",
+            f"v1/projects/{project}/session_annotations",
+            params={"session_ids": [trial.example_id]},
+        )
+        assert [a["identifier"] for a in body["data"]] == ["grasp-evals:numeric@2"]
+
+        export = await turns.dataset_from_traces(
+            phoenix_url=base_url, start=started, end=datetime.now(UTC)
+        )
+        assert sorted(e.input for e in export.dataset) == ["2+2", "3+3"]
+
+
+@pytest.mark.asyncio
+async def test_sessions_with_unusual_ids_and_partial_annotation_writes(
+    base_url: str,
+) -> None:
+    import asyncio  # noqa: PLC0415
+    import json  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+        OTLPSpanExporter,
+    )
+    from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
+    from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: PLC0415
+
+    from grasp_agents.evals import TraceAnnotation, TraceQuery, TraceWindow  # noqa: PLC0415
+    from grasp_agents.evals.online import collect_items  # noqa: PLC0415
+    from grasp_agents.evals.phoenix import PhoenixTraceSource  # noqa: PLC0415
+
+    project = f"grasp-evals-sessions-{uuid.uuid4().hex[:8]}"
+    provider = TracerProvider(
+        resource=Resource({"openinference.project.name": project})
+    )
+    provider.add_span_processor(
+        SimpleSpanProcessor(OTLPSpanExporter(endpoint=f"{base_url}/v1/traces"))
+    )
+    tracer = provider.get_tracer("live-test")
+    started = datetime.now(UTC) - timedelta(seconds=1)
+    sessions = ["course/7:lesson", " padded "]
+    for session in sessions:
+        for turn in range(2):
+            with tracer.start_as_current_span(
+                "tutor",
+                attributes={
+                    "grasp.processor.name": "tutor",
+                    "session.id": session,
+                    "input.value": json.dumps(f"q{turn}"),
+                    "input.mime_type": "application/json",
+                },
+            ):
+                pass
+    provider.shutdown()
+
+    async with PhoenixClient(base_url) as client:
+        source = PhoenixTraceSource(client)
+        query = TraceQuery(
+            project=project,
+            processor="tutor",
+            scope="session",
+            session_idle_s=0,
+            completion_buffer_s=0,
+        )
+        window = TraceWindow(
+            start=started, end=datetime.now(UTC) + timedelta(seconds=5)
+        )
+        items: list[Any] = []
+        for _ in range(100):
+            try:
+                items = await collect_items(source, query, window)
+            except Exception:  # the project appears with its first spans
+                items = []
+            if len(items) == 2 and all(len(i.spans) == 2 for i in items):
+                break
+            await asyncio.sleep(0.2)
+        assert sorted(i.id for i in items) == sorted(sessions)
+        assert all(len(i.spans) == 2 for i in items)
+
+        span_id = items[0].spans[0].span_id
+        written = await source.annotate(
+            project,
+            [
+                *(
+                    TraceAnnotation(
+                        scope="session",
+                        target_id=i.id,
+                        name="ok",
+                        label="pass",
+                        identifier="x@1",
+                    )
+                    for i in items
+                ),
+                TraceAnnotation(
+                    scope="span",
+                    target_id="00000000deadbeef",
+                    name="ok",
+                    label="pass",
+                    identifier="x@1",
+                ),
+                TraceAnnotation(
+                    scope="span",
+                    target_id=span_id,
+                    name="ok",
+                    label="pass",
+                    identifier="x@1",
+                ),
+                TraceAnnotation(
+                    scope="span",
+                    target_id=span_id,
+                    name="note",
+                    label="x",
+                    identifier="x@1",
+                ),
+            ],
+        )
+        # The two sessions and the existing span; the missing span and the
+        # reserved name are left out.
+        assert written == 3
+        with pytest.raises(PhoenixError, match="expected JSON"):
+            await client.request_json("GET", "v1/sessions/with%2Fslash")

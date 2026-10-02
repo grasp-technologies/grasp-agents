@@ -31,6 +31,7 @@ from .dataset import (
 from .evaluation import (
     Evaluation,
     SpecError,
+    TraceExport,
     list_evaluations,
     load_evaluation,
     load_object,
@@ -69,6 +70,20 @@ from .metrics import (
     compute_metrics,
     default_metrics,
 )
+from .online import (
+    AnnotationError,
+    AnnotationsRejectedError,
+    Extracted,
+    Extractor,
+    SpanRecord,
+    TraceAnnotation,
+    TraceItem,
+    TraceQuery,
+    TraceSource,
+    annotate_run,
+    default_extractor,
+    evaluate_traces,
+)
 from .pairwise import (
     FunctionPairwiseJudge,
     OrderSwapped,
@@ -79,7 +94,13 @@ from .pairwise import (
     pairwise,
 )
 from .report import render_comparison_markdown, render_run_markdown, run_summary
-from .runner import ResumeError, SealedSelectionError, evaluate, rescore
+from .runner import (
+    ResumeError,
+    SealedSelectionError,
+    evaluate,
+    evaluate_trials,
+    rescore,
+)
 from .store import LocalRunStore, RunNotFoundError, RunStore
 from .task import FunctionTask, ProcessorTask, Task, TrialContext
 from .types import (
@@ -95,6 +116,7 @@ from .types import (
     RunStatus,
     Score,
     ScoreReason,
+    TraceWindow,
     Trial,
     Usage,
 )
@@ -108,6 +130,8 @@ from .validation import (
 )
 
 __all__ = [
+    "AnnotationError",
+    "AnnotationsRejectedError",
     "ClassRecall",
     "CohenKappa",
     "Comparison",
@@ -131,6 +155,8 @@ __all__ = [
     "EvaluatorOutput",
     "Example",
     "ExampleDelta",
+    "Extracted",
+    "Extractor",
     "FunctionEvaluator",
     "FunctionPairwiseJudge",
     "FunctionTask",
@@ -164,10 +190,17 @@ __all__ = [
     "Score",
     "ScoreReason",
     "SealedSelectionError",
+    "SpanRecord",
     "SpecError",
     "TargetComparison",
     "Task",
     "Total",
+    "TraceAnnotation",
+    "TraceExport",
+    "TraceItem",
+    "TraceQuery",
+    "TraceSource",
+    "TraceWindow",
     "Trial",
     "TrialContext",
     "TrialProgress",
@@ -175,10 +208,14 @@ __all__ = [
     "Usage",
     "ValidationGate",
     "WinRate",
+    "annotate_run",
     "compare",
     "compute_metrics",
+    "default_extractor",
     "default_metrics",
     "evaluate",
+    "evaluate_traces",
+    "evaluate_trials",
     "evaluator",
     "example_json_schema",
     "import_labels",

@@ -238,6 +238,14 @@ class PhoenixClient:
         response = await self.http.request(method, path, params=params, json=json)
         if not response.is_success:
             raise PhoenixError(response.status_code, method, path, response.text[:500])
+        if "json" not in response.headers.get("content-type", ""):
+            # Unknown routes fall through to Phoenix's web app (HTML, 200).
+            raise PhoenixError(
+                response.status_code,
+                method,
+                path,
+                f"expected JSON, got {response.headers.get('content-type')!r}",
+            )
         return cast("dict[str, Any]", response.json())
 
     async def server_version(self) -> ServerVersion:

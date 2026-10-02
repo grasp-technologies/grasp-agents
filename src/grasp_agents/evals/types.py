@@ -2,7 +2,7 @@ import dataclasses
 import math
 import traceback
 from collections.abc import Iterable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from functools import cached_property
 from typing import Any, Literal, NamedTuple, Self, cast, override
@@ -457,7 +457,22 @@ class PhoenixLink(BaseModel):
     logged_trials: dict[str, str] = Field(default_factory=dict[str, str])
 
 
-type RunKind = Literal["evaluation", "rescore", "pairwise", "retry"]
+type RunKind = Literal["evaluation", "rescore", "pairwise", "retry", "online"]
+
+
+class TraceWindow(BaseModel):
+    """
+    The ``[start, end)`` span start times an online run read from a trace
+    store (UTC when given without a timezone).
+    """
+
+    start: datetime
+    end: datetime
+
+    @field_validator("start", "end")
+    @classmethod
+    def _aware(cls, moment: datetime) -> datetime:
+        return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
 class EvaluationRun(BaseModel):
@@ -467,7 +482,9 @@ class EvaluationRun(BaseModel):
     A completed run's results are never modified (pushing it to Phoenix only
     records the link): resuming it creates a ``retry`` child and rescoring a
     ``rescore`` child (``parent_run_id``). Runs that did not complete
-    (running, cancelled, partial, failed) are continued in place.
+    (running, cancelled, partial, failed) are continued in place. An
+    ``online`` run scores outputs read from production traces in ``window``
+    instead of running the task.
     ``trials`` and ``examples`` are stored next to the header
     (``trials.jsonl`` / ``examples.jsonl``), not inside ``run.json``.
     """
@@ -484,6 +501,7 @@ class EvaluationRun(BaseModel):
     evaluation: str | None = None
     parent_run_id: str | None = None
     dataset: DatasetRef
+    window: TraceWindow | None = None
     task: ComponentInfo
     evaluators: list[ComponentInfo] = Field(default_factory=list[ComponentInfo])
     config: RunConfig = Field(default_factory=RunConfig)

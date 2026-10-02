@@ -20,11 +20,21 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from grasp_agents import grasp_logging
 from grasp_agents.session_context import SessionContext
-from grasp_agents.telemetry import SpanKind, traced
+from grasp_agents.telemetry import (
+    CALL_ARGUMENTS,
+    SpanKind,
+    SpanResult,
+    SpanStart,
+    capture_run_span,
+    record_span_error,
+    traced,
+)
+from grasp_agents.telemetry import attributes as span_attrs
 from grasp_agents.types.events import (
     Event,
     ToolErrorEvent,
     ToolErrorInfo,
+    ToolOutputEvent,
     ToolStreamEvent,
 )
 from grasp_agents.utils.errors import format_error_chain
@@ -35,6 +45,9 @@ if TYPE_CHECKING:
     from grasp_agents.durability.checkpoints import CheckpointKind
 
 logger = logging.getLogger(__name__)
+
+# The traced entity of a tool call.
+_CALL_ENTITY = "tool"
 
 
 class NamedToolChoice(BaseModel):
@@ -223,8 +236,6 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        from grasp_agents.types.events import ToolOutputEvent  # noqa: PLC0415
-
         out = await self._run(
             inp,
             ctx=ctx,
@@ -271,6 +282,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         events forever would otherwise never time out.
         """
         t0 = time.monotonic()
+        span = capture_run_span(self)
         try:
             if self.timeout is not None:
                 loop = asyncio.get_running_loop()
@@ -288,6 +300,8 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
                 async for event in stream:
                     yield event
         except Exception as e:
+            if span is not None:
+                record_span_error(span, e)
             error_data = self._on_error(e)
             yield ToolErrorEvent(data=error_data, source=self.name, exec_id=exec_id)
         else:
@@ -312,6 +326,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
                 ),
             )
         t0 = time.monotonic()
+        span = capture_run_span(self)
         try:
             coro = self._run(
                 inp,
@@ -326,6 +341,8 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
             else:
                 result = await coro
         except Exception as e:
+            if span is not None:
+                record_span_error(span, e)
             return self._on_error(e)
         logger.info("tool %s ok in %.2fs", self.name, time.monotonic() - t0)
         if logger.isEnabledFor(logging.DEBUG):
@@ -367,9 +384,38 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         async for event in self._stream_with_timeout(stream, exec_id=exec_id):
             yield event
 
+    # --- Tracing ---
+
+    def _trace_span_start(
+        self, entity: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> SpanStart:
+        if entity != _CALL_ENTITY:
+            # Another traced method of a subclass: not a call of the tool.
+            return SpanStart(
+                name=f"{self.name}.{entity}", kind=SpanKind.TASK, input=CALL_ARGUMENTS
+            )
+        attributes: dict[str, Any] = {span_attrs.ATTR_TOOL_NAME: self.name}
+        agent_ctx = kwargs.get("agent_ctx")
+        if agent_ctx is not None:
+            attributes[span_attrs.ATTR_AGENT_NAME] = agent_ctx.agent_name
+        return SpanStart(
+            name=self.name,
+            kind=SpanKind.TOOL,
+            attributes=attributes,
+            input=args[0] if args else kwargs.get("inp"),
+        )
+
+    def _trace_span_result(self, entity: str, item: Any) -> SpanResult | None:
+        if entity != _CALL_ENTITY:
+            return SpanResult(output=item)
+        if isinstance(item, ToolOutputEvent | ToolErrorEvent):
+            return SpanResult(output=item.data)
+        if isinstance(item, Event):
+            return None
+        return SpanResult(output=item)
+
     # --- Public API ---
 
-    @traced(name="tool", span_kind=SpanKind.TOOL)
     async def __call__(
         self,
         *,
@@ -380,7 +426,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         **kwargs: Any,
     ) -> OutT | ToolErrorInfo:
         inp = TypeAdapter(self.in_type).validate_python(kwargs)
-        return await self._run_with_timeout(
+        return await self.run(
             inp,
             ctx=ctx,
             exec_id=exec_id,
@@ -388,7 +434,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
             agent_ctx=agent_ctx,
         )
 
-    @traced(name="tool", span_kind=SpanKind.TOOL)
+    @traced(name=_CALL_ENTITY, span_kind=SpanKind.TOOL)
     async def run(
         self,
         inp: InT,
@@ -408,7 +454,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
             agent_ctx=agent_ctx,
         )
 
-    @traced(name="tool", span_kind=SpanKind.TOOL)
+    @traced(name=_CALL_ENTITY, span_kind=SpanKind.TOOL)
     async def run_stream(
         self,
         inp: InT,

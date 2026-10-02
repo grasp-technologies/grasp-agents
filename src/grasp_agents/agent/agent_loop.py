@@ -12,7 +12,8 @@ from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
 from grasp_agents.durability.store_keys import make_tool_call_path
-from grasp_agents.telemetry import traced
+from grasp_agents.telemetry import SpanKind, SpanResult, SpanStart, traced
+from grasp_agents.telemetry import attributes as span_attrs
 from grasp_agents.tools.base import (
     BaseTool,
     NamedToolChoice,
@@ -298,6 +299,56 @@ class AgentLoop[CtxT]:
     @property
     def cw(self) -> ContextWindowManager:
         return self._cw
+
+    def _trace_span_start(
+        self, entity: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> SpanStart:
+        # No input payload: a model call's input is the agent's transcript.
+        del args, kwargs
+        if entity != "generate":
+            return SpanStart(
+                name=f"{self.agent_name}.{entity}",
+                kind=SpanKind.TASK,
+                attributes={span_attrs.ATTR_AGENT_NAME: self.agent_name},
+            )
+        return SpanStart(
+            name=f"{self.agent_name}.generate",
+            kind=SpanKind.GENERATE,
+            attributes={
+                span_attrs.ATTR_AGENT_NAME: self.agent_name,
+                span_attrs.ATTR_LLM_REQUEST_MODEL: self._llm.model_name,
+            },
+        )
+
+    def _trace_span_result(self, entity: str, item: Any) -> SpanResult | None:
+        if entity != "generate" or not isinstance(item, LLMStreamEvent):
+            return None
+        completed = item.data
+        if not isinstance(completed, ResponseCompleted):
+            return None
+        response = completed.response
+        attributes: dict[str, Any] = {
+            span_attrs.ATTR_LLM_RESPONSE_MODEL: response.model
+        }
+        usage = response.usage
+        if usage is not None:
+            attributes |= {
+                span_attrs.ATTR_LLM_INPUT_TOKENS: usage.input_tokens,
+                span_attrs.ATTR_LLM_OUTPUT_TOKENS: usage.output_tokens,
+                span_attrs.ATTR_LLM_REASONING_TOKENS: (
+                    usage.output_tokens_details.reasoning_tokens
+                ),
+                span_attrs.ATTR_LLM_CACHED_TOKENS: (
+                    usage.input_tokens_details.cached_tokens
+                ),
+            }
+            if usage.cost is not None:
+                attributes[span_attrs.ATTR_LLM_COST_USD] = usage.cost
+        # Unset fields would only take the attribute's room.
+        items = [
+            item.model_dump(mode="json", exclude_none=True) for item in response.output
+        ]
+        return SpanResult(output=items, attributes=attributes)
 
     async def checkpoint(
         self,
@@ -648,7 +699,7 @@ class AgentLoop[CtxT]:
                 extra_llm_settings=extra_llm_settings,
             ):
                 yield event
-
+            return
         except LlmContextWindowError:
             # The view overflowed the window despite (or without) proactive
             # compaction. Force a fold and retry once; if nothing can be
@@ -656,17 +707,19 @@ class AgentLoop[CtxT]:
             fold = await self._cw.maybe_compact(exec_id=exec_id, force=True)
             if fold is None:
                 raise
-            yield self._cw.compaction_event(fold, exec_id=exec_id)
-            logger.warning(
-                "agent '%s' hit the context window; compacted and retrying",
-                self.agent_name,
-            )
-            async for event in self._try_query_llm(
-                tool_choice=tool_choice,
-                exec_id=exec_id,
-                extra_llm_settings=extra_llm_settings,
-            ):
-                yield event
+        # Retried outside the handler, so a failure of the retry is not
+        # chained to the overflow.
+        yield self._cw.compaction_event(fold, exec_id=exec_id)
+        logger.warning(
+            "agent '%s' hit the context window; compacted and retrying",
+            self.agent_name,
+        )
+        async for event in self._try_query_llm(
+            tool_choice=tool_choice,
+            exec_id=exec_id,
+            extra_llm_settings=extra_llm_settings,
+        ):
+            yield event
 
     # --- Tool calling ---
 
@@ -830,7 +883,7 @@ class AgentLoop[CtxT]:
 
     # --- Final answer ---
 
-    @traced(name="force_generate_final_answer")
+    @traced(name="final_answer")
     async def _force_generate_final_answer_stream(
         self,
         exec_id: str,

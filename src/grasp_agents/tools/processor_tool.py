@@ -39,6 +39,14 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         )
         self._processor = processor
         self._reset_transcript_on_run = reset_transcript_on_run
+        # The tool's spans record the processor's input: they mask what it
+        # masks, and go dark when it does.
+        if not processor.tracing_enabled:
+            self.tracing_enabled = False
+        if processor.tracing_exclude_input_fields:
+            self.tracing_exclude_input_fields = (
+                self.tracing_exclude_input_fields or set()
+            ) | set(processor.tracing_exclude_input_fields)
 
         # Resolve types from the processor at runtime
         self._in_type = processor.in_type

@@ -79,4 +79,14 @@ if [[ -n "${PHOENIX_BASE_URL:-}" ]]; then
   step "13. Mirror the runs to Phoenix (the sealed test run as aggregates only)"
   evals push "$V2"
   evals push "$TEST"
+
+  step "14. The grader in production, traced into Phoenix, then scored online"
+  TELEMETRY_COLLECTOR_HTTP_ENDPOINT="$PHOENIX_BASE_URL/v1/traces" \
+    uv run --no-sync python src/grasp_agents/examples/evals/production.py
+  sleep 6  # the demo's completion buffer: spans still being exported
+  evals online "${SPEC}:grader_online" --since 10m
+
+  step "15. Production inputs as dataset examples"
+  evals datasets from-traces "${SPEC}:grader_online" --since 10m \
+    -o "$WORK/production_inputs.jsonl"
 fi

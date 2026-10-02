@@ -39,6 +39,7 @@ from grasp_agents.evals import (
     ProcessorEvaluator,
     ProcessorTask,
     Score,
+    TraceQuery,
     ValidationGate,
     evaluator,
     judge_probes,
@@ -52,6 +53,8 @@ from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 DATA = Path(__file__).parent / "data" / "short_answers.jsonl"
 # Teachers' labels of graders' feedback: was it specific enough to act on?
 LABELS = Path(__file__).parent / "data" / "feedback_labels.jsonl"
+# The Phoenix project the grader is traced into in production (production.py).
+PRODUCTION_PROJECT = "short-answer-grader"
 
 type Verdict = Literal["correct", "partial", "incorrect"]
 
@@ -134,8 +137,7 @@ class Analyzer(Processor[Submission, Analysis, None]):
     """Which key points of the reference answer the student's answer covers."""
 
     def __init__(self, name: str = "analyzer", *, version: str = "v1") -> None:
-        super().__init__(name=name)
-        self.version = version
+        super().__init__(name=name, version=version)
 
     async def _process_stream(
         self,
@@ -179,8 +181,7 @@ class FeedbackWriter(Processor[Analysis, Grade, None]):
     def __init__(
         self, name: str = "writer", *, version: str = "v1", noise: float = 0.15
     ) -> None:
-        super().__init__(name=name)
-        self.version = version
+        super().__init__(name=name, version=version)
         self.noise = noise
 
     async def _process_stream(
@@ -235,6 +236,7 @@ def build_grader(
             Analyzer(version=version),
             FeedbackWriter(version=version, noise=noise),
         ],
+        version=version,
     )
 
 
@@ -364,8 +366,7 @@ class FeedbackJudge(Processor[Judged, FeedbackVerdict, None]):
     def __init__(
         self, name: str = "feedback_judge", *, version: str = "v1", noise: float = 0.1
     ) -> None:
-        super().__init__(name=name)
-        self.version = version
+        super().__init__(name=name, version=version)
         self.noise = noise
 
     async def _process_stream(
@@ -561,3 +562,31 @@ def llm_grader_evaluation(llm: Any) -> Evaluation:
         grader=llm_grader(llm),
         name="short-answer-grader-llm",
     )
+
+
+# The grader in production, scored online: its traced runs are read from
+# Phoenix, judged by the same evaluators (those that need no teacher grade),
+# and the scores written back onto the traces. The judge must have passed
+# validation, and its pass rate is reported corrected for its errors. Students'
+# requests are correlated, so intervals are clustered on the session.
+grader_online = Evaluation(
+    name="short-answer-grader-online",
+    description="Is the grader's feedback in production concise and specific?",
+    input_type=Submission,
+    output_type=Grade,
+    evaluators=[feedback_concise, feedback_judge("v2")],
+    metrics=[PassRate("feedback_concise"), PassRate("feedback_quality")],
+    cluster_by="session_id",
+    group_by=["version"],
+    validation_gates={
+        "feedback_quality": ValidationGate(min_kappa=0.2, labels="feedback_labels")
+    },
+    traces=TraceQuery(
+        project=PRODUCTION_PROJECT,
+        processor="grader",
+        # A real deployment waits longer for spans to be exported (an hour by
+        # default); the demo reads them seconds after they are made.
+        completion_buffer_s=5,
+    ),
+    tags=["demo"],
+)

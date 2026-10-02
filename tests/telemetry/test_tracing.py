@@ -2,50 +2,68 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
 from opentelemetry import context as otel_context
 from opentelemetry import trace
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
     SpanExporter,
     SpanExportResult,
 )
+from pydantic import BaseModel
 
 from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.evals.online import SpanRecord, TraceItem, default_extractor
+from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
 from grasp_agents.session_context import SessionContext
 from grasp_agents.telemetry import (
-    SessionSpanProcessor,
+    InheritedAttributesSpanProcessor,
     SpanKind,
+    SpanStart,
+    attributes,
     derive_session_span_context,
+    fit_json,
+    inherited_span_attributes,
     set_run_span_attributes,
     traced,
 )
+from grasp_agents.telemetry.attributes import (
+    ATTR_FAILED_ATTEMPTS,
+    ATTR_INPUT_MIME_TYPE,
+    ATTR_INPUT_VALUE,
+    ATTR_OI_SPAN_KIND,
+    ATTR_OUTPUT_VALUE,
+    ATTR_SPAN_KIND,
+)
 from grasp_agents.telemetry.decorators import (
     _SUPPRESS_INSTRUMENTATION_KEY,
-    ATTR_ENTITY_INPUT,
-    ATTR_ENTITY_NAME,
-    ATTR_ENTITY_OUTPUT,
-    ATTR_FAILED_ATTEMPTS,
-    ATTR_OI_SPAN_KIND,
-    ATTR_SPAN_KIND,
-    ATTR_WORKFLOW_NAME,
+    _clip,
+    _inherited,
     _resolve_run_span_context,
-    _resolve_span_kind,
     _should_send_prompts,
     _to_plain,
-    _truncate_if_needed,
 )
 from grasp_agents.tools.agent_tool import AgentTool
+from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
-from grasp_agents.types.events import Event, ProcPayloadOutEvent
-from tests._helpers import MockLLM, _text_response, _tool_call_response
+from grasp_agents.types.events import Event, ProcPayloadOutEvent, ToolErrorInfo
+from tests._helpers import (
+    AddInput,
+    AddTool,
+    MockLLM,
+    _text_response,
+    _tool_call_response,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -79,7 +97,7 @@ class MemoryExporter(SpanExporter):
 
 _exporter = MemoryExporter()
 _provider = TracerProvider()
-_provider.add_span_processor(SessionSpanProcessor())  # stamps session attrs
+_provider.add_span_processor(InheritedAttributesSpanProcessor())
 _provider.add_span_processor(SimpleSpanProcessor(_exporter))
 
 # Reset the set-once guard so we can install our test provider.
@@ -120,9 +138,8 @@ class TestSyncFunction:
 
         spans = _exporter.get_finished_spans()
         assert len(spans) == 1
-        assert spans[0].name == "add_one.task"
+        assert spans[0].name == "add_one"
         assert spans[0].attributes[ATTR_SPAN_KIND] == "task"
-        assert spans[0].attributes[ATTR_ENTITY_NAME] == "add_one"
 
     def test_exception_propagates_and_sets_error_status(self) -> None:
         @traced(name="failing")
@@ -164,9 +181,7 @@ class TestSyncGenerator:
         assert len(spans) == 1
         # Output should be the last yielded item
         assert spans[0].attributes is not None
-        output = spans[0].attributes.get(ATTR_ENTITY_OUTPUT)
-        assert output is not None
-        assert "b" in str(output)
+        assert spans[0].attributes.get(ATTR_OUTPUT_VALUE) == '"b"'
 
 
 # ========================================================================= #
@@ -193,7 +208,7 @@ class TestAsyncFunction:
 
         spans = _exporter.get_finished_spans()
         assert len(spans) == 1
-        assert spans[0].name == "async_add.task"
+        assert spans[0].name == "async_add"
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_exception_propagates(self) -> None:
@@ -234,7 +249,7 @@ class TestAsyncGenerator:
 
         spans = _exporter.get_finished_spans()
         assert len(spans) == 1
-        assert spans[0].name == "async_gen.task"
+        assert spans[0].name == "async_gen"
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_exception_propagates(self) -> None:
@@ -252,54 +267,54 @@ class TestAsyncGenerator:
 
 
 # ========================================================================= #
-#  Dynamic span kind resolution via _span_kind                               #
+#  Objects describing their own spans                                        #
 # ========================================================================= #
 
 
-class TestSpanKindResolution:
+class TestSpanDescriptionHooks:
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_instance_span_kind_overrides_decorator(self) -> None:
-        """A class with _span_kind = AGENT overrides @task's default TASK."""
-
-        class MyAgent:
-            _span_kind = SpanKind.AGENT
-            name = "planner"
+    async def test_instance_describes_name_kind_attributes_and_input(self) -> None:
+        class Planner:
             tracing_enabled = True
+
+            def _trace_span_start(
+                self, entity: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+            ) -> SpanStart:
+                return SpanStart(
+                    name=f"planner.{entity}",
+                    kind=SpanKind.AGENT,
+                    attributes={"planner.depth": 2},
+                    input={"goal": args[0]},
+                )
 
             @traced(name="run")
-            async def run(self) -> str:
-                return "done"
+            async def run(self, goal: str) -> str:
+                return goal.upper()
 
-        await MyAgent().run()
+        await Planner().run("ship")
 
-        spans = _exporter.get_finished_spans()
-        assert spans[0].attributes[ATTR_SPAN_KIND] == "agent"
-        assert spans[0].attributes[ATTR_WORKFLOW_NAME] == "run"
+        (span,) = _exporter.get_finished_spans()
+        attrs = span.attributes or {}
+        assert span.name == "planner.run"
+        assert attrs[ATTR_SPAN_KIND] == "agent"
+        assert attrs[ATTR_OI_SPAN_KIND] == "AGENT"
+        assert attrs["planner.depth"] == 2
+        assert attrs[ATTR_INPUT_VALUE] == '{"goal": "ship"}'
+        assert attrs[ATTR_OUTPUT_VALUE] == '"SHIP"'
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_falls_back_to_decorator_default(self) -> None:
-        """Without _span_kind, the decorator's span_kind is used."""
-
+    async def test_without_hooks_the_decorator_describes_the_span(self) -> None:
         class Plain:
-            name = "proc"
-            tracing_enabled = True
-
             @traced(name="do_work", span_kind=SpanKind.WORKFLOW)
-            async def do_work(self) -> str:
+            async def do_work(self, n: int) -> str:
                 return "ok"
 
-        await Plain().do_work()
+        await Plain().do_work(3)
 
-        spans = _exporter.get_finished_spans()
-        assert spans[0].attributes[ATTR_SPAN_KIND] == "workflow"
-
-    def test_resolve_span_kind_helper(self) -> None:
-        class WithKind:
-            _span_kind = SpanKind.AGENT
-
-        assert _resolve_span_kind(WithKind(), SpanKind.TASK) == SpanKind.AGENT
-        assert _resolve_span_kind(None, SpanKind.TASK) == SpanKind.TASK
-        assert _resolve_span_kind(object(), SpanKind.WORKFLOW) == SpanKind.WORKFLOW
+        (span,) = _exporter.get_finished_spans()
+        assert span.name == "do_work"
+        assert (span.attributes or {})[ATTR_SPAN_KIND] == "workflow"
+        assert (span.attributes or {})[ATTR_INPUT_VALUE] == '{"n": 3}'
 
 
 # ========================================================================= #
@@ -431,39 +446,6 @@ class TestDisabledInstrumentationSuppression:
 
 class TestSpanAttributes:
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_workflow_sets_workflow_name(self) -> None:
-        @traced(name="my_wf", span_kind=SpanKind.WORKFLOW)
-        async def wf() -> str:
-            return "ok"
-
-        await wf()
-
-        spans = _exporter.get_finished_spans()
-        assert spans[0].attributes[ATTR_WORKFLOW_NAME] == "my_wf"
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_task_does_not_set_workflow_name(self) -> None:
-        @traced(name="my_task")
-        async def t() -> str:
-            return "ok"
-
-        await t()
-
-        spans = _exporter.get_finished_spans()
-        assert ATTR_WORKFLOW_NAME not in (spans[0].attributes or {})
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_agent_sets_workflow_name(self) -> None:
-        @traced(name="my_agent", span_kind=SpanKind.AGENT)
-        async def a() -> str:
-            return "ok"
-
-        await a()
-
-        spans = _exporter.get_finished_spans()
-        assert spans[0].attributes[ATTR_WORKFLOW_NAME] == "my_agent"
-
-    @pytest.mark.asyncio(loop_scope="function")
     async def test_openinference_span_kind_set(self) -> None:
         """Each grasp span kind maps to an OpenInference span kind."""
 
@@ -488,27 +470,41 @@ class TestSpanAttributes:
         await tl()
         await tk()
 
-        spans = _exporter.get_finished_spans()
-        by_name = {s.attributes[ATTR_ENTITY_NAME]: s for s in spans}  # type: ignore[index]
-        assert by_name["wf"].attributes[ATTR_OI_SPAN_KIND] == "CHAIN"
-        assert by_name["ag"].attributes[ATTR_OI_SPAN_KIND] == "AGENT"
-        assert by_name["tl"].attributes[ATTR_OI_SPAN_KIND] == "TOOL"
-        assert by_name["tk"].attributes[ATTR_OI_SPAN_KIND] == "CHAIN"
+        by_name = {s.name: s.attributes or {} for s in _exporter.get_finished_spans()}
+        assert by_name["wf"][ATTR_OI_SPAN_KIND] == "CHAIN"
+        assert by_name["ag"][ATTR_OI_SPAN_KIND] == "AGENT"
+        assert by_name["tl"][ATTR_OI_SPAN_KIND] == "TOOL"
+        assert by_name["tk"][ATTR_OI_SPAN_KIND] == "CHAIN"
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_input_output_recorded(self) -> None:
+    async def test_input_output_recorded_as_json(self) -> None:
+        @traced(name="echo")
+        async def echo(x: int, *, label: str = "") -> int:
+            return x * 2
+
+        await echo(5, label="n")
+
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert attrs[ATTR_INPUT_VALUE] == '{"x": 5, "label": "n"}'
+        assert attrs[ATTR_INPUT_MIME_TYPE] == "application/json"
+        assert attrs[ATTR_OUTPUT_VALUE] == "10"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_content_off_records_no_payloads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRASP_TRACE_CONTENT", "false")
+
         @traced(name="echo")
         async def echo(x: int) -> int:
-            return x * 2
+            return x
 
         await echo(5)
 
-        spans = _exporter.get_finished_spans()
-        attrs = spans[0].attributes or {}
-        assert ATTR_ENTITY_INPUT in attrs
-        assert ATTR_ENTITY_OUTPUT in attrs
-        assert "5" in str(attrs[ATTR_ENTITY_INPUT])
-        assert "10" in str(attrs[ATTR_ENTITY_OUTPUT])
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert ATTR_INPUT_VALUE not in attrs
+        assert ATTR_OUTPUT_VALUE not in attrs
+        assert attrs[ATTR_SPAN_KIND] == "task"
 
 
 # ========================================================================= #
@@ -517,52 +513,30 @@ class TestSpanAttributes:
 
 
 class TestSpanNaming:
-    def test_standalone_function_name(self) -> None:
+    def test_function_named_by_decorator(self) -> None:
         @traced(name="compute")
         def compute() -> int:
             return 1
 
         compute()
-        assert _exporter.get_finished_spans()[0].name == "compute.task"
+        assert _exporter.get_finished_spans()[0].name == "compute"
 
-    def test_workflow_name(self) -> None:
-        @traced(name="pipeline", span_kind=SpanKind.WORKFLOW)
-        def pipeline() -> int:
+    def test_function_named_by_qualname_by_default(self) -> None:
+        @traced()
+        def compute() -> int:
             return 1
 
-        pipeline()
-        assert _exporter.get_finished_spans()[0].name == "pipeline.workflow"
+        compute()
+        assert _exporter.get_finished_spans()[0].name.endswith("compute")
 
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_method_uses_instance_name(self) -> None:
-        class MyTool:
-            name = "search"
-            tracing_enabled = True
-            _span_kind = SpanKind.TOOL
+    def test_class_decoration_names_class_and_method(self) -> None:
+        @traced(method_name="work")
+        class Worker:
+            def work(self) -> int:
+                return 1
 
-            @traced(name="execute")
-            async def execute(self) -> str:
-                return "found"
-
-        await MyTool().execute()
-
-        # TOOL kind reads instance.name
-        assert _exporter.get_finished_spans()[0].name == "search.execute"
-
-    @pytest.mark.asyncio(loop_scope="function")
-    async def test_exec_id_suffix(self) -> None:
-        class MyAgent:
-            name = "writer"
-            tracing_enabled = True
-            _span_kind = SpanKind.AGENT
-
-            @traced(name="run")
-            async def run(self, exec_id: str = "") -> str:
-                return "ok"
-
-        await MyAgent().run(exec_id="abc123")
-
-        assert _exporter.get_finished_spans()[0].name == "writer.run[abc123]"
+        Worker().work()
+        assert _exporter.get_finished_spans()[0].name == "Worker.work"
 
 
 # ========================================================================= #
@@ -586,8 +560,8 @@ class TestSpanNesting:
         spans = _exporter.get_finished_spans()
         assert len(spans) == 2
 
-        inner_span = next(s for s in spans if s.name == "inner.task")
-        outer_span = next(s for s in spans if s.name == "outer.workflow")
+        inner_span = next(s for s in spans if s.name == "inner")
+        outer_span = next(s for s in spans if s.name == "outer")
 
         assert inner_span.parent is not None
         assert inner_span.parent.span_id == outer_span.context.span_id
@@ -616,26 +590,19 @@ class TestHelpers:
         result = _to_plain({"items": [{"a": 1}, {"b": 2}]})
         assert result == {"items": [{"a": 1}, {"b": 2}]}
 
-    def test_truncate_tiny_limit_falls_back_to_head_clip(self) -> None:
+    def test_clip_tiny_limit_falls_back_to_head(self) -> None:
         # Limit too small to fit a head…tail marker → plain head clip.
-        with patch.dict(os.environ, {"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT": "5"}):
-            assert _truncate_if_needed("hello world") == "hello"
-            assert _truncate_if_needed("hi") == "hi"
+        assert _clip("hello world", 5) == "hello"
+        assert _clip("hi", 5) == "hi"
 
-    def test_truncate_keeps_head_and_tail(self) -> None:
-        with patch.dict(os.environ, {"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT": "60"}):
-            text = "H" * 40 + "X" * 200 + "T" * 40
-            out = _truncate_if_needed(text)
-            assert len(out) <= 60  # never exceeds the limit
-            assert out.startswith("H")  # head kept
-            assert out.endswith("T")  # tail kept
-            assert "chars]" in out  # head…tail marker present
-            assert "X" * 20 not in out  # middle dropped
-
-    def test_truncate_no_limit(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", None)
-            assert _truncate_if_needed("hello world") == "hello world"
+    def test_clip_keeps_head_and_tail(self) -> None:
+        text = "H" * 40 + "X" * 200 + "T" * 40
+        out = _clip(text, 60)
+        assert len(out) <= 60
+        assert out.startswith("H")
+        assert out.endswith("T")
+        assert "chars]" in out
+        assert "X" * 20 not in out
 
 
 # ========================================================================= #
@@ -769,7 +736,7 @@ class TestSerializationFailureContained:
         # Span still finishes; the serialization failure was swallowed, so no
         # output attribute was set and the call did not error out.
         assert spans[0].attributes is not None
-        assert spans[0].attributes.get(ATTR_ENTITY_OUTPUT) is None
+        assert spans[0].attributes.get(ATTR_OUTPUT_VALUE) is None
         assert spans[0].status.status_code != trace.StatusCode.ERROR
 
 
@@ -832,7 +799,7 @@ class TestCallerSpanOverrides:
         await run()
 
         span = _exporter.get_finished_spans()[0]
-        assert span.name == "run.task"
+        assert span.name == "run"
         assert "goal.id" not in (span.attributes or {})
 
     @pytest.mark.asyncio(loop_scope="function")
@@ -854,12 +821,15 @@ class TestCallerSpanOverrides:
 # ========================================================================= #
 
 
+_RUN_KINDS = frozenset({"agent", "workflow", "processor"})
+
+
 def _processor_spans() -> list[ReadableSpan]:
-    """Run-root spans (one per run_stream), selected by entity name."""
+    """Processor-run spans (one per run_stream), selected by span kind."""
     return [
         s
         for s in _exporter.get_finished_spans()
-        if (s.attributes or {}).get(ATTR_ENTITY_NAME) == "processor"
+        if (s.attributes or {}).get(ATTR_SPAN_KIND) in _RUN_KINDS
     ]
 
 
@@ -886,15 +856,32 @@ class TestSessionTraceDerivation:
         assert _resolve_run_span_context(DefaultSession()) is None  # unnamed
         assert _resolve_run_span_context(Named()) is not None  # at a run root
 
-    def test_resolver_skips_when_nested_under_recording_span(self) -> None:
+    def test_under_a_caller_span_the_session_keeps_the_callers_trace(self) -> None:
         class Named:
             def _trace_session_info(self) -> tuple[str, bool] | None:
                 return ("sess-A", True)
 
-        # A live ancestor span means we are nested — inherit the enclosing run's
-        # context instead of starting a fresh session root.
-        with trace.get_tracer("test").start_as_current_span("outer"):
-            assert _resolve_run_span_context(Named()) is None
+        # A caller's span (an HTTP request, an evaluation trial): the session
+        # id is stamped, the run stays in the caller's trace.
+        with trace.get_tracer("test").start_as_current_span("outer") as outer:
+            context = _resolve_run_span_context(Named())
+            assert context is not None
+            assert trace.get_current_span(context) is outer
+            assert _inherited(context)["session.id"] == "sess-A"
+            # Runs nested in the session's run inherit it.
+            token = otel_context.attach(context)
+            try:
+                assert _resolve_run_span_context(Named()) is None
+            finally:
+                otel_context.detach(token)
+
+    def test_derived_session_traces_are_namespaced(self) -> None:
+        def trace_id(namespace: str | None) -> int:
+            parent = derive_session_span_context("s", namespace=namespace)
+            return trace.get_current_span(parent).get_span_context().trace_id
+
+        assert trace_id("staging/app") != trace_id("prod/app")
+        assert trace_id(None) == _session_trace_id("s")
 
 
 class TestSessionTraceGrouping:
@@ -980,7 +967,7 @@ class TestSessionTraceGrouping:
 
 
 # ========================================================================= #
-#  Session attributes (SessionSpanProcessor — propagated to every span)      #
+#  Session attributes (propagated to every span of a session's run)        #
 # ========================================================================= #
 
 
@@ -1004,13 +991,14 @@ class TestSessionAttributes:
     async def test_stamped_on_run_and_child_spans(self) -> None:
         await _run_chat("sess-attr")
         spans = _exporter.get_finished_spans()
-        by_entity = {(s.attributes or {}).get(ATTR_ENTITY_NAME): s for s in spans}
-        # The run root (processor) AND a child it created (generate) both carry
+        by_kind = {(s.attributes or {}).get(ATTR_SPAN_KIND): s for s in spans}
+        # The run root (agent) AND a child it created (generate) both carry
         # the session id — the processor propagates it down the whole run tree.
-        assert "processor" in by_entity
-        assert "generate" in by_entity
-        assert _session_attr(by_entity["processor"]) == "sess-attr"
-        assert _session_attr(by_entity["generate"]) == "sess-attr"
+        assert "agent" in by_kind
+        assert "generate" in by_kind
+        for key in ("session.id", "gen_ai.conversation.id"):
+            assert _session_attr(by_kind["agent"], key) == "sess-attr"
+            assert _session_attr(by_kind["generate"], key) == "sess-attr"
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_emitted_even_when_grouping_off(self) -> None:
@@ -1034,9 +1022,7 @@ class TestSessionAttributes:
         monkeypatch.setenv("GRASP_SESSION_ID_ATTRIBUTES", "session.id, custom.session")
         await _run_chat("sess-cfg")
         spans = _exporter.get_finished_spans()
-        root = next(
-            s for s in spans if _session_attr(s, ATTR_ENTITY_NAME) == "processor"
-        )
+        root = next(s for s in spans if _session_attr(s, ATTR_SPAN_KIND) == "agent")
         attrs = root.attributes or {}
         assert attrs.get("session.id") == "sess-cfg"
         assert attrs.get("custom.session") == "sess-cfg"
@@ -1089,10 +1075,8 @@ class _FlakyProcessor(Processor[str, str, None]):
             yield ProcPayloadOutEvent(data=f"{inp}!", source=self.name, exec_id=exec_id)
 
 
-def _span_by_entity(spans: Sequence[ReadableSpan], entity: str) -> ReadableSpan:
-    return next(
-        s for s in spans if (s.attributes or {}).get(ATTR_ENTITY_NAME) == entity
-    )
+def _span_by_kind(spans: Sequence[ReadableSpan], kind: str) -> ReadableSpan:
+    return next(s for s in spans if (s.attributes or {}).get(ATTR_SPAN_KIND) == kind)
 
 
 def _exception_events(span: ReadableSpan) -> list[Any]:
@@ -1106,7 +1090,7 @@ class TestRetryExceptionRecording:
         out = await proc.run(in_args="hi")
         assert out.payloads == ["hi!"]
 
-        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        span = _span_by_kind(_exporter.get_finished_spans(), "processor")
         events = _exception_events(span)
 
         # Each swallowed attempt is visible, in order, with its own cause.
@@ -1131,7 +1115,7 @@ class TestRetryExceptionRecording:
         with pytest.raises(ProcRunError):
             await proc.run(in_args="hi")
 
-        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        span = _span_by_kind(_exporter.get_finished_spans(), "processor")
         events = _exception_events(span)
         types_ = [(e.attributes or {})["exception.type"] for e in events]
 
@@ -1161,9 +1145,9 @@ class TestRetryExceptionRecording:
         # span inside its retry loop belongs to the enclosing (recording)
         # parent — its retries must not be attributed there.
         assert all(
-            (s.attributes or {}).get(ATTR_ENTITY_NAME) != "processor" for s in spans
+            (s.attributes or {}).get(ATTR_SPAN_KIND) != "processor" for s in spans
         )
-        parent = _span_by_entity(spans, "outer")
+        parent = next(s for s in spans if s.name == "outer")
         assert _exception_events(parent) == []
         assert ATTR_FAILED_ATTEMPTS not in (parent.attributes or {})
 
@@ -1190,7 +1174,7 @@ class TestRetryExceptionRecording:
         await agent.run(chat_inputs="hi")
 
         spans = _exporter.get_finished_spans()
-        proc_span = _span_by_entity(spans, "processor")
+        proc_span = _span_by_kind(spans, "agent")
         (event,) = _exception_events(proc_span)
         assert (event.attributes or {})["exception.message"] == (
             "resource block did not resolve"
@@ -1200,7 +1184,7 @@ class TestRetryExceptionRecording:
         # The model answered fine on both attempts, so no `generate` span is
         # red — without this change the wasted attempt is invisible in the trace.
         gen_spans = [
-            s for s in spans if (s.attributes or {}).get(ATTR_ENTITY_NAME) == "generate"
+            s for s in spans if (s.attributes or {}).get(ATTR_SPAN_KIND) == "generate"
         ]
         assert len(gen_spans) == 2
         assert all(not _exception_events(s) for s in gen_spans)
@@ -1240,13 +1224,11 @@ class TestAbandonedChildStream:
         child = _FlakyProcessor("child", fail_times=0)
         parent = _ParentAbandoningChild("parent", child=child, max_retries=1)
 
-        out = await parent.run(in_args="hi", span_name="parent-run")
+        out = await parent.run(in_args="hi")
         assert out.payloads == ["hi!"]
 
-        # Both processor spans are named "processor.task", so the parent's is
-        # pinned via the span_name override.
         exported = _exporter.get_finished_spans()
-        parent_span = next(s for s in exported if s.name == "parent-run")
+        parent_span = next(s for s in exported if s.name == "parent")
         events = _exception_events(parent_span)
         assert [(e.attributes or {})["exception.type"] for e in events] == [
             "ValueError"
@@ -1262,7 +1244,7 @@ class TestAbandonedChildStream:
         )
         await proc.run(in_args="hi")
 
-        span = _span_by_entity(_exporter.get_finished_spans(), "processor")
+        span = _span_by_kind(_exporter.get_finished_spans(), "processor")
         (event,) = _exception_events(span)
         attrs = event.attributes or {}
         assert attrs["exception.type"] == "ValueError"
@@ -1308,3 +1290,522 @@ class TestAbandonedChildStream:
         assert "lesson text" in (span.status.description or "")
         (event,) = _exception_events(span)
         assert "lesson text" in str((event.attributes or {})["exception.message"])
+
+
+# ========================================================================= #
+#  Framework span conventions                                                #
+# ========================================================================= #
+
+
+def _spans_of_kind(kind: str) -> list[ReadableSpan]:
+    return [
+        s
+        for s in _exporter.get_finished_spans()
+        if (s.attributes or {}).get(ATTR_SPAN_KIND) == kind
+    ]
+
+
+class TestFrameworkSpans:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_agent_run_span_identity_and_payloads(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="writer",
+            llm=MockLLM(responses_queue=[_text_response("done")]),
+            version="v2",
+        )
+        await agent.run(chat_inputs="hello")
+
+        (run,) = _spans_of_kind("agent")
+        attrs = run.attributes or {}
+        assert run.name == "writer"
+        assert attrs[ATTR_OI_SPAN_KIND] == "AGENT"
+        assert attrs[attributes.ATTR_PROCESSOR_NAME] == "writer"
+        assert attrs[attributes.ATTR_PROCESSOR_CLASS] == "LLMAgent"
+        assert attrs[attributes.ATTR_PROCESSOR_PATH] == "writer"
+        assert attrs[attributes.ATTR_PROCESSOR_VERSION] == "v2"
+        assert str(attrs[attributes.ATTR_PROCESSOR_EXEC_ID]).endswith("_writer")
+        assert attrs[attributes.ATTR_AGENT_MODEL] == "mock"
+        assert attrs[ATTR_INPUT_VALUE] == '"hello"'
+        assert attrs[ATTR_OUTPUT_VALUE] == '"done"'
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_model_call_span_carries_models_usage_and_output_items(
+        self,
+    ) -> None:
+        agent = LLMAgent[str, str, None](
+            name="writer", llm=MockLLM(responses_queue=[_text_response("done")])
+        )
+        await agent.run(chat_inputs="hello")
+
+        (call,) = _spans_of_kind("generate")
+        attrs = call.attributes or {}
+        assert call.name == "writer.generate"
+        assert attrs[attributes.ATTR_AGENT_NAME] == "writer"
+        assert attrs[attributes.ATTR_LLM_REQUEST_MODEL] == "mock"
+        assert attrs[attributes.ATTR_LLM_RESPONSE_MODEL] == "mock"
+        assert attrs[attributes.ATTR_LLM_INPUT_TOKENS] == 10
+        assert attrs[attributes.ATTR_LLM_OUTPUT_TOKENS] == 5
+        assert ATTR_INPUT_VALUE not in attrs
+        (item,) = json.loads(str(attrs[ATTR_OUTPUT_VALUE]))
+        assert item["content"][0]["text"] == "done"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_tool_span_names_the_tool_and_its_caller(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="calc",
+            llm=MockLLM(
+                responses_queue=[
+                    _tool_call_response("add", '{"a": 2, "b": 3}', "tc1"),
+                    _text_response("5"),
+                ]
+            ),
+            tools=[AddTool()],
+        )
+        await agent.run(chat_inputs="2+3")
+
+        (tool,) = _spans_of_kind("tool")
+        attrs = tool.attributes or {}
+        assert tool.name == "add"
+        assert attrs[ATTR_OI_SPAN_KIND] == "TOOL"
+        assert attrs[attributes.ATTR_TOOL_NAME] == "add"
+        assert attrs[attributes.ATTR_AGENT_NAME] == "calc"
+        assert json.loads(str(attrs[ATTR_INPUT_VALUE])) == {"a": 2, "b": 3}
+        assert attrs[ATTR_OUTPUT_VALUE] == "5"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_parallel_replicas_are_named_after_their_template(self) -> None:
+        parallel = ParallelProcessor(_FlakyProcessor("echo", fail_times=0))
+        await parallel.run(in_args=["a", "b"])
+
+        runs = _spans_of_kind("processor")
+        replicas = [s for s in runs if s.name == "echo"]
+        assert sorted(
+            (s.attributes or {})[attributes.ATTR_PROCESSOR_REPLICA] for s in replicas
+        ) == [0, 1]
+        assert {(s.attributes or {})[ATTR_INPUT_VALUE] for s in replicas} == {
+            '"a"',
+            '"b"',
+        }
+        (container,) = [s for s in runs if s.name == "echo_par"]
+        assert (container.attributes or {})[attributes.ATTR_PROCESSOR_CLASS] == (
+            "ParallelProcessor"
+        )
+        assert (container.attributes or {})[ATTR_OUTPUT_VALUE] == '["a!", "b!"]'
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_failed_run_records_cause_chain_and_root_type(self) -> None:
+        proc = _FlakyProcessor("doomed", fail_times=99, err_msg="empty chunk")
+        with pytest.raises(ProcRunError):
+            await proc.run(in_args="hi")
+
+        (span,) = _spans_of_kind("processor")
+        assert span.status.status_code is trace.StatusCode.ERROR
+        description = span.status.description or ""
+        assert description.startswith("ProcRunError: ")
+        assert "Caused by: ValueError: empty chunk" in description
+        assert (span.attributes or {})[attributes.ATTR_ERROR_TYPE] == "ValueError"
+        assert ATTR_OUTPUT_VALUE not in (span.attributes or {})
+
+
+class TestInheritedSpanAttributes:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_stamped_on_every_span_started_in_the_block(self) -> None:
+        agent = LLMAgent[str, str, None](
+            name="writer",
+            llm=MockLLM(responses_queue=[_text_response("a"), _text_response("b")]),
+        )
+        with inherited_span_attributes({"grasp.eval.run_id": "r1"}):
+            with inherited_span_attributes({"grasp.eval.example_id": "e1"}):
+                await agent.run(chat_inputs="one")
+        inside = _exporter.get_finished_spans()
+        _exporter.clear()
+        await agent.run(chat_inputs="two")
+
+        assert len(inside) >= 2
+        for span in inside:
+            attrs = span.attributes or {}
+            assert attrs["grasp.eval.run_id"] == "r1"
+            assert attrs["grasp.eval.example_id"] == "e1"
+        assert all(
+            "grasp.eval.run_id" not in (s.attributes or {})
+            for s in _exporter.get_finished_spans()
+        )
+
+
+class TestFitJson:
+    def test_short_value_is_unchanged(self) -> None:
+        assert fit_json({"a": [1, 2]}, 100) == ('{"a": [1, 2]}', False)
+        assert fit_json({"a": "x" * 500}, None) == (json.dumps({"a": "x" * 500}), False)
+
+    def test_long_strings_are_cut_inside_valid_json(self) -> None:
+        value = {"error": "chunk misaligned", "draft": "D" * 5000, "n": 3}
+        text, truncated = fit_json(value, 400)
+        parsed = json.loads(text)
+        assert truncated
+        assert len(text) <= 400
+        assert parsed["error"] == "chunk misaligned"
+        assert parsed["n"] == 3
+        assert parsed["draft"].startswith("D")
+        assert "chars]" in parsed["draft"]
+
+    def test_long_lists_keep_head_and_tail(self) -> None:
+        text, truncated = fit_json(list(range(1000)), 120)
+        parsed = json.loads(text)
+        assert truncated
+        assert len(text) <= 120
+        assert parsed[0] == 0
+        assert parsed[-1] == 999
+        assert any(isinstance(v, str) and "items]" in v for v in parsed)
+
+    def test_short_lists_survive_when_a_long_string_is_cut(self) -> None:
+        # A model's output items: the answer text is cut, no item is dropped.
+        items = [{"type": "reasoning"}, {"text": "A" * 5000}, {"type": "call"}]
+        text, truncated = fit_json(items, 1000)
+        parsed = json.loads(text)
+        assert truncated
+        assert len(text) <= 1000
+        assert [list(item) for item in parsed] == [["type"], ["text"], ["type"]]
+        assert len(parsed[1]["text"]) > 800
+        one_over = {"note": "x" * 100, "ids": [101, 102, 103]}
+        text, _ = fit_json(one_over, len(json.dumps(one_over)) - 1)
+        assert json.loads(text)["ids"] == [101, 102, 103]
+
+    def test_wide_mappings_keep_their_head_and_tail_keys(self) -> None:
+        value = {f"key_{i}": i for i in range(200)}
+        text, truncated = fit_json(value, 80)
+        parsed = json.loads(text)
+        assert truncated
+        assert len(text) <= 80
+        assert parsed["key_0"] == 0
+        assert parsed["key_199"] == 199
+        assert parsed["…"] == f"[{200 - len(parsed) + 1} more keys]"
+
+    def test_structure_too_large_becomes_a_json_string(self) -> None:
+        value = [{"a": [{"b": i}]} for i in range(50)]
+        text, truncated = fit_json(value, 20)
+        assert truncated
+        assert len(text) <= 20
+        assert isinstance(json.loads(text), str)
+
+    def test_non_finite_numbers_stay_valid_json(self) -> None:
+        @traced(name="scores")
+        def scores() -> list[float]:
+            return [float("nan"), float("inf"), 1.5]
+
+        scores()
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert json.loads(str(attrs[ATTR_OUTPUT_VALUE])) == ["NaN", "Infinity", 1.5]
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_span_payload_marked_truncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The provider's limit, however it was configured (env or code).
+        monkeypatch.setattr(
+            _provider.get_tracer("grasp_agents"),
+            "_span_limits",
+            SpanLimits(max_span_attribute_length=200),
+        )
+
+        @traced(name="big")
+        async def big(text: str) -> dict[str, str]:
+            return {"text": text}
+
+        await big("x" * 1000)
+
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert attrs[attributes.ATTR_INPUT_TRUNCATED] is True
+        assert attrs[attributes.ATTR_OUTPUT_TRUNCATED] is True
+        assert json.loads(str(attrs[ATTR_OUTPUT_VALUE]))["text"].startswith("x")
+
+
+class TestOnlineEvaluationRoundTrip:
+    """Production spans carry what online evaluations read back."""
+
+    @staticmethod
+    def _record(span: ReadableSpan) -> SpanRecord:
+        context = span.get_span_context()
+        return SpanRecord(
+            trace_id=format(context.trace_id, "032x"),
+            span_id=format(context.span_id, "016x"),
+            name=span.name,
+            start_time=datetime.fromtimestamp((span.start_time or 0) / 1e9, UTC),
+            status="ERROR"
+            if span.status.status_code is trace.StatusCode.ERROR
+            else "UNSET",
+            status_message=span.status.description,
+            attributes=dict(span.attributes or {}),
+        )
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_agent_spans_extract_into_inputs_and_outputs(self) -> None:
+        class Question(BaseModel):
+            topic: str
+
+        agent = LLMAgent[Question, str, None](
+            name="tutor", llm=MockLLM(responses_queue=[_text_response("an answer")])
+        )
+        await agent.run(in_args=Question(topic="fractions"))
+
+        (run,) = _spans_of_kind("agent")
+        record = self._record(run)
+        extracted = default_extractor(
+            TraceItem(scope="span", id=record.span_id, spans=(record,))
+        )
+        assert extracted.input == {"topic": "fractions"}
+        assert extracted.output == "an answer"
+        assert extracted.error is None
+        assert Question.model_validate(extracted.input) == Question(topic="fractions")
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_failed_run_extracts_as_a_task_error(self) -> None:
+        proc = _FlakyProcessor("doomed", fail_times=99, err_msg="empty chunk")
+        with pytest.raises(ProcRunError):
+            await proc.run(in_args="hi")
+
+        (span,) = _spans_of_kind("processor")
+        record = self._record(span)
+        extracted = default_extractor(
+            TraceItem(scope="span", id=record.span_id, spans=(record,))
+        )
+        assert extracted.input == "hi"
+        assert extracted.error is not None
+        assert extracted.error.type == "ValueError"
+        assert "empty chunk" in extracted.error.message
+
+
+def test_a_class_level_version_is_the_declared_version() -> None:
+    class Versioned(_FlakyProcessor):
+        version = "7"
+
+    assert Versioned("v", fail_times=0).version == "7"
+    assert Versioned("v", fail_times=0, version="8").version == "8"
+    assert _FlakyProcessor("plain", fail_times=0).version is None
+
+
+# ========================================================================= #
+#  Review regressions                                                        #
+# ========================================================================= #
+
+
+class _Ask(BaseModel):
+    topic: str
+    secret: str
+
+
+class TestTracingRegressions:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_traced_helper_of_an_agent_subclass_is_not_a_run(self) -> None:
+        class Writer(LLMAgent[str, str, None]):
+            @traced(name="score_draft")
+            async def score_draft(self, draft: str) -> int:
+                return len(draft)
+
+        await Writer(name="writer", llm=MockLLM()).score_draft("my draft")
+
+        (span,) = _exporter.get_finished_spans()
+        attrs = span.attributes or {}
+        assert span.name == "writer.score_draft"
+        assert attrs[ATTR_SPAN_KIND] == "task"
+        assert attributes.ATTR_PROCESSOR_NAME not in attrs
+        assert attrs[ATTR_INPUT_VALUE] == '{"draft": "my draft"}'
+        assert attrs[ATTR_OUTPUT_VALUE] == "8"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_traced_helper_of_a_tool_is_not_a_call(self) -> None:
+        class Lookup(AddTool):
+            @traced(name="fetch_page")
+            async def fetch_page(self, url: str) -> str:
+                return url
+
+        await Lookup().fetch_page("https://x")
+
+        (span,) = _exporter.get_finished_spans()
+        assert span.name == "add.fetch_page"
+        assert (span.attributes or {})[ATTR_SPAN_KIND] == "task"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_odd_hook_results_never_break_the_call(self) -> None:
+        class Default:
+            def _trace_span_start(self, *_: Any) -> None:
+                return None
+
+            @traced(name="run")
+            async def run(self) -> str:
+                return "ok"
+
+        class Wrong:
+            def _trace_span_start(self, *_: Any) -> str:
+                return "not a start"
+
+            def _trace_span_result(self, *_: Any) -> int:
+                return 42
+
+            @traced(name="run")
+            async def run(self) -> str:
+                return "ok"
+
+        class PlainKind:
+            def _trace_span_start(self, *_: Any) -> SpanStart:
+                return SpanStart(name="plain", kind="agent")  # type: ignore[arg-type]
+
+            @traced(name="run")
+            async def run(self) -> str:
+                return "ok"
+
+        assert await Default().run() == "ok"
+        assert await Wrong().run() == "ok"
+        assert await PlainKind().run() == "ok"
+        by_name = {s.name: s.attributes or {} for s in _exporter.get_finished_spans()}
+        assert by_name["plain"][ATTR_SPAN_KIND] == "agent"
+        assert by_name["run"][ATTR_SPAN_KIND] == "task"
+
+    def test_a_payload_that_cannot_be_shown_does_not_fail_the_call(self) -> None:
+        class Unshowable:
+            def __str__(self) -> str:
+                raise RuntimeError("no")
+
+        @traced(name="show")
+        def show(value: Any) -> Any:
+            return value
+
+        value = Unshowable()
+        assert show(value) is value
+        (span,) = _exporter.get_finished_spans()
+        assert [e.name for e in span.events] == ["exception", "exception"]
+        assert ATTR_INPUT_VALUE not in (span.attributes or {})
+
+    def test_an_invalid_item_result_keeps_the_last_good_one(self) -> None:
+        from grasp_agents.telemetry import SpanResult  # noqa: PLC0415
+
+        class Stream:
+            def _trace_span_result(self, entity: str, item: Any) -> Any:
+                return SpanResult(output=item) if item == "good" else 42
+
+            @traced(name="stream")
+            def stream(self) -> Iterator[str]:
+                yield "good"
+                yield "ignored"
+
+        assert list(Stream().stream()) == ["good", "ignored"]
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert attrs[ATTR_OUTPUT_VALUE] == '"good"'
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_failed_tool_call_is_an_error(self) -> None:
+        class Broken(AddTool):
+            async def _run(self, inp: Any, **_: Any) -> int:
+                raise KeyError("missing key")
+
+        result = await Broken().run(AddInput(a=1, b=2))
+
+        assert isinstance(result, ToolErrorInfo)
+        (span,) = _spans_of_kind("tool")
+        assert span.status.status_code is trace.StatusCode.ERROR
+        assert (span.attributes or {})[attributes.ATTR_ERROR_TYPE] == "KeyError"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_tool_calls_record_every_input_field(self) -> None:
+        class PathInput(BaseModel):
+            path: str
+
+        class Reader(BaseTool[PathInput, str, Any]):
+            def __init__(self) -> None:
+                super().__init__(name="read", description="Read a file.")
+
+            async def _run(self, inp: PathInput, **_: Any) -> str:
+                return inp.path
+
+        await Reader()(path="/notes.md")
+
+        (span,) = _spans_of_kind("tool")
+        assert json.loads(str((span.attributes or {})[ATTR_INPUT_VALUE])) == {
+            "path": "/notes.md"
+        }
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_session_under_a_caller_span_keeps_the_callers_trace(
+        self,
+    ) -> None:
+        with trace.get_tracer("app").start_as_current_span("request") as request:
+            with SessionContext[None](session_key="sess-req"):
+                agent = LLMAgent[str, str, None](
+                    name="chat", llm=MockLLM(responses_queue=[_text_response("ok")])
+                )
+                await agent.run(chat_inputs="hi")
+
+        (run,) = _spans_of_kind("agent")
+        assert run.context.trace_id == request.get_span_context().trace_id
+        assert (run.attributes or {})["session.id"] == "sess-req"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_sampled_out_caller_keeps_a_session_unsampled(self) -> None:
+        parent = trace.NonRecordingSpan(
+            trace.SpanContext(
+                trace_id=7, span_id=7, is_remote=True, trace_flags=trace.TraceFlags(0)
+            )
+        )
+        token = otel_context.attach(trace.set_span_in_context(parent))
+        try:
+            with SessionContext[None](session_key="sess-unsampled"):
+                agent = LLMAgent[str, str, None](
+                    name="chat", llm=MockLLM(responses_queue=[_text_response("ok")])
+                )
+                await agent.run(chat_inputs="hi")
+        finally:
+            otel_context.detach(token)
+
+        assert _exporter.get_finished_spans() == []
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_wrapped_agents_masked_fields_stay_masked_on_its_tool(
+        self,
+    ) -> None:
+        sub = LLMAgent[_Ask, str, None](
+            name="sub",
+            llm=MockLLM(responses_queue=[_text_response("done")]),
+            tracing_exclude_input_fields={"secret"},
+        )
+        tool = sub.as_tool("ask_sub", "Ask the sub-agent.")
+        await tool.run(_Ask(topic="x", secret="TOPSECRET"))
+
+        for span in _exporter.get_finished_spans():
+            assert "TOPSECRET" not in str((span.attributes or {}).get(ATTR_INPUT_VALUE))
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_a_cancelled_call_is_marked(self) -> None:
+        @traced(name="slow")
+        async def slow() -> None:
+            await asyncio.sleep(10)
+
+        task = asyncio.create_task(slow())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        (span,) = _exporter.get_finished_spans()
+        assert (span.attributes or {})[attributes.ATTR_CANCELLED] is True
+        assert span.status.status_code is not trace.StatusCode.ERROR
+
+    def test_a_function_whose_argument_has_its_name_records_it(self) -> None:
+        @traced(name="split")
+        def split(text: str) -> list[str]:
+            return text.split()
+
+        split("a b")
+        attrs = _exporter.get_finished_spans()[0].attributes or {}
+        assert attrs[ATTR_INPUT_VALUE] == '{"text": "a b"}'
+
+    def test_init_tracing_marks_an_existing_provider_once(self) -> None:
+        from grasp_agents.telemetry import setup
+
+        provider = TracerProvider()
+        with patch.object(setup.trace, "get_tracer_provider", return_value=provider):
+            assert setup.init_tracing() is provider
+            setup.init_tracing()
+        processors = provider._active_span_processor._span_processors  # type: ignore[attr-defined]
+        assert (
+            sum(isinstance(p, InheritedAttributesSpanProcessor) for p in processors)
+            == 1
+        )

@@ -248,6 +248,7 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
             for i in pending_indices:
                 rep = self._subproc.copy()
                 rep.name = f"{self._subproc.name}_{i}"
+                rep._replica = (self._subproc.name, i)  # noqa: SLF001
                 # ``on_adopted`` re-derives path from ``self.path`` + new
                 # ``rep.name`` and refreshes ctx (already shared via
                 # ``SessionContext.__deepcopy__``, but kept for symmetry).

@@ -11,7 +11,8 @@ exit code says what happened:
 - 0: done;
 - 1: a gate failed — the run is invalid or incomplete, a ``--fail-under``
   threshold is missed, ``--fail-on-regression`` found a significant regression
-  against ``--baseline``, a judge is not validated, or a dataset is invalid;
+  against ``--baseline``, an online metric is ``--alert-below`` its line, a
+  judge is not validated, or a dataset is invalid;
 - 2: usage error (bad arguments, spec, dataset file or run reference);
 - 3: an unexpected error, or Phoenix failed.
 """
@@ -19,9 +20,11 @@ exit code says what happened:
 import argparse
 import asyncio
 import json
+import re
 import sys
 import traceback
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NoReturn, cast, override
 
@@ -30,6 +33,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from ._execution import ProgressCallback, TrialProgress
+from ._util import utc_now
 from .compare import Comparison, compare, regressions
 from .dataset import Dataset, DatasetError, example_json_schema
 from .evaluation import (
@@ -38,8 +42,10 @@ from .evaluation import (
     list_evaluations,
     load_evaluation,
     load_object,
+    open_trace_source,
     parse_phoenix_ref,
 )
+from .online import AnnotationError, annotate_run
 from .pairwise import PairwiseJudge, pairwise
 from .report import (
     render_comparison_markdown,
@@ -49,7 +55,7 @@ from .report import (
 )
 from .runner import ResumeError, SealedSelectionError
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
-from .types import EvaluationRun, RunStatus, Trial
+from .types import EvaluationRun, Example, RunStatus, Trial
 from .validation import UnvalidatedJudgeError
 
 EXIT_OK = 0
@@ -135,21 +141,66 @@ def _non_negative_int(text: str) -> int:
     return value
 
 
-def _parse_thresholds(values: Sequence[str]) -> dict[str, float]:
+def _parse_thresholds(
+    values: Sequence[str], flag: str = "--fail-under"
+) -> dict[str, float]:
     thresholds: dict[str, float] = {}
     for item in values:
         name, sep, raw = item.rpartition("=")
         if not sep or not name:
-            raise CLIError(f"--fail-under expects NAME=VALUE, got {item!r}")
+            raise CLIError(f"{flag} expects NAME=VALUE, got {item!r}")
         try:
             thresholds[name] = float(raw)
         except ValueError as exc:
-            raise CLIError(f"--fail-under value must be a number: {item!r}") from exc
+            raise CLIError(f"{flag} value must be a number: {item!r}") from exc
     return thresholds
 
 
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)([smhd])")
+_UNIT_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _moment(text: str, now: datetime) -> datetime:
+    """An ISO time (UTC unless it says otherwise), or a duration ago: 90m, 6h, 2d."""
+    match = _DURATION_RE.fullmatch(text.strip())
+    if match is not None:
+        amount, unit = match.groups()
+        return now - timedelta(seconds=float(amount) * _UNIT_S[unit])
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise CLIError(
+            f"Expected an ISO time or a duration ago (90m, 6h, 2d), got {text!r}"
+        ) from exc
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def _alert_messages(run: EvaluationRun, alerts: dict[str, float]) -> list[str]:
+    # Alerts read the interval, not the estimate: a metric is flagged when
+    # even the top of its interval is below the line (its value, when it
+    # has no interval).
+    messages: list[str] = []
+    for name, line in alerts.items():
+        metric = run.metric(name)
+        if metric is None:
+            known = ", ".join(m.name for m in run.metrics)
+            messages.append(f"metric {name!r} not found (metrics: {known})")
+        elif metric.ci_high is not None and metric.ci_high < line:
+            messages.append(
+                f"{name} = {metric.value:.3g} is below {line:g} "
+                f"({metric.confidence:.0%} CI up to {metric.ci_high:.3g})"
+            )
+        elif (
+            metric.ci_high is None and metric.value is not None and metric.value < line
+        ):
+            messages.append(f"{name} = {metric.value:.3g} is below {line:g}")
+    return messages
+
+
 def _check_threshold_names(
-    evaluation: Evaluation, thresholds: dict[str, float]
+    evaluation: Evaluation, thresholds: dict[str, float], flag: str = "--fail-under"
 ) -> None:
     metrics = evaluation.metrics
     if metrics is None or callable(metrics) or not thresholds:
@@ -159,7 +210,7 @@ def _check_threshold_names(
     ]
     unknown = [n for n in thresholds if n not in known]
     if unknown:
-        raise CLIError(f"--fail-under names unknown metrics {unknown}; known: {known}")
+        raise CLIError(f"{flag} names unknown metrics {unknown}; known: {known}")
 
 
 def _gate_messages(
@@ -288,13 +339,129 @@ async def _push(run: EvaluationRun, store: LocalRunStore, base_url: str | None) 
     return experiment_url(link) or link.base_url
 
 
+async def _annotate(
+    run: EvaluationRun, store: LocalRunStore, base_url: str | None
+) -> int:
+    async with open_trace_source(phoenix_url=base_url) as source:
+        return await annotate_run(source, run, store=store)
+
+
 async def _cmd_push(args: argparse.Namespace) -> int:
     store, run = _resolve_run(args.run, args.root)
+    if run.window is not None:
+        # Scores of production traces go back onto the traces.
+        written = await _annotate(run, store, args.base_url)
+        if args.json:
+            _print_json({"id": run.id, "annotations": written})
+        else:
+            sys.stdout.write(f"{written} annotations written\n")
+        return EXIT_OK
     url = await _push(run, store, args.base_url)
     if args.json:
         _print_json({"id": run.id, "phoenix_url": url})
     else:
         sys.stdout.write(f"{url}\n")
+    return EXIT_OK
+
+
+async def _cmd_online(args: argparse.Namespace) -> int:
+    evaluation = load_evaluation(args.spec)
+    thresholds = _parse_thresholds(args.fail_under)
+    _check_threshold_names(evaluation, thresholds)
+    alerts = _parse_thresholds(args.alert_below, "--alert-below")
+    _check_threshold_names(evaluation, alerts, "--alert-below")
+    now = utc_now()
+    store = LocalRunStore(args.root)
+    annotation_error: AnnotationError | None = None
+    try:
+        run = await evaluation.run_online(
+            phoenix_url=args.base_url,
+            start=_moment(args.since, now) if args.since else None,
+            end=_moment(args.until, now) if args.until else None,
+            now=now,
+            annotate=not args.no_annotate,
+            concurrency=args.concurrency,
+            max_cost_usd=args.max_cost,
+            store=store,
+            tags=args.tag,
+            progress=_progress_printer(args.progress),
+            allow_unvalidated=args.allow_unvalidated,
+        )
+    except AnnotationError as exc:
+        # The window was scored: report it and its gates all the same.
+        annotation_error, run = exc, exc.run
+    if run is None:
+        if args.json:
+            _print_json({"run": None, "message": "nothing new to evaluate"})
+        else:
+            sys.stderr.write("nothing new to evaluate\n")
+        return EXIT_OK
+    failures = _gate_messages(run, thresholds, None, None, 0.0)
+    failures.extend(_alert_messages(run, alerts))
+    if args.json:
+        payload = {
+            **run_summary(run),
+            "path": str(store.run_dir(run.id)),
+            "gate_failures": failures,
+        }
+        if annotation_error is not None:
+            payload["annotation_error"] = str(annotation_error.__cause__)
+        _print_json(payload)
+    else:
+        _print_markdown(render_run_markdown(run))
+        sys.stderr.write(f"run stored in {store.run_dir(run.id)}\n")
+    for failure in failures:
+        sys.stderr.write(f"gate: {failure}\n")
+    if annotation_error is not None:
+        sys.stderr.write(
+            f"annotations not written: {annotation_error.__cause__}; "
+            "the next online run (or `push`) retries them\n"
+        )
+        return EXIT_ERROR
+    return EXIT_GATE if failures else EXIT_OK
+
+
+def _excluded_examples(
+    output: Path, excluded: Sequence[Path], *, force: bool
+) -> list[Example[Any, Any]]:
+    if output.exists() and not force:
+        raise CLIError(f"{output} exists; pass --force to replace it")
+    if any(p.resolve() == output.resolve() for p in excluded):
+        raise CLIError(f"{output} is also excluded: write to a new file")
+    if output.suffix != ".jsonl":
+        raise CLIError(f"Write examples to a .jsonl file, not {output.name}")
+    return [e for path in excluded for e in Dataset.load(path)]
+
+
+async def _cmd_from_traces(args: argparse.Namespace) -> int:
+    evaluation = load_evaluation(args.spec)
+    output = Path(args.output)
+    exclude = _excluded_examples(
+        output, [Path(p) for p in args.exclude], force=args.force
+    )
+    now = utc_now()
+    export = await evaluation.dataset_from_traces(
+        start=_moment(args.since, now),
+        end=_moment(args.until, now) if args.until else None,
+        phoenix_url=args.base_url,
+        status=args.status,
+        sample_rate=args.sample_rate,
+        max_items=args.max,
+        exclude=exclude,
+    )
+    if len(export.dataset):
+        export.dataset.save(output)
+    _print_json(
+        {
+            "saved_to": str(output) if len(export.dataset) else None,
+            "examples": len(export.dataset),
+            "items": export.items,
+            "sampled": export.sampled,
+            "duplicates": export.duplicates,
+            "skipped": export.skipped,
+            "extraction_failures": export.failures,
+        }
+    )
     return EXIT_OK
 
 
@@ -522,6 +689,8 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
         return EXIT_GATE if problems else EXIT_OK
     if args.datasets_command in {"pull", "push"}:
         return await _cmd_phoenix_datasets(args)
+    if args.datasets_command == "from-traces":
+        return await _cmd_from_traces(args)
     dataset = Dataset.load(args.path)
     _print_json(
         {
@@ -863,10 +1032,54 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(run)
     _add_progress(run)
 
-    push = sub.add_parser("push", help="mirror a finished run to Phoenix")
+    push = sub.add_parser(
+        "push",
+        help="mirror a finished run to Phoenix (an online run: annotate its traces)",
+    )
     push.add_argument("run")
     push.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push)
+
+    online = sub.add_parser(
+        "online", help="score production traces since the last online run"
+    )
+    online.add_argument("spec")
+    online.add_argument(
+        "--since",
+        help="window start, ISO time or duration ago (default: the last run's end)",
+    )
+    online.add_argument(
+        "--until",
+        help="window end, ISO time or duration ago (default: the completion buffer)",
+    )
+    online.add_argument(
+        "--no-annotate", action="store_true", help="do not write scores to the traces"
+    )
+    online.add_argument("-c", "--concurrency", type=_positive_int)
+    online.add_argument("--max-cost", type=float, help="cap the evaluators' spend")
+    online.add_argument(
+        "--allow-unvalidated",
+        action="store_true",
+        help="score with judges whose validation gate does not pass",
+    )
+    online.add_argument(
+        "--fail-under",
+        action="append",
+        default=[],
+        metavar="METRIC=VALUE",
+        help="exit 1 if a metric's value is below VALUE",
+    )
+    online.add_argument(
+        "--alert-below",
+        action="append",
+        default=[],
+        metavar="METRIC=VALUE",
+        help="exit 1 if a metric's whole confidence interval is below VALUE",
+    )
+    online.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    online.add_argument("--tag", action="append", default=[])
+    _add_json(online)
+    _add_progress(online)
 
     rescore = sub.add_parser("rescore", help="score a run's outputs again (child run)")
     rescore.add_argument("run")
@@ -958,6 +1171,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     push_ds.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push_ds)
+    traced = dsub.add_parser(
+        "from-traces", help="dataset examples from an evaluation's production traces"
+    )
+    traced.add_argument("spec")
+    traced.add_argument(
+        "--since", required=True, help="window start, ISO time or duration ago"
+    )
+    traced.add_argument("--until", help="window end (default: now)")
+    traced.add_argument(
+        "--status", choices=["ok", "error"], help="only succeeded or failed items"
+    )
+    traced.add_argument("--sample-rate", type=float, help="share of traces to keep")
+    traced.add_argument("--max", type=_positive_int, help="at most N examples")
+    traced.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="skip inputs already in this dataset file",
+    )
+    traced.add_argument("-o", "--output", required=True, help="JSONL file to write")
+    traced.add_argument(
+        "--force", action="store_true", help="replace the output file if it exists"
+    )
+    traced.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    _add_json(traced)
 
     labels = sub.add_parser(
         "labels", help="collect labels for judge validation (JSON output)"
@@ -1040,6 +1279,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return asyncio.run(_cmd_rescore(args))
         case "push":
             return asyncio.run(_cmd_push(args))
+        case "online":
+            return asyncio.run(_cmd_online(args))
         case "show":
             return _cmd_show(args)
         case "compare":
@@ -1078,12 +1319,15 @@ def _exit_code(exc: BaseException) -> int:
     from .phoenix import (  # noqa: PLC0415
         DatasetPushError,
         PhoenixError,
+        PhoenixProjectNotFoundError,
         StaleDatasetError,
     )
 
     if isinstance(exc, UnvalidatedJudgeError):
         return EXIT_GATE
-    if isinstance(exc, StaleDatasetError | DatasetPushError):
+    if isinstance(
+        exc, StaleDatasetError | DatasetPushError | PhoenixProjectNotFoundError
+    ):
         return EXIT_USAGE
     if isinstance(exc, PhoenixError | ValidationError):
         return EXIT_ERROR

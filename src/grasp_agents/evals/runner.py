@@ -29,11 +29,14 @@ from .store import RunStore
 from .task import Task, TaskFn, as_task
 from .types import (
     ComponentInfo,
+    DatasetRef,
     EvaluationRun,
     Example,
     Provenance,
     RunConfig,
+    RunKind,
     RunStatus,
+    TraceWindow,
     Trial,
 )
 
@@ -438,6 +441,112 @@ async def evaluate[InT, OutT, RefT](
     )
 
 
+async def evaluate_trials(
+    examples: Sequence[Example[Any, Any]],
+    trials: Sequence[Trial],
+    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    metrics: MetricsSpec = None,
+    *,
+    name: str,
+    task: ComponentInfo,
+    dataset: DatasetRef,
+    kind: RunKind = "online",
+    window: TraceWindow | None = None,
+    output_type: Any = Any,
+    description: str | None = None,
+    concurrency: int = 4,
+    evaluator_timeout_s: float | None = None,
+    max_cost_usd: float | None = None,
+    max_error_rate: float | None = None,
+    group_by: Sequence[str] = (),
+    cluster_by: str | None = None,
+    store: RunStore | None = None,
+    persist: bool = True,
+    tags: Sequence[str] = (),
+    metadata: Mapping[str, Any] | None = None,
+    evaluation: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> EvaluationRun:
+    """
+    Score trials whose outputs came from elsewhere — production traces, or
+    another system's logs — as a run of their own, on the same scoring path
+    as :func:`rescore`. ``task`` describes what produced the outputs and
+    ``dataset`` where they were read; stored outputs are re-validated as
+    ``output_type`` before evaluators see them. ``max_cost_usd`` caps the
+    evaluators' spend (the run ends ``partial``).
+    """
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
+    by_id = {e.id: e for e in examples}
+    missing = sorted({t.example_id for t in trials} - by_id.keys())
+    if missing:
+        raise ValueError(f"Trials of unknown examples: {missing[:5]}")
+    keys = [t.key for t in trials]
+    if len(set(keys)) != len(keys):
+        raise ValueError("Two trials have the same example id and repetition")
+    evaluator_list: list[Evaluator[Any, Any, Any]] = list(evaluators)
+    _check_evaluators(evaluator_list)
+    run_store = resolve_store(store, persist)
+    evaluator_infos = [e.describe() for e in evaluator_list]
+    adapter = output_adapter(output_type)
+    warn_if_untyped(output_type, (t.output for t in trials if t.ok))
+    config = RunConfig(
+        concurrency=concurrency,
+        evaluator_timeout_s=evaluator_timeout_s,
+        max_cost_usd=max_cost_usd,
+        max_error_rate=max_error_rate,
+        group_by=list(group_by),
+        cluster_by=cluster_by,
+    )
+    run = EvaluationRun(
+        id=new_run_id(name),
+        name=name,
+        kind=kind,
+        created_at=utc_now(),
+        description=description,
+        evaluation=evaluation,
+        dataset=dataset,
+        window=window,
+        task=task,
+        evaluators=evaluator_infos,
+        config=config,
+        provenance=capture_provenance(sources=evaluator_sources(evaluator_list)),
+        config_hash=config_hash(task, evaluator_infos, dataset, 1),
+        tags=list(tags),
+        metadata=dict(metadata or {}),
+        examples=list(examples),
+    )
+    if run_store is not None:
+        run_store.create(run)
+    order: list[TrialKey] = [t.key for t in trials]
+    executor = Executor(
+        run,
+        store=run_store,
+        evaluators=evaluator_list,
+        max_cost_usd=max_cost_usd,
+        evaluator_timeout_s=evaluator_timeout_s,
+        progress=progress,
+        total=len(order),
+    )
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def work(given: Trial) -> None:
+        async with semaphore:
+            if not await executor.admit():
+                return
+            try:
+                trial = given.model_copy(deep=True)
+                output = rehydrate_output(adapter, trial.output) if trial.ok else None
+                await executor.score(trial, by_id[trial.example_id], output)
+                await executor.record(trial)
+            finally:
+                await executor.release()
+
+    return await run_all(
+        executor, [work(t) for t in trials], metrics=metrics, order=order
+    )
+
+
 def _without(trial: Trial, replaced: set[str]) -> Trial:
     return trial.model_copy(
         deep=True,
@@ -540,6 +649,7 @@ async def rescore(
         evaluation=parent.evaluation,
         parent_run_id=parent.id,
         dataset=parent.dataset,
+        window=parent.window,
         task=parent.task,
         evaluators=evaluator_infos,
         config=config,

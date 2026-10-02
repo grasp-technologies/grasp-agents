@@ -1,10 +1,16 @@
+import importlib
 import json
 import textwrap
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from grasp_agents.evals.cli import main
+from tests.evals.test_online import T0, MemorySource, _span
 
 _MODULE = """
 from grasp_agents.evals import (
@@ -394,3 +400,168 @@ def test_unvalidated_judges_fail_the_run_gate(
     )
     assert code == 0
     assert listed["gate_failures"] == []
+
+
+_ONLINE = """
+from grasp_agents.evals import EvalContext, Evaluation, PassRate, TraceQuery, evaluator
+
+@evaluator
+def answered(ctx: EvalContext) -> bool:
+    return ctx.output == "answer"
+
+writer = Evaluation(
+    name="writer-online",
+    evaluators=[answered],
+    metrics=[PassRate("answered")],
+    traces=TraceQuery(project="p", processor="writer", completion_buffer_s=0),
+)
+"""
+
+
+@pytest.fixture
+def traces(monkeypatch: pytest.MonkeyPatch) -> MemorySource:
+    from grasp_agents.evals import cli as cli_module
+
+    evaluation_module = importlib.import_module("grasp_agents.evals.evaluation")
+    source = MemorySource(
+        [
+            _span("a", trace_id="ta", minute=10, input="q1"),
+            _span("b", trace_id="tb", minute=70, input="q2", output="wrong"),
+        ]
+    )
+
+    @asynccontextmanager
+    async def memory(*_: Any, **__: Any) -> AsyncGenerator[MemorySource]:
+        yield source
+
+    monkeypatch.setattr(evaluation_module, "open_trace_source", memory)
+    monkeypatch.setattr(cli_module, "open_trace_source", memory)
+    return source
+
+
+def _at(minutes: int) -> str:
+    return (T0 + timedelta(minutes=minutes)).isoformat()
+
+
+def test_online_runs_continue_alert_and_annotate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], traces: MemorySource
+) -> None:
+    module = tmp_path / "online_evals.py"
+    module.write_text(textwrap.dedent(_ONLINE))
+    root = str(tmp_path / "evals")
+    spec = f"{module}:writer"
+    code, first = _run_json(
+        capsys,
+        "--root",
+        root,
+        "online",
+        spec,
+        "--since",
+        _at(0),
+        "--until",
+        _at(60),
+        "--json",
+        "-q",
+    )
+    assert code == 0
+    assert first["kind"] == "online"
+    assert first["window"]["end"].startswith("2026-09-01T01:00")
+    assert first["annotations"]["written"] == 1
+    assert first["metrics"]["pass_rate(answered)"]["value"] == 1.0
+
+    code, second = _run_json(
+        capsys,
+        "--root",
+        root,
+        "online",
+        spec,
+        "--until",
+        _at(120),
+        "--alert-below",
+        "pass_rate(answered)=0.99",
+        "--json",
+        "-q",
+    )
+    assert code == 1
+    assert second["window"]["start"] == first["window"]["end"]
+    assert second["gate_failures"][0].startswith("pass_rate(answered) = 0 is below")
+
+    code, nothing = _run_json(
+        capsys, "--root", root, "online", spec, "--until", _at(120), "--json"
+    )
+    assert code == 0
+    assert nothing["run"] is None
+
+    code, pushed = _run_json(capsys, "--root", root, "push", first["id"], "--json")
+    assert code == 0
+    assert pushed["annotations"] == 1
+    assert [a.target_id for a in traces.annotations] == ["a", "b", "a"]
+
+
+def test_datasets_from_traces(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], traces: MemorySource
+) -> None:
+    module = tmp_path / "online_evals.py"
+    module.write_text(textwrap.dedent(_ONLINE))
+    spec = f"{module}:writer"
+    output = tmp_path / "inputs.jsonl"
+    window = ["--since", _at(0), "--until", _at(120)]
+    code, export = _run_json(
+        capsys, "datasets", "from-traces", spec, *window, "-o", str(output), "--json"
+    )
+    assert code == 0
+    assert export["examples"] == 2
+    assert [json.loads(line)["input"] for line in output.read_text().splitlines()] == [
+        "q1",
+        "q2",
+    ]
+    code, refused = _run_json(
+        capsys, "datasets", "from-traces", spec, *window, "-o", str(output), "--json"
+    )
+    assert code == 2
+    assert "exists" in refused["error"]["message"]
+    fresh = tmp_path / "fresh.jsonl"
+    code, none_new = _run_json(
+        capsys,
+        "datasets",
+        "from-traces",
+        spec,
+        *window,
+        "--exclude",
+        str(output),
+        "-o",
+        str(fresh),
+        "--json",
+    )
+    assert code == 0
+    assert none_new["examples"] == 0
+    assert none_new["duplicates"] == 2
+    assert not fresh.exists()
+
+
+def test_online_reports_its_gates_when_annotations_fail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], traces: MemorySource
+) -> None:
+    module = tmp_path / "online_evals.py"
+    module.write_text(textwrap.dedent(_ONLINE))
+    traces.fail_annotations = True
+    code, payload = _run_json(
+        capsys,
+        "--root",
+        str(tmp_path / "evals"),
+        "online",
+        f"{module}:writer",
+        "--since",
+        _at(0),
+        "--until",
+        _at(120),
+        "--alert-below",
+        "pass_rate(answered)=0.99",
+        "--json",
+        "-q",
+    )
+    assert code == 3
+    assert payload["kind"] == "online"
+    assert payload["annotation_error"] == "store unavailable"
+    assert payload["gate_failures"][0].startswith("pass_rate(answered)")
+    assert payload["annotations"]["pending"] == 2

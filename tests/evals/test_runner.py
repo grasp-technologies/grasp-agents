@@ -28,6 +28,7 @@ from grasp_agents.evals import (
     evaluator,
     rescore,
 )
+from grasp_agents.telemetry import InheritedAttributesSpanProcessor
 
 type Ctx = EvalContext[int, int, int]
 
@@ -261,8 +262,38 @@ class TestEvaluate:
         assert len(spans) == 2
         ids = {format(s.context.trace_id, "032x") for s in spans}
         assert {t.trace_id for t in run.trials} == ids
-        attributes = spans[0].attributes or {}
+        assert {s.name for s in spans} == {"double.trial"}
+        by_example = {(s.attributes or {})["grasp.eval.example_id"]: s for s in spans}
+        attributes = by_example[run.trials[0].example_id].attributes or {}
         assert attributes["grasp.eval.run_id"] == run.id
+        assert attributes["grasp.span.kind"] == "trial"
+        assert attributes["input.value"] == "0"
+        assert attributes["output.value"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_every_span_of_a_trial_carries_its_identity(self) -> None:
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(InheritedAttributesSpanProcessor())
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracer = provider.get_tracer("test")
+        from grasp_agents.evals import _execution
+
+        async def traced_double(x: int) -> int:
+            with tracer.start_as_current_span("inner"):
+                return x * 2
+
+        original = _execution._tracer
+        _execution._tracer = tracer
+        try:
+            run = await evaluate(traced_double, _numbers(1), [correct], persist=False)
+        finally:
+            _execution._tracer = original
+        inner = next(s for s in exporter.get_finished_spans() if s.name == "inner")
+        attributes = inner.attributes or {}
+        assert attributes["grasp.eval.run_id"] == run.id
+        assert attributes["grasp.eval.example_id"] == run.trials[0].example_id
+        assert attributes["grasp.eval.repetition"] == 0
 
 
 class TestResume:
@@ -804,3 +835,26 @@ class TestRescoreRules:
         store.save(loaded)
         with pytest.raises(ValueError, match="not finished"):
             await rescore(parent.id, [correct], store=store)
+
+
+@pytest.mark.asyncio
+async def test_evaluator_calls_are_marked_as_evaluation_traffic() -> None:
+    from grasp_agents.telemetry.decorators import _inherited  # noqa: PLC0415
+
+    seen: dict[str, dict[str, Any]] = {}
+
+    @evaluator(name="async_peek")
+    async def async_peek(ctx: EvalContext[int, int, int]) -> bool:
+        seen["async"] = _inherited()
+        return True
+
+    @evaluator(name="sync_peek")
+    def sync_peek(ctx: EvalContext[int, int, int]) -> bool:
+        seen["sync"] = _inherited()
+        return True
+
+    run = await evaluate(double, _numbers(1), [async_peek, sync_peek], persist=False)
+    for kind, name in (("async", "async_peek"), ("sync", "sync_peek")):
+        assert seen[kind]["grasp.eval.run_id"] == run.id
+        assert seen[kind]["grasp.eval.evaluator"] == name
+        assert seen[kind]["grasp.eval.example_id"] == run.trials[0].example_id

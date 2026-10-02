@@ -16,7 +16,8 @@ from grasp_agents.session_context import (
     SessionContext,
     current_session_context,
 )
-from grasp_agents.telemetry import SpanKind, traced
+from grasp_agents.telemetry import SpanKind, SpanResult, SpanStart, traced
+from grasp_agents.telemetry import attributes as span_attrs
 from grasp_agents.types.errors import RunnerError
 from grasp_agents.types.events import Event, ProcPacketOutEvent, RunPacketOutEvent
 from grasp_agents.types.packet import Packet
@@ -25,6 +26,9 @@ from grasp_agents.utils.generics import AutoInstanceAttributesMixin
 from .event_bus import EventBus
 
 logger = logging.getLogger(__name__)
+
+# The traced entity of a runner run.
+_RUN_ENTITY = "runner_run"
 
 START_PROC_NAME: Literal["*START*"] = "*START*"
 END_PROC_NAME: Literal["*END*"] = "*END*"
@@ -383,7 +387,28 @@ class Runner[OutT, CtxT](AutoInstanceAttributesMixin, CheckpointPersistMixin):
             f"Posted output packet to recipients: {route}\n"
         )
 
-    @traced(name="runner_run", span_kind=SpanKind.WORKFLOW)
+    def _trace_span_start(
+        self, entity: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> SpanStart | None:
+        if entity != _RUN_ENTITY:
+            return None
+        chat_inputs = args[0] if args else kwargs.get("chat_inputs", "start")
+        return SpanStart(
+            name=self._name,
+            kind=SpanKind.RUNNER,
+            attributes={span_attrs.ATTR_RUNNER_NAME: self._name},
+            input=chat_inputs,
+        )
+
+    def _trace_span_result(self, entity: str, item: Any) -> SpanResult | None:
+        if entity != _RUN_ENTITY:
+            return SpanResult(output=item)
+        if not isinstance(item, RunPacketOutEvent):
+            return None
+        payloads = list(item.data.payloads)
+        return SpanResult(output=payloads[0] if len(payloads) == 1 else payloads)
+
+    @traced(name=_RUN_ENTITY, span_kind=SpanKind.RUNNER)
     async def run_stream(
         self, chat_inputs: Any = "start", **run_kwargs: Any
     ) -> AsyncIterator[Event[Any]]:

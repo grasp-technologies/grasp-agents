@@ -14,9 +14,16 @@ from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+from opentelemetry.util.types import AttributeValue
 from pydantic import ConfigDict, PydanticUserError, TypeAdapter, ValidationError
 
 from grasp_agents.session_context import SessionContext
+from grasp_agents.telemetry import (
+    SpanKind,
+    inherited_span_attributes,
+    record_span_payload,
+)
+from grasp_agents.telemetry import attributes as span_attrs
 from grasp_agents.types.events import Event
 
 from ._util import (
@@ -181,6 +188,18 @@ def warn_if_untyped(output_type: Any, outputs: Iterable[Any]) -> None:
         )
 
 
+def trial_span_attributes(
+    run: EvaluationRun, example_id: str, repetition: int
+) -> dict[str, AttributeValue]:
+    """What marks every span of a trial (and of its scoring) as evaluation traffic."""
+    return {
+        span_attrs.ATTR_EVAL_RUN_ID: run.id,
+        span_attrs.ATTR_EVAL_RUN_NAME: run.name,
+        span_attrs.ATTR_EVAL_EXAMPLE_ID: example_id,
+        span_attrs.ATTR_EVAL_REPETITION: repetition,
+    }
+
+
 def _trace_id(span: trace.Span) -> str | None:
     context = span.get_span_context()
     if not span.is_recording() or not context.trace_id:
@@ -205,16 +224,21 @@ async def execute_trial(
     output: Any = None
     stored: Any = None
     error: ErrorInfo | None = None
-    attributes = {
-        "grasp.eval.run_id": run.id,
-        "grasp.eval.name": run.name,
-        "grasp.eval.example_id": example.id,
-        "grasp.eval.repetition": repetition,
-        "openinference.span.kind": "CHAIN",
-    }
-    with _tracer.start_as_current_span(
-        f"eval.trial[{example.id}#{repetition}]", attributes=attributes
-    ) as span:
+    trial_attributes = trial_span_attributes(run, example.id, repetition)
+    with (
+        inherited_span_attributes(trial_attributes),
+        _tracer.start_as_current_span(
+            f"{run.name}.trial",
+            attributes={
+                span_attrs.ATTR_SPAN_KIND: SpanKind.TRIAL.value,
+                span_attrs.ATTR_OI_SPAN_KIND: "CHAIN",
+                **trial_attributes,
+            },
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span,
+    ):
+        record_span_payload(span, example.input, output=False)
         scope = asyncio.timeout(timeout_s)
         try:
             async with scope:
@@ -243,6 +267,9 @@ async def execute_trial(
                 )
         if error is not None:
             span.set_status(Status(StatusCode.ERROR, error.message))
+            span.set_attribute(span_attrs.ATTR_ERROR_TYPE, error.type)
+        else:
+            record_span_payload(span, stored, output=True)
         trace_id = _trace_id(span)
     trial = Trial(
         example_id=example.id,
@@ -412,10 +439,17 @@ class Executor:
     async def _run_one(
         self, evaluator: Evaluator[Any, Any, Any], ctx: EvalContext[Any, Any, Any]
     ) -> list[Score] | ErrorInfo:
+        marks = {
+            **trial_span_attributes(
+                self.run, ctx.trial.example_id, ctx.trial.repetition
+            ),
+            span_attrs.ATTR_EVAL_EVALUATOR: evaluator.name,
+        }
         try:
-            return await run_evaluator(
-                evaluator, ctx, timeout_s=self.evaluator_timeout_s
-            )
+            with inherited_span_attributes(marks):
+                return await run_evaluator(
+                    evaluator, ctx, timeout_s=self.evaluator_timeout_s
+                )
         except TimeoutError:
             return ErrorInfo(
                 type="TimeoutError",

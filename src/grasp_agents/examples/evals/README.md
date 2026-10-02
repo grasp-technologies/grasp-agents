@@ -10,7 +10,10 @@ A complete evaluation loop over a small grasp-agents pipeline, runnable offline.
   `llm_feedback_judge(llm)` for an `LLMAgent`), its validations and probes
   (`judge_v1_validation`, `judge_v2_validation`, `judge_v1_probes`,
   `judge_v2_probes`), and `grader_v2_judged`, which may only use a validated
-  judge.
+  judge. For production: `grader_online`, which scores the grader's traced runs.
+- `production.py` — the grader "in production": grades every student answer
+  with tracing on — eight students, each a session — into the Phoenix project
+  `short-answer-grader`.
 - `data/short_answers.jsonl` — 24 student answers with teacher grades, `dev` and
   `test` splits (`test` is sealed), `topic`/`difficulty` strata.
 - `data/feedback_labels.jsonl` — 41 graded answers whose feedback a teacher
@@ -109,7 +112,7 @@ Labels can also come from Phoenix. Trials carry trace ids when the run is traced
 into a Phoenix project — e.g. the spec module calls
 `grasp_agents.telemetry.init_tracing(project_name=NAME)` and
 `grasp_agents.telemetry.phoenix.init_phoenix(project_name=NAME)` with
-`PHOENIX_COLLECTOR_HTTP_ENDPOINT` set. People annotate those traces (or any of
+`TELEMETRY_COLLECTOR_HTTP_ENDPOINT` set (e.g. `$PHOENIX_BASE_URL/v1/traces`). People annotate those traces (or any of
 their spans) in the UI under the score's name, and `grasp-evals labels pull
 to_label.jsonl --project NAME --into my_labels.jsonl` reads the newest human
 annotation of each back (`--true`/`--false` map other label words to pass/fail).
@@ -119,11 +122,72 @@ time: each prompt, model or code change is a new judge whose validation starts
 over, compared on dev with the last one; the test split is the final check, not
 a target.
 
+## Production: online evaluation
+
+The same evaluators also score what the system did in production. An
+`Evaluation` with `traces=TraceQuery(...)` reads the spans of a Phoenix project —
+here the grader's runs, selected by processor name — and every scheduled run
+covers the window since the previous one. Grasp-agents spans carry what this
+needs: each processor run records its name, class, path, declared `version` and
+model as attributes, and its input and output payloads as JSON in
+`input.value` / `output.value` (long payloads are shortened without breaking the
+JSON). Spans recorded while an evaluation runs are left out.
+
+```bash
+# 14. The grader in production (a simulation), traced into Phoenix.
+export TELEMETRY_COLLECTOR_HTTP_ENDPOINT="$PHOENIX_BASE_URL/v1/traces"
+python src/grasp_agents/examples/evals/production.py
+
+# 15. Score its runs: the first online run says where the window starts; each
+#     later one continues where the last ended (up to a completion buffer before
+#     now, so spans still being exported are not missed). Scores are written
+#     back onto the spans as annotations. The judge must be validated (step 11),
+#     its pass rate is also reported corrected for its errors, and an alert
+#     fires (exit 1) only when a metric's whole interval is below the line.
+#     Clustered on the student (session), the intervals are wide with 8 of them.
+grasp-evals online "${SPEC}:grader_online" --since 1h \
+  --alert-below 'pass_rate(feedback_concise)=0.9'
+grasp-evals online "${SPEC}:grader_online"      # later: the next window
+
+# 16. Production inputs as examples for the offline evaluation — e.g. only the
+#     failed runs (--status error) — leaving out inputs the dataset already has.
+grasp-evals datasets from-traces "${SPEC}:grader_online" --since 1d \
+  --exclude src/grasp_agents/examples/evals/data/short_answers.jsonl -o new_inputs.jsonl
+```
+
+- **What one trial is**: a span (`scope="span"`, the default), all selected spans
+  of a trace (`"trace"`), or of a session (`"session"`, Phoenix `session.id`) —
+  for conversations, scored once the session has been idle for
+  `session_idle_s`. The default extractor reads the recorded payloads; a custom
+  one (`TraceQuery(extractor=...)`) can fetch full artifacts from the
+  application's database by the ids in the span attributes, and is where data
+  that must not leave production is dropped.
+- **Sampling** keeps a deterministic share of traces (`sample_rate`, by trace
+  id, so every evaluation at the same rate sees the same traces), capped by
+  `max_items` and spread over `strata`.
+- **Runs**: an online run is a normal run on disk (`show`, `labels sample` and
+  `rescore` work on it; `push` writes a rescore's scores to the traces) whose
+  window is recorded; the next window starts at the end of the newest one that
+  covered its window — a run stopped by `--max-cost` covers it too, so cap
+  volume with `sample_rate` / `max_items` rather than the budget. A run whose
+  extractor could not read every item is invalid; one that read none (an
+  outage) failed, and its window is read again. Run one job at a time per
+  evaluation. Annotations an online run failed to write are retried (best
+  effort) by the next run, or with `grasp-evals push RUN`; the command still
+  reports the window's gates, then exits 3. Annotations are named after the
+  score and identified by the evaluator version
+  (`grasp-evals:feedback_quality@v2`), so writing them again replaces them;
+  after an upgrade, both versions' annotations sit under the score's name.
+- **Labels from production**: `grasp-evals labels sample latest:grader_online
+  --score feedback_quality -o to_label.jsonl` picks production outputs to label;
+  annotations people make on those traces in Phoenix come back with `labels
+  pull`.
+
 Every command takes `--json` (one JSON document on stdout, also for errors).
 Progress goes to stderr; `--progress json` makes it one JSON object per finished
 trial. Exit codes: 0 done, 1 a gate failed (invalid or incomplete run, missed
 `--fail-under`, significant regression, unvalidated judge, invalid dataset), 2
-usage error, 3 unexpected or Phoenix error. Runs are addressed by id, unique id
+usage error, 3 unexpected or Phoenix error (`online --alert-below` also exits 1). Runs are addressed by id, unique id
 prefix, run directory, `latest`, or `latest:<name>` where the name is the run's
 name or the spec attribute (`latest:grader_v1`).
 

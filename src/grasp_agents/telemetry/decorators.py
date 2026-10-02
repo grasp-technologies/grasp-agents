@@ -3,19 +3,21 @@ Tracing decorators using raw OpenTelemetry API.
 
 Follows the OTel library instrumentation pattern: depends only on opentelemetry-api.
 If no TracerProvider is configured by the application, all spans are no-ops.
+Span names and attributes are listed in :mod:`grasp_agents.telemetry.attributes`.
 """
 
+import asyncio
 import hashlib
 import inspect
 import json
+import math
 import os
-import re
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from enum import StrEnum
-from functools import wraps
+from dataclasses import dataclass, field, replace
+from functools import cached_property, wraps
 from logging import getLogger
-from typing import Any, cast, overload
+from typing import Any, Final, cast, overload
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -24,7 +26,28 @@ from opentelemetry.context import (
     Context,
 )
 from opentelemetry.trace.propagation import set_span_in_context
+from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel
+
+from grasp_agents.utils.errors import format_error_chain, root_cause
+
+from .attributes import (
+    ATTR_CANCELLED,
+    ATTR_CONVERSATION_ID,
+    ATTR_ERROR_TYPE,
+    ATTR_INPUT_MIME_TYPE,
+    ATTR_INPUT_TRUNCATED,
+    ATTR_INPUT_VALUE,
+    ATTR_OI_SPAN_KIND,
+    ATTR_OUTPUT_MIME_TYPE,
+    ATTR_OUTPUT_TRUNCATED,
+    ATTR_OUTPUT_VALUE,
+    ATTR_SESSION_ID,
+    ATTR_SPAN_KIND,
+    JSON_MIME_TYPE,
+    OPENINFERENCE_SPAN_KINDS,
+    SpanKind,
+)
 
 logger = getLogger(__name__)
 
@@ -32,49 +55,54 @@ logger = getLogger(__name__)
 # contrib instrumentations (see opentelemetry.instrumentation.utils).
 _SUPPRESS_INSTRUMENTATION_KEY_PLAIN = "suppress_instrumentation"
 
-# ---------------------------------------------------------------------------
-# Span kind values
-# ---------------------------------------------------------------------------
-
-
-class SpanKind(StrEnum):
-    WORKFLOW = "workflow"
-    TASK = "task"
-    AGENT = "agent"
-    TOOL = "tool"
-
-
-# ---------------------------------------------------------------------------
-# Span attribute keys
-# Align with gen_ai.* where applicable; use grasp.* for framework-specific.
-# ---------------------------------------------------------------------------
-
-ATTR_SPAN_KIND = "grasp.span.kind"
-ATTR_ENTITY_NAME = "grasp.entity.name"
-ATTR_ENTITY_VERSION = "grasp.entity.version"
-ATTR_ENTITY_INPUT = "grasp.entity.input"
-ATTR_ENTITY_OUTPUT = "grasp.entity.output"
-ATTR_WORKFLOW_NAME = "grasp.workflow.name"
-ATTR_FAILED_ATTEMPTS = "grasp.processor.failed_attempts"
-
-# OpenInference compatibility — Phoenix uses this to show span type icons
-ATTR_OI_SPAN_KIND = "openinference.span.kind"
-_GRASP_TO_OI_KIND: dict[str, str] = {
-    "workflow": "CHAIN",
-    "task": "CHAIN",
-    "agent": "AGENT",
-    "tool": "TOOL",
-}
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "responses"}
+DEFAULT_EXCLUDE_FIELDS = {"_hidden_params", "responses", "encrypted_content"}
 _TRACER_NAME = "grasp_agents"
 
+
+class _NoPayload:
+    def __repr__(self) -> str:
+        return "NO_PAYLOAD"
+
+
+NO_PAYLOAD: Final[Any] = _NoPayload()
+"""Marks a span that records no ``input.value`` / ``output.value``."""
+
+
+class _CallArguments:
+    def __repr__(self) -> str:
+        return "CALL_ARGUMENTS"
+
+
+CALL_ARGUMENTS: Final[Any] = _CallArguments()
+"""As a ``SpanStart.input``: record the call's arguments, by parameter name."""
+
+
+@dataclass(frozen=True)
+class SpanStart:
+    """How a traced object describes the span of one of its calls."""
+
+    name: str
+    kind: SpanKind
+    attributes: Mapping[str, AttributeValue] = field(
+        default_factory=dict[str, AttributeValue]
+    )
+    # Recorded as ``input.value`` (JSON) when content tracing is on.
+    input: Any = NO_PAYLOAD
+
+
+@dataclass(frozen=True)
+class SpanResult:
+    """What a call's result (or a yielded item) adds to its span."""
+
+    # Recorded as ``output.value`` (JSON) when content tracing is on.
+    output: Any = NO_PAYLOAD
+    attributes: Mapping[str, AttributeValue] = field(
+        default_factory=dict[str, AttributeValue]
+    )
+
+
 # ---------------------------------------------------------------------------
-# Helpers
+# Payloads
 # ---------------------------------------------------------------------------
 
 
@@ -82,7 +110,7 @@ def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
     all_exclude = DEFAULT_EXCLUDE_FIELDS.union(exclude_fields or set())
     if isinstance(obj, BaseModel):
         try:
-            return obj.model_dump(exclude=all_exclude)
+            return _to_plain(obj.model_dump(exclude=all_exclude), exclude_fields)
         except Exception:
             return str(obj)
     if isinstance(obj, dict):
@@ -96,39 +124,239 @@ def _to_plain(obj: Any, exclude_fields: set[str] | None = None) -> Any:
             _to_plain(v, exclude_fields)
             for v in cast("list[Any] | tuple[Any, ...] | set[Any]", obj)
         ]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        # NaN and infinities are not JSON.
+        return "NaN" if math.isnan(obj) else ("Infinity" if obj > 0 else "-Infinity")
     return obj
 
 
-def _truncate_if_needed(json_str: str) -> str:
-    limit_str = os.getenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT")
-    if not limit_str:
-        return json_str
-    try:
-        limit = int(limit_str)
-    except ValueError:
-        return json_str
-    if limit <= 0 or len(json_str) <= limit:
-        return json_str
-    # Keep the head AND tail, dropping the middle: the start and end of a
-    # prompt/response carry the most signal (the bulk is usually repetitive
-    # context). Fitted within `limit` so the SDK's own head-only cap never fires.
-    marker = f" …[{len(json_str) - limit} chars]… "
+_LIMIT_ENV = (
+    "OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+    "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+)
+
+
+def _attribute_limit(span: trace.Span | None = None) -> int | None:
+    """The length the SDK cuts the span's attribute values to, if any."""
+    limits = getattr(span, "_limits", None)
+    if limits is not None:
+        limit = getattr(limits, "max_span_attribute_length", None)
+        return limit if isinstance(limit, int) and limit > 0 else None
+    for name in _LIMIT_ENV:
+        raw = os.getenv(name)
+        if raw:
+            try:
+                limit = int(raw)
+            except ValueError:
+                return None
+            return limit if limit > 0 else None
+    return None
+
+
+def _dumps(value: Any) -> str:
+    return json.dumps(value, default=str, ensure_ascii=False)
+
+
+def _clip(text: str, limit: int) -> str:
+    """``text`` within ``limit`` characters, keeping its head and tail."""
+    if len(text) <= limit:
+        return text
+    marker = f"…[{len(text) - limit} chars]…"
     keep = limit - len(marker)
     if keep <= 0:
-        # Limit too small to fit a head…tail marker — fall back to a head clip.
-        return json_str[:limit]
-    head, tail = keep // 2, keep - keep // 2
-    # Removing head+tail (not just the over-limit slice) raises the true omitted
-    # count; recompute the marker so the result still fits within `limit`.
-    marker = f" …[{len(json_str) - head - tail} chars]… "
+        return text[:limit]
+    # The marker counts what is dropped, which grows once it takes room too.
+    marker = f"…[{len(text) - keep} chars]…"
     keep = max(0, limit - len(marker))
-    head, tail = keep // 2, keep - keep // 2
-    return (json_str[:head] + marker + json_str[len(json_str) - tail :])[:limit]
+    head, tail = keep - keep // 2, keep // 2
+    return text[:head] + marker + text[len(text) - tail :]
+
+
+@dataclass(frozen=True)
+class _Cut:
+    """The head and tail of a longer list or mapping, and how large it was."""
+
+    value: list[Any] | dict[str, Any]
+    total: int
+
+
+def _ends[T](items: list[T], keep: int) -> list[T]:
+    if len(items) <= keep:
+        return items
+    tail = keep // 2
+    return [*items[: keep - tail], *items[len(items) - tail :]]
+
+
+def _cut(value: Any, max_chars: int, max_items: int) -> Any:
+    # Containers keep their head and tail and remember their size, so markers
+    # added by ``_shrunk`` later count what the original held.
+    if isinstance(value, str):
+        return _clip(value, max_chars)
+    if isinstance(value, list):
+        items = cast("list[Any]", value)
+        kept = [_cut(v, max_chars, max_items) for v in _ends(items, max_items)]
+        return kept if len(items) <= max_items else _Cut(kept, len(items))
+    if isinstance(value, dict):
+        entries = list(cast("dict[str, Any]", value).items())
+        cut = {k: _cut(v, max_chars, max_items) for k, v in _ends(entries, max_items)}
+        return cut if len(entries) <= max_items else _Cut(cut, len(entries))
+    return value
+
+
+def _shrunk(value: Any, max_chars: int, max_items: int) -> Any:
+    """``value`` with strings cut to ``max_chars`` and containers to ``max_items``."""
+    total: int | None = None
+    if isinstance(value, _Cut):
+        value, total = value.value, value.total
+    if isinstance(value, str):
+        return _clip(value, max_chars)
+    if isinstance(value, list):
+        items = cast("list[Any]", value)
+        total = total or len(items)
+        if total > max_items:
+            tail = max_items // 2
+            marker = f"…[{total - max_items} items]…"
+            items = [*items[: max_items - tail], marker, *items[len(items) - tail :]]
+        return [_shrunk(v, max_chars, max_items) for v in items]
+    if isinstance(value, dict):
+        entries = list(cast("dict[str, Any]", value).items())
+        total = total or len(entries)
+        if total > max_items:
+            tail = max_items // 2
+            entries = [
+                *entries[: max_items - tail],
+                ("…", f"[{total - max_items} more keys]"),
+                *entries[len(entries) - tail :],
+            ]
+        return {k: _shrunk(v, max_chars, max_items) for k, v in entries}
+    return value
+
+
+def _extent(value: Any) -> tuple[int, int]:
+    """The longest string and the largest container inside a JSON value."""
+    if isinstance(value, _Cut):
+        value = value.value
+    if isinstance(value, str):
+        return len(value), 0
+    if isinstance(value, list | dict):
+        children = cast(
+            "list[Any]",
+            list(cast("dict[str, Any]", value).values())
+            if isinstance(value, dict)
+            else value,
+        )
+        extents = [_extent(v) for v in children]
+        return max((e[0] for e in extents), default=0), max(
+            [len(children), *(e[1] for e in extents)]
+        )
+    return 0, 0
+
+
+_MIN_CHARS = 16
+_MIN_ITEMS = 2
+
+
+def _largest_fitting(low: int, high: int, fits: Callable[[int], bool]) -> int:
+    """The largest ``n`` in ``[low, high]`` with ``fits(n)``, given ``fits(low)``."""
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def fit_json(value: Any, limit: int | None) -> tuple[str, bool]:
+    """
+    ``value`` as JSON text of at most ``limit`` characters, and whether it
+    had to be shortened. Long strings are cut in the middle first (keeping
+    head and tail, with a marker), then — only if that is not enough — long
+    lists and mappings, so the text stays valid JSON with as much content as
+    fits; a value whose structure alone is too large becomes a JSON string
+    holding the cut text.
+    """
+    text = _dumps(value)
+    if limit is None or len(text) <= limit:
+        return text, False
+    # Nothing longer than the limit, and no container with more entries than
+    # half of it, can be kept whole: cut those first, so the search below
+    # handles only what can fit.
+    native = _cut(json.loads(text), limit, max(_MIN_ITEMS, limit // 2))
+    longest, widest = _extent(native)
+
+    def size(max_chars: int, max_items: int) -> int:
+        return len(_dumps(_shrunk(native, max_chars, max_items)))
+
+    if size(_MIN_CHARS, _MIN_ITEMS) <= limit:
+        whole = size(_MIN_CHARS, widest)
+        if whole <= limit:
+            items = widest
+        else:
+            # Size grows about linearly with the entries kept: search below
+            # twice the proportional share, so candidates stay small.
+            def fits(n: int) -> bool:
+                return size(_MIN_CHARS, n) <= limit
+
+            high = max(_MIN_ITEMS, min(widest, 2 * widest * limit // whole))
+            items = _largest_fitting(_MIN_ITEMS, widest if fits(high) else high, fits)
+        chars = _largest_fitting(
+            _MIN_CHARS, max(_MIN_CHARS, longest), lambda n: size(n, items) <= limit
+        )
+        return _dumps(_shrunk(native, chars, items)), True
+    budget = limit
+    while budget > 0:
+        quoted = _dumps(_clip(text, budget))
+        if len(quoted) <= limit:
+            return quoted, True
+        budget -= len(quoted) - limit
+    return _dumps(""), True
 
 
 def _should_send_prompts() -> bool:
     val = os.getenv("GRASP_TRACE_CONTENT") or os.getenv("TRACELOOP_TRACE_CONTENT")
     return (val or "true").lower() == "true"
+
+
+def record_span_payload(
+    span: trace.Span,
+    payload: Any,
+    *,
+    output: bool,
+    exclude_fields: set[str] | None = None,
+) -> None:
+    """
+    Record ``payload`` as the span's ``input.value`` (or ``output.value``):
+    JSON, shortened to the span's attribute length limit without breaking it.
+    No-op when content tracing is off or ``payload`` is :data:`NO_PAYLOAD`.
+    """
+    if payload is NO_PAYLOAD or not _should_send_prompts() or not span.is_recording():
+        return
+    if output:
+        value_key, mime_key = ATTR_OUTPUT_VALUE, ATTR_OUTPUT_MIME_TYPE
+        truncated_key = ATTR_OUTPUT_TRUNCATED
+    else:
+        value_key, mime_key = ATTR_INPUT_VALUE, ATTR_INPUT_MIME_TYPE
+        truncated_key = ATTR_INPUT_TRUNCATED
+    limit = _attribute_limit(span)
+    try:
+        text, truncated = fit_json(_to_plain(payload, exclude_fields), limit)
+    except Exception as e:
+        # Telemetry must never fail the traced call (unserializable or
+        # circular payloads, a failing ``__str__``).
+        span.record_exception(e)
+        return
+    if limit is not None and len(text) > limit:
+        return
+    span.set_attribute(value_key, text)
+    span.set_attribute(mime_key, JSON_MIME_TYPE)
+    if truncated:
+        span.set_attribute(truncated_key, value=True)
+
+
+# ---------------------------------------------------------------------------
+# Instrumentation suppression
+# ---------------------------------------------------------------------------
 
 
 @contextmanager
@@ -173,45 +401,8 @@ def _exclude_fields_from_instance(instance: Any | None = None) -> set[str] | Non
 
 
 # ---------------------------------------------------------------------------
-# Span construction
+# Run-span helpers
 # ---------------------------------------------------------------------------
-
-
-def _get_span_name(
-    entity_name: str,
-    span_kind: SpanKind,
-    instance: Any | None = None,
-    kwargs: dict[str, Any] | None = None,
-) -> str:
-    instance_name = None
-    if instance is not None:
-        if span_kind in {SpanKind.WORKFLOW, SpanKind.AGENT, SpanKind.TOOL}:
-            instance_name = getattr(instance, "name", None)
-        elif span_kind == SpanKind.TASK and entity_name == "generate":
-            instance_name = getattr(instance, "agent_name", None)
-
-    if instance_name:
-        exec_id = (kwargs or {}).get("exec_id")
-        suffix = f"[{exec_id}]" if exec_id else ""
-        return f"{instance_name}.{entity_name}{suffix}"
-    return f"{entity_name}.{span_kind.value}"
-
-
-def _set_span_attributes(
-    span: trace.Span,
-    entity_name: str,
-    span_kind: SpanKind,
-    version: int | None,
-) -> None:
-    span.set_attribute(ATTR_SPAN_KIND, span_kind.value)
-    span.set_attribute(ATTR_ENTITY_NAME, entity_name)
-    oi_kind = _GRASP_TO_OI_KIND.get(span_kind.value)
-    if oi_kind:
-        span.set_attribute(ATTR_OI_SPAN_KIND, oi_kind)
-    if span_kind in {SpanKind.WORKFLOW, SpanKind.AGENT}:
-        span.set_attribute(ATTR_WORKFLOW_NAME, entity_name)
-    if version:
-        span.set_attribute(ATTR_ENTITY_VERSION, version)
 
 
 def _apply_caller_span_overrides(span: trace.Span, kwargs: dict[str, Any]) -> None:
@@ -263,11 +454,23 @@ def capture_run_span(instance: Any) -> trace.Span | None:
 
 
 # ---------------------------------------------------------------------------
-# Session trace grouping + session attributes
+# Inherited attributes: session id + scoped attributes
 # ---------------------------------------------------------------------------
 
 
-def derive_session_span_context(session_key: str) -> Context:
+def _trace_namespace() -> str:
+    # The project (or service) the global tracer provider exports as.
+    resource = getattr(trace.get_tracer_provider(), "resource", None)
+    attributes = cast("Mapping[str, Any]", getattr(resource, "attributes", None) or {})
+    value = attributes.get("openinference.project.name") or attributes.get(
+        "service.name"
+    )
+    return str(value) if value else ""
+
+
+def derive_session_span_context(
+    session_key: str, namespace: str | None = None
+) -> Context:
     """
     Deterministic remote-parent context for a session.
 
@@ -276,10 +479,14 @@ def derive_session_span_context(session_key: str) -> Context:
     without a checkpoint store — lands in a single trace, parented to a common
     session root. The root span itself is never emitted (it is a remote parent),
     so the grouping is expressed purely in OTel primitives and renders in any
-    backend. Pass the result as a span's ``context=`` to correlate your own
-    work with a grasp-agents session.
+    backend. ``namespace`` (default: the tracer provider's project or service
+    name) keeps equal session keys of different projects apart — a trace
+    stays in the backend project that first received it. Pass the result as a
+    span's ``context=`` to correlate your own work with a grasp-agents session.
     """
-    digest = hashlib.sha256(session_key.encode("utf-8")).digest()
+    space = _trace_namespace() if namespace is None else namespace
+    key = f"{space}\x00{session_key}" if space else session_key
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
     # trace_id is 128-bit, span_id 64-bit; both must be non-zero (OTel treats a
     # zero id as invalid). A SHA-256 slice is non-zero in practice — guard anyway.
     trace_id = int.from_bytes(digest[:16], "big") or 1
@@ -293,18 +500,18 @@ def derive_session_span_context(session_key: str) -> Context:
     return set_span_in_context(trace.NonRecordingSpan(span_context))
 
 
-_DEFAULT_SESSION_ID_ATTRIBUTES = ("gen_ai.conversation.id",)
+_DEFAULT_SESSION_ID_ATTRIBUTES = (ATTR_SESSION_ID, ATTR_CONVERSATION_ID)
 
 
 def _session_id_attribute_keys() -> tuple[str, ...]:
     """
     Span-attribute keys to stamp with the session id.
 
-    Defaults to ``gen_ai.conversation.id`` (the OpenTelemetry GenAI convention).
-    Override via the ``GRASP_SESSION_ID_ATTRIBUTES`` env var — comma-separated,
-    e.g. ``gen_ai.conversation.id,session.id`` (set it empty to stamp none).
-    Which keys a backend reads is a deployment concern, so it is configured at
-    the deployment level (env) rather than per session.
+    Defaults to ``session.id`` (OpenInference: Phoenix's Sessions view) and
+    ``gen_ai.conversation.id`` (the OpenTelemetry GenAI convention). Override
+    via the ``GRASP_SESSION_ID_ATTRIBUTES`` env var — comma-separated (set it
+    empty to stamp none). Which keys a backend reads is a deployment concern,
+    so it is configured at the deployment level (env) rather than per session.
     """
     raw = os.getenv("GRASP_SESSION_ID_ATTRIBUTES")
     if raw is None:
@@ -312,30 +519,57 @@ def _session_id_attribute_keys() -> tuple[str, ...]:
     return tuple(k.strip() for k in raw.split(",") if k.strip())
 
 
-# Carries the active session id down the OTel context so SessionSpanProcessor
-# can stamp it onto every descendant span. A context value, NOT baggage: it
-# never rides outbound request headers, so a possibly-identifying session id is
-# not leaked to LLM providers / downstream services.
-_SESSION_ID_CTX_KEY = otel_context.create_key("grasp.session_id")
+# Attributes every span started in this context receives (see
+# InheritedAttributesSpanProcessor). A context value, NOT baggage: it never
+# rides outbound request headers, so a possibly-identifying session id is not
+# leaked to LLM providers / downstream services.
+_INHERITED_ATTRIBUTES_KEY = otel_context.create_key("grasp.inherited_attributes")
+# The session the enclosing grasp run belongs to.
+_SESSION_KEY = otel_context.create_key("grasp.session")
+
+
+def _inherited(context: Context | None = None) -> dict[str, AttributeValue]:
+    value = otel_context.get_value(_INHERITED_ATTRIBUTES_KEY, context)
+    return dict(cast("Mapping[str, AttributeValue]", value)) if value else {}
+
+
+@contextmanager
+def inherited_span_attributes(
+    attributes: Mapping[str, AttributeValue | None],
+) -> Generator[None]:
+    """
+    Stamp ``attributes`` (those not ``None``) onto every span started inside
+    the block — this process's spans only; they are never propagated to other
+    services. grasp-agents spans always get them; other instrumentation's
+    spans need :class:`~grasp_agents.telemetry.InheritedAttributesSpanProcessor`,
+    which :func:`~grasp_agents.telemetry.init_tracing` installs.
+    """
+    merged = {
+        **_inherited(),
+        **{k: v for k, v in attributes.items() if v is not None},
+    }
+    token = otel_context.attach(
+        otel_context.set_value(_INHERITED_ATTRIBUTES_KEY, merged)
+    )
+    try:
+        yield
+    finally:
+        otel_context.detach(token)
 
 
 def _resolve_run_span_context(instance: Any | None) -> Context | None:
     """
-    Resolve the context for a run-ROOT span: session parent + session id.
+    The context for a session's outermost run: its session id, and its
+    trace when sessions are grouped.
 
     A run root (``Processor`` / ``Runner``) exposes ``_trace_session_info`` — its
     session id plus whether to group every run of the session into one trace.
-    Both apply only when this span would actually *be* a trace root (no span is
-    already recording); a nested run (a sub-agent under a runner, an
-    agent-as-tool, a generate/tool span) inherits the enclosing run's context
-    and is left untouched. The returned context carries:
-
-    * a derived session-root parent — so every run of the session shares one
-      trace — when grouping is on; otherwise no parent override;
-    * the session id as a context value, which :class:`SessionSpanProcessor`
-      reads to stamp the configured attribute(s) onto this span and every
-      descendant, attributing the whole run tree (incl. provider spans) to the
-      session.
+    The outermost grasp run of a session (no session is active yet) stamps the
+    session id on its span and every descendant, whatever the caller's spans
+    (an HTTP server span, an evaluation trial). It is parented to the derived
+    session root only when it has no parent of its own, so a caller's trace —
+    and its sampling decision — is kept. Nested runs (a sub-agent, an
+    agent-as-tool) inherit the enclosing run's context.
 
     ``None`` when nested or there is no named session. Telemetry must never fail
     the call: any error falls back to ambient parenting.
@@ -346,41 +580,41 @@ def _resolve_run_span_context(instance: Any | None) -> Context | None:
     if get_info is None:
         return None
     try:
-        # Only the outermost run span adopts the session; a recording ancestor
-        # means we are nested and must inherit the enclosing run's context.
-        if trace.get_current_span().is_recording():
+        if otel_context.get_value(_SESSION_KEY) is not None:
             return None
         info = get_info()
-        if info is None:
-            return None
-        session_id, group = info
-        ctx = derive_session_span_context(session_id) if group else None
-        return otel_context.set_value(_SESSION_ID_CTX_KEY, session_id, ctx)
+        return None if info is None else _session_context(*info)
     except Exception:
         logger.debug("session span resolution failed", exc_info=True)
         return None
 
 
-def stamp_session_attributes(
+def _session_context(session_id: str, group: bool) -> Context:
+    orphan = not trace.get_current_span().get_span_context().is_valid
+    context = derive_session_span_context(session_id) if group and orphan else None
+    inherited = {
+        **_inherited(),
+        **dict.fromkeys(_session_id_attribute_keys(), str(session_id)),
+    }
+    context = otel_context.set_value(_SESSION_KEY, str(session_id), context)
+    return otel_context.set_value(_INHERITED_ATTRIBUTES_KEY, inherited, context)
+
+
+def stamp_inherited_attributes(
     span: trace.Span, parent_context: Context | None = None
 ) -> None:
     """
-    Stamp the active session id onto ``span`` as the configured attribute(s).
-
-    Reads the session id a run root placed on the OTel context (resolved from
-    ``parent_context``, else the current context) and writes it to each key in
-    ``GRASP_SESSION_ID_ATTRIBUTES`` (default ``gen_ai.conversation.id``). Called
-    by :class:`grasp_agents.telemetry.SessionSpanProcessor` for every span — so
-    the whole run tree, including provider-instrumentation spans, is attributed
-    to the session. No-op when no session is active or the span is not recording.
+    Stamp the attributes inherited from ``parent_context`` (else the current
+    context) onto ``span``: the run's session id and anything set with
+    :func:`inherited_span_attributes`. Called by
+    :class:`grasp_agents.telemetry.InheritedAttributesSpanProcessor` for every
+    span, so the whole run tree — provider-instrumentation spans included —
+    carries them. No-op when nothing is inherited or the span is not recording.
     """
     if not span.is_recording():
         return
-    session_id = otel_context.get_value(_SESSION_ID_CTX_KEY, parent_context)
-    if not session_id:
-        return
-    for key in _session_id_attribute_keys():
-        span.set_attribute(key, str(session_id))
+    for key, value in _inherited(parent_context).items():
+        span.set_attribute(key, value)
 
 
 @contextmanager
@@ -388,15 +622,13 @@ def _run_span(
     span_name: str, instance: Any | None
 ) -> Generator[trace.Span, None, None]:
     """
-    Open a span, attaching the run-root's session context for its duration.
+    Open a span, attaching the session context for its duration.
 
-    At a run root the attached context carries the session parent + id, so the
-    span parents into the shared session trace (when grouping is on) and
-    :class:`SessionSpanProcessor` stamps the session attribute(s) on this span
-    AND every descendant — the attach (not just ``context=``) is what lets the
+    At a session's outermost run the attached context carries the session id
+    (and its trace, when grouped), so this span and every descendant get the
+    session attribute(s) — the attach (not just ``context=``) is what lets the
     id reach child spans, since ``start_as_current_span`` re-bases the active
-    context on the current one. A nested span attaches nothing and inherits the
-    enclosing run's context.
+    context on the current one.
     """
     parent_context = _resolve_run_span_context(instance)
     token = otel_context.attach(parent_context) if parent_context is not None else None
@@ -406,243 +638,278 @@ def _run_span(
             record_exception=False,
             set_status_on_exception=False,
         ) as span:
+            stamp_inherited_attributes(span)
             yield span
     finally:
         if token is not None:
             otel_context.detach(token)
 
 
-def _handle_span_input(
-    span: trace.Span,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-    exclude_fields: set[str] | None = None,
-) -> None:
-    if not span.is_recording():
-        return
-    try:
-        if _should_send_prompts():
-            json_input = json.dumps(
-                {
-                    "args": _to_plain(list(args), exclude_fields=exclude_fields),
-                    "kwargs": _to_plain(kwargs, exclude_fields=exclude_fields),
-                },
-                default=str,
-                indent=2,
-            )
-            span.set_attribute(ATTR_ENTITY_INPUT, _truncate_if_needed(json_input))
-    except (TypeError, ValueError, RecursionError) as e:
-        # Telemetry serialization must never fail the traced call. json.dumps
-        # raises ValueError on circular refs and RecursionError on deeply
-        # nested payloads; _to_plain can raise either too.
-        span.record_exception(e)
+# ---------------------------------------------------------------------------
+# One traced call
+# ---------------------------------------------------------------------------
 
 
-def _handle_span_output(
-    span: trace.Span,
-    res: Any,
-    exclude_fields: set[str] | None = None,
-) -> None:
-    if not span.is_recording():
-        return
-    try:
-        if _should_send_prompts():
-            json_output = json.dumps(
-                _to_plain(res, exclude_fields=exclude_fields),
-                default=str,
-                indent=2,
-            )
-            span.set_attribute(ATTR_ENTITY_OUTPUT, _truncate_if_needed(json_output))
-    except (TypeError, ValueError, RecursionError) as e:
-        # Telemetry serialization must never fail the traced call. json.dumps
-        # raises ValueError on circular refs and RecursionError on deeply
-        # nested payloads; _to_plain can raise either too.
-        span.record_exception(e)
+def _is_method(signature: inspect.Signature | None) -> bool:
+    if signature is None:
+        return False
+    first = next(iter(signature.parameters), None)
+    return first in {"self", "cls"}
 
 
-def _resolve_span_kind(instance: Any | None, default: SpanKind) -> SpanKind:
-    if instance is not None:
-        kind = getattr(instance, "_span_kind", None)
-        if isinstance(kind, SpanKind):
-            return kind
-    return default
-
-
-def _is_bound_method(func: Callable[..., Any], self_candidate: Any) -> bool:
-    return (inspect.ismethod(func) and (func.__self__ is self_candidate)) or hasattr(
-        self_candidate, func.__name__
-    )
+def _display_name(obj: Any) -> str:
+    # ``Class.method`` without the enclosing function of a local definition.
+    return str(obj.__qualname__).rsplit(".<locals>.", 1)[-1]
 
 
 def _is_async(fn: Callable[..., Any]) -> bool:
     return inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn)
 
 
-def _camel_to_snake(name: str) -> str:
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+def _call_arguments(
+    signature: inspect.Signature | None,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    bound: bool,
+) -> Any:
+    if signature is not None:
+        try:
+            arguments = dict(signature.bind_partial(*args, **kwargs).arguments)
+        except TypeError:
+            pass
+        else:
+            if bound and arguments:
+                arguments.pop(next(iter(arguments)))
+            return arguments
+    return {"args": list(args[1:] if bound else args), "kwargs": kwargs}
+
+
+class _TracedCall:
+    """Describes, observes and closes the span of one traced call."""
+
+    def __init__(
+        self,
+        *,
+        entity_name: str,
+        span_kind: SpanKind,
+        signature: inspect.Signature | None,
+        method: bool,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> None:
+        self._bound = method and bool(args)
+        self.instance: Any = args[0] if self._bound else None
+        self.entity_name = entity_name
+        self.kwargs = kwargs
+        self.result: SpanResult | None = None
+        self._span_kind = span_kind
+        self._signature = signature
+        self._args = args
+        self._observe: Callable[[str, Any], SpanResult | None] | None = getattr(
+            self.instance, "_trace_span_result", None
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return _tracing_enabled(self.instance)
+
+    @cached_property
+    def start(self) -> SpanStart:
+        start = self._described() or SpanStart(
+            name=self.entity_name, kind=self._span_kind, input=CALL_ARGUMENTS
+        )
+        if start.input is CALL_ARGUMENTS:
+            arguments = _call_arguments(
+                self._signature, self._args, self.kwargs, bound=self._bound
+            )
+            start = replace(start, input=arguments)
+        return start
+
+    def _described(self) -> SpanStart | None:
+        describe = getattr(self.instance, "_trace_span_start", None)
+        if describe is None:
+            return None
+        try:
+            start = describe(self.entity_name, self._args[1:], self.kwargs)
+            if not isinstance(start, SpanStart):
+                return None
+            # A kind given as a plain string.
+            return replace(start, kind=SpanKind(start.kind))
+        except Exception:
+            logger.debug("span description failed", exc_info=True)
+            return None
+
+    def begin(self, span: trace.Span) -> None:
+        if not span.is_recording():
+            return
+        try:
+            start = self.start
+            span.set_attribute(ATTR_SPAN_KIND, start.kind.value)
+            span.set_attribute(
+                ATTR_OI_SPAN_KIND, OPENINFERENCE_SPAN_KINDS.get(start.kind, "CHAIN")
+            )
+            for key, value in start.attributes.items():
+                span.set_attribute(key, value)
+            _apply_caller_span_overrides(span, self.kwargs)
+            record_span_payload(
+                span,
+                start.input,
+                output=False,
+                exclude_fields=_exclude_fields_from_instance(self.instance),
+            )
+        except Exception:
+            logger.debug("span start failed", exc_info=True)
+
+    def observe(self, item: Any) -> None:
+        """Note a yielded item, or the return value."""
+        if self._observe is None:
+            self.result = SpanResult(output=item)
+            return
+        try:
+            result = self._observe(self.entity_name, item)
+        except Exception:
+            logger.debug("span result failed", exc_info=True)
+            return
+        if isinstance(result, SpanResult):
+            self.result = result
+
+    def end(self, span: trace.Span) -> None:
+        result = self.result
+        if result is None or not span.is_recording():
+            return
+        try:
+            for key, value in result.attributes.items():
+                span.set_attribute(key, value)
+            record_span_payload(span, result.output, output=True)
+        except Exception:
+            logger.debug("span end failed", exc_info=True)
+
+
+def record_span_error(span: trace.Span, error: BaseException) -> None:
+    """Mark ``span`` failed: the cause chain, the root cause's type, the event."""
+    span.set_status(trace.Status(trace.StatusCode.ERROR, format_error_chain(error)))
+    span.set_attribute(ATTR_ERROR_TYPE, type(root_cause(error)).__name__)
+    span.record_exception(error)
 
 
 # ---------------------------------------------------------------------------
-# Internal decorator factories
+# Decorator factories
 # ---------------------------------------------------------------------------
 
 
 def _entity_method[F: Callable[..., Any]](
     name: str | None = None,
-    version: int | None = None,
     span_kind: SpanKind = SpanKind.TASK,
 ) -> Callable[[F], F]:
     def decorate(fn: F) -> F:
-        is_async = _is_async(fn)
-        entity_name = name or fn.__qualname__
+        entity_name = name or _display_name(fn)
+        try:
+            signature: inspect.Signature | None = inspect.signature(fn)
+        except (TypeError, ValueError):
+            signature = None
+        method = _is_method(signature)
 
-        if is_async:
-            if inspect.isasyncgenfunction(fn):
+        def traced_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> _TracedCall:
+            return _TracedCall(
+                entity_name=entity_name,
+                span_kind=span_kind,
+                signature=signature,
+                method=method,
+                args=args,
+                kwargs=kwargs,
+            )
 
-                @wraps(fn)
-                async def async_gen_wrap(*args: Any, **kwargs: Any) -> Any:
-                    is_bound = _is_bound_method(fn, args[0] if args else False)
-                    instance = args[0] if is_bound else None
-                    input_args = args[1:] if is_bound else args
-                    exclude_fields = _exclude_fields_from_instance(instance)
+        if inspect.isasyncgenfunction(fn):
 
-                    if not _tracing_enabled(instance):
-                        with _suppressed_instrumentation():
-                            async for item in fn(*args, **kwargs):
-                                yield item
-                        return
+            @wraps(fn)
+            async def async_gen_wrap(*args: Any, **kwargs: Any) -> Any:
+                call = traced_call(args, kwargs)
+                if not call.enabled:
+                    with _suppressed_instrumentation():
+                        async for item in fn(*args, **kwargs):
+                            yield item
+                    return
+                with _run_span(call.start.name, call.instance) as span:
+                    call.begin(span)
+                    try:
+                        async for item in fn(*args, **kwargs):
+                            call.observe(item)
+                            yield item
+                    except asyncio.CancelledError:
+                        span.set_attribute(ATTR_CANCELLED, value=True)
+                        raise
+                    except Exception as e:
+                        record_span_error(span, e)
+                        raise
+                    finally:
+                        call.end(span)
 
-                    resolved_kind = _resolve_span_kind(instance, span_kind)
-                    span_name = _get_span_name(
-                        entity_name, resolved_kind, instance=instance, kwargs=kwargs
-                    )
-                    with _run_span(span_name, instance) as span:
-                        _set_span_attributes(span, entity_name, resolved_kind, version)
-                        _apply_caller_span_overrides(span, kwargs)
-                        _handle_span_input(span, input_args, kwargs, exclude_fields)
-                        # Track only the LAST item — buffering every yielded
-                        # event multiplies memory by the tracing nesting depth.
-                        last_item: Any = None
-                        has_items = False
+            return cast("F", async_gen_wrap)
 
-                        try:
-                            async for item in fn(*args, **kwargs):
-                                last_item = item
-                                has_items = True
-                                yield item
-                        except Exception as e:
-                            span.set_status(
-                                trace.Status(trace.StatusCode.ERROR, str(e))
-                            )
-                            span.record_exception(e)
-                            raise
-                        finally:
-                            if has_items:
-                                _handle_span_output(span, last_item)
-
-                return cast("F", async_gen_wrap)
+        if _is_async(fn):
 
             @wraps(fn)
             async def async_wrap(*args: Any, **kwargs: Any) -> Any:
-                is_bound = _is_bound_method(fn, args[0] if args else False)
-                instance = args[0] if is_bound else None
-                input_args = args[1:] if is_bound else args
-                exclude_fields = _exclude_fields_from_instance(instance)
-
-                if not _tracing_enabled(instance):
+                call = traced_call(args, kwargs)
+                if not call.enabled:
                     with _suppressed_instrumentation():
                         return await fn(*args, **kwargs)
-
-                resolved_kind = _resolve_span_kind(instance, span_kind)
-                span_name = _get_span_name(
-                    entity_name, resolved_kind, instance=instance, kwargs=kwargs
-                )
-                with _run_span(span_name, instance) as span:
-                    _set_span_attributes(span, entity_name, resolved_kind, version)
-                    _apply_caller_span_overrides(span, kwargs)
-                    _handle_span_input(span, input_args, kwargs, exclude_fields)
+                with _run_span(call.start.name, call.instance) as span:
+                    call.begin(span)
                     try:
                         res = await fn(*args, **kwargs)
-                        _handle_span_output(span, res)
-                        return res
-                    except Exception as e:
-                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                        span.record_exception(e)
+                    except asyncio.CancelledError:
+                        span.set_attribute(ATTR_CANCELLED, value=True)
                         raise
+                    except Exception as e:
+                        record_span_error(span, e)
+                        raise
+                    call.observe(res)
+                    call.end(span)
+                    return res
 
             return cast("F", async_wrap)
-
-        # --- Sync paths ---
 
         if inspect.isgeneratorfunction(fn):
 
             @wraps(fn)
             def sync_gen_wrap(*args: Any, **kwargs: Any) -> Any:
-                is_bound = _is_bound_method(fn, args[0] if args else False)
-                instance = args[0] if is_bound else None
-                input_args = args[1:] if is_bound else args
-                exclude_fields = _exclude_fields_from_instance(instance)
-
-                if not _tracing_enabled(instance):
+                call = traced_call(args, kwargs)
+                if not call.enabled:
                     with _suppressed_instrumentation():
                         yield from fn(*args, **kwargs)
                     return
-
-                resolved_kind = _resolve_span_kind(instance, span_kind)
-                span_name = _get_span_name(
-                    entity_name, resolved_kind, instance=instance, kwargs=kwargs
-                )
-                with _run_span(span_name, instance) as span:
-                    _set_span_attributes(span, entity_name, resolved_kind, version)
-                    _apply_caller_span_overrides(span, kwargs)
-                    _handle_span_input(span, input_args, kwargs, exclude_fields)
-                    # Track only the LAST item — see the async generator path.
-                    last_item: Any = None
-                    has_items = False
-
+                with _run_span(call.start.name, call.instance) as span:
+                    call.begin(span)
                     try:
                         for item in fn(*args, **kwargs):
-                            last_item = item
-                            has_items = True
+                            call.observe(item)
                             yield item
                     except Exception as e:
-                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                        span.record_exception(e)
+                        record_span_error(span, e)
                         raise
                     finally:
-                        if has_items:
-                            _handle_span_output(span, last_item)
+                        call.end(span)
 
             return cast("F", sync_gen_wrap)
 
         @wraps(fn)
         def sync_wrap(*args: Any, **kwargs: Any) -> Any:
-            is_bound = _is_bound_method(fn, args[0] if args else False)
-            instance = args[0] if is_bound else None
-            input_args = args[1:] if is_bound else args
-            exclude_fields = _exclude_fields_from_instance(instance)
-
-            if not _tracing_enabled(instance):
+            call = traced_call(args, kwargs)
+            if not call.enabled:
                 with _suppressed_instrumentation():
                     return fn(*args, **kwargs)
-
-            resolved_kind = _resolve_span_kind(instance, span_kind)
-            span_name = _get_span_name(
-                entity_name, resolved_kind, instance=instance, kwargs=kwargs
-            )
-            with _run_span(span_name, instance) as span:
-                _set_span_attributes(span, entity_name, resolved_kind, version)
-                _apply_caller_span_overrides(span, kwargs)
-                _handle_span_input(span, input_args, kwargs, exclude_fields)
+            with _run_span(call.start.name, call.instance) as span:
+                call.begin(span)
                 try:
                     res = fn(*args, **kwargs)
-                    _handle_span_output(span, res)
-                    return res
                 except Exception as e:
-                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    span.record_exception(e)
+                    record_span_error(span, e)
                     raise
+                call.observe(res)
+                call.end(span)
+                return res
 
         return cast("F", sync_wrap)
 
@@ -651,19 +918,18 @@ def _entity_method[F: Callable[..., Any]](
 
 def _entity_class[T: type](
     name: str | None,
-    version: int | None,
     method_name: str,
     span_kind: SpanKind = SpanKind.TASK,
 ) -> Callable[[T], T]:
     def decorator(cls: T) -> T:
-        task_name = name or _camel_to_snake(cls.__qualname__)
         method = getattr(cls, method_name)
         setattr(
             cls,
             method_name,
-            _entity_method(name=task_name, version=version, span_kind=span_kind)(
-                method
-            ),
+            _entity_method(
+                name=name or f"{_display_name(cls)}.{method_name}",
+                span_kind=span_kind,
+            )(method),
         )
         return cls
 
@@ -678,7 +944,6 @@ def _entity_class[T: type](
 @overload
 def traced[F: Callable[..., Any]](
     name: str | None = ...,
-    version: int | None = ...,
     span_kind: SpanKind = ...,
 ) -> Callable[[F], F]: ...
 
@@ -686,7 +951,6 @@ def traced[F: Callable[..., Any]](
 @overload
 def traced[T: type](
     name: str | None = ...,
-    version: int | None = ...,
     span_kind: SpanKind = ...,
     *,
     method_name: str,
@@ -695,23 +959,20 @@ def traced[T: type](
 
 def traced[F: Callable[..., Any], T: type](
     name: str | None = None,
-    version: int | None = None,
     span_kind: SpanKind = SpanKind.TASK,
     method_name: str | None = None,
 ) -> Callable[[F], F] | Callable[[T], T]:
     """
-    Trace a function or class method with an OTel span.
+    Trace a function or class method with an OTel span named ``name`` (default:
+    the function's qualified name), recording its arguments and result.
 
-    Span kind is resolved at call time: ``instance._span_kind`` (if present)
-    takes precedence over the *span_kind* argument.  Use the decorator
-    parameter for methods decorated directly; use the class attribute for
-    inherited methods that need different kinds in subclasses.
+    A traced method's object may describe its spans itself: ``_trace_span_start
+    (entity, args, kwargs) -> SpanStart | None`` (name, kind, attributes, input;
+    ``None`` keeps the default description) and ``_trace_span_result(entity,
+    item) -> SpanResult | None``, called with the return value or with each
+    yielded item (the last ``SpanResult`` is recorded). ``entity`` is the span
+    name the decorator would use (its ``name``, else the qualified name).
     """
     if method_name is None:
-        return _entity_method(name=name, version=version, span_kind=span_kind)
-    return _entity_class(
-        name=name,
-        version=version,
-        method_name=method_name,
-        span_kind=span_kind,
-    )
+        return _entity_method(name=name, span_kind=span_kind)
+    return _entity_class(name=name, method_name=method_name, span_kind=span_kind)

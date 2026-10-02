@@ -8,6 +8,7 @@ and convenience functions for common OTel exporters.
 import threading
 from logging import getLogger
 from typing import Any
+from weakref import WeakSet
 
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -20,27 +21,27 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.trace import Span
 
-from .decorators import stamp_session_attributes
+from .decorators import stamp_inherited_attributes
 
 logger = getLogger(__name__)
 
 _init_lock = threading.Lock()
 
 
-class SessionSpanProcessor(SpanProcessor):
+class InheritedAttributesSpanProcessor(SpanProcessor):
     """
-    Stamp the active session id onto every span as configured attribute(s).
+    Stamp inherited attributes onto every span when it starts: the run's
+    session id (under each key in ``GRASP_SESSION_ID_ATTRIBUTES``, default
+    ``session.id`` and ``gen_ai.conversation.id``) and attributes set with
+    :func:`~grasp_agents.telemetry.inherited_span_attributes`.
 
-    Reads the session id a run root placed on the OTel context and writes it to
-    each key in ``GRASP_SESSION_ID_ATTRIBUTES`` (default ``gen_ai.conversation.id``).
-    :func:`init_tracing` installs it automatically; add it to a hand-built
-    ``TracerProvider`` to propagate the session id to ALL spans — including
-    provider-instrumentation spans — for backends that group or filter by it per
-    span (Langfuse, Datadog, …). No-op when no session is active.
+    :func:`init_tracing` installs it; add it to a hand-built ``TracerProvider``
+    so ALL spans carry them — including provider-instrumentation spans — for
+    backends that group or filter by them per span.
     """
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
-        stamp_session_attributes(span, parent_context)
+        stamp_inherited_attributes(span, parent_context)
 
 
 def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
@@ -49,12 +50,15 @@ def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
 
     This makes grasp-agents tracing decorators emit real spans. By default
     no exporter is attached -- add one via add_exporter() or init_phoenix().
+    An already configured provider is kept (and given an
+    :class:`InheritedAttributesSpanProcessor` if it has none from here).
 
     Returns the TracerProvider so callers can attach exporters/processors.
     """
     with _init_lock:
         existing = trace.get_tracer_provider()
         if isinstance(existing, TracerProvider):
+            _add_inherited_attributes(existing)
             return existing
 
         provider = TracerProvider(
@@ -65,11 +69,20 @@ def init_tracing(project_name: str = "grasp-agents") -> TracerProvider:
                 }
             ),
         )
-        # Propagates the run's session id onto every span (see the processor).
-        provider.add_span_processor(SessionSpanProcessor())
+        _add_inherited_attributes(provider)
         trace.set_tracer_provider(provider)
         logger.info("Initialized TracerProvider for %s", project_name)
         return provider
+
+
+_stamping: WeakSet[TracerProvider] = WeakSet()
+
+
+def _add_inherited_attributes(provider: TracerProvider) -> None:
+    # Propagates the session id and inherited attributes onto every span.
+    if provider not in _stamping:
+        provider.add_span_processor(InheritedAttributesSpanProcessor())
+        _stamping.add(provider)
 
 
 def add_exporter(

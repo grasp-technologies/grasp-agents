@@ -61,6 +61,7 @@ from grasp_agents.session_context import SessionContext
 from grasp_agents.skills.injection import make_skills_section
 from grasp_agents.skills.types import SkillFilter
 from grasp_agents.telemetry import SpanKind
+from grasp_agents.telemetry import attributes as span_attrs
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import Content, InputImage
 from grasp_agents.types.errors import ProcInputValidationError
@@ -206,6 +207,8 @@ class LLMAgent[InT, OutT, CtxT](
         # no transcript log, no checkpoint heads, no task records — e.g. for
         # throwaway replicas fanned out by a ParallelProcessor.
         durability_enabled: bool = True,
+        # Declared version (e.g. of the prompts), recorded on the agent's spans
+        version: str | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -216,6 +219,7 @@ class LLMAgent[InT, OutT, CtxT](
             tracing_enabled=tracing_enabled,
             tracing_exclude_input_fields=tracing_exclude_input_fields,
             durability_enabled=durability_enabled,
+            version=version,
         )
 
         # Session persistence
@@ -541,6 +545,14 @@ class LLMAgent[InT, OutT, CtxT](
     @property
     def llm(self) -> LLM:
         return self._loop.llm
+
+    def _span_attributes(self) -> dict[str, Any]:
+        attributes = super()._span_attributes()
+        return {
+            **attributes,
+            span_attrs.ATTR_AGENT_NAME: attributes[span_attrs.ATTR_PROCESSOR_NAME],
+            span_attrs.ATTR_AGENT_MODEL: self.llm.model_name,
+        }
 
     @property
     def sys_prompt(self) -> LLMPrompt | None:

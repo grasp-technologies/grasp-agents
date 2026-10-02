@@ -598,6 +598,11 @@ async def push_run(
     """
     if not run.finished:
         raise ValueError(f"Run {run.id} is still running; push it when it finishes")
+    if run.window is not None:
+        raise ValueError(
+            f"Run {run.id} scored production traces: its scores are annotations "
+            "of those traces (annotate_run), not an experiment"
+        )
     await client.check_server()
     link = run.phoenix
     if link is None or link.base_url != client.base_url:
