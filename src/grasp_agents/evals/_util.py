@@ -1,5 +1,6 @@
 import base64
 import dataclasses
+import functools
 import hashlib
 import inspect
 import json
@@ -8,6 +9,7 @@ import re
 import secrets
 import shutil
 import subprocess  # noqa: S404
+import sysconfig
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -107,12 +109,142 @@ def short_hash(*parts: str, length: int = 12) -> str:
     return digest.hexdigest()[:length]
 
 
-def code_hash(obj: Any) -> str | None:
-    """Hash of a function's or class's source code (``None`` when unavailable)."""
+_PLAIN = (str, int, float, bool, type(None))
+_MAX_CODE_DEPTH = 4
+
+
+def _plain_text(value: Any) -> str:
     try:
-        return short_hash(inspect.getsource(inspect.unwrap(obj)))
+        return canonical_json(value)
+    except TypeError:
+        return qualified_name(type(value))
+
+
+def _is_constant(value: Any) -> bool:
+    if isinstance(value, _PLAIN):
+        return True
+    if isinstance(value, tuple | frozenset):
+        return all(_is_constant(v) for v in cast("Iterable[Any]", value))
+    return False
+
+
+def _value_text(value: Any, depth: int) -> str:
+    # A value a function closes over, defaults to or is bound with: code for
+    # callables, constants as they are. Other objects (lists, caches,
+    # clients) are state, not configuration: only their type counts.
+    if callable(value) and not isinstance(value, type):
+        return _code_text(value, depth + 1)
+    if _is_constant(value):
+        return _plain_text(value)
+    return qualified_name(type(value))
+
+
+def _function_text(fn: Any, depth: int) -> str:
+    parts = [inspect.getsource(fn)]
+    parts.extend(_value_text(v, depth) for v in fn.__defaults__ or ())
+    keyword_defaults = cast("dict[str, Any]", fn.__kwdefaults__ or {})
+    parts.extend(f"{k}={_value_text(v, depth)}" for k, v in keyword_defaults.items())
+    for cell in fn.__closure__ or ():
+        try:
+            parts.append(_value_text(cell.cell_contents, depth))
+        except ValueError:  # an empty cell
+            parts.append("<empty>")
+    return "\x00".join(parts)
+
+
+def _code_text(obj: Any, depth: int = 0) -> str:
+    if depth > _MAX_CODE_DEPTH:
+        return qualified_name(obj)
+    if isinstance(obj, functools.partial):
+        call = cast("functools.partial[Any]", obj)
+        return "\x00".join(
+            [
+                _code_text(call.func, depth + 1),
+                *(_value_text(a, depth) for a in call.args),
+                *(f"{k}={_value_text(v, depth)}" for k, v in call.keywords.items()),
+            ]
+        )
+    if inspect.ismethod(obj):
+        return _code_text(obj.__func__, depth + 1)
+    target = inspect.unwrap(obj)
+    if inspect.isfunction(target):
+        return _function_text(target, depth)
+    if inspect.isclass(target):
+        return inspect.getsource(target)
+    # A callable object: its class's code and its constant public attributes.
+    attributes = cast("dict[str, Any]", getattr(target, "__dict__", {}))
+    settings = {
+        k: v for k, v in attributes.items() if not k.startswith("_") and _is_constant(v)
+    }
+    cls = cast("type[Any]", type(target))
+    return inspect.getsource(cls) + _plain_text(settings)
+
+
+def code_hash(obj: Any) -> str | None:
+    """
+    Hash of the code of a function, class, method, ``functools.partial`` or
+    callable object, including the constants (numbers, strings, tuples of
+    them) it closes over, defaults to or is bound with, and the code of the
+    functions among them (``None`` when its source is unavailable).
+    """
+    try:
+        return short_hash(_code_text(obj))
     except (OSError, TypeError):
         return None
+
+
+def _library_roots() -> tuple[Path, ...]:
+    paths = sysconfig.get_paths()
+    roots = {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
+    return tuple(Path(root).resolve() for root in roots if root)
+
+
+def is_library_code(obj: Any) -> bool:
+    """
+    Whether ``obj`` (a function, class or instance) comes from grasp-agents
+    (other than its examples), an installed package or the standard library.
+    """
+    target: Any = obj
+    if isinstance(obj, functools.partial):
+        target = cast("functools.partial[Any]", obj).func
+    if inspect.ismethod(target):
+        target = target.__func__
+    if not (inspect.isfunction(target) or inspect.isclass(target)):
+        target = cast("type[Any]", type(target))
+    module: str = getattr(target, "__module__", None) or ""
+    if module.partition(".")[0] == "grasp_agents":
+        return not module.startswith("grasp_agents.examples")
+    try:
+        path = inspect.getsourcefile(target)
+    except TypeError:
+        return True  # built-in
+    if path is None:
+        return True
+    resolved = Path(path).resolve()
+    return any(resolved.is_relative_to(root) for root in _library_roots())
+
+
+def code_identity(obj: Any) -> str:
+    """:func:`code_hash`, or a stable description when there is no source."""
+    found = code_hash(obj)
+    if found is not None:
+        return found
+    text = repr(obj)
+    return text if " at 0x" not in text else qualified_name(obj)
+
+
+def user_code_hash(objects: Iterable[Any]) -> str | None:
+    """
+    Combined :func:`code_identity` of ``objects`` that are user code — not
+    grasp-agents, installed packages or the standard library (``None`` when
+    there are none) — so upgrading a dependency does not change it.
+    """
+    identities = dict.fromkeys(
+        code_identity(obj)
+        for obj in objects
+        if obj is not None and not is_library_code(obj)
+    )
+    return short_hash(*identities) if identities else None
 
 
 def source_hash(objects: Iterable[Any]) -> str | None:

@@ -181,6 +181,18 @@ def with_record[E: Example[Any, Any]](example: E, record: ExampleRecord) -> E:
     return example
 
 
+class JudgedOutput[InT, OutT, RefT](BaseModel):
+    """
+    An output together with the example it answers: what a judge reads, and
+    the input of judge validation, probes and labeling.
+    """
+
+    input: InT
+    output: OutT
+    reference: RefT | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
+
+
 class Score(BaseModel):
     """
     One per-example judgment produced by an evaluator.
@@ -372,9 +384,9 @@ class ComponentInfo(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict[str, Any])
     # Evaluators only: who produced the judgments.
     annotator: Literal["CODE", "LLM", "HUMAN"] | None = None
-    # Tasks only: hash of what the system under test is made of (models,
-    # settings, prompts, tools, processor structure) when it can be read
-    # before running.
+    # Tasks and processor judges: hash of what the processor is made of
+    # (models, settings, prompts, tools, structure) when it can be read before
+    # running.
     fingerprint: str | None = None
     # Evaluators only: hash of the evaluator's own code (its function or
     # class). Outside the config hash; rescoring re-runs an evaluator whose
