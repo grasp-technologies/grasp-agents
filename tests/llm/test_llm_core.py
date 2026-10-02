@@ -25,6 +25,7 @@ import anthropic.types as anthropic_types
 import httpx
 import pytest
 
+from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm.model_info import get_model_capabilities
 from grasp_agents.llm.resilience import RetryPolicy
@@ -212,6 +213,22 @@ class TestStreamedResponseFailed:
 
 
 class TestStreamEndsWithoutTerminalEvent:
+    @pytest.mark.asyncio
+    async def test_failure_names_the_configured_endpoint(self) -> None:
+        llm = BrokenStreamCloudLLM(
+            model_name="fake",
+            failure="silent",
+            fail_attempts=10,
+            api_provider=APIProvider(
+                name="proxy", base_url="https://llm.example.test/v1", api_key="k"
+            ),
+        )
+
+        with pytest.raises(LlmInternalServerError) as excinfo:
+            await _drain_once(llm)
+
+        assert str(excinfo.value.request.url) == "https://llm.example.test/v1"
+
     @pytest.mark.asyncio
     async def test_error_event_raises_typed_error_with_its_message(self) -> None:
         llm = BrokenStreamCloudLLM(model_name="fake", failure="error", fail_attempts=10)

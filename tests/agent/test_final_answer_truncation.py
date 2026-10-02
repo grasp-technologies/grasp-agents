@@ -1,9 +1,15 @@
 """
 A final answer taken from a truncated response says so, to a custom output
-parser as well, unless it is parsed against a structured output schema.
+parser as well, unless it is parsed against a structured output schema. A
+streamed ``response.incomplete`` reaches the agent the same way.
 """
 
 from __future__ import annotations
+
+import logging
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from openai.types.responses.response import IncompleteDetails
@@ -12,6 +18,11 @@ from pydantic import BaseModel
 from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.types.content import OutputMessageText
 from grasp_agents.types.items import OutputMessageItem
+from grasp_agents.types.llm_events import (
+    LlmEvent,
+    ResponseCompleted,
+    ResponseIncomplete,
+)
 from grasp_agents.types.response import Response
 from tests._helpers import MockLLM
 
@@ -93,3 +104,40 @@ async def test_custom_parser_of_a_text_output_sees_the_notice() -> None:
     await agent.run("tag it")
 
     assert received == ["<a>x</a>" + _NOTICE]
+
+
+@dataclass(frozen=True)
+class _IncompleteStreamLLM(MockLLM):
+    """Ends each stream with ``response.incomplete``, as the Responses API does."""
+
+    async def _generate_response_stream_once(
+        self, input: Any, **kwargs: Any
+    ) -> AsyncIterator[LlmEvent]:
+        async for event in super()._generate_response_stream_once(input, **kwargs):
+            if isinstance(event, ResponseCompleted):
+                yield ResponseIncomplete(
+                    response=event.response,  # type: ignore[arg-type]
+                    sequence_number=event.sequence_number,
+                )
+            else:
+                yield event
+
+
+@pytest.mark.asyncio
+async def test_streamed_incomplete_response_reaches_the_output(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    agent = LLMAgent[str, str, None](
+        name="writer",
+        ctx=SessionContext[None](state=None),
+        llm=_IncompleteStreamLLM(
+            responses_queue=[_response("truncated", truncated=True)]
+        ),
+        stream_llm=True,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.agent_loop"):
+        out = await agent.run("hi")
+
+    assert out.payloads == ["truncated" + _NOTICE]
+    assert "LLM response is incomplete (max_output_tokens)" in caplog.text

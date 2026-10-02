@@ -916,6 +916,13 @@ class TestFinishReasons:
         assert resp.incomplete_details is not None
         assert resp.incomplete_details.reason == "max_output_tokens"
 
+    def test_stream_cut_before_a_finish_reason_has_no_terminal_event(self):
+        """A partial answer must not be reported as a completed response."""
+        events = asyncio.run(
+            _collect(CompletionsStreamConverter(), [_chunk(content="The answer is")])
+        )
+        assert not _events_of_type(events, ResponseCompleted)
+
 
 # ================================================================== #
 #  Helper function tests                                                #

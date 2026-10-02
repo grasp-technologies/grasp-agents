@@ -25,6 +25,7 @@ from grasp_agents.types.llm_errors import (
     LlmError,
     LlmErrorTuple,
     LlmInternalServerError,
+    LlmResponseSchemaError,
 )
 from grasp_agents.types.llm_events import (
     LlmError as LlmErrorEvent,
@@ -47,17 +48,6 @@ from .thought_signatures import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _streamed_failure(message: str) -> LlmInternalServerError:
-    return LlmInternalServerError(
-        message,
-        response=httpx.Response(
-            status_code=502,
-            request=httpx.Request("POST", "https://api.openai.com/v1"),
-        ),
-        body=None,
-    )
 
 
 def _format_usage(response: Response) -> str:
@@ -451,11 +441,19 @@ class CloudLLM(LLM):
         t0 = time.monotonic()
         try:
             raw = await self._get_api_response(**api_kwargs, **extra_settings)
-            # Conversion is inside the mapped region: a 200 response carrying
-            # an error body surfaces here (e.g. ``CompletionError``) and must
-            # reach retry/fallback as a typed LlmError, not a bare exception.
-            response = self._convert_api_response(raw)
         except Exception as err:
+            self._raise_mapped(err, output_schema=output_schema)
+        try:
+            response = self._convert_api_response(raw)
+        except ValidationError as err:
+            # Our types rejected what the provider returned: not a structured
+            # output to re-sample, and not a transient failure to retry.
+            raise LlmResponseSchemaError(
+                f"llm {self.model_name}: response failed validation: {err}"
+            ) from err
+        except Exception as err:
+            # A 200 response can carry an error body (e.g. ``CompletionError``)
+            # that must reach retry/fallback as a typed LlmError.
             self._raise_mapped(err, output_schema=output_schema)
 
         self._finalize_response(response)
@@ -538,7 +536,7 @@ class CloudLLM(LLM):
                 # up with no final response at all).
                 error = event.response.error
                 message = error.message if error else "response failed"
-                raise _streamed_failure(f"Streamed response failed: {message}")
+                raise self._streamed_failure(f"Streamed response failed: {message}")
             if isinstance(event, LlmErrorEvent):
                 stream_error = event
             if isinstance(event, OutputItemDone):
@@ -568,16 +566,24 @@ class CloudLLM(LLM):
             yield event
 
         if not terminal_seen:
-            # Providers can end a stream after an ``error`` event, or drop it
-            # with no terminal event at all. Neither raises in the SDK, and a
-            # caller that only recognizes ``response.completed`` would be left
-            # with no response — raise a typed error so retries and fallback
-            # engage, exactly as for ``response.failed``.
+            # The SDK doesn't raise when a stream ends after an ``error`` event
+            # or with no terminal event; fail so retries and fallback engage.
             detail = (
                 f"{stream_error.code or 'error'}: {stream_error.message}"
                 if stream_error is not None
                 else "no error event received"
             )
-            raise _streamed_failure(
+            raise self._streamed_failure(
                 f"Stream ended without a terminal response event ({detail})"
             )
+
+    def _streamed_failure(self, message: str) -> LlmInternalServerError:
+        # The error type requires a request; it only names the endpoint.
+        endpoint = self.api_provider.get("base_url") if self.api_provider else None
+        return LlmInternalServerError(
+            message,
+            response=httpx.Response(
+                status_code=502, request=httpx.Request("POST", endpoint or "/")
+            ),
+            body=None,
+        )
