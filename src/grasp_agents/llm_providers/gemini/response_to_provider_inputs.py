@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import TYPE_CHECKING
 
 from grasp_agents.llm_providers._file_helpers import file_part_data
@@ -287,4 +288,10 @@ PLACEHOLDER_THOUGHT_SIGNATURE = b"skip_thought_signature_validator"
 
 
 def requires_thought_signatures(model: str | None) -> bool:
-    return model is not None and "gemini-3" in model
+    if model is None:
+        return False
+
+    match = re.search(r"gemini-([0-9]+)(?:[.-]|$)", model)
+    base_version = int(match.group(1)) if match is not None else None
+
+    return base_version is not None and base_version >= 3
