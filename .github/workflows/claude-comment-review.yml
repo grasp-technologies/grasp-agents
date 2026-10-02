@@ -1,0 +1,48 @@
+name: Claude PR Comment Review
+# cSpell:words anthropics
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    # This repo is public, so anyone can write `@claude` in a comment. The
+    # action's own actor check gates that: it only answers commenters with
+    # write access to the repository, so a drive-by mention from an outside
+    # contributor doesn't spend API credit.
+    if: >-
+      ${{
+        contains(github.event.comment.body, '@claude')
+        && (github.event.issue.pull_request != null || github.event.pull_request != null)
+      }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Claude Code Action (comment-triggered)
+        uses: anthropics/claude-code-action@v1
+        # No `prompt:` here — providing one switches the action into
+        # automation mode, where it cannot post comments back to the PR
+        # (the review is generated but silently discarded). Without it the
+        # action runs in tag mode: it reads the @claude comment as the
+        # instruction and replies in a tracking comment.
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Claude Code posts as the `claude` GitHub App, so an @claude mention
+          # it writes makes the triggering actor a bot and the action refuses to
+          # run ("Workflow initiated by non-human actor"). Allow that one bot by
+          # name — not `*` — so a bot-posted mention is answered like anyone
+          # else's.
+          allowed_bots: "claude"
+          claude_args: |
+            --append-system-prompt "When reviewing a PR, produce a single COMPLETE review: walk every changed hunk systematically and surface every issue at once, not a sample. First read the existing PR comments and skip anything already raised. Classify every finding by severity ([Blocker]/[High]/[Medium]/[Nit]) and prefix each inline comment with its tag. Focus on correctness, security, performance, and project conventions (CONTRIBUTING.md + .claude/rules/) — not formatting, which ruff and pyright already cover. End with one summary that groups findings by severity as a checklist so the author can fix them in one pass. Be concise, cite lines, and don't restate code."
