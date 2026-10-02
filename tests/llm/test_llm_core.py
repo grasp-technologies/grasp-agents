@@ -4,6 +4,8 @@ LLM core / resilience behavior:
 * server ``Retry-After`` hints are sanitized at parse and capped at retry time
 * Anthropic usage is cache-normalized (no $0 cache writes, no negative cost)
 * a streamed terminal ``response.failed`` raises a typed, retryable error
+* a stream that ends without a terminal event (``error`` event, or a silent
+  end) raises a typed, retryable error
 * ``CompletionError`` (200-with-error-body) maps to a retryable LlmError
 * the resolved API key is not visible in ``repr()``
 * FallbackLLM stamps cost with the serving member's identity
@@ -17,7 +19,7 @@ from __future__ import annotations
 import math
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import anthropic.types as anthropic_types
 import httpx
@@ -49,8 +51,12 @@ from grasp_agents.types.llm_errors import (
     LlmRateLimitError,
 )
 from grasp_agents.types.llm_events import (
+    LlmError as LlmErrorEvent,
+)
+from grasp_agents.types.llm_events import (
     LlmEvent,
     ResponseCompleted,
+    ResponseCreated,
     ResponseFailed,
     ResponseRetrying,
 )
@@ -139,8 +145,10 @@ class TestAnthropicCacheUsage:
 
 
 @dataclass(frozen=True)
-class FailedStreamCloudLLM(LazyStreamCloudLLM):
-    """First ``fail_attempts`` streams end in a terminal ``response.failed``."""
+class BrokenStreamCloudLLM(LazyStreamCloudLLM):
+    """First ``fail_attempts`` streams end with ``failure``; later ones complete."""
+
+    failure: Literal["failed", "error", "silent"] = "failed"
 
     async def _get_api_stream(
         self,
@@ -152,7 +160,7 @@ class FailedStreamCloudLLM(LazyStreamCloudLLM):
         async def iterator() -> AsyncIterator[Any]:
             count: int = self._attempts  # type: ignore[attr-defined]
             object.__setattr__(self, "_attempts", count + 1)
-            yield "failed" if count < self.fail_attempts else "done"
+            yield self.failure if count < self.fail_attempts else "done"
 
         return iterator()
 
@@ -161,36 +169,80 @@ class FailedStreamCloudLLM(LazyStreamCloudLLM):
     ) -> AsyncIterator[LlmEvent]:
         seq = 0
         async for chunk in api_stream:
-            seq += 1
             resp = _text_response("recovered")
+            seq += 1
+            yield ResponseCreated(response=resp, sequence_number=seq)  # type: ignore[arg-type]
+            seq += 1
             if chunk == "failed":
                 resp = resp.model_copy(update={"status": "failed"})
                 yield ResponseFailed(response=resp, sequence_number=seq)  # type: ignore[arg-type]
-            else:
+            elif chunk == "error":
+                yield LlmErrorEvent(
+                    code="server_error",
+                    message="upstream exploded mid-stream",
+                    sequence_number=seq,
+                )
+            elif chunk == "done":
                 yield ResponseCompleted(response=resp, sequence_number=seq)  # type: ignore[arg-type]
+
+
+async def _drain_once(llm: BrokenStreamCloudLLM) -> None:
+    async for _ in llm._generate_response_stream_once(_USER_MSG):
+        pass
 
 
 class TestStreamedResponseFailed:
     @pytest.mark.asyncio
     async def test_terminal_failed_event_raises_typed_error(self) -> None:
-        llm = FailedStreamCloudLLM(model_name="fake", fail_attempts=10)
-
-        async def _collect() -> None:
-            async for _ in llm._generate_response_stream_once(_USER_MSG):
-                pass
+        llm = BrokenStreamCloudLLM(model_name="fake", fail_attempts=10)
 
         with pytest.raises(LlmInternalServerError, match="response failed"):
-            await _collect()
+            await _drain_once(llm)
 
     @pytest.mark.asyncio
     async def test_retry_recovers_from_failed_stream(self) -> None:
-        llm = FailedStreamCloudLLM(
+        llm = BrokenStreamCloudLLM(
             model_name="fake",
             fail_attempts=1,
             retry_policy=RetryPolicy(api_retries=2, initial_delay=0.01, max_delay=0.01),
         )
         events = [e async for e in llm.generate_response_stream(_USER_MSG)]
         assert any(isinstance(e, ResponseRetrying) for e in events)
+        assert llm.attempts == 2
+
+
+class TestStreamEndsWithoutTerminalEvent:
+    @pytest.mark.asyncio
+    async def test_error_event_raises_typed_error_with_its_message(self) -> None:
+        llm = BrokenStreamCloudLLM(model_name="fake", failure="error", fail_attempts=10)
+
+        with pytest.raises(LlmInternalServerError, match="upstream exploded"):
+            await _drain_once(llm)
+
+    @pytest.mark.asyncio
+    async def test_silent_end_raises_typed_error(self) -> None:
+        llm = BrokenStreamCloudLLM(
+            model_name="fake", failure="silent", fail_attempts=10
+        )
+
+        with pytest.raises(
+            LlmInternalServerError,
+            match=r"without a terminal response event \(no error event received\)",
+        ):
+            await _drain_once(llm)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["error", "silent"])
+    async def test_retry_recovers(self, failure: Literal["error", "silent"]) -> None:
+        llm = BrokenStreamCloudLLM(
+            model_name="fake",
+            failure=failure,
+            fail_attempts=1,
+            retry_policy=RetryPolicy(api_retries=2, initial_delay=0.01, max_delay=0.01),
+        )
+        events = [e async for e in llm.generate_response_stream(_USER_MSG)]
+        assert any(isinstance(e, ResponseRetrying) for e in events)
+        assert isinstance(events[-1], ResponseCompleted)
         assert llm.attempts == 2
 
 
