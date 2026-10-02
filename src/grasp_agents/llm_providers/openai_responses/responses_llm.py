@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
-from openai._types import omit  # noqa: PLC2701
+from openai._types import omit  # ruff: ignore[import-private-name]
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
 )
@@ -45,7 +45,7 @@ from openai.types.responses.web_search_preview_tool_param import (
 from openai.types.responses.web_search_tool_param import WebSearchToolParam
 from openai.types.shared import Reasoning
 from openai.types.shared_params import Metadata
-from pydantic import BaseModel, ConfigDict, TypeAdapter, with_config
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, with_config
 
 from grasp_agents.llm.cloud_llm import (
     ApiCallParams,
@@ -59,7 +59,7 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
 )
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
-from grasp_agents.types.llm_errors import LlmError
+from grasp_agents.types.llm_errors import LlmError, LlmResponseSchemaError
 from grasp_agents.types.llm_events import LlmEvent
 from grasp_agents.types.response import Response as InternalResponse
 
@@ -70,6 +70,9 @@ from .tool_converters import to_api_tool, to_api_tool_choice
 logger = logging.getLogger(__name__)
 
 _STREAM_EVENT_ADAPTER: TypeAdapter[LlmEvent] = TypeAdapter(LlmEvent)
+_TERMINAL_EVENT_TYPES = frozenset(
+    {"response.completed", "response.incomplete", "response.failed"}
+)
 
 # Caller-appended tool-output item types (user / system messages are matched
 # by role below). ``function_call_output`` is the only one the framework emits
@@ -220,7 +223,7 @@ class OpenAIResponsesLLM(CloudLLM):
 
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
@@ -371,10 +374,16 @@ class OpenAIResponsesLLM(CloudLLM):
     ) -> AsyncIterator[LlmEvent]:
         async for sdk_event in api_stream:
             data = sdk_event.model_dump(warnings="none", by_alias=True)
+            event_type = data.get("type")
             try:
-                yield _STREAM_EVENT_ADAPTER.validate_python(data)
-            except Exception:
-                logger.debug(
-                    "Skipping unrecognized stream event: %s",
-                    data.get("type"),
-                )
+                event = _STREAM_EVENT_ADAPTER.validate_python(data)
+            except ValidationError as err:
+                if event_type in _TERMINAL_EVENT_TYPES:
+                    # Skipping it would read as a stream with no final response.
+                    raise LlmResponseSchemaError(
+                        f"llm {self.model_name}: {event_type} event failed "
+                        f"validation: {err}"
+                    ) from err
+                logger.debug("Skipping unrecognized stream event: %s", event_type)
+                continue
+            yield event

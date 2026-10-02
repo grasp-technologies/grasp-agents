@@ -29,6 +29,7 @@ from grasp_agents.types.llm_errors import (
     LlmPermissionDeniedError,
     LlmQuotaExceededError,
     LlmRateLimitError,
+    LlmResponseSchemaError,
     LlmUnprocessableEntityError,
 )
 from grasp_agents.types.recovery import (
@@ -126,6 +127,11 @@ class TestRecoveryHintClassification:
         """A spent account never clears, so it must not inherit RATE_LIMITED."""
         err = LlmQuotaExceededError("spent", response=_fake_response(), body=None)
         assert classify_error(err) is RecoveryHint.QUOTA_EXCEEDED
+        assert not is_retryable(classify_error(err))
+
+    def test_response_schema_error_is_not_retried(self) -> None:
+        err = LlmResponseSchemaError("status failed validation")
+        assert classify_error(err) is RecoveryHint.INVALID_RESPONSE
         assert not is_retryable(classify_error(err))
 
     def test_unknown_exception_maps_to_unknown(self) -> None:

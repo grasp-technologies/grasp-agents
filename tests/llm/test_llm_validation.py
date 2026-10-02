@@ -161,6 +161,42 @@ class MockLLM(LLM):
 
 
 @dataclass(frozen=True)
+class _PlannedLLM(MockLLM):
+    """
+    Follows ``plan`` per stream call: ``"error"`` raises a retryable API error
+    before streaming anything, any other step streams the next response.
+    """
+
+    plan: list[str] = field(default_factory=list)
+
+    async def _generate_response_stream_once(
+        self,
+        input: Sequence[InputItem],
+        *,
+        tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
+        output_schema: Any | None = None,
+        tool_choice: Any | None = None,
+        **extra: Any,
+    ) -> AsyncIterator[LlmEvent]:
+        if self.plan.pop(0) == "error":
+            raise LlmInternalServerError(
+                "flaky",
+                response=httpx.Response(
+                    status_code=500, request=httpx.Request("POST", "https://llm.test")
+                ),
+                body=None,
+            )
+        async for event in super()._generate_response_stream_once(
+            input,
+            tools=tools,
+            output_schema=output_schema,
+            tool_choice=tool_choice,
+            **extra,
+        ):
+            yield event
+
+
+@dataclass(frozen=True)
 class ErrorLLM(LLM):
     """Always raises a given error — used to test propagation behavior."""
 
@@ -472,9 +508,10 @@ class TestStreamRetry:
         assert len(retrying) == 1
         assert retrying[0].attempt == 1
 
-        # Stream eventually succeeds
+        # The failed attempt's terminal event is withheld; only the success
+        # is a ResponseCompleted.
         completed = [e for e in events if isinstance(e, ResponseCompleted)]
-        assert len(completed) == 2  # one failed attempt + one success
+        assert len(completed) == 1
 
     @pytest.mark.asyncio
     async def test_response_retrying_sequence_number(self):
@@ -495,6 +532,32 @@ class TestStreamRetry:
         retrying_idx = next(
             i for i, e in enumerate(events) if isinstance(e, ResponseRetrying)
         )
+        # The failed attempt's ResponseCompleted never goes out, so the last
+        # streamed event is its final item.
         last_before = events[retrying_idx - 1]
-        assert isinstance(last_before, ResponseCompleted)
+        assert isinstance(last_before, OutputItemDone)
         assert events[retrying_idx].sequence_number == last_before.sequence_number + 1
+
+    @pytest.mark.asyncio
+    async def test_each_retry_layer_counts_its_own_attempts(self):
+        """API retries and validation retries are numbered independently."""
+        llm = _PlannedLLM(
+            model_name="mock",
+            plan=["error", "bad", "error", "good"],
+            responses=[_text_response("bad"), _text_response('{"v": 1}')],
+            retry_policy=RetryPolicy(
+                api_retries=1, validation_retries=1, initial_delay=0.0
+            ),
+        )
+
+        class M(BaseModel):
+            v: int
+
+        events: list[LlmEvent] = []
+        async for event in llm.generate_response_stream(_USER_MSG, output_schema=M):
+            events.append(event)
+
+        retrying = [e for e in events if isinstance(e, ResponseRetrying)]
+        # API retry 1, validation retry 1, API retry 1 (fresh validation attempt)
+        assert [e.attempt for e in retrying] == [1, 1, 1]
+        assert len([e for e in events if isinstance(e, ResponseCompleted)]) == 1

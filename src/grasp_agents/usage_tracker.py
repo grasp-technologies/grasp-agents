@@ -52,8 +52,9 @@ class UsageTracker(BaseModel):
         litellm_provider: str | None = None,
     ) -> None:
         for response in responses:
-            if response.usage is not None:
-                usage = response.usage
+            for usage in (response.usage, response.superseded_usage):
+                if usage is None:
+                    continue
                 if usage.cost is None and model_name is not None:
                     self._add_cost_to_usage(
                         usage=usage,
@@ -62,7 +63,7 @@ class UsageTracker(BaseModel):
                     )
                 if agent_name not in self.usages:
                     self.usages[agent_name] = ResponseUsage()
-                self.usages[agent_name] += response.usage
+                self.usages[agent_name] += usage
 
     @property
     def total_usage(self) -> ResponseUsage:
