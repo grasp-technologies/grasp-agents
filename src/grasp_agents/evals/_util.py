@@ -7,7 +7,7 @@ import math
 import re
 import secrets
 import shutil
-import subprocess  # noqa: S404
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,29 +59,37 @@ def _dumps(obj: Any) -> str:
 def _canonical(obj: Any) -> Any:
     if obj is None or isinstance(obj, str | bool | int):
         return obj
+
     if isinstance(obj, float):
         if math.isfinite(obj):
             return obj
         return {"$float": "nan" if math.isnan(obj) else ("inf" if obj > 0 else "-inf")}
+
     if isinstance(obj, BaseModel):
         return _canonical(obj.model_dump(mode="python"))
+
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return _canonical(
             {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
         )
+
     if isinstance(obj, Mapping):
         mapping = cast("Mapping[Any, Any]", obj)
         if all(isinstance(k, str) for k in mapping):
             return {str(k): _canonical(v) for k, v in mapping.items()}
         pairs = [[_canonical(k), _canonical(v)] for k, v in mapping.items()]
         return {"$map": sorted(pairs, key=_dumps)}
+
     if isinstance(obj, set | frozenset):
         members = cast("Iterable[Any]", obj)
         return {"$set": sorted((_canonical(v) for v in members), key=_dumps)}
+
     if isinstance(obj, list | tuple):
         return [_canonical(v) for v in cast("Iterable[Any]", obj)]
+
     if isinstance(obj, bytes | bytearray):
         return {"$bytes": base64.b64encode(bytes(obj)).decode("ascii")}
+
     try:
         return to_jsonable_python(obj)
     except Exception as exc:
@@ -165,7 +173,7 @@ def git_state(
 
     def run(*args: str) -> str | None:
         try:
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
                 [git, *args],
                 cwd=cwd,
                 capture_output=True,

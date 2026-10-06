@@ -88,7 +88,7 @@ class Task[InT, OutT](ABC):
         return [type(self)]
 
     @abstractmethod
-    async def run(self, input: InT, trial: TrialContext) -> OutT: ...  # noqa: A002
+    async def run(self, input: InT, trial: TrialContext) -> OutT: ...  # ruff: ignore[builtin-argument-shadowing]
 
 
 type TaskFn[InT, OutT] = (
@@ -162,7 +162,7 @@ class FunctionTask[InT, OutT](Task[InT, OutT]):
     def source_objects(self) -> list[Any]:
         return [self._fn]
 
-    async def run(self, input: InT, trial: TrialContext) -> OutT:  # noqa: A002
+    async def run(self, input: InT, trial: TrialContext) -> OutT:  # ruff: ignore[builtin-argument-shadowing]
         call = cast("Callable[..., Awaitable[OutT]]", self._fn)
         if self._trial_passing == "keyword":
             return await call(input, trial=trial)
@@ -291,7 +291,9 @@ def processor_fingerprint(root: Processor[Any, Any, Any]) -> str | None:
 def _reset_transcripts(root: Processor[Any, Any, Any]) -> None:
     # A copy of an agent that already ran would start each trial with that
     # conversation; trials must start from scratch.
-    from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
+    from grasp_agents.agent.llm_agent import (
+        LLMAgent,
+    )
 
     for proc in iter_processors(root):
         if isinstance(proc, LLMAgent):
@@ -364,6 +366,7 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
     ) -> None:
         self._template: Processor[InT, OutT, Any] | None
         self._factory: Callable[[], Processor[InT, OutT, Any]] | None
+
         if isinstance(processor, Processor):
             template = cast("Processor[InT, OutT, Any]", processor)
             self._template, self._factory = template, None
@@ -380,12 +383,14 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             declared = _declared_output_type(factory)
             self._kind = qualified_name(factory)
             self._fingerprint = None
+
         if output_type is not None:
             self._out_type: Any = output_type
         elif output_fn is not None:
             self._out_type = Any
         else:
             self._out_type = declared
+
         self.name = name or default_name
         self.version = version
         self._config = dict(config or {})
@@ -428,7 +433,7 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
         proc.on_adopted(ctx=ctx)
         return proc
 
-    async def run(self, input: InT, trial: TrialContext) -> OutT:  # noqa: A002
+    async def run(self, input: InT, trial: TrialContext) -> OutT:  # ruff: ignore[builtin-argument-shadowing]
         ctx: SessionContext[Any] = (
             self._ctx_factory(trial.example)
             if self._ctx_factory is not None

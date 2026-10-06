@@ -44,17 +44,22 @@ def _plain(value: Any) -> Any:
         # Defaulted fields are left out, so adding a field with a default to
         # an input model keeps existing ids and hashes.
         return _plain(value.model_dump(mode="python", exclude_defaults=True))
+
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             f.name: _plain(getattr(value, f.name)) for f in dataclasses.fields(value)
         }
+
     if isinstance(value, Mapping):
         return {k: _plain(v) for k, v in cast("Mapping[Any, Any]", value).items()}
+
     if isinstance(value, list | tuple):
         return [_plain(v) for v in cast("Iterable[Any]", value)]
+
     if isinstance(value, set | frozenset):
         members = (_plain(v) for v in cast("Iterable[Any]", value))
         return sorted(members, key=canonical_json)
+
     return value
 
 
