@@ -116,6 +116,20 @@ def _validate_tool_names(
         )
 
 
+_RETRY_FEEDBACK_TEMPLATE = (
+    "Your answer was rejected: {error_text}\n"
+    "Fix exactly that and return the whole corrected answer."
+)
+
+
+def render_retry_feedback(error_text: str) -> str:
+    """
+    The user message a retry sends after the output parser rejected the
+    final answer: the parser's error text, verbatim, in one fixed template.
+    """
+    return _RETRY_FEEDBACK_TEMPLATE.format(error_text=error_text)
+
+
 class LLMAgent[InT, OutT, CtxT](
     AgentCheckpointPersistMixin, Processor[InT, OutT, CtxT]
 ):
@@ -233,6 +247,17 @@ class LLMAgent[InT, OutT, CtxT](
         # continues the settled delivery (see ``_settle_run``) instead of
         # re-memorizing the input. Consumed at the next stream entry.
         self._retry_continuation: bool = False
+
+        # Set when the output parser rejects the final answer: its error text.
+        # The rejected answer stays in the transcript, and a retry sends this
+        # text after it as the next user message (``_inject_retry_feedback``);
+        # with no retry left, ``_finalize_failure`` prunes the answer instead.
+        self._pending_retry_feedback: str | None = None
+
+        # The feedback messages this delivery's retries sent. Once the run
+        # ends, by a final failure or by an answer that parses, each one goes
+        # with the rejected answer it follows (``_drop_retry_exchange``).
+        self._retry_feedback_messages: list[InputItem] = []
 
         # True while the session is parked by a rollback (set on rollback and
         # on loading a ``ROLLED_BACK`` head): the parked step's input was
@@ -965,7 +990,9 @@ class LLMAgent[InT, OutT, CtxT](
         Drops only the tool round in flight; completed rounds stay (their side
         effects are real and already on the durable log — re-running would
         re-issue them). ``failed`` additionally drops a trailing final answer:
-        not a closed turn (e.g. it did not parse), so a retry regenerates it.
+        not a closed turn, so a retry regenerates it. (A final answer the
+        parser rejected is kept for the retry instead; ``_finalize_failure``
+        drops it when no retry follows.)
         When something is dropped, the paired context state is rewound to the
         last checkpoint boundary, which matches the kept transcript exactly.
         """
@@ -990,6 +1017,40 @@ class LLMAgent[InT, OutT, CtxT](
         # The failed attempt settled (``_settle_run``); the retry continues
         # that delivery rather than starting a fresh one.
         self._retry_continuation = True
+
+    def _finalize_failure(self) -> None:
+        # No retry follows: the answers kept for retries go, each with the
+        # feedback that followed it, so the transcript settles exactly where
+        # a failed run without feedback would.
+        if self._pending_retry_feedback is not None:
+            self._pending_retry_feedback = None
+            self._settle_run(failed=True)
+        if self._retry_feedback_messages:
+            self._drop_retry_exchange()
+
+    def _drop_retry_exchange(self) -> None:
+        # Each feedback message goes with the rejected answer before it; the
+        # prompt, completed tool rounds and the last answer stay.
+        kept: list[InputItem] = []
+        for message in self.transcript.messages:
+            if message in self._retry_feedback_messages:
+                kept = prepare_messages_for_resume(
+                    kept, drop_trailing_response=True
+                ).messages
+            else:
+                kept.append(message)
+        self.transcript.messages = kept
+        self._retry_feedback_messages = []
+
+    def _inject_retry_feedback(self) -> list[InputItem]:
+        if self._pending_retry_feedback is None:
+            return []
+        message = InputMessageItem.from_text(
+            render_retry_feedback(self._pending_retry_feedback), role="user"
+        )
+        self._pending_retry_feedback = None
+        self.transcript.update([message])
+        return [message]
 
     def _archive_step_boundary(self) -> None:
         """
@@ -1551,6 +1612,13 @@ class LLMAgent[InT, OutT, CtxT](
                 await self._start_step(chat_inputs, inp=inp, exec_id=exec_id)
             )
 
+        if retry_continuation:
+            # A retry after a rejected final answer: the parser's error text
+            # follows the kept answer as the next user message.
+            retry_feedback = self._inject_retry_feedback()
+            self._retry_feedback_messages.extend(retry_feedback)
+            messages_to_expose.extend(retry_feedback)
+
         # Surface initial context + input message for a fresh delivery
         for event in self._expose_messages(
             messages_to_expose, exec_id=exec_id, source=self._current_input_source
@@ -1567,7 +1635,7 @@ class LLMAgent[InT, OutT, CtxT](
         )
         run_t0 = time.monotonic()
 
-        # The settle guard scopes exactly the work that can leave the
+        # The settle guards scope exactly the work that can leave the
         # transcript and its paired state disagreeing: the loop's generations
         # and tool rounds, and the final-answer parse. Entry work above needs
         # no settling — ``_start_step`` mutates only after its fallible steps
@@ -1585,9 +1653,6 @@ class LLMAgent[InT, OutT, CtxT](
             )
 
             assert self._loop.final_answer is not None
-            output = self.parse_output(
-                self._loop.final_answer, in_args=inp, exec_id=exec_id
-            )
 
         except (asyncio.CancelledError, GeneratorExit):
             # Interrupted mid-turn (Esc / consumer abort): settle the live
@@ -1596,12 +1661,38 @@ class LLMAgent[InT, OutT, CtxT](
             raise
 
         except BaseException:
-            # Genuine failure (LLM error, parser, …): settle to the last
-            # closed round, pruning the round in flight and a failed final
+            # Genuine failure (LLM error, tool round, …): settle to the last
+            # closed round, pruning the round in flight and a trailing final
             # answer. A retry (``_prepare_retry``) or a later no-input run
             # continues from here instead of re-delivering the whole run.
             self._settle_run(failed=True)
             raise
+
+        try:
+            output = self.parse_output(
+                self._loop.final_answer, in_args=inp, exec_id=exec_id
+            )
+
+        except Exception as err:
+            # The parser rejected the final answer. No round is in flight, so
+            # the settle keeps the answer: a retry sends the error text after
+            # it (``_inject_retry_feedback``); with no retry left,
+            # ``_finalize_failure`` prunes it as a failed run.
+            self._settle_run()
+            self._pending_retry_feedback = str(err)
+            raise
+
+        if self._retry_feedback_messages:
+            # The answer parsed: the rejected answers and their feedback served
+            # only the retries. Saving the final-answer checkpoint again
+            # rewrites the persisted log without them.
+            self._drop_retry_exchange()
+            await self.save_checkpoint(
+                turn=self._loop.turn,
+                output=self._loop.final_answer,
+                location=AgentCheckpointLocation.AFTER_FINAL_ANSWER,
+                stop_reason=self._loop.stop_reason,
+            )
 
         yield ProcPayloadOutEvent(data=output, source=self.name, exec_id=exec_id)
 

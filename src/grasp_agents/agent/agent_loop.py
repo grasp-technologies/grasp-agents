@@ -219,6 +219,7 @@ class AgentLoop[CtxT]:
     _cw: ContextWindowManager
     _llm: LLM
     _final_answer: str | None
+    _stop_reason: StopReason | None
     _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
 
     # Private state
@@ -272,6 +273,7 @@ class AgentLoop[CtxT]:
         self._cw = context_window
         self._agent_ctx = agent_ctx
         self._final_answer = None
+        self._stop_reason = None
 
         # Private state
 
@@ -323,6 +325,10 @@ class AgentLoop[CtxT]:
     @property
     def final_answer(self) -> str | None:
         return self._final_answer
+
+    @property
+    def stop_reason(self) -> StopReason | None:
+        return self._stop_reason
 
     @property
     def llm(self) -> LLM:
@@ -1260,6 +1266,7 @@ class AgentLoop[CtxT]:
     ) -> AsyncIterator[Event[Any]]:
         """``NextStepStop``: final answer extracted, end loop cleanly."""
         self._final_answer = step.final_answer
+        self._stop_reason = step.stop_reason
         closures = self._close_stop_tool_calls(response)
         for closure_event in self._closure_events(closures, exec_id=exec_id):
             yield closure_event
@@ -1309,6 +1316,7 @@ class AgentLoop[CtxT]:
             extra_llm_settings=extra_llm_settings,
         ):
             yield event
+        self._stop_reason = stop_reason
 
         await self.checkpoint(
             turn=self.turn,
@@ -1544,6 +1552,7 @@ class AgentLoop[CtxT]:
     ) -> AsyncIterator[Event[Any]]:
         had_tool_calls = False
         self._final_answer = None
+        self._stop_reason = None
 
         # Start (or, on resume, restart) the current message's per-message turn
         # budget from here — a resumed resident gets a fresh budget for whatever
