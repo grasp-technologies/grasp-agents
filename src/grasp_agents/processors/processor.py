@@ -94,6 +94,7 @@ def with_retry[F: Callable[..., AsyncIterator[Event[Any]]]](func: F) -> F:
                     f"Processor run failed [proc_name={self.name}; exec_id={exec_id}]"
                 )
                 if n_attempt > self.max_retries:
+                    self._finalize_failure()  # pyright: ignore[reportPrivateUsage]
                     raise ProcRunError(
                         proc_name=self.name,
                         exec_id=exec_id,
@@ -557,6 +558,13 @@ class Processor[InT, OutT, CtxT](
         stream. Subclasses use it to carry the failed attempt's settled state
         into the retry (see ``LLMAgent``); the base processor retries from
         scratch.
+        """
+
+    def _finalize_failure(self) -> None:
+        """
+        Hook run by ``with_retry`` when the run fails for good (no retries
+        left), before it raises. Subclasses use it to drop state kept only
+        for a retry (see ``LLMAgent``); the base processor keeps none.
         """
 
     def generate_exec_id(self, exec_id: str | None) -> str:

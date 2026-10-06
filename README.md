@@ -52,6 +52,8 @@ First-class integrations.
 
 - `LLMAgent` — an LLM with tools and an agentic loop (PRE-ACT/ACT/JUDGE/OBSERVE
   phases, `max_turns`, per-run and per-tool timeouts, forced final answer).
+- Agent retries (`max_retries`): when the output parser rejects a final answer,
+  the retry keeps that answer and sends the parser's error as the next user message.
 - `SequentialWorkflow`, `LoopedWorkflow`, `ParallelProcessor` — typed,
   composable processing chains and concurrent fan-out.
 - `Runner` — multi-agent orchestration over an in-process event bus, with fully

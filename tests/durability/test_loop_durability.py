@@ -6,6 +6,7 @@ Transcript / durability behavior:
 * force-final-answer commits items and counts usage exactly once
 * a ``final_answer`` tool call (and its siblings) get paired tool results
 * a failed run rolls the transcript back (no poisoning of reused instances)
+* a parser-rejected answer retried with feedback persists without it once corrected
 * lenient LLM-layer arg validation is mirrored at dispatch; residual input
   failures become tool results, not crashes
 * the append-only message log is rewritten when the persisted prefix changes
@@ -63,8 +64,11 @@ def _make_agent(
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     session_key: str | None = None,
     store: InMemoryCheckpointStore | None = None,
+    llm: MockLLM | None = None,
     **agent_kwargs: Any,
 ) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
+    # ``llm`` replaces the default queue-driven mock (e.g. a recording or
+    # failing ``MockLLM`` subclass); ``responses`` is then unused.
     ctx_kwargs: dict[str, Any] = {"checkpoint_store": store}
     if session_key is not None:
         ctx_kwargs["session_key"] = session_key
@@ -72,7 +76,7 @@ def _make_agent(
     agent = LLMAgent[str, str, None](
         name="test_agent",
         ctx=ctx,
-        llm=MockLLM(responses_queue=responses),
+        llm=llm if llm is not None else MockLLM(responses_queue=responses),
         tools=tools,
         **agent_kwargs,
     )
@@ -329,13 +333,14 @@ class _Answer(BaseModel):
 
 
 def _make_answer_agent(
-    responses: list[Any], **agent_kwargs: Any
+    responses: list[Any], *, llm: MockLLM | None = None, **agent_kwargs: Any
 ) -> LLMAgent[str, _Answer, None]:
+    # ``llm`` replaces the default queue-driven mock, as in ``_make_agent``.
     ctx: SessionContext[None] = SessionContext()
     return LLMAgent[str, _Answer, None](
         name="test_agent",
         ctx=ctx,
-        llm=MockLLM(responses_queue=responses),
+        llm=llm if llm is not None else MockLLM(responses_queue=responses),
         tools=[_EchoTool()],
         final_answer_as_tool_call=True,
         **agent_kwargs,
@@ -464,6 +469,49 @@ class TestFailedRunSettle:
         assert sum("first try" in t for t in texts) == 1
         assert all("echo" not in t for t in texts)
         agent.transcript.validate_tool_call_pairing()
+
+
+# ---------------------------------------------------------------------------
+# Retry with feedback persists
+# ---------------------------------------------------------------------------
+
+
+class TestRetryWithFeedbackPersists:
+    @pytest.mark.asyncio
+    async def test_cold_resume_after_a_successful_retry_holds_prompt_and_correction(
+        self,
+    ) -> None:
+        """
+        The rejected answer and its feedback serve only the retry: once the
+        corrected answer parses they leave the transcript, and the log a cold
+        resume reads holds just the prompt and the corrected answer, with the
+        tool-call pairing intact.
+        """
+        store = InMemoryCheckpointStore()
+        agent, _ = _make_agent(
+            [_text_response("rejected draft"), _text_response("corrected draft")],
+            session_key="rf1",
+            store=store,
+            max_retries=1,
+        )
+
+        @agent.add_output_parser
+        def parse(final_answer: str, *, in_args: Any = None, exec_id: str) -> str:
+            del in_args, exec_id
+            if final_answer == "rejected draft":
+                raise ValueError("parser boom")
+            return final_answer
+
+        out = await agent.run("first try")
+        assert out.payloads[0] == "corrected draft"
+
+        resumed, _ = _make_agent([], session_key="rf1", store=store)
+        await resumed.load_checkpoint()
+        texts = [str(m) for m in resumed.transcript.messages]
+        assert len(texts) == 2
+        for position, marker in enumerate(["first try", "corrected draft"]):
+            assert marker in texts[position]
+        resumed.transcript.validate_tool_call_pairing()
 
 
 # ---------------------------------------------------------------------------
