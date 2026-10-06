@@ -12,7 +12,9 @@ import base64
 import json
 from typing import Any
 
+import pytest
 from google.genai.types import (
+    BlockedReason,
     Candidate,
     Citation,
     CitationMetadata,
@@ -20,6 +22,7 @@ from google.genai.types import (
     FinishReason,
     FunctionCall,
     GenerateContentResponse,
+    GenerateContentResponsePromptFeedback,
     GenerateContentResponseUsageMetadata,
     GroundingChunk,
     GroundingChunkWeb,
@@ -61,6 +64,7 @@ from grasp_agents.types.items import (
     ReasoningItem,
     WebSearchCallItem,
 )
+from grasp_agents.types.llm_errors import LlmContentFilterError
 from grasp_agents.types.llm_events import (
     FunctionCallArgumentsDelta,
     FunctionCallArgumentsDone,
@@ -73,6 +77,7 @@ from grasp_agents.types.llm_events import (
 from grasp_agents.types.llm_events import (
     OutputMessageTextPartTextDelta as LlmTextDelta,
 )
+from tests.gemini.test_thought_signatures import _GEMINI_PROVIDER, _StubGeminiLLM
 
 # ==== Helpers ====
 
@@ -877,12 +882,35 @@ def _final_chunk(
     )
 
 
+def _blocked_prompt() -> GenerateContentResponse:
+    """What Gemini returns for a blocked prompt: feedback and no candidates."""
+    return GenerateContentResponse(
+        response_id="resp_blocked",
+        prompt_feedback=GenerateContentResponsePromptFeedback(
+            block_reason=BlockedReason.PROHIBITED_CONTENT
+        ),
+    )
+
+
 # ==== Stream converter tests ====
 
 
 class TestGeminiStreamConverter:
     def _run(self, chunks: list[GenerateContentResponse]) -> list[Any]:
         return asyncio.run(_collect_events(chunks))
+
+    def test_stream_cut_before_a_finish_reason_has_no_terminal_event(self):
+        events = self._run([_text_chunk("Hello")])
+
+        assert not [e for e in events if isinstance(e, ResponseCompleted)]
+
+    def test_blocked_prompt_is_an_incomplete_content_filter_response(self):
+        events = self._run([_blocked_prompt()])
+
+        (completed,) = [e for e in events if isinstance(e, ResponseCompleted)]
+        assert completed.response.status == "incomplete"
+        assert completed.response.incomplete_details is not None
+        assert completed.response.incomplete_details.reason == "content_filter"
 
     def test_simple_text_streaming(self):
         """Multiple text chunks → text deltas + done."""
@@ -1245,3 +1273,23 @@ class TestUrlContextStream:
         assert wf.status == "failed"
         assert isinstance(wf.action, OpenPageAction)
         assert wf.provider_specific_fields is not None
+
+
+class TestBlockedPrompt:
+    def test_non_streaming_blocked_prompt_is_a_content_filter_response(self):
+        response = provider_output_to_response(_blocked_prompt())
+
+        assert response.status == "incomplete"
+        assert response.incomplete_details is not None
+        assert response.incomplete_details.reason == "content_filter"
+
+    @pytest.mark.asyncio
+    async def test_blocked_prompt_raises_a_content_filter_error(self):
+        llm = _StubGeminiLLM(
+            model_name="gemini-3.1-flash-lite",
+            api_provider=_GEMINI_PROVIDER,
+            served=_blocked_prompt(),
+        )
+
+        with pytest.raises(LlmContentFilterError):
+            await llm.generate_response([InputMessageItem.from_text("hi")])

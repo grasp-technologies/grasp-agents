@@ -675,9 +675,7 @@ class TestCacheControls:
 
         msg = UserMessage(
             content=[
-                InputText(
-                    text="pinned", cache_control=CacheControl()
-                ),
+                InputText(text="pinned", cache_control=CacheControl()),
                 InputText(text="tail"),
             ]
         )
@@ -694,11 +692,7 @@ class TestCacheControls:
 
         msg = SystemMessage(
             role="system",
-            content=[
-                InputText(
-                    text="pinned", cache_control=CacheControl()
-                )
-            ],
+            content=[InputText(text="pinned", cache_control=CacheControl())],
         )
 
         [param] = items_to_completions_messages([msg])
@@ -712,3 +706,37 @@ class TestCacheControls:
         [param] = items_to_completions_messages([UserMessage.from_text("hi")])
 
         assert param["content"] == "hi"
+
+
+# ---------- Tool call provider-specific fields ----------
+
+
+class TestToolCallProviderSpecificFields:
+    def test_thought_signature_is_forwarded_on_the_tool_call(self):
+        """LiteLLM reads the Gemini signature off the tool call param itself."""
+        items = [
+            InputMessageItem.from_text("add 1 and 2"),
+            FunctionToolCallItem(
+                call_id="c1",
+                name="add",
+                arguments="{}",
+                provider_specific_fields={"thought_signature": "SIG"},
+            ),
+            FunctionToolOutputItem(call_id="c1", output="3"),
+        ]
+        msgs = items_to_completions_messages(items)
+
+        (tool_call,) = msgs[1]["tool_calls"]
+        assert tool_call["id"] == "c1"
+        assert tool_call["provider_specific_fields"] == {"thought_signature": "SIG"}
+
+    def test_unsigned_tool_call_carries_no_provider_fields(self):
+        items = [
+            InputMessageItem.from_text("add 1 and 2"),
+            FunctionToolCallItem(call_id="c1", name="add", arguments="{}"),
+            FunctionToolOutputItem(call_id="c1", output="3"),
+        ]
+        msgs = items_to_completions_messages(items)
+
+        (tool_call,) = msgs[1]["tool_calls"]
+        assert "provider_specific_fields" not in tool_call

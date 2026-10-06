@@ -227,3 +227,21 @@ class TestCacheWriteTokens:
 
         assert total.input_tokens_details.cached_tokens == 15
         assert total.input_tokens_details.cache_write_tokens == 20
+
+
+class TestSupersededUsage:
+    def test_usage_of_replaced_attempts_is_counted(self):
+        """Billed tokens of attempts a retry replaced count toward the agent."""
+        tracker = UsageTracker()
+        response = _make_response(
+            usage=_make_response_usage(input_tokens=100, output_tokens=50)
+        )
+        response.superseded_usage = _make_response_usage(
+            input_tokens=30, output_tokens=10
+        )
+
+        tracker.update("agent_a", [response])
+
+        agent_usage = tracker.usages["agent_a"]
+        assert agent_usage.input_tokens == 130
+        assert agent_usage.output_tokens == 60
