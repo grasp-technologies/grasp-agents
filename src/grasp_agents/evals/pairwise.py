@@ -30,14 +30,14 @@ from ._execution import (
     run_all,
 )
 from ._util import code_hash, new_run_id, qualified_name, short_hash, utc_now
-from .evaluator import (
+from .metrics import Metric, PassRate
+from .scorer import (
     EvalContext,
-    Evaluator,
-    EvaluatorOutput,
+    Scorer,
+    ScorerOutput,
     call_off_loop,
     snake_case,
 )
-from .metrics import Metric, PassRate
 from .stats import bounded_mean_estimate, sign_test
 from .store import RunStore
 from .types import (
@@ -161,9 +161,9 @@ _BACKWARD: dict[Winner, str] = {"first": "candidate", "second": "base", "tie": "
 _PREFERS_CANDIDATE = {"candidate": 1.0, "base": 0.0, "tie": 0.5, "inconsistent": 0.5}
 
 
-class OrderSwapped[InT, OutT, RefT](Evaluator[InT, Mapping[str, OutT], RefT]):
+class OrderSwapped[InT, OutT, RefT](Scorer[InT, Mapping[str, OutT], RefT]):
     """
-    Evaluates a pair ``{"base": ..., "candidate": ...}`` with a pairwise judge,
+    Scores a pair ``{"base": ..., "candidate": ...}`` with a pairwise judge,
     once in each order. Produces ``<name>.winner`` (base / candidate / tie /
     inconsistent), ``<name>.prefers_candidate`` (1 / ½ / 0; inconsistent
     verdicts count as ties) and ``<name>.position_consistent``.
@@ -187,9 +187,9 @@ class OrderSwapped[InT, OutT, RefT](Evaluator[InT, Mapping[str, OutT], RefT]):
             "both_orders": self.both_orders,
         }
 
-    async def evaluate(
+    async def score(
         self, ctx: EvalContext[InT, Mapping[str, OutT], RefT]
-    ) -> EvaluatorOutput:
+    ) -> ScorerOutput:
         base, candidate = ctx.output["base"], ctx.output["candidate"]
         forward_ctx = PairwiseContext(example=ctx.example, first=base, second=candidate)
         if self.both_orders:
@@ -352,8 +352,8 @@ async def pairwise(
         )
     }
     adapter = output_adapter(output_type)
-    evaluator = OrderSwapped(judge, both_orders=both_orders)
-    evaluator_info = evaluator.describe()
+    scorer = OrderSwapped(judge, both_orders=both_orders)
+    scorer_info = scorer.describe()
     paired_ids = sorted({b.example_id for b, _ in pairs})
     dataset = base_run.dataset.model_copy(
         update={
@@ -386,7 +386,7 @@ async def pairwise(
         created_at=utc_now(),
         dataset=dataset,
         task=task_info,
-        evaluators=[evaluator_info],
+        scorers=[scorer_info],
         config=RunConfig(
             repetitions=base_run.config.repetitions,
             concurrency=concurrency,
@@ -396,7 +396,7 @@ async def pairwise(
         ),
         provenance=capture_provenance(),
         config_hash=config_hash(
-            task_info, [evaluator_info], dataset, base_run.config.repetitions
+            task_info, [scorer_info], dataset, base_run.config.repetitions
         ),
         examples=[e for e in base_run.examples if e.id in paired_example_ids],
     )
@@ -406,7 +406,7 @@ async def pairwise(
     executor = Executor(
         run,
         store=run_store,
-        evaluators=[evaluator],
+        scorers=[scorer],
         progress=progress,
         total=len(order),
     )
@@ -426,9 +426,9 @@ async def pairwise(
             example = examples.get(trial.example_id)
             if not (base_trial.ok and candidate_trial.ok):
                 trial.scores.extend(
-                    _decided_by_error(evaluator.name, base_ok=base_trial.ok)
+                    _decided_by_error(scorer.name, base_ok=base_trial.ok)
                 )
-                trial.evaluated.append(evaluator.name)
+                trial.scorers_run.append(scorer.name)
             elif example is not None:
                 output = {
                     "base": rehydrate_output(adapter, base_trial.output),
@@ -437,9 +437,9 @@ async def pairwise(
                 await executor.score(trial, example, output)
             await executor.record(trial)
 
-    default_metrics: list[Metric] = [WinRate(evaluator.name)]
+    default_metrics: list[Metric] = [WinRate(scorer.name)]
     if both_orders:
-        default_metrics.append(PassRate(f"{evaluator.name}.position_consistent"))
+        default_metrics.append(PassRate(f"{scorer.name}.position_consistent"))
     return await run_all(
         executor,
         list(starmap(work, pairs)),

@@ -8,7 +8,7 @@ from grasp_agents.evals.cli import main
 
 _MODULE = """
 from grasp_agents.evals import (
-    Dataset, EvalContext, Evaluation, Example, FunctionTask, evaluator,
+    Dataset, EvalContext, Evaluation, Example, FunctionTask, scorer,
 )
 
 async def solve(x: int) -> int:
@@ -17,11 +17,11 @@ async def solve(x: int) -> int:
 async def solve_fixed(x: int) -> int:
     return x * 2
 
-@evaluator
+@scorer
 def correct(ctx: EvalContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 
-@evaluator(name="correct", version="2")
+@scorer(name="correct", version="2")
 def correct_v2(ctx: EvalContext[int, int, int]) -> float:
     return 1.0 if ctx.output == ctx.reference else 0.0
 
@@ -33,12 +33,12 @@ DATA = Dataset(
     name="doubling",
 )
 
-def doubling(solver, evaluators, sealed=("test",)):
+def doubling(solver, scorers, sealed=("test",)):
     return Evaluation(
         name="doubling",
         task=FunctionTask(solver, name="solver"),
         dataset=DATA,
-        evaluators=evaluators,
+        scorers=scorers,
         sealed_splits=sealed,
     )
 
@@ -139,7 +139,7 @@ def test_run_show_compare_rescore(
     )
     assert child["kind"] == "rescore"
     assert child["parent_run_id"] == base["id"]
-    assert child["evaluators"] == {"correct": "2"}
+    assert child["scorers"] == {"correct": "2"}
 
     code, runs = _run_json(capsys, "--root", root, "runs", "--json")
     assert len(runs) == 4

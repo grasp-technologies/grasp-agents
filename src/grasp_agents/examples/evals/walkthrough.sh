@@ -28,7 +28,7 @@ V2=$(evals run "${SPEC}:grader_v2" --split dev --baseline "$V1" \
   --fail-on-regression --json -q | run_id)
 evals compare "$V1" "$V2"
 
-step "5. Re-judge v2's stored outputs with a stricter evaluator (no re-run)"
+step "5. Re-judge v2's stored outputs with a stricter scorer (no re-run)"
 STRICT=$(evals rescore "$V2" --spec "${SPEC}:grader_v2_strict" --json -q | run_id)
 evals compare "$V2" "$STRICT"
 

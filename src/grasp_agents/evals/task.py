@@ -337,7 +337,7 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
     ``output_type`` re-validates stored outputs when a run is rescored or
     resumed; it defaults to the template's output type or the factory's
     declared return type (``-> Processor[In, Out, Ctx]``). Set it whenever an
-    ``output_fn`` is used or the factory is unannotated, or evaluators receive
+    ``output_fn`` is used or the factory is unannotated, or scorers receive
     stored outputs as plain JSON.
     """
 

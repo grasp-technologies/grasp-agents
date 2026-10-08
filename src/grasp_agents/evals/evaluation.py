@@ -13,10 +13,10 @@ from grasp_agents.processors.processor import Processor
 from ._execution import ProgressCallback
 from ._util import SPEC_MODULE_PREFIX, short_hash
 from .dataset import Dataset, DatasetCheck, DatasetError, DatasetProblem
-from .evaluator import Evaluator
 from .metrics import Metric
 from .runner import evaluate as evaluate_task
 from .runner import rescore
+from .scorer import Scorer
 from .store import LocalRunStore, RunStore
 from .task import Task, as_task
 from .types import EvaluationRun
@@ -91,7 +91,7 @@ class Evaluation:
     name: str
     task: TaskSource
     dataset: DatasetSource
-    evaluators: Sequence[Evaluator[Any, Any, Any]] = ()
+    scorers: Sequence[Scorer[Any, Any, Any]] = ()
     metrics: Sequence[Metric] | None = None
     description: str | None = None
     # Types used to validate dataset files and stored outputs; they default to
@@ -102,7 +102,7 @@ class Evaluation:
     repetitions: int = 1
     concurrency: int = 4
     timeout_s: float | None = None
-    evaluator_timeout_s: float | None = None
+    scorer_timeout_s: float | None = None
     max_cost_usd: float | None = None
     max_error_rate: float | None = None
     group_by: Sequence[str] = ()
@@ -232,7 +232,7 @@ class Evaluation:
         repetitions: int | None = None,
         concurrency: int | None = None,
         timeout_s: float | None = None,
-        evaluator_timeout_s: float | None = None,
+        scorer_timeout_s: float | None = None,
         max_cost_usd: float | None = None,
         score: bool = True,
         name: str | None = None,
@@ -263,16 +263,16 @@ class Evaluation:
         return await evaluate_task(
             self.build_task(),
             data,
-            self.evaluators,
+            self.scorers,
             self.metrics,
             name=name or self.name,
             description=self.description,
             repetitions=repetitions if repetitions is not None else self.repetitions,
             concurrency=concurrency if concurrency is not None else self.concurrency,
             timeout_s=timeout_s if timeout_s is not None else self.timeout_s,
-            evaluator_timeout_s=evaluator_timeout_s
-            if evaluator_timeout_s is not None
-            else self.evaluator_timeout_s,
+            scorer_timeout_s=scorer_timeout_s
+            if scorer_timeout_s is not None
+            else self.scorer_timeout_s,
             max_cost_usd=max_cost_usd
             if max_cost_usd is not None
             else self.max_cost_usd,
@@ -302,19 +302,19 @@ class Evaluation:
         progress: ProgressCallback | None = None,
     ) -> EvaluationRun:
         """
-        Re-score a stored run of this evaluation with its current evaluators:
+        Re-score a stored run of this evaluation with its current scorers:
         changed ones run again, unchanged ones only where they failed or did
         not run (all of them with ``rerun=True``).
         """
         return await rescore(
             run,
-            self.evaluators,
+            self.scorers,
             self.metrics,
             input_type=self.resolved_input_type,
             reference_type=self.reference_type,
             output_type=self.resolved_output_type,
             concurrency=concurrency if concurrency is not None else self.concurrency,
-            evaluator_timeout_s=self.evaluator_timeout_s,
+            scorer_timeout_s=self.scorer_timeout_s,
             group_by=self.group_by,
             cluster_by=self.cluster_by,
             rerun=rerun,

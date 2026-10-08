@@ -315,7 +315,7 @@ class TestAccounting:
     def test_not_applicable_is_not_missing(self) -> None:
         trials = [
             _trial("a", scores={"ok": True}),
-            _trial("b"),  # the evaluator returned nothing for b
+            _trial("b"),  # the scorer returned nothing for b
         ]
         result = PassRate("ok").compute(trials)
         assert result.n == 1

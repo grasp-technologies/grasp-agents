@@ -3,7 +3,7 @@
 A complete evaluation loop over a small grasp-agents pipeline, runnable offline.
 
 - `grader_evals.py` — the system under test (a two-step `SequentialWorkflow`:
-  analyzer → feedback writer, versions `v1` and `v2`), its evaluators, a pairwise
+  analyzer → feedback writer, versions `v1` and `v2`), its scorers, a pairwise
   judge, and three `Evaluation` definitions (`grader_v1`, `grader_v2`,
   `grader_v2_strict`). `llm_grader_evaluation(llm)` swaps in an `LLMAgent`.
 - `data/short_answers.jsonl` — 24 student answers with teacher grades, `dev` and
@@ -35,7 +35,7 @@ grasp-evals run "${SPEC}:grader_v2" --split dev --baseline latest:grader_v1 --fa
 grasp-evals compare latest:grader_v1 latest:grader_v2
 
 # 5. Change the instrument, not the task: rescore stored outputs (a child run).
-#    Unchanged evaluators keep their scores; the changed one runs again.
+#    Unchanged scorers keep their scores; the changed one runs again.
 grasp-evals rescore latest:grader_v2 --spec "${SPEC}:grader_v2_strict"
 
 # 6. Pairwise A/B with an order-swapped judge (a run of its own).
@@ -71,7 +71,7 @@ spec attribute (`latest:grader_v1`).
 - **pass^3 ≤ pass rate**: the writer is noisy on borderline answers, so the
   same answer does not always get the same verdict.
 - **Rescoring** with the stricter `feedback_quality` v2 drops a few v2 examples
-  whose feedback is vague; the comparison warns that the evaluator version
+  whose feedback is vague; the comparison warns that the scorer version
   changed, so the drop is the instrument, not the task.
 - **Pairwise**: v2's feedback is at least as specific in every pair — it wins
   about half and ties the rest. Position consistency is trivially perfect here,

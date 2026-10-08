@@ -36,7 +36,7 @@ from grasp_agents.evals import (
     PassRate,
     ProcessorTask,
     Score,
-    evaluator,
+    scorer,
 )
 from grasp_agents.evals.metrics import Measure, Percentile
 from grasp_agents.processors.processor import Processor
@@ -249,12 +249,12 @@ def llm_grader(llm: Any) -> Processor[Submission, Grade, None]:
     )
 
 
-# --- Evaluators ---
+# --- Scorers ---
 
 type Ctx = EvalContext[Submission, Grade, TeacherGrade]
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def agrees_with_teacher(ctx: Ctx) -> Score:
     assert ctx.reference is not None
     return Score(
@@ -264,7 +264,7 @@ def agrees_with_teacher(ctx: Ctx) -> Score:
     )
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def names_key_issue(ctx: Ctx) -> Score | None:
     """Does the feedback name what is wrong or missing? N/A when nothing is."""
     if ctx.reference is None or ctx.reference.key_issue is None:
@@ -278,12 +278,12 @@ def names_key_issue(ctx: Ctx) -> Score | None:
     )
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def feedback_concise(ctx: Ctx) -> bool:
     return len(ctx.output.feedback) <= 160
 
 
-@evaluator(name="feedback_quality", version="1")
+@scorer(name="feedback_quality", version="1")
 def feedback_quality_v1(ctx: Ctx) -> Score:
     """
     A lenient stand-in for an LLM judge (code, so it is recorded as such):
@@ -293,7 +293,7 @@ def feedback_quality_v1(ctx: Ctx) -> Score:
     return Score(name="feedback_quality", value=ok, explanation=ctx.output.feedback)
 
 
-@evaluator(name="feedback_quality", version="2")
+@scorer(name="feedback_quality", version="2")
 def feedback_quality_v2(ctx: Ctx) -> Score:
     """A stricter stand-in judge: feedback on an imperfect answer must be specific."""
     assert ctx.reference is not None
@@ -367,7 +367,7 @@ def _grader_evaluation(
         dataset=DATA,
         input_type=Submission,
         reference_type=TeacherGrade,
-        evaluators=[agrees_with_teacher, names_key_issue, feedback_concise, quality],
+        scorers=[agrees_with_teacher, names_key_issue, feedback_concise, quality],
         metrics=_METRICS,
         repetitions=3,
         group_by=["difficulty"],
@@ -379,7 +379,7 @@ def _grader_evaluation(
 
 grader_v1 = _grader_evaluation("v1", feedback_quality_v1)
 grader_v2 = _grader_evaluation("v2", feedback_quality_v1)
-# Same task as v2, judged by the stricter feedback evaluator — use it to
+# Same task as v2, judged by the stricter feedback scorer — use it to
 # rescore a stored run: ``grasp-evals rescore <run> --spec ...:grader_v2_strict``.
 grader_v2_strict = _grader_evaluation("v2", feedback_quality_v2)
 

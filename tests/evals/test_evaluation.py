@@ -14,10 +14,10 @@ from grasp_agents.evals import (
     FunctionTask,
     LocalRunStore,
     SpecError,
-    evaluator,
     list_evaluations,
     load_evaluation,
     load_object,
+    scorer,
 )
 
 
@@ -30,7 +30,7 @@ async def add(problem: Problem) -> int:
     return problem.a + problem.b
 
 
-@evaluator
+@scorer
 def exact(ctx: EvalContext[Problem, int, int]) -> bool:
     return ctx.output == ctx.reference
 
@@ -59,7 +59,7 @@ class TestEvaluation:
             description="Does the adder add?",
             task=FunctionTask(add),
             dataset=_write_dataset(tmp_path / "sums.jsonl"),
-            evaluators=[exact],
+            scorers=[exact],
             reference_type=int,
             sealed_splits=["test"],
         )
@@ -99,7 +99,7 @@ class TestEvaluation:
             name="lazy",
             task=make_task,
             dataset=_write_dataset(tmp_path / "d.jsonl"),
-            evaluators=[exact],
+            scorers=[exact],
         )
         assert built == 0
         await evaluation.run(limit=1, persist=False)
@@ -147,7 +147,7 @@ class Verdict(BaseModel):
     value: int
 
 
-@evaluator(name="typed", version="2")
+@scorer(name="typed", version="2")
 def typed_exact(ctx: EvalContext[Problem, int, Verdict]) -> bool:
     # Attribute access fails unless stored examples are re-validated.
     return ctx.output == ctx.input.a + ctx.input.b == ctx.reference.value  # type: ignore[union-attr]
@@ -155,7 +155,7 @@ def typed_exact(ctx: EvalContext[Problem, int, Verdict]) -> bool:
 
 @pytest.mark.asyncio
 async def test_rescore_from_disk_sees_typed_examples(tmp_path: Path) -> None:
-    @evaluator(name="typed", version="1")
+    @scorer(name="typed", version="1")
     def typed_v1(ctx: EvalContext[Problem, int, Verdict]) -> bool:
         return ctx.reference is not None and ctx.output == ctx.reference.value
 
@@ -170,7 +170,7 @@ async def test_rescore_from_disk_sees_typed_examples(tmp_path: Path) -> None:
         name="typed",
         task=FunctionTask(add),
         dataset=dataset,
-        evaluators=[typed_v1],
+        scorers=[typed_v1],
         reference_type=Verdict,
     )
     run = await first.run(store=store)
@@ -178,11 +178,11 @@ async def test_rescore_from_disk_sees_typed_examples(tmp_path: Path) -> None:
         name="typed",
         task=FunctionTask(add),
         dataset=dataset,
-        evaluators=[typed_exact],
+        scorers=[typed_exact],
         reference_type=Verdict,
     )
     child = await second.rescore(run.id, store=store)
-    assert child.counts.evaluator_failures == 0
+    assert child.counts.scorer_failures == 0
     assert child.metric("pass_rate(typed)").value == pytest.approx(1.0)  # type: ignore[union-attr]
 
 

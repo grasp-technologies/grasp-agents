@@ -141,12 +141,12 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         f"- **Dataset:** {ds.name}{version} `{ds.fingerprint}` · "
         f"{ds.selected_size}/{ds.size} examples{selection}"
     )
-    if run.evaluators:
-        evaluators = ", ".join(
+    if run.scorers:
+        scorers = ", ".join(
             f"{e.name}@{e.version}" + (f" ({e.annotator})" if e.annotator else "")
-            for e in run.evaluators
+            for e in run.scorers
         )
-        lines.append(f"- **Evaluators:** {evaluators}")
+        lines.append(f"- **Scorers:** {scorers}")
     prov = run.provenance
     if prov.git_commit:
         dirty = " +uncommitted changes" if prov.git_dirty else ""
@@ -155,7 +155,7 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
     lines.append(
         f"- **Trials:** {counts.trials_done}/{counts.trials_expected} "
         f"({run.config.repetitions} per example) · task errors {counts.task_errors} · "
-        f"evaluator failures {counts.evaluator_failures} · unscored {counts.unscored}"
+        f"scorer failures {counts.scorer_failures} · unscored {counts.unscored}"
     )
     usage = run.usage
     if not usage.is_empty:
@@ -211,18 +211,18 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
                 f"{_cell(_clip(trial.error.message))} |"
             )
 
-    failures = [(t, f) for t in run.trials for f in t.evaluator_failures]
+    failures = [(t, f) for t in run.trials for f in t.scorer_failures]
     if failures:
         lines += [
             "",
-            f"## Evaluator failures ({len(failures)})",
+            f"## Scorer failures ({len(failures)})",
             "",
-            "| example | rep | evaluator | error |",
+            "| example | rep | scorer | error |",
             "|---|---|---|---|",
         ]
         for trial, failure in [x for x in failures if not x[0].sealed][:max_rows]:
             lines.append(
-                f"| `{trial.example_id}` | {trial.repetition} | {failure.evaluator} | "
+                f"| `{trial.example_id}` | {trial.repetition} | {failure.scorer} | "
                 f"{_cell(_clip(failure.error.message))} |"
             )
 
@@ -345,7 +345,7 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
             "selection": run.dataset.selection,
         },
         "task": {"name": run.task.name, "version": run.task.version},
-        "evaluators": {e.name: e.version for e in run.evaluators},
+        "scorers": {e.name: e.version for e in run.scorers},
         "counts": run.counts.model_dump(),
         "cost_usd": run.usage.cost_usd,
         "metrics": {m.name: _metric_summary(m, hidden) for m in run.metrics},
@@ -377,9 +377,9 @@ def trial_summary(trial: Trial, *, include_output: bool = True) -> dict[str, Any
     }
     if trial.error is not None:
         data["error"] = {"type": trial.error.type, "message": trial.error.message}
-    if trial.evaluator_failures:
-        data["evaluator_failures"] = {
-            f.evaluator: f.error.message for f in trial.evaluator_failures
+    if trial.scorer_failures:
+        data["scorer_failures"] = {
+            f.scorer: f.error.message for f in trial.scorer_failures
         }
     if include_output:
         data["output"] = trial.output

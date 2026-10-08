@@ -183,7 +183,7 @@ def _warnings(
         warnings.append("Both sides are the same run.")
     elif base.config_hash == candidate.config_hash:
         warnings.append(
-            "Identical configuration (same task, evaluators and data): differences "
+            "Identical configuration (same task, scorers and data): differences "
             "measure run-to-run noise."
         )
     if n_paired == 0:
@@ -203,24 +203,24 @@ def _warnings(
             f"{', '.join(candidate.dataset.selection) or 'all'}); only shared "
             "examples are compared."
         )
-    base_evaluators = {e.name: e for e in base.evaluators}
-    for evaluator in candidate.evaluators:
-        old = base_evaluators.get(evaluator.name)
+    base_scorers = {e.name: e for e in base.scorers}
+    for scorer in candidate.scorers:
+        old = base_scorers.get(scorer.name)
         if old is None:
             continue
-        if old.version != evaluator.version:
+        if old.version != scorer.version:
             warnings.append(
-                f"Evaluator {evaluator.name!r} changed version ({old.version} → "
-                f"{evaluator.version}): score differences may come from the instrument."
+                f"Scorer {scorer.name!r} changed version ({old.version} → "
+                f"{scorer.version}): score differences may come from the instrument."
             )
-        elif old.config != evaluator.config:
+        elif old.config != scorer.config:
             warnings.append(
-                f"Evaluator {evaluator.name!r} changed its configuration without a "
+                f"Scorer {scorer.name!r} changed its configuration without a "
                 "version bump: score differences may come from the instrument."
             )
-        elif old.source and evaluator.source and old.source != evaluator.source:
+        elif old.source and scorer.source and old.source != scorer.source:
             warnings.append(
-                f"Evaluator {evaluator.name!r} changed its code without a version "
+                f"Scorer {scorer.name!r} changed its code without a version "
                 "bump: score differences may come from the instrument."
             )
     if base.config.repetitions != candidate.config.repetitions:

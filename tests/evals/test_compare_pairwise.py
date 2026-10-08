@@ -22,9 +22,9 @@ from grasp_agents.evals import (
     WinRate,
     compare,
     evaluate,
-    evaluator,
     pairwise,
     render_comparison_markdown,
+    scorer,
 )
 from grasp_agents.evals.compare import regressions
 
@@ -35,7 +35,7 @@ def _dataset(n: int = 20) -> Dataset[int, int]:
     return Dataset([Example(id=f"x{i}", input=i, reference=i * 2) for i in range(n)])
 
 
-@evaluator
+@scorer
 def correct(ctx: Ctx) -> bool:
     return ctx.output == ctx.reference
 
@@ -287,7 +287,7 @@ async def test_pairwise_validates_stored_types(store: LocalRunStore) -> None:
         input_type=Item,
         store=store,
     )
-    assert run.counts.evaluator_failures == 0
+    assert run.counts.scorer_failures == 0
     assert run.metric("win_rate(len)").value == pytest.approx(1.0)  # type: ignore[union-attr]
 
 
@@ -382,7 +382,7 @@ class TestGate:
     async def test_the_gate_catches_crashes_behind_numeric_scores(
         self, store: LocalRunStore
     ) -> None:
-        @evaluator
+        @scorer
         def closeness(ctx: Ctx) -> float:
             return 1.0 if ctx.output == ctx.reference else 0.5
 
@@ -446,12 +446,12 @@ class TestGate:
         assert any("correct cannot be tested" in f for f in regressions(result))
 
     @pytest.mark.asyncio
-    async def test_changed_evaluator_code_is_flagged(
+    async def test_changed_scorer_code_is_flagged(
         self, store: LocalRunStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         base = await evaluate(good, _dataset(4), [correct], store=store)
         # (The package exports a function named like the module.)
-        module = importlib.import_module("grasp_agents.evals.evaluator")
+        module = importlib.import_module("grasp_agents.evals.scorer")
         monkeypatch.setattr(module, "code_hash", lambda _: "edited")
         candidate = await evaluate(good, _dataset(4), [correct], store=store)
         assert any("changed its code" in w for w in compare(base, candidate).warnings)
@@ -484,7 +484,7 @@ class TestGate:
     async def test_regressions_explain_the_failing_repetition(
         self, store: LocalRunStore
     ) -> None:
-        @evaluator
+        @scorer
         def explained(ctx: Ctx) -> Score:
             ok = ctx.output == ctx.reference
             return Score(

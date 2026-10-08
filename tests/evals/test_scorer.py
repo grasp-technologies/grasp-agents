@@ -1,7 +1,7 @@
 import pytest
 
 from grasp_agents.evals import Score, ScoreReason
-from grasp_agents.evals.evaluator import normalize_scores
+from grasp_agents.evals.scorer import normalize_scores
 
 
 def test_mapping_values_are_named_by_their_keys() -> None:
@@ -9,7 +9,7 @@ def test_mapping_values_are_named_by_their_keys() -> None:
         "judge", {"accuracy": Score(name="draft", value=True), "tone": "warm"}
     )
     assert [s.name for s in scores] == ["accuracy", "tone"]
-    assert all(s.evaluator == "judge" for s in scores)
+    assert all(s.scorer == "judge" for s in scores)
 
 
 def test_non_finite_values_are_unscored() -> None:
