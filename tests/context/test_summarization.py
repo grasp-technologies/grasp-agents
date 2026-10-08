@@ -29,7 +29,7 @@ from grasp_agents.durability.checkpoints import AgentCheckpoint
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
-from grasp_agents.types.events import CompactionEvent
+from grasp_agents.types.events import CompactionEvent, LLMStreamEvent
 from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -39,6 +39,7 @@ from grasp_agents.types.items import (
     ReasoningItem,
 )
 from grasp_agents.types.llm_errors import LlmContextWindowError
+from grasp_agents.types.llm_events import ResponseRetrying
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 BIGMSG = "x" * 100
@@ -330,8 +331,10 @@ class _RecordingLLM(MockLLM):
 
 
 @dataclass(frozen=True)
-class _OverflowOnceLLM(MockLLM):
-    """Raises a context-window error on its second call, then behaves normally."""
+class _OverflowingLLM(MockLLM):
+    """Raises a context-window error on the given calls, otherwise behaves normally."""
+
+    overflow_calls: tuple[int, ...] = (2,)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -339,7 +342,7 @@ class _OverflowOnceLLM(MockLLM):
 
     async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
         object.__setattr__(self, "_calls", self._calls + 1)  # type: ignore[attr-defined]
-        if self._calls == 2:  # type: ignore[attr-defined]
+        if self._calls in self.overflow_calls:  # type: ignore[attr-defined]
             raise LlmContextWindowError(
                 "context length exceeded",
                 response=httpx.Response(
@@ -556,12 +559,22 @@ async def test_rollback_drops_folds_past_rewind() -> None:
 
 @pytest.mark.asyncio
 async def test_context_window_error_compacts_and_retries() -> None:
+    agent = _overflowing_agent()
+    out = await agent.run("go")
+    assert out.payloads[0] == "recovered"  # recovered via compact + retry
+    assert agent._cw.folds  # the forced fold was recorded
+
+
+def _overflowing_agent(
+    overflow_calls: tuple[int, ...] = (2,),
+) -> LLMAgent[str, str, None]:
     summary_llm = MockLLM(responses_queue=[_text_response("SUM")])
-    agent_llm = _OverflowOnceLLM(
+    agent_llm = _OverflowingLLM(
         responses_queue=[
             _tool_call_response("big", "{}", "c1"),
             _text_response("recovered"),
-        ]
+        ],
+        overflow_calls=overflow_calls,
     )
     ctx: SessionContext[None] = SessionContext()
     agent = LLMAgent[str, str, None](
@@ -576,7 +589,35 @@ async def test_context_window_error_compacts_and_retries() -> None:
             keep_recent_turns=1,
         )
     )
+    return agent
 
-    out = await agent.run("go")
-    assert out.payloads[0] == "recovered"  # recovered via compact + retry
-    assert agent._cw.folds  # the forced fold was recorded
+
+@pytest.mark.asyncio
+async def test_context_window_retry_supersedes_the_failed_attempt() -> None:
+    events = [event async for event in _overflowing_agent().run_stream("go")]
+    compacted = next(i for i, e in enumerate(events) if isinstance(e, CompactionEvent))
+    retrying = [
+        (i, e.data)
+        for i, e in enumerate(events)
+        if isinstance(e, LLMStreamEvent) and isinstance(e.data, ResponseRetrying)
+    ]
+    assert len(retrying) == 1
+    index, retry = retrying[0]
+    assert index > compacted
+    assert retry.attempt == 1
+    assert "context window" in (retry.error or "")
+
+
+@pytest.mark.asyncio
+async def test_failed_context_window_retry_is_not_chained_to_the_overflow() -> None:
+    agent = _overflowing_agent(overflow_calls=(2, 3))
+    with pytest.raises(Exception) as excinfo:
+        await agent.run("go")
+    chain: list[BaseException] = []
+    error: BaseException | None = excinfo.value
+    while error is not None and len(chain) < 20:
+        chain.append(error)
+        error = error.__cause__ or error.__context__
+    overflows = [e for e in chain if isinstance(e, LlmContextWindowError)]
+    # Only the retry's own overflow: it was not raised while handling the first.
+    assert len(overflows) == 1
