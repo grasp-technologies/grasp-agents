@@ -12,7 +12,7 @@ from grasp_agents.evals import (
     Example,
     ProcessorTask,
     evaluate,
-    evaluator,
+    scorer,
 )
 from grasp_agents.processors.parallel_processor import ParallelProcessor
 from grasp_agents.processors.processor import Processor
@@ -73,7 +73,7 @@ def _ints(n: int = 3) -> Dataset[int, int]:
     return Dataset([Example(id=f"i{i}", input=i, reference=i + 2) for i in range(n)])
 
 
-@evaluator
+@scorer
 def matches(ctx: EvalContext[Any, Any, Any]) -> bool:
     return ctx.output == ctx.reference
 
@@ -98,7 +98,7 @@ class TestAnyProcessor:
             sessions.append(ctx)
             return ctx
 
-        @evaluator
+        @scorer
         def outcome(ctx: EvalContext[int, int, int]) -> bool:
             assert ctx.session is not None
             return ctx.session.state.seen == [ctx.input]
@@ -179,7 +179,7 @@ class TestLLMAgent:
             ]
         )
 
-        @evaluator
+        @scorer
         def transcript_has_no_deltas(ctx: EvalContext[str, str, str]) -> bool:
             return not any(isinstance(e, LLMStreamEvent) for e in ctx.events) and bool(
                 ctx.events

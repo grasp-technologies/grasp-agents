@@ -11,7 +11,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from grasp_agents.evals import (
     Dataset,
     EvalContext,
-    Evaluator,
     Example,
     FunctionTask,
     LocalRunStore,
@@ -20,13 +19,14 @@ from grasp_agents.evals import (
     ResumeError,
     RunStatus,
     Score,
+    Scorer,
     SealedSelectionError,
     TrialContext,
     TrialProgress,
     Usage,
     evaluate,
-    evaluator,
     rescore,
+    scorer,
 )
 
 type Ctx = EvalContext[int, int, int]
@@ -43,7 +43,7 @@ async def double(x: int) -> int:
     return x * 2
 
 
-@evaluator
+@scorer
 def correct(ctx: Ctx) -> bool:
     return ctx.output == ctx.reference
 
@@ -62,12 +62,12 @@ class TestEvaluate:
         assert run.metric("pass_rate(correct)") is not None
         assert run.metric("pass_rate(correct)").value == pytest.approx(1.0)  # type: ignore[union-attr]
         assert run.task.name == "double"
-        assert run.evaluators[0].name == "correct"
+        assert run.scorers[0].name == "correct"
         assert run.provenance.python
 
         loaded = store.load(run.id)
         assert [t.key for t in loaded.trials] == [t.key for t in run.trials]
-        assert loaded.trials[0].scores[0].evaluator == "correct"
+        assert loaded.trials[0].scores[0].scorer == "correct"
         assert [e.id for e in loaded.examples] == ["n0", "n1", "n2", "n3"]
         assert (store.run_dir(run.id) / "report.md").read_text().startswith("# double")
 
@@ -78,7 +78,7 @@ class TestEvaluate:
                 raise ValueError("cannot handle 1")
             return x * 2
 
-        @evaluator
+        @scorer
         def judge(ctx: Ctx) -> Score | None:
             if ctx.input == 0:
                 return None  # not applicable
@@ -86,7 +86,7 @@ class TestEvaluate:
                 return Score.unscored("judge", reason="invalid_response_format")
             return Score(name="judge", value=0.5, explanation="half")
 
-        @evaluator
+        @scorer
         def broken(ctx: Ctx) -> bool:
             raise RuntimeError("judge crashed")
 
@@ -95,17 +95,17 @@ class TestEvaluate:
         assert by_id["n1"].error is not None
         assert by_id["n1"].scores == []
         assert by_id["n0"].scores == []  # not applicable: nothing recorded
-        assert "judge" in by_id["n0"].evaluated
+        assert "judge" in by_id["n0"].scorers_run
         assert by_id["n2"].scores[0].value is None
         assert by_id["n3"].scores[0].value == pytest.approx(0.5)
         assert all(
-            [f.evaluator for f in t.evaluator_failures] == ["broken"]
+            [f.scorer for f in t.scorer_failures] == ["broken"]
             for t in run.trials
             if t.ok
         )
         assert run.counts.task_errors == 1
         assert run.counts.unscored == 1
-        assert run.counts.evaluator_failures == 3
+        assert run.counts.scorer_failures == 3
         mean = run.metric("mean(judge)")
         assert mean is not None
         assert mean.value == pytest.approx(0.5)
@@ -114,22 +114,22 @@ class TestEvaluate:
 
     @pytest.mark.asyncio
     async def test_duplicate_score_names_are_a_failure(self) -> None:
-        @evaluator(name="a")
+        @scorer(name="a")
         def first(ctx: Ctx) -> dict[str, float]:
             return {"shared": 1.0}
 
-        @evaluator(name="b")
+        @scorer(name="b")
         def second(ctx: Ctx) -> dict[str, float]:
             return {"shared": 0.0}
 
         run = await evaluate(double, _numbers(1), [first, second], persist=False)
         trial = run.trials[0]
         assert [s.name for s in trial.scores] == ["shared"]
-        assert trial.evaluator_failures[0].error.type == "DuplicateScoreName"
+        assert trial.scorer_failures[0].error.type == "DuplicateScoreName"
 
     @pytest.mark.asyncio
-    async def test_duplicate_evaluator_names_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Duplicate evaluator"):
+    async def test_duplicate_scorer_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Duplicate scorer"):
             await evaluate(double, _numbers(1), [correct, correct], persist=False)
 
     @pytest.mark.asyncio
@@ -296,7 +296,7 @@ class TestResume:
         assert all(t.ok for t in reloaded.trials)
 
     @pytest.mark.asyncio
-    async def test_resume_scores_missing_evaluators(self, store: LocalRunStore) -> None:
+    async def test_resume_scores_missing_scorers(self, store: LocalRunStore) -> None:
         unscored = await evaluate(
             double, _numbers(2), [correct], store=store, score=False
         )
@@ -325,11 +325,11 @@ class TestRescore:
             calls += 1
             return x * 2
 
-        @evaluator(name="strict", version="1")
+        @scorer(name="strict", version="1")
         def strict_v1(ctx: Ctx) -> bool:
             return False
 
-        @evaluator(name="strict", version="2")
+        @scorer(name="strict", version="2")
         def strict_v2(ctx: Ctx) -> bool:
             return ctx.output == ctx.reference
 
@@ -339,7 +339,7 @@ class TestRescore:
         assert calls == 3  # the task did not run again
         assert child.parent_run_id == parent.id
         assert child.kind == "rescore"
-        assert {e.name: e.version for e in child.evaluators} == {
+        assert {e.name: e.version for e in child.scorers} == {
             "correct": "1",
             "strict": "2",
         }
@@ -354,7 +354,7 @@ class TestRescore:
     ) -> None:
         seen: list[Any] = []
 
-        @evaluator
+        @scorer
         def inspect_output(ctx: Ctx) -> None:
             seen.append(ctx.output)
 
@@ -428,14 +428,14 @@ class TestResumeRules:
         assert forced.metadata["resumed"][-1]["forced_past"]
 
     @pytest.mark.asyncio
-    async def test_changed_evaluators_refuse_resume(self, store: LocalRunStore) -> None:
-        @evaluator
+    async def test_changed_scorers_refuse_resume(self, store: LocalRunStore) -> None:
+        @scorer
         def positive(ctx: Ctx) -> bool:
             return ctx.output >= 0
 
         first = await evaluate(double, _numbers(2), [correct], store=store)
         _mark_interrupted(store, first.id)
-        with pytest.raises(ResumeError, match="evaluators"):
+        with pytest.raises(ResumeError, match="scorers"):
             await evaluate(
                 double, _numbers(2), [correct, positive], store=store, resume=first.id
             )
@@ -564,10 +564,10 @@ class TestFailureIsolation:
         assert "finite" in run.trials[0].error.message  # type: ignore[union-attr]
 
     @pytest.mark.asyncio
-    async def test_sync_evaluators_run_off_the_event_loop(self) -> None:
+    async def test_sync_scorers_run_off_the_event_loop(self) -> None:
         import time
 
-        @evaluator
+        @scorer
         def slow(ctx: Ctx) -> bool:
             time.sleep(0.3)
             return True
@@ -577,29 +577,27 @@ class TestFailureIsolation:
         assert time.perf_counter() - started < 0.9
         assert all(t.duration_s < 0.25 for t in run.trials)
 
-    def test_a_hanging_sync_evaluator_does_not_delay_the_exit(self) -> None:
+    def test_a_hanging_sync_scorer_does_not_delay_the_exit(self) -> None:
         import time
 
-        @evaluator
+        @scorer
         def hangs(ctx: Ctx) -> bool:
             time.sleep(3)
             return True
 
         started = time.perf_counter()
         run = asyncio.run(
-            evaluate(
-                double, _numbers(1), [hangs], evaluator_timeout_s=0.1, persist=False
-            )
+            evaluate(double, _numbers(1), [hangs], scorer_timeout_s=0.1, persist=False)
         )
         assert time.perf_counter() - started < 2
-        (failure,) = run.trials[0].evaluator_failures
+        (failure,) = run.trials[0].scorer_failures
         assert failure.error.type == "TimeoutError"
 
     @pytest.mark.asyncio
     async def test_bytes_outputs_survive_storage(self, store: LocalRunStore) -> None:
         seen: list[Any] = []
 
-        @evaluator
+        @scorer
         def is_payload(ctx: EvalContext[int, bytes, None]) -> bool:
             seen.append(ctx.output)
             return ctx.output == b"\x00\xff"
@@ -614,16 +612,16 @@ class TestFailureIsolation:
         assert later.trials[0].scores[0].value is True
 
     @pytest.mark.asyncio
-    async def test_hanging_evaluators_time_out(self) -> None:
-        @evaluator
+    async def test_hanging_scorers_time_out(self) -> None:
+        @scorer
         async def hangs(ctx: Ctx) -> bool:
             await asyncio.sleep(5)
             return True
 
         run = await evaluate(
-            double, _numbers(1), [hangs], evaluator_timeout_s=0.05, persist=False
+            double, _numbers(1), [hangs], scorer_timeout_s=0.05, persist=False
         )
-        (failure,) = run.trials[0].evaluator_failures
+        (failure,) = run.trials[0].scorer_failures
         assert failure.error.type == "TimeoutError"
 
 
@@ -680,11 +678,11 @@ class TestBudget:
 
 class TestRescoreRules:
     @pytest.mark.asyncio
-    async def test_unchanged_evaluators_are_reused(self, store: LocalRunStore) -> None:
+    async def test_unchanged_scorers_are_reused(self, store: LocalRunStore) -> None:
         calls: list[str] = []
 
         def judge(version: str) -> Any:
-            @evaluator(name="judged", version=version)
+            @scorer(name="judged", version=version)
             def judged(ctx: Ctx) -> bool:
                 calls.append(ctx.example.id)
                 return ctx.output == ctx.reference
@@ -707,13 +705,13 @@ class TestRescoreRules:
     ) -> None:
         calls: list[str] = []
 
-        class Labelled(Evaluator[int, int, int]):
+        class Labelled(Scorer[int, int, int]):
             name = "labelled"
 
             def config(self) -> dict[str, Any]:
                 return {"labels": ("good", "bad"), "tags": {"b", "a"}}
 
-            def evaluate(self, ctx: Ctx) -> bool:
+            def score(self, ctx: Ctx) -> bool:
                 calls.append(ctx.example.id)
                 return ctx.output == ctx.reference
 
@@ -722,31 +720,29 @@ class TestRescoreRules:
         assert len(calls) == 3
 
     @pytest.mark.asyncio
-    async def test_edited_evaluator_code_is_rerun(
+    async def test_edited_scorer_code_is_rerun(
         self, store: LocalRunStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls: list[str] = []
 
-        @evaluator(name="judged")
+        @scorer(name="judged")
         def judged(ctx: Ctx) -> bool:
             calls.append(ctx.example.id)
             return ctx.output == ctx.reference
 
         run = await evaluate(double, _numbers(3), [judged], store=store)
         # (The package exports a function named like the module.)
-        module = importlib.import_module("grasp_agents.evals.evaluator")
+        module = importlib.import_module("grasp_agents.evals.scorer")
         monkeypatch.setattr(module, "code_hash", lambda _: "edited")
         await rescore(run.id, [judged], store=store, output_type=int)
         assert len(calls) == 6
 
     @pytest.mark.asyncio
-    async def test_failed_evaluator_outputs_are_filled(
-        self, store: LocalRunStore
-    ) -> None:
+    async def test_failed_scorer_outputs_are_filled(self, store: LocalRunStore) -> None:
         broken = {"n0"}
         calls: list[str] = []
 
-        @evaluator
+        @scorer
         def fragile(ctx: Ctx) -> bool:
             calls.append(ctx.example.id)
             if ctx.example.id in broken:
@@ -754,12 +750,12 @@ class TestRescoreRules:
             return True
 
         parent = await evaluate(double, _numbers(3), [fragile], store=store)
-        assert parent.counts.evaluator_failures == 1
+        assert parent.counts.scorer_failures == 1
         broken.clear()
         calls.clear()
         child = await rescore(parent.id, [fragile], store=store)
         assert calls == ["n0"]
-        assert child.counts.evaluator_failures == 0
+        assert child.counts.scorer_failures == 0
 
     @pytest.mark.asyncio
     async def test_rescoring_a_partial_run_stays_partial(
@@ -783,7 +779,7 @@ class TestRescoreRules:
         self, store: LocalRunStore
     ) -> None:
         def paid(version: str) -> Any:
-            @evaluator(name="paid", version=version)
+            @scorer(name="paid", version=version)
             def judge(ctx: Ctx) -> bool:
                 ctx.record_usage(Usage(input_tokens=1, cost_usd=1.0))
                 return True

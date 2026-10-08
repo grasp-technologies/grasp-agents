@@ -1,5 +1,5 @@
 """
-Judges: evaluators backed by grasp-agents processors (an ``LLMAgent``, or any
+Judges: scorers backed by grasp-agents processors (an ``LLMAgent``, or any
 :class:`Processor`, that reads an output and returns a verdict), and the
 evaluations that validate a judge against labels and probe it with changed
 outputs.
@@ -14,16 +14,16 @@ from grasp_agents.session_context import SessionContext
 
 from ._util import user_code_hash
 from .evaluation import DatasetSource, Evaluation
-from .evaluator import EvalContext, Evaluator, EvaluatorOutput
 from .pairwise import PairwiseContext, PairwiseJudge, PairwiseVerdict
+from .scorer import EvalContext, Scorer, ScorerOutput
 from .task import ProcessorSource, ProcessorTask, TrialContext
 from .types import ComponentInfo, Example, JudgedOutput, Usage
 from .validation import (
-    EvaluatorTask,
     LabelAgreement,
     Perturbation,
     ProbeCheck,
     ProbeTask,
+    ScorerTask,
     probe_metrics,
     validation_metrics,
 )
@@ -97,11 +97,9 @@ class _JudgeRunner:
         )
 
 
-class ProcessorEvaluator[InT, OutT, RefT, JudgeInT, JudgeOutT](
-    Evaluator[InT, OutT, RefT]
-):
+class ProcessorScorer[InT, OutT, RefT, JudgeInT, JudgeOutT](Scorer[InT, OutT, RefT]):
     """
-    An evaluator whose judgments come from a :class:`Processor` — typically an
+    A scorer whose judgments come from a :class:`Processor` — typically an
     ``LLMAgent`` with a structured verdict.
 
     Each call runs a fresh copy of the judge (or a factory's product) in a
@@ -117,7 +115,7 @@ class ProcessorEvaluator[InT, OutT, RefT, JudgeInT, JudgeOutT](
     rescoring run it again and invalidates earlier validation runs. A judge
     built by a factory has no fingerprint, so declare its model and prompt in
     ``version`` or ``config``. A judge that raises (including on a verdict
-    that does not parse) is an evaluator failure, which rescoring retries.
+    that does not parse) is a scorer failure, which rescoring retries.
     """
 
     annotator: Annotator = "LLM"
@@ -129,11 +127,11 @@ class ProcessorEvaluator[InT, OutT, RefT, JudgeInT, JudgeOutT](
         name: str | None = None,
         version: str = "1",
         to_input: Callable[[EvalContext[InT, OutT, RefT]], JudgeInT] | None = None,
-        to_scores: Callable[[JudgeOutT], EvaluatorOutput] | None = None,
+        to_scores: Callable[[JudgeOutT], ScorerOutput] | None = None,
         config: Mapping[str, Any] | None = None,
         ctx_factory: Callable[[Example[Any, Any]], SessionContext[Any]] | None = None,
         input_mode: Literal["in_args", "chat"] = "in_args",
-        evaluates_errors: bool = False,
+        scores_errors: bool = False,
         annotator: Annotator = "LLM",
     ) -> None:
         self._runner = _JudgeRunner(
@@ -143,7 +141,7 @@ class ProcessorEvaluator[InT, OutT, RefT, JudgeInT, JudgeOutT](
         self._to_input = to_input
         self._to_scores = to_scores
         self._config = dict(config or {})
-        self.evaluates_errors = evaluates_errors
+        self.scores_errors = scores_errors
         self.annotator = annotator
 
     def config(self) -> dict[str, Any]:
@@ -158,7 +156,7 @@ class ProcessorEvaluator[InT, OutT, RefT, JudgeInT, JudgeOutT](
             code=[type(self), self._to_input, self._to_scores],
         )
 
-    async def evaluate(self, ctx: EvalContext[InT, OutT, RefT]) -> EvaluatorOutput:
+    async def score(self, ctx: EvalContext[InT, OutT, RefT]) -> ScorerOutput:
         judge_input: Any = (
             self._to_input(ctx)
             if self._to_input is not None
@@ -174,7 +172,7 @@ class ProcessorEvaluator[InT, OutT, RefT, JudgeInT, JudgeOutT](
         )
         if self._to_scores is not None:
             return self._to_scores(verdict)
-        return cast("EvaluatorOutput", verdict)
+        return cast("ScorerOutput", verdict)
 
 
 class ProcessorPairwiseJudge[InT, OutT, RefT, JudgeInT, JudgeOutT](
@@ -182,7 +180,7 @@ class ProcessorPairwiseJudge[InT, OutT, RefT, JudgeInT, JudgeOutT](
 ):
     """
     A pairwise judge backed by a :class:`Processor`, run in isolation per
-    call like :class:`ProcessorEvaluator`. ``to_input(ctx)`` builds its input
+    call like :class:`ProcessorScorer`. ``to_input(ctx)`` builds its input
     (by default a :class:`JudgedPair`) and ``to_verdict(output)`` its
     :class:`PairwiseVerdict` (by default the output must be one).
     """
@@ -250,7 +248,7 @@ class ProcessorPairwiseJudge[InT, OutT, RefT, JudgeInT, JudgeOutT](
 
 
 def _score_names(
-    judge: Evaluator[Any, Any, Any], scores: str | Sequence[str] | None
+    judge: Scorer[Any, Any, Any], scores: str | Sequence[str] | None
 ) -> list[str]:
     if isinstance(scores, str):
         return [scores]
@@ -258,7 +256,7 @@ def _score_names(
 
 
 def judge_validation(
-    judge: Evaluator[Any, Any, Any],
+    judge: Scorer[Any, Any, Any],
     labels: DatasetSource,
     *,
     scores: str | Sequence[str] | None = None,
@@ -308,14 +306,14 @@ def judge_validation(
     return Evaluation(
         name=name or f"{judge.name}-validation",
         description=description or f"Agreement of the {judge.name} judge with labels",
-        task=EvaluatorTask(
+        task=ScorerTask(
             judge,
             input_type=input_type,
             output_type=output_type,
             reference_type=reference_type,
         ),
         dataset=labels,
-        evaluators=[
+        scorers=[
             LabelAgreement(
                 names, threshold=threshold, positive=positive, negative=negative
             )
@@ -335,7 +333,7 @@ def judge_validation(
 
 
 def judge_probes(
-    judge: Evaluator[Any, Any, Any],
+    judge: Scorer[Any, Any, Any],
     items: DatasetSource,
     perturbations: Sequence[Perturbation],
     *,
@@ -379,7 +377,7 @@ def judge_probes(
             reference_type=reference_type,
         ),
         dataset=items,
-        evaluators=[ProbeCheck(perturbations, names, threshold=threshold)],
+        scorers=[ProbeCheck(perturbations, names, threshold=threshold)],
         metrics=probe_metrics(perturbations, names),
         repetitions=repetitions,
         concurrency=concurrency,

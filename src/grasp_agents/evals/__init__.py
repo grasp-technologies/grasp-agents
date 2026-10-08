@@ -3,14 +3,14 @@ Evaluations for grasp-agents processors.
 
 Build a :class:`Dataset` of :class:`Example` s, run any processor (or async
 function) over it with :func:`evaluate`, score each :class:`Trial` with
-:class:`Evaluator` s, aggregate with :class:`Metric` s, and compare runs with
+:class:`Scorer` s, aggregate with :class:`Metric` s, and compare runs with
 :func:`compare`. Every run is an append-only, on-disk :class:`EvaluationRun`
 whose results never change once completed; retrying, rescoring (:func:`rescore`)
 and pairwise judging (:func:`pairwise`) create new runs from stored outputs.
 Package an evaluation as an :class:`Evaluation` to run it from the
 ``grasp-evals`` CLI.
 
-Judges are evaluators too: :class:`ProcessorEvaluator` turns any processor
+Judges are scorers too: :class:`ProcessorScorer` turns any processor
 (an ``LLMAgent`` with a structured verdict) into one, and
 :func:`judge_validation` / :func:`judge_probes` measure a judge with the same
 machinery — agreement with labels collected by :func:`sample_for_labeling` and
@@ -35,17 +35,10 @@ from .evaluation import (
     load_evaluation,
     load_object,
 )
-from .evaluator import (
-    EvalContext,
-    Evaluator,
-    EvaluatorOutput,
-    FunctionEvaluator,
-    evaluator,
-)
 from .judge import (
     JudgedPair,
-    ProcessorEvaluator,
     ProcessorPairwiseJudge,
+    ProcessorScorer,
     judge_probes,
     judge_validation,
 )
@@ -80,6 +73,13 @@ from .pairwise import (
 )
 from .report import render_comparison_markdown, render_run_markdown, run_summary
 from .runner import ResumeError, SealedSelectionError, evaluate, rescore
+from .scorer import (
+    EvalContext,
+    FunctionScorer,
+    Scorer,
+    ScorerOutput,
+    scorer,
+)
 from .store import LocalRunStore, RunNotFoundError, RunStore
 from .task import FunctionTask, ProcessorTask, Task, TrialContext
 from .types import (
@@ -87,7 +87,6 @@ from .types import (
     DatasetRef,
     ErrorInfo,
     EvaluationRun,
-    EvaluatorFailure,
     Example,
     JudgedOutput,
     MetricResult,
@@ -95,6 +94,7 @@ from .types import (
     RunStatus,
     Score,
     ScoreReason,
+    ScorerFailure,
     Trial,
     Usage,
 )
@@ -126,13 +126,10 @@ __all__ = [
     "EvalContext",
     "Evaluation",
     "EvaluationRun",
-    "Evaluator",
-    "EvaluatorFailure",
-    "EvaluatorOutput",
     "Example",
     "ExampleDelta",
-    "FunctionEvaluator",
     "FunctionPairwiseJudge",
+    "FunctionScorer",
     "FunctionTask",
     "JudgeErrorRates",
     "JudgeValidation",
@@ -152,8 +149,8 @@ __all__ = [
     "PassRate",
     "Percentile",
     "Perturbation",
-    "ProcessorEvaluator",
     "ProcessorPairwiseJudge",
+    "ProcessorScorer",
     "ProcessorTask",
     "Proportion",
     "Provenance",
@@ -163,6 +160,9 @@ __all__ = [
     "RunStore",
     "Score",
     "ScoreReason",
+    "Scorer",
+    "ScorerFailure",
+    "ScorerOutput",
     "SealedSelectionError",
     "SpecError",
     "TargetComparison",
@@ -179,7 +179,6 @@ __all__ = [
     "compute_metrics",
     "default_metrics",
     "evaluate",
-    "evaluator",
     "example_json_schema",
     "import_labels",
     "judge_probes",
@@ -194,4 +193,5 @@ __all__ = [
     "rescore",
     "run_summary",
     "sample_for_labeling",
+    "scorer",
 ]

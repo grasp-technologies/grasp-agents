@@ -10,7 +10,7 @@ from grasp_agents.evals import (
     LocalRunStore,
     RunNotFoundError,
     evaluate,
-    evaluator,
+    scorer,
 )
 
 
@@ -25,7 +25,7 @@ async def double(x: int) -> int:
     return x * 2
 
 
-@evaluator
+@scorer
 def correct(ctx: EvalContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 

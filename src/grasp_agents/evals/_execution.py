@@ -27,15 +27,15 @@ from ._util import (
     to_jsonable,
     utc_now,
 )
-from .evaluator import (
-    EvalContext,
-    Evaluator,
-    FunctionEvaluator,
-    merge_models,
-    run_evaluator,
-)
 from .metrics import MetricsSpec, compute_metrics
 from .report import render_run_markdown
+from .scorer import (
+    EvalContext,
+    FunctionScorer,
+    Scorer,
+    merge_models,
+    run_scorer,
+)
 from .store import LocalRunStore, RunStore
 from .task import Task, TrialContext
 from .types import (
@@ -43,12 +43,12 @@ from .types import (
     DatasetRef,
     ErrorInfo,
     EvaluationRun,
-    EvaluatorFailure,
     Example,
     Provenance,
     RunCounts,
     RunStatus,
     Score,
+    ScorerFailure,
     Trial,
     Usage,
     with_record,
@@ -74,9 +74,9 @@ class TrialProgress:
 type ProgressCallback = Callable[[TrialProgress], None]
 
 
-def evaluator_sources(evaluators: Iterable[Evaluator[Any, Any, Any]]) -> list[Any]:
-    """Classes and functions whose source files define ``evaluators``."""
-    return [e.fn if isinstance(e, FunctionEvaluator) else type(e) for e in evaluators]
+def scorer_sources(scorers: Iterable[Scorer[Any, Any, Any]]) -> list[Any]:
+    """Classes and functions whose source files define ``scorers``."""
+    return [e.fn if isinstance(e, FunctionScorer) else type(e) for e in scorers]
 
 
 def capture_provenance(
@@ -103,7 +103,7 @@ def capture_provenance(
 
 def config_hash(
     task: ComponentInfo,
-    evaluators: Sequence[ComponentInfo],
+    scorers: Sequence[ComponentInfo],
     dataset: DatasetRef,
     repetitions: int,
 ) -> str:
@@ -112,8 +112,8 @@ def config_hash(
         canonical_json(
             {
                 "task": task,
-                "evaluators": sorted(
-                    (e.model_dump(exclude={"source"}) for e in evaluators),
+                "scorers": sorted(
+                    (e.model_dump(exclude={"source"}) for e in scorers),
                     key=operator.itemgetter("name"),
                 ),
                 "dataset": dataset.selected_fingerprint,
@@ -171,12 +171,12 @@ def rehydrate_output(adapter: TypeAdapter[Any], output: Any) -> Any:
 
 
 def warn_if_untyped(output_type: Any, outputs: Iterable[Any]) -> None:
-    """Warn once when stored outputs reach evaluators as plain JSON objects."""
+    """Warn once when stored outputs reach scorers as plain JSON objects."""
     if output_type is not Any:
         return
     if any(isinstance(o, dict | list) for o in outputs):
         logger.warning(
-            "The task's output type is unknown, so evaluators receive stored "
+            "The task's output type is unknown, so scorers receive stored "
             "outputs as plain JSON; pass output_type= to re-validate them"
         )
 
@@ -271,19 +271,19 @@ class Executor:
         run: EvaluationRun,
         *,
         store: RunStore | None,
-        evaluators: Sequence[Evaluator[Any, Any, Any]],
+        scorers: Sequence[Scorer[Any, Any, Any]],
         capture_events: bool = True,
         max_cost_usd: float | None = None,
-        evaluator_timeout_s: float | None = None,
+        scorer_timeout_s: float | None = None,
         progress: ProgressCallback | None = None,
         total: int = 0,
     ) -> None:
         self.run = run
         self.store = store
-        self.evaluators = list(evaluators)
+        self.scorers = list(scorers)
         self.capture_events = capture_events
         self.max_cost_usd = max_cost_usd
-        self.evaluator_timeout_s = evaluator_timeout_s
+        self.scorer_timeout_s = scorer_timeout_s
         self.progress = progress
         self.total = total
         self.budget_exhausted = False
@@ -358,8 +358,8 @@ class Executor:
     ) -> None:
         pending = [
             e
-            for e in self.evaluators
-            if e.name not in trial.evaluated and (trial.ok or e.evaluates_errors)
+            for e in self.scorers
+            if e.name not in trial.scorers_run and (trial.ok or e.scores_errors)
         ]
         if not pending:
             return
@@ -377,27 +377,27 @@ class Executor:
             *starmap(self._run_one, zip(pending, contexts, strict=True))
         )
         names = {s.name for s in trial.scores}
-        for evaluator, ctx, outcome in zip(pending, contexts, outcomes, strict=True):
-            trial.evaluator_failures = [
-                f for f in trial.evaluator_failures if f.evaluator != evaluator.name
+        for scorer, ctx, outcome in zip(pending, contexts, outcomes, strict=True):
+            trial.scorer_failures = [
+                f for f in trial.scorer_failures if f.scorer != scorer.name
             ]
             usage = sum(ctx.usage, Usage())
             if not usage.is_empty:
-                trial.evaluator_usage[evaluator.name] = usage
+                trial.scorer_usage[scorer.name] = usage
                 self._new_usage += usage
                 if usage.total_tokens and usage.cost_usd is None:
-                    self._unpriced.add(f"evaluator {evaluator.name}")
+                    self._unpriced.add(f"scorer {scorer.name}")
             merge_models(trial.models, ctx.models)
             if isinstance(outcome, ErrorInfo):
-                trial.evaluator_failures.append(
-                    EvaluatorFailure(evaluator=evaluator.name, error=outcome)
+                trial.scorer_failures.append(
+                    ScorerFailure(scorer=scorer.name, error=outcome)
                 )
                 continue
             clashes = sorted({s.name for s in outcome} & names)
             if clashes:
-                trial.evaluator_failures.append(
-                    EvaluatorFailure(
-                        evaluator=evaluator.name,
+                trial.scorer_failures.append(
+                    ScorerFailure(
+                        scorer=scorer.name,
                         error=ErrorInfo(
                             type="DuplicateScoreName",
                             message=f"DuplicateScoreName: already produced {clashes}",
@@ -407,27 +407,25 @@ class Executor:
                 continue
             trial.scores.extend(outcome)
             names.update(s.name for s in outcome)
-            trial.evaluated.append(evaluator.name)
+            trial.scorers_run.append(scorer.name)
 
     async def _run_one(
-        self, evaluator: Evaluator[Any, Any, Any], ctx: EvalContext[Any, Any, Any]
+        self, scorer: Scorer[Any, Any, Any], ctx: EvalContext[Any, Any, Any]
     ) -> list[Score] | ErrorInfo:
         try:
-            return await run_evaluator(
-                evaluator, ctx, timeout_s=self.evaluator_timeout_s
-            )
+            return await run_scorer(scorer, ctx, timeout_s=self.scorer_timeout_s)
         except TimeoutError:
             return ErrorInfo(
                 type="TimeoutError",
                 message=(
-                    "TimeoutError: evaluator exceeded its "
-                    f"{self.evaluator_timeout_s:g}s timeout"
+                    "TimeoutError: scorer exceeded its "
+                    f"{self.scorer_timeout_s:g}s timeout"
                 ),
             )
         except Exception as exc:
             logger.debug(
-                "Evaluator %s failed on example %s: %s",
-                evaluator.name,
+                "Scorer %s failed on example %s: %s",
+                scorer.name,
                 ctx.example.id,
                 exc,
             )
@@ -486,7 +484,7 @@ class Executor:
             trials_expected=len(order),
             trials_done=len(trials),
             task_errors=sum(1 for t in trials if not t.ok),
-            evaluator_failures=sum(len(t.evaluator_failures) for t in trials),
+            scorer_failures=sum(len(t.scorer_failures) for t in trials),
             unscored=sum(1 for t in trials for s in t.scores if not s.scored),
         )
         run.usage = self._base_usage + self._new_usage

@@ -16,8 +16,8 @@ from ._util import canonical_json, short_hash, utc_now
 from .dataset import Dataset, DatasetError
 from .types import EvaluationRun, JudgedOutput, ScoreValue, Trial, input_digest
 from .validation import (
-    EVALUATOR_TASK_KIND,
     PROBE_TASK_KIND,
+    SCORER_TASK_KIND,
     LabelMismatchError,
     comparable,
     label_value_text,
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Runs whose outputs are not a system's answers (a judge's verdicts, pairs).
 _NOT_SAMPLEABLE = {
-    EVALUATOR_TASK_KIND: "a judge validation",
+    SCORER_TASK_KIND: "a judge validation",
     PROBE_TASK_KIND: "a probe",
 }
 

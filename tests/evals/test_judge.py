@@ -16,8 +16,8 @@ from grasp_agents.evals import (
     JudgedPair,
     LocalRunStore,
     PairwiseVerdict,
-    ProcessorEvaluator,
     ProcessorPairwiseJudge,
+    ProcessorScorer,
     evaluate,
     pairwise,
     rescore,
@@ -84,14 +84,14 @@ def store(tmp_path: Path) -> LocalRunStore:
     return LocalRunStore(tmp_path / "evals")
 
 
-class TestProcessorEvaluator:
+class TestProcessorScorer:
     @pytest.mark.asyncio
     async def test_runs_an_isolated_judge_per_trial_and_records_its_usage(
         self,
     ) -> None:
         llm = VerdictLLM(model_name="judge-1")
         agent = _judge_agent(llm)
-        judge = ProcessorEvaluator(agent, name="quality", to_scores=_passed)
+        judge = ProcessorScorer(agent, name="quality", to_scores=_passed)
         run = await evaluate(_answer, _letters(), [judge], persist=False)
         values = {t.example_id: t.score("quality") for t in run.trials}
         assert {k: v.value if v else None for k, v in values.items()} == {
@@ -103,10 +103,10 @@ class TestProcessorEvaluator:
         # The template never runs: every call is a fresh copy.
         assert agent.transcript.messages == []
         for trial in run.trials:
-            usage = trial.evaluator_usage["quality"]
+            usage = trial.scorer_usage["quality"]
             assert (usage.input_tokens, usage.output_tokens) == (10, 5)
             assert trial.usage.is_empty
-        assert run.evaluators[0].annotator == "LLM"
+        assert run.scorers[0].annotator == "LLM"
 
     @pytest.mark.asyncio
     async def test_default_input_is_a_typed_judged_output(self) -> None:
@@ -136,7 +136,7 @@ class TestProcessorEvaluator:
         async def upper(x: str) -> str:
             return x.upper()
 
-        judge = ProcessorEvaluator(Recorder(name="recorder"), name="matches")
+        judge = ProcessorScorer(Recorder(name="recorder"), name="matches")
         run = await evaluate(upper, dataset, [judge], persist=False)
         assert run.trials[0].score("matches") is not None
         assert run.trials[0].score("matches").value is True  # type: ignore[union-attr]
@@ -145,8 +145,8 @@ class TestProcessorEvaluator:
         assert seen[0].metadata == {"k": 1}
 
     def test_identity_follows_prompt_model_and_code(self) -> None:
-        def build(**kwargs: Any) -> ProcessorEvaluator[Any, Any, Any, Any, Any]:
-            return ProcessorEvaluator(_judge_agent(**kwargs), to_scores=_passed)
+        def build(**kwargs: Any) -> ProcessorScorer[Any, Any, Any, Any, Any]:
+            return ProcessorScorer(_judge_agent(**kwargs), to_scores=_passed)
 
         base = build().describe()
         assert base == build().describe()
@@ -154,7 +154,7 @@ class TestProcessorEvaluator:
         assert build(sys_prompt="Be strict.").describe().fingerprint != base.fingerprint
         other_model = build(llm=VerdictLLM(model_name="judge-2")).describe()
         assert other_model.fingerprint != base.fingerprint
-        relabeled = ProcessorEvaluator(
+        relabeled = ProcessorScorer(
             _judge_agent(), to_scores=lambda v: v.passed
         ).describe()
         assert relabeled.fingerprint == base.fingerprint
@@ -165,17 +165,17 @@ class TestProcessorEvaluator:
         self, store: LocalRunStore
     ) -> None:
         first = VerdictLLM(model_name="judge-1")
-        judge = ProcessorEvaluator(_judge_agent(first), name="q", to_scores=_passed)
+        judge = ProcessorScorer(_judge_agent(first), name="q", to_scores=_passed)
         run = await evaluate(_answer, _letters(), [judge], store=store)
         assert first.call_count == 3
 
         same = VerdictLLM(model_name="judge-1")
-        unchanged = ProcessorEvaluator(_judge_agent(same), name="q", to_scores=_passed)
+        unchanged = ProcessorScorer(_judge_agent(same), name="q", to_scores=_passed)
         await rescore(run, [unchanged], store=store)
         assert same.call_count == 0
 
         edited = VerdictLLM(model_name="judge-1")
-        reworded = ProcessorEvaluator(
+        reworded = ProcessorScorer(
             _judge_agent(edited, sys_prompt="Is the answer good? Be strict."),
             name="q",
             to_scores=_passed,
@@ -184,7 +184,7 @@ class TestProcessorEvaluator:
         assert edited.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_a_failing_judge_is_an_evaluator_failure(self) -> None:
+    async def test_a_failing_judge_is_an_scorer_failure(self) -> None:
         class Broken(Processor[Any, bool, Any]):
             async def _process_stream(
                 self,
@@ -197,11 +197,11 @@ class TestProcessorEvaluator:
                 raise RuntimeError("judge exploded")
                 yield  # pragma: no cover
 
-        judge = ProcessorEvaluator(Broken(name="broken"))
+        judge = ProcessorScorer(Broken(name="broken"))
         run = await evaluate(_answer, _letters(), [judge], persist=False)
-        assert run.counts.evaluator_failures == 3
+        assert run.counts.scorer_failures == 3
         assert all(t.ok for t in run.trials)
-        assert "judge exploded" in run.trials[0].evaluator_failures[0].error.message
+        assert "judge exploded" in run.trials[0].scorer_failures[0].error.message
 
 
 class _Longer(Processor[JudgedPair[str, str, Any], PairwiseVerdict, Any]):
@@ -242,7 +242,7 @@ class TestProcessorPairwiseJudge:
         consistent = run.metric("pass_rate(longer.position_consistent)")
         assert consistent is not None
         assert consistent.value == 1.0
-        assert run.evaluators[0].config["judge"]["fingerprint"] is not None
+        assert run.scorers[0].config["judge"]["fingerprint"] is not None
 
     @pytest.mark.asyncio
     async def test_pairwise_judge_usage_reaches_the_trial(
@@ -272,7 +272,7 @@ class TestProcessorPairwiseJudge:
         run = await pairwise(
             base, candidate, ProcessorPairwiseJudge(agent), store=store
         )
-        usage = run.trials[0].evaluator_usage["pair_judge"]
+        usage = run.trials[0].scorer_usage["pair_judge"]
         # One call per order.
         assert usage.input_tokens == 20
         # "first" in both orders: position-inconsistent, a tie.
@@ -300,13 +300,13 @@ class TestProcessorPairwiseJudge:
         bare = await pairwise(
             base, candidate, ProcessorPairwiseJudge(Says(name="s")), store=store
         )
-        assert bare.counts.evaluator_failures == 3
-        assert "to_verdict" in bare.trials[0].evaluator_failures[0].error.message
+        assert bare.counts.scorer_failures == 3
+        assert "to_verdict" in bare.trials[0].scorer_failures[0].error.message
         mapped = ProcessorPairwiseJudge(
             Says(name="s"), to_verdict=lambda w: PairwiseVerdict(winner=w)
         )
         run = await pairwise(base, candidate, mapped, store=store)
-        assert run.counts.evaluator_failures == 0
+        assert run.counts.scorer_failures == 0
 
 
 def _judge_with(
@@ -331,7 +331,7 @@ def _render_differently(*_: Any, **__: Any) -> str:
 
 class TestJudgeIdentity:
     def _source(self, agent: Any, to_scores: Any = _passed) -> str | None:
-        return ProcessorEvaluator(agent, to_scores=to_scores).describe().source
+        return ProcessorScorer(agent, to_scores=to_scores).describe().source
 
     def test_hooks_are_part_of_the_identity(self) -> None:
         plain = _judge_with()
@@ -362,7 +362,7 @@ class TestJudgeIdentity:
         )
         recoded = _judge_with(tools=[function_tool(lookup_v2, name="lookup")])
         fingerprints = {
-            ProcessorEvaluator(a).describe().fingerprint for a in (first, described)
+            ProcessorScorer(a).describe().fingerprint for a in (first, described)
         }
         assert len(fingerprints) == 2
         assert self._source(first) != self._source(recoded)
@@ -394,7 +394,7 @@ class TestJudgeIdentity:
 
     def test_operational_flags_and_late_changes(self) -> None:
         agent = _judge_with()
-        judge = ProcessorEvaluator(agent, to_scores=_passed)
+        judge = ProcessorScorer(agent, to_scores=_passed)
         before = judge.describe()
         agent.tracing_enabled = False
         assert judge.describe() == before
@@ -406,29 +406,33 @@ class TestJudgeIdentity:
 class TestJudgeSpend:
     @pytest.mark.asyncio
     async def test_judge_models_are_recorded(self, store: LocalRunStore) -> None:
-        judge = ProcessorEvaluator(_judge_agent(), name="q", to_scores=_passed)
+        judge = ProcessorScorer(_judge_agent(), name="q", to_scores=_passed)
         run = await evaluate(_answer, _letters(), [judge], store=store)
         assert run.trials[0].models == {"judge": ["judge-1"]}
         assert run.provenance.observed_models == {"judge": ["judge-1"]}
 
     @pytest.mark.asyncio
     async def test_unpriced_judges_are_reported(self, store: LocalRunStore) -> None:
-        judge = ProcessorEvaluator(_judge_agent(), name="q", to_scores=_passed)
+        judge = ProcessorScorer(_judge_agent(), name="q", to_scores=_passed)
         run = await evaluate(
             _answer, _letters(), [judge], store=store, max_cost_usd=1.0
         )
-        assert run.metadata["unpriced_agents"] == ["evaluator q"]
+        assert run.metadata["unpriced_agents"] == ["scorer q"]
 
     @pytest.mark.asyncio
     async def test_a_failing_judgment_stops_the_others(self) -> None:
         import asyncio  # noqa: PLC0415
 
-        from grasp_agents.evals import EvalContext, Perturbation, evaluator  # noqa: PLC0415
+        from grasp_agents.evals import (  # noqa: PLC0415
+            EvalContext,
+            Perturbation,
+            scorer,
+        )
         from grasp_agents.evals.validation import ProbeTask  # noqa: PLC0415
 
         finished: list[str] = []
 
-        @evaluator(name="slow", annotator="LLM")
+        @scorer(name="slow", annotator="LLM")
         async def slow(ctx: EvalContext[str, str, Any]) -> bool:
             if ctx.output.endswith("!"):
                 raise RuntimeError("judge failed")

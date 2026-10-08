@@ -161,7 +161,7 @@ def _group_by_example(trials: Iterable[Trial]) -> dict[str, list[Trial]]:
 def _not_applicable(trial: Trial, target: Target | None) -> bool:
     if target is None or isinstance(target, Measure) or not trial.ok:
         return False
-    if trial.evaluator_failures or target in trial.measurements:
+    if trial.scorer_failures or target in trial.measurements:
         return False
     return trial.score(target) is None
 

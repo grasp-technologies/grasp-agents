@@ -13,11 +13,11 @@ from grasp_agents.evals import (
     Example,
     LocalRunStore,
     evaluate,
-    evaluator,
     import_labels,
     judge_validation,
     judged_outputs,
     sample_for_labeling,
+    scorer,
 )
 from grasp_agents.evals.cli import main
 from grasp_agents.evals.labeling import (
@@ -33,12 +33,12 @@ from grasp_agents.evals.phoenix.annotations import human_annotations
 type Ctx = EvalContext[int, str, Any]
 
 
-@evaluator(name="judge", annotator="LLM")
+@scorer(name="judge", annotator="LLM")
 def judge(ctx: Ctx) -> bool:
     return ctx.input % 2 == 0
 
 
-@evaluator(name="check")
+@scorer(name="check")
 def check(ctx: Ctx) -> bool:
     return ctx.input % 3 == 0
 
@@ -499,7 +499,7 @@ class TestLabelingRules:
     async def test_verdicts_balance_before_strata_and_unscored_come_last(
         self, store: LocalRunStore
     ) -> None:
-        @evaluator(name="judge", annotator="LLM")
+        @scorer(name="judge", annotator="LLM")
         def lopsided(ctx: Ctx) -> bool | None:
             if ctx.input >= 36:
                 return None  # not applicable
