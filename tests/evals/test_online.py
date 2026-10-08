@@ -8,13 +8,13 @@ import pytest
 
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Evaluation,
     Example,
     Extracted,
     LocalRunStore,
     PassRate,
     RunStatus,
+    ScoreContext,
     SpanRecord,
     TraceAnnotation,
     TraceItem,
@@ -146,12 +146,12 @@ def _window(start: float = 0.0, end: float = 60.0) -> TraceWindow:
 
 
 @scorer
-def answered(ctx: EvalContext[Any, Any, Any]) -> bool:
+def answered(ctx: ScoreContext[Any, Any, Any]) -> bool:
     return ctx.output == "answer"
 
 
 @scorer(name="tone")
-def tone(ctx: EvalContext[Any, Any, Any]) -> str | None:
+def tone(ctx: ScoreContext[Any, Any, Any]) -> str | None:
     return None if ctx.output == "skip" else "polite"
 
 
@@ -605,7 +605,7 @@ def test_run_annotations_skip_trials_that_are_not_trace_items() -> None:
 
 
 @scorer(name="costly")
-def costly(ctx: EvalContext[Any, Any, Any]) -> bool:
+def costly(ctx: ScoreContext[Any, Any, Any]) -> bool:
     ctx.record_usage(Usage(input_tokens=10, cost_usd=1.0))
     return True
 

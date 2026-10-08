@@ -8,7 +8,6 @@ import pytest
 
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Example,
     FunctionPairwiseJudge,
     FunctionTask,
@@ -17,6 +16,7 @@ from grasp_agents.evals import (
     PairwiseContext,
     PairwiseVerdict,
     Score,
+    ScoreContext,
     Trial,
     TrialContext,
     WinRate,
@@ -28,7 +28,7 @@ from grasp_agents.evals import (
 )
 from grasp_agents.evals.compare import regressions
 
-type Ctx = EvalContext[int, int, int]
+type Ctx = ScoreContext[int, int, int]
 
 
 def _dataset(n: int = 20) -> Dataset[int, int]:

@@ -13,13 +13,13 @@ from grasp_agents.evals import (
     ConfusionMatrix,
     Consistency,
     CorrectedPassRate,
-    EvalContext,
     Evaluation,
     JudgeErrorRates,
     LocalRunStore,
     PassRate,
     Perturbation,
     Score,
+    ScoreContext,
     Trial,
     UnvalidatedJudgeError,
     ValidationGate,
@@ -31,7 +31,7 @@ from grasp_agents.evals import (
 from grasp_agents.evals.stats import cohens_kappa, corrected_prevalence
 from grasp_agents.evals.validation import find_validation, summarize_validation
 
-type Judged = EvalContext[str, str, Any]
+type Judged = ScoreContext[str, str, Any]
 
 
 @scorer(name="good", annotator="LLM")

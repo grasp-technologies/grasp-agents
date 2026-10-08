@@ -95,8 +95,8 @@ from .runner import (
     rescore,
 )
 from .scorer import (
-    EvalContext,
     FunctionScorer,
+    ScoreContext,
     Scorer,
     ScorerOutput,
     scorer,
@@ -147,7 +147,6 @@ __all__ = [
     "Distribution",
     "ErrorInfo",
     "ErrorRate",
-    "EvalContext",
     "Evaluation",
     "EvaluationRun",
     "Example",
@@ -185,6 +184,7 @@ __all__ = [
     "RunStatus",
     "RunStore",
     "Score",
+    "ScoreContext",
     "ScoreReason",
     "Scorer",
     "ScorerFailure",

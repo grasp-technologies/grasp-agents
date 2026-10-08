@@ -14,7 +14,7 @@ from tests.evals.test_online import T0, MemorySource, _span
 
 _MODULE = """
 from grasp_agents.evals import (
-    Dataset, EvalContext, Evaluation, Example, FunctionTask, scorer,
+    Dataset, ScoreContext, Evaluation, Example, FunctionTask, scorer,
 )
 
 async def solve(x: int) -> int:
@@ -24,11 +24,11 @@ async def solve_fixed(x: int) -> int:
     return x * 2
 
 @scorer
-def correct(ctx: EvalContext[int, int, int]) -> bool:
+def correct(ctx: ScoreContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 
 @scorer(name="correct", version="2")
-def correct_v2(ctx: EvalContext[int, int, int]) -> float:
+def correct_v2(ctx: ScoreContext[int, int, int]) -> float:
     return 1.0 if ctx.output == ctx.reference else 0.0
 
 DATA = Dataset(
@@ -310,7 +310,7 @@ import json
 from pathlib import Path
 
 from grasp_agents.evals import (
-    Dataset, EvalContext, Evaluation, Example, FunctionTask, PassRate,
+    Dataset, ScoreContext, Evaluation, Example, FunctionTask, PassRate,
     ValidationGate, scorer, judge_validation,
 )
 
@@ -322,7 +322,7 @@ LABELS.write_text("".join(
 ))
 
 @scorer(name="even", annotator="LLM")
-def even(ctx: EvalContext[int, int, bool]) -> bool:
+def even(ctx: ScoreContext[int, int, bool]) -> bool:
     return ctx.output % 4 == 0
 
 async def double(x: int) -> int:
@@ -403,10 +403,10 @@ def test_unvalidated_judges_fail_the_run_gate(
 
 
 _ONLINE = """
-from grasp_agents.evals import EvalContext, Evaluation, PassRate, TraceQuery, scorer
+from grasp_agents.evals import ScoreContext, Evaluation, PassRate, TraceQuery, scorer
 
 @scorer
-def answered(ctx: EvalContext) -> bool:
+def answered(ctx: ScoreContext) -> bool:
     return ctx.output == "answer"
 
 writer = Evaluation(

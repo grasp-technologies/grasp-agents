@@ -26,7 +26,7 @@ from .metrics import (
     label_text,
 )
 from .scorer import (
-    EvalContext,
+    ScoreContext,
     Scorer,
     ScorerOutput,
     merge_models,
@@ -156,7 +156,7 @@ async def _judge(
         started_at=utc_now(),
         duration_s=0.0,
     )
-    ctx = EvalContext(example=example, output=output, trial=trial, usage=spend.usage)
+    ctx = ScoreContext(example=example, output=output, trial=trial, usage=spend.usage)
     try:
         return await run_scorer(scorer, ctx)
     finally:
@@ -319,7 +319,7 @@ class LabelAgreement(Scorer[Any, list[Score], Any]):
             "negative": self.negative,
         }
 
-    def score(self, ctx: EvalContext[Any, list[Score], Any]) -> ScorerOutput:
+    def score(self, ctx: ScoreContext[Any, list[Score], Any]) -> ScorerOutput:
         if ctx.reference is None:
             return None
         labels = _labels_of(ctx.reference, self.scores, ctx.metadata.get("score"))
@@ -569,7 +569,7 @@ class ProbeCheck(Scorer[Any, dict[str, list[Score] | None], Any]):
         return low < high
 
     def score(
-        self, ctx: EvalContext[Any, dict[str, list[Score] | None], Any]
+        self, ctx: ScoreContext[Any, dict[str, list[Score] | None], Any]
     ) -> ScorerOutput:
         outputs = ctx.output or {}
         original = _scores_of(outputs.get("original"))

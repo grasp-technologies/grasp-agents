@@ -15,10 +15,10 @@ from pydantic import BaseModel
 
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Example,
     FunctionTask,
     LocalRunStore,
+    ScoreContext,
     evaluate,
     scorer,
 )
@@ -70,12 +70,12 @@ async def add(problem: Problem) -> int:
 
 
 @scorer(version="3")
-def exact(ctx: EvalContext[Problem, int, int]) -> bool:
+def exact(ctx: ScoreContext[Problem, int, int]) -> bool:
     return ctx.output == ctx.reference
 
 
 @scorer(name="judge", version="1", annotator="LLM")
-def judge(ctx: EvalContext[Problem, int, int]) -> dict[str, float | str]:
+def judge(ctx: ScoreContext[Problem, int, int]) -> dict[str, float | str]:
     return {
         "closeness": 1.0 / (1 + abs(ctx.output - (ctx.reference or 0))),
         "tone": "ok",
@@ -360,7 +360,7 @@ class Draft(BaseModel):
 
 
 @scorer(version="1")
-def nonempty(ctx: EvalContext[Draft, str, None]) -> bool:
+def nonempty(ctx: ScoreContext[Draft, str, None]) -> bool:
     return bool(ctx.output)
 
 
@@ -585,7 +585,7 @@ async def test_online_evaluation_reads_scores_and_annotates_production(
     provider.force_flush()
 
     @scorer(version="2", annotator="LLM")
-    def numeric(ctx: EvalContext[Any, Any, Any]) -> bool:
+    def numeric(ctx: ScoreContext[Any, Any, Any]) -> bool:
         return str(ctx.output).isdigit()
 
     store = LocalRunStore(tmp_path)

@@ -26,7 +26,7 @@ names several scores; ``None`` means "not applicable" (nothing is recorded).
 
 
 @dataclass(frozen=True)
-class EvalContext[InT, OutT, RefT]:
+class ScoreContext[InT, OutT, RefT]:
     """Everything a scorer may look at for one trial."""
 
     example: Example[InT, RefT]
@@ -115,12 +115,12 @@ class Scorer[InT, OutT, RefT](ABC):
 
     @abstractmethod
     def score(
-        self, ctx: EvalContext[InT, OutT, RefT]
+        self, ctx: ScoreContext[InT, OutT, RefT]
     ) -> ScorerOutput | Awaitable[ScorerOutput]: ...
 
 
 type ScorerFn[InT, OutT, RefT] = Callable[
-    [EvalContext[InT, OutT, RefT]], ScorerOutput | Awaitable[ScorerOutput]
+    [ScoreContext[InT, OutT, RefT]], ScorerOutput | Awaitable[ScorerOutput]
 ]
 
 
@@ -155,7 +155,7 @@ class FunctionScorer[InT, OutT, RefT](Scorer[InT, OutT, RefT]):
         return self._fn
 
     def score(
-        self, ctx: EvalContext[InT, OutT, RefT]
+        self, ctx: ScoreContext[InT, OutT, RefT]
     ) -> ScorerOutput | Awaitable[ScorerOutput]:
         return self._fn(ctx)
 
@@ -194,10 +194,10 @@ def scorer(
     annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE",
 ) -> FunctionScorer[Any, Any, Any] | ScorerDecorator:
     """
-    Turn a function of :class:`EvalContext` into a scorer::
+    Turn a function of :class:`ScoreContext` into a scorer::
 
         @scorer(version="2")
-        def exact_match(ctx: EvalContext[str, str, str]) -> bool:
+        def exact_match(ctx: ScoreContext[str, str, str]) -> bool:
             return ctx.output == ctx.reference
     """
 
@@ -224,7 +224,7 @@ def _is_async(scorer: Scorer[Any, Any, Any]) -> bool:
 
 async def run_scorer(
     scorer: Scorer[Any, Any, Any],
-    ctx: EvalContext[Any, Any, Any],
+    ctx: ScoreContext[Any, Any, Any],
     *,
     timeout_s: float | None = None,
 ) -> list[Score]:

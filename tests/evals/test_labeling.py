@@ -8,10 +8,10 @@ import pytest
 from grasp_agents.evals import (
     Dataset,
     DatasetError,
-    EvalContext,
     EvaluationRun,
     Example,
     LocalRunStore,
+    ScoreContext,
     evaluate,
     import_labels,
     judge_validation,
@@ -30,7 +30,7 @@ from grasp_agents.evals.labeling import (
 from grasp_agents.evals.phoenix import PhoenixClient
 from grasp_agents.evals.phoenix.annotations import human_annotations
 
-type Ctx = EvalContext[int, str, Any]
+type Ctx = ScoreContext[int, str, Any]
 
 
 @scorer(name="judge", annotator="LLM")
