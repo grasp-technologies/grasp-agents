@@ -5,10 +5,10 @@ import pytest
 
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Example,
     LocalRunStore,
     RunNotFoundError,
+    ScoreContext,
     evaluate,
     scorer,
 )
@@ -26,7 +26,7 @@ async def double(x: int) -> int:
 
 
 @scorer
-def correct(ctx: EvalContext[int, int, int]) -> bool:
+def correct(ctx: ScoreContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 
 

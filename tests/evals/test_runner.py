@@ -10,7 +10,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Example,
     FunctionTask,
     LocalRunStore,
@@ -19,6 +18,7 @@ from grasp_agents.evals import (
     ResumeError,
     RunStatus,
     Score,
+    ScoreContext,
     Scorer,
     SealedSelectionError,
     TrialContext,
@@ -29,7 +29,7 @@ from grasp_agents.evals import (
     scorer,
 )
 
-type Ctx = EvalContext[int, int, int]
+type Ctx = ScoreContext[int, int, int]
 
 
 def _numbers(n: int = 4) -> Dataset[int, int]:
@@ -598,7 +598,7 @@ class TestFailureIsolation:
         seen: list[Any] = []
 
         @scorer
-        def is_payload(ctx: EvalContext[int, bytes, None]) -> bool:
+        def is_payload(ctx: ScoreContext[int, bytes, None]) -> bool:
             seen.append(ctx.output)
             return ctx.output == b"\x00\xff"
 

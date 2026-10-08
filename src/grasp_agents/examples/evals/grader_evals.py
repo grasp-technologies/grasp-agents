@@ -26,7 +26,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from grasp_agents.evals import (
-    EvalContext,
     Evaluation,
     Example,
     FunctionPairwiseJudge,
@@ -36,6 +35,7 @@ from grasp_agents.evals import (
     PassRate,
     ProcessorTask,
     Score,
+    ScoreContext,
     scorer,
 )
 from grasp_agents.evals.metrics import Measure, Percentile
@@ -251,7 +251,7 @@ def llm_grader(llm: Any) -> Processor[Submission, Grade, None]:
 
 # --- Scorers ---
 
-type Ctx = EvalContext[Submission, Grade, TeacherGrade]
+type Ctx = ScoreContext[Submission, Grade, TeacherGrade]
 
 
 @scorer(version="1")
