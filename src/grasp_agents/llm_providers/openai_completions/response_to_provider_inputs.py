@@ -88,6 +88,14 @@ class ChatCompletionAssistantMessageParamExt(
     provider_specific_fields: dict[str, Any] | None
 
 
+class ChatCompletionMessageToolCallParamExt(
+    ChatCompletionMessageToolCallParam, total=False
+):
+    """Tool call param carrying provider-specific fields (Gemini thought signature)."""
+
+    provider_specific_fields: dict[str, Any] | None
+
+
 def items_to_provider_inputs(
     items: Sequence[InputItem],
     *,
@@ -340,13 +348,14 @@ def _add_tool_call_items(
             thought_sig = tc.provider_specific_fields["thought_signature"]
             thought_sigs.append(thought_sig)
 
-        tc_message_params.append(
-            ChatCompletionMessageToolCallParam(
-                id=tc.call_id,
-                type="function",
-                function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
-            )
+        param = ChatCompletionMessageToolCallParamExt(
+            id=tc.call_id,
+            type="function",
+            function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
         )
+        if tc.provider_specific_fields:
+            param["provider_specific_fields"] = tc.provider_specific_fields
+        tc_message_params.append(param)
 
     if tc_message_params:
         msg["tool_calls"] = tc_message_params

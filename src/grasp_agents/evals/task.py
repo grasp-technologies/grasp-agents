@@ -95,7 +95,7 @@ class Task[InT, OutT](ABC):
         return [type(self)]
 
     @abstractmethod
-    async def run(self, input: InT, trial: TrialContext) -> OutT: ...  # noqa: A002
+    async def run(self, input: InT, trial: TrialContext) -> OutT: ...  # ruff: ignore[builtin-argument-shadowing]
 
 
 type TaskFn[InT, OutT] = (
@@ -169,7 +169,7 @@ class FunctionTask[InT, OutT](Task[InT, OutT]):
     def source_objects(self) -> list[Any]:
         return [self._fn]
 
-    async def run(self, input: InT, trial: TrialContext) -> OutT:  # noqa: A002
+    async def run(self, input: InT, trial: TrialContext) -> OutT:  # ruff: ignore[builtin-argument-shadowing]
         call = cast("Callable[..., Awaitable[OutT]]", self._fn)
         if self._trial_passing == "keyword":
             return await call(input, trial=trial)
@@ -187,15 +187,6 @@ def _keep_event(event: Event[Any]) -> bool:
     # Token deltas and incremental tool output are reproduced by the final
     # items/responses; keeping them would multiply transcript size.
     return not isinstance(event, LLMStreamEvent | ToolStreamEvent)
-
-
-def _as_in_args(arg: Any) -> Any:
-    # A falsy scalar (0, "", False) passed alone reads as "no input"; as a
-    # one-element argument list it is unambiguous.
-    wrapped: Any = arg
-    if arg is not None and not arg and not isinstance(arg, list):
-        wrapped = [arg]
-    return wrapped
 
 
 def _to_usage(usage: ResponseUsage) -> Usage:
@@ -374,7 +365,9 @@ def processor_fingerprint(root: Processor[Any, Any, Any]) -> str | None:
 def _reset_transcripts(root: Processor[Any, Any, Any]) -> None:
     # A copy of an agent that already ran would start each trial with that
     # conversation; trials must start from scratch.
-    from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
+    from grasp_agents.agent.llm_agent import (  # ruff: ignore[import-outside-top-level]
+        LLMAgent,
+    )
 
     for proc in iter_processors(root):
         if isinstance(proc, LLMAgent):
@@ -447,6 +440,7 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
     ) -> None:
         self._template: Processor[InT, OutT, Any] | None
         self._factory: Callable[[], Processor[InT, OutT, Any]] | None
+
         if isinstance(processor, Processor):
             template = cast("Processor[InT, OutT, Any]", processor)
             self._template, self._factory = template, None
@@ -461,12 +455,14 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             self._in_type = Any
             declared = _declared_output_type(factory)
             self._kind = qualified_name(factory)
+
         if output_type is not None:
             self._out_type: Any = output_type
         elif output_fn is not None:
             self._out_type = Any
         else:
             self._out_type = declared
+
         self.name = name or default_name
         self.version = version
         self._config = dict(config or {})
@@ -516,7 +512,7 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
         proc.on_adopted(ctx=ctx)
         return proc
 
-    async def run(self, input: InT, trial: TrialContext) -> OutT:  # noqa: A002
+    async def run(self, input: InT, trial: TrialContext) -> OutT:  # ruff: ignore[builtin-argument-shadowing]
         ctx: SessionContext[Any] = (
             self._ctx_factory(trial.example)
             if self._ctx_factory is not None
@@ -524,14 +520,13 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
         )
         trial.session = ctx
         packet: Packet[Any] | None = None
+
         with ctx:
             proc = self._instantiate(ctx)
             try:
                 arg: Any = (
                     self._input_fn(input) if self._input_fn is not None else input
                 )
-                if self._input_mode == "in_args":
-                    arg = _as_in_args(arg)
                 stream = (
                     proc.run_stream(chat_inputs=arg)
                     if self._input_mode == "chat"
@@ -549,19 +544,24 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             finally:
                 await proc.aclose()
                 self._collect_session_facts(ctx, trial)
+
         if packet is None:
             raise RuntimeError(f"Processor {proc.name!r} produced no output packet")
+
         if self._output_fn is not None:
             return self._output_fn(packet, ctx)
+
         payloads = list(packet.payloads)
         if len(payloads) == 1:
             return cast("OutT", payloads[0])
+
         return cast("OutT", payloads or None)
 
     @staticmethod
     def _collect_session_facts(ctx: SessionContext[Any], trial: TrialContext) -> None:
         for agent, usage in ctx.usage_tracker.usages.items():
             trial.usage_by_agent[agent] = _to_usage(usage)
+
         for agent, responses in ctx.responses.items():
             models = trial.models.setdefault(agent, [])
             for response in responses:
@@ -575,8 +575,11 @@ def as_task(
     """Coerce a processor or an async function into a :class:`Task`."""
     if isinstance(task, Task):
         return cast("Task[Any, Any]", task)
+
     if isinstance(task, Processor):
         return ProcessorTask(cast("Processor[Any, Any, Any]", task))
+
     if callable(task):
         return FunctionTask(task)
+
     raise TypeError(f"Cannot use {task!r} as an evaluation task")

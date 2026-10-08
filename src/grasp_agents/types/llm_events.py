@@ -365,10 +365,11 @@ class ResponseRetrying(BaseModel):
     Discard contract for stream consumers: any partial content already streamed
     for the *current* response — the deltas since the last ``ResponseCreated``
     — belongs to the failed attempt and must be dropped (e.g. clear the
-    in-progress message in the UI). A fresh attempt's events follow. The
-    framework's own transcript honors this (it discards pending items); the
-    bundled console prints a discard notice and the TUI removes the partial
-    widget.
+    in-progress message in the UI). A fresh attempt's events follow. A retry
+    never follows a response's ``ResponseCompleted`` / ``ResponseIncomplete``,
+    so a terminal response, once streamed, is final. The framework's own
+    transcript honors this (it discards pending items); the bundled console
+    prints a discard notice and the TUI removes the partial widget.
     """
 
     type: Literal["response.retrying"] = "response.retrying"
@@ -376,7 +377,7 @@ class ResponseRetrying(BaseModel):
     attempt: int
     """Which retry is about to start (1 = first retry, 2 = second, ...)."""
     error: str
-    """Description of the validation failure that triggered the retry."""
+    """Description of the failure that triggered the retry."""
 
 
 class ResponseFallback(BaseModel):

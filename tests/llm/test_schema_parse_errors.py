@@ -24,6 +24,8 @@ from grasp_agents.llm.resilience import RetryPolicy
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import LLMResponseValidationError
 from grasp_agents.types.items import InputItem
+from grasp_agents.types.llm_errors import LlmResponseSchemaError
+from grasp_agents.types.response import Response
 from tests.llm.test_resilience import (
     _USER_MSG,
     RealMapperCloudLLM,
@@ -56,6 +58,26 @@ class BadInputCloudLLM(RealMapperCloudLLM):
         output_schema: Any | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
+        raise _parse_failure()
+
+
+@dataclass(frozen=True)
+class BadConversionCloudLLM(RealMapperCloudLLM):
+    """The provider call succeeds; our conversion of its response fails."""
+
+    async def _get_api_response(
+        self,
+        api_input: list[Any],
+        *,
+        api_tools: list[Any] | None = None,
+        api_tool_choice: Any | None = None,
+        api_output_schema: type | None = None,
+        **api_llm_settings: Any,
+    ) -> Any:
+        object.__setattr__(self, "_attempts", self.attempts + 1)
+        return object()
+
+    def _convert_api_response(self, raw: Any) -> Response:
         raise _parse_failure()
 
 
@@ -126,3 +148,35 @@ class TestUnrelatedValidationErrorsAreNotConverted:
             await llm.generate_response(_USER_MSG, output_schema=_Schema)
 
         assert llm.attempts == 0
+
+
+class TestResponseConversionFailures:
+    """
+    A response the provider returned but our types reject is not the model's
+    structured output: re-sampling or retrying fails the same way, while
+    another model can still serve the turn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_is_a_schema_error_and_not_retried(self) -> None:
+        llm = BadConversionCloudLLM(
+            model_name="primary",
+            retry_policy=RetryPolicy(
+                api_retries=2, validation_retries=2, initial_delay=0.0
+            ),
+        )
+
+        with pytest.raises(LlmResponseSchemaError):
+            await llm.generate_response(_USER_MSG, output_schema=_Schema)
+
+        assert llm.attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_advances_the_fallback(self) -> None:
+        primary = BadConversionCloudLLM(model_name="primary", retry_policy=None)
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        response = await llm.generate_response(_USER_MSG)
+
+        assert response.output_text == "rescued"

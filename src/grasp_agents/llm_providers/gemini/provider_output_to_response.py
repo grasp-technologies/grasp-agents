@@ -532,6 +532,9 @@ def map_finish_reason(
 def _map_finish_reason(
     response: GenerateContentResponse,
 ) -> tuple[ResponseStatus, IncompleteDetails | None]:
+    # A blocked prompt comes back with feedback instead of candidates.
+    if response.prompt_feedback and response.prompt_feedback.block_reason:
+        return "incomplete", IncompleteDetails(reason="content_filter")
     if not response.candidates or not response.candidates[0].finish_reason:
         return "completed", None
     return map_finish_reason(response.candidates[0].finish_reason.name)

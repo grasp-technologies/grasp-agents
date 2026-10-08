@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from grasp_agents.evals import Dataset, DatasetError, Example, example_json_schema
 
@@ -137,6 +137,19 @@ class TestFiles:
         assert loaded.fingerprint == ds.fingerprint
         assert loaded.name == "qa"
         assert loaded.source == str(path)
+
+    @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\x1c"])
+    def test_jsonl_keeps_unicode_line_separators(
+        self, tmp_path: Path, separator: str
+    ) -> None:
+        text = f"first{separator}second"
+        path = Dataset([Example(id="a", input=text)]).save(tmp_path / "text.jsonl")
+        assert Dataset.load(path)["a"].input == text
+
+    def test_jsonl_accepts_crlf_line_endings(self, tmp_path: Path) -> None:
+        path = tmp_path / "crlf.jsonl"
+        path.write_bytes(b'{"id": "a", "input": "x"}\r\n{"id": "b", "input": "y"}\r\n')
+        assert Dataset.load(path).ids == ["a", "b"]
 
     def test_invalid_input_names_the_record(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.jsonl"
@@ -324,3 +337,45 @@ def test_alias_keys_are_known_fields(tmp_path: Path) -> None:
     path = tmp_path / "aliased.jsonl"
     path.write_text('{"id": "a", "input": {"q": "why?"}}\n', encoding="utf-8")
     assert Dataset.load(path, input_type=Aliased)[0].input.question == "why?"
+
+
+class SplitAlias(BaseModel):
+    # ``alias`` only names the field on output; input reads ``validation_alias``.
+    level: int = Field(0, alias="lvl", validation_alias="difficulty")
+
+
+class AliasOnly(BaseModel):
+    text: str = Field("", alias="questionText")
+
+
+class AliasOrName(BaseModel):
+    model_config = ConfigDict(validate_by_name=True)
+
+    text: str = Field("", alias="questionText")
+
+
+@pytest.mark.parametrize(
+    ("input_type", "row", "ignored"),
+    [
+        (SplitAlias, {"lvl": 3}, "lvl"),
+        (AliasOnly, {"text": "why?"}, "text"),
+    ],
+)
+def test_keys_pydantic_ignores_are_unknown_fields(
+    tmp_path: Path, input_type: type[BaseModel], row: dict[str, Any], ignored: str
+) -> None:
+    path = tmp_path / "ignored.jsonl"
+    path.write_text(json.dumps({"id": "a", "input": row}) + "\n", encoding="utf-8")
+    with pytest.raises(DatasetError, match=f"unknown fields \\['{ignored}'\\]"):
+        Dataset.load(path, input_type=input_type)
+
+
+def test_field_name_is_known_when_validating_by_name(tmp_path: Path) -> None:
+    path = tmp_path / "by_name.jsonl"
+    path.write_text(
+        '{"id": "a", "input": {"text": "why?"}}\n'
+        '{"id": "b", "input": {"questionText": "how?"}}\n',
+        encoding="utf-8",
+    )
+    loaded = Dataset.load(path, input_type=AliasOrName)
+    assert [e.input.text for e in loaded] == ["why?", "how?"]

@@ -30,8 +30,6 @@ from .utils import validate_chunk
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
-
     from grasp_agents.types.content import Annotation
     from grasp_agents.types.llm_events import LlmEvent
 
@@ -70,15 +68,8 @@ class CompletionsStreamConverter(BaseLlmStreamConverter[ChatCompletionChunk]):
         super().__init__()
         self._has_reasoning_details = False
 
-    def _process_event(
-        self, raw_event: ChatCompletionChunk | LiteLLMCompletionChunk
-    ) -> Iterator[LlmEvent]:
+    def _process_event(self, raw_event: ChatCompletionChunk) -> Iterator[LlmEvent]:
         chunk = raw_event
-
-        if not isinstance(chunk, ChatCompletionChunk):
-            raise TypeError(
-                f"Unsupported chunk type: {type(chunk)}. Expected ChatCompletionChunk."
-            )
 
         if not validate_chunk(chunk):
             # Usage-only chunk (no choices) — capture usage and skip

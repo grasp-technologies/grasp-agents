@@ -66,21 +66,31 @@ def _is_model(tp: Any) -> bool:
 def _alias_keys(alias: str | AliasPath | AliasChoices | None) -> list[str]:
     if alias is None:
         return []
+
     if isinstance(alias, str):
         return [alias]
+
     if isinstance(alias, AliasPath):
         first = alias.path[0] if alias.path else None
         return [first] if isinstance(first, str) else []
+
     return [key for choice in alias.choices for key in _alias_keys(choice)]
 
 
 def _field_names(model: type[BaseModel]) -> set[str]:
+    # The keys pydantic reads on input: a field's validation aliases, and its
+    # name only when it has none or the model also validates by name.
+    config = model.model_config
+    by_alias = config.get("validate_by_alias", True)
+    by_name = config.get("validate_by_name") or config.get("populate_by_name")
     names: set[str] = set()
+
     for name, info in model.model_fields.items():
-        names.add(name)
-        if info.alias:
-            names.add(info.alias)
-        names.update(_alias_keys(info.validation_alias))
+        aliases = _alias_keys(info.validation_alias) if by_alias else []
+        if by_name or not aliases:
+            names.add(name)
+        names.update(aliases)
+
     return names
 
 
@@ -89,10 +99,13 @@ def _unknown_fields(tp: Any, raw: Any) -> list[str]:
     # key is almost always a typo that pydantic would silently drop.
     if not _is_model(tp) or not isinstance(raw, Mapping):
         return []
+
     model = cast("type[BaseModel]", tp)
     if model.model_config.get("extra") is not None:
         return []
+
     known = _field_names(model)
+
     return sorted(str(k) for k in cast("Mapping[Any, Any]", raw) if str(k) not in known)
 
 
@@ -144,8 +157,10 @@ class Dataset[InT, RefT]:
 
     @overload
     def __getitem__(self, key: int) -> Example[InT, RefT]: ...
+
     @overload
     def __getitem__(self, key: str) -> Example[InT, RefT]: ...
+
     def __getitem__(self, key: int | str) -> Example[InT, RefT]:
         if isinstance(key, str):
             return self._by_id[key]
@@ -299,6 +314,7 @@ class Dataset[InT, RefT]:
                 while key in named:
                     key, copy = f"{base}#{copy}", copy + 1
                 named[key] = check
+
         problems: list[DatasetProblem] = []
         for example in self._examples:
             for check_name, check in named.items():
@@ -311,6 +327,7 @@ class Dataset[InT, RefT]:
                     DatasetProblem(example_id=example.id, check=check_name, message=m)
                     for m in messages
                 )
+
         return problems
 
     # --- Serialization ---
@@ -333,9 +350,11 @@ class Dataset[InT, RefT]:
                 encoding="utf-8",
             )
             return path
+
         document: dict[str, Any] = {"name": self.name}
         if self.description:
             document["description"] = self.description
+
         document["examples"] = records
         if path.suffix in _YAML_SUFFIXES:
             path.write_text(
@@ -346,6 +365,7 @@ class Dataset[InT, RefT]:
             path.write_text(
                 json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+
         return path
 
     @overload
@@ -362,6 +382,7 @@ class Dataset[InT, RefT]:
         description: str | None = ...,
         locations: Sequence[str] | None = ...,
     ) -> "Dataset[I, R]": ...
+
     @overload
     @classmethod
     def from_records[I](
@@ -375,6 +396,7 @@ class Dataset[InT, RefT]:
         description: str | None = ...,
         locations: Sequence[str] | None = ...,
     ) -> "Dataset[I, Any]": ...
+
     @overload
     @classmethod
     def from_records(
@@ -389,6 +411,7 @@ class Dataset[InT, RefT]:
         description: str | None = ...,
         locations: Sequence[str] | None = ...,
     ) -> "Dataset[Any, Any]": ...
+
     @classmethod
     def from_records(
         cls,
@@ -430,6 +453,7 @@ class Dataset[InT, RefT]:
                     f"(first at {first_seen[example_id]})"
                 )
             first_seen[example_id] = where
+
         return Dataset(
             examples,
             name=name,
@@ -448,11 +472,13 @@ class Dataset[InT, RefT]:
         reference_type: type[R],
         name: str | None = ...,
     ) -> "Dataset[I, R]": ...
+
     @overload
     @classmethod
     def load[I](
         cls, path: str | Path, *, input_type: type[I], name: str | None = ...
     ) -> "Dataset[I, Any]": ...
+
     @overload
     @classmethod
     def load(
@@ -463,6 +489,7 @@ class Dataset[InT, RefT]:
         reference_type: Any = ...,
         name: str | None = ...,
     ) -> "Dataset[Any, Any]": ...
+
     @classmethod
     def load(
         cls,
@@ -478,16 +505,21 @@ class Dataset[InT, RefT]:
             raise DatasetError(
                 f"{path}: unsupported dataset format (use .jsonl, .json or .yaml)"
             )
+
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:
             raise DatasetError(f"{path}: cannot read ({exc.strerror or exc})") from exc
+
         document_name: str | None = None
         description: str | None = None
         records: list[Any] = []
         locations: list[str] = []
+
         if path.suffix == ".jsonl":
-            for lineno, line in enumerate(text.splitlines(), start=1):
+            # Only "\n" ends a record: strings may hold U+2028 and other
+            # characters that ``str.splitlines`` also breaks on.
+            for lineno, line in enumerate(text.split("\n"), start=1):
                 stripped = line.strip()
                 if not stripped or stripped.startswith("//"):
                     continue
@@ -498,6 +530,7 @@ class Dataset[InT, RefT]:
                         f"{path}:{lineno}: invalid JSON ({exc.msg}, column {exc.colno})"
                     ) from exc
                 locations.append(f"{path}:{lineno}")
+
         else:
             try:
                 loaded: Any = (
@@ -507,8 +540,10 @@ class Dataset[InT, RefT]:
                 )
             except (yaml.YAMLError, json.JSONDecodeError) as exc:
                 raise DatasetError(f"{path}: cannot parse ({exc})") from exc
+
             if isinstance(loaded, list):
                 records = cast("list[Any]", loaded)
+
             elif isinstance(loaded, dict) and "examples" in loaded:
                 document = cast("dict[str, Any]", loaded)
                 document_name = document.get("name")
@@ -517,11 +552,14 @@ class Dataset[InT, RefT]:
                 if not isinstance(examples, list):
                     raise DatasetError(f"{path}: 'examples' must be a list")
                 records = cast("list[Any]", examples)
+
             else:
                 raise DatasetError(
                     f"{path}: expected a list of examples or an object with 'examples'"
                 )
+
             locations = [f"{path}: examples[{i}]" for i in range(len(records))]
+
         return cls.from_records(
             records,
             input_type=input_type,
@@ -546,10 +584,12 @@ def _parse_record(
         raise DatasetError(
             f"{where}: expected an object with 'input', got {type(raw).__name__}"
         )
+
     try:
         record = _Record.model_validate(raw)
     except ValidationError as exc:
         raise DatasetError(f"{where}: {_explain(exc)}") from exc
+
     label = f"{where} (id={record.id!r})" if record.id is not None else where
     for field, tp, value in (
         ("input", input_type, record.input),
@@ -561,6 +601,7 @@ def _parse_record(
             raise DatasetError(
                 f"{label}: {field} has unknown fields {unknown}; expected {known}"
             )
+
     try:
         value = input_adapter.validate_python(record.input)
         reference = (
@@ -570,6 +611,7 @@ def _parse_record(
         )
     except ValidationError as exc:
         raise DatasetError(f"{label}: {_explain(exc)}") from exc
+
     try:
         example_id = (
             str(record.id)
@@ -579,6 +621,7 @@ def _parse_record(
         content_hash = content_digest(record.input, record.reference, record.metadata)
     except TypeError as exc:
         raise DatasetError(f"{label}: {exc}") from exc
+
     example = Example[Any, Any](
         id=example_id,
         input=value,
@@ -587,6 +630,7 @@ def _parse_record(
         splits=list(record.splits),
         content_hash=content_hash,
     )
+
     return with_record(
         example, ExampleRecord(record.input, record.reference, record.metadata)
     )

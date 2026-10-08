@@ -35,6 +35,7 @@ from .scorer import (
     EvalContext,
     Scorer,
     ScorerOutput,
+    call_off_loop,
     merge_models,
     run_all_or_cancel,
     snake_case,
@@ -127,13 +128,15 @@ class PairwiseJudge[InT, OutT, RefT](ABC):
     ) -> PairwiseVerdict | Awaitable[PairwiseVerdict]: ...
 
 
+type JudgeFn[InT, OutT, RefT] = Callable[
+    [PairwiseContext[InT, OutT, RefT]], PairwiseVerdict | Awaitable[PairwiseVerdict]
+]
+
+
 class FunctionPairwiseJudge[InT, OutT, RefT](PairwiseJudge[InT, OutT, RefT]):
     def __init__(
         self,
-        fn: Callable[
-            [PairwiseContext[InT, OutT, RefT]],
-            PairwiseVerdict | Awaitable[PairwiseVerdict],
-        ],
+        fn: JudgeFn[InT, OutT, RefT],
         *,
         name: str | None = None,
         version: str = "1",
@@ -149,6 +152,10 @@ class FunctionPairwiseJudge[InT, OutT, RefT](PairwiseJudge[InT, OutT, RefT]):
         info.source = code_hash(self._fn)
         return info
 
+    @property
+    def fn(self) -> JudgeFn[InT, OutT, RefT]:
+        return self._fn
+
     def judge(
         self, ctx: PairwiseContext[InT, OutT, RefT]
     ) -> PairwiseVerdict | Awaitable[PairwiseVerdict]:
@@ -158,10 +165,10 @@ class FunctionPairwiseJudge[InT, OutT, RefT](PairwiseJudge[InT, OutT, RefT]):
 async def _ask(
     judge: PairwiseJudge[Any, Any, Any], ctx: PairwiseContext[Any, Any, Any]
 ) -> PairwiseVerdict:
-    verdict = judge.judge(ctx)
-    if inspect.isawaitable(verdict):
-        verdict = await verdict
-    return verdict
+    target = judge.fn if isinstance(judge, FunctionPairwiseJudge) else judge.judge
+    return await call_off_loop(
+        judge.judge, ctx, is_async=inspect.iscoroutinefunction(target)
+    )
 
 
 def _forward_usage(
