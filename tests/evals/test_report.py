@@ -5,14 +5,14 @@ from grasp_agents.evals import (
     EvalContext,
     Example,
     evaluate,
-    evaluator,
     render_run_markdown,
     run_summary,
+    scorer,
 )
 from grasp_agents.evals.report import trial_summary
 
 
-@evaluator
+@scorer
 def correct(ctx: EvalContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 

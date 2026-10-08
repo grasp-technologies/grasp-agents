@@ -25,8 +25,8 @@ from grasp_agents.evals import (
     default_extractor,
     evaluate_traces,
     evaluate_trials,
-    evaluator,
     rescore,
+    scorer,
 )
 from grasp_agents.evals.online import (
     AnnotationError,
@@ -145,12 +145,12 @@ def _window(start: float = 0.0, end: float = 60.0) -> TraceWindow:
     )
 
 
-@evaluator
+@scorer
 def answered(ctx: EvalContext[Any, Any, Any]) -> bool:
     return ctx.output == "answer"
 
 
-@evaluator(name="tone")
+@scorer(name="tone")
 def tone(ctx: EvalContext[Any, Any, Any]) -> str | None:
     return None if ctx.output == "skip" else "polite"
 
@@ -481,7 +481,7 @@ class TestEvaluationOnline:
     def _evaluation(self, **query: Any) -> Evaluation:
         return Evaluation(
             name="writer-online",
-            evaluators=[answered],
+            scorers=[answered],
             traces=TraceQuery(
                 project="p", processor="writer", completion_buffer_s=0, **query
             ),
@@ -537,7 +537,7 @@ class TestEvaluationOnline:
 
     @pytest.mark.asyncio
     async def test_an_offline_only_evaluation_cannot_run_online(self) -> None:
-        evaluation = Evaluation(name="x", evaluators=[answered])
+        evaluation = Evaluation(name="x", scorers=[answered])
         with pytest.raises(LookupError, match="defines no traces"):
             await evaluation.run_online(source=MemorySource([]), persist=False)
 
@@ -604,7 +604,7 @@ def test_run_annotations_skip_trials_that_are_not_trace_items() -> None:
 # --- Review regressions ---
 
 
-@evaluator(name="costly")
+@scorer(name="costly")
 def costly(ctx: EvalContext[Any, Any, Any]) -> bool:
     ctx.record_usage(Usage(input_tokens=10, cost_usd=1.0))
     return True
@@ -622,7 +622,7 @@ class TestWindowsKeepMoving:
         store = LocalRunStore(tmp_path)
         evaluation = Evaluation(
             name="w",
-            evaluators=[costly],
+            scorers=[costly],
             max_cost_usd=1.5,
             traces=TraceQuery(project="p", completion_buffer_s=0),
         )

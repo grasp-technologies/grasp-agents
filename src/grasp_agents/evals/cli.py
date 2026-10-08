@@ -115,8 +115,8 @@ def _progress_printer(mode: str) -> ProgressCallback | None:
         outcome = (
             "ok" if trial.ok else f"error {trial.error.type if trial.error else ''}"
         )
-        if trial.evaluator_failures:
-            outcome += f" ({len(trial.evaluator_failures)} evaluator failures)"
+        if trial.scorer_failures:
+            outcome += f" ({len(trial.scorer_failures)} scorer failures)"
         label = "(sealed)" if trial.sealed else trial.example_id
         sys.stderr.write(
             f"[{progress.done}/{progress.total}] {label}#{trial.repetition} "
@@ -489,7 +489,7 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
 
 
 def _failing(trial: Trial) -> bool:
-    if not trial.ok or trial.evaluator_failures:
+    if not trial.ok or trial.scorer_failures:
         return True
     return any(s.value is False or not s.scored for s in trial.scores)
 
@@ -643,7 +643,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             "spec": f"{args.module}:{attr}",
             "name": evaluation.name,
             "description": evaluation.description,
-            "evaluators": [e.name for e in evaluation.evaluators],
+            "scorers": [e.name for e in evaluation.scorers],
         }
         for attr, evaluation in found.items()
     ]
@@ -1056,7 +1056,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-annotate", action="store_true", help="do not write scores to the traces"
     )
     online.add_argument("-c", "--concurrency", type=_positive_int)
-    online.add_argument("--max-cost", type=float, help="cap the evaluators' spend")
+    online.add_argument("--max-cost", type=float, help="cap the scorers' spend")
     online.add_argument(
         "--allow-unvalidated",
         action="store_true",
@@ -1083,9 +1083,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     rescore = sub.add_parser("rescore", help="score a run's outputs again (child run)")
     rescore.add_argument("run")
-    rescore.add_argument("--spec", help="Evaluation to take evaluators from")
+    rescore.add_argument("--spec", help="Evaluation to take scorers from")
     rescore.add_argument(
-        "--rerun", action="store_true", help="re-run unchanged evaluators too"
+        "--rerun", action="store_true", help="re-run unchanged scorers too"
     )
     rescore.add_argument(
         "--allow-unvalidated",

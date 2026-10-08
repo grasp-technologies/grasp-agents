@@ -3,7 +3,7 @@ Online evaluation: score what the system did in production.
 
 Spans are read from a trace store for a time window, grouped into items (a
 span, a trace or a session), sampled deterministically, turned into trials by
-an extractor, scored by reference-free evaluators like any run, and the scores
+an extractor, scored by reference-free scorers like any run, and the scores
 written back to the store as annotations.
 """
 
@@ -33,10 +33,10 @@ from ._util import (
     to_jsonable,
     utc_now,
 )
-from .evaluator import Evaluator
 from .metrics import MetricsSpec
 from .report import render_run_markdown
 from .runner import evaluate_trials
+from .scorer import Scorer
 from .store import RunStore
 from .types import (
     ComponentInfo,
@@ -678,9 +678,9 @@ def dataset_ref(
 # --- Annotations ---
 
 
-def annotation_identifier(evaluator: str, version: str | None) -> str:
-    """The identifier of an evaluator version's annotations."""
-    return f"grasp-evals:{evaluator}@{version or '1'}"
+def annotation_identifier(scorer: str, version: str | None) -> str:
+    """The identifier of a scorer version's annotations."""
+    return f"grasp-evals:{scorer}@{version or '1'}"
 
 
 def score_result(score: Score) -> tuple[str | None, float | None] | None:
@@ -700,21 +700,21 @@ def run_annotations(run: EvaluationRun) -> list[TraceAnnotation]:
     scope = run.task.config.get("scope")
     if run.window is None or scope not in {"span", "trace", "session"}:
         return []
-    evaluators = {e.name: e for e in run.evaluators}
+    scorers = {e.name: e for e in run.scorers}
     annotations: list[TraceAnnotation] = []
     for trial in run.trials:
         for score in trial.scores:
             result = score_result(score)
             if result is None:
                 continue
-            evaluator = score.evaluator or score.name
-            info = evaluators.get(evaluator)
+            scorer = score.scorer or score.name
+            info = scorers.get(scorer)
             version = info.version if info is not None else None
             metadata: dict[str, Any] = {
                 "run_id": run.id,
                 "evaluation": run.name,
-                "evaluator": evaluator,
-                "evaluator_version": version,
+                "scorer": scorer,
+                "scorer_version": version,
             }
             if score.reason:
                 metadata["reason"] = score.reason
@@ -727,7 +727,7 @@ def run_annotations(run: EvaluationRun) -> list[TraceAnnotation]:
                     label=result[0],
                     score=result[1],
                     explanation=score.explanation,
-                    identifier=annotation_identifier(evaluator, version),
+                    identifier=annotation_identifier(scorer, version),
                     metadata=metadata,
                 )
             )
@@ -819,7 +819,7 @@ def _judge_extraction(
 async def evaluate_traces(
     source: TraceSource,
     query: TraceQuery,
-    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    scorers: Sequence[Scorer[Any, Any, Any]],
     metrics: MetricsSpec = None,
     *,
     window: TraceWindow,
@@ -827,7 +827,7 @@ async def evaluate_traces(
     output_type: Any = Any,
     description: str | None = None,
     concurrency: int = 4,
-    evaluator_timeout_s: float | None = None,
+    scorer_timeout_s: float | None = None,
     max_cost_usd: float | None = None,
     max_error_rate: float | None = None,
     group_by: Sequence[str] = (),
@@ -858,7 +858,7 @@ async def evaluate_traces(
     run = await evaluate_trials(
         extraction.examples,
         extraction.trials,
-        evaluators,
+        scorers,
         metrics,
         name=name,
         task=query.describe(),
@@ -867,7 +867,7 @@ async def evaluate_traces(
         output_type=output_type,
         description=description,
         concurrency=concurrency,
-        evaluator_timeout_s=evaluator_timeout_s,
+        scorer_timeout_s=scorer_timeout_s,
         max_cost_usd=max_cost_usd,
         max_error_rate=max_error_rate,
         group_by=group_by,

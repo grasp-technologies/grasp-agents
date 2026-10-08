@@ -47,7 +47,7 @@ parallel replica is named after its template and numbered by
 every span below it (``GRASP_SESSION_ID_ATTRIBUTES``, default ``session.id``
 and ``gen_ai.conversation.id``), as do attributes set with
 :func:`~grasp_agents.telemetry.inherited_span_attributes` — evaluations stamp
-``grasp.eval.*`` (run id, run name, example id, repetition, and the evaluator
+``grasp.eval.*`` (run id, run name, example id, repetition, and the scorer
 for its own calls) on every span they make.
 """
 
@@ -114,4 +114,4 @@ ATTR_EVAL_RUN_ID = "grasp.eval.run_id"
 ATTR_EVAL_RUN_NAME = "grasp.eval.run_name"
 ATTR_EVAL_EXAMPLE_ID = "grasp.eval.example_id"
 ATTR_EVAL_REPETITION = "grasp.eval.repetition"
-ATTR_EVAL_EVALUATOR = "grasp.eval.evaluator"
+ATTR_EVAL_SCORER = "grasp.eval.scorer"

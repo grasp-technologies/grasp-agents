@@ -36,14 +36,14 @@ from grasp_agents.evals import (
     PassHatK,
     PassRate,
     Perturbation,
-    ProcessorEvaluator,
+    ProcessorScorer,
     ProcessorTask,
     Score,
     TraceQuery,
     ValidationGate,
-    evaluator,
     judge_probes,
     judge_validation,
+    scorer,
 )
 from grasp_agents.evals.metrics import Measure, Percentile
 from grasp_agents.processors.processor import Processor
@@ -259,12 +259,12 @@ def llm_grader(llm: Any) -> Processor[Submission, Grade, None]:
     )
 
 
-# --- Evaluators ---
+# --- Scorers ---
 
 type Ctx = EvalContext[Submission, Grade, TeacherGrade]
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def agrees_with_teacher(ctx: Ctx) -> Score:
     assert ctx.reference is not None
     return Score(
@@ -274,7 +274,7 @@ def agrees_with_teacher(ctx: Ctx) -> Score:
     )
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def names_key_issue(ctx: Ctx) -> Score | None:
     """Does the feedback name what is wrong or missing? N/A when nothing is."""
     if ctx.reference is None or ctx.reference.key_issue is None:
@@ -288,12 +288,12 @@ def names_key_issue(ctx: Ctx) -> Score | None:
     )
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def feedback_concise(ctx: Ctx) -> bool:
     return len(ctx.output.feedback) <= 160
 
 
-@evaluator(name="feedback_quality", version="1")
+@scorer(name="feedback_quality", version="1")
 def feedback_quality_v1(ctx: Ctx) -> Score:
     """
     A lenient stand-in for an LLM judge (code, so it is recorded as such):
@@ -303,7 +303,7 @@ def feedback_quality_v1(ctx: Ctx) -> Score:
     return Score(name="feedback_quality", value=ok, explanation=ctx.output.feedback)
 
 
-@evaluator(name="feedback_quality", version="2")
+@scorer(name="feedback_quality", version="2")
 def feedback_quality_v2(ctx: Ctx) -> Score:
     """A stricter stand-in judge: feedback on an imperfect answer must be specific."""
     assert ctx.reference is not None
@@ -407,9 +407,9 @@ def _quality(verdict: FeedbackVerdict) -> Score:
     )
 
 
-def feedback_judge(version: str) -> ProcessorEvaluator[Any, Any, Any, Any, Any]:
+def feedback_judge(version: str) -> ProcessorScorer[Any, Any, Any, Any, Any]:
     """The feedback-quality judge, version ``v1`` or ``v2``."""
-    return ProcessorEvaluator(
+    return ProcessorScorer(
         FeedbackJudge(version=version),
         name="feedback_quality",
         version=version,
@@ -417,7 +417,7 @@ def feedback_judge(version: str) -> ProcessorEvaluator[Any, Any, Any, Any, Any]:
     )
 
 
-def llm_feedback_judge(llm: Any) -> ProcessorEvaluator[Any, Any, Any, Any, Any]:
+def llm_feedback_judge(llm: Any) -> ProcessorScorer[Any, Any, Any, Any, Any]:
     """The same judge as an LLM agent (``apply_output_schema_via_provider=True``)."""
     from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
 
@@ -433,7 +433,7 @@ def llm_feedback_judge(llm: Any) -> ProcessorEvaluator[Any, Any, Any, Any, Any]:
             "explanation: one sentence."
         ),
     )
-    return ProcessorEvaluator(
+    return ProcessorScorer(
         agent, name="feedback_quality", version="llm-1", to_scores=_quality
     )
 
@@ -505,7 +505,7 @@ def _grader_evaluation(
         dataset=DATA,
         input_type=Submission,
         reference_type=TeacherGrade,
-        evaluators=[agrees_with_teacher, names_key_issue, feedback_concise, quality],
+        scorers=[agrees_with_teacher, names_key_issue, feedback_concise, quality],
         metrics=_METRICS,
         repetitions=3,
         group_by=["difficulty"],
@@ -518,7 +518,7 @@ def _grader_evaluation(
 
 grader_v1 = _grader_evaluation("v1", feedback_quality_v1)
 grader_v2 = _grader_evaluation("v2", feedback_quality_v1)
-# Same task as v2, judged by the stricter feedback evaluator — use it to
+# Same task as v2, judged by the stricter feedback scorer — use it to
 # rescore a stored run: ``grasp-evals rescore <run> --spec ...:grader_v2_strict``.
 grader_v2_strict = _grader_evaluation("v2", feedback_quality_v2)
 
@@ -565,7 +565,7 @@ def llm_grader_evaluation(llm: Any) -> Evaluation:
 
 
 # The grader in production, scored online: its traced runs are read from
-# Phoenix, judged by the same evaluators (those that need no teacher grade),
+# Phoenix, judged by the same scorers (those that need no teacher grade),
 # and the scores written back onto the traces. The judge must have passed
 # validation, and its pass rate is reported corrected for its errors. Students'
 # requests are correlated, so intervals are clustered on the session.
@@ -574,7 +574,7 @@ grader_online = Evaluation(
     description="Is the grader's feedback in production concise and specific?",
     input_type=Submission,
     output_type=Grade,
-    evaluators=[feedback_concise, feedback_judge("v2")],
+    scorers=[feedback_concise, feedback_judge("v2")],
     metrics=[PassRate("feedback_concise"), PassRate("feedback_quality")],
     cluster_by="session_id",
     group_by=["version"],

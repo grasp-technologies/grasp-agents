@@ -20,7 +20,7 @@ from grasp_agents.evals import (
     FunctionTask,
     LocalRunStore,
     evaluate,
-    evaluator,
+    scorer,
 )
 from grasp_agents.evals.phoenix import (
     DatasetPushError,
@@ -69,12 +69,12 @@ async def add(problem: Problem) -> int:
     return problem.a + problem.b if problem.a != 2 else -1
 
 
-@evaluator(version="3")
+@scorer(version="3")
 def exact(ctx: EvalContext[Problem, int, int]) -> bool:
     return ctx.output == ctx.reference
 
 
-@evaluator(name="judge", version="1", annotator="LLM")
+@scorer(name="judge", version="1", annotator="LLM")
 def judge(ctx: EvalContext[Problem, int, int]) -> dict[str, float | str]:
     return {
         "closeness": 1.0 / (1 + abs(ctx.output - (ctx.reference or 0))),
@@ -236,7 +236,7 @@ async def test_push_run_is_idempotent_and_resumable(
         experiments = await client.sdk.experiments.list(dataset_id=link.dataset_id)
         assert [e["id"] for e in experiments] == [link.experiment_id]
         assert experiments[0]["metadata"]["grasp_run_id"] == run.id
-        assert experiments[0]["metadata"]["evaluators"] == {"exact": "3", "judge": "1"}
+        assert experiments[0]["metadata"]["scorers"] == {"exact": "3", "judge": "1"}
 
 
 @pytest.mark.asyncio
@@ -359,7 +359,7 @@ class Draft(BaseModel):
     key_issue: str | None = None
 
 
-@evaluator(version="1")
+@scorer(version="1")
 def nonempty(ctx: EvalContext[Draft, str, None]) -> bool:
     return bool(ctx.output)
 
@@ -584,7 +584,7 @@ async def test_online_evaluation_reads_scores_and_annotates_production(
     )
     provider.force_flush()
 
-    @evaluator(version="2", annotator="LLM")
+    @scorer(version="2", annotator="LLM")
     def numeric(ctx: EvalContext[Any, Any, Any]) -> bool:
         return str(ctx.output).isdigit()
 
@@ -606,7 +606,7 @@ async def test_online_evaluation_reads_scores_and_annotates_production(
         now = datetime.now(UTC)
         turns = Evaluation(
             name=f"tutor-{project}",
-            evaluators=[numeric],
+            scorers=[numeric],
             traces=TraceQuery(
                 project=project, processor="tutor", completion_buffer_s=0
             ),
@@ -634,7 +634,7 @@ async def test_online_evaluation_reads_scores_and_annotates_production(
 
         conversations = Evaluation(
             name=f"conversations-{project}",
-            evaluators=[numeric],
+            scorers=[numeric],
             traces=TraceQuery(
                 project=project,
                 processor="tutor",
@@ -678,7 +678,11 @@ async def test_sessions_with_unusual_ids_and_partial_annotation_writes(
     from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: PLC0415
 
-    from grasp_agents.evals import TraceAnnotation, TraceQuery, TraceWindow  # noqa: PLC0415
+    from grasp_agents.evals import (  # noqa: PLC0415
+        TraceAnnotation,
+        TraceQuery,
+        TraceWindow,
+    )
     from grasp_agents.evals.online import collect_items  # noqa: PLC0415
     from grasp_agents.evals.phoenix import PhoenixTraceSource  # noqa: PLC0415
 

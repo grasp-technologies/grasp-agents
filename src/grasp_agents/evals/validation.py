@@ -1,5 +1,5 @@
 """
-Judge validation: a judge (any :class:`Evaluator`) becomes the system under
+Judge validation: a judge (any :class:`Scorer`) becomes the system under
 test, applied to stored outputs whose correct verdict is known — labeled by
 people, or constructed by perturbing outputs — so its agreement is measured
 with the same runs, statistics, sealing and comparisons as any evaluation.
@@ -13,16 +13,8 @@ from typing import Any, Literal, cast, override
 
 from pydantic import BaseModel, ValidationError
 
-from ._execution import evaluator_sources
+from ._execution import scorer_sources
 from ._util import to_jsonable, user_code_hash, utc_now
-from .evaluator import (
-    EvalContext,
-    Evaluator,
-    EvaluatorOutput,
-    merge_models,
-    run_all_or_cancel,
-    run_evaluator,
-)
 from .metrics import (
     ClassRecall,
     CohenKappa,
@@ -32,6 +24,14 @@ from .metrics import (
     Metric,
     PassRate,
     label_text,
+)
+from .scorer import (
+    EvalContext,
+    Scorer,
+    ScorerOutput,
+    merge_models,
+    run_all_or_cancel,
+    run_scorer,
 )
 from .stats import corrected_prevalence, percentile
 from .store import RunStore
@@ -48,12 +48,12 @@ from .types import (
     Usage,
 )
 
-# ``ComponentInfo.kind`` of the tasks that apply an evaluator to stored
+# ``ComponentInfo.kind`` of the tasks that apply a scorer to stored
 # outputs: against labels, and with perturbed outputs.
-EVALUATOR_TASK_KIND = "evaluator"
-PROBE_TASK_KIND = "evaluator-probes"
+SCORER_TASK_KIND = "scorer"
+PROBE_TASK_KIND = "scorer-probes"
 
-# The name the label-agreement evaluator records its scores under.
+# The name the label-agreement scorer records its scores under.
 AGREEMENT = "agreement"
 
 _TRUE_WORDS = frozenset({"true", "yes", "pass", "passed"})
@@ -142,7 +142,7 @@ class _Spend:
 
 
 async def _judge(
-    evaluator: Evaluator[Any, Any, Any],
+    scorer: Scorer[Any, Any, Any],
     example: Example[Any, Any],
     output: Any,
     repetition: int,
@@ -158,26 +158,26 @@ async def _judge(
     )
     ctx = EvalContext(example=example, output=output, trial=trial, usage=spend.usage)
     try:
-        return await run_evaluator(evaluator, ctx)
+        return await run_scorer(scorer, ctx)
     finally:
         merge_models(spend.models, ctx.models)
 
 
 class _JudgeTask[OutT](Task[JudgedOutput[Any, Any, Any], OutT]):
-    kind: str = EVALUATOR_TASK_KIND
+    kind: str = SCORER_TASK_KIND
 
     def __init__(
         self,
-        evaluator: Evaluator[Any, Any, Any],
+        scorer: Scorer[Any, Any, Any],
         *,
         input_type: Any,
         output_type: Any,
         reference_type: Any,
         name: str | None,
     ) -> None:
-        self.evaluator = evaluator
-        self.name = name or evaluator.name
-        self.version = evaluator.version
+        self.scorer = scorer
+        self.name = name or scorer.name
+        self.version = scorer.version
         self._input_type: Any = JudgedOutput[input_type, output_type, reference_type]
         # Task settings recorded with the judge's identity.
         self.settings: dict[str, Any] = {}
@@ -187,31 +187,31 @@ class _JudgeTask[OutT](Task[JudgedOutput[Any, Any, Any], OutT]):
         return self._input_type
 
     def describe(self) -> ComponentInfo:
-        info = self.evaluator.describe()
+        info = self.scorer.describe()
         return ComponentInfo(
             name=self.name,
             kind=self.kind,
             version=info.version,
-            config={"evaluator": info.model_dump(mode="json"), **self.settings},
+            config={"scorer": info.model_dump(mode="json"), **self.settings},
             fingerprint=info.fingerprint,
         )
 
     def source_objects(self) -> list[Any]:
-        return evaluator_sources([self.evaluator])
+        return scorer_sources([self.scorer])
 
 
-class EvaluatorTask(_JudgeTask[list[Score]]):
+class ScorerTask(_JudgeTask[list[Score]]):
     """
-    Applies ``evaluator`` to stored outputs, making the judge the system
+    Applies ``scorer`` to stored outputs, making the judge the system
     under test: each example's input is a :class:`JudgedOutput` and the
-    task's output is the evaluator's scores. The judge's model usage and
+    task's output is the scorer's scores. The judge's model usage and
     models are the trial's, and a judge that fails is a task error.
-    Evaluators that read the transcript or the session see neither.
+    Scorers that read the transcript or the session see neither.
     """
 
     def __init__(
         self,
-        evaluator: Evaluator[Any, Any, Any],
+        scorer: Scorer[Any, Any, Any],
         *,
         input_type: Any = Any,
         output_type: Any = Any,
@@ -219,7 +219,7 @@ class EvaluatorTask(_JudgeTask[list[Score]]):
         name: str | None = None,
     ) -> None:
         super().__init__(
-            evaluator,
+            scorer,
             input_type=input_type,
             output_type=output_type,
             reference_type=reference_type,
@@ -238,14 +238,14 @@ class EvaluatorTask(_JudgeTask[list[Score]]):
         spend = _Spend(usage=[], models={})
         try:
             return await _judge(
-                self.evaluator,
+                self.scorer,
                 _source_example(trial, input),
                 input.output,
                 trial.repetition,
                 spend,
             )
         finally:
-            spend.record(trial, self.evaluator.name)
+            spend.record(trial, self.scorer.name)
 
 
 def _scores_of(output: Any) -> dict[str, Score]:
@@ -281,9 +281,9 @@ def _labels_of(
     return {target: cast("ScoreValue", reference)} if target in scores else {}
 
 
-class LabelAgreement(Evaluator[Any, list[Score], Any]):
+class LabelAgreement(Scorer[Any, list[Score], Any]):
     """
-    Compares a judge's scores (the output of :class:`EvaluatorTask`) with the
+    Compares a judge's scores (the output of :class:`ScorerTask`) with the
     example's reference label: a mapping of score names to values, or one
     value for the score its ``metadata.score`` names (or the only one
     validated). For each labeled score ``s`` it records ``s.label``, and the
@@ -294,7 +294,7 @@ class LabelAgreement(Evaluator[Any, list[Score], Any]):
     labels, recorded for the gate.
     """
 
-    evaluates_errors = True
+    scores_errors = True
 
     def __init__(
         self,
@@ -319,7 +319,7 @@ class LabelAgreement(Evaluator[Any, list[Score], Any]):
             "negative": self.negative,
         }
 
-    def evaluate(self, ctx: EvalContext[Any, list[Score], Any]) -> EvaluatorOutput:
+    def score(self, ctx: EvalContext[Any, list[Score], Any]) -> ScorerOutput:
         if ctx.reference is None:
             return None
         labels = _labels_of(ctx.reference, self.scores, ctx.metadata.get("score"))
@@ -450,7 +450,7 @@ class ProbeTask(_JudgeTask[dict[str, list[Score] | None]]):
 
     def __init__(
         self,
-        evaluator: Evaluator[Any, Any, Any],
+        scorer: Scorer[Any, Any, Any],
         perturbations: Sequence[Perturbation],
         *,
         input_type: Any = Any,
@@ -459,7 +459,7 @@ class ProbeTask(_JudgeTask[dict[str, list[Score] | None]]):
         name: str | None = None,
     ) -> None:
         super().__init__(
-            evaluator,
+            scorer,
             input_type=input_type,
             output_type=output_type,
             reference_type=reference_type,
@@ -498,12 +498,12 @@ class ProbeTask(_JudgeTask[dict[str, list[Score] | None]]):
         try:
             judged = await run_all_or_cancel(
                 [
-                    _judge(self.evaluator, example, output, trial.repetition, spend)
+                    _judge(self.scorer, example, output, trial.repetition, spend)
                     for output in outputs.values()
                 ]
             )
         finally:
-            spend.record(trial, self.evaluator.name)
+            spend.record(trial, self.scorer.name)
         results: dict[str, list[Score] | None] = dict.fromkeys(
             ["original", *(p.name for p in self.perturbations)]
         )
@@ -519,7 +519,7 @@ def _ordinal(value: ScoreValue) -> float | None:
     return None
 
 
-class ProbeCheck(Evaluator[Any, dict[str, list[Score] | None], Any]):
+class ProbeCheck(Scorer[Any, dict[str, list[Score] | None], Any]):
     """
     Scores a :class:`ProbeTask` output: for each validated score ``s`` and
     perturbation ``p``, ``s.p`` passes when the judge's verdict moved as
@@ -568,9 +568,9 @@ class ProbeCheck(Evaluator[Any, dict[str, list[Score] | None], Any]):
             return None
         return low < high
 
-    def evaluate(
+    def score(
         self, ctx: EvalContext[Any, dict[str, list[Score] | None], Any]
-    ) -> EvaluatorOutput:
+    ) -> ScorerOutput:
         outputs = ctx.output or {}
         original = _scores_of(outputs.get("original"))
         scores: list[Score] = []
@@ -628,7 +628,7 @@ class JudgeValidation(BaseModel):
 
     run_id: str
     score: str
-    evaluator: ComponentInfo
+    scorer: ComponentInfo
     # The labels dataset: its name and the fingerprint of what was evaluated.
     labels: str
     labels_fingerprint: str
@@ -689,18 +689,18 @@ class JudgeValidation(BaseModel):
         }
 
 
-def validated_evaluator(run: EvaluationRun) -> ComponentInfo | None:
+def validated_scorer(run: EvaluationRun) -> ComponentInfo | None:
     """The judge a validation run measured, or ``None`` for other runs."""
-    if run.task.kind != EVALUATOR_TASK_KIND:
+    if run.task.kind != SCORER_TASK_KIND:
         return None
     try:
-        return ComponentInfo.model_validate(run.task.config.get("evaluator"))
+        return ComponentInfo.model_validate(run.task.config.get("scorer"))
     except ValidationError:
         return None
 
 
 def _agreement_config(run: EvaluationRun, score: str) -> dict[str, Any] | None:
-    for info in run.evaluators:
+    for info in run.scorers:
         scores = info.config.get("scores")
         if info.name == AGREEMENT and isinstance(scores, list) and score in scores:
             return info.config
@@ -726,9 +726,9 @@ def summarize_validation(
     ``score`` — over the sealed split (``sealed_only``), or every trial —
     clustered as the run was.
     """
-    evaluator = validated_evaluator(run)
+    scorer = validated_scorer(run)
     config = _agreement_config(run, score)
-    if evaluator is None or config is None:
+    if scorer is None or config is None:
         raise ValueError(f"Run {run.id} is not a validation run covering {score!r}")
     trials = [t for t in run.trials if t.sealed] if sealed_only else list(run.trials)
     judged, label = f"{score}.judge", f"{score}.label"
@@ -743,7 +743,7 @@ def summarize_validation(
         t
         for t in trials
         if t.score(label) is not None
-        or any(f.evaluator == AGREEMENT for f in t.evaluator_failures)
+        or any(f.scorer == AGREEMENT for f in t.scorer_failures)
     ]
     missing = sum(
         1
@@ -763,7 +763,7 @@ def summarize_validation(
     return JudgeValidation(
         run_id=run.id,
         score=score,
-        evaluator=evaluator,
+        scorer=scorer,
         labels=run.dataset.name,
         labels_fingerprint=run.dataset.selected_fingerprint,
         sealed=sealed_only,
@@ -850,25 +850,25 @@ def _measured_at(
 
 def find_validation(
     store: RunStore,
-    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    scorers: Sequence[Scorer[Any, Any, Any]],
     score: str,
     *,
     labels: str | None = None,
 ) -> JudgeValidation | None:
     """
-    The newest finished, valid validation run of one of ``evaluators`` —
+    The newest finished, valid validation run of one of ``scorers`` —
     exactly as they are now (name, version, configuration, fingerprint and
     code) — that covers ``score`` on a sealed split (of the labels dataset
     named ``labels``, when given), summarized over that split. Rescored runs
     rank by when their trials ran.
     """
-    identities = [e.describe() for e in evaluators]
+    identities = [e.describe() for e in scorers]
     headers = {h.id: h for h in store.list_runs()}
     candidates = [
         h
         for h in headers.values()
-        if (evaluator := validated_evaluator(h)) is not None
-        and evaluator in identities
+        if (scorer := validated_scorer(h)) is not None
+        and scorer in identities
         and h.completed
         and not h.invalid_reason
         and _agreement_config(h, score) is not None
@@ -888,14 +888,14 @@ class UnvalidatedJudgeError(Exception):
 
 def check_validations(
     store: RunStore,
-    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    scorers: Sequence[Scorer[Any, Any, Any]],
     gates: Mapping[str, ValidationGate],
 ) -> tuple[dict[str, JudgeValidation], list[str]]:
     """``(validations found, gate failures)`` for each gated score."""
     found: dict[str, JudgeValidation] = {}
     failures: list[str] = []
     for score, gate in gates.items():
-        validation = find_validation(store, evaluators, score, labels=gate.labels)
+        validation = find_validation(store, scorers, score, labels=gate.labels)
         if validation is None:
             on = f" of {gate.labels!r}" if gate.labels else ""
             failures.append(

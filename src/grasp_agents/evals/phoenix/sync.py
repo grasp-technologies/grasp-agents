@@ -458,7 +458,7 @@ def _experiment_metadata(run: EvaluationRun, withheld: int) -> dict[str, Any]:
         "evaluation": run.evaluation,
         "parent_run_id": run.parent_run_id,
         "task": run.task.model_dump(mode="json"),
-        "evaluators": {e.name: e.version for e in run.evaluators},
+        "scorers": {e.name: e.version for e in run.scorers},
         "metrics": {
             m.name: {"value": m.value, "ci": [m.ci_low, m.ci_high], "n": m.n}
             for m in run.metrics
@@ -540,7 +540,7 @@ def _digest(trial: Trial) -> str:
                     [s.name, s.value, s.explanation, s.reason] for s in trial.scores
                 ],
                 "failures": [
-                    [f.evaluator, f.error.message] for f in trial.evaluator_failures
+                    [f.scorer, f.error.message] for f in trial.scorer_failures
                 ],
             }
         )
@@ -635,9 +635,9 @@ async def push_run(
         if store is not None:
             store.save(run)
     annotators: dict[str, AnnotatorKind] = {
-        e.name: e.annotator or "CODE" for e in run.evaluators
+        e.name: e.annotator or "CODE" for e in run.scorers
     }
-    versions = {e.name: e.version for e in run.evaluators}
+    versions = {e.name: e.version for e in run.scorers}
     logged = dict(link.logged_trials)
     known_runs: dict[tuple[str, int], str] = {}
     lock = asyncio.Lock()
@@ -693,17 +693,17 @@ async def push_run(
                     raise
                 run_id = await existing_run_id(node_id, repetition)
             for score in trial.scores:
-                evaluator = score.evaluator or score.name
+                scorer = score.scorer or score.name
                 await client.call(
                     client.sdk.experiments.log_evaluation(
                         experiment_run_id=run_id,
                         name=score.name,
-                        annotator_kind=annotators.get(evaluator, "CODE"),
+                        annotator_kind=annotators.get(scorer, "CODE"),
                         start_time=ended,
                         end_time=ended,
                         metadata={
-                            "evaluator": evaluator,
-                            "evaluator_version": versions.get(evaluator),
+                            "scorer": scorer,
+                            "scorer_version": versions.get(scorer),
                             "reason": score.reason,
                             **cast("dict[str, Any]", to_jsonable(score.metadata)),
                         },
@@ -712,12 +712,12 @@ async def push_run(
                         **_evaluation_fields(score),
                     )
                 )
-            for failure in trial.evaluator_failures:
+            for failure in trial.scorer_failures:
                 await client.call(
                     client.sdk.experiments.log_evaluation(
                         experiment_run_id=run_id,
-                        name=failure.evaluator,
-                        annotator_kind=annotators.get(failure.evaluator, "CODE"),
+                        name=failure.scorer,
+                        annotator_kind=annotators.get(failure.scorer, "CODE"),
                         start_time=ended,
                         end_time=ended,
                         error=failure.error.message,

@@ -3,7 +3,7 @@
 A complete evaluation loop over a small grasp-agents pipeline, runnable offline.
 
 - `grader_evals.py` — the system under test (a two-step `SequentialWorkflow`:
-  analyzer → feedback writer, versions `v1` and `v2`), its evaluators, a pairwise
+  analyzer → feedback writer, versions `v1` and `v2`), its scorers, a pairwise
   judge, and three `Evaluation` definitions (`grader_v1`, `grader_v2`,
   `grader_v2_strict`). `llm_grader_evaluation(llm)` swaps in an `LLMAgent`.
   For judges: a feedback-quality judge built from a processor (`v1`, `v2`;
@@ -46,7 +46,7 @@ grasp-evals run "${SPEC}:grader_v2" --split dev --baseline latest:grader_v1 --fa
 grasp-evals compare latest:grader_v1 latest:grader_v2
 
 # 5. Change the instrument, not the task: rescore stored outputs (a child run).
-#    Unchanged evaluators keep their scores; the changed one runs again.
+#    Unchanged scorers keep their scores; the changed one runs again.
 grasp-evals rescore latest:grader_v2 --spec "${SPEC}:grader_v2_strict"
 
 # 6. Pairwise A/B with an order-swapped judge (a run of its own).
@@ -65,7 +65,7 @@ grasp-evals push latest                        # the test run: aggregates only
 
 ## Judges: validate before you trust
 
-A judge is an evaluator whose verdicts need checking too. Here the judge decides
+A judge is a scorer whose verdicts need checking too. Here the judge decides
 whether the grader's feedback is specific enough to act on, and teachers' labels
 say what the right verdict was.
 
@@ -106,7 +106,7 @@ Labels are stored per score (`"reference": {"feedback_quality": true}`), with wh
 labeled each and when; a single value in a to-label file goes to the score its
 `metadata.score` names. Verdicts and labels must be comparable — pass/fail words,
 `true`/`false` and `1`/`0` all read as pass/fail; a label such as `correct` against
-a pass/fail judge is an evaluator failure, not a silent disagreement.
+a pass/fail judge is a scorer failure, not a silent disagreement.
 
 Labels can also come from Phoenix. Trials carry trace ids when the run is traced
 into a Phoenix project — e.g. the spec module calls
@@ -124,7 +124,7 @@ a target.
 
 ## Production: online evaluation
 
-The same evaluators also score what the system did in production. An
+The same scorers also score what the system did in production. An
 `Evaluation` with `traces=TraceQuery(...)` reads the spans of a Phoenix project —
 here the grader's runs, selected by processor name — and every scheduled run
 covers the window since the previous one. Grasp-agents spans carry what this
@@ -175,7 +175,7 @@ grasp-evals datasets from-traces "${SPEC}:grader_online" --since 1d \
   evaluation. Annotations an online run failed to write are retried (best
   effort) by the next run, or with `grasp-evals push RUN`; the command still
   reports the window's gates, then exits 3. Annotations are named after the
-  score and identified by the evaluator version
+  score and identified by the scorer version
   (`grasp-evals:feedback_quality@v2`), so writing them again replaces them;
   after an upgrade, both versions' annotations sit under the score's name.
 - **Labels from production**: `grasp-evals labels sample latest:grader_online
@@ -202,7 +202,7 @@ name or the spec attribute (`latest:grader_v1`).
 - **pass^3 ≤ pass rate**: the writer is noisy on borderline answers, so the
   same answer does not always get the same verdict.
 - **Rescoring** with the stricter `feedback_quality` v2 drops a few v2 examples
-  whose feedback is vague; the comparison warns that the evaluator version
+  whose feedback is vague; the comparison warns that the scorer version
   changed, so the drop is the instrument, not the task.
 - **Pairwise**: v2's feedback is at least as specific in every pair — it wins
   about half and ties the rest. Position consistency is trivially perfect here,

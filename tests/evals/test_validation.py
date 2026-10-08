@@ -24,9 +24,9 @@ from grasp_agents.evals import (
     UnvalidatedJudgeError,
     ValidationGate,
     compare,
-    evaluator,
     judge_probes,
     judge_validation,
+    scorer,
 )
 from grasp_agents.evals.stats import cohens_kappa, corrected_prevalence
 from grasp_agents.evals.validation import find_validation, summarize_validation
@@ -34,12 +34,12 @@ from grasp_agents.evals.validation import find_validation, summarize_validation
 type Judged = EvalContext[str, str, Any]
 
 
-@evaluator(name="good", annotator="LLM")
+@scorer(name="good", annotator="LLM")
 def good_judge(ctx: Judged) -> Score:
     return Score(name="good", value="good" in ctx.output, explanation="said good")
 
 
-@evaluator(name="good", version="2", annotator="LLM")
+@scorer(name="good", version="2", annotator="LLM")
 def good_judge_v2(ctx: Judged) -> bool:
     return "good" in ctx.output and not ctx.output.endswith(".")
 
@@ -85,7 +85,7 @@ def _trial(example_id: str, repetition: int = 0, **scores: Any) -> Trial:
         started_at=datetime.now(UTC),
         duration_s=0.0,
         scores=[Score(name=k.replace("__", "."), value=v) for k, v in scores.items()],
-        evaluated=["e"],
+        scorers_run=["e"],
     )
 
 
@@ -162,7 +162,7 @@ class TestJudgeValidation:
         assert values["tpr(good)"] == pytest.approx(2 / 4)
         assert values["tnr(good)"] == pytest.approx(2 / 4)
         assert values["kappa(good)"] == pytest.approx(0.0)
-        assert run.task.kind == "evaluator"
+        assert run.task.kind == "scorer"
         assert run.config.sealed_splits == ["test"]
         assert {t.sealed for t in run.trials} == {True, False}
         explanation = run.trials[1].score("good.agrees")
@@ -188,11 +188,11 @@ class TestJudgeValidation:
     async def test_several_scores_numeric_verdicts_and_missing_ones(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="rubric", annotator="LLM")
+        @scorer(name="rubric", annotator="LLM")
         def rubric(ctx: Judged) -> dict[str, Any]:
             return {"clarity": len(ctx.output) / 10, "tone": "kind"}
 
-        @evaluator(name="unsure", annotator="LLM")
+        @scorer(name="unsure", annotator="LLM")
         def unsure(ctx: Judged) -> Score:
             return Score.unscored("unsure", reason="refusal")
 
@@ -226,13 +226,13 @@ class TestJudgeValidation:
         run = await judge_validation(
             good_judge, _labels(tmp_path / "l.jsonl"), scores=["good", "other"]
         ).run(split="dev", store=store)
-        assert run.counts.evaluator_failures == 4
+        assert run.counts.scorer_failures == 4
 
     @pytest.mark.asyncio
     async def test_a_failing_judge_is_a_task_error_and_usage_is_the_trials(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="good", annotator="LLM")
+        @scorer(name="good", annotator="LLM")
         async def costly(ctx: Judged) -> bool:
             from grasp_agents.evals import Usage  # noqa: PLC0415
 
@@ -254,7 +254,7 @@ class TestJudgeValidation:
     ) -> None:
         rng = random.Random(0)
 
-        @evaluator(name="good", annotator="LLM")
+        @scorer(name="good", annotator="LLM")
         def coin(ctx: Judged) -> bool:
             return rng.random() < 0.5
 
@@ -299,17 +299,21 @@ class TestValidationGates:
         )
         assert find_validation(store, [good_judge], "good") is not None
         # Same name, version and configuration; the function's code changed.
-        module = importlib.import_module("grasp_agents.evals.evaluator")
+        module = importlib.import_module("grasp_agents.evals.scorer")
         monkeypatch.setattr(module, "code_hash", lambda _: "edited")
         assert find_validation(store, [good_judge], "good") is None
 
     def test_gate_reads_the_lower_bound_by_default(self) -> None:
-        from grasp_agents.evals import ComponentInfo, JudgeValidation, MetricResult  # noqa: PLC0415
+        from grasp_agents.evals import (  # noqa: PLC0415
+            ComponentInfo,
+            JudgeValidation,
+            MetricResult,
+        )
 
         validation = JudgeValidation(
             run_id="r",
             score="good",
-            evaluator=ComponentInfo(name="good", kind="k"),
+            scorer=ComponentInfo(name="good", kind="k"),
             labels="labels",
             labels_fingerprint="f",
             sealed=True,
@@ -342,7 +346,7 @@ class TestValidationGates:
                 name="answers",
                 task=FunctionTask(shout),
                 dataset=answers,
-                evaluators=[good_judge],
+                scorers=[good_judge],
                 metrics=metrics,
                 validation_gates={"good": ValidationGate(min_accuracy=minimum)},
             )
@@ -475,7 +479,7 @@ class TestProbes:
     async def test_numeric_verdicts_with_a_threshold(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="length", annotator="LLM")
+        @scorer(name="length", annotator="LLM")
         def length(ctx: Judged) -> float:
             return float(len(ctx.output))
 
@@ -502,7 +506,7 @@ class TestValidationCoverage:
     async def test_abstentions_and_failures_count_as_missing(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="good", annotator="LLM")
+        @scorer(name="good", annotator="LLM")
         def picky(ctx: Judged) -> Score | bool:
             if "bad" in ctx.output:
                 return Score.unscored("good", reason="refusal")
@@ -547,7 +551,7 @@ class TestValidationCoverage:
     async def test_labels_named_for_the_gate(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="good", annotator="LLM")
+        @scorer(name="good", annotator="LLM")
         def quality(ctx: Judged) -> str:
             return "good" if "good" in ctx.output else "bad"
 
@@ -632,7 +636,7 @@ class TestValidationCoverage:
     async def test_numbers_bools_and_mismatched_labels(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="good", annotator="LLM")
+        @scorer(name="good", annotator="LLM")
         def binary(ctx: Judged) -> int:
             return 1 if "good" in ctx.output else 0
 
@@ -647,8 +651,8 @@ class TestValidationCoverage:
         mismatched = await judge_validation(
             good_judge, _labels(tmp_path / "words.jsonl", rows)
         ).run(split="dev", store=store)
-        assert mismatched.counts.evaluator_failures == 4
-        failure = mismatched.trials[0].evaluator_failures[0].error.message
+        assert mismatched.counts.scorer_failures == 4
+        failure = mismatched.trials[0].scorer_failures[0].error.message
         assert "pass/fail verdict needs a pass/fail label" in failure
 
     @pytest.mark.asyncio
@@ -703,7 +707,7 @@ class TestProbeEdges:
     async def test_lower_needs_ordered_verdicts(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        @evaluator(name="tone", annotator="LLM")
+        @scorer(name="tone", annotator="LLM")
         def tone(ctx: Judged) -> str:
             return "kind" if "!" in ctx.output else "flat"
 
@@ -712,10 +716,8 @@ class TestProbeEdges:
             _labels(tmp_path / "l.jsonl"),
             [Perturbation("flat", lambda i: i.output.rstrip("!."), "lower")],
         ).run(store=store)
-        assert run.counts.evaluator_failures == 8
-        assert (
-            "use expect='changed'" in run.trials[0].evaluator_failures[0].error.message
-        )
+        assert run.counts.scorer_failures == 8
+        assert "use expect='changed'" in run.trials[0].scorer_failures[0].error.message
 
     def test_perturbation_code_is_part_of_the_identity(self) -> None:
         def first(item: Any) -> str:

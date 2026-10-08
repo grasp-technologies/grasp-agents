@@ -14,7 +14,7 @@ from tests.evals.test_online import T0, MemorySource, _span
 
 _MODULE = """
 from grasp_agents.evals import (
-    Dataset, EvalContext, Evaluation, Example, FunctionTask, evaluator,
+    Dataset, EvalContext, Evaluation, Example, FunctionTask, scorer,
 )
 
 async def solve(x: int) -> int:
@@ -23,11 +23,11 @@ async def solve(x: int) -> int:
 async def solve_fixed(x: int) -> int:
     return x * 2
 
-@evaluator
+@scorer
 def correct(ctx: EvalContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 
-@evaluator(name="correct", version="2")
+@scorer(name="correct", version="2")
 def correct_v2(ctx: EvalContext[int, int, int]) -> float:
     return 1.0 if ctx.output == ctx.reference else 0.0
 
@@ -39,12 +39,12 @@ DATA = Dataset(
     name="doubling",
 )
 
-def doubling(solver, evaluators, sealed=("test",)):
+def doubling(solver, scorers, sealed=("test",)):
     return Evaluation(
         name="doubling",
         task=FunctionTask(solver, name="solver"),
         dataset=DATA,
-        evaluators=evaluators,
+        scorers=scorers,
         sealed_splits=sealed,
     )
 
@@ -145,7 +145,7 @@ def test_run_show_compare_rescore(
     )
     assert child["kind"] == "rescore"
     assert child["parent_run_id"] == base["id"]
-    assert child["evaluators"] == {"correct": "2"}
+    assert child["scorers"] == {"correct": "2"}
 
     code, runs = _run_json(capsys, "--root", root, "runs", "--json")
     assert len(runs) == 4
@@ -311,7 +311,7 @@ from pathlib import Path
 
 from grasp_agents.evals import (
     Dataset, EvalContext, Evaluation, Example, FunctionTask, PassRate,
-    ValidationGate, evaluator, judge_validation,
+    ValidationGate, scorer, judge_validation,
 )
 
 LABELS = Path(__file__).with_name("labels.jsonl")
@@ -321,7 +321,7 @@ LABELS.write_text("".join(
     for i in range(8)
 ))
 
-@evaluator(name="even", annotator="LLM")
+@scorer(name="even", annotator="LLM")
 def even(ctx: EvalContext[int, int, bool]) -> bool:
     return ctx.output % 4 == 0
 
@@ -332,7 +332,7 @@ judged = Evaluation(
     name="judged",
     task=FunctionTask(double),
     dataset=Dataset([Example(id=f"x{i}", input=i) for i in range(4)]),
-    evaluators=[even],
+    scorers=[even],
     validation_gates={"even": ValidationGate(min_accuracy=0.0)},
 )
 even_validation = judge_validation(even, LABELS, input_type=int, output_type=int)
@@ -340,7 +340,7 @@ listed = Evaluation(
     name="listed",
     task=FunctionTask(double),
     dataset=Dataset([Example(id=f"x{i}", input=i) for i in range(4)]),
-    evaluators=[even],
+    scorers=[even],
     metrics=[PassRate("even")],
     validation_gates={"even": ValidationGate(min_accuracy=0.0)},
 )
@@ -403,15 +403,15 @@ def test_unvalidated_judges_fail_the_run_gate(
 
 
 _ONLINE = """
-from grasp_agents.evals import EvalContext, Evaluation, PassRate, TraceQuery, evaluator
+from grasp_agents.evals import EvalContext, Evaluation, PassRate, TraceQuery, scorer
 
-@evaluator
+@scorer
 def answered(ctx: EvalContext) -> bool:
     return ctx.output == "answer"
 
 writer = Evaluation(
     name="writer-online",
-    evaluators=[answered],
+    scorers=[answered],
     metrics=[PassRate("answered")],
     traces=TraceQuery(project="p", processor="writer", completion_buffer_s=0),
 )

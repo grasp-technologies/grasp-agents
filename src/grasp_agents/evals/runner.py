@@ -11,7 +11,6 @@ from ._execution import (
     TrialKey,
     capture_provenance,
     config_hash,
-    evaluator_sources,
     execute_trial,
     load_run,
     output_adapter,
@@ -19,12 +18,13 @@ from ._execution import (
     resolve_store,
     retype_examples,
     run_all,
+    scorer_sources,
     warn_if_untyped,
 )
 from ._util import new_run_id, utc_now
 from .dataset import Dataset
-from .evaluator import Evaluator
 from .metrics import MetricsSpec
+from .scorer import Scorer
 from .store import RunStore
 from .task import Task, TaskFn, as_task
 from .types import (
@@ -54,7 +54,7 @@ type TaskLike[InT, OutT] = (
 _ADJUSTABLE = (
     "concurrency",
     "timeout_s",
-    "evaluator_timeout_s",
+    "scorer_timeout_s",
     "max_cost_usd",
     "max_error_rate",
     "score",
@@ -71,12 +71,12 @@ class SealedSelectionError(ValueError):
     pass
 
 
-def _check_evaluators(evaluators: Sequence[Evaluator[Any, Any, Any]]) -> None:
+def _check_scorers(scorers: Sequence[Scorer[Any, Any, Any]]) -> None:
     seen: set[str] = set()
-    for evaluator in evaluators:
-        if evaluator.name in seen:
-            raise ValueError(f"Duplicate evaluator name {evaluator.name!r}")
-        seen.add(evaluator.name)
+    for scorer in scorers:
+        if scorer.name in seen:
+            raise ValueError(f"Duplicate scorer name {scorer.name!r}")
+        seen.add(scorer.name)
 
 
 def check_sealed(dataset: Dataset[Any, Any], sealed: frozenset[str]) -> None:
@@ -121,7 +121,7 @@ def _code_changes(old: Provenance, new: Provenance) -> list[str]:
                 f"({old.git_diff_hash or 'none'} → {new.git_diff_hash or 'none'})"
             )
     if old.source_hash is not None and old.source_hash != new.source_hash:
-        changes.append("source files of the task or evaluators changed")
+        changes.append("source files of the task or scorers changed")
     return changes
 
 
@@ -135,7 +135,7 @@ def _resume_record(
 ) -> dict[str, Any]:
     if previous.config_hash != run_hash:
         raise ResumeError(
-            f"Cannot resume {previous.id}: the task, evaluators, selected examples or "
+            f"Cannot resume {previous.id}: the task, scorers, selected examples or "
             "repetitions differ from the original run. Pass the same selection "
             "(split, ids, limit, sample) and repetitions as the original run, or "
             "start a new one."
@@ -169,7 +169,7 @@ def _retry_run(
     parent: EvaluationRun,
     *,
     task_info: ComponentInfo,
-    evaluator_infos: list[ComponentInfo],
+    scorer_infos: list[ComponentInfo],
     config: RunConfig,
     provenance: Provenance,
     run_hash: str,
@@ -187,7 +187,7 @@ def _retry_run(
         parent_run_id=parent.id,
         dataset=parent.dataset,
         task=task_info,
-        evaluators=evaluator_infos,
+        scorers=scorer_infos,
         config=config,
         provenance=provenance,
         config_hash=run_hash,
@@ -201,7 +201,7 @@ def _retry_run(
 def _nothing_to_redo(
     run: EvaluationRun,
     order: Sequence[TrialKey],
-    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    scorers: Sequence[Scorer[Any, Any, Any]],
     score: bool,
 ) -> bool:
     trials = {t.key: t for t in run.trials}
@@ -209,7 +209,7 @@ def _nothing_to_redo(
         trial = trials.get(key)
         if trial is None or not trial.ok:
             return False
-        if score and any(e.name not in trial.evaluated for e in evaluators):
+        if score and any(e.name not in trial.scorers_run for e in scorers):
             return False
     return True
 
@@ -229,7 +229,7 @@ def _model_drift(trial: Trial, known: Mapping[str, set[str]]) -> str | None:
 async def evaluate[InT, OutT, RefT](
     task: TaskLike[InT, OutT],
     dataset: Dataset[InT, RefT],
-    evaluators: Sequence[Evaluator[InT, OutT, RefT]] = (),
+    scorers: Sequence[Scorer[InT, OutT, RefT]] = (),
     metrics: MetricsSpec = None,
     *,
     name: str | None = None,
@@ -237,7 +237,7 @@ async def evaluate[InT, OutT, RefT](
     repetitions: int = 1,
     concurrency: int = 4,
     timeout_s: float | None = None,
-    evaluator_timeout_s: float | None = None,
+    scorer_timeout_s: float | None = None,
     max_cost_usd: float | None = None,
     max_error_rate: float | None = None,
     group_by: Sequence[str] = (),
@@ -256,18 +256,18 @@ async def evaluate[InT, OutT, RefT](
 ) -> EvaluationRun:
     """
     Run ``task`` on every example of ``dataset`` (x ``repetitions``) and score
-    each trial with ``evaluators``.
+    each trial with ``scorers``.
 
     ``task`` may be a :class:`Task`, any :class:`Processor` (run in an isolated
     session per trial) or an async function. Trials run with bounded
     ``concurrency``; each is persisted as soon as it is scored.
 
-    ``resume=<run>`` continues a run with the same task, evaluators, selected
+    ``resume=<run>`` continues a run with the same task, scorers, selected
     examples and repetitions: it runs only missing or failed trials (and
-    evaluators that did not finish). A run that did not complete is continued
+    scorers that did not finish). A run that did not complete is continued
     in place; a completed one keeps its results — its failed trials are
     retried in a new ``retry`` run that copies the rest. Resuming refuses if
-    the code changed (git state, or the task's and evaluators' source files;
+    the code changed (git state, or the task's and scorers' source files;
     ``force=True`` overrides) and stops if an agent answers with a model the
     run did not use.
 
@@ -286,24 +286,24 @@ async def evaluate[InT, OutT, RefT](
     if len(dataset) == 0:
         raise ValueError(f"The selection from {dataset.name!r} has no examples")
     the_task = as_task(task)
-    evaluator_list: list[Evaluator[Any, Any, Any]] = list(evaluators)
-    _check_evaluators(evaluator_list)
+    scorer_list: list[Scorer[Any, Any, Any]] = list(scorers)
+    _check_scorers(scorer_list)
     sealed = frozenset(sealed_splits)
     check_sealed(dataset, sealed)
     run_store = resolve_store(store, persist)
     dataset_ref = dataset.ref()
     task_info = the_task.describe()
-    evaluator_infos = [e.describe() for e in evaluator_list]
-    run_hash = config_hash(task_info, evaluator_infos, dataset_ref, repetitions)
+    scorer_infos = [e.describe() for e in scorer_list]
+    run_hash = config_hash(task_info, scorer_infos, dataset_ref, repetitions)
     adapter = output_adapter(the_task.output_type)
     provenance = capture_provenance(
-        sources=[*the_task.source_objects(), *evaluator_sources(evaluator_list)]
+        sources=[*the_task.source_objects(), *scorer_sources(scorer_list)]
     )
     config = RunConfig(
         repetitions=repetitions,
         concurrency=concurrency,
         timeout_s=timeout_s,
-        evaluator_timeout_s=evaluator_timeout_s,
+        scorer_timeout_s=scorer_timeout_s,
         max_cost_usd=max_cost_usd,
         max_error_rate=max_error_rate,
         score=score,
@@ -333,13 +333,13 @@ async def evaluate[InT, OutT, RefT](
         ):
             known_models.setdefault(agent, set()).update(models)
         if previous.completed:
-            if _nothing_to_redo(previous, order, evaluator_list, score):
+            if _nothing_to_redo(previous, order, scorer_list, score):
                 logger.info("Run %s has nothing left to retry", previous.id)
                 return previous
             run = _retry_run(
                 previous,
                 task_info=task_info,
-                evaluator_infos=evaluator_infos,
+                scorer_infos=scorer_infos,
                 config=config,
                 provenance=provenance,
                 run_hash=run_hash,
@@ -378,7 +378,7 @@ async def evaluate[InT, OutT, RefT](
             evaluation=evaluation,
             dataset=dataset_ref,
             task=task_info,
-            evaluators=evaluator_infos,
+            scorers=scorer_infos,
             config=config,
             provenance=provenance,
             config_hash=run_hash,
@@ -392,10 +392,10 @@ async def evaluate[InT, OutT, RefT](
     executor = Executor(
         run,
         store=run_store,
-        evaluators=evaluator_list if score else [],
+        scorers=scorer_list if score else [],
         capture_events=capture_events,
         max_cost_usd=max_cost_usd,
-        evaluator_timeout_s=evaluator_timeout_s,
+        scorer_timeout_s=scorer_timeout_s,
         progress=progress,
         total=len(order),
     )
@@ -406,7 +406,7 @@ async def evaluate[InT, OutT, RefT](
         async with semaphore:
             prior = executor.get((example.id, repetition))
             if prior is not None and prior.ok:
-                if score and any(e.name not in prior.evaluated for e in evaluator_list):
+                if score and any(e.name not in prior.scorers_run for e in scorer_list):
                     output = rehydrate_output(adapter, prior.output)
                     events = events_by_key.get(prior.key, [])
                     await executor.score(prior, example, output, events)
@@ -444,7 +444,7 @@ async def evaluate[InT, OutT, RefT](
 async def evaluate_trials(
     examples: Sequence[Example[Any, Any]],
     trials: Sequence[Trial],
-    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    scorers: Sequence[Scorer[Any, Any, Any]],
     metrics: MetricsSpec = None,
     *,
     name: str,
@@ -455,7 +455,7 @@ async def evaluate_trials(
     output_type: Any = Any,
     description: str | None = None,
     concurrency: int = 4,
-    evaluator_timeout_s: float | None = None,
+    scorer_timeout_s: float | None = None,
     max_cost_usd: float | None = None,
     max_error_rate: float | None = None,
     group_by: Sequence[str] = (),
@@ -472,8 +472,8 @@ async def evaluate_trials(
     another system's logs — as a run of their own, on the same scoring path
     as :func:`rescore`. ``task`` describes what produced the outputs and
     ``dataset`` where they were read; stored outputs are re-validated as
-    ``output_type`` before evaluators see them. ``max_cost_usd`` caps the
-    evaluators' spend (the run ends ``partial``).
+    ``output_type`` before scorers see them. ``max_cost_usd`` caps the
+    scorers' spend (the run ends ``partial``).
     """
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
@@ -484,15 +484,15 @@ async def evaluate_trials(
     keys = [t.key for t in trials]
     if len(set(keys)) != len(keys):
         raise ValueError("Two trials have the same example id and repetition")
-    evaluator_list: list[Evaluator[Any, Any, Any]] = list(evaluators)
-    _check_evaluators(evaluator_list)
+    scorer_list: list[Scorer[Any, Any, Any]] = list(scorers)
+    _check_scorers(scorer_list)
     run_store = resolve_store(store, persist)
-    evaluator_infos = [e.describe() for e in evaluator_list]
+    scorer_infos = [e.describe() for e in scorer_list]
     adapter = output_adapter(output_type)
     warn_if_untyped(output_type, (t.output for t in trials if t.ok))
     config = RunConfig(
         concurrency=concurrency,
-        evaluator_timeout_s=evaluator_timeout_s,
+        scorer_timeout_s=scorer_timeout_s,
         max_cost_usd=max_cost_usd,
         max_error_rate=max_error_rate,
         group_by=list(group_by),
@@ -508,10 +508,10 @@ async def evaluate_trials(
         dataset=dataset,
         window=window,
         task=task,
-        evaluators=evaluator_infos,
+        scorers=scorer_infos,
         config=config,
-        provenance=capture_provenance(sources=evaluator_sources(evaluator_list)),
-        config_hash=config_hash(task, evaluator_infos, dataset, 1),
+        provenance=capture_provenance(sources=scorer_sources(scorer_list)),
+        config_hash=config_hash(task, scorer_infos, dataset, 1),
         tags=list(tags),
         metadata=dict(metadata or {}),
         examples=list(examples),
@@ -522,9 +522,9 @@ async def evaluate_trials(
     executor = Executor(
         run,
         store=run_store,
-        evaluators=evaluator_list,
+        scorers=scorer_list,
         max_cost_usd=max_cost_usd,
-        evaluator_timeout_s=evaluator_timeout_s,
+        scorer_timeout_s=scorer_timeout_s,
         progress=progress,
         total=len(order),
     )
@@ -551,13 +551,13 @@ def _without(trial: Trial, replaced: set[str]) -> Trial:
     return trial.model_copy(
         deep=True,
         update={
-            "scores": [s for s in trial.scores if s.evaluator not in replaced],
-            "evaluated": [e for e in trial.evaluated if e not in replaced],
-            "evaluator_failures": [
-                f for f in trial.evaluator_failures if f.evaluator not in replaced
+            "scores": [s for s in trial.scores if s.scorer not in replaced],
+            "scorers_run": [e for e in trial.scorers_run if e not in replaced],
+            "scorer_failures": [
+                f for f in trial.scorer_failures if f.scorer not in replaced
             ],
-            "evaluator_usage": {
-                k: v for k, v in trial.evaluator_usage.items() if k not in replaced
+            "scorer_usage": {
+                k: v for k, v in trial.scorer_usage.items() if k not in replaced
             },
         },
     )
@@ -565,7 +565,7 @@ def _without(trial: Trial, replaced: set[str]) -> Trial:
 
 async def rescore(
     run: "str | EvaluationRun",
-    evaluators: Sequence[Evaluator[Any, Any, Any]],
+    scorers: Sequence[Scorer[Any, Any, Any]],
     metrics: MetricsSpec = None,
     *,
     input_type: Any = Any,
@@ -573,7 +573,7 @@ async def rescore(
     output_type: Any = Any,
     name: str | None = None,
     concurrency: int = 4,
-    evaluator_timeout_s: float | None = None,
+    scorer_timeout_s: float | None = None,
     group_by: Sequence[str] | None = None,
     cluster_by: str | None = None,
     rerun: bool = False,
@@ -587,20 +587,20 @@ async def rescore(
     Score a run's stored outputs again, without re-running the task.
 
     Creates a child run (``parent_run_id``) that copies the parent's trials and
-    transcripts; the parent is never modified. An evaluator identical to the
+    transcripts; the parent is never modified. A scorer identical to the
     parent's (same name, version, configuration and code) keeps its scores and
     only fills the trials where it failed or did not run; a new or changed one
-    replaces the parent's scores under its name. Only the evaluator's own
+    replaces the parent's scores under its name. Only the scorer's own
     function or class is compared: when a helper, closure or data file it
     relies on changes, bump its version or pass ``rerun=True``, which re-runs
-    every given evaluator (also to measure a judge's self-consistency). The
-    parent's other evaluators' scores are kept.
+    every given scorer (also to measure a judge's self-consistency). The
+    parent's other scorers' scores are kept.
 
     Stored examples and outputs are re-validated as ``input_type`` /
-    ``reference_type`` / ``output_type`` before evaluators see them. A parent
+    ``reference_type`` / ``output_type`` before scorers see them. A parent
     that did not complete yields a ``partial`` child.
     """
-    _check_evaluators(evaluators)
+    _check_scorers(scorers)
     run_store = resolve_store(store, persist)
     parent = load_run(run_store, run)
     if parent.status == RunStatus.RUNNING:
@@ -615,19 +615,19 @@ async def rescore(
     )
     adapter = output_adapter(output_type)
     warn_if_untyped(output_type, (t.output for t in parent.trials if t.ok))
-    previous = {info.name: info for info in parent.evaluators}
-    given = {e.name for e in evaluators}
+    previous = {info.name: info for info in parent.scorers}
+    given = {e.name for e in scorers}
     replaced = {
-        e.name for e in evaluators if rerun or previous.get(e.name) != e.describe()
+        e.name for e in scorers if rerun or previous.get(e.name) != e.describe()
     }
-    evaluator_infos = [i for i in parent.evaluators if i.name not in given] + [
-        e.describe() for e in evaluators
+    scorer_infos = [i for i in parent.scorers if i.name not in given] + [
+        e.describe() for e in scorers
     ]
     config = parent.config.model_copy(
         update={
             "score": True,
             "concurrency": concurrency,
-            "evaluator_timeout_s": evaluator_timeout_s,
+            "scorer_timeout_s": scorer_timeout_s,
             "group_by": list(group_by)
             if group_by is not None
             else parent.config.group_by,
@@ -651,13 +651,13 @@ async def rescore(
         dataset=parent.dataset,
         window=parent.window,
         task=parent.task,
-        evaluators=evaluator_infos,
+        scorers=scorer_infos,
         config=config,
         provenance=capture_provenance(
-            parent.provenance.observed_models, sources=evaluator_sources(evaluators)
+            parent.provenance.observed_models, sources=scorer_sources(scorers)
         ),
         config_hash=config_hash(
-            parent.task, evaluator_infos, parent.dataset, parent.config.repetitions
+            parent.task, scorer_infos, parent.dataset, parent.config.repetitions
         ),
         tags=[*parent.tags, *tags],
         metadata={**parent.metadata, **(metadata or {})},
@@ -669,8 +669,8 @@ async def rescore(
     executor = Executor(
         child,
         store=run_store,
-        evaluators=evaluators,
-        evaluator_timeout_s=evaluator_timeout_s,
+        scorers=scorers,
+        scorer_timeout_s=scorer_timeout_s,
         progress=progress,
         total=len(order),
     )

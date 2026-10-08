@@ -195,10 +195,10 @@ class JudgedOutput[InT, OutT, RefT](BaseModel):
 
 class Score(BaseModel):
     """
-    One per-example judgment produced by an evaluator.
+    One per-example judgment produced by a scorer.
 
     ``value`` is a pass/fail (``bool``), a number, or a categorical label
-    (``str``). ``None`` means *unscored*: the evaluator ran but could not
+    (``str``). ``None`` means *unscored*: the scorer ran but could not
     produce a judgment (e.g. an unparseable judge verdict). Unscored values are
     excluded from metrics and counted separately — never turned into a number.
     """
@@ -211,8 +211,8 @@ class Score(BaseModel):
     # Machine-readable cause for an unscored value or a degenerate output,
     # e.g. "invalid_response_format", "refusal", "no_response".
     reason: str | None = None
-    # Name of the evaluator that produced this score (stamped by the runner).
-    evaluator: str | None = None
+    # Name of the scorer that produced this score (stamped by the runner).
+    scorer: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
 
     @classmethod
@@ -254,8 +254,8 @@ class ErrorInfo(BaseModel):
         )
 
 
-class EvaluatorFailure(BaseModel):
-    evaluator: str
+class ScorerFailure(BaseModel):
+    scorer: str
     error: ErrorInfo
 
 
@@ -294,7 +294,7 @@ class Trial(BaseModel):
     One execution of the task on one example (one repetition), and its scores.
 
     ``output`` is stored in JSON form; ``error`` is set instead when the task
-    raised or timed out (evaluators are then skipped).
+    raised or timed out (scorers are then skipped).
     """
 
     example_id: str
@@ -310,13 +310,11 @@ class Trial(BaseModel):
     trace_id: str | None = None
     measurements: dict[str, float] = Field(default_factory=dict[str, float])
     scores: list[Score] = Field(default_factory=list[Score])
-    evaluator_failures: list[EvaluatorFailure] = Field(
-        default_factory=list[EvaluatorFailure]
-    )
-    # Evaluators that completed on this trial (including "not applicable").
-    evaluated: list[str] = Field(default_factory=list[str])
-    # Model usage reported by each evaluator (see ``EvalContext.record_usage``).
-    evaluator_usage: dict[str, Usage] = Field(default_factory=dict[str, Usage])
+    scorer_failures: list[ScorerFailure] = Field(default_factory=list[ScorerFailure])
+    # Scorers that completed on this trial (including "not applicable").
+    scorers_run: list[str] = Field(default_factory=list[str])
+    # Model usage reported by each scorer (see ``EvalContext.record_usage``).
+    scorer_usage: dict[str, Usage] = Field(default_factory=dict[str, Usage])
     # The example belongs to a sealed (held-out) split: reports show this
     # trial only in aggregate.
     sealed: bool = False
@@ -337,7 +335,7 @@ class Trial(BaseModel):
 
     @property
     def total_usage(self) -> Usage:
-        return sum(self.evaluator_usage.values(), self.usage)
+        return sum(self.scorer_usage.values(), self.usage)
 
 
 class MetricResult(BaseModel):
@@ -346,9 +344,9 @@ class MetricResult(BaseModel):
     # Units the value aggregates (examples, or trials for trial-level metrics).
     n: int
     # Units with no usable value: the task failed, the score is unscored, or
-    # its evaluator failed. Never silently counted as zero.
+    # its scorer failed. Never silently counted as zero.
     n_missing: int = 0
-    # Units the score does not apply to (the evaluator returned nothing).
+    # Units the score does not apply to (the scorer returned nothing).
     n_na: int = 0
     stderr: float | None = None
     ci_low: float | None = None
@@ -375,21 +373,21 @@ class DatasetRef(BaseModel):
 
 
 class ComponentInfo(BaseModel):
-    """Declared identity of a task or evaluator, for provenance and diffs."""
+    """Declared identity of a task or scorer, for provenance and diffs."""
 
     name: str
     # Import path of the implementing class or function.
     kind: str
     version: str | None = None
     config: dict[str, Any] = Field(default_factory=dict[str, Any])
-    # Evaluators only: who produced the judgments.
+    # Scorers only: who produced the judgments.
     annotator: Literal["CODE", "LLM", "HUMAN"] | None = None
     # Tasks and processor judges: hash of what the processor is made of
     # (models, settings, prompts, tools, structure) when it can be read before
     # running.
     fingerprint: str | None = None
-    # Evaluators only: hash of the evaluator's own code (its function or
-    # class). Outside the config hash; rescoring re-runs an evaluator whose
+    # Scorers only: hash of the scorer's own code (its function or
+    # class). Outside the config hash; rescoring re-runs a scorer whose
     # code changed, and comparisons warn about it.
     source: str | None = None
 
@@ -407,7 +405,7 @@ class Provenance(BaseModel):
     # Hash of the uncommitted diff of tracked files: two runs with the same
     # commit and diff hash ran the same code.
     git_diff_hash: str | None = None
-    # Hash of the source files defining the task and evaluators, tracked by
+    # Hash of the source files defining the task and scorers, tracked by
     # git or not.
     source_hash: str | None = None
     python: str
@@ -420,7 +418,7 @@ class RunConfig(BaseModel):
     repetitions: int = 1
     concurrency: int = 4
     timeout_s: float | None = None
-    evaluator_timeout_s: float | None = None
+    scorer_timeout_s: float | None = None
     max_cost_usd: float | None = None
     max_error_rate: float | None = None
     score: bool = True
@@ -443,7 +441,7 @@ class RunCounts(BaseModel):
     trials_expected: int = 0
     trials_done: int = 0
     task_errors: int = 0
-    evaluator_failures: int = 0
+    scorer_failures: int = 0
     unscored: int = 0
 
 
@@ -503,7 +501,7 @@ class EvaluationRun(BaseModel):
     dataset: DatasetRef
     window: TraceWindow | None = None
     task: ComponentInfo
-    evaluators: list[ComponentInfo] = Field(default_factory=list[ComponentInfo])
+    scorers: list[ComponentInfo] = Field(default_factory=list[ComponentInfo])
     config: RunConfig = Field(default_factory=RunConfig)
     provenance: Provenance
     config_hash: str
