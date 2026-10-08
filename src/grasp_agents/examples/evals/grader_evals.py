@@ -26,7 +26,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from grasp_agents.evals import (
-    EvalContext,
     Evaluation,
     Example,
     FunctionPairwiseJudge,
@@ -39,6 +38,7 @@ from grasp_agents.evals import (
     ProcessorScorer,
     ProcessorTask,
     Score,
+    ScoreContext,
     ValidationGate,
     judge_probes,
     judge_validation,
@@ -259,7 +259,7 @@ def llm_grader(llm: Any) -> Processor[Submission, Grade, None]:
 
 # --- Scorers ---
 
-type Ctx = EvalContext[Submission, Grade, TeacherGrade]
+type Ctx = ScoreContext[Submission, Grade, TeacherGrade]
 
 
 @scorer(version="1")

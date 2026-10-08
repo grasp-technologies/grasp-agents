@@ -15,7 +15,7 @@ from grasp_agents.session_context import SessionContext
 from ._util import user_code_hash
 from .evaluation import DatasetSource, Evaluation
 from .pairwise import PairwiseContext, PairwiseJudge, PairwiseVerdict
-from .scorer import EvalContext, Scorer, ScorerOutput
+from .scorer import ScoreContext, Scorer, ScorerOutput
 from .task import ProcessorSource, ProcessorTask, TrialContext
 from .types import ComponentInfo, Example, JudgedOutput, Usage
 from .validation import (
@@ -126,7 +126,7 @@ class ProcessorScorer[InT, OutT, RefT, JudgeInT, JudgeOutT](Scorer[InT, OutT, Re
         *,
         name: str | None = None,
         version: str = "1",
-        to_input: Callable[[EvalContext[InT, OutT, RefT]], JudgeInT] | None = None,
+        to_input: Callable[[ScoreContext[InT, OutT, RefT]], JudgeInT] | None = None,
         to_scores: Callable[[JudgeOutT], ScorerOutput] | None = None,
         config: Mapping[str, Any] | None = None,
         ctx_factory: Callable[[Example[Any, Any]], SessionContext[Any]] | None = None,
@@ -156,7 +156,7 @@ class ProcessorScorer[InT, OutT, RefT, JudgeInT, JudgeOutT](Scorer[InT, OutT, Re
             code=[type(self), self._to_input, self._to_scores],
         )
 
-    async def score(self, ctx: EvalContext[InT, OutT, RefT]) -> ScorerOutput:
+    async def score(self, ctx: ScoreContext[InT, OutT, RefT]) -> ScorerOutput:
         judge_input: Any = (
             self._to_input(ctx)
             if self._to_input is not None

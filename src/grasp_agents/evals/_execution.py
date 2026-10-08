@@ -30,8 +30,8 @@ from ._util import (
 from .metrics import MetricsSpec, compute_metrics
 from .report import render_run_markdown
 from .scorer import (
-    EvalContext,
     FunctionScorer,
+    ScoreContext,
     Scorer,
     merge_models,
     run_scorer,
@@ -364,7 +364,7 @@ class Executor:
         if not pending:
             return
         contexts = [
-            EvalContext(
+            ScoreContext(
                 example=example,
                 output=output,
                 trial=trial,
@@ -410,7 +410,7 @@ class Executor:
             trial.scorers_run.append(scorer.name)
 
     async def _run_one(
-        self, scorer: Scorer[Any, Any, Any], ctx: EvalContext[Any, Any, Any]
+        self, scorer: Scorer[Any, Any, Any], ctx: ScoreContext[Any, Any, Any]
     ) -> list[Score] | ErrorInfo:
         try:
             return await run_scorer(scorer, ctx, timeout_s=self.scorer_timeout_s)

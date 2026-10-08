@@ -2,8 +2,8 @@ import pytest
 
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Example,
+    ScoreContext,
     evaluate,
     render_run_markdown,
     run_summary,
@@ -13,7 +13,7 @@ from grasp_agents.evals.report import trial_summary
 
 
 @scorer
-def correct(ctx: EvalContext[int, int, int]) -> bool:
+def correct(ctx: ScoreContext[int, int, int]) -> bool:
     return ctx.output == ctx.reference
 
 

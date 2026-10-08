@@ -8,11 +8,11 @@ from pydantic import BaseModel
 from grasp_agents.evals import (
     Dataset,
     DatasetError,
-    EvalContext,
     Evaluation,
     Example,
     FunctionTask,
     LocalRunStore,
+    ScoreContext,
     SpecError,
     list_evaluations,
     load_evaluation,
@@ -31,7 +31,7 @@ async def add(problem: Problem) -> int:
 
 
 @scorer
-def exact(ctx: EvalContext[Problem, int, int]) -> bool:
+def exact(ctx: ScoreContext[Problem, int, int]) -> bool:
     return ctx.output == ctx.reference
 
 
@@ -148,7 +148,7 @@ class Verdict(BaseModel):
 
 
 @scorer(name="typed", version="2")
-def typed_exact(ctx: EvalContext[Problem, int, Verdict]) -> bool:
+def typed_exact(ctx: ScoreContext[Problem, int, Verdict]) -> bool:
     # Attribute access fails unless stored examples are re-validated.
     return ctx.output == ctx.input.a + ctx.input.b == ctx.reference.value  # type: ignore[union-attr]
 
@@ -156,7 +156,7 @@ def typed_exact(ctx: EvalContext[Problem, int, Verdict]) -> bool:
 @pytest.mark.asyncio
 async def test_rescore_from_disk_sees_typed_examples(tmp_path: Path) -> None:
     @scorer(name="typed", version="1")
-    def typed_v1(ctx: EvalContext[Problem, int, Verdict]) -> bool:
+    def typed_v1(ctx: ScoreContext[Problem, int, Verdict]) -> bool:
         return ctx.reference is not None and ctx.output == ctx.reference.value
 
     dataset = Dataset(

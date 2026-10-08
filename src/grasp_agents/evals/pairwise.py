@@ -32,7 +32,7 @@ from ._execution import (
 from ._util import code_hash, new_run_id, qualified_name, short_hash, utc_now
 from .metrics import Metric, MetricsSpec, PassRate
 from .scorer import (
-    EvalContext,
+    ScoreContext,
     Scorer,
     ScorerOutput,
     call_off_loop,
@@ -172,7 +172,7 @@ async def _ask(
 
 
 def _forward_usage(
-    ctx: EvalContext[Any, Any, Any], *asked: PairwiseContext[Any, Any, Any]
+    ctx: ScoreContext[Any, Any, Any], *asked: PairwiseContext[Any, Any, Any]
 ) -> None:
     for pair in asked:
         for usage in pair.usage:
@@ -213,7 +213,7 @@ class OrderSwapped[InT, OutT, RefT](Scorer[InT, Mapping[str, OutT], RefT]):
         }
 
     async def score(
-        self, ctx: EvalContext[InT, Mapping[str, OutT], RefT]
+        self, ctx: ScoreContext[InT, Mapping[str, OutT], RefT]
     ) -> ScorerOutput:
         base, candidate = ctx.output["base"], ctx.output["candidate"]
         repetition = ctx.trial.repetition

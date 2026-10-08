@@ -424,8 +424,8 @@ class TestJudgeSpend:
         import asyncio  # noqa: PLC0415
 
         from grasp_agents.evals import (  # noqa: PLC0415
-            EvalContext,
             Perturbation,
+            ScoreContext,
             scorer,
         )
         from grasp_agents.evals.validation import ProbeTask  # noqa: PLC0415
@@ -433,7 +433,7 @@ class TestJudgeSpend:
         finished: list[str] = []
 
         @scorer(name="slow", annotator="LLM")
-        async def slow(ctx: EvalContext[str, str, Any]) -> bool:
+        async def slow(ctx: ScoreContext[str, str, Any]) -> bool:
             if ctx.output.endswith("!"):
                 raise RuntimeError("judge failed")
             await asyncio.sleep(0.2)
