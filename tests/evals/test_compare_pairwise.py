@@ -1,4 +1,6 @@
+import asyncio
 import importlib
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +183,37 @@ class TestPairwise:
         assert win is not None
         assert win.value == pytest.approx(0.5)
         assert win.details["inconsistent"] == 5
+
+    @pytest.mark.asyncio
+    async def test_sync_judges_run_off_the_event_loop(
+        self, store: LocalRunStore
+    ) -> None:
+        async def same(x: int) -> str:
+            return "same"
+
+        loop_alive = threading.Event()
+
+        async def tick() -> None:
+            await asyncio.sleep(0.01)
+            loop_alive.set()
+
+        def judge(ctx: PairwiseContext[int, str, int]) -> PairwiseVerdict:
+            # Blocks; only the event loop (the tick task) can release it.
+            released = loop_alive.wait(timeout=2)
+            return PairwiseVerdict(winner="tie" if released else "first")
+
+        base = await evaluate(FunctionTask(same), _dataset(1), store=store)
+        candidate = await evaluate(FunctionTask(same), _dataset(1), store=store)
+        ticker = asyncio.create_task(tick())
+        run = await pairwise(
+            base, candidate, FunctionPairwiseJudge(judge, name="j"), store=store
+        )
+        await ticker
+        trial = run.trial("x0")
+        assert trial is not None
+        winner = trial.score("j.winner")
+        assert winner is not None
+        assert winner.value == "tie"
 
     @pytest.mark.asyncio
     async def test_a_failed_arm_loses_its_pair(self, store: LocalRunStore) -> None:

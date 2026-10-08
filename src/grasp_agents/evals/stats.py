@@ -59,23 +59,31 @@ def _betacf(a: float, b: float, x: float) -> float:
     c, d = 1.0, 1.0 - qab * x / qap
     d = 1.0 / (d if abs(d) > tiny else tiny)
     h = d
+
     for m in range(1, 300):
         m2 = 2 * m
         aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+
         d = 1.0 + aa * d
         d = 1.0 / (d if abs(d) > tiny else tiny)
+
         c = 1.0 + aa / c
         c = c if abs(c) > tiny else tiny
+
         h *= d * c
         aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+
         d = 1.0 + aa * d
         d = 1.0 / (d if abs(d) > tiny else tiny)
+
         c = 1.0 + aa / c
         c = c if abs(c) > tiny else tiny
+
         delta = d * c
         h *= delta
         if abs(delta - 1.0) < 1e-12:
             break
+
     return h
 
 
@@ -83,8 +91,10 @@ def betainc(a: float, b: float, x: float) -> float:
     """Regularized incomplete beta function I_x(a, b)."""
     if x <= 0.0:
         return 0.0
+
     if x >= 1.0:
         return 1.0
+
     log_front = (
         math.lgamma(a + b)
         - math.lgamma(a)
@@ -92,9 +102,12 @@ def betainc(a: float, b: float, x: float) -> float:
         + a * math.log(x)
         + b * math.log1p(-x)
     )
+
     front = math.exp(log_front)
+
     if x < (a + 1.0) / (a + b + 2.0):
         return front * _betacf(a, b, x) / a
+
     return 1.0 - front * _betacf(b, a, 1.0 - x) / b
 
 
@@ -108,13 +121,17 @@ def t_ppf(p: float, df: float) -> float:
     """Quantile of Student's t (bisection on the exact CDF)."""
     if not 0.0 < p < 1.0:
         raise ValueError("p must be in (0, 1)")
+
     if math.isclose(p, 0.5):
         return 0.0
+
     if p < 0.5:
         return -t_ppf(1.0 - p, df)
+
     lo, hi = 0.0, 1.0
     while t_sf(hi, df) > 1.0 - p:
         hi *= 2.0
+
     for _ in range(200):
         mid = (lo + hi) / 2.0
         if t_sf(mid, df) > 1.0 - p:
@@ -123,6 +140,7 @@ def t_ppf(p: float, df: float) -> float:
             hi = mid
         if hi - lo < 1e-10:
             break
+
     return (lo + hi) / 2.0
 
 
@@ -156,28 +174,37 @@ def mean_estimate(
     n = len(values)
     if n == 0:
         return Estimate(value=math.nan, n=0)
+
     mean = _mean(values)
+
     if clusters is not None:
         if len(clusters) != n:
             raise ValueError("clusters must align with values")
+
         sums: dict[Hashable, float] = {}
         for value, key in zip(values, clusters, strict=True):
             sums[key] = sums.get(key, 0.0) + (value - mean)
+
         n_clusters = len(sums)
         if n_clusters < 2:
             return Estimate(value=mean, n=n, units=n_clusters)
+
         correction = n_clusters / (n_clusters - 1)
         se = math.sqrt(correction * math.fsum(s * s for s in sums.values())) / n
         df = float(n_clusters - 1)
         units = n_clusters
+
     else:
         if n == 1:
             return Estimate(value=mean, n=1, units=1)
+
         variance = math.fsum((v - mean) ** 2 for v in values) / (n - 1)
         se = math.sqrt(variance / n)
         df = float(n - 1)
         units = n
+
     half = critical_value(confidence, df) * se
+
     return Estimate(
         value=mean,
         n=n,
@@ -193,12 +220,14 @@ def wilson_interval(p: float, n: float, *, critical: float) -> tuple[float, floa
     """Wilson score interval for a share ``p`` of ``n`` (possibly effective) units."""
     if n <= 0:
         return 0.0, 1.0
+
     z2 = critical * critical
     denominator = 1.0 + z2 / n
     centre = (p + z2 / (2 * n)) / denominator
     half = critical * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / denominator
     low = 0.0 if p <= 0.0 else max(0.0, centre - half)
     high = 1.0 if p >= 1.0 else min(1.0, centre + half)
+
     return low, high
 
 
@@ -208,8 +237,10 @@ def proportion_estimate(
     """Proportion with the Wilson score interval (well-behaved near 0 and 1)."""
     if n == 0:
         return Estimate(value=math.nan, n=0)
+
     p = successes / n
     low, high = wilson_interval(p, n, critical=critical_value(confidence))
+
     return Estimate(
         value=p,
         n=n,
@@ -242,6 +273,7 @@ def bounded_mean_estimate(
     estimate = mean_estimate(values, clusters=clusters, confidence=confidence)
     if estimate.n == 0:
         return estimate
+
     p = min(1.0, max(0.0, estimate.value))
     se = estimate.stderr
     saturated = p <= 0.0 or p >= 1.0
@@ -250,9 +282,11 @@ def bounded_mean_estimate(
     else:
         cap = observations if observations is not None else estimate.n
         n_eff = min(p * (1.0 - p) / (se * se), float(cap))
+
     low, high = wilson_interval(
         p, n_eff, critical=critical_value(confidence, estimate.df)
     )
+
     return Estimate(
         value=estimate.value,
         n=estimate.n,
@@ -268,13 +302,16 @@ def percentile(values: Sequence[float], q: float) -> float:
     """``q``-th percentile (0-100) with linear interpolation."""
     if not values:
         return math.nan
+
     ordered = sorted(values)
     if len(ordered) == 1:
         return ordered[0]
+
     rank = (q / 100.0) * (len(ordered) - 1)
     lower = math.floor(rank)
     upper = min(lower + 1, len(ordered) - 1)
     weight = rank - lower
+
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
 
@@ -294,23 +331,29 @@ def bootstrap_estimate(
     """
     if n_resamples < 2:
         raise ValueError("n_resamples must be >= 2")
+
     n = len(values)
     if n == 0:
         return Estimate(value=math.nan, n=0)
+
     point = statistic(values)
     groups: list[list[float]]
     if clusters is None:
         groups = [[v] for v in values]
+
     else:
         if len(clusters) != n:
             raise ValueError("clusters must align with values")
+
         by_key: dict[Hashable, list[float]] = {}
         for value, key in zip(values, clusters, strict=True):
             by_key.setdefault(key, []).append(value)
         groups = list(by_key.values())
+
     if len(groups) < 2:
         return Estimate(value=point, n=n, units=len(groups))
-    rng = random.Random(seed)  # noqa: S311
+
+    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
     resampled = sorted(
         statistic([v for g in rng.choices(groups, k=len(groups)) for v in g])
         for _ in range(n_resamples)
@@ -318,6 +361,7 @@ def bootstrap_estimate(
     alpha = (1.0 - confidence) / 2.0
     mean = _mean(resampled)
     se = math.sqrt(math.fsum((v - mean) ** 2 for v in resampled) / (n_resamples - 1))
+
     return Estimate(
         value=point,
         n=n,
@@ -397,6 +441,7 @@ def newcombe_paired_interval(
     n = both + base_only + candidate_only + neither
     if n == 0:
         return -1.0, 1.0
+
     z = critical_value(confidence)
     p_candidate = (both + candidate_only) / n
     p_base = (both + base_only) / n
@@ -452,6 +497,7 @@ def paired_difference(
     """
     if len(base) != len(candidate):
         raise ValueError("base and candidate must be paired")
+
     n = len(base)
     if n == 0:
         return PairedEstimate(
@@ -466,6 +512,7 @@ def paired_difference(
             mde=None,
             test="none",
         )
+
     diffs = [c - b for b, c in zip(base, candidate, strict=True)]
     estimate = mean_estimate(diffs, clusters=clusters, confidence=confidence)
     se = estimate.stderr
@@ -473,6 +520,7 @@ def paired_difference(
     binary = clusters is None and all(v in {0.0, 1.0} for v in (*base, *candidate))
     ci_low, ci_high = estimate.ci_low, estimate.ci_high
     p_value: float | None
+
     if binary:
         pairs = list(zip(base, candidate, strict=True))
         base_only = sum(1 for b, c in pairs if b > c)
@@ -487,15 +535,19 @@ def paired_difference(
             confidence=confidence,
         )
         test = "mcnemar"
+
     elif se is None:
         p_value, test = None, "none"
+
     elif degenerate:
         p_value, test = sign_test(diffs), "sign"
+
     else:
         t = estimate.value / se
         df = estimate.df if estimate.df is not None else float(n - 1)
         p_value = min(1.0, 2.0 * t_sf(abs(t), df))
         test = "paired_t" if clusters is None else "clustered_paired_t"
+
     return PairedEstimate(
         n=n,
         base_mean=_mean(base),
@@ -524,15 +576,18 @@ def cohens_kappa(pairs: Sequence[tuple[Hashable, Hashable]]) -> float | None:
     n = len(pairs)
     if n == 0:
         return None
+
     observed = sum(1 for a, b in pairs if a == b) / n
     left: dict[Hashable, int] = {}
     right: dict[Hashable, int] = {}
     for a, b in pairs:
         left[a] = left.get(a, 0) + 1
         right[b] = right.get(b, 0) + 1
+
     expected = sum(left[k] * right.get(k, 0) for k in left) / (n * n)
     if expected >= 1.0:
         return None
+
     return (observed - expected) / (1.0 - expected)
 
 
@@ -544,4 +599,5 @@ def corrected_prevalence(observed: float, tpr: float, tnr: float) -> float | Non
     denominator = tpr + tnr - 1.0
     if denominator <= 0.0:
         return None
+
     return min(1.0, max(0.0, (observed + tnr - 1.0) / denominator))

@@ -182,15 +182,6 @@ def _keep_event(event: Event[Any]) -> bool:
     return not isinstance(event, LLMStreamEvent | ToolStreamEvent)
 
 
-def _as_in_args(arg: Any) -> Any:
-    # A falsy scalar (0, "", False) passed alone reads as "no input"; as a
-    # one-element argument list it is unambiguous.
-    wrapped: Any = arg
-    if arg is not None and not arg and not isinstance(arg, list):
-        wrapped = [arg]
-    return wrapped
-
-
 def _to_usage(usage: ResponseUsage) -> Usage:
     return Usage(
         input_tokens=usage.input_tokens,
@@ -291,7 +282,7 @@ def processor_fingerprint(root: Processor[Any, Any, Any]) -> str | None:
 def _reset_transcripts(root: Processor[Any, Any, Any]) -> None:
     # A copy of an agent that already ran would start each trial with that
     # conversation; trials must start from scratch.
-    from grasp_agents.agent.llm_agent import (
+    from grasp_agents.agent.llm_agent import (  # ruff: ignore[import-outside-top-level]
         LLMAgent,
     )
 
@@ -441,14 +432,13 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
         )
         trial.session = ctx
         packet: Packet[Any] | None = None
+
         with ctx:
             proc = self._instantiate(ctx)
             try:
                 arg: Any = (
                     self._input_fn(input) if self._input_fn is not None else input
                 )
-                if self._input_mode == "in_args":
-                    arg = _as_in_args(arg)
                 stream = (
                     proc.run_stream(chat_inputs=arg)
                     if self._input_mode == "chat"
@@ -466,19 +456,24 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             finally:
                 await proc.aclose()
                 self._collect_session_facts(ctx, trial)
+
         if packet is None:
             raise RuntimeError(f"Processor {proc.name!r} produced no output packet")
+
         if self._output_fn is not None:
             return self._output_fn(packet, ctx)
+
         payloads = list(packet.payloads)
         if len(payloads) == 1:
             return cast("OutT", payloads[0])
+
         return cast("OutT", payloads or None)
 
     @staticmethod
     def _collect_session_facts(ctx: SessionContext[Any], trial: TrialContext) -> None:
         for agent, usage in ctx.usage_tracker.usages.items():
             trial.usage_by_agent[agent] = _to_usage(usage)
+
         for agent, responses in ctx.responses.items():
             models = trial.models.setdefault(agent, [])
             for response in responses:
@@ -492,8 +487,11 @@ def as_task(
     """Coerce a processor or an async function into a :class:`Task`."""
     if isinstance(task, Task):
         return cast("Task[Any, Any]", task)
+
     if isinstance(task, Processor):
         return ProcessorTask(cast("Processor[Any, Any, Any]", task))
+
     if callable(task):
         return FunctionTask(task)
+
     raise TypeError(f"Cannot use {task!r} as an evaluation task")

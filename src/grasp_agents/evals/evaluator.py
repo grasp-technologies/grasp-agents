@@ -162,6 +162,8 @@ class EvaluatorDecorator(Protocol):
 def evaluator[InT, OutT, RefT](
     fn: EvaluatorFn[InT, OutT, RefT], /
 ) -> FunctionEvaluator[InT, OutT, RefT]: ...
+
+
 @overload
 def evaluator(
     *,
@@ -171,6 +173,8 @@ def evaluator(
     evaluates_errors: bool = False,
     annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE",
 ) -> EvaluatorDecorator: ...
+
+
 def evaluator(
     fn: EvaluatorFn[Any, Any, Any] | None = None,
     /,
@@ -222,19 +226,29 @@ async def run_evaluator(
     and the thread finishes in the background without delaying the exit.
     """
     async with asyncio.timeout(timeout_s):
-        if _is_async(evaluator):
-            result = evaluator.evaluate(ctx)
-        else:
-            result = await _in_thread(evaluator.evaluate, ctx)
-        if inspect.isawaitable(result):
-            result = await result
+        result = await call_off_loop(
+            evaluator.evaluate, ctx, is_async=_is_async(evaluator)
+        )
     return normalize_scores(evaluator.name, result)
+
+
+async def call_off_loop[A, R](
+    fn: Callable[[A], R | Awaitable[R]], arg: A, *, is_async: bool
+) -> R:
+    """
+    Call user code without blocking the event loop: ``fn(arg)`` is awaited
+    when ``is_async``, otherwise it runs in a thread of its own.
+    """
+    result = fn(arg) if is_async else await _in_thread(fn, arg)
+    if inspect.isawaitable(result):
+        return await result
+    return cast("R", result)
 
 
 async def _in_thread[T](fn: Callable[[Any], T], arg: Any) -> T:
     # A daemon thread rather than the loop's executor: the executor is joined
-    # when the loop shuts down, so one evaluator that never returns would hang
-    # the program, and a few would exhaust the pool.
+    # when the loop shuts down, so one call that never returns would hang the
+    # program, and a few would exhaust the pool.
     loop = asyncio.get_running_loop()
     future: asyncio.Future[T] = loop.create_future()
     context = contextvars.copy_context()
@@ -257,17 +271,20 @@ async def _in_thread[T](fn: Callable[[Any], T], arg: Any) -> T:
         else:
             settle(future.set_result, result)
 
-    threading.Thread(target=work, name="grasp-evals-evaluator", daemon=True).start()
+    threading.Thread(target=work, name="grasp-evals-sync-call", daemon=True).start()
     return await future
 
 
 def normalize_scores(evaluator_name: str, output: EvaluatorOutput) -> list[Score]:
     if output is None:
         return []
+
     if isinstance(output, Score):
         scores = [output]
+
     elif isinstance(output, bool | int | float | str):
         scores = [_scalar_score(evaluator_name, output)]
+
     elif isinstance(output, Mapping):
         scores = [
             value.model_copy(update={"name": key})
@@ -275,6 +292,7 @@ def normalize_scores(evaluator_name: str, output: EvaluatorOutput) -> list[Score
             else _scalar_score(key, value)
             for key, value in output.items()
         ]
+
     else:
         scores = list(output)
         for score in scores:
@@ -283,12 +301,14 @@ def normalize_scores(evaluator_name: str, output: EvaluatorOutput) -> list[Score
                     f"Evaluator {evaluator_name!r} returned an unsupported value "
                     f"{score!r}; expected a Score, scalar, mapping or None"
                 )
+
     names = [s.name for s in scores]
     duplicates = sorted({n for n in names if names.count(n) > 1})
     if duplicates:
         raise ValueError(
             f"Evaluator {evaluator_name!r} returned several scores named {duplicates}"
         )
+
     return [_finite(s, evaluator_name) for s in scores]
 
 
@@ -296,19 +316,23 @@ def _finite(score: Score, evaluator_name: str) -> Score:
     update: dict[str, Any] = {}
     if score.evaluator is None:
         update["evaluator"] = evaluator_name
+
     value = score.value
     if isinstance(value, float) and not math.isfinite(value):
         update["value"] = None
         update["reason"] = ScoreReason.NON_FINITE_VALUE
+
     return score.model_copy(update=update) if update else score
 
 
 def _scalar_score(name: str, value: ScalarScore) -> Score:
     if isinstance(value, bool | str):
         return Score(name=name, value=value)
+
     number = float(value)
     if not math.isfinite(number):
         return Score.unscored(name, reason=ScoreReason.NON_FINITE_VALUE)
+
     return Score(name=name, value=number)
 
 
