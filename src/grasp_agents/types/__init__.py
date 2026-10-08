@@ -66,6 +66,7 @@ from .llm_errors import (
     LlmPermissionDeniedError,
     LlmQuotaExceededError,
     LlmRateLimitError,
+    LlmResponseSchemaError,
 )
 from .llm_events import (
     AnnotationAdded,
@@ -152,6 +153,7 @@ __all__ = [
     "LlmPermissionDeniedError",
     "LlmQuotaExceededError",
     "LlmRateLimitError",
+    "LlmResponseSchemaError",
     "OpenPageAction",
     "OutputContentPart",
     "OutputContentPartAdded",

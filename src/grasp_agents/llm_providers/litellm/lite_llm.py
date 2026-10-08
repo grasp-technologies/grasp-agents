@@ -8,6 +8,12 @@ import litellm
 from litellm.litellm_core_utils.get_supported_openai_params import (
     get_supported_openai_params,  # type: ignore[no-redef]
 )
+from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+from litellm.llms.vertex_ai.common_utils import (
+    VertexAIModelRoute,
+    get_vertex_ai_model_route,  # pyright: ignore[reportUnknownVariableType]
+)
+from litellm.llms.vertex_ai.vertex_ai_partner_models.main import PartnerModelPrefixes
 from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.utils import (
     supports_parallel_function_calling,
@@ -49,6 +55,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _platform_vendor(provider: str | None, model_name: str) -> str | None:
+    """
+    Vendor whose backend verifies the reasoning of a model LiteLLM serves from
+    a cloud platform, as ``platform=`` does for the native clients: Azure
+    serves OpenAI's models, and Claude signatures stay valid on Bedrock and
+    Vertex AI. ``None`` keeps the platform's own name.
+    """
+    if provider == "azure":
+        return "openai"
+    if provider not in {"bedrock", "vertex_ai", "vertex_ai_beta"}:
+        return None
+    try:
+        model, _, _, _ = litellm.get_llm_provider(model_name)  # type: ignore[no-untyped-call]
+    except litellm.exceptions.BadRequestError:
+        return None
+    if provider == "bedrock":
+        if BaseAWSLLM.get_bedrock_invoke_provider(model) == "anthropic":
+            return "anthropic"
+        return None
+    route = get_vertex_ai_model_route(model)
+    if route is VertexAIModelRoute.GEMINI:
+        return "gemini"
+    if route is VertexAIModelRoute.PARTNER_MODELS and model.startswith(
+        PartnerModelPrefixes.CLAUDE_PREFIX
+    ):
+        return "anthropic"
+    return None
+
+
 @with_config(ConfigDict(extra="allow"))
 class LiteLLMSettings(OpenAILLMSettings, total=False):
     thinking: AnthropicThinkingParam | None
@@ -75,6 +110,7 @@ class LiteLLM(CloudLLM):
     _lite_llm_completion_params: dict[str, Any] = field(
         default_factory=dict[str, Any], init=False, repr=False, compare=False
     )
+    _vendor: str | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -123,6 +159,17 @@ class LiteLLM(CloudLLM):
             )
 
         object.__setattr__(self, "api_provider", _api_provider)
+        provider = _api_provider.get("name")
+        object.__setattr__(
+            self, "_vendor", _platform_vendor(provider, self.model_name) or provider
+        )
+
+    @property
+    def native_provider_name(self) -> str | None:
+        # The provider LiteLLM routes to ("gemini", "anthropic", "openai", or a
+        # gateway such as "openrouter"), whose backend verifies the reasoning
+        # payloads it returns; on a cloud platform, the model's vendor.
+        return self._vendor
 
     def get_supported_openai_params(self) -> list[Any] | None:
         return get_supported_openai_params(  # type: ignore[no-untyped-call]
@@ -158,7 +205,7 @@ class LiteLLM(CloudLLM):
 
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
@@ -213,7 +260,7 @@ class LiteLLM(CloudLLM):
         )
         # Unmapped models raise here — never fail a successful response over pricing.
         try:
-            completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]  # noqa: SLF001
+            completion._hidden_params["response_cost"] = litellm.completion_cost(  # type: ignore[no-untyped-call]  # ruff: ignore[private-member-access]
                 completion
             )
         except Exception:

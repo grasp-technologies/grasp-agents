@@ -120,6 +120,22 @@ class LlmUnprocessableEntityError(openai.UnprocessableEntityError):
     status_code: Literal[422] = 422
 
 
+class LlmResponseSchemaError(openai.OpenAIError):
+    """
+    A provider response failed validation against the framework's types, as
+    when an API starts returning a value the installed schema doesn't know.
+
+    Never retried, since the same response fails the same way, but it does
+    advance a ``FallbackLLM``.
+    """
+
+    message: str
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 type LlmError = (
     LlmContentFilterError
     | LlmContextWindowError
@@ -136,6 +152,7 @@ type LlmError = (
     | LlmBadRequestError
     | LlmConflictError
     | LlmUnprocessableEntityError
+    | LlmResponseSchemaError
 )
 
 LlmErrorTuple = (
@@ -154,4 +171,5 @@ LlmErrorTuple = (
     LlmBadRequestError,
     LlmConflictError,
     LlmUnprocessableEntityError,
+    LlmResponseSchemaError,
 )

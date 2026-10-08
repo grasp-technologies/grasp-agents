@@ -14,17 +14,38 @@ from grasp_agents import grasp_logging
 from grasp_agents.rate_limiting.rate_limiter import RateLimiter, limit_rate
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import LLMResponseValidationError
-from grasp_agents.types.items import InputItem
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    InputItem,
+    OutputItem,
+    OutputMessageItem,
+    ReasoningItem,
+)
 from grasp_agents.types.llm_errors import (
     LlmError,
     LlmErrorTuple,
     LlmInternalServerError,
+    LlmResponseSchemaError,
 )
-from grasp_agents.types.llm_events import LlmEvent, ResponseCompleted, ResponseFailed
+from grasp_agents.types.llm_events import (
+    LlmError as LlmErrorEvent,
+)
+from grasp_agents.types.llm_events import (
+    LlmEvent,
+    OutputItemDone,
+    ResponseCompleted,
+    ResponseFailed,
+    ResponseIncomplete,
+)
 from grasp_agents.types.response import Response
 from grasp_agents.usage_tracker import add_cost_to_usage
 
 from .llm import LLM, LLMSettings
+from .thought_signatures import (
+    has_thought_signature,
+    normalize_litellm_gemini_items,
+    without_thought_signature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +93,9 @@ class CloudLLM(LLM):
     # through to the provider untouched. ``None`` disables validation.
     _settings_type: ClassVar[Any] = CloudLLMSettings
 
-    # The vendor's own API: the name of its endpoint, used for the
-    # ``api_provider`` entry when the caller supplies none.
+    # The vendor of the client's own API family ("openai", "anthropic",
+    # "gemini"): names the endpoint for the ``api_provider`` entry when the
+    # caller supplies none, and is the default ``native_provider_name``.
     _native_provider_name: ClassVar[str | None] = None
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
@@ -227,7 +249,7 @@ class CloudLLM(LLM):
     @abstractmethod
     def _make_api_input(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: Any | None = None,
@@ -292,6 +314,84 @@ class CloudLLM(LLM):
                 litellm_provider=self.litellm_provider,
             )
 
+    @property
+    def native_provider_name(self) -> str | None:
+        """
+        Vendor whose backend verifies this model's reasoning payloads
+        ("openai", "anthropic", "gemini"), whatever endpoint or platform serves
+        the model. Stamped on the items this model produces and used to keep
+        another vendor's signed reasoning out of its requests; ``None`` stamps
+        and drops nothing.
+        """
+        return self._native_provider_name
+
+    # --- Native provider name stamping ---
+
+    def _stamp_item_native_provider_name(self, item: OutputItem) -> None:
+        """
+        Stamp an untagged item with THIS model's native provider name.
+
+        Only items whose payload the producing company's backend verifies are
+        stamped: reasoning items always, message and tool-call items when they
+        carry a thought signature.
+        """
+        if isinstance(item, (OutputMessageItem, FunctionToolCallItem)):
+            if not has_thought_signature(item):
+                return
+        elif not isinstance(item, ReasoningItem):
+            return
+        if item.native_provider_name is None:
+            item.native_provider_name = self.native_provider_name
+
+    def _stamp_native_provider_name(self, response: Response) -> None:
+        """Stamp untagged response items with THIS model's native provider name."""
+        for item in response.output:
+            self._stamp_item_native_provider_name(item)
+
+    def _finalize_response(self, response: Response) -> None:
+        self._stamp_cost(response)
+        self._stamp_native_provider_name(response)
+
+    # --- Foreign reasoning ---
+
+    def _drop_foreign_reasoning(
+        self,
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
+    ) -> Sequence[InputItem]:
+        """
+        Keep out of the request any reasoning payload only a foreign backend
+        can verify.
+
+        A reasoning item tagged with a native provider name other than THIS model's is
+        dropped whole: providers verify reasoning payloads server-side, so a
+        foreign one is rejected at the wire and nothing is left of the item
+        once its payload is gone. A foreign-tagged message or tool call is
+        instead forwarded as a copy without its thought signature — dropping it
+        would break tool-call pairing and lose the text. The caller's items are
+        never modified, so the signature is still there if a later turn goes
+        back to the model that produced it. Untagged items (name ``None``)
+        pass through as they are.
+        """
+        native_provider_name = self.native_provider_name
+        if native_provider_name is None:
+            return input
+
+        kept: list[InputItem] = []
+        for item in input:
+            if isinstance(item, ReasoningItem):
+                if item.native_provider_name in {None, native_provider_name}:
+                    kept.append(item)
+            elif (
+                isinstance(item, (OutputMessageItem, FunctionToolCallItem))
+                and item.native_provider_name not in {None, native_provider_name}
+                and has_thought_signature(item)
+            ):
+                kept.append(without_thought_signature(item))
+            else:
+                kept.append(item)
+
+        return kept
+
     # --- LLM interface implementation ---
 
     def __init_subclass__(cls, **kwargs: Any):
@@ -305,13 +405,17 @@ class CloudLLM(LLM):
 
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> Response:
+        input = self._drop_foreign_reasoning(  # ruff: ignore[builtin-variable-shadowing]
+            normalize_litellm_gemini_items(input)
+        )
+
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -337,14 +441,22 @@ class CloudLLM(LLM):
         t0 = time.monotonic()
         try:
             raw = await self._get_api_response(**api_kwargs, **extra_settings)
-            # Conversion is inside the mapped region: a 200 response carrying
-            # an error body surfaces here (e.g. ``CompletionError``) and must
-            # reach retry/fallback as a typed LlmError, not a bare exception.
-            response = self._convert_api_response(raw)
         except Exception as err:
             self._raise_mapped(err, output_schema=output_schema)
+        try:
+            response = self._convert_api_response(raw)
+        except ValidationError as err:
+            # Our types rejected what the provider returned: not a structured
+            # output to re-sample, and not a transient failure to retry.
+            raise LlmResponseSchemaError(
+                f"llm {self.model_name}: response failed validation: {err}"
+            ) from err
+        except Exception as err:
+            # A 200 response can carry an error body (e.g. ``CompletionError``)
+            # that must reach retry/fallback as a typed LlmError.
+            self._raise_mapped(err, output_schema=output_schema)
 
-        self._stamp_cost(response)
+        self._finalize_response(response)
         logger.info(
             "llm %s → %s in %.2fs",
             self.model_name,
@@ -363,13 +475,17 @@ class CloudLLM(LLM):
 
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
+        input = self._drop_foreign_reasoning(  # ruff: ignore[builtin-variable-shadowing]
+            normalize_litellm_gemini_items(input)
+        )
+
         api_kwargs = self._make_api_input(
             input,
             tools=tools,
@@ -404,6 +520,8 @@ class CloudLLM(LLM):
         # than at acquisition — map them too, or the retry/fallback layers
         # (which catch only LlmErrorTuple) never see streaming failures.
         event_stream = self._convert_api_stream(api_stream)
+        terminal_seen = False
+        stream_error: LlmErrorEvent | None = None
         while True:
             try:
                 event = await anext(event_stream)
@@ -418,16 +536,18 @@ class CloudLLM(LLM):
                 # up with no final response at all).
                 error = event.response.error
                 message = error.message if error else "response failed"
-                raise LlmInternalServerError(
-                    f"Streamed response failed: {message}",
-                    response=httpx.Response(
-                        status_code=502,
-                        request=httpx.Request("POST", "https://api.openai.com/v1"),
-                    ),
-                    body=None,
-                )
-            if isinstance(event, ResponseCompleted):
-                self._stamp_cost(event.response)
+                raise self._streamed_failure(f"Streamed response failed: {message}")
+            if isinstance(event, LlmErrorEvent):
+                stream_error = event
+            if isinstance(event, OutputItemDone):
+                # Streamed items are consumed as they arrive, and a converter
+                # is free to hand out objects distinct from the ones in the
+                # terminal response, so each item is stamped where it flows
+                # rather than only on the response it ends up in.
+                self._stamp_item_native_provider_name(event.item)
+            if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                terminal_seen = True
+                self._finalize_response(event.response)
                 logger.info(
                     "llm %s → %s in %.2fs (streamed)",
                     self.model_name,
@@ -444,3 +564,26 @@ class CloudLLM(LLM):
                         ),
                     )
             yield event
+
+        if not terminal_seen:
+            # The SDK doesn't raise when a stream ends after an ``error`` event
+            # or with no terminal event; fail so retries and fallback engage.
+            detail = (
+                f"{stream_error.code or 'error'}: {stream_error.message}"
+                if stream_error is not None
+                else "no error event received"
+            )
+            raise self._streamed_failure(
+                f"Stream ended without a terminal response event ({detail})"
+            )
+
+    def _streamed_failure(self, message: str) -> LlmInternalServerError:
+        # The error type requires a request; it only names the endpoint.
+        endpoint = self.api_provider.get("base_url") if self.api_provider else None
+        return LlmInternalServerError(
+            message,
+            response=httpx.Response(
+                status_code=502, request=httpx.Request("POST", endpoint or "/")
+            ),
+            body=None,
+        )

@@ -28,7 +28,7 @@ from grasp_agents.types.llm_events import (
     ResponseIncomplete,
     ResponseRetrying,
 )
-from grasp_agents.types.response import REFUSAL_CATEGORY_KEY, Response
+from grasp_agents.types.response import REFUSAL_CATEGORY_KEY, Response, ResponseUsage
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 from .model_info import ModelCapabilities, get_model_capabilities
@@ -37,6 +37,21 @@ from .resilience import RetryPolicy
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_ERRORS = (LLMToolCallValidationError, LLMResponseValidationError)
+
+
+def _superseded_usage(
+    previous: ResponseUsage | None, failed: Response | None
+) -> ResponseUsage | None:
+    if failed is None or failed.usage is None:
+        return previous
+    return failed.usage if previous is None else previous + failed.usage
+
+
+async def _aclose(stream: AsyncIterator[Any]) -> None:
+    """Close an abandoned attempt's stream now rather than at garbage collection."""
+    aclose = getattr(stream, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 @with_config(ConfigDict(extra="allow"))
@@ -70,7 +85,7 @@ class LLM(ABC):
     @abstractmethod
     async def _generate_response_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -81,7 +96,7 @@ class LLM(ABC):
     @abstractmethod
     async def _generate_response_stream_once(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -94,7 +109,7 @@ class LLM(ABC):
 
     async def _generate_with_api_retries(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -140,45 +155,56 @@ class LLM(ABC):
 
     async def _generate_stream_with_api_retries(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
         tool_choice: ToolChoice | None = None,
         **extra_llm_settings: Any,
     ) -> AsyncIterator[LlmEvent]:
-        """Streaming variant of API retry loop. Yields ResponseRetrying on retry."""
+        """
+        Streaming variant of API retry loop. Yields ResponseRetrying on retry;
+        ``attempt`` counts this layer's own retries. An attempt ends at its final
+        response: a failure after it neither retries nor raises.
+        """
         policy = self.retry_policy
+        attempt = 0
+        last_seq = 0
 
-        if not policy:
-            async for event in self._generate_response_stream_once(
+        while True:
+            stream = self._generate_response_stream_once(
                 input,
                 tools=tools,
                 output_schema=output_schema,
                 tool_choice=tool_choice,
                 **extra_llm_settings,
-            ):
-                yield event
-            return
-
-        attempt = 0
-        last_seq = 0
-
-        while True:
+            )
+            delivered = False
             try:
-                async for event in self._generate_response_stream_once(
-                    input,
-                    tools=tools,
-                    output_schema=output_schema,
-                    tool_choice=tool_choice,
-                    **extra_llm_settings,
-                ):
+                async for event in stream:
                     last_seq = event.sequence_number
                     yield event
+                    if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                        delivered = True
                 return
             except LlmErrorTuple as err:
+                if delivered:
+                    # Retrying or falling back would replace a complete response
+                    # and bill it again.
+                    logger.warning(
+                        "Model %s: stream failed after its final response "
+                        "(%s: %s); keeping the response",
+                        self.model_name,
+                        type(err).__name__,
+                        err,
+                    )
+                    return
                 attempt += 1
-                if policy.is_retryable_api_error(err) and attempt <= policy.api_retries:
+                if (
+                    policy is not None
+                    and policy.is_retryable_api_error(err)
+                    and attempt <= policy.api_retries
+                ):
                     delay = policy.api_delay_for(attempt - 1, err)
                     logger.warning(
                         "Model %s: %s (attempt %d/%d, retrying in %.1fs)",
@@ -194,13 +220,15 @@ class LLM(ABC):
                     await asyncio.sleep(delay)
                 else:
                     raise
+            finally:
+                await _aclose(stream)
 
     # --- Public interface ---
 
     @final
     async def generate_response(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -211,7 +239,9 @@ class LLM(ABC):
             self.retry_policy.validation_retries if self.retry_policy else 0
         )
         n_attempt = 0
+        superseded: ResponseUsage | None = None
         while n_attempt <= max_validation:
+            response: Response | None = None
             try:
                 response = await self._generate_with_api_retries(
                     input,
@@ -220,12 +250,14 @@ class LLM(ABC):
                     tool_choice=tool_choice,
                     **extra_llm_settings,
                 )
+                response.superseded_usage = superseded
                 self._validate_response(
                     response, tools=tools, output_schema=output_schema
                 )
                 return response
 
             except _RETRYABLE_ERRORS as err:
+                superseded = _superseded_usage(superseded, response)
                 n_attempt += 1
                 if n_attempt <= max_validation:
                     logger.warning(
@@ -242,7 +274,7 @@ class LLM(ABC):
     @final
     async def generate_response_stream(
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         *,
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         output_schema: Any | None = None,
@@ -254,30 +286,30 @@ class LLM(ABC):
         )
         n_attempt = 0
         last_seq = 0
+        superseded: ResponseUsage | None = None
         while n_attempt <= max_validation:
+            attempt_response: Response | None = None
+            stream = self._generate_stream_with_api_retries(
+                input,
+                tools=tools,
+                output_schema=output_schema,
+                tool_choice=tool_choice,
+                **extra_llm_settings,
+            )
             try:
-                async for event in self._generate_stream_with_api_retries(
-                    input,
-                    tools=tools,
-                    output_schema=output_schema,
-                    tool_choice=tool_choice,
-                    **extra_llm_settings,
-                ):
+                async for event in stream:
+                    if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                        attempt_response = event.response
+                        attempt_response.superseded_usage = superseded
+                        self._validate_response(
+                            attempt_response, tools=tools, output_schema=output_schema
+                        )
                     yield event
                     last_seq = event.sequence_number
-
-                    if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
-                        # Incomplete responses validate exactly like the
-                        # non-streaming path (which returns them as response
-                        # objects): a content filter raises, a written refusal
-                        # logs a warning, a truncated response reaches the
-                        # caller.
-                        self._validate_response(
-                            event.response, tools=tools, output_schema=output_schema
-                        )
                 return
 
             except _RETRYABLE_ERRORS as err:
+                superseded = _superseded_usage(superseded, attempt_response)
                 n_attempt += 1
                 if n_attempt <= max_validation:
                     logger.warning(
@@ -286,6 +318,8 @@ class LLM(ABC):
                         n_attempt,
                         err,
                     )
+                    # ``attempt`` counts validation retries; API retries keep
+                    # their own count in the layer below.
                     yield ResponseRetrying(
                         attempt=n_attempt,
                         error=str(err),
@@ -293,6 +327,10 @@ class LLM(ABC):
                     )
                 else:
                     raise
+            finally:
+                # The attempt's stream is abandoned when validation raises
+                # above; close it before the next attempt opens another.
+                await _aclose(stream)
 
     # --- Validation ---
 

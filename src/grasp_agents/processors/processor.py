@@ -437,11 +437,6 @@ class Processor[InT, OutT, CtxT](
                 message="in_packet must contain at least one payload", **err_kwargs
             )
 
-        if in_args is not None and not in_args:
-            raise ProcInputValidationError(
-                message="in_args must contain at least one argument", **err_kwargs
-            )
-
         if chat_inputs is not None:
             # 1) chat_inputs are provided -> no need to validate further
             return None
@@ -456,11 +451,17 @@ class Processor[InT, OutT, CtxT](
             resolved_args = list(in_packet.payloads)
 
         elif self._is_single_in_arg(in_args):
-            # 3) Single in_args of the declared type is provided
+            # 3) Single in_args of the declared type is provided (falsy values
+            # such as 0, "" or an empty list for a list-typed processor included)
             resolved_args = [cast("InT", in_args)]
 
         elif isinstance(in_args, list):
             # 4) List of in_args is provided
+            if not in_args:
+                raise ProcInputValidationError(
+                    message="in_args must contain at least one argument",
+                    **err_kwargs,
+                )
             resolved_args = cast("list[InT]", in_args)
 
         else:

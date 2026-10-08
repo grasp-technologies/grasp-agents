@@ -47,6 +47,7 @@ from .llm_errors import (
     LlmPermissionDeniedError,
     LlmQuotaExceededError,
     LlmRateLimitError,
+    LlmResponseSchemaError,
     LlmUnprocessableEntityError,
 )
 
@@ -81,6 +82,9 @@ class RecoveryHint(StrEnum):
     INVALID_REQUEST = "invalid_request"
     """Request shape is wrong. Treat as a programmer bug; do not retry."""
 
+    INVALID_RESPONSE = "invalid_response"
+    """The response doesn't fit the framework's schema; do not retry."""
+
     UNKNOWN = "unknown"
     """No classification is available. Callers should treat conservatively."""
 
@@ -103,6 +107,7 @@ _HINT_REGISTRY: dict[type[BaseException], RecoveryHint] = {
     LlmBadRequestError: RecoveryHint.INVALID_REQUEST,
     LlmNotFoundError: RecoveryHint.INVALID_REQUEST,
     LlmUnprocessableEntityError: RecoveryHint.INVALID_REQUEST,
+    LlmResponseSchemaError: RecoveryHint.INVALID_RESPONSE,
     # Transient server / network issues.
     LlmConflictError: RecoveryHint.TRANSIENT,
     LlmApiTimeoutError: RecoveryHint.TRANSIENT,
@@ -114,9 +119,7 @@ _HINT_REGISTRY: dict[type[BaseException], RecoveryHint] = {
 }
 
 
-def register_recovery_hint(
-    exc_type: type[BaseException], hint: RecoveryHint
-) -> None:
+def register_recovery_hint(exc_type: type[BaseException], hint: RecoveryHint) -> None:
     """
     Associate a recovery hint with an exception type.
 
@@ -166,9 +169,7 @@ def classify_error(err: BaseException) -> RecoveryHint:
     return RecoveryHint.UNKNOWN
 
 
-_RETRYABLE_HINTS = frozenset(
-    {RecoveryHint.TRANSIENT, RecoveryHint.RATE_LIMITED}
-)
+_RETRYABLE_HINTS = frozenset({RecoveryHint.TRANSIENT, RecoveryHint.RATE_LIMITED})
 
 
 def is_retryable(hint: RecoveryHint) -> bool:

@@ -118,6 +118,7 @@ ignore = [
   "TRY201",
   "TRY300",
   "RUF052",  # used-dummy-variable
+  "PLW0717", # long try/except blocks
 ]
 
 fixable = ["ALL"]
