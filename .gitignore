@@ -196,6 +196,3 @@ CLAUDE.md
 .grasp/
 src/grasp_agents/kits/
 tests/kits/
-
-# grasp-evals run records and dataset caches (default GRASP_EVALS_DIR)
-.evals/
