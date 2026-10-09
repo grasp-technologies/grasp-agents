@@ -306,7 +306,7 @@ class Trial(BaseModel):
     scorer_failures: list[ScorerFailure] = Field(default_factory=list[ScorerFailure])
     # Scorers that completed on this trial (including "not applicable").
     scorers_run: list[str] = Field(default_factory=list[str])
-    # Model usage reported by each scorer (see ``EvalContext.record_usage``).
+    # Model usage reported by each scorer (see ``ScoreContext.record_usage``).
     scorer_usage: dict[str, Usage] = Field(default_factory=dict[str, Usage])
     # The example belongs to a sealed (held-out) split: reports show this
     # trial only in aggregate.

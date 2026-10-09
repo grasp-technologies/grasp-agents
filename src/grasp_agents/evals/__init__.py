@@ -54,8 +54,8 @@ from .pairwise import (
 from .report import render_comparison_markdown, render_run_markdown, run_summary
 from .runner import ResumeError, SealedSelectionError, evaluate, rescore
 from .scorer import (
-    EvalContext,
     FunctionScorer,
+    ScoreContext,
     Scorer,
     ScorerOutput,
     scorer,
@@ -89,7 +89,6 @@ __all__ = [
     "Distribution",
     "ErrorInfo",
     "ErrorRate",
-    "EvalContext",
     "Evaluation",
     "EvaluationRun",
     "Example",
@@ -118,6 +117,7 @@ __all__ = [
     "RunStatus",
     "RunStore",
     "Score",
+    "ScoreContext",
     "ScoreReason",
     "Scorer",
     "ScorerFailure",

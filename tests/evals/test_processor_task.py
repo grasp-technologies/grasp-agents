@@ -8,9 +8,9 @@ from pydantic import BaseModel
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.evals import (
     Dataset,
-    EvalContext,
     Example,
     ProcessorTask,
+    ScoreContext,
     evaluate,
     scorer,
 )
@@ -74,7 +74,7 @@ def _ints(n: int = 3) -> Dataset[int, int]:
 
 
 @scorer
-def matches(ctx: EvalContext[Any, Any, Any]) -> bool:
+def matches(ctx: ScoreContext[Any, Any, Any]) -> bool:
     return ctx.output == ctx.reference
 
 
@@ -99,7 +99,7 @@ class TestAnyProcessor:
             return ctx
 
         @scorer
-        def outcome(ctx: EvalContext[int, int, int]) -> bool:
+        def outcome(ctx: ScoreContext[int, int, int]) -> bool:
             assert ctx.session is not None
             return ctx.session.state.seen == [ctx.input]
 
@@ -180,7 +180,7 @@ class TestLLMAgent:
         )
 
         @scorer
-        def transcript_has_no_deltas(ctx: EvalContext[str, str, str]) -> bool:
+        def transcript_has_no_deltas(ctx: ScoreContext[str, str, str]) -> bool:
             return not any(isinstance(e, LLMStreamEvent) for e in ctx.events) and bool(
                 ctx.events
             )
