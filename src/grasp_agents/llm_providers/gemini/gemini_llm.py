@@ -184,13 +184,15 @@ class GeminiLLM(CloudLLM):
 
     def _make_api_input(  # type: ignore[override]
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: type | None = None,
         **extra_llm_settings: Any,
     ) -> ApiCallParams:
-        system_instruction, contents = items_to_provider_inputs(input)
+        system_instruction, contents = items_to_provider_inputs(
+            input, model=self.model_name
+        )
 
         # Merge settings: base llm_settings + per-call overrides
         merged: dict[str, Any] = dict(self.llm_settings or {})

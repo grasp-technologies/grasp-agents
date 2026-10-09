@@ -55,9 +55,12 @@ def _get_response(err: genai_errors.APIError) -> httpx.Response:
 
 
 def map_api_error(err: Exception) -> LlmError | None:
-    # The GenAI SDK inspects httpx transport failures for its own retry
-    # predicate but does not wrap them, so they surface here unchanged.
-    if isinstance(err, httpx.TimeoutException):
+    # The GenAI SDK inspects transport failures for its own retry predicate but
+    # does not wrap them, so they surface here unchanged. It prefers aiohttp
+    # over httpx whenever aiohttp is importable, and aiohttp enforces the client
+    # timeout with a bare asyncio.TimeoutError (the builtin since 3.11), not an
+    # httpx one — left unmapped that skips both retry and fallback.
+    if isinstance(err, httpx.TimeoutException | TimeoutError):
         return LlmApiTimeoutError(request=httpx.Request(*_SYNTHETIC_REQUEST))
     if isinstance(err, httpx.TransportError):
         return LlmApiConnectionError(

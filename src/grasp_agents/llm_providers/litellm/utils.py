@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from litellm.types.utils import Choices as LiteLLMChoice
 from litellm.types.utils import ModelResponse as LiteLLMCompletion
 from litellm.types.utils import ModelResponseStream as LiteLLMCompletionChunk
 from litellm.types.utils import StreamingChoices as LiteLLMChunkChoice
 
 from grasp_agents.types.errors import CompletionError
-from grasp_agents.types.items import ReasoningItem
-
-if TYPE_CHECKING:
-    from grasp_agents.llm.llm_stream_converter import ToolCallState
-    from grasp_agents.types.items import OutputItem
 
 
 def validate_completion(completion: LiteLLMCompletion) -> None:
@@ -58,31 +51,3 @@ def validate_chunk(chunk: LiteLLMCompletionChunk) -> None:
 
     if choice.delta is None:  # type: ignore[union-attr]
         raise CompletionError("Chunk choice is missing delta")
-
-
-def patch_thought_signatures(
-    thought_signatures: list[str],
-    items: list[OutputItem],
-    tool_calls: dict[int, ToolCallState],
-) -> None:
-    """
-    Distribute thought_signatures from provider_specific_fields onto items.
-
-    Fallback for providers that send plain reasoning_content without
-    thinking_blocks.  Signatures are matched positionally: first to
-    ReasoningItems that lack encrypted_content, then to ToolCallStates
-    that lack provider_specific_fields.
-    """
-    sig_iter = iter(thought_signatures)
-    for i, item in enumerate(items):
-        if isinstance(item, ReasoningItem) and not item.encrypted_content:
-            sig = next(sig_iter, None)
-            if sig is None:
-                return
-            items[i] = item.model_copy(update={"encrypted_content": sig})
-    for state in tool_calls.values():
-        if not state.provider_specific_fields:
-            sig = next(sig_iter, None)
-            if sig is None:
-                return
-            state.provider_specific_fields = {"thought_signature": sig}

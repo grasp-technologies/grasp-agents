@@ -14,6 +14,7 @@ install, forcing the synthesis path.
 from __future__ import annotations
 
 import httpx
+import pytest
 from google.genai import errors as genai_errors
 
 from grasp_agents.llm_providers.gemini.error_mapping import map_api_error
@@ -58,7 +59,7 @@ class TestGeminiErrorMapping:
         mapped = map_api_error(err)
 
         assert isinstance(mapped, LlmRateLimitError)
-        assert mapped.retry_after == 7.0
+        assert mapped.retry_after == pytest.approx(7.0)
 
     def test_client_error_with_requestless_httpx_response_maps(self):
         err = genai_errors.ClientError(
@@ -83,7 +84,7 @@ class TestGeminiErrorMapping:
         mapped = map_api_error(err)
 
         assert isinstance(mapped, LlmRateLimitError)
-        assert mapped.retry_after == 11.0
+        assert mapped.retry_after == pytest.approx(11.0)
         assert mapped.response is response
 
     def test_server_error_maps_to_internal_server_error(self):
@@ -128,3 +129,19 @@ class TestGeminiErrorMapping:
 
         assert isinstance(timeout, LlmApiTimeoutError)
         assert isinstance(connect, LlmApiConnectionError)
+
+    def test_aiohttp_transport_timeout_maps(self):
+        # aiohttp enforces the client timeout with a bare asyncio.TimeoutError
+        # (the builtin TimeoutError since 3.11) carrying no message, and the SDK
+        # prefers aiohttp over httpx whenever it is importable — so this, not
+        # httpx.ReadTimeout, is the timeout that actually reaches the mapper.
+        mapped = map_api_error(TimeoutError())
+
+        assert isinstance(mapped, LlmApiTimeoutError)
+
+    def test_aiohttp_server_timeout_subclass_maps(self):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        mapped = map_api_error(aiohttp.ServerTimeoutError())
+
+        assert isinstance(mapped, LlmApiTimeoutError)

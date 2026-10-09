@@ -144,6 +144,11 @@ class Response(_SDKResponse):
 
     response_ms: float | None = None
 
+    # Usage billed for earlier attempts at this response that a validation
+    # retry replaced. Kept apart from ``usage``, which describes only the
+    # request that produced this output.
+    superseded_usage: ResponseUsage | None = None
+
     provider_specific_fields: dict[str, Any] | None = None
     hidden_params: dict[str, Any] | None = None
     response_headers: dict[str, Any] | None = None

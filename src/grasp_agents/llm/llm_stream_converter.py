@@ -186,7 +186,7 @@ class BaseLlmStreamConverter[T](ABC):
     def _start_response(
         self,
         *,
-        id: str,  # noqa: A002
+        id: str,  # ruff: ignore[builtin-argument-shadowing]
         model: str,
         created_at: float,
     ) -> Iterator[LlmEvent]:
@@ -207,6 +207,9 @@ class BaseLlmStreamConverter[T](ABC):
 
     def _close_response(self) -> Iterator[LlmEvent]:
         """Close every open item and emit ResponseCompleted."""
+        if not self._provider_finished():
+            return
+
         if self._reasoning_open:
             yield from self._close_reasoning()
 
@@ -233,6 +236,14 @@ class BaseLlmStreamConverter[T](ABC):
         )
 
         return ResponseCompleted(response=response, sequence_number=self._next_seq())
+
+    def _provider_finished(self) -> bool:
+        """
+        Whether the provider signaled the end of the response. A stream that
+        stops before it gets no terminal event, rather than one that passes a
+        partial response off as complete.
+        """
+        return self._finish_reason is not None
 
     def _map_finish_reason(self) -> tuple[ResponseStatus, IncompleteDetails | None]:
         """Map provider finish_reason to ResponseStatus. Override per provider."""

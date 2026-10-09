@@ -68,6 +68,7 @@
         "pbar",
         "pgid",
         "procs",
+        "pyqwest",
         "quiesces",
         "redef",
         "reinject",

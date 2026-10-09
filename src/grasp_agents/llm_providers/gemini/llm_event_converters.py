@@ -58,6 +58,7 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
         self._tool_call_idx: int = 0
         self._grounding: GroundingMetadata | None = None
         self._url_context: UrlContextMetadata | None = None
+        self._prompt_blocked = False
 
     def _process_event(self, raw_event: GeminiResponse) -> Iterator[LlmEvent]:
         chunk = raw_event
@@ -75,6 +76,8 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
 
         candidate = chunk.candidates[0] if chunk.candidates else None
 
+        if chunk.prompt_feedback and chunk.prompt_feedback.block_reason:
+            self._prompt_blocked = True
         if candidate and candidate.finish_reason:
             self._finish_reason = candidate.finish_reason.name
 
@@ -165,6 +168,8 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
             }
 
     def _close_response(self) -> Iterator[LlmEvent]:
+        if not self._provider_finished():
+            return
         if self._reasoning_open:
             yield from self._close_reasoning()
         if self._message_open:
@@ -191,7 +196,12 @@ class GeminiStreamConverter(BaseLlmStreamConverter[GeminiResponse]):
 
         yield super()._build_response_completed()
 
+    def _provider_finished(self) -> bool:
+        return self._prompt_blocked or super()._provider_finished()
+
     def _map_finish_reason(
         self,
     ) -> tuple[ResponseStatus, IncompleteDetails | None]:
+        if self._prompt_blocked:
+            return "incomplete", IncompleteDetails(reason="content_filter")
         return map_finish_reason(self._finish_reason)
