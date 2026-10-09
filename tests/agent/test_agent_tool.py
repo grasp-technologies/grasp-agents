@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -21,7 +22,6 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.llm.llm import LLM
@@ -31,11 +31,7 @@ from grasp_agents.tools.agent_tool import (
     AgentToolInput,
 )
 from grasp_agents.tools.base import BaseTool
-from grasp_agents.tools.bash_common import ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
-from grasp_agents.tools.file_edit import FileEditSessionState
 from grasp_agents.tools.function_tool import function_tool
-from grasp_agents.tools.notebook_exec import KernelHolder
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
@@ -43,7 +39,7 @@ from grasp_agents.types.events import (
     ToolOutputEvent,
     UserMessageEvent,
 )
-from grasp_agents.types.items import OutputMessageItem
+from grasp_agents.types.items import InputItem, OutputMessageItem
 from grasp_agents.types.llm_events import (
     LlmEvent,
     OutputItemAdded,
@@ -52,9 +48,10 @@ from grasp_agents.types.llm_events import (
     ResponseCreated,
 )
 from grasp_agents.types.response import Response, ResponseUsage
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Mapping
 
 # ------------------------------------------------------------------ #
 #  Test helpers                                                        #
@@ -162,7 +159,7 @@ def _make_child_llm(*texts: str) -> MockLLM:
 
 def _agent_ctx(
     *,
-    transcript: LLMAgentTranscript | None = None,
+    messages: Sequence[InputItem] | None = None,
     tools: list[BaseTool[Any, Any, Any]] | None = None,
     explicit_tool_names: frozenset[str] | None = None,
 ) -> AgentContext:
@@ -175,21 +172,14 @@ def _agent_ctx(
     explicitly-given, hence inheritable); pass ``frozenset()`` to simulate
     auto-attached tools that must NOT be inherited.
     """
-    transcript = transcript or LLMAgentTranscript()
     tool_map = {t.name: t for t in (tools or [])}
     if explicit_tool_names is None:
         explicit_tool_names = frozenset(tool_map)
-    return AgentContext(
-        transcript=transcript,
+    return _make_agent_ctx(
+        agent_name="parent",
         tools=tool_map,
+        messages=messages,
         explicit_tool_names=explicit_tool_names,
-        file_edit_state=FileEditSessionState(),
-        bg_tasks=BackgroundTaskManager(
-            agent_name="parent", transcript=transcript, tools=tool_map
-        ),
-        session_holder=BashSessionHolder(),
-        nb_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
     )
 
 
@@ -563,21 +553,22 @@ class TestAgentToolPromptBuilders:
         )
 
         # The parent transcript reaches the builder via the call's AgentContext.
-        parent_mem = LLMAgentTranscript()
         from grasp_agents.types.items import InputMessageItem
 
-        parent_mem.update([InputMessageItem.from_text("user said hi", role="user")])
+        parent_ctx = _agent_ctx(
+            messages=[InputMessageItem.from_text("user said hi", role="user")]
+        )
 
         ctx: SessionContext[None] = SessionContext()
         await agent_tool._run(
             AgentToolInput(prompt="go"),
             ctx=ctx,
             exec_id="x",
-            agent_ctx=_agent_ctx(transcript=parent_mem),
+            agent_ctx=parent_ctx,
         )
         assert len(received_memory) == 1
-        assert received_memory[0] is parent_mem
-        assert len(received_memory[0].messages) == 1
+        assert received_memory[0] is parent_ctx.transcript
+        assert len(received_memory[0]) == 1
 
     @pytest.mark.asyncio
     async def test_async_builder(self) -> None:
@@ -654,7 +645,7 @@ class TestAgentToolPromptBuilders:
             name="parent", llm=parent_llm, tools=[agent_tool]
         )
 
-        assert parent._loop.agent_ctx.transcript is parent._transcript
+        assert parent._loop.agent_ctx.transcript is parent.transcript
 
 
 class TestToolCopy:

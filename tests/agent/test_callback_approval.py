@@ -87,15 +87,15 @@ def _make_executor(
     ctx: SessionContext[Any] | None = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript, MockLLM]:
     llm = MockLLM(model_name="mock", responses_queue=responses)
-    memory = LLMAgentTranscript()
-    memory.messages = [InputMessageItem.from_text("sys", role="system")]
-    memory.update([InputMessageItem.from_text("go", role="user")])
 
     ctx = ctx if ctx is not None else SessionContext[None](state=None)
     executor = _make_agent_loop(
         agent_name="test",
         llm=llm,
-        transcript=memory,
+        messages=[
+            InputMessageItem.from_text("sys", role="system"),
+            InputMessageItem.from_text("go", role="user"),
+        ],
         tools=tools,
         ctx=ctx,
         max_turns=max_turns,
@@ -104,7 +104,7 @@ def _make_executor(
     executor.final_answer_extractor = lambda *, exec_id, response=None, **kw: (
         response.output_text if response and not response.tool_call_items else None
     )
-    return executor, memory, llm
+    return executor, executor.cw.transcript, llm
 
 
 async def _drain(executor: AgentLoop[None], ctx: SessionContext[None]) -> Response:

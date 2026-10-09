@@ -17,7 +17,6 @@ from typing import Any
 import pytest
 
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.agent.task_progress import excerpt_for_inline, spill_if_large
 from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
@@ -49,12 +48,10 @@ async def capped_untrusted(n: int = 0) -> str:
 def _loop(
     tools: list[BaseTool[Any, Any, Any]], *, ctx: SessionContext[None]
 ) -> AgentLoop[None]:
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     return _make_agent_loop(
         agent_name="test",
         llm=MockLLM(model_name="mock", responses_queue=[]),
-        transcript=transcript,
+        messages=[InputMessageItem.from_text("sys", role="system")],
         ctx=ctx,
         tools=tools,
         max_turns=10,

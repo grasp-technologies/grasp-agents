@@ -5,35 +5,41 @@ Where :class:`~grasp_agents.session_context.SessionContext` is the *run*-scoped 
 container shared by every processor in a run, :class:`AgentContext` is the
 *agent*-scoped counterpart: one per :class:`AgentLoop`, carrying the mutable
 state a single agent's tools operate against — the file-edit ledger, the
-persistent shell session, the background-task manager, and the agent's own
-transcript / sibling tools (read by sub-agent tools as their *parent's*).
+persistent shell session, the background-task manager, the context-window
+manager (which owns the agent's transcript log), and the agent's sibling tools
+(the transcript and tools are read by sub-agent tools as their *parent's*).
 
 The loop owns one and passes it (as ``agent_ctx``) to every tool call, so tools
 stay stateless: a single tool instance can be shared across agents without the
-state of one clobbering another, and there is no async-local ``ContextVar`` to
-set / reset around a run.
+state of one clobbering another.
 
 ``bg_tasks`` and ``inbox`` are the agent's two *side channels* — separate queues
-that inject messages into the transcript between turns, sharing one mirrored
-lifecycle: a monotonic per-item seq (task ``launch_seq`` / mail consumption
-``seq``) whose high-waters are checkpointed and ``seed_*``-ed back on resume;
-durable effects deferred until the absorbing turn is checkpointed
-(``flush_flips`` / ``flush_acks``); and rollback keyed on ``seq >`` the
-boundary's high-water — tasks launched past it are *cancelled*, task notes
-truncated by the cut are *redelivered*, consumed mail is *voided* (senders
-notified, never re-delivered).
+whose messages are written into the transcript between turns (task notes through
+:meth:`AgentContext.deliver_task_notes`), sharing one mirrored lifecycle: a
+monotonic per-item seq (task ``launch_seq`` / mail consumption ``seq``) whose
+high-waters are checkpointed and ``seed_*``-ed back on resume; durable effects
+deferred until the absorbing turn is checkpointed (``flush_flips`` /
+``flush_acks``); and rollback keyed on ``seq >`` the boundary's high-water —
+tasks launched past it are *cancelled*, task notes truncated by the cut are
+*redelivered*, consumed mail is *voided* (senders notified, never re-delivered).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
 from grasp_agents.durability.checkpoints import AgentContextState
+from grasp_agents.types.items import FunctionToolCallItem
+
+from .context_window import ContextWindowManager
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
+
     from grasp_agents.inbox import AgentInbox
+    from grasp_agents.llm.model_info import ModelCapabilities
     from grasp_agents.session_context import SessionContext
     from grasp_agents.skills.types import SkillFilter
     from grasp_agents.tools.base import BaseTool
@@ -43,19 +49,31 @@ if TYPE_CHECKING:
     from grasp_agents.tools.notebook_exec import KernelHolder
     from grasp_agents.types.items import InputMessageItem
 
-    from .background_tasks import BackgroundTaskManager
+    from .background_tasks import BackgroundTaskManager, TaskNote
     from .llm_agent_transcript import LLMAgentTranscript
 
 logger = getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DeferredEffect:
+    """A tool's durable side effect, held for the checkpoint that persists its call."""
+
+    call_id: str | None
+    run: Callable[[], Awaitable[None]]
 
 
 @dataclass
 class AgentContext:
     """The agent-scope state one :class:`AgentLoop` exposes to its tools."""
 
-    transcript: LLMAgentTranscript
+    # Owns the transcript log and the model-facing view derived from it (summary
+    # folds, token budget, compaction); the single writer of destructive
+    # transcript operations.
+    cw: ContextWindowManager
 
     tools: dict[str, BaseTool[Any, Any, Any]]
+
     file_edit_state: FileEditSessionState
 
     bg_tasks: BackgroundTaskManager[Any]
@@ -97,12 +115,87 @@ class AgentContext:
     # backgrounded / bubbled) output to the right agent's pane.
     agent_name: str = ""
 
+    # The tool call this context copy was handed to (see :meth:`for_tool_call`);
+    # ``None`` outside a tool invocation.
+    tool_call_id: str | None = None
+
+    # Tool effects deferred to the next checkpoint (:meth:`defer_effect`). One
+    # list shared by every per-call copy.
+    pending_effects: list[DeferredEffect] = field(default_factory=list[DeferredEffect])
+
+    @property
+    def transcript(self) -> LLMAgentTranscript:
+        """The agent's transcript log, read-only; writes go through :attr:`cw`."""
+        return self.cw.transcript
+
+    def for_tool_call(self, call_id: str) -> AgentContext:
+        """
+        This context bound to one tool call — the same shared state with
+        ``tool_call_id`` set. The loop and the task manager hand each tool
+        invocation one, so a deferred effect knows the call it belongs to.
+        """
+        return replace(self, tool_call_id=call_id)
+
+    def defer_effect(self, effect: Callable[[], Awaitable[None]]) -> None:
+        """
+        Run ``effect`` inside the next checkpoint instead of now.
+
+        For a tool whose result the model sees at once but whose durable side
+        effect — a business row, an artifact — must exist exactly when the
+        transcript records the call: the effect runs in the checkpoint that
+        persists the tool result, inside the store's
+        :meth:`~grasp_agents.durability.CheckpointStore.transaction`, so on a
+        transactional store the two commit atomically and a crash on either
+        side re-runs nothing twice. A failed run prunes its in-flight tool
+        round and drops that round's pending effects with it; a rollback drops
+        those of the tasks it cancels. An effect deferred outside a tool call
+        is never dropped. The effect must be self-contained (a closure over
+        what it writes); a failure aborts the checkpoint.
+        """
+        self.pending_effects.append(
+            DeferredEffect(call_id=self.tool_call_id, run=effect)
+        )
+
+    async def run_effects(self) -> int:
+        """
+        Run every pending effect in registration order; returns how many ran.
+        They stay pending until :meth:`commit_effects` drops them once the
+        checkpoint they ran in has landed, so a failure anywhere in that unit
+        of work — an effect, the head write, a record flip — leaves them for
+        the next checkpoint (a transactional store rolled their writes back
+        with it).
+        """
+        batch = list(self.pending_effects)
+        for effect in batch:
+            await effect.run()
+        return len(batch)
+
+    def commit_effects(self, count: int) -> None:
+        """
+        Drop the ``count`` effects :meth:`run_effects` ran, once the checkpoint
+        they ran in is durable.
+        """
+        del self.pending_effects[:count]
+
+    def drop_orphaned_effects(self) -> None:
+        """
+        Drop pending effects whose tool call is no longer in the transcript —
+        a pruned round, a cancelled task's launch, a reset conversation.
+        """
+        live = {
+            m.call_id for m in self.transcript if isinstance(m, FunctionToolCallItem)
+        }
+        self.pending_effects[:] = [
+            e for e in self.pending_effects if e.call_id is None or e.call_id in live
+        ]
+
     @classmethod
     def create(
         cls,
         *,
-        transcript: LLMAgentTranscript,
+        model_name: str,
         tools: dict[str, BaseTool[Any, Any, Any]],
+        capabilities: ModelCapabilities | None = None,
         bg_tasks: BackgroundTaskManager[Any] | None = None,
         agent_name: str = "",
         file_edit_state: FileEditSessionState | None = None,
@@ -116,13 +209,15 @@ class AgentContext:
         """
         Build an ``AgentContext`` with fresh agent-scope state.
 
-        Creates the session holders (the Bash session, the ``RunCell`` and
-        ``RunPython`` kernels, the shell cwd), the background-task manager
-        (unless one is supplied — ``path`` / ``max_background`` configure the
-        built-in one), and an empty file-edit ledger — so callers pass only
-        the agent-specific pieces (transcript, tool map) instead of
-        hand-building each part. The tool-module imports are local to keep
-        them off the agent core's import path.
+        Creates the context-window manager for ``model_name`` (``capabilities``
+        sizes its budget — pass the LLM's own so a composed model budgets
+        conservatively; omitted, they are looked up by name), the session holders (the
+        Bash session, the ``RunCell`` and ``RunPython`` kernels, the shell
+        cwd), the background-task manager (unless one is supplied — ``path`` /
+        ``max_background`` configure the built-in one), and an empty file-edit
+        ledger — so callers pass only the agent-specific pieces (model, tool
+        map) instead of hand-building each part. The tool-module imports are
+        local to keep them off the agent core's import path.
 
         Pass ``ipy_exec_context_id`` / ``nb_exec_context_id`` when resuming a
         session to re-attach the ``RunPython`` / ``RunCell`` kernel to its
@@ -141,17 +236,22 @@ class AgentContext:
             BackgroundTaskManager as _BackgroundTaskManager,
         )
 
+        cw = ContextWindowManager(
+            model_name=model_name,
+            capabilities=capabilities,
+            source=agent_name,
+        )
+
         if bg_tasks is None:
             bg_tasks = _BackgroundTaskManager[Any](
                 agent_name=agent_name,
-                transcript=transcript,
                 tools=tools,
                 path=path,
                 max_background=max_background,
             )
 
         return cls(
-            transcript=transcript,
+            cw=cw,
             tools=tools,
             file_edit_state=file_edit_state or _FileEditSessionState(),
             bg_tasks=bg_tasks,
@@ -215,7 +315,7 @@ class AgentContext:
 
         self.shell_state.cwd = state.shell_cwd
 
-        kept = len(self.transcript.messages)
+        kept = len(self.cw.transcript)
         live_flips = {
             key: flip
             for key, flip in self.bg_tasks.export_deferred_delivered().items()
@@ -236,6 +336,9 @@ class AgentContext:
         # record updates, which the imports must not clobber.
         self.bg_tasks.cancel_launched_after(state.task_launch_seq)
 
+        # Like the flips: the live transcript decides which effects survive.
+        self.drop_orphaned_effects()
+
         # Leases are NOT dropped here: a settle keeps the absorbed-but-unacked
         # message in the transcript, and its lease is what stops the loop from
         # re-taking (duplicating) it. The callers that discard the message's
@@ -249,6 +352,17 @@ class AgentContext:
             if state.nb_exec_context_id is not None:
                 self.nb_kernel_holder.rebind(state.nb_exec_context_id)
 
+    def deliver_task_notes(self, notes: Sequence[TaskNote]) -> None:
+        """
+        Write background-task notes into the transcript, in order, and report
+        each note's position back to the task manager so the durable record
+        flip it unlocks is stamped with where the note sits. The single point
+        where the task side channel enters the conversation log.
+        """
+        for note in notes:
+            note_pos = self.cw.add_messages([note.message])
+            self.bg_tasks.record_delivery(note, note_pos=note_pos)
+
     async def rewind(
         self,
         state: AgentContextState,
@@ -259,15 +373,16 @@ class AgentContext:
         rebind_kernels: bool = False,
     ) -> list[InputMessageItem]:
         """
-        The context half of a step rollback: truncate the transcript to
-        ``message_count``, reapply ``state`` (:meth:`restore`), then reconcile
-        the two side channels' durable halves — where :meth:`restore` is a pure
-        in-memory reset, the channels also have effects the reset cannot
-        express. A delivered task note that sat past the cut while its
-        launching call survived just lost the only live copy of its outcome:
-        re-inject it at the rewind point (returned for the caller to surface
-        as resume notifications). Mail consumed past the boundary was absorbed
-        by turns the truncation dropped: void it.
+        The in-memory half of a step rollback: cut the transcript to
+        ``message_count`` (repairing the folds / token anchor keyed to it),
+        reapply ``state`` (:meth:`restore`), then reconcile the two side
+        channels' durable halves — where :meth:`restore` is a pure in-memory
+        reset, the channels also have effects the reset cannot express. A
+        delivered task note that sat past the cut while its launching call
+        survived just lost the only live copy of its outcome: re-inject it at
+        the rewind point (returned for the caller to surface as resume
+        notifications). Mail consumed past the boundary was absorbed by turns
+        the truncation dropped: void it.
 
         ``committed_mail_seq`` is the pre-rollback *persisted* consumption
         high-water — the head's, captured before the boundary becomes the new
@@ -276,7 +391,7 @@ class AgentContext:
         Runs only at quiescence (no live run); the persisted-head / filesystem
         crash protocol around it is the caller's.
         """
-        self.transcript.messages = self.transcript.messages[:message_count]
+        self.cw.truncate_transcript(message_count)
 
         # Exported before the restore replaces it: a drained-but-unflushed
         # note's deferred flip is the only trace that the note (now truncated)
@@ -285,12 +400,13 @@ class AgentContext:
 
         self.restore(state, rebind_kernels=rebind_kernels)
 
-        injected = await self.bg_tasks.redeliver_after(
+        notes = await self.bg_tasks.redeliver_after(
             message_count=message_count,
             task_launch_seq=state.task_launch_seq,
             ctx=ctx,
             pre_restore_deferred_delivered=deferred_flips,
         )
+        self.deliver_task_notes(notes)
 
         # The mailbox half: mail consumed past the boundary is VOIDED, never
         # re-delivered — a rollback rewrites history, so the human supplies
@@ -311,7 +427,7 @@ class AgentContext:
             transport.seed_consumption_seq(self.agent_name, committed_mail_seq)
             await void_mail_after(transport, self.agent_name, mailbox_hw, leased=leased)
 
-        return injected
+        return [note.message for note in notes]
 
     async def close(self, *, ctx: SessionContext[Any] | None = None) -> None:
         """

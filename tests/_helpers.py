@@ -20,9 +20,7 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.context_window import ContextWindowManager
 from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.llm.llm import LLM
 from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
@@ -30,7 +28,11 @@ from grasp_agents.sandbox.policy import SandboxPolicy
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
-from grasp_agents.types.items import FunctionToolCallItem, OutputMessageItem
+from grasp_agents.types.items import (
+    FunctionToolCallItem,
+    InputItem,
+    OutputMessageItem,
+)
 from grasp_agents.types.llm_events import (
     LlmEvent,
     OutputItemAdded,
@@ -240,6 +242,31 @@ class FailFirstLLM(MockLLM):
         return await super()._generate_response_once(*args, **kwargs)
 
 
+# --- AgentContext construction (tool tests need agent-scope state, no loop) ---
+
+
+def _make_agent_ctx(
+    *,
+    agent_name: str = "test",
+    tools: Mapping[str, BaseTool[Any, Any, Any]] | None = None,
+    messages: Sequence[InputItem] | None = None,
+    **create_kwargs: Any,
+) -> AgentContext:
+    """
+    A fresh ``AgentContext`` for a stub model (capabilities resolve by name),
+    its transcript seeded with ``messages``.
+    """
+    agent_ctx = AgentContext.create(
+        model_name="mock",
+        tools=dict(tools or {}),
+        agent_name=agent_name,
+        **create_kwargs,
+    )
+    if messages:
+        agent_ctx.cw.add_messages(messages)
+    return agent_ctx
+
+
 # --- AgentLoop construction (loop tests drive the loop directly) ---
 
 
@@ -247,25 +274,27 @@ def _make_agent_loop(
     *,
     agent_name: str,
     llm: LLM,
-    transcript: LLMAgentTranscript,
     ctx: SessionContext[None],
+    messages: Sequence[InputItem] | None = None,
     tools: Sequence[BaseTool[Any, Any, Any]] | None = None,
     path: list[str] | None = None,
     max_background: int = 16,
     **loop_kwargs: Any,
 ) -> AgentLoop[None]:
-    """An ``AgentLoop`` over a fresh ``AgentContext`` built from flat parts."""
+    """
+    An ``AgentLoop`` over a fresh ``AgentContext`` built from flat parts, its
+    transcript seeded with ``messages`` (read it back as ``loop.cw.transcript``).
+    """
     agent_ctx = AgentContext.create(
-        transcript=transcript,
+        model_name=llm.model_name,
+        capabilities=llm.capabilities,
         tools={t.name: t for t in (tools or [])},
         agent_name=agent_name,
         path=path,
         max_background=max_background,
     )
-    loop_kwargs.setdefault(
-        "context_window",
-        ContextWindowManager(transcript=transcript, llm=llm, source=agent_name),
-    )
+    if messages:
+        agent_ctx.cw.add_messages(messages)
     return AgentLoop[None](
         agent_name=agent_name,
         llm=llm,

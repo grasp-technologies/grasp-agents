@@ -108,14 +108,13 @@ def _make_loop(
     retry_policy: Any = None,
 ) -> tuple[AgentLoop[None], LLMAgentTranscript]:
     llm = MockLLM(responses_queue=responses, retry_policy=retry_policy)
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    transcript.update([InputMessageItem.from_text("go", role="user")])
-
     loop = _make_agent_loop(
         agent_name="test",
         llm=llm,
-        transcript=transcript,
+        messages=[
+            InputMessageItem.from_text("sys", role="system"),
+            InputMessageItem.from_text("go", role="user"),
+        ],
         tools=tools,
         ctx=SessionContext[None](state=None),
         max_turns=max_turns,
@@ -123,7 +122,7 @@ def _make_loop(
         final_answer_type=final_answer_type,
         stream_llm=False,
     )
-    return loop, transcript
+    return loop, loop.cw.transcript
 
 
 async def _drain(loop: AgentLoop[None]) -> list[Event[Any]]:
@@ -138,7 +137,7 @@ def _tool_outputs_for(
 ) -> list[FunctionToolOutputItem]:
     return [
         m
-        for m in transcript.messages
+        for m in transcript
         if isinstance(m, FunctionToolOutputItem) and m.call_id == call_id
     ]
 
@@ -571,14 +570,16 @@ class TestTurnBoundaryEventPayloads:
         )
         # A mid-conversation boundary: the trailing input run stops at the
         # previous answer.
-        transcript.messages = [
-            OutputMessageItem(
-                status="completed",
-                content=[OutputMessageText(text="previous answer")],
-            ),
-            InputMessageItem.from_text("go", role="user"),
-        ]
-        run_input = transcript.messages[-1]
+        loop.cw.replace_transcript(
+            [
+                OutputMessageItem(
+                    status="completed",
+                    content=[OutputMessageText(text="previous answer")],
+                ),
+                InputMessageItem.from_text("go", role="user"),
+            ]
+        )
+        run_input = transcript[-1]
 
         events = await _drain(loop)
 

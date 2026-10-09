@@ -98,24 +98,29 @@ async def write_result_file(
 
 
 def excerpt_for_inline(
-    text: str, cap: int | None, *, log_file: str | None = None
+    text: str,
+    cap: int | None,
+    *,
+    log_file: str | None = None,
+    log_kind: str = "full output",
 ) -> tuple[str, bool]:
     """
     Fit a result into the limited inline space (a transcript message or a
     completion note): ``(text, truncated)``.
 
     Returns ``text`` unchanged when no cap applies or it already fits. Otherwise
-    keeps a head + tail of ``cap`` chars total with a middle marker; when an
+    keeps a head + tail of ``cap`` chars total with a middle marker; when a
     ``log_file`` is known (a spilled result or a task's ``.grasp`` log), the
-    marker points there so the model can ``Read`` / ``Grep`` the full output on
-    demand rather than bloating the transcript with it.
+    marker points there — worded as ``log_kind`` so the model knows whether it
+    is the full result or only the streamed output — so it can ``Read`` /
+    ``Grep`` the rest on demand rather than bloating the transcript with it.
     """
     if cap is None or len(text) <= cap:
         return text, False
     head = cap // 2
     tail = cap - head
     omitted = len(text) - cap
-    pointer = f" — full output in {log_file}" if log_file else ""
+    pointer = f" — {log_kind} in {log_file}" if log_file else ""
     marker = f"\n... [{omitted} chars omitted{pointer}] ...\n"
 
     return text[:head] + marker + text[-tail:], True

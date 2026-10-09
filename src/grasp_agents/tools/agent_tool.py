@@ -180,7 +180,9 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         parent_transcript: LLMAgentTranscript | None,
     ) -> tuple[str | None, str]:
         """Resolve sys_prompt and user message via builders or defaults."""
-        transcript = parent_transcript or LLMAgentTranscript()
+        transcript = (
+            parent_transcript if parent_transcript is not None else LLMAgentTranscript()
+        )
         sys_prompt = self._sys_prompt
         in_prompt = prompt
 
@@ -217,7 +219,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         del exec_id
         from grasp_agents.agent.llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
 
-        parent_transcript = agent_ctx.transcript if agent_ctx is not None else None
+        parent_transcript = agent_ctx.cw.transcript if agent_ctx is not None else None
         parent_tools = list(agent_ctx.tools.values()) if agent_ctx is not None else []
         parent_explicit_names: frozenset[str] = (
             agent_ctx.explicit_tool_names if agent_ctx is not None else frozenset()

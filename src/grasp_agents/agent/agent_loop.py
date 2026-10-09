@@ -25,6 +25,7 @@ from grasp_agents.types.errors import (
     MissingLLMResponseError,
 )
 from grasp_agents.types.events import (
+    BackgroundTaskCompletedEvent,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -89,6 +90,7 @@ from .tool_decision import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
+    from grasp_agents.agent.background_tasks import BackgroundTaskManager
     from grasp_agents.hooks import (
         AfterLlmHook,
         AfterToolHook,
@@ -98,12 +100,14 @@ if TYPE_CHECKING:
         ToolInputConverter,
         ToolOutputConverter,
     )
+    from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
     from grasp_agents.session_context import SessionContext
     from grasp_agents.types.response import Response
 
     from .agent_context import AgentContext
     from .context_window import ContextWindowManager
+
 
 logger = getLogger(__name__)
 
@@ -216,7 +220,6 @@ class AgentLoop[CtxT]:
     # Properties
 
     _agent_ctx: AgentContext
-    _cw: ContextWindowManager
     _llm: LLM
     _final_answer: str | None
     _final_answer_tool: BaseTool[BaseModel, Any, CtxT]
@@ -235,7 +238,6 @@ class AgentLoop[CtxT]:
         llm: LLM,
         ctx: SessionContext[CtxT],
         agent_ctx: AgentContext,
-        context_window: ContextWindowManager,
         path: list[str] | None = None,
         final_answer_type: type[BaseModel] = BaseModel,
         final_answer_as_tool_call: bool = False,
@@ -269,7 +271,6 @@ class AgentLoop[CtxT]:
         # Properties
 
         self._llm = llm
-        self._cw = context_window
         self._agent_ctx = agent_ctx
         self._final_answer = None
 
@@ -321,16 +322,24 @@ class AgentLoop[CtxT]:
         return self._agent_ctx
 
     @property
+    def cw(self) -> ContextWindowManager:
+        return self._agent_ctx.cw
+
+    @property
+    def bg_tasks(self) -> BackgroundTaskManager[CtxT]:
+        return self._agent_ctx.bg_tasks
+
+    @property
+    def inbox(self) -> AgentInbox | None:
+        return self._agent_ctx.inbox
+
+    @property
     def final_answer(self) -> str | None:
         return self._final_answer
 
     @property
     def llm(self) -> LLM:
         return self._llm
-
-    @property
-    def cw(self) -> ContextWindowManager:
-        return self._cw
 
     async def checkpoint(
         self,
@@ -480,10 +489,10 @@ class AgentLoop[CtxT]:
         exec_id: str,
         extra_llm_settings: dict[str, Any],
     ) -> AsyncIterator[Event[Any]]:
-        self._agent_ctx.transcript.validate_tool_call_pairing()
+        self.cw.transcript.validate_tool_call_pairing()
 
         llm_params: dict[str, Any] = {
-            "input": await self._cw.project_view(exec_id=exec_id),
+            "input": await self.cw.project_view(exec_id=exec_id),
             "output_schema": self.llm_output_schema,
             "tools": self._agent_ctx.tools or None,
             "tool_choice": tool_choice,
@@ -535,7 +544,7 @@ class AgentLoop[CtxT]:
                 # the terminal event of a response that fails validation,
                 # so the ``ResponseCompleted`` below is this turn's only one.
                 if pending:
-                    self._agent_ctx.transcript.update(pending)
+                    self.cw.add_messages(pending)
                     for ev in self._item_events(pending, exec_id=exec_id):
                         yield ev
 
@@ -556,19 +565,19 @@ class AgentLoop[CtxT]:
 
             # Clean completion → commit pending items, then surface their
             # item events (post-write, per the convention above).
-            self._agent_ctx.transcript.update(pending)
+            self.cw.add_messages(pending)
             for ev in self._item_events(pending, exec_id=exec_id):
                 yield ev
 
         else:
             try:
                 response = await self._llm.generate_response(**llm_params)
-                self._agent_ctx.transcript.update(response.output)
+                self.cw.add_messages(response.output)
 
             except LLMToolCallValidationError as exc:
                 response = exc.response
                 if response is not None:
-                    self._agent_ctx.transcript.update(response.output)
+                    self.cw.add_messages(response.output)
                     for ev in self._item_events(response.output, exec_id=exec_id):
                         yield ev
 
@@ -641,7 +650,7 @@ class AgentLoop[CtxT]:
             msg = FunctionToolOutputItem.from_tool_result(
                 call_id=item.call_id, output=err_info
             )
-            self._agent_ctx.transcript.update([msg])
+            self.cw.add_messages([msg])
             self._skip_call_ids.add(item.call_id)
             yield ToolOutputItemEvent(
                 source=item.name, destination=self.agent_name, exec_id=exec_id, data=msg
@@ -703,10 +712,10 @@ class AgentLoop[CtxT]:
             # The view overflowed the window despite (or without) proactive
             # compaction. Force a fold and retry once; if nothing can be
             # folded, surface the error.
-            fold = await self._cw.maybe_compact(exec_id=exec_id, force=True)
+            fold = await self.cw.maybe_compact(exec_id=exec_id, force=True)
             if fold is None:
                 raise
-            yield self._cw.compaction_event(fold, exec_id=exec_id)
+            yield self.cw.compaction_event(fold, exec_id=exec_id)
             logger.warning(
                 "agent '%s' hit the context window; compacted and retrying",
                 self.agent_name,
@@ -787,7 +796,7 @@ class AgentLoop[CtxT]:
         # else a launch note + a ``BackgroundTaskLaunchedEvent`` to bubble.
         bg_tasks_async: dict[int, asyncio.Task[Any]] = {
             i: asyncio.create_task(
-                self._agent_ctx.bg_tasks.run_backgroundable(
+                self.bg_tasks.run_backgroundable(
                     call,
                     tool,
                     inp,
@@ -813,7 +822,7 @@ class AgentLoop[CtxT]:
                         ctx=self.ctx,
                         exec_id=exec_id,
                         path=make_tool_call_path(self.path, call.call_id),
-                        agent_ctx=self._agent_ctx,
+                        agent_ctx=self._agent_ctx.for_tool_call(call.call_id),
                     )
                     for _, call, tool, inp in immediate
                 ]
@@ -876,7 +885,7 @@ class AgentLoop[CtxT]:
                 continue
             msg = await self._convert_tool_output(output, call, exec_id=exec_id)
             tool_messages.append(msg)
-            self._agent_ctx.transcript.update([msg])
+            self.cw.add_messages([msg])
             yield ToolOutputItemEvent(
                 source=call.name, destination=self.agent_name, exec_id=exec_id, data=msg
             )
@@ -902,7 +911,7 @@ class AgentLoop[CtxT]:
             ),
             role="user",
         )
-        self._agent_ctx.transcript.update([user_message])
+        self.cw.add_messages([user_message])
         # TODO: set source
         yield UserMessageEvent(
             source=None,
@@ -945,6 +954,8 @@ class AgentLoop[CtxT]:
 
         await self.on_after_llm(response, turn=self.turn, exec_id=exec_id)
 
+        # NOTE: Why do we skip emitting a GenerationEndEvent here?
+
         self._final_answer = self._extract_final_answer(
             response=response, exec_id=exec_id
         )
@@ -979,7 +990,7 @@ class AgentLoop[CtxT]:
             return []
         answered = {
             m.call_id
-            for m in self._agent_ctx.transcript.messages
+            for m in self.cw.transcript
             if isinstance(m, FunctionToolOutputItem)
         }
         for tc in tool_calls:
@@ -1008,7 +1019,7 @@ class AgentLoop[CtxT]:
             for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self._agent_ctx.transcript.update([msg for _, msg in closures])
+            self.cw.add_messages([msg for _, msg in closures])
 
         return closures
 
@@ -1040,7 +1051,7 @@ class AgentLoop[CtxT]:
             for tc in self._unanswered_tool_calls(response)
         ]
         if closures:
-            self._agent_ctx.transcript.update([msg for _, msg in closures])
+            self.cw.add_messages([msg for _, msg in closures])
 
         return closures
 
@@ -1100,10 +1111,10 @@ class AgentLoop[CtxT]:
             tool_calls=response.tool_call_items,
             turn=self.turn,
             max_turns=self.max_turns,
-            blocking_bg_tasks=self._agent_ctx.bg_tasks.has_blocking_tasks,
+            blocking_bg_tasks=self.bg_tasks.has_blocking_tasks,
             deadline_exceeded=self._deadline is not None
             and time.monotonic() >= self._deadline,
-            inbox_open=self._agent_ctx.inbox is not None,
+            inbox_open=self.inbox is not None,
             turns_on_message=self.turn - self._message_start_turn,
         )
 
@@ -1173,6 +1184,7 @@ class AgentLoop[CtxT]:
                 # it to the dispatcher, which consumes and skips it.
                 allowed_calls.append(call)
                 continue
+
             decision = (decisions or {}).get(call.call_id, AllowTool())
             if isinstance(decision, RejectToolContent):
                 msg = FunctionToolOutputItem.from_tool_result(
@@ -1180,7 +1192,7 @@ class AgentLoop[CtxT]:
                 )
                 tool_msgs.append(msg)
                 rejection_msgs.append(msg)
-                self._agent_ctx.transcript.update([msg])
+                self.cw.add_messages([msg])
                 yield ToolOutputItemEvent(
                     source=call.name,
                     destination=self.agent_name,
@@ -1298,7 +1310,7 @@ class AgentLoop[CtxT]:
         the loop with the given ``stop_reason`` (``MAX_TURNS`` or ``TIMEOUT``).
         Background tasks are NOT cancelled — exhausting a turn budget must not
         kill deliberately backgrounded work; completion notes land at a later
-        run's drain.
+        run's turn boundary.
         """
         closures = self._close_dangling_tool_calls(response)
         for closure_event in self._closure_events(closures, exec_id=exec_id):
@@ -1327,6 +1339,8 @@ class AgentLoop[CtxT]:
                 tool_outputs=[msg for _, msg in closures],
             ),
         )
+
+        # NOTE: Should we log first instead (as in _handle_force_resident_answer)?
 
         if stop_reason is StopReason.TIMEOUT:
             logger.info(
@@ -1460,14 +1474,6 @@ class AgentLoop[CtxT]:
 
     # --- Inbox / background-task message queues ---
 
-    async def _await_bg_tasks(self) -> None:
-        idle_timeout = (
-            max(0.0, self._deadline - time.monotonic())
-            if self._deadline is not None
-            else None
-        )
-        await self._agent_ctx.bg_tasks.wait_idle(timeout=idle_timeout)
-
     async def _await_inbox(self) -> None:
         """
         Resident PRE-ACT wait — the inbox counterpart to
@@ -1476,40 +1482,49 @@ class AgentLoop[CtxT]:
         completion (both surfaced by the drains below). Ended from outside by
         cancelling the resident run's task.
         """
-        inbox = self._agent_ctx.inbox
-        assert inbox is not None
+        assert self.inbox is not None
+
+        # NOTE: inbox.has_pending can be a property?
 
         # Mark the inbox parked ("waiting") so a team supervisor can read this loop
         # as idle while it blocks here (the per-actor quiescence signal).
-        with inbox.waiting():
+        with self.inbox.waiting():
             while not (
-                await inbox.has_pending()
-                or self._agent_ctx.bg_tasks.has_undelivered_completions
+                await self.inbox.has_pending()
+                or self.bg_tasks.has_undelivered_completions
             ):
-                await inbox.wait(timeout=self._inbox_poll_interval)
+                await self.inbox.wait(timeout=self._inbox_poll_interval)
+
+    async def _await_bg_tasks(self) -> None:
+        idle_timeout = (
+            max(0.0, self._deadline - time.monotonic())
+            if self._deadline is not None
+            else None
+        )
+        await self.bg_tasks.wait_idle(timeout=idle_timeout)
 
     async def _drain_inbox(self, *, exec_id: str) -> AsyncIterator[Event[Any]]:
         """
         Deliver the next peer / human message as a user turn at the turn boundary —
-        the resident counterpart to :meth:`BackgroundTaskManager.drain`. The inbox
-        leases the message (released on this turn's checkpoint), and holds the next
-        until then, so one message lands per turn yet new mail enters *between*
-        turns — the agent need not reach a final answer first. A no-op with no inbox
+        the resident counterpart to :meth:`_drain_bg_completions`. The inbox leases
+        the message (released on this turn's checkpoint), and holds the next until
+        then, so one message lands per turn yet new mail enters *between* turns —
+        the agent need not reach a final answer first. A no-op with no inbox
         attached (non-resident) or none queued (the wait was woken by a
         background-task completion instead).
         """
-        inbox = self._agent_ctx.inbox
-        if inbox is None:
+        if self.inbox is None:
             return
 
-        message = await inbox.take()
+        # NOTE: Need to discuss why we take one message at a time
+        message = await self.inbox.take()
         if message is None:
             return
 
         # A new message resets the per-message turn budget (see decide_next_step).
         self._message_start_turn = self.turn
         item = message.to_input_message()
-        self._agent_ctx.transcript.update([item])
+        self.cw.add_messages([item])
 
         # ``source`` names the mailbox sender (a peer, or "user" for human
         # input), so a UI can tell queued human turns from peer hand-offs.
@@ -1520,6 +1535,27 @@ class AgentLoop[CtxT]:
             exec_id=exec_id,
         )
 
+    async def _drain_bg_completions(self, *, exec_id: str) -> AsyncIterator[Event[Any]]:
+        """
+        Deliver every finished background task's completion note as a user turn
+        at the turn boundary — the counterpart to :meth:`_drain_inbox` for the
+        other side channel. Each note enters the transcript (through the owner
+        of both the log and the task manager) before its events fire, per the
+        ``_item_events`` convention.
+        """
+        for done in await self.bg_tasks.pop_completions(ctx=self.ctx):
+            self._agent_ctx.deliver_task_notes([done.note])
+
+            yield BackgroundTaskCompletedEvent(
+                source=self.agent_name, exec_id=exec_id, data=done.info
+            )
+            yield UserMessageEvent(
+                source=done.info.tool_name,
+                destination=self.agent_name,
+                exec_id=exec_id,
+                data=done.note.message,
+            )
+
     def _turn_input_messages(self) -> list[InputItem]:
         """
         The input messages the upcoming turn responds to: the transcript's
@@ -1528,7 +1564,7 @@ class AgentLoop[CtxT]:
         turn follows a tool round or an answer.
         """
         inputs: list[InputItem] = []
-        for item in reversed(self._agent_ctx.transcript.messages):
+        for item in reversed(self.cw.transcript):
             if not isinstance(item, InputMessageItem):
                 break
             inputs.append(item)
@@ -1570,14 +1606,14 @@ class AgentLoop[CtxT]:
         # agent's whole run. A resident is instead bounded *per inbox message*
         # (``turns_on_message`` in ``decide_next_step``): a runaway message force-
         # finalizes and the loop moves on, but the run itself only ends on cancel.
-        while self._agent_ctx.inbox is not None or self.turn <= self.max_turns:
+        while self.inbox is not None or self.turn <= self.max_turns:
             # ── PRE-ACT: prepare for generation ──
 
             # Wait for new inbox messages or background-task completions only if
             # the agent has nothing to respond to (user messages or tool outputs)
             # at this turn.
-            if not self._agent_ctx.transcript.owes_response:
-                if self._agent_ctx.inbox is not None:
+            if not self.cw.transcript.owes_response:
+                if self.inbox is not None:
                     # Resident: park for the next inbox message (or a pending
                     # background completion). Indefinite — ended only when the
                     # run's task is cancelled from outside.
@@ -1591,20 +1627,32 @@ class AgentLoop[CtxT]:
                     await self._await_bg_tasks()
 
             # Turn-boundary delivery: the next resident inbox message as a user
-            # turn, then any background-task completions (bubbling their events,
-            # mirroring stream output to the .grasp logs, etc.).
+            # turn, then the background tasks' live progress (bubbled events,
+            # mirrored to the .grasp logs) and any completions.
+            delivered_from = len(self.cw.transcript)
             async for event in self._drain_inbox(exec_id=exec_id):
                 yield event
 
-            bg_tasks = self._agent_ctx.bg_tasks
-            async for event in bg_tasks.drain(exec_id=exec_id, ctx=self.ctx):
+            # Bubble live progress events from background tasks
+            async for event in self.bg_tasks.bubble_events(ctx=self.ctx):
                 yield event
+
+            async for event in self._drain_bg_completions(exec_id=exec_id):
+                yield event
+
+            if len(self.cw.transcript) > delivered_from:
+                # Side-channel input is made durable before the turn responds to
+                # it, exactly like a step's input; the save also acks the inbox
+                # message and flips the delivered tasks' records.
+                await self.checkpoint(
+                    turn=self.turn, location=AgentCheckpointLocation.AFTER_INPUT
+                )
 
             # Compaction: fold an old span before generating if the view
             # approaches the budget (no-op without a compactor / under budget).
-            fold = await self._cw.maybe_compact(exec_id=exec_id)
+            fold = await self.cw.maybe_compact(exec_id=exec_id)
             if fold is not None:
-                yield self._cw.compaction_event(fold, exec_id=exec_id)
+                yield self.cw.compaction_event(fold, exec_id=exec_id)
 
             yield TurnStartEvent(
                 source=self.agent_name,
@@ -1722,7 +1770,7 @@ class AgentLoop[CtxT]:
         if usage is not None and usage.input_tokens:
             # Anchor the compaction budget on the provider's exact reported count
             # for the view just sent.
-            self._cw.note_response_usage(usage.input_tokens)
+            self.cw.note_response_usage(usage.input_tokens)
 
         self.ctx.usage_tracker.update(agent_name=self.agent_name, responses=[response])
 
