@@ -247,6 +247,24 @@ wheels = [
 ]
 
 [[package]]
+name = "arize-phoenix-client"
+version = "3.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-sdk" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a5/43/564a6250a64a8dbd05239fca547fac74f47ef003c3d2284cb86edc05ff61/arize_phoenix_client-3.5.0.tar.gz", hash = "sha256:6f9013457f6f56d56db65f61877369eae7bd23460212030b54da68cb0a4d8047", size = 311114, upload-time = "2026-09-08T22:24:52.577Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/e6/ce7d4acb909595d215a81effd1af1ee33e7ce09f1d53b095d8441afeed17/arize_phoenix_client-3.5.0-py3-none-any.whl", hash = "sha256:db7d05b692db0389d8d3306d59579793264f8ec3b2f7e9e5d724e9160ac78f72", size = 263582, upload-time = "2026-09-08T22:24:50.833Z" },
+]
+
+[[package]]
 name = "arize-phoenix-otel"
 version = "0.17.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1296,7 +1314,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "1.0.35"
+version = "1.0.36"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -1312,6 +1330,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "anthropic", extra = ["bedrock", "vertex"] },
+    { name = "arize-phoenix-client" },
     { name = "arize-phoenix-otel" },
     { name = "catppuccin" },
     { name = "chafa-py" },
@@ -1367,6 +1386,7 @@ notebook-edit = [
     { name = "nbformat" },
 ]
 phoenix = [
+    { name = "arize-phoenix-client" },
     { name = "arize-phoenix-otel" },
     { name = "openinference-instrumentation-anthropic" },
     { name = "openinference-instrumentation-google-genai" },
@@ -1412,6 +1432,7 @@ requires-dist = [
     { name = "anthropic", extras = ["bedrock"], marker = "extra == 'bedrock'", specifier = ">=0.84,<1" },
     { name = "anthropic", extras = ["bedrock", "vertex"], marker = "extra == 'all-llm-providers'", specifier = ">=0.84,<1" },
     { name = "anthropic", extras = ["vertex"], marker = "extra == 'vertex'", specifier = ">=0.84,<1" },
+    { name = "arize-phoenix-client", marker = "extra == 'phoenix'", specifier = ">=3.5,<4" },
     { name = "arize-phoenix-otel", marker = "extra == 'phoenix'", specifier = ">=0.13.1,<1" },
     { name = "catppuccin", marker = "extra == 'tui'", specifier = ">=2.5.0,<3" },
     { name = "chafa-py", marker = "extra == 'tui'", specifier = ">=1.2,<2" },
