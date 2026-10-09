@@ -1213,10 +1213,10 @@ async def test_e2b_live_background_writes_greppable_log() -> None:
 
         keys = await store.list_keys(task_prefix("s1"))
         rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")
-        assert rec.output_path is not None
-        assert ".grasp/tasks" in rec.output_path
+        assert rec.log_path is not None
+        assert ".grasp/tasks" in rec.log_path
         # The log lives in the remote sandbox FS and holds the streamed output.
-        content, _ = await env.file_backend.read_text(Path(rec.output_path))
+        content, _ = await env.file_backend.read_text(Path(rec.log_path))
         assert "HELLO" in content
 
         await kill(mgr, task_id)

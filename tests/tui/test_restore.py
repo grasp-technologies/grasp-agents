@@ -134,7 +134,7 @@ async def test_rebuilds_completed_task_pane_with_log(tmp_path: Path) -> None:
         tool_call_id="call_1",
         tool_name="index_sources",
         status=TaskStatus.COMPLETED,
-        output_path=str(log),
+        log_path=str(log),
     )
     await store.save(
         f"{ctx.session_key}/task/lead/tc_call_1", record.model_dump_json().encode()
@@ -165,7 +165,7 @@ async def test_running_task_pane_stays_open_and_routed(tmp_path: Path) -> None:
         tool_call_id="call_2",
         tool_name="index_sources",
         status=TaskStatus.RUNNING,
-        output_path=str(log),
+        log_path=str(log),
     )
     await store.save(
         f"{ctx.session_key}/task/lead/tc_call_2", record.model_dump_json().encode()

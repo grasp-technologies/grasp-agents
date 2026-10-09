@@ -949,8 +949,8 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             self._ga_parent.setdefault(key, agent)
         pane = await self._ensure(key)
         head = f"⧗ {info.tool_name} running in background (id: {info.task_id})"
-        if info.output_name:
-            head += f" · {info.output_name}"
+        if info.log_name:
+            head += f" · {info.log_name}"
         await pane.mount(
             SelectableStatic(Text(head, style=PALETTE["warn"]), classes="ga-msg")
         )
@@ -1267,7 +1267,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         elif isinstance(event, BackgroundTaskLaunchedEvent):
             child, parent = event.data.tool_name, event.source
             # its subsequent streamed output is background progress, not a result
-            self._ga_bg_tools[event.data.tool_name] = event.data.output_name
+            self._ga_bg_tools[event.data.tool_name] = event.data.log_name
         if child and parent and child != parent:
             self._ga_parent.setdefault(child, parent)
 

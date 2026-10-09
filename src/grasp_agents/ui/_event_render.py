@@ -286,8 +286,8 @@ def render_event(
     if isinstance(event, BackgroundTaskLaunchedEvent):
         i = event.data
         text = f"⧗ {i.tool_name} launched in background (id: {i.task_id})"
-        if i.output_name:
-            text += f" · {i.output_name}"
+        if i.log_name:
+            text += f" · {i.log_name}"
         return Text(text, style=PALETTE["warn"])
 
     if isinstance(event, BackgroundTaskCompletedEvent):

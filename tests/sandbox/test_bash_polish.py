@@ -916,9 +916,9 @@ async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
     keys = await store.list_keys(task_prefix(ctx.session_key))
     rec = TaskRecord.model_validate_json(await store.load(keys[0]))
     # The record indexes an agent-readable .grasp/tasks log holding the output.
-    assert rec.output_path is not None
-    assert ".grasp/tasks" in rec.output_path
-    log = _Path(rec.output_path)
+    assert rec.log_path is not None
+    assert ".grasp/tasks" in rec.log_path
+    log = _Path(rec.log_path)
     assert log.exists()
     assert "HELLO" in log.read_text()
 
@@ -966,7 +966,7 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     await asyncio.sleep(0.2)
     await _flush(
         loop.agent_ctx.bg_tasks, ctx
-    )  # mirrors the .grasp log (output_path set at launch)
+    )  # mirrors the .grasp log (log_path set at launch)
 
     # Simulate a crash: drop the in-flight task without finalizing the record.
     for pt in list(loop.agent_ctx.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]

@@ -338,7 +338,7 @@ async def test_backgrounded_tool_stream_does_not_displace_next_tool() -> None:
                 task_id="bg_1",
                 tool_name="Bash",
                 tool_call_id="b1",
-                output_name="b1.log",
+                log_name="b1.log",
             ),
             source="de",
         )

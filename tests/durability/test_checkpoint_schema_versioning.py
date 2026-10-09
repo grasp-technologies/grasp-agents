@@ -166,6 +166,22 @@ class TestTaskRecordVersion:
         with pytest.raises(CheckpointSchemaError):
             TaskRecord.model_validate_json(future)
 
+    def test_v15_output_path_loads_as_log_path(self) -> None:
+        v15 = json.dumps(
+            {
+                "schema_version": 15,
+                "task_id": "t1",
+                "session_key": "s1",
+                "tool_call_id": "c1",
+                "tool_name": "do_thing",
+                "output_path": ".grasp/tasks/c1.log",
+            }
+        )
+        loaded = TaskRecord.model_validate_json(v15)
+        assert loaded.log_path == ".grasp/tasks/c1.log"
+        # Re-saved under the current name.
+        assert json.loads(loaded.model_dump_json())["log_path"] == ".grasp/tasks/c1.log"
+
 
 class TestDeserializePropagation:
     """_deserialize_checkpoint must re-raise CheckpointSchemaError, not swallow it."""

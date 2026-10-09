@@ -595,7 +595,7 @@ class EventConsole:
         # Track name so we can suppress the subagent's internal events. The
         # launch itself stays silent — the eventual result panel covers it.
         self._bg_tool_counts[event.data.tool_name] += 1
-        self._bg_tool_logs[event.data.tool_name] = event.data.output_name
+        self._bg_tool_logs[event.data.tool_name] = event.data.log_name
 
     def _on_bg_completed(self, event: BackgroundTaskCompletedEvent) -> None:
         # Drop the suppression once the last in-flight task of this tool ends,

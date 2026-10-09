@@ -115,10 +115,10 @@ class BackgroundTaskInfo(BaseModel):
     task_id: str
     tool_name: str
     tool_call_id: str
-    # basename of the task's streamed-output log, when one is written (a file
+    # Basename of the task's streamed-output log, when one is written (a file
     # backend is attached); the task's live output is mirrored there rather than
     # placed in the agent's context. ``None`` when no log is written.
-    output_name: str | None = None
+    log_name: str | None = None
 
 
 class BackgroundTaskLaunchedEvent(Event[BackgroundTaskInfo], frozen=True):

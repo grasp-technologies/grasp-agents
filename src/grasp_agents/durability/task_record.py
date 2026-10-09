@@ -1,6 +1,8 @@
 from enum import StrEnum, auto
 from typing import NotRequired, TypedDict
 
+from pydantic import AliasChoices, Field
+
 from .checkpoints import PersistedRecord
 
 
@@ -68,7 +70,11 @@ class TaskRecord(PersistedRecord):
     # flips DELIVERED.
     note_transcript_pos: int | None = None
 
-    # The agent-readable ``.grasp/tasks`` log file holding this task's full
-    # streamed output (the single source of truth for it; ``None`` when no file
-    # backend is wired). On resume the interrupted notice points the agent here.
-    output_path: str | None = None
+    # The agent-readable ``.grasp/tasks`` log mirroring this task's streamed
+    # output (``None`` when no file backend is wired). A result too large to
+    # inline is spilled to a separate ``.result`` file. On resume the
+    # interrupted notice points the agent here. Records before v16 call it
+    # ``output_path``.
+    log_path: str | None = Field(
+        default=None, validation_alias=AliasChoices("log_path", "output_path")
+    )
