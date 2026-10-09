@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from operator import itemgetter
-from typing import Any
+from typing import Any, cast
 
 from .compare import Comparison, TargetComparison
 from .types import EvaluationRun, MetricResult, Score, Trial
@@ -111,6 +111,30 @@ def _lowest(
     return rows[:limit]
 
 
+def _confusion_table(metric: MetricResult) -> list[str]:
+    labels = metric.details.get("labels")
+    counts = metric.details.get("counts")
+    if not (isinstance(labels, list) and labels and isinstance(counts, dict)):
+        return []
+    names = [str(label) for label in cast("list[Any]", labels)]
+    table = cast("dict[str, dict[str, int]]", counts)
+    rows = metric.details.get("truth", "truth")
+    columns = metric.details.get("judged", "judged")
+    lines = [
+        "",
+        f"## {metric.name}",
+        "",
+        f"Rows: `{rows}`; columns: `{columns}`.",
+        "",
+        "| | " + " | ".join(_cell(n) for n in names) + " |",
+        "|---|" + "---|" * len(names),
+    ]
+    for truth in names:
+        cells = [str(table.get(truth, {}).get(judged, 0)) for judged in names]
+        lines.append(f"| **{_cell(truth)}** | " + " | ".join(cells) + " |")
+    return lines
+
+
 def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
     """Summary of a run: identity, metrics, failures and the weakest examples."""
     lines = [f"# {run.name} — {run.status}"]
@@ -194,6 +218,8 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         ]
         for metric in run.metrics:
             lines.extend(_metric_rows(metric, hidden))
+        for metric in run.metrics:
+            lines.extend(_confusion_table(metric))
 
     errors = [t for t in run.trials if t.error is not None]
     if errors:

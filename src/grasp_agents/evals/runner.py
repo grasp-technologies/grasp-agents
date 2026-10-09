@@ -23,7 +23,7 @@ from ._execution import (
 )
 from ._util import new_run_id, utc_now
 from .dataset import Dataset
-from .metrics import Metric
+from .metrics import MetricsSpec
 from .scorer import Scorer
 from .store import RunStore
 from .task import Task, TaskFn, as_task
@@ -227,7 +227,7 @@ async def evaluate[InT, OutT, RefT](
     task: TaskLike[InT, OutT],
     dataset: Dataset[InT, RefT],
     scorers: Sequence[Scorer[InT, OutT, RefT]] = (),
-    metrics: Sequence[Metric] | None = None,
+    metrics: MetricsSpec = None,
     *,
     name: str | None = None,
     description: str | None = None,
@@ -457,7 +457,7 @@ def _without(trial: Trial, replaced: set[str]) -> Trial:
 async def rescore(
     run: "str | EvaluationRun",
     scorers: Sequence[Scorer[Any, Any, Any]],
-    metrics: Sequence[Metric] | None = None,
+    metrics: MetricsSpec = None,
     *,
     input_type: Any = Any,
     reference_type: Any = Any,

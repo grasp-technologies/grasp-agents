@@ -40,11 +40,43 @@ TEST=$(evals run "${SPEC}:grader_v2" --split test --json -q \
   --fail-under 'pass_rate(agrees_with_teacher)=0.6' | run_id)
 evals show "$TEST"
 
-step "8. Everything recorded so far"
+step "8. Is the feedback judge any good? Agreement with teachers' labels on dev"
+J1=$(evals run "${SPEC}:judge_v1_validation" --split dev --json -q | run_id)
+J2=$(evals run "${SPEC}:judge_v2_validation" --split dev --json -q | run_id)
+evals show "$J2" --failures
+evals compare "$J1" "$J2"
+
+step "9. Probe it: degraded feedback must fail, padded feedback must not move"
+evals run "${SPEC}:judge_v2_probes" -q
+
+step "10. The judge's final check on its sealed test split, then grading with it"
+evals run "${SPEC}:judge_v2_validation" --split test -q
+JUDGED=$(evals run "${SPEC}:grader_v2_judged" --split dev --json -q | run_id)
+evals show "$JUDGED"
+
+step "11. More labels: sample outputs to label (blind), fill them in, merge"
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/grasp-evals-labels.XXXXXX")
+LABELS=src/grasp_agents/examples/evals/data/feedback_labels.jsonl
+evals labels sample "$JUDGED" --score feedback_quality --against names_key_issue \
+  -n 5 --exclude "$LABELS" -o "$WORK/to_label.jsonl"
+cp "$LABELS" "$WORK/labels.jsonl"
+# A person would fill in each "reference"; here every feedback is marked specific.
+python3 - "$WORK/to_label.jsonl" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = [json.loads(line) for line in open(path)]
+with open(path, "w") as f:
+    for row in rows:
+        f.write(json.dumps({**row, "reference": True}) + "\n")
+PY
+evals labels import "$WORK/to_label.jsonl" --into "$WORK/labels.jsonl" --labeler demo
+evals labels show "$WORK/labels.jsonl"
+
+step "12. Everything recorded so far"
 evals runs
 
 if [[ -n "${PHOENIX_BASE_URL:-}" ]]; then
-  step "9. Mirror the runs to Phoenix (the sealed test run as aggregates only)"
+  step "13. Mirror the runs to Phoenix (the sealed test run as aggregates only)"
   evals push "$V2"
   evals push "$TEST"
 fi

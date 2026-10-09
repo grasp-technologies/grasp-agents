@@ -297,3 +297,100 @@ def test_progress_can_be_json_lines(
     shown = {e["trial"].get("example_id") for e in events}
     assert shown == {"x0", "x1", "x2", "x3", None}  # sealed trials are redacted
     assert events[-1]["task_errors"] == 0
+
+
+_JUDGED = """
+import json
+from pathlib import Path
+
+from grasp_agents.evals import (
+    Dataset, ScoreContext, Evaluation, Example, FunctionTask, PassRate,
+    ValidationGate, scorer, judge_validation,
+)
+
+LABELS = Path(__file__).with_name("labels.jsonl")
+LABELS.write_text("".join(
+    json.dumps({"id": f"o{i}", "input": {"input": i, "output": i * 2},
+                "reference": i % 2 == 0, "splits": ["test" if i > 3 else "dev"]}) + "\\n"
+    for i in range(8)
+))
+
+@scorer(name="even", annotator="LLM")
+def even(ctx: ScoreContext[int, int, bool]) -> bool:
+    return ctx.output % 4 == 0
+
+async def double(x: int) -> int:
+    return x * 2
+
+judged = Evaluation(
+    name="judged",
+    task=FunctionTask(double),
+    dataset=Dataset([Example(id=f"x{i}", input=i) for i in range(4)]),
+    scorers=[even],
+    validation_gates={"even": ValidationGate(min_accuracy=0.0)},
+)
+even_validation = judge_validation(even, LABELS, input_type=int, output_type=int)
+listed = Evaluation(
+    name="listed",
+    task=FunctionTask(double),
+    dataset=Dataset([Example(id=f"x{i}", input=i) for i in range(4)]),
+    scorers=[even],
+    metrics=[PassRate("even")],
+    validation_gates={"even": ValidationGate(min_accuracy=0.0)},
+)
+"""
+
+
+def test_unvalidated_judges_fail_the_run_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = tmp_path / "judged_evals.py"
+    module.write_text(textwrap.dedent(_JUDGED))
+    root = str(tmp_path / "evals")
+    code, payload = _run_json(
+        capsys, "--root", root, "run", f"{module}:judged", "--json", "-q"
+    )
+    assert code == 1
+    assert payload["error"]["type"] == "UnvalidatedJudgeError"
+    code, allowed = _run_json(
+        capsys,
+        "--root",
+        root,
+        "run",
+        f"{module}:judged",
+        "--allow-unvalidated",
+        "--json",
+        "-q",
+    )
+    assert code == 0
+    assert allowed["status"] == "completed"
+    code, _ = _run_json(
+        capsys,
+        "--root",
+        root,
+        "run",
+        f"{module}:even_validation",
+        "--split",
+        "test",
+        "--json",
+        "-q",
+    )
+    assert code == 0
+    code, validated = _run_json(
+        capsys, "--root", root, "run", f"{module}:judged", "--json", "-q"
+    )
+    assert code == 0
+    assert "corrected_pass_rate(even)" in validated["metrics"]
+    code, listed = _run_json(
+        capsys,
+        "--root",
+        root,
+        "run",
+        f"{module}:listed",
+        "--fail-under",
+        "corrected_pass_rate(even)=0.0",
+        "--json",
+        "-q",
+    )
+    assert code == 0
+    assert listed["gate_failures"] == []

@@ -13,13 +13,19 @@ from grasp_agents.processors.processor import Processor
 from ._execution import ProgressCallback
 from ._util import SPEC_MODULE_PREFIX, short_hash
 from .dataset import Dataset, DatasetCheck, DatasetError, DatasetProblem
-from .metrics import Metric
+from .metrics import MetricsSpec, default_metrics
 from .runner import evaluate as evaluate_task
 from .runner import rescore
 from .scorer import Scorer
 from .store import LocalRunStore, RunStore
 from .task import Task, as_task
-from .types import EvaluationRun
+from .types import EvaluationRun, Trial
+from .validation import (
+    CorrectedPassRate,
+    UnvalidatedJudgeError,
+    ValidationGate,
+    check_validations,
+)
 
 PHOENIX_PREFIX = "phoenix:"
 
@@ -92,7 +98,7 @@ class Evaluation:
     task: TaskSource
     dataset: DatasetSource
     scorers: Sequence[Scorer[Any, Any, Any]] = ()
-    metrics: Sequence[Metric] | None = None
+    metrics: MetricsSpec = None
     description: str | None = None
     # Types used to validate dataset files and stored outputs; they default to
     # the task's (a processor's ``in_type`` / ``out_type``).
@@ -114,6 +120,13 @@ class Evaluation:
     sealed_splits: Sequence[str] = ()
     # Integrity checks run on the dataset before every run.
     dataset_checks: Mapping[str, DatasetCheck] | Sequence[DatasetCheck] = ()
+    # Scores whose judge must have passed validation on held-out labels before
+    # this evaluation scores anything: the newest validation run of the judge
+    # exactly as it is now must meet the gate. Their pass rates are also
+    # reported corrected for the judge's measured errors.
+    validation_gates: Mapping[str, ValidationGate] = field(
+        default_factory=dict[str, ValidationGate]
+    )
     tags: Sequence[str] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict[str, Any])
     # Import spec this definition was loaded from (set by ``load_evaluation``).
@@ -174,6 +187,50 @@ class Evaluation:
 
     def check_dataset(self, dataset: Dataset[Any, Any]) -> list[DatasetProblem]:
         return dataset.check(self.dataset_checks) if self.dataset_checks else []
+
+    def check_judges(
+        self, store: RunStore | None = None, *, allow_unvalidated: bool = False
+    ) -> tuple[MetricsSpec, dict[str, Any]]:
+        """
+        Check :attr:`validation_gates` against the validation runs in
+        ``store``: the metrics to report (with corrected pass rates for
+        validated binary judges) and what to record on the run. Raises
+        :class:`UnvalidatedJudgeError` unless ``allow_unvalidated``.
+        """
+        if not self.validation_gates:
+            return self.metrics, {}
+        found, failures = check_validations(
+            store if store is not None else LocalRunStore(),
+            self.scorers,
+            self.validation_gates,
+        )
+        if failures and not allow_unvalidated:
+            listed = "\n".join(f"  {failure}" for failure in failures)
+            raise UnvalidatedJudgeError(
+                f"{self.name}: judges are not validated:\n{listed}\nRun their "
+                "validation evaluations first, or allow unvalidated judges."
+            )
+        record: dict[str, Any] = {
+            "judge_validations": {s: v.brief() for s, v in found.items()},
+            "unvalidated_judges": failures,
+        }
+        corrected = [
+            CorrectedPassRate(score, rates, threshold=validation.threshold)
+            for score, validation in found.items()
+            if (rates := validation.rates()) is not None
+        ]
+        metrics = self.metrics
+        if not corrected:
+            return metrics, record
+        if metrics is not None and not callable(metrics):
+            return [*metrics, *corrected], record
+        base = metrics
+
+        def with_corrected(trials: Sequence[Trial]) -> list[Any]:
+            chosen = default_metrics(trials) if base is None else list(base(trials))
+            return [*chosen, *corrected]
+
+        return with_corrected, record
 
     async def select(
         self,
@@ -245,7 +302,13 @@ class Evaluation:
         progress: ProgressCallback | None = None,
         check: bool = True,
         phoenix_url: str | None = None,
+        allow_unvalidated: bool = False,
     ) -> EvaluationRun:
+        metrics, judges = (
+            self.check_judges(store, allow_unvalidated=allow_unvalidated)
+            if score
+            else (self.metrics, {})
+        )
         data = await self.select(
             dataset=dataset,
             split=split,
@@ -264,7 +327,7 @@ class Evaluation:
             self.build_task(),
             data,
             self.scorers,
-            self.metrics,
+            metrics,
             name=name or self.name,
             description=self.description,
             repetitions=repetitions if repetitions is not None else self.repetitions,
@@ -286,7 +349,7 @@ class Evaluation:
             resume=resume,
             force=force,
             tags=[*self.tags, *tags],
-            metadata={**self.metadata, **(metadata or {})},
+            metadata={**self.metadata, **(metadata or {}), **judges},
             evaluation=self.spec,
             progress=progress,
         )
@@ -300,16 +363,19 @@ class Evaluation:
         persist: bool = True,
         concurrency: int | None = None,
         progress: ProgressCallback | None = None,
+        allow_unvalidated: bool = False,
     ) -> EvaluationRun:
         """
         Re-score a stored run of this evaluation with its current scorers:
         changed ones run again, unchanged ones only where they failed or did
-        not run (all of them with ``rerun=True``).
+        not run (all of them with ``rerun=True``). Gated judges must be
+        validated, as for :meth:`run`.
         """
+        metrics, judges = self.check_judges(store, allow_unvalidated=allow_unvalidated)
         return await rescore(
             run,
             self.scorers,
-            self.metrics,
+            metrics,
             input_type=self.resolved_input_type,
             reference_type=self.reference_type,
             output_type=self.resolved_output_type,
@@ -320,6 +386,7 @@ class Evaluation:
             rerun=rerun,
             store=store,
             persist=persist,
+            metadata=judges,
             progress=progress,
         )
 

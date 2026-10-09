@@ -11,7 +11,7 @@ exit code says what happened:
 - 0: done;
 - 1: a gate failed — the run is invalid or incomplete, a ``--fail-under``
   threshold is missed, ``--fail-on-regression`` found a significant regression
-  against ``--baseline``, or a dataset is invalid;
+  against ``--baseline``, a judge is not validated, or a dataset is invalid;
 - 2: usage error (bad arguments, spec, dataset file or run reference);
 - 3: an unexpected error, or Phoenix failed.
 """
@@ -50,6 +50,7 @@ from .report import (
 from .runner import ResumeError, SealedSelectionError
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
 from .types import EvaluationRun, RunStatus, Trial
+from .validation import UnvalidatedJudgeError
 
 EXIT_OK = 0
 EXIT_GATE = 1
@@ -150,9 +151,12 @@ def _parse_thresholds(values: Sequence[str]) -> dict[str, float]:
 def _check_threshold_names(
     evaluation: Evaluation, thresholds: dict[str, float]
 ) -> None:
-    if evaluation.metrics is None or not thresholds:
+    metrics = evaluation.metrics
+    if metrics is None or callable(metrics) or not thresholds:
         return
-    known = [m.name for m in evaluation.metrics]
+    known = [m.name for m in metrics] + [
+        f"corrected_pass_rate({score})" for score in evaluation.validation_gates
+    ]
     unknown = [n for n in thresholds if n not in known]
     if unknown:
         raise CLIError(f"--fail-under names unknown metrics {unknown}; known: {known}")
@@ -228,6 +232,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
         tags=args.tag,
         progress=_progress_printer(args.progress),
         phoenix_url=args.base_url,
+        allow_unvalidated=args.allow_unvalidated,
     )
     comparison = compare(baseline, run) if baseline is not None else None
     pushed: str | None = None
@@ -303,7 +308,11 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
         )
     evaluation = load_evaluation(spec)
     child = await evaluation.rescore(
-        parent, rerun=args.rerun, store=store, progress=_progress_printer(args.progress)
+        parent,
+        rerun=args.rerun,
+        store=store,
+        progress=_progress_printer(args.progress),
+        allow_unvalidated=args.allow_unvalidated,
     )
     if args.json:
         _print_json({**run_summary(child), "path": str(store.run_dir(child.id))})
@@ -568,6 +577,184 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
         return EXIT_OK
 
 
+def _cmd_labels(args: argparse.Namespace) -> int:
+    from .labeling import (  # noqa: PLC0415
+        import_labels,
+        known_splits,
+        label_requests,
+        sample_for_labeling,
+        write_records,
+    )
+
+    if args.labels_command == "sample":
+        output = Path(args.output)
+        if any(Path(p).resolve() == output.resolve() for p in args.exclude):
+            raise CLIError(
+                f"-o {output} is also excluded: write the new requests elsewhere"
+            )
+        if output.exists() and not args.force:
+            raise CLIError(f"{output} exists; pass --force to replace it")
+        _, run = _resolve_run(args.run, args.root)
+        earlier = [r for path in args.exclude for r in label_requests(path)]
+        records = sample_for_labeling(
+            run,
+            args.n,
+            score=args.score,
+            against=args.against,
+            strata=args.strata,
+            exclude={str(r["id"]) for r in earlier},
+            test_share=args.test_share,
+            splits=known_splits(earlier),
+            seed=args.seed,
+        )
+        path = write_records(records, output)
+        splits: dict[str, int] = {}
+        for record in records:
+            for split in record["splits"]:
+                splits[split] = splits.get(split, 0) + 1
+        scored = args.score is None or args.score in run.score_names()
+        _print_json(
+            {
+                "path": str(path),
+                "records": len(records),
+                "splits": splits,
+                "run_id": run.id,
+                "score": args.score,
+                "score_in_run": scored,
+            }
+        )
+        if not scored:
+            sys.stderr.write(
+                f"note: no trial of {run.id} has a score named {args.score!r}, so the "
+                "sample is not spread over its verdicts\n"
+            )
+        return EXIT_OK
+    if args.labels_command == "import":
+        result = import_labels(
+            args.paths, args.into, labeler=args.labeler, replace=args.replace
+        )
+        _print_json(result.model_dump())
+        for conflict in result.conflicts:
+            sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
+        if result.unlabeled and not (result.added or result.updated):
+            sys.stderr.write(
+                f"{result.unlabeled} records had no label yet: fill in "
+                "their reference first\n"
+            )
+        return EXIT_OK
+    if args.labels_command == "pull":
+        return asyncio.run(_pull_labels(args))
+    return _show_labels(Path(args.path))
+
+
+async def _pull_labels(args: argparse.Namespace) -> int:
+    from .labeling import (  # noqa: PLC0415
+        annotation_value,
+        label_requests,
+        merge_labels,
+    )
+    from .phoenix import PhoenixClient  # noqa: PLC0415
+    from .phoenix.annotations import (  # noqa: PLC0415
+        PhoenixProjectNotFoundError,
+        human_annotations,
+    )
+
+    records = label_requests(args.path)
+    traced = [r for r in records if r.get("metadata", {}).get("trace_id")]
+    if not traced:
+        raise CLIError(
+            f"No record in {args.path} carries a trace id (metadata.trace_id): "
+            "only trials traced into Phoenix can be labeled there"
+        )
+    names = {args.name or r.get("metadata", {}).get("score") for r in traced}
+    if None in names:
+        raise CLIError("Pass --name: some records do not say which score they label")
+    async with PhoenixClient(args.base_url) as client:
+        try:
+            found = await human_annotations(
+                client,
+                args.project,
+                [r["metadata"]["trace_id"] for r in traced],
+                sorted(cast("set[str]", names)),
+            )
+        except PhoenixProjectNotFoundError as exc:
+            raise CLIError(str(exc)) from exc
+    if len(found.missing_traces) == len({r["metadata"]["trace_id"] for r in traced}):
+        raise CLIError(
+            f"None of the {len(traced)} traced records' traces are in project "
+            f"{args.project!r}: is it the project the run was traced into?"
+        )
+    labeled: list[dict[str, Any]] = []
+    for record in traced:
+        name = args.name or record["metadata"]["score"]
+        annotation = found.by_trace.get(record["metadata"]["trace_id"], {}).get(name)
+        if annotation is None:
+            continue
+        value = annotation_value(
+            annotation.label,
+            annotation.score,
+            true_labels=args.true,
+            false_labels=args.false,
+        )
+        if value is None:
+            continue
+        metadata = {
+            **record.get("metadata", {}),
+            "score": name,
+            "labeler": annotation.user_id or "phoenix",
+            "labeled_at": annotation.updated_at.isoformat(),
+        }
+        if annotation.explanation:
+            metadata["label_note"] = annotation.explanation
+        labeled.append({**record, "reference": value, "metadata": metadata})
+    result = merge_labels(labeled, args.into, replace=args.replace)
+    _print_json(
+        {
+            **result.model_dump(),
+            "requested": len(records),
+            "traced": len(traced),
+            "annotated": len(labeled),
+            "missing_traces": len(found.missing_traces),
+        }
+    )
+    for conflict in result.conflicts:
+        sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
+    return EXIT_OK
+
+
+def _show_labels(path: Path) -> int:
+    dataset = Dataset.load(path)
+    splits: dict[str, int] = {}
+    labels: dict[str, dict[str, int]] = {}
+    unlabeled = 0
+    for example in dataset:
+        for split in example.splits or ["(none)"]:
+            splits[split] = splits.get(split, 0) + 1
+        reference = example.record.reference
+        if reference is None:
+            unlabeled += 1
+            continue
+        named = (
+            cast("dict[str, Any]", reference)
+            if isinstance(reference, dict)
+            else {str(example.metadata.get("score") or "label"): reference}
+        )
+        for score, value in named.items():
+            counts = labels.setdefault(score, {})
+            key = json.dumps(value)
+            counts[key] = counts.get(key, 0) + 1
+    _print_json(
+        {
+            "path": str(path),
+            "records": len(dataset),
+            "unlabeled": unlabeled,
+            "splits": splits,
+            "labels": labels,
+        }
+    )
+    return EXIT_OK
+
+
 # --- Parser ---
 
 
@@ -655,6 +842,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--force", action="store_true", help="resume even if the code changed"
     )
+    run.add_argument(
+        "--allow-unvalidated",
+        action="store_true",
+        help="score with judges whose validation gate does not pass",
+    )
     run.add_argument("--baseline", help="compare against this run afterwards")
     run.add_argument(
         "--fail-under",
@@ -681,6 +873,11 @@ def build_parser() -> argparse.ArgumentParser:
     rescore.add_argument("--spec", help="Evaluation to take scorers from")
     rescore.add_argument(
         "--rerun", action="store_true", help="re-run unchanged scorers too"
+    )
+    rescore.add_argument(
+        "--allow-unvalidated",
+        action="store_true",
+        help="score with judges whose validation gate does not pass",
     )
     _add_json(rescore)
     _add_progress(rescore)
@@ -761,6 +958,77 @@ def build_parser() -> argparse.ArgumentParser:
     )
     push_ds.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push_ds)
+
+    labels = sub.add_parser(
+        "labels", help="collect labels for judge validation (JSON output)"
+    )
+    lsub = labels.add_subparsers(dest="labels_command", required=True)
+    sample = lsub.add_parser(
+        "sample", help="choose a run's outputs to label (writes a to-label file)"
+    )
+    sample.add_argument("run")
+    sample.add_argument("-o", "--output", required=True, help="to-label JSONL file")
+    sample.add_argument("-n", type=_positive_int, default=50, help="how many")
+    sample.add_argument("--score", help="the judge score to be labeled")
+    sample.add_argument(
+        "--against", help="another score: outputs where the two disagree come first"
+    )
+    sample.add_argument("--strata", help="metadata key to spread the sample over")
+    sample.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="skip outputs already in this labels or to-label file",
+    )
+    sample.add_argument(
+        "--test-share",
+        type=float,
+        default=0.4,
+        help="share of examples in the sealed test split",
+    )
+    sample.add_argument("--seed", type=int, default=0)
+    sample.add_argument(
+        "--force", action="store_true", help="replace the output file if it exists"
+    )
+    _add_json(sample)
+    imp = lsub.add_parser("import", help="merge filled-in to-label files")
+    imp.add_argument("paths", nargs="+")
+    imp.add_argument("--into", required=True, help="labels dataset file")
+    imp.add_argument("--labeler", help="who labeled them (unless a record says)")
+    imp.add_argument(
+        "--replace", action="store_true", help="replace conflicting labels"
+    )
+    _add_json(imp)
+    lpull = lsub.add_parser(
+        "pull", help="labels from human annotations in Phoenix (by trace id)"
+    )
+    lpull.add_argument("path", help="to-label file whose records carry trace ids")
+    lpull.add_argument("--project", required=True, help="Phoenix project")
+    lpull.add_argument("--name", help="annotation name (default: the records' score)")
+    lpull.add_argument(
+        "--true",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help="an annotation label that means pass (true/yes/pass already do)",
+    )
+    lpull.add_argument(
+        "--false",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help="an annotation label that means fail (false/no/fail already do)",
+    )
+    lpull.add_argument("--into", required=True, help="labels dataset file")
+    lpull.add_argument(
+        "--replace", action="store_true", help="replace conflicting labels"
+    )
+    lpull.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    _add_json(lpull)
+    lshow = lsub.add_parser("show", help="count labels by split and value")
+    lshow.add_argument("path")
+    _add_json(lshow)
     return parser
 
 
@@ -784,6 +1052,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_list(args)
         case "datasets":
             return asyncio.run(_cmd_datasets(args))
+        case "labels":
+            return _cmd_labels(args)
         case _:
             raise CLIError(f"Unknown command {args.command!r}")
 
@@ -811,6 +1081,8 @@ def _exit_code(exc: BaseException) -> int:
         StaleDatasetError,
     )
 
+    if isinstance(exc, UnvalidatedJudgeError):
+        return EXIT_GATE
     if isinstance(exc, StaleDatasetError | DatasetPushError):
         return EXIT_USAGE
     if isinstance(exc, PhoenixError | ValidationError):

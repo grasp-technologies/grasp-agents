@@ -1,7 +1,8 @@
+import functools
 import inspect
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_type_hints
 
@@ -18,7 +19,13 @@ from grasp_agents.types.events import (
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-from ._util import canonical_json, qualified_name, short_hash, to_jsonable
+from ._util import (
+    canonical_json,
+    is_library_code,
+    qualified_name,
+    short_hash,
+    to_jsonable,
+)
 from .types import ComponentInfo, Example, Usage
 
 
@@ -221,14 +228,84 @@ def iter_processors(
                 stack.append(cast("Processor[Any, Any, Any]", child))
 
 
+# Settings that change what is observed or persisted, not what is produced.
+_OPERATIONAL = frozenset({"tracing_enabled", "durability_enabled"})
+
+
 def _public_settings(obj: Any) -> dict[str, Any]:
     # Plain public attributes are a processor's construction-time settings
     # (a custom subclass's thresholds, a declared variant).
     return {
         key: value
         for key, value in cast("dict[str, Any]", vars(obj)).items()
-        if not key.startswith("_") and isinstance(value, str | int | float | bool)
+        if not key.startswith("_")
+        and key not in _OPERATIONAL
+        and isinstance(value, str | int | float | bool)
     }
+
+
+def _tool_entry(tool: Any) -> dict[str, Any]:
+    return {
+        "description": short_hash(str(getattr(tool, "description", ""))),
+        "input": _type_identity(getattr(tool, "in_type", Any)),
+    }
+
+
+_MAX_WALK_DEPTH = 5
+
+
+def processor_code(root: Processor[Any, Any, Any]) -> list[Any]:
+    """
+    The user code a processor tree runs: custom processor and tool classes,
+    and the functions registered on it — hooks, input and output builders
+    and parsers, prompt sections, tool functions, converters. Code from
+    grasp-agents, installed packages and the standard library is left out.
+    """
+    from grasp_agents.llm.llm import LLM  # noqa: PLC0415
+    from grasp_agents.tools.base import BaseTool  # noqa: PLC0415
+
+    found: list[Any] = []
+    seen: set[int] = set()
+
+    def visit(value: Any, depth: int) -> None:
+        if depth > _MAX_WALK_DEPTH or id(value) in seen:
+            return
+        seen.add(id(value))
+        if value is None or isinstance(value, str | bytes | int | float | bool):
+            return
+        if isinstance(value, SessionContext | type):
+            return
+        if isinstance(value, Mapping):
+            for item in cast("Mapping[Any, Any]", value).values():
+                visit(item, depth + 1)
+            return
+        if isinstance(value, list | tuple | set | frozenset):
+            for item in cast("Iterable[Any]", value):
+                visit(item, depth + 1)
+            return
+        if callable(value) and (
+            inspect.isfunction(value)
+            or inspect.ismethod(value)
+            or isinstance(value, functools.partial)
+        ):
+            if not is_library_code(value):
+                found.append(value)
+            return
+        if not is_library_code(value):
+            # A user object: a callable one (a hook, a section) with its
+            # settings, others (a custom processor, tool or LLM) by the code
+            # of their class — their data is in the fingerprint.
+            hook = callable(value) and not isinstance(value, BaseTool | LLM)
+            found.append(cast("Any", value) if hook else type(cast("object", value)))
+        if is_library_code(value) or isinstance(value, Processor):
+            attributes: Any = getattr(cast("object", value), "__dict__", None)
+            if isinstance(attributes, dict):
+                for item in cast("dict[str, Any]", attributes).values():
+                    visit(item, depth + 1)
+
+    for proc in iter_processors(root):
+        visit(proc, 0)
+    return found
 
 
 def _type_identity(tp: Any) -> str:
@@ -261,7 +338,12 @@ def _describe_processor(proc: Processor[Any, Any, Any]) -> dict[str, Any]:
     entry["output"] = _type_identity(getattr(proc, "out_type", Any))
     tools = getattr(proc, "tools", None)
     if isinstance(tools, Mapping):
-        entry["tools"] = sorted(str(k) for k in cast("Mapping[Any, Any]", tools))
+        entry["tools"] = {
+            str(name): _tool_entry(tool)
+            for name, tool in sorted(
+                cast("Mapping[Any, Any]", tools).items(), key=lambda kv: str(kv[0])
+            )
+        }
     return entry
 
 
@@ -269,7 +351,8 @@ def processor_fingerprint(root: Processor[Any, Any, Any]) -> str | None:
     """
     Hash of what a processor tree is made of: types, names, models and their
     settings, system and input prompts, turn limits, output schemas, tools
-    and plain public settings. ``None`` when it cannot be read.
+    (names, descriptions, input schemas) and plain public settings — not its
+    code (see :func:`processor_code`). ``None`` when it cannot be read.
     """
     try:
         return short_hash(
@@ -365,7 +448,6 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             self._in_type: Any = template.in_type
             declared: Any = template.out_type
             self._kind = qualified_name(type(template))
-            self._fingerprint = processor_fingerprint(template)
         else:
             factory = processor
             self._template, self._factory = None, factory
@@ -373,7 +455,6 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
             self._in_type = Any
             declared = _declared_output_type(factory)
             self._kind = qualified_name(factory)
-            self._fingerprint = None
 
         if output_type is not None:
             self._out_type: Any = output_type
@@ -405,14 +486,21 @@ class ProcessorTask[InT, OutT](Task[InT, OutT]):
     def describe(self) -> ComponentInfo:
         info = super().describe()
         info.kind = self._kind
-        info.fingerprint = self._fingerprint
+        info.fingerprint = (
+            processor_fingerprint(self._template)
+            if self._template is not None
+            else None
+        )
         return info
 
     def source_objects(self) -> list[Any]:
         if self._factory is not None:
             return [self._factory]
         assert self._template is not None
-        return [type(p) for p in iter_processors(self._template)]
+        return [
+            *(type(p) for p in iter_processors(self._template)),
+            *processor_code(self._template),
+        ]
 
     def _instantiate(self, ctx: SessionContext[Any]) -> Processor[InT, OutT, Any]:
         if self._template is not None:

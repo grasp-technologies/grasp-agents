@@ -10,7 +10,7 @@ import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Hashable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import starmap
 from typing import Any, Literal, override
 
@@ -30,12 +30,14 @@ from ._execution import (
     run_all,
 )
 from ._util import code_hash, new_run_id, qualified_name, short_hash, utc_now
-from .metrics import Metric, PassRate
+from .metrics import Metric, MetricsSpec, PassRate
 from .scorer import (
     ScoreContext,
     Scorer,
     ScorerOutput,
     call_off_loop,
+    merge_models,
+    run_all_or_cancel,
     snake_case,
 )
 from .stats import bounded_mean_estimate, sign_test
@@ -48,6 +50,7 @@ from .types import (
     RunConfig,
     Score,
     Trial,
+    Usage,
 )
 
 type Winner = Literal["first", "second", "tie"]
@@ -65,6 +68,18 @@ class PairwiseContext[InT, OutT, RefT]:
     example: Example[InT, RefT]
     first: OutT
     second: OutT
+    repetition: int = 0
+    # Usage reported by judges that call models (see ``record_usage``).
+    usage: list[Usage] = field(default_factory=list[Usage])
+    # Models those calls used, per agent.
+    models: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+
+    def record_usage(
+        self, usage: Usage, *, models: Mapping[str, Sequence[str]] | None = None
+    ) -> None:
+        """Attribute the judge's own model usage (cost) and models to this pair."""
+        self.usage.append(usage)
+        merge_models(self.models, models or {})
 
     @property
     def input(self) -> InT:
@@ -156,6 +171,16 @@ async def _ask(
     )
 
 
+def _forward_usage(
+    ctx: ScoreContext[Any, Any, Any], *asked: PairwiseContext[Any, Any, Any]
+) -> None:
+    for pair in asked:
+        for usage in pair.usage:
+            ctx.record_usage(usage)
+        if pair.models:
+            ctx.record_usage(Usage(), models=pair.models)
+
+
 _FORWARD: dict[Winner, str] = {"first": "base", "second": "candidate", "tie": "tie"}
 _BACKWARD: dict[Winner, str] = {"first": "candidate", "second": "base", "tie": "tie"}
 _PREFERS_CANDIDATE = {"candidate": 1.0, "base": 0.0, "tie": 0.5, "inconsistent": 0.5}
@@ -191,14 +216,20 @@ class OrderSwapped[InT, OutT, RefT](Scorer[InT, Mapping[str, OutT], RefT]):
         self, ctx: ScoreContext[InT, Mapping[str, OutT], RefT]
     ) -> ScorerOutput:
         base, candidate = ctx.output["base"], ctx.output["candidate"]
-        forward_ctx = PairwiseContext(example=ctx.example, first=base, second=candidate)
+        repetition = ctx.trial.repetition
+        forward_ctx = PairwiseContext(
+            example=ctx.example, first=base, second=candidate, repetition=repetition
+        )
         if self.both_orders:
             backward_ctx = PairwiseContext(
-                example=ctx.example, first=candidate, second=base
+                example=ctx.example, first=candidate, second=base, repetition=repetition
             )
-            forward, backward = await asyncio.gather(
-                _ask(self.judge, forward_ctx), _ask(self.judge, backward_ctx)
-            )
+            try:
+                forward, backward = await run_all_or_cancel(
+                    [_ask(self.judge, forward_ctx), _ask(self.judge, backward_ctx)]
+                )
+            finally:
+                _forward_usage(ctx, forward_ctx, backward_ctx)
             first, second = _FORWARD[forward.winner], _BACKWARD[backward.winner]
             consistent = first == second
             winner = first if consistent else "inconsistent"
@@ -207,7 +238,10 @@ class OrderSwapped[InT, OutT, RefT](Scorer[InT, Mapping[str, OutT], RefT]):
                 f"candidate first → {second}: {backward.explanation or ''}"
             )
         else:
-            forward = await _ask(self.judge, forward_ctx)
+            try:
+                forward = await _ask(self.judge, forward_ctx)
+            finally:
+                _forward_usage(ctx, forward_ctx)
             winner, consistent = _FORWARD[forward.winner], None
             explanation = forward.explanation
         scores = [
@@ -308,7 +342,7 @@ async def pairwise(
     base: "str | EvaluationRun",
     candidate: "str | EvaluationRun",
     judge: PairwiseJudge[Any, Any, Any],
-    metrics: Sequence[Metric] | None = None,
+    metrics: MetricsSpec = None,
     *,
     both_orders: bool = True,
     input_type: Any = Any,

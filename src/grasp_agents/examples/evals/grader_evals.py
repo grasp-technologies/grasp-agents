@@ -29,13 +29,19 @@ from grasp_agents.evals import (
     Evaluation,
     Example,
     FunctionPairwiseJudge,
+    JudgedOutput,
     PairwiseContext,
     PairwiseVerdict,
     PassHatK,
     PassRate,
+    Perturbation,
+    ProcessorScorer,
     ProcessorTask,
     Score,
     ScoreContext,
+    ValidationGate,
+    judge_probes,
+    judge_validation,
     scorer,
 )
 from grasp_agents.evals.metrics import Measure, Percentile
@@ -44,6 +50,8 @@ from grasp_agents.types.events import Event, ProcPayloadOutEvent
 from grasp_agents.workflow.sequential_workflow import SequentialWorkflow
 
 DATA = Path(__file__).parent / "data" / "short_answers.jsonl"
+# Teachers' labels of graders' feedback: was it specific enough to act on?
+LABELS = Path(__file__).parent / "data" / "feedback_labels.jsonl"
 
 type Verdict = Literal["correct", "partial", "incorrect"]
 
@@ -335,6 +343,130 @@ specific_feedback_judge = FunctionPairwiseJudge(
 )
 
 
+# --- A judge as a processor ---
+
+type Judged = JudgedOutput[Submission, Grade, TeacherGrade]
+
+
+class FeedbackVerdict(BaseModel):
+    specific: bool
+    explanation: str
+
+
+class FeedbackJudge(Processor[Judged, FeedbackVerdict, None]):
+    """
+    An offline stand-in for an LLM judge of feedback quality. ``v1`` passes
+    any feedback of a few words; ``v2`` wants feedback on an imperfect answer
+    to name a key point. Like a sampled model it is not perfectly consistent:
+    it flips some verdicts at random (``noise``).
+    """
+
+    def __init__(
+        self, name: str = "feedback_judge", *, version: str = "v1", noise: float = 0.1
+    ) -> None:
+        super().__init__(name=name)
+        self.version = version
+        self.noise = noise
+
+    async def _process_stream(
+        self,
+        chat_inputs: Any | None = None,
+        *,
+        in_args: list[Judged] | None = None,
+        exec_id: str,
+        step: int | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        for item in in_args or []:
+            yield ProcPayloadOutEvent(
+                data=self._judge(item), source=self.name, exec_id=exec_id
+            )
+
+    def _judge(self, item: Judged) -> FeedbackVerdict:
+        feedback = item.output.feedback
+        if self.version == "v1":
+            specific = len(feedback.split()) >= 3
+            explanation = f"{len(feedback.split())} words"
+        elif item.reference is not None and item.reference.verdict == "correct":
+            specific, explanation = True, "the answer was correct"
+        else:
+            named = set(_tokens(feedback)) & set(
+                _key_points(item.input.reference_answer)
+            )
+            specific = bool(named)
+            explanation = f"names {sorted(named)}" if named else "names no key point"
+        if random.random() < self.noise:  # noqa: S311
+            specific = not specific
+            explanation += " (on a second reading: the opposite)"
+        return FeedbackVerdict(specific=specific, explanation=explanation)
+
+
+def _quality(verdict: FeedbackVerdict) -> Score:
+    return Score(
+        name="feedback_quality", value=verdict.specific, explanation=verdict.explanation
+    )
+
+
+def feedback_judge(version: str) -> ProcessorScorer[Any, Any, Any, Any, Any]:
+    """The feedback-quality judge, version ``v1`` or ``v2``."""
+    return ProcessorScorer(
+        FeedbackJudge(version=version),
+        name="feedback_quality",
+        version=version,
+        to_scores=_quality,
+    )
+
+
+def llm_feedback_judge(llm: Any) -> ProcessorScorer[Any, Any, Any, Any, Any]:
+    """The same judge as an LLM agent (``apply_output_schema_via_provider=True``)."""
+    from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
+
+    agent = LLMAgent[Judged, FeedbackVerdict, None](
+        name="feedback_judge",
+        llm=llm,
+        sys_prompt=(
+            "You review a grader's feedback on a student's short answer. The input "
+            "holds the question, the reference answer, the student's answer, the "
+            "grade and the teacher's grade. specific: true when the feedback tells "
+            "the student exactly what is missing or wrong (or, for a correct "
+            "answer, confirms it), false when it is generic or misleading. "
+            "explanation: one sentence."
+        ),
+    )
+    return ProcessorScorer(
+        agent, name="feedback_quality", version="llm-1", to_scores=_quality
+    )
+
+
+# Perturbations of graded outputs: what a feedback judge must notice, and what
+# it must not.
+_PADDING = " Keep up the effort, and ask if anything is unclear."
+PROBES = [
+    Perturbation(
+        "generic",
+        lambda item: (
+            item.output.model_copy(update={"feedback": "Please review the material."})
+            if item.reference is not None and item.reference.verdict != "correct"
+            else None
+        ),
+        expect="lower",
+    ),
+    Perturbation(
+        "padded",
+        lambda item: item.output.model_copy(
+            update={"feedback": item.output.feedback + _PADDING}
+        ),
+        expect="same",
+    ),
+    Perturbation(
+        "uppercase",
+        lambda item: item.output.model_copy(
+            update={"feedback": item.output.feedback.upper()}
+        ),
+        expect="same",
+    ),
+]
+
+
 # --- Dataset checks ---
 
 
@@ -358,7 +490,12 @@ _METRICS = [
 
 
 def _grader_evaluation(
-    version: str, quality: Any, *, grader: Any = None, name: str = "short-answer-grader"
+    version: str,
+    quality: Any,
+    *,
+    grader: Any = None,
+    name: str = "short-answer-grader",
+    validation_gates: Any = None,
 ) -> Evaluation:
     return Evaluation(
         name=name,
@@ -373,6 +510,7 @@ def _grader_evaluation(
         group_by=["difficulty"],
         sealed_splits=["test"],
         dataset_checks=[key_issue_implies_imperfect],
+        validation_gates=validation_gates or {},
         tags=["demo"],
     )
 
@@ -382,6 +520,37 @@ grader_v2 = _grader_evaluation("v2", feedback_quality_v1)
 # Same task as v2, judged by the stricter feedback scorer — use it to
 # rescore a stored run: ``grasp-evals rescore <run> --spec ...:grader_v2_strict``.
 grader_v2_strict = _grader_evaluation("v2", feedback_quality_v2)
+
+
+# Validating the feedback judge against teachers' labels (dev to iterate, the
+# sealed test split once at the end), and probing it with changed outputs.
+_JUDGED_TYPES: dict[str, Any] = {
+    "input_type": Submission,
+    "output_type": Grade,
+    "reference_type": TeacherGrade,
+}
+judge_v1_validation = judge_validation(
+    feedback_judge("v1"), LABELS, repetitions=3, **_JUDGED_TYPES
+)
+judge_v2_validation = judge_validation(
+    feedback_judge("v2"), LABELS, repetitions=3, **_JUDGED_TYPES
+)
+# The labels' test split stays sealed in probe runs too.
+judge_v1_probes = judge_probes(
+    feedback_judge("v1"), LABELS, PROBES, sealed_splits=["test"], **_JUDGED_TYPES
+)
+judge_v2_probes = judge_probes(
+    feedback_judge("v2"), LABELS, PROBES, sealed_splits=["test"], **_JUDGED_TYPES
+)
+
+# v2 graded by the processor judge, which must have passed validation first.
+grader_v2_judged = _grader_evaluation(
+    "v2",
+    feedback_judge("v2"),
+    validation_gates={
+        "feedback_quality": ValidationGate(min_kappa=0.2, labels="feedback_labels")
+    },
+)
 
 
 def llm_grader_evaluation(llm: Any) -> Evaluation:

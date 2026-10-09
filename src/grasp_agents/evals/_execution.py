@@ -27,9 +27,15 @@ from ._util import (
     to_jsonable,
     utc_now,
 )
-from .metrics import Metric, compute_metrics
+from .metrics import MetricsSpec, compute_metrics
 from .report import render_run_markdown
-from .scorer import FunctionScorer, ScoreContext, Scorer, run_scorer
+from .scorer import (
+    FunctionScorer,
+    ScoreContext,
+    Scorer,
+    merge_models,
+    run_scorer,
+)
 from .store import LocalRunStore, RunStore
 from .task import Task, TrialContext
 from .types import (
@@ -375,10 +381,13 @@ class Executor:
             trial.scorer_failures = [
                 f for f in trial.scorer_failures if f.scorer != scorer.name
             ]
-            if ctx.usage:
-                usage = sum(ctx.usage, Usage())
+            usage = sum(ctx.usage, Usage())
+            if not usage.is_empty:
                 trial.scorer_usage[scorer.name] = usage
                 self._new_usage += usage
+                if usage.total_tokens and usage.cost_usd is None:
+                    self._unpriced.add(f"scorer {scorer.name}")
+            merge_models(trial.models, ctx.models)
             if isinstance(outcome, ErrorInfo):
                 trial.scorer_failures.append(
                     ScorerFailure(scorer=scorer.name, error=outcome)
@@ -461,7 +470,7 @@ class Executor:
         self,
         status: RunStatus,
         *,
-        metrics: Sequence[Metric] | None,
+        metrics: MetricsSpec,
         order: Sequence[TrialKey],
     ) -> EvaluationRun:
         run = self.run
@@ -541,7 +550,7 @@ async def run_all(
     executor: Executor,
     coroutines: Sequence[Any],
     *,
-    metrics: Sequence[Metric] | None,
+    metrics: MetricsSpec,
     order: Sequence[TrialKey],
 ) -> EvaluationRun:
     """
