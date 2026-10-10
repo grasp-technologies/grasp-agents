@@ -1,0 +1,84 @@
+name: Claude Code Review
+# cSpell:words anthropics
+
+on:
+  pull_request:
+    # `labeled` — first review when claude-review is applied.
+    # `synchronize`/`reopened` — re-review on every new push (and reopen) while
+    # the PR already carries the label, so addressed-then-pushed PRs get a fresh
+    # pass without re-toggling the label by hand.
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+# A new push supersedes an in-flight review for the same PR, so rapid pushes
+# don't pile up overlapping reviews.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Label application, OR a push/reopen on a PR that already has the label.
+    # The head-repo check skips PRs from forks: `pull_request` runs for a fork
+    # get no repository secrets, so ANTHROPIC_API_KEY would be empty and the
+    # job would fail red on every community contribution. Skipping is silent.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'claude-review') ||
+        (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'claude-review'))
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: the review's `history` dimension reads git blame and
+          # log on the modified lines, which a shallow clone can't serve.
+          fetch-depth: 0
+
+      - name: Run Claude Code Action (automatic PR review)
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Claude Code opens PRs as the `claude` GitHub App, so on those PRs the
+          # triggering actor is a bot and the action refuses to run ("Workflow
+          # initiated by non-human actor"). Allow that one bot by name — not `*`
+          # — so Claude-authored PRs get reviewed like anyone else's.
+          allowed_bots: "claude"
+          # The review itself lives in .claude/commands/grasp-code-review.md:
+          # one reviewer per applicable file in .claude/rules/, then a verifier
+          # per finding that must locate the cited rule verbatim before it can
+          # be reported. Keeping it in the repo means it also runs locally as
+          # /grasp-code-review, so CI and a developer's pre-push review match.
+          #
+          # track_progress is rejected for `labeled` events (only supported for
+          # opened/synchronize/ready_for_review/reopened). We trigger on both
+          # labeled and synchronize, so keep it off for uniform behavior across
+          # triggers.
+          # /grasp-code-review, NOT /code-review: the latter is a built-in
+          # Claude Code command that shadows the project one, so invoking it
+          # runs a generic review instead of this repo's workflow.
+          prompt: "/grasp-code-review ${{ github.event.pull_request.number }}"
+          # Automation mode (prompt set) grants no GitHub posting tools by
+          # default — without this allowlist the review is generated but
+          # silently discarded (permission denials, nothing posted).
+          # gh api is allowed so the scope agent can read prior PR comments and
+          # avoid re-posting findings on re-runs.
+          # Task, not Workflow: the Workflow tool is asynchronous — it returns a
+          # task id and delivers results via a later notification, which never
+          # arrives in a headless one-shot run, so the job finishes green having
+          # posted nothing. The command fans out with Task subagents in a single
+          # message instead: parallel, and done before the turn ends.
+          # Read/Grep/Glob: the reviewers and verifiers open the changed files,
+          # not just the diff. --allowedTools is an exclusive allowlist in
+          # automation mode, so anything not listed is denied.
+          claude_args: |
+            --model opus
+            --allowedTools "Task,Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*),Bash(git merge-base:*)"
+            --max-turns 200

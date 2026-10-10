@@ -192,7 +192,13 @@ tests/tui/_review/
 orchestration_workdir/
 autoresearch_workdir/
 CLAUDE.md
-.claude/
+# Local Claude config stays untracked, except the PR-review setup, which the
+# Claude Code Review workflow runs out of the repo.
+.claude/*
+!.claude/commands/
+.claude/commands/*
+!.claude/commands/grasp-code-review.md
+!.claude/rules/
 .grasp/
 src/grasp_agents/kits/
 tests/kits/
