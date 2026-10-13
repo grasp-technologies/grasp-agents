@@ -141,7 +141,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         ):
             yield event
 
-    async def resume_stream(
+    async def _resume_stream(
         self,
         *,
         ctx: SessionContext[CtxT] | None = None,

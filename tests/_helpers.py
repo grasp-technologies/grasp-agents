@@ -11,11 +11,20 @@ call sites are unchanged when a local copy is replaced by an import.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+import ctypes
+import functools
+import json
+import os
+import shutil
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
+import tempfile
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
+import pytest
 from pydantic import BaseModel, Field
 
 from grasp_agents.agent.agent_context import AgentContext
@@ -23,6 +32,7 @@ from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.file_backend.local import LocalFileBackend
 from grasp_agents.llm.llm import LLM
+from grasp_agents.sandbox import build_srt_settings, srt_argv
 from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
 from grasp_agents.sandbox.policy import SandboxPolicy
 from grasp_agents.session_context import SessionContext
@@ -242,6 +252,76 @@ class FailFirstLLM(MockLLM):
         return await super()._generate_response_once(*args, **kwargs)
 
 
+# --- Confinement for tests that execute code ---
+
+
+def process_is_sandboxed() -> bool:
+    """Whether the OS already confines this process (macOS ``sandbox_check``)."""
+    if sys.platform != "darwin":
+        return False
+    sandbox_check = ctypes.CDLL("/usr/lib/libSystem.B.dylib").sandbox_check
+    sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    sandbox_check.restype = ctypes.c_int
+    return sandbox_check(os.getpid(), None, 0) == 1
+
+
+@functools.cache
+def srt_can_run() -> bool:
+    """
+    Whether ``srt`` can apply its confinement and run a command here — false
+    inside another sandbox, where its Seatbelt/bwrap layer cannot nest.
+    """
+    srt = shutil.which("srt")
+    if srt is None:
+        return False
+    with tempfile.TemporaryDirectory() as d:
+        settings = build_srt_settings(SandboxPolicy(allowed_roots=(Path(d),)))
+        settings_file = Path(d) / "s.json"
+        settings_file.write_text(json.dumps(settings))
+        argv = list(srt_argv(srt, str(settings_file), "true"))
+        try:
+            proc = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+                argv, capture_output=True, timeout=30, check=False
+            )
+        except Exception:
+            return False
+        return proc.returncode == 0
+
+
+def exec_confinement() -> Literal["none", "srt"]:
+    """
+    How a test confines code it executes but does not fully control (model-
+    written, a demo notebook's): ``"none"`` when this process is already
+    sandboxed — the outer sandbox contains it, and ``srt`` cannot nest there —
+    else ``"srt"``. Skips the test when neither applies, so that code never
+    runs unconfined.
+    """
+    if process_is_sandboxed():
+        return "none"
+    if srt_can_run():
+        return "srt"
+    pytest.skip("executes code: needs an outer sandbox or a working srt")
+
+
+def confine_notebook(cells: Iterable[Any]) -> None:
+    """
+    Run a demo notebook's ``confinement="srt"`` environments under
+    :func:`exec_confinement` instead. Fails when no cell confines with ``srt``,
+    so a notebook that stops confining its code is noticed.
+    """
+    confinement = exec_confinement()
+    confined = [
+        cell
+        for cell in cells
+        if cell.cell_type == "code" and 'confinement="srt"' in cell.source
+    ]
+    assert confined, 'the notebook has no confinement="srt" environment'
+    for cell in confined:
+        cell.source = cell.source.replace(
+            'confinement="srt"', f'confinement="{confinement}"'
+        )
+
+
 # --- AgentContext construction (tool tests need agent-scope state, no loop) ---
 
 
@@ -296,7 +376,6 @@ def _make_agent_loop(
     if messages:
         agent_ctx.cw.add_messages(messages)
     return AgentLoop[None](
-        agent_name=agent_name,
         llm=llm,
         agent_ctx=agent_ctx,
         ctx=ctx,

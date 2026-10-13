@@ -295,7 +295,7 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         ):
             yield event
 
-    async def resume_stream(
+    async def _resume_stream(
         self,
         *,
         ctx: SessionContext[CtxT] | None = None,

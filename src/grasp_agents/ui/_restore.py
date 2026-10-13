@@ -206,7 +206,7 @@ class SessionRestoreMixin:
             log_name=Path(record.log_path).name if record.log_path else None,
         )
         await self._open_task_pane(BackgroundTaskLaunchedEvent(source=agent, data=info))
-        key = self._ga_task_panes[agent, record.task_id]
+        key = self._ga_task_panes[agent, record.tool_call_id]
         log_text = await self._read_task_log(record.log_path)
         if log_text:
             await self._stream_task_log(

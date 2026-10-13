@@ -235,13 +235,13 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
             source="coordinator",
             exec_id="c1",
         ),
-        # The backgrounded task's live output — stamped with its task_id, so it
-        # streams into the task's own log pane, not the coordinator's.
+        # The backgrounded task's live output — claimed with its tool call id,
+        # so it streams into the task's own log pane, not the coordinator's.
         ToolStreamEvent(
             data="indexing 4 sources…\n",
             source="index_sources",
             destination="coordinator",
-            task_id="bg1",
+            tool_call_id="c_bg",
             exec_id="c1",
         ),
         ToolCallItemEvent(
@@ -297,7 +297,7 @@ def demo_event_list(*, with_image: bool = True) -> list[Event[Any]]:
             data="indexed 4/4 · building embeddings… done (3.1s)\n",
             source="index_sources",
             destination="coordinator",
-            task_id="bg1",
+            tool_call_id="c_bg",
             exec_id="c1",
         ),
         BackgroundTaskCompletedEvent(

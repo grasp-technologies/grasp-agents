@@ -71,6 +71,9 @@ class ToolOutputItemEvent(Event[FunctionToolOutputItem], frozen=True):
 
 class ToolOutputEvent(Event[Any], frozen=True):
     type: Literal["tool.output"] = "tool.output"
+    # The tool call this is the result of, set when the tool runs for one; a
+    # nested tool's result (a sub-agent's) carries its own call's id.
+    tool_call_id: str | None = None
 
 
 class ToolStreamEvent(Event[Any], frozen=True):
@@ -85,17 +88,16 @@ class ToolStreamEvent(Event[Any], frozen=True):
     ``ToolStreamEvent``.
 
     ``destination`` is the owning agent so a UI can route a tool's live output
-    to that agent's pane. ``task_id`` names the backgrounded task this delta
-    belongs to — stamped by the background-task manager when it bubbles a
-    task's buffered output at a turn boundary (matching the ``task_id`` of the
-    :class:`BackgroundTaskLaunchedEvent`), so a UI can give each task its own
-    live-log surface even when several tasks of one tool run at once; ``None``
-    for a foreground (inline) stream.
+    to that agent's pane. ``tool_call_id`` is the call this delta belongs to,
+    set when the tool runs for one (a nested tool's carries its own call's id);
+    a UI matches it against :class:`BackgroundTaskLaunchedEvent` to give each
+    backgrounded task its own live-log surface, even when several tasks of one
+    tool run at once.
     """
 
     type: Literal["tool.stream"] = "tool.stream"
     destination: str | None = None
-    task_id: str | None = None
+    tool_call_id: str | None = None
 
 
 class ToolErrorInfo(BaseModel):
@@ -106,6 +108,8 @@ class ToolErrorInfo(BaseModel):
 
 class ToolErrorEvent(Event[ToolErrorInfo], frozen=True):
     type: Literal["tool.error"] = "tool.error"
+    # The tool call that failed (see ``ToolOutputEvent.tool_call_id``).
+    tool_call_id: str | None = None
 
 
 # ── Background tasks ──
