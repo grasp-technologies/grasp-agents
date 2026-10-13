@@ -32,7 +32,7 @@ def _completion(tool_call: ChatCompletionMessageToolCall) -> ModelResponse:
     message = Message(content=None, role="assistant", tool_calls=[tool_call])
     return ModelResponse(
         id="resp_1",
-        model="gemini-3.1-flash-lite",
+        model="gemini-3.5-flash-lite",
         choices=[Choices(index=0, finish_reason="tool_calls", message=message)],
     )
 

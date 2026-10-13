@@ -47,8 +47,11 @@ class TestLiteLLMIntegration:
 
         # LiteLLM reads OPENAI_API_KEY from env automatically
         return LiteLLM(
-            model_name="gpt-5.4-nano",
-            llm_settings={"max_completion_tokens": 100},
+            model_name="gpt-6-luna",
+            # gpt-6-luna takes function tools on Chat Completions only unreasoned;
+            # LiteLLM's parameter map does not list its reasoning_effort yet.
+            llm_settings={"max_completion_tokens": 100, "reasoning_effort": "none"},
+            allowed_openai_params=["reasoning_effort"],
         )
 
     @pytest.mark.asyncio
@@ -105,7 +108,7 @@ class TestLiteLLMStructuredOutput:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(
-            model_name="gpt-5.4-nano",
+            model_name="gpt-6-luna",
             llm_settings={"max_completion_tokens": 200},
             apply_output_schema_via_provider=True,
         )
@@ -157,8 +160,11 @@ class TestLiteLLMParallelToolUse:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(
-            model_name="gpt-5.4-nano",
-            llm_settings={"max_completion_tokens": 256},
+            model_name="gpt-6-luna",
+            # gpt-6-luna takes function tools on Chat Completions only unreasoned;
+            # LiteLLM's parameter map does not list its reasoning_effort yet.
+            llm_settings={"max_completion_tokens": 256, "reasoning_effort": "none"},
+            allowed_openai_params=["reasoning_effort"],
         )
 
     @pytest.mark.asyncio
@@ -260,7 +266,7 @@ class TestLiteLLMGeminiThoughtSignatures:
         from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 
         return LiteLLM(
-            model_name="gemini/gemini-3.1-flash-lite",
+            model_name="gemini/gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="gemini", base_url=None, api_key=google_api_key
             ),

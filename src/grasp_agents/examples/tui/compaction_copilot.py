@@ -40,7 +40,7 @@ from grasp_agents.llm_providers.openai_responses import (
 )
 from grasp_agents.tools.function_tool import function_tool
 
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-6-luna"
 
 # An artificially small window so summarization fires within a couple of turns.
 # The meter is shown against ARTIFICIAL_WINDOW; compaction triggers at the soft

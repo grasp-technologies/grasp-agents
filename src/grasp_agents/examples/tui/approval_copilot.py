@@ -39,7 +39,7 @@ from grasp_agents.llm_providers.openai_responses import (
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.ui import TuiApprovalStore
 
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-6-luna"
 
 # "Allow always" decisions are written here, so they survive restarts: re-run
 # the demo and a tool you allowed permanently is no longer prompted for.

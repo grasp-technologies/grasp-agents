@@ -44,8 +44,9 @@ class TestOpenAICompletionsIntegration:
         )
 
         return OpenAILLM(
-            model_name="gpt-5.4-nano",
-            llm_settings={"max_completion_tokens": 100},
+            model_name="gpt-6-luna",
+            # gpt-6-luna takes function tools on Chat Completions only unreasoned.
+            llm_settings={"max_completion_tokens": 100, "reasoning_effort": "none"},
         )
 
     @pytest.mark.asyncio
@@ -152,9 +153,7 @@ class TestOpenAICompletionsStructuredOutput:
             OpenAILLM,
         )
 
-        return OpenAILLM(
-            model_name="gpt-5.4-nano", apply_output_schema_via_provider=True
-        )
+        return OpenAILLM(model_name="gpt-6-luna", apply_output_schema_via_provider=True)
 
     @pytest.mark.asyncio
     async def test_structured_output(self, llm: CloudLLM) -> None:
@@ -205,8 +204,9 @@ class TestOpenAICompletionsParallelToolUse:
         )
 
         return OpenAILLM(
-            model_name="gpt-5.4-nano",
-            llm_settings={"max_completion_tokens": 256},
+            model_name="gpt-6-luna",
+            # gpt-6-luna takes function tools on Chat Completions only unreasoned.
+            llm_settings={"max_completion_tokens": 256, "reasoning_effort": "none"},
         )
 
     @pytest.mark.asyncio

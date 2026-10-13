@@ -34,7 +34,7 @@ def _completed(status: str = "completed") -> dict[str, Any]:
         "response": {
             "id": "resp_1",
             "created_at": 1.0,
-            "model": "gpt-5.4-nano",
+            "model": "gpt-6-luna",
             "object": "response",
             "output": [],
             "status": status,
@@ -83,7 +83,7 @@ class _ScriptedResponsesLLM(OpenAIResponsesLLM):
 
 def _llm(*script: dict[str, Any], **kwargs: Any) -> _ScriptedResponsesLLM:
     return _ScriptedResponsesLLM(
-        model_name="gpt-5.4-nano",
+        model_name="gpt-6-luna",
         api_provider=APIProvider(name="openai", base_url=None, api_key="test-key"),
         script=list(script),
         **kwargs,

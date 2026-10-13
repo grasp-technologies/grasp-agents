@@ -1286,7 +1286,7 @@ class TestBlockedPrompt:
     @pytest.mark.asyncio
     async def test_blocked_prompt_raises_a_content_filter_error(self):
         llm = _StubGeminiLLM(
-            model_name="gemini-3.1-flash-lite",
+            model_name="gemini-3.5-flash-lite",
             api_provider=_GEMINI_PROVIDER,
             served=_blocked_prompt(),
         )

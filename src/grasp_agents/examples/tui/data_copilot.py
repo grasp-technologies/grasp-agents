@@ -33,7 +33,7 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.bash import Bash, bash_tools
 from grasp_agents.tools.code_interpreter import RunPython
 
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-6-luna"
 
 _ANALYST_SYS = """\
 You are a data-analysis copilot coordinating two specialists, each running \

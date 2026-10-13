@@ -1,7 +1,7 @@
 """
 Runner + ParallelProcessor + Workflow + LLMAgent integration tests.
 
-Uses OpenAI Responses API with gpt-5.4-nano.
+Uses OpenAI Responses API with gpt-6-luna.
 Skipped by default. Run with:
     uv run pytest -m integration -k test_runner_integration
 """
@@ -128,7 +128,7 @@ def _make_llm(
     )
 
     return OpenAIResponsesLLM(
-        model_name="gpt-5.4-nano",
+        model_name="gpt-6-luna",
         llm_settings={"max_output_tokens": max_output_tokens},
         apply_output_schema_via_provider=structured,
     )

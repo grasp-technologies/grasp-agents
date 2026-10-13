@@ -41,7 +41,7 @@ Short research session — be quick and frugal:
 
 
 def _model() -> str:
-    return os.environ.get("AUTORESEARCH_TEST_MODEL", "gpt-5.5")
+    return os.environ.get("AUTORESEARCH_TEST_MODEL", "gpt-6.1-sol")
 
 
 def test_prepare_workspace_is_idempotent(tmp_path: Path) -> None:

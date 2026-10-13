@@ -47,7 +47,8 @@ class TestOpenAIResponsesIntegration:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4-nano", llm_settings={"max_output_tokens": 100}
+            model_name="gpt-6-luna",
+            llm_settings={"max_output_tokens": 100, "reasoning": {"effort": "none"}},
         )
 
     @pytest.mark.asyncio
@@ -109,7 +110,7 @@ class TestOpenAIResponsesStructuredOutput:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4-nano",
+            model_name="gpt-6-luna",
             llm_settings={"max_output_tokens": 200},
             apply_output_schema_via_provider=True,
         )
@@ -150,7 +151,7 @@ class TestOpenAIResponsesWebSearch:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4",
+            model_name="gpt-6-luna",
             llm_settings={
                 "max_output_tokens": 4096,
                 "web_search": {"type": "web_search_preview"},
@@ -227,10 +228,11 @@ class TestOpenAIResponsesReasoningContinuity:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4",
+            model_name="gpt-6-luna",
             llm_settings={
                 "max_output_tokens": 4096,
-                "reasoning": {"effort": "low", "summary": "auto"},
+                # gpt-6-luna skips reasoning on this task at "low".
+                "reasoning": {"effort": "medium", "summary": "auto"},
             },
         )
 
@@ -329,10 +331,11 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4-mini",
+            model_name="gpt-6-luna",
             llm_settings={
                 "max_output_tokens": 4096,
-                "reasoning": {"effort": "low", "summary": "auto"},
+                # gpt-6-luna skips reasoning on this task at "low".
+                "reasoning": {"effort": "medium", "summary": "auto"},
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
             },
@@ -439,7 +442,7 @@ class TestOpenAIResponsesWebFetch:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4",
+            model_name="gpt-6-luna",
             llm_settings={
                 "max_output_tokens": 4096,
                 "web_search": {"type": "web_search_preview"},
@@ -587,7 +590,7 @@ class TestOpenAIResponsesParallelToolUse:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4-nano",
+            model_name="gpt-6-luna",
             llm_settings={"max_output_tokens": 256},
         )
 
@@ -679,7 +682,7 @@ class TestOpenAIResponsesExplicitPromptCaching:
         from grasp_agents.types.items import UserMessage
 
         llm = OpenAIResponsesLLM(
-            model_name="gpt-5.6-luna",
+            model_name="gpt-6-luna",
             llm_settings={
                 "max_output_tokens": 200,
                 "prompt_cache_options": {"mode": "explicit"},

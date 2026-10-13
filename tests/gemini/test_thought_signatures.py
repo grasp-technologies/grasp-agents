@@ -214,7 +214,7 @@ def test_unsigned_tool_call_gets_placeholder_only_on_gemini_3() -> None:
     )
     items: list[InputItem] = [InputMessageItem.from_text("add"), unsigned, signed]
 
-    _, contents = items_to_provider_inputs(items, model="gemini-3.1-flash-lite")
+    _, contents = items_to_provider_inputs(items, model="gemini-3.5-flash-lite")
     assert _model_part_signatures(contents) == [PLACEHOLDER_THOUGHT_SIGNATURE, _FC_SIG]
 
     _, contents = items_to_provider_inputs(items, model="gemini-2.5-flash")
@@ -224,7 +224,7 @@ def test_unsigned_tool_call_gets_placeholder_only_on_gemini_3() -> None:
 @pytest.mark.parametrize(
     ("model", "required"),
     [
-        ("gemini-3.1-flash-lite", True),
+        ("gemini-3.5-flash-lite", True),
         ("gemini-3-pro-preview", True),
         ("gemini-3", True),
         ("models/gemini-3-flash", True),

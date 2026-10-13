@@ -74,10 +74,11 @@ def _llm(name: str, keys: dict[str, str]) -> CloudLLM:
         )
 
         return OpenAIResponsesLLM(
-            model_name="gpt-5.4-nano",
+            model_name="gpt-6-luna",
             llm_settings={
                 "max_output_tokens": 2048,
-                "reasoning": {"effort": "low", "summary": "auto"},
+                # gpt-6-luna skips reasoning on simple tasks at "low".
+                "reasoning": {"effort": "medium", "summary": "auto"},
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
             },
@@ -87,33 +88,40 @@ def _llm(name: str, keys: dict[str, str]) -> CloudLLM:
             OpenAILLM,
         )
 
+        # gpt-6-luna takes function tools on Chat Completions only unreasoned.
         return OpenAILLM(
-            model_name="gpt-5.4-nano", llm_settings={"max_completion_tokens": 1024}
+            model_name="gpt-6-luna",
+            llm_settings={"max_completion_tokens": 1024, "reasoning_effort": "none"},
         )
     if name == "anthropic":
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic", base_url=None, api_key=keys["anthropic"]
             ),
             llm_settings={
                 "max_tokens": 4096,
-                "thinking": {"type": "enabled", "budget_tokens": 1024},
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "medium"},
             },
         )
     if name == "gemini":
         from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 
         return GeminiLLM(
-            model_name="gemini-3.1-flash-lite",
+            model_name="gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="google", base_url=None, api_key=keys["google"]
             ),
             llm_settings={
                 "max_output_tokens": 2048,
-                "thinking_config": {"thinking_level": "low", "include_thoughts": True},
+                # Gemini skips thinking on these prompts at "low".
+                "thinking_config": {
+                    "thinking_level": "medium",
+                    "include_thoughts": True,
+                },
             },
         )
 
@@ -121,30 +129,35 @@ def _llm(name: str, keys: dict[str, str]) -> CloudLLM:
 
     if name == "litellm_gemini":
         return LiteLLM(
-            model_name="gemini/gemini-3.1-flash-lite",
+            model_name="gemini/gemini-3.5-flash-lite",
             api_provider=APIProvider(
                 name="gemini", base_url=None, api_key=keys["google"]
             ),
-            llm_settings={"reasoning_effort": "low", "max_completion_tokens": 1024},
+            # Gemini skips thinking on these prompts at "low".
+            llm_settings={"reasoning_effort": "medium", "max_completion_tokens": 1024},
         )
     if name == "litellm_anthropic":
         return LiteLLM(
-            model_name="anthropic/claude-haiku-4-5-20251001",
+            model_name="anthropic/claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic", base_url=None, api_key=keys["anthropic"]
             ),
             llm_settings={
                 "max_tokens": 4096,
-                "thinking": {"type": "enabled", "budget_tokens": 1024},
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "medium"},
             },
         )
     if name == "litellm_openai":
         return LiteLLM(
-            model_name="gpt-5.4-nano",
+            model_name="gpt-6-luna",
             api_provider=APIProvider(
                 name="openai", base_url=None, api_key=keys["openai"]
             ),
-            llm_settings={"max_completion_tokens": 1024},
+            # Function tools on Chat Completions only unreasoned; LiteLLM's
+            # parameter map does not list gpt-6-luna's reasoning_effort yet.
+            llm_settings={"max_completion_tokens": 1024, "reasoning_effort": "none"},
+            allowed_openai_params=["reasoning_effort"],
         )
     raise ValueError(name)
 
