@@ -12,8 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -27,6 +25,7 @@ from grasp_agents.sandbox import (
     srt_argv,
 )
 from grasp_agents.session_context import SessionContext
+from tests._helpers import srt_can_run
 
 from ._bg_harness import background, kill, make_stack, marker_size, poll_until_done
 
@@ -35,28 +34,7 @@ pytestmark = pytest.mark.asyncio
 _HAS_SRT = shutil.which("srt") is not None
 
 
-def _srt_can_run() -> bool:
-    """
-    True only where `srt` can actually apply confinement and run a command —
-    i.e. an unconfined host, not a nested sandbox (where its Seatbelt/bwrap
-    layer can't apply). Gates the live-exec tests, mirroring seatbelt's probe.
-    """
-    srt = shutil.which("srt")
-    if srt is None:
-        return False
-    with tempfile.TemporaryDirectory() as d:
-        settings = build_srt_settings(SandboxPolicy(allowed_roots=(Path(d),)))
-        settings_file = Path(d) / "s.json"
-        settings_file.write_text(json.dumps(settings))
-        argv = list(srt_argv(srt, str(settings_file), "true"))
-        try:
-            proc = subprocess.run(argv, capture_output=True, timeout=30, check=False)
-        except Exception:
-            return False
-        return proc.returncode == 0
-
-
-_SRT_CAN_RUN = _srt_can_run()
+_SRT_CAN_RUN = srt_can_run()
 
 
 # --- settings mapping --------------------------------------------------------

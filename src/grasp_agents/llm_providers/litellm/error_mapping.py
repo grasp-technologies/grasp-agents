@@ -50,6 +50,11 @@ def map_api_error(err: Exception) -> LlmError | None:
         # in-body upstream failures) — transient, must reach retry/fallback.
         return LlmInternalServerError(msg, response=_synthetic_response(502), body=None)
 
+    if isinstance(err, litellm.UnsupportedParamsError):
+        # Raised by LiteLLM before any request, without the SDK fields
+        # (``type``, ``body``, ``response``) the checks below read.
+        return LlmBadRequestError(msg, response=_synthetic_response(400), body=None)
+
     # Both mean the account can no longer pay for the call, whatever status
     # the upstream chose — fail over instead of retrying a dead key.
     if isinstance(err, litellm.BudgetExceededError) or (

@@ -14,10 +14,11 @@ figure the agent saves in step 2 (``cumsum.png``) lands in the workspace.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import pytest
+
+from tests._helpers import confine_notebook
 
 _NB = (
     Path(__file__).resolve().parents[2]
@@ -27,7 +28,6 @@ _NB = (
 
 @pytest.mark.integration
 @pytest.mark.skipif(not os.environ.get("OPENAI_API_KEY"), reason="needs OPENAI_API_KEY")
-@pytest.mark.skipif(shutil.which("srt") is None, reason="needs srt")
 def test_code_interpreter_demo_notebook_executes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -40,6 +40,7 @@ def test_code_interpreter_demo_notebook_executes(
     monkeypatch.delenv("CLAUDE_TMPDIR", raising=False)
 
     nb = nbformat.read(str(_NB), as_version=4)
+    confine_notebook(nb.cells)
     client = nbclient.NotebookClient(
         nb,
         timeout=300,

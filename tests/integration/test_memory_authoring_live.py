@@ -73,7 +73,8 @@ async def test_memory_authoring_does_not_clobber(memdir: Path) -> None:
     retries = int(os.environ.get("MEMORY_TEST_VALIDATION_RETRIES", "3"))
     llm = OpenAILLM(
         model_name=model_name,
-        llm_settings=OpenAILLMSettings(temperature=0.0),
+        # gpt-6-luna takes function tools on Chat Completions only unreasoned.
+        llm_settings=OpenAILLMSettings(temperature=0.0, reasoning_effort="none"),
         retry_policy=RetryPolicy(validation_retries=retries),
     )
     provider = MemoryProvider(memdir)

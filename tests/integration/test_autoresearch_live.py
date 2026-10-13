@@ -4,8 +4,9 @@ a real LLM runs a short but complete research session — venv setup, dataset
 download through the srt network allowlist, notebook-driven modeling, hidden
 holdout scoring — and the session state must survive a simulated restart.
 
-Slow (several minutes) and ``integration``-gated; needs ``OPENAI_API_KEY``
-and the ``srt`` CLI. Run unsandboxed, foreground:
+Slow (several minutes) and ``integration``-gated; needs ``OPENAI_API_KEY``,
+network access to PyPI and the dataset host, and ``srt`` unless run inside an
+outer sandbox (:func:`tests._helpers.exec_confinement`). Run foreground:
 
     uv run pytest -m integration tests/integration/test_autoresearch_live.py -s
 """
@@ -14,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -25,10 +25,10 @@ from grasp_agents.examples.tui.autoresearch import (
     prepare_workspace,
     run_headless,
 )
+from tests._helpers import exec_confinement
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(shutil.which("srt") is None, reason="srt not installed"),
 ]
 
 _SHORT_GOAL = """\
@@ -70,7 +70,9 @@ async def test_short_research_session(
     monkeypatch.delenv("CLAUDE_TMPDIR", raising=False)
 
     ws = tmp_path / "ws"
-    researcher, ctx = build_researcher(ws, model=_model(), max_turns=30)
+    researcher, ctx = build_researcher(
+        ws, model=_model(), max_turns=30, confinement=exec_confinement()
+    )
 
     final = await run_headless(researcher, goal=_SHORT_GOAL)
 
@@ -102,7 +104,9 @@ async def test_short_research_session(
     assert "Survived" not in holdout_header
 
     # --- Simulated restart: fresh agent + ctx over the same checkpoints ---
-    researcher2, ctx2 = build_researcher(ws, model=_model(), max_turns=30)
+    researcher2, ctx2 = build_researcher(
+        ws, model=_model(), max_turns=30, confinement=exec_confinement()
+    )
     assert ctx2.state == ResearchState()  # fresh state before loading
     async with researcher2:
         # Run-start order: the session restore (ctx.state) precedes the

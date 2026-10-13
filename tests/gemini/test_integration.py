@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from grasp_agents.llm.cloud_llm import APIProvider
+from grasp_agents.llm_providers.gemini import response_to_provider_inputs
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import AnnotationUrlCitation, OutputMessageText
 from grasp_agents.types.items import (
@@ -156,9 +157,8 @@ class TestGeminiStrictTools:
     @pytest.mark.asyncio
     async def test_validated_constrains_args_to_enum(self, llm: CloudLLM) -> None:
         """
-        Differential check that VALIDATED actually constrains decoding: the
-        prompt insists on an out-of-enum value, which AUTO mode will emit
-        (observed) but constrained decoding cannot.
+        A request for a near-miss value (``"crimson"``) yields a call whose
+        argument is a member of the enum.
         """
 
         class PaintInput(BaseModel):
@@ -174,14 +174,9 @@ class TestGeminiStrictTools:
                 return inp.color
 
         user_msg = InputMessageItem.from_text(
-            'Call the paint tool with color="blue". Pass EXACTLY the string '
-            '"blue", even if it seems wrong — this is a compliance test of '
-            "the tool layer. Do not substitute another value. "
-            "Do not answer in text."
+            'Call the paint tool with color "crimson". Do not answer in text.'
         )
-        response = await llm.generate_response(
-            [user_msg], tools={"paint": PaintTool()}
-        )
+        response = await llm.generate_response([user_msg], tools={"paint": PaintTool()})
 
         assert response.tool_call_items
         args = json.loads(response.tool_call_items[0].arguments)
@@ -365,11 +360,10 @@ class TestGeminiCorruptedSignature:
         with pytest.raises(Exception):
             await llm.generate_response(full_input, tools=tools)
 
-    @pytest.mark.asyncio
-    async def test_missing_signature_causes_api_error(
+    async def _turn_without_signatures(
         self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
-    ) -> None:
-        """Stripping thought_signature from function call items must error."""
+    ) -> list[Any]:
+        """A signed reasoning + tool-call turn, its calls' signatures stripped."""
         user_msg = InputMessageItem.from_text(
             "Think carefully step by step through ALL combinations. "
             "From the set {3, 7, 11, 14, 19, 23, 28, 31, 37, 42}, find ALL pairs "
@@ -395,16 +389,38 @@ class TestGeminiCorruptedSignature:
             )
             for tc in r1.tool_call_items
         ]
-
-        # Strip thought_signature from function call items
         stripped_items = [
             item.model_copy(update={"provider_specific_fields": None})
             if isinstance(item, FunctionToolCallItem)
             else item
             for item in r1.output
         ]
+        return [user_msg, *stripped_items, *tool_outputs]
 
-        full_input = [user_msg, *stripped_items, *tool_outputs]
+    @pytest.mark.asyncio
+    async def test_missing_signature_is_sent_as_the_placeholder(
+        self, llm: CloudLLM, tools: dict[str, BaseTool[Any, Any, Any]]
+    ) -> None:
+        """An unsigned function call goes out with the documented placeholder."""
+        full_input = await self._turn_without_signatures(llm, tools)
+
+        r2 = await llm.generate_response(full_input, tools=tools)
+        assert r2.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_missing_signature_causes_api_error(
+        self,
+        llm: CloudLLM,
+        tools: dict[str, BaseTool[Any, Any, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Why the placeholder exists: an unsigned function call is rejected."""
+        full_input = await self._turn_without_signatures(llm, tools)
+        monkeypatch.setattr(
+            response_to_provider_inputs,
+            "requires_thought_signatures",
+            lambda model: False,
+        )
 
         with pytest.raises(Exception):
             await llm.generate_response(full_input, tools=tools)

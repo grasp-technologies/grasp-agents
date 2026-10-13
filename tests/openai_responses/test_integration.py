@@ -245,9 +245,8 @@ class TestOpenAIResponsesReasoningContinuity:
             "whose sum is exactly 42. Work through the combinations, "
             "then use the add tool to verify your answer."
         )
-        r1 = await llm.generate_response(
-            [user_msg], tools=tools, tool_choice="required"
-        )
+        # gpt-6-luna mostly skips reasoning under a forced tool choice.
+        r1 = await llm.generate_response([user_msg], tools=tools)
 
         # First turn: reasoning + tool call
         assert len(r1.reasoning_items) >= 1, "First turn must produce reasoning"
@@ -279,11 +278,10 @@ class TestOpenAIResponsesReasoningContinuity:
             "then use the add tool to verify your answer."
         )
         # First turn: streaming
+        # gpt-6-luna mostly skips reasoning under a forced tool choice.
         events1 = [
             event
-            async for event in llm.generate_response_stream(
-                [user_msg], tools=tools, tool_choice="required"
-            )
+            async for event in llm.generate_response_stream([user_msg], tools=tools)
         ]
         completed1 = [e for e in events1 if isinstance(e, ResponseCompleted)]
         assert len(completed1) == 1
@@ -350,9 +348,8 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
             "whose sum is exactly 42. Work through the combinations, "
             "then use the add tool to verify your answer."
         )
-        r1 = await llm.generate_response(
-            [user_msg], tools=tools, tool_choice="required"
-        )
+        # gpt-6-luna mostly skips reasoning under a forced tool choice.
+        r1 = await llm.generate_response([user_msg], tools=tools)
 
         assert len(r1.reasoning_items) >= 1, "First turn must produce reasoning"
 
@@ -398,9 +395,8 @@ class TestOpenAIResponsesCorruptedEncryptedContent:
             "whose sum is exactly 42. Work through the combinations, "
             "then use the add tool to verify your answer."
         )
-        r1 = await llm.generate_response(
-            [user_msg], tools=tools, tool_choice="required"
-        )
+        # gpt-6-luna mostly skips reasoning under a forced tool choice.
+        r1 = await llm.generate_response([user_msg], tools=tools)
 
         assert len(r1.reasoning_items) >= 1, "First turn must produce reasoning"
 
