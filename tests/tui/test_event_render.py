@@ -820,7 +820,7 @@ def test_bg_launched_notice_cites_log_only_when_present() -> None:
                 task_id="bg_1",
                 tool_name="Bash",
                 tool_call_id="c1",
-                output_name="call_c1.log",
+                log_name="call_c1.log",
             ),
             source="lead",
         )

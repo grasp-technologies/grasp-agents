@@ -1,11 +1,12 @@
 """
 Free-form live integration test for ``RunPython``: a real LLM is asked to make
-a plot, runs matplotlib code in a **real srt-confined kernel**, and the figure
-it displays must come back to it as an image.
+a plot, runs matplotlib code in a **real confined kernel**, and the figure it
+displays must come back to it as an image.
 
-Exercises the whole loop end-to-end — model → tool call → srt kernel → rich
-display output → image part fed back to the model. Requires ``OPENAI_API_KEY``
-and the ``srt`` CLI, and must run unsandboxed:
+Exercises the whole loop end-to-end — model → tool call → kernel → rich display
+output → image part fed back to the model. Requires ``OPENAI_API_KEY``; the
+kernel runs under ``srt``, or unconfined inside an outer sandbox
+(:func:`tests._helpers.exec_confinement`):
 
     uv run pytest -m integration tests/integration/test_code_interpreter_live.py -s
 """
@@ -13,7 +14,6 @@ and the ``srt`` CLI, and must run unsandboxed:
 from __future__ import annotations
 
 import os
-import shutil
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -26,6 +26,7 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.tools.code_interpreter import RunPython
 from grasp_agents.types.content import InputImage
 from grasp_agents.types.events import ToolOutputItemEvent
+from tests._helpers import exec_confinement
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,7 +45,7 @@ _SYS_PROMPT = (
 def _make_llm() -> OpenAIResponsesLLM:
     # The Responses API (unlike Chat Completions) supports image tool outputs,
     # which is what lets a displayed plot be fed back to the model.
-    model_name = os.environ.get("CODE_INTERP_TEST_MODEL", "gpt-5.4-mini")
+    model_name = os.environ.get("CODE_INTERP_TEST_MODEL", "gpt-6-luna")
     return OpenAIResponsesLLM(model_name=model_name)
 
 
@@ -52,7 +53,6 @@ def _make_llm() -> OpenAIResponsesLLM:
 @pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"), reason="Live test — requires OPENAI_API_KEY"
 )
-@pytest.mark.skipif(shutil.which("srt") is None, reason="srt not installed")
 async def test_freeform_agent_produces_plot_via_srt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -64,7 +64,7 @@ async def test_freeform_agent_produces_plot_via_srt(
     # Keep matplotlib's font cache inside the writable root (srt confines writes).
     env = local_environment(
         allowed_roots=[tmp_path],
-        confinement="srt",
+        confinement=exec_confinement(),
         env={"MPLCONFIGDIR": str(tmp_path / ".mpl")},
     )
     ctx: SessionContext[None] = SessionContext(state=None, environment=env)

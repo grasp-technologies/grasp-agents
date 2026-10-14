@@ -36,7 +36,7 @@ def _make_llm() -> Any:
     )
 
     return OpenAIResponsesLLM(
-        model_name="gpt-5.4-nano", llm_settings={"max_output_tokens": 400}
+        model_name="gpt-6-luna", llm_settings={"max_output_tokens": 400}
     )
 
 

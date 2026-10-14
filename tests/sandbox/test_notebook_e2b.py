@@ -25,14 +25,9 @@ import pytest
 from nbformat import v4
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.sandbox import e2b_environment
 from grasp_agents.session_context import SessionContext
-from grasp_agents.tools.bash_common import ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import (
-    FileEditSessionState,
     NotebookEditInput,
     NotebookEditResult,
     NotebookEditTool,
@@ -42,6 +37,7 @@ from grasp_agents.tools.file_edit import (
 )
 from grasp_agents.tools.notebook_exec import KernelHolder, RunCell, RunCellInput
 from grasp_agents.types.events import ToolErrorInfo
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from grasp_agents.file_backend.base import FileBackend
@@ -59,19 +55,7 @@ _live = pytest.mark.skipif(
 
 
 def _agent_ctx() -> AgentContext:
-    transcript = LLMAgentTranscript()
-    return AgentContext(
-        transcript=transcript,
-        tools={},
-        file_edit_state=FileEditSessionState(),
-        bg_tasks=BackgroundTaskManager(
-            agent_name="test", transcript=transcript, tools={}
-        ),
-        session_holder=BashSessionHolder(),
-        nb_kernel_holder=KernelHolder(),
-        ipy_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
-    )
+    return _make_agent_ctx()
 
 
 async def _write_notebook(fb: FileBackend, path: Path, source: str) -> None:

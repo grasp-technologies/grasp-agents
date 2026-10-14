@@ -2,16 +2,16 @@
 Agent-readable on-disk artifacts for tool-call outputs, under the agent's own
 filesystem at ``<first allowed root>/.grasp/tasks/<call_id>.<ext>``:
 
-- ``<call_id>.log`` — a backgrounded task's *streamed* output, mirrored
-  incrementally as it runs so it survives a crash and the agent can ``Read`` /
-  ``Grep`` a running task. Appended to at the manager's turn-boundary flush.
-- ``<call_id>.result`` — a tool call's *full result*, written once when it
-  exceeds the inline cap: a backgrounded task's terminal result on completion,
-  or a foreground call's result spilled by :func:`spill_if_large`. The streamed
-  log holds text; this holds the structured result (e.g. a ``BashResult`` with
-  split stdout / stderr / exit code) — what the inline excerpt points at.
+- ``<call_id>.log`` — a backgrounded task's *streamed* output, appended as it
+  runs so it survives a crash and the agent can ``Read`` / ``Grep`` a running
+  task.
+- ``<call_id>.result`` — a tool call's *full result* (or error), written once by
+  :func:`spill_if_large` when it exceeds the inline cap: a foreground call's
+  result, or a backgrounded task's outcome when it finishes. The streamed log
+  holds text; this holds the structured result (e.g. a ``BashResult`` with split
+  stdout / stderr / exit code) — what the inline excerpt points at.
 
-A backgrounded task's ``TaskRecord`` indexes its log via ``output_path``.
+A backgrounded task's ``TaskRecord`` indexes its log via ``log_path``.
 """
 
 from __future__ import annotations
@@ -98,49 +98,55 @@ async def write_result_file(
 
 
 def excerpt_for_inline(
-    text: str, cap: int | None, *, log_file: str | None = None
+    text: str,
+    cap: int | None,
+    *,
+    file: str | None = None,
+    file_kind: str = "full output",
 ) -> tuple[str, bool]:
     """
     Fit a result into the limited inline space (a transcript message or a
     completion note): ``(text, truncated)``.
 
     Returns ``text`` unchanged when no cap applies or it already fits. Otherwise
-    keeps a head + tail of ``cap`` chars total with a middle marker; when an
-    ``log_file`` is known (a spilled result or a task's ``.grasp`` log), the
-    marker points there so the model can ``Read`` / ``Grep`` the full output on
-    demand rather than bloating the transcript with it.
+    keeps a head + tail of ``cap`` chars total with a middle marker; when a
+    ``file`` is known (a spilled result or a task's ``.grasp`` log), the marker
+    points there — worded as ``file_kind`` so the model knows whether it is the
+    full text or only the streamed output — so it can ``Read`` / ``Grep`` the
+    rest on demand rather than bloating the transcript with it.
     """
     if cap is None or len(text) <= cap:
         return text, False
     head = cap // 2
     tail = cap - head
     omitted = len(text) - cap
-    pointer = f" — full output in {log_file}" if log_file else ""
+    pointer = f" — {file_kind} in {file}" if file else ""
     marker = f"\n... [{omitted} chars omitted{pointer}] ...\n"
 
     return text[:head] + marker + text[-tail:], True
 
 
 async def spill_if_large(
-    file_backend: FileBackend | None, *, name: str, text: str, cap: int | None
-) -> str:
+    file_backend: FileBackend | None,
+    *,
+    name: str,
+    text: str,
+    cap: int | None,
+    file_kind: str = "full output",
+) -> tuple[str, str | None]:
     """
     Bound how much of a tool result is inlined: when ``text`` exceeds ``cap``,
     spill the full text to a ``.result`` file and return a head+tail excerpt that
-    points at it (``Read`` / ``Grep`` recovers the rest).
+    points at it (``Read`` / ``Grep`` recovers the rest), with that file's path.
 
-    Returns ``text`` unchanged when it fits, when ``cap`` is ``None``, or when
-    there is no backend to spill to — truncating with no recovery path would
-    hide output unrecoverably.
+    Returns ``(text, None)`` when it fits, when ``cap`` is ``None``, or when the
+    spill is impossible (no backend) or fails — truncating with no recovery path
+    would hide output unrecoverably.
     """
-    if cap is None or len(text) <= cap:
-        return text
-    output_file = (
-        await write_result_file(file_backend, name=name, text=text)
-        if file_backend is not None
-        else None
-    )
-    if output_file is None:
-        return text
-    excerpt, _ = excerpt_for_inline(text, cap, log_file=output_file)
-    return excerpt
+    if cap is None or len(text) <= cap or file_backend is None:
+        return text, None
+    result_path = await write_result_file(file_backend, name=name, text=text)
+    if result_path is None:
+        return text, None
+    excerpt, _ = excerpt_for_inline(text, cap, file=result_path, file_kind=file_kind)
+    return excerpt, result_path

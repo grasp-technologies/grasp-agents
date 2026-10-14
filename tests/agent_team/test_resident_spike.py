@@ -267,10 +267,11 @@ async def test_resident_answer_durable_and_message_released() -> None:
 
 
 async def test_resident_message_released_on_absorption_not_at_reply() -> None:
-    # Ack-on-absorption: a drained message is released at the *first* checkpoint
-    # that persists it — the first tool turn — NOT held until the reply. Crash
-    # safety then rests on the log (see the resume test below), so the message need
-    # not linger in the mailbox across the whole handling.
+    # Ack-on-absorption: a drained message is released by the checkpoint that
+    # persists it — taken at the turn boundary, before the turn's LLM call — NOT
+    # held until the reply. Crash safety then rests on the log (see the resume
+    # test below), so the message need not linger in the mailbox across the
+    # whole handling.
     store = InMemoryCheckpointStore()
     transport = CheckpointMailboxTransport(store, session_key="s")
     r1 = asyncio.Event()
@@ -306,23 +307,17 @@ async def test_resident_message_released_on_absorption_not_at_reply() -> None:
     run = asyncio.create_task(_collect(agent))
     await transport.post(msg)
     try:
-        # First tool turn issued, tool still blocking → not yet checkpointed, so the
-        # message is still leased (pending, not processed).
+        # First tool turn issued, tool still blocking: the message was absorbed
+        # and checkpointed at the turn boundary, so it is already released —
+        # processed, not pending — with no tool result produced yet.
         await _until(lambda: agent.llm.call_count == 1)
-        assert await transport.has_pending("curator")
-        assert not await transport.was_processed("curator", msg.message_id)
-
-        # Release step1: its result is checkpointed, releasing the message NOW — at
-        # the first tool turn, while step2 still blocks and the reply (call 3) is
-        # not yet produced.
-        r1.set()
-        await _until(lambda: agent.llm.call_count == 2)  # step2 issued, blocking
-        for _ in range(300):
-            if await transport.was_processed("curator", msg.message_id):
-                break
-            await asyncio.sleep(0.01)
         assert await transport.was_processed("curator", msg.message_id)
         assert not await transport.has_pending("curator")
+
+        # Neither step1's result nor the reply (call 3) played a part.
+        r1.set()
+        await _until(lambda: agent.llm.call_count == 2)  # step2 issued, blocking
+        assert await transport.was_processed("curator", msg.message_id)
         assert agent.llm.call_count == 2  # released before the reply, not at it
     finally:
         r2.set()

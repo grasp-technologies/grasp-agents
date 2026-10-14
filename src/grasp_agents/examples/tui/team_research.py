@@ -73,8 +73,8 @@ from grasp_agents.types.events import Event, ToolOutputEvent, ToolStreamEvent
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-DEFAULT_MODEL = "gpt-5.4-nano"
-LEAD_MODEL = "gpt-5.4"
+DEFAULT_MODEL = "gpt-6-luna"
+LEAD_MODEL = "gpt-6.1-sol"
 DEFAULT_DIR = Path(".grasp") / "team-demo"
 
 ROSTER = [

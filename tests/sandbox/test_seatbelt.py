@@ -46,11 +46,11 @@ from grasp_agents.session_context import SessionContext
 from ._bg_harness import (
     background,
     drain_notes,
-    flush,
     kill,
     make_stack,
     marker_size,
     poll_until_done,
+    read_log_until,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -411,7 +411,7 @@ async def test_seatbelt_background_small_result_inlined(tmp_path: Path) -> None:
     assert task_id is not None
 
     await mgr.wait_idle()
-    notes = await drain_notes(mgr, ctx)
+    notes = await drain_notes(agent_ctx, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "hello" in notes[0]
@@ -438,7 +438,7 @@ async def test_seatbelt_background_large_result_excerpted(tmp_path: Path) -> Non
     assert task_id is not None
 
     await mgr.wait_idle()
-    notes = await drain_notes(mgr, ctx)
+    notes = await drain_notes(agent_ctx, ctx)
     assert len(notes) == 1
     assert "completed" in notes[0]
     assert "chars omitted" in notes[0]
@@ -471,15 +471,11 @@ async def test_seatbelt_background_writes_greppable_log(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    await asyncio.sleep(0.3)
-    await flush(mgr, ctx)
-
     keys = await store.list_keys(task_prefix("s1"))
     rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")
-    assert rec.output_path is not None
-    assert ".grasp/tasks" in rec.output_path
-    content, _ = await env.file_backend.read_text(Path(rec.output_path))
-    assert "HELLO" in content
+    assert rec.log_path is not None
+    assert ".grasp/tasks" in rec.log_path
+    await read_log_until(env.file_backend, rec.log_path, "HELLO")
 
     await kill(mgr, task_id)
     assert mgr._tasks == {}  # pyright: ignore[reportPrivateUsage]

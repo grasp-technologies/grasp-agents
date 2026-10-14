@@ -371,7 +371,7 @@ def _reset_transcripts(root: Processor[Any, Any, Any]) -> None:
 
     for proc in iter_processors(root):
         if isinstance(proc, LLMAgent):
-            proc.transcript.clear()
+            proc.reset_transcript()
 
 
 def _declared_output_type(factory: Callable[[], Any]) -> Any:

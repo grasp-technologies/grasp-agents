@@ -101,7 +101,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
             from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
 
             if isinstance(proc, LLMAgent):
-                proc.transcript.clear()
+                proc.reset_transcript()
         return proc
 
     async def _run(
@@ -141,7 +141,7 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         ):
             yield event
 
-    async def resume_stream(
+    async def _resume_stream(
         self,
         *,
         ctx: SessionContext[CtxT] | None = None,

@@ -48,7 +48,7 @@ class TestAnthropicIntegration:
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,
@@ -114,7 +114,7 @@ class TestAnthropicStrictTools:
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,
@@ -188,7 +188,7 @@ class TestAnthropicStrictTools:
             "input_schema": raw_schema,
         }
         common: dict[str, Any] = {
-            "model": "claude-haiku-4-5-20251001",
+            "model": "claude-haiku-5-5",
             "max_tokens": 100,
             "messages": [{"role": "user", "content": "What is 17 + 25? Use add."}],
             "tool_choice": {"type": "any"},
@@ -215,7 +215,7 @@ class TestAnthropicReasoningContinuity:
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,
@@ -223,7 +223,8 @@ class TestAnthropicReasoningContinuity:
             ),
             llm_settings={
                 "max_tokens": 4096,
-                "thinking": {"type": "enabled", "budget_tokens": 1024},
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "medium"},
             },
         )
 
@@ -381,7 +382,7 @@ class TestAnthropicWebSearch:
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-sonnet-4-6",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,
@@ -516,7 +517,7 @@ class TestAnthropicStructuredOutput:
         )
 
         return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,
@@ -560,7 +561,7 @@ class TestAnthropicWebFetch:
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-sonnet-4-6",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,
@@ -677,7 +678,7 @@ class TestAnthropicParallelToolUse:
         from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
         return AnthropicLLM(
-            model_name="claude-haiku-4-5-20251001",
+            model_name="claude-haiku-5-5",
             api_provider=APIProvider(
                 name="anthropic",
                 base_url=None,

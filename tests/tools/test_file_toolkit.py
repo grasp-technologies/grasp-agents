@@ -16,18 +16,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools import FileToolkit
-from grasp_agents.tools.bash_common import ShellState
-from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.file_edit import (
     DeleteTool,
     EditTool,
-    FileEditSessionState,
     NullRedactor,
     ReadInput,
     ReadTool,
@@ -35,7 +29,7 @@ from grasp_agents.tools.file_edit import (
     WriteTool,
 )
 from grasp_agents.tools.file_search import GlobTool, GrepTool
-from grasp_agents.tools.notebook_exec import KernelHolder
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,18 +103,7 @@ async def test_read_then_write_composes(tmp_path: Path) -> None:
     f = tmp_path / "a.txt"
     f.write_text("original")
 
-    transcript = LLMAgentTranscript()
-    agent_ctx = AgentContext(
-        transcript=transcript,
-        tools={},
-        file_edit_state=FileEditSessionState(),
-        bg_tasks=BackgroundTaskManager(
-            agent_name="test", transcript=transcript, tools={}
-        ),
-        session_holder=BashSessionHolder(),
-        nb_kernel_holder=KernelHolder(),
-        shell_state=ShellState(),
-    )
+    agent_ctx = _make_agent_ctx()
     await tk.read.run(ReadInput(path=str(f)), ctx=ctx, agent_ctx=agent_ctx)
     await tk.write.run(
         WriteInput(path=str(f), content="updated"), ctx=ctx, agent_ctx=agent_ctx

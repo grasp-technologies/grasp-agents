@@ -114,7 +114,7 @@ async def test_background_task_gets_its_own_log_pane() -> None:
     )
 
     info = BackgroundTaskInfo(
-        task_id="bg_1", tool_name="Bash", tool_call_id="c1", output_name="c1.log"
+        task_id="bg_1", tool_name="Bash", tool_call_id="c1", log_name="c1.log"
     )
     app = GraspAgentsApp()
     async with app.run_test() as pilot:
@@ -123,7 +123,10 @@ async def test_background_task_gets_its_own_log_pane() -> None:
         for chunk in ("hello ", "world"):
             await app._feed(
                 ToolStreamEvent(
-                    data=chunk, source="Bash", destination="coordinator", task_id="bg_1"
+                    data=chunk,
+                    source="Bash",
+                    destination="coordinator",
+                    tool_call_id="c1",
                 )
             )
         await pilot.pause()

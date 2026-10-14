@@ -200,9 +200,8 @@ def test_pairing_is_preserved() -> None:
     msgs = [_user("q"), _call("c1"), _result("c1", BIG), _user("next")]
     out = collapse_tool_outputs(msgs, keep_recent_turns=1)
     assert [m.call_id for m in _outputs(out)] == ["c1"]
-    transcript = LLMAgentTranscript()
-    transcript.messages = list(out)
-    transcript.validate_tool_call_pairing()  # raises if collapse orphaned a pair
+    # raises if collapse orphaned a pair
+    LLMAgentTranscript(list(out)).validate_tool_call_pairing()
 
 
 def test_collapse_is_deterministic() -> None:

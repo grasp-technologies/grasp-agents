@@ -28,7 +28,7 @@ from grasp_agents.mailbox import InMemoryMailboxTransport
 from grasp_agents.runtime import Closed
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Collection, Generator
 
     from grasp_agents.runtime import Transport
     from grasp_agents.types.message import TeamMessage
@@ -136,6 +136,26 @@ class AgentInbox:
         for message in list(self._leased.values()):
             await self._transport.ack(self._recipient, message)
             self._leased.pop(message.message_id, None)
+
+    def acks_through(self, store: object) -> bool:
+        """Whether acks write through ``store`` (:meth:`Transport.writes_through`)."""
+        return self._transport.writes_through(store)
+
+    async def ack_leases(self) -> list[str]:
+        """
+        Ack every leased message but keep the leases, returning their ids for
+        :meth:`release` — for acks inside a checkpoint's transaction, which
+        may still roll back: a lease released too early would let the restored
+        message be taken a second time.
+        """
+        for message in list(self._leased.values()):
+            await self._transport.ack(self._recipient, message)
+        return list(self._leased)
+
+    def release(self, message_ids: Collection[str]) -> None:
+        """Drop the leases of messages whose acks are now durable."""
+        for message_id in message_ids:
+            self._leased.pop(message_id, None)
 
     def drop_leases(self) -> list[TeamMessage]:
         """

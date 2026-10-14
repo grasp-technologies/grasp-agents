@@ -2,7 +2,8 @@
 The per-agent :class:`AgentInbox` as a view over a pluggable
 :class:`MessageTransport`: in-memory FIFO, the parked-idle signal, and durable
 delivery (the same message survives a restart over a shared checkpoint store, and a
-consumed one is not re-delivered).
+consumed one is not re-delivered), and acks that commit inside the checkpoint's
+transaction when the mailbox lives in that same store.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ from grasp_agents.inbox import AgentInbox
 from grasp_agents.mailbox import CheckpointMailboxTransport, InMemoryMailboxTransport
 from grasp_agents.runtime import Transport
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
+from tests._helpers import _text_response
+from tests.agent.test_human_turn_anchors import _human, _run_resident_until
+from tests.durability.test_deferred_effects import _RollbackStore, _Store
+from tests.durability.test_sessions import _make_agent
 
 pytestmark = pytest.mark.asyncio
 
@@ -193,3 +198,88 @@ async def test_take_mints_consumption_seq_and_restore_never_lowers() -> None:
     third = await reattached.poll()
     assert third is not None
     assert third.seq == 10
+
+
+# --- Acks and the checkpoint transaction ---
+
+
+def _is_ack_write(key: str) -> bool:
+    return "processed" in key.split("/")
+
+
+class _AckRecordingStore(_Store):
+    """Records, for each mailbox ack, whether it landed inside a transaction."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ack_writes: list[bool] = []
+
+    async def save(self, key: str, data: bytes) -> None:
+        if _is_ack_write(key):
+            self.ack_writes.append(self.in_transaction)
+        await super().save(key, data)
+
+
+class _AckRecordingRollbackStore(_RollbackStore):
+    """The transactional counterpart of :class:`_AckRecordingStore`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ack_writes: list[bool] = []
+
+    async def save(self, key: str, data: bytes) -> None:
+        if _is_ack_write(key):
+            self.ack_writes.append(self.in_transaction)
+        await super().save(key, data)
+
+
+async def test_acks_commit_inside_a_transactional_checkpoint() -> None:
+    store = _AckRecordingRollbackStore()
+    agent, ctx = _make_agent([_text_response("re: hi")], session_key="s1", store=store)
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    ctx.transport = transport
+    agent.attach_inbox()
+
+    await _run_resident_until(agent, transport, [_human("hi")])
+
+    assert store.ack_writes == [True]
+
+
+async def test_acks_follow_a_non_transactional_checkpoint() -> None:
+    store = _AckRecordingStore()
+    agent, ctx = _make_agent([_text_response("re: hi")], session_key="s1", store=store)
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    ctx.transport = transport
+    agent.attach_inbox()
+
+    await _run_resident_until(agent, transport, [_human("hi")])
+
+    assert store.ack_writes == [False]
+
+
+async def test_a_rolled_back_checkpoint_keeps_the_message_leased() -> None:
+    store = _RollbackStore()
+    agent, ctx = _make_agent([], session_key="s1", store=store)
+    transport = CheckpointMailboxTransport(store, session_key="s1")
+    ctx.transport = transport
+    agent.attach_inbox()
+    inbox = agent.agent_ctx.inbox
+    assert inbox is not None
+
+    message = _human("hi")
+    await transport.post(message)
+    assert await inbox.take() is not None
+
+    store.fail_next_commit = True
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await agent.save_checkpoint()
+    # The ack rolled back with the checkpoint: still pending, and still leased,
+    # so it is not taken a second time.
+    assert await transport.has_pending("test_agent")
+    assert not await transport.was_processed("test_agent", message.message_id)
+    assert await inbox.take() is None
+
+    await agent.save_checkpoint()
+    assert await transport.was_processed("test_agent", message.message_id)
+    assert not await transport.has_pending("test_agent")
+    assert not inbox._leased  # pyright: ignore[reportPrivateUsage]

@@ -324,8 +324,8 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         # not a result the agent sees — rendered distinctly, headed by the log.
         self._ga_bg_tools: dict[str, str | None] = {}
         # Background-task panes: each backgrounded task gets its own pane showing
-        # its live log. Keyed by (launching agent, task_id) — the identity a
-        # stamped ToolStreamEvent carries via (destination, task_id) — mapped to
+        # its live log. Keyed by (launching agent, tool_call_id) — the identity a
+        # claimed ToolStreamEvent carries via (destination, tool_call_id) — mapped to
         # the pane's source key, unmapped on completion. ``_ga_task_keys`` holds
         # every key ever minted (a pane stays a task pane — tab tint, log-style
         # rendering — for its lifetime); the text/widget maps hold the
@@ -936,7 +936,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         """
         info = event.data
         agent = event.source or ""
-        ident = (agent, info.task_id)
+        ident = (agent, info.tool_call_id)
         if ident in self._ga_task_panes:
             return
         key = f"{info.tool_name} {info.task_id}"
@@ -949,8 +949,8 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             self._ga_parent.setdefault(key, agent)
         pane = await self._ensure(key)
         head = f"⧗ {info.tool_name} running in background (id: {info.task_id})"
-        if info.output_name:
-            head += f" · {info.output_name}"
+        if info.log_name:
+            head += f" · {info.log_name}"
         await pane.mount(
             SelectableStatic(Text(head, style=PALETTE["warn"]), classes="ga-msg")
         )
@@ -963,7 +963,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         failed: bool = False,
     ) -> None:
         """Mark the task's pane done and stop routing its (finished) stream."""
-        ident = (event.source or "", event.data.task_id)
+        ident = (event.source or "", event.data.tool_call_id)
         key = self._ga_task_panes.pop(ident, None)
         if key is None:
             return
@@ -1249,8 +1249,8 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
                 event.destination or self._ga_main or self._ga_last_agent or "session"
             )
         # a backgrounded task's live output goes to that task's own log pane
-        if isinstance(event, ToolStreamEvent) and event.task_id is not None:
-            key = self._ga_task_panes.get((event.destination or "", event.task_id))
+        if isinstance(event, ToolStreamEvent) and event.tool_call_id is not None:
+            key = self._ga_task_panes.get((event.destination or "", event.tool_call_id))
             if key is not None:
                 return key
         # tool / exec output (source = tool name) renders in the calling agent's
@@ -1267,7 +1267,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         elif isinstance(event, BackgroundTaskLaunchedEvent):
             child, parent = event.data.tool_name, event.source
             # its subsequent streamed output is background progress, not a result
-            self._ga_bg_tools[event.data.tool_name] = event.data.output_name
+            self._ga_bg_tools[event.data.tool_name] = event.data.log_name
         if child and parent and child != parent:
             self._ga_parent.setdefault(child, parent)
 

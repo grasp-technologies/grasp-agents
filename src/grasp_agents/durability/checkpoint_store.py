@@ -1,6 +1,8 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import asynccontextmanager
+from typing import ClassVar
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -47,6 +49,36 @@ class CheckpointStore(ABC):
     :meth:`append_messages` / :meth:`read_messages` / :meth:`rewrite_messages`;
     :meth:`load_json` is provided.
     """
+
+    # Whether :meth:`transaction` really makes a checkpoint atomic. A store that
+    # implements it sets this; deferred tool effects are then kept pending until
+    # their checkpoint commits, instead of being retired as each one succeeds.
+    transactional: ClassVar[bool] = False
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[None]:
+        """
+        Scope one checkpoint's writes — the session record, the message log,
+        the head, task-record flips, and the agent's deferred tool effects —
+        as a unit. The default is a no-op: each write stands alone.
+
+        To make checkpoints atomic on a transactional backend (e.g. a
+        database), override this and set ``transactional = True``:
+
+        - Open a transaction, commit on normal exit and roll back on an
+          exception, so a failure mid-checkpoint persists all of it or none.
+        - Keep the open transaction per task (e.g. its connection in a
+          ``ContextVar``), not on the store: one store is shared by agents that
+          checkpoint concurrently, such as a parent and its background
+          sub-agents.
+        - Write through that transaction in this store's methods and in any
+          deferred effect that should commit with the checkpoint; an effect
+          that uses its own connection commits on its own.
+        - If the commit itself is interrupted (e.g. by cancellation), whether
+          it landed is unknown: the effects stay pending and run again at the
+          next checkpoint, so they must tolerate running twice.
+        """
+        yield
 
     @abstractmethod
     async def save(self, key: str, data: bytes) -> None: ...

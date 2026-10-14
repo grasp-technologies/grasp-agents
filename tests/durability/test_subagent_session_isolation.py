@@ -32,7 +32,7 @@ from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.agent_tool import AgentTool
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText
-from grasp_agents.types.events import ProcPacketOutEvent
+from grasp_agents.types.events import ProcPacketOutEvent, TurnStartEvent
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
@@ -175,6 +175,42 @@ async def test_parallel_processor_replicas_dont_collide() -> None:
     assert await store.load("par-s/agent/worker_par/worker_0") is not None
     assert await store.load("par-s/agent/worker_par/worker_1") is not None
     assert await store.load("par-s/agent/worker_par/worker_2") is not None
+
+
+async def test_parallel_replicas_report_their_own_names() -> None:
+    ctx: SessionContext[None] = SessionContext(state=None)
+    subproc = LLMAgent[str, str, None](
+        name="worker",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[_text_response("out-0"), _text_response("out-1")]),
+        stream_llm=True,
+    )
+    par = ParallelProcessor[str, str, None](subproc=subproc, ctx=ctx)
+
+    turn_sources = {
+        e.source
+        async for e in par.run_stream(in_args=["a", "b"])
+        if isinstance(e, TurnStartEvent)
+    }
+
+    assert turn_sources == {"worker_0", "worker_1"}
+
+
+async def test_readopting_a_renamed_agent_renames_its_components() -> None:
+    ctx = SessionContext[None](state=None)
+    agent = LLMAgent[str, str, None](
+        name="worker",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[]),
+        stream_llm=True,
+    )
+
+    agent.name = "renamed"
+    agent.on_adopted(ctx=ctx)
+
+    assert agent.agent_ctx.agent_name == "renamed"
+    assert agent._loop.agent_name == "renamed"  # pyright: ignore[reportPrivateUsage]
+    assert agent._prompt_builder.agent_name == "renamed"  # pyright: ignore[reportPrivateUsage]
 
 
 # ---------------------------------------------------------------------------

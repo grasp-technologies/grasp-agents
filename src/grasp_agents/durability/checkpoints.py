@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 15
+CURRENT_SCHEMA_VERSION: int = 16
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -163,6 +163,11 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "rollback no longer re-injects its note; a v14 head's unflushed "
         "deferred flips are dropped) EXCEPT a head parked at "
         "after_forced_final_answer (rerun or resave the session)."
+    ),
+    16: (
+        "TaskRecord.output_path was renamed to log_path: it is the task's "
+        "streamed-output log, distinct from the .result file a large result is "
+        "spilled to. v13-v15 records load fine (the old name is still read)."
     ),
 }
 """

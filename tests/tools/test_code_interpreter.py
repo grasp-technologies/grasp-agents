@@ -2,38 +2,34 @@
 Tests for ``RunPython`` (the code-interpreter tool).
 
 The artifact-collection logic and guard paths run kernel-free (no integration
-marker). The end-to-end execution tests spawn a real kernel under **srt**
-confinement (loopback ZMQ + write confinement); they are gated behind the
-``integration`` marker and ``srt`` being installed, and run via
+marker). The end-to-end execution tests spawn a real kernel, confined per
+:func:`tests._helpers.exec_confinement` (``srt``, or none inside an outer
+sandbox); they are gated behind the ``integration`` marker and run via
 ``uv run pytest -m integration``.
 """
 
 from __future__ import annotations
 
 import base64
-import shutil
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput, _human_size
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
+from tests._helpers import _make_agent_ctx, exec_confinement
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 # A 1x1 transparent PNG — lets us assert image handling without matplotlib.
-_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # ruff: ignore[line-too-long]
 _PNG_BYTES = base64.b64decode(_PNG_B64)
-
-_needs_srt = pytest.mark.skipif(shutil.which("srt") is None, reason="srt not installed")
 
 
 @pytest.fixture(autouse=True)
@@ -53,14 +49,7 @@ def _error_message(result: Any) -> str:
 
 
 def _agent_ctx() -> AgentContext:
-    transcript = LLMAgentTranscript()
-    return AgentContext.create(
-        transcript=transcript,
-        tools={},
-        bg_tasks=BackgroundTaskManager(
-            agent_name="test", transcript=transcript, tools={}
-        ),
-    )
+    return _make_agent_ctx()
 
 
 def _text(parts: list[InputText | InputImage]) -> str:
@@ -159,12 +148,12 @@ async def test_collect_artifacts_no_file_backend() -> None:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end execution — real kernel under srt confinement (integration).
+# End-to-end execution — real, confined kernel (integration).
 # ---------------------------------------------------------------------------
 
 
-def _srt_ctx(tmp_path: Path) -> SessionContext[Any]:
-    env = local_environment(allowed_roots=[tmp_path], confinement="srt")
+def _exec_ctx(tmp_path: Path) -> SessionContext[Any]:
+    env = local_environment(allowed_roots=[tmp_path], confinement=exec_confinement())
     return SessionContext(environment=env)
 
 
@@ -182,11 +171,10 @@ async def _close(agent_ctx: AgentContext) -> None:
         await agent_ctx.ipy_kernel_holder.close()
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_executes_and_returns_value(tmp_path: Path) -> None:
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
     try:
         parts = await _run(ctx, agent_ctx, RunPythonInput(code="print('hi'); 40 + 2"))
@@ -198,11 +186,10 @@ async def test_run_python_executes_and_returns_value(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_state_persists(tmp_path: Path) -> None:
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()  # create() wires a persistent code kernel
     try:
         await _run(ctx, agent_ctx, RunPythonInput(code="value = 41"))
@@ -212,12 +199,11 @@ async def test_run_python_state_persists(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_all_output_modalities(tmp_path: Path) -> None:
     """Stdout + execute_result + every viewable image MIME + an error."""
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
     code = (
         "import base64\n"
@@ -239,11 +225,10 @@ async def test_run_python_all_output_modalities(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_error_output(tmp_path: Path) -> None:
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
     try:
         parts = await _run(ctx, agent_ctx, RunPythonInput(code="1 / 0"))
@@ -254,11 +239,10 @@ async def test_run_python_error_output(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_inline_plot(tmp_path: Path) -> None:
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
     code = (
         "import base64\n"
@@ -272,12 +256,11 @@ async def test_run_python_inline_plot(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_artifacts_are_references(tmp_path: Path) -> None:
     """A saved figure + CSV come back as references (not inlined images)."""
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
     code = (
         "import base64\n"
@@ -298,12 +281,11 @@ async def test_run_python_artifacts_are_references(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_displays_saved_image(tmp_path: Path) -> None:
     """The model can view a saved image by displaying it (the display channel)."""
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
     code = (
         "import base64\n"
@@ -318,7 +300,6 @@ async def test_run_python_displays_saved_image(tmp_path: Path) -> None:
         await _close(agent_ctx)
 
 
-@_needs_srt
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_run_python_kernel_separate_from_run_cell(tmp_path: Path) -> None:
@@ -333,7 +314,7 @@ async def test_run_python_kernel_separate_from_run_cell(tmp_path: Path) -> None:
     )
     from grasp_agents.tools.notebook_exec import RunCell, RunCellInput
 
-    ctx = _srt_ctx(tmp_path)
+    ctx = _exec_ctx(tmp_path)
     agent_ctx = _agent_ctx()
 
     nb = v4.new_notebook()

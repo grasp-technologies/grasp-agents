@@ -140,6 +140,17 @@ class Transport[E](ABC):
     async def ack(self, recipient: str, envelope: E) -> None:
         """Mark ``envelope`` consumed. A no-op where ``consume`` already removed it."""
 
+    def writes_through(self, store: object) -> bool:
+        """
+        Whether :meth:`ack` persists through ``store`` — then a checkpoint on a
+        transactional ``store`` acks the messages its turn absorbed inside its
+        own transaction, so the turn and the acks commit together. ``False``
+        by default: acks follow the checkpoint, and a crash between the two
+        re-delivers a message whose turn is already saved.
+        """
+        del store
+        return False
+
     @abstractmethod
     async def has_pending(self, recipient: str) -> bool:
         """

@@ -101,7 +101,7 @@ class TestProcessorScorer:
         }
         assert llm.call_count == 3
         # The template never runs: every call is a fresh copy.
-        assert agent.transcript.messages == []
+        assert list(agent.transcript) == []
         for trial in run.trials:
             usage = trial.scorer_usage["quality"]
             assert (usage.input_tokens, usage.output_tokens) == (10, 5)

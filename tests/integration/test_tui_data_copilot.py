@@ -20,13 +20,14 @@ from grasp_agents.types.events import (
     ToolOutputItemEvent,
     UserMessageEvent,
 )
+from tests._helpers import exec_confinement
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
 async def test_data_copilot_pipeline(tmp_path: Path) -> None:
-    analyst, _ = build_copilot(tmp_path, confinement="srt")
+    analyst, _ = build_copilot(tmp_path, confinement=exec_confinement())
     prompt = (
         "Generate a small synthetic dataset of 120 daily sales values, then "
         "plot the 7-day moving average over time."
@@ -87,7 +88,7 @@ async def test_runpython_displays_inline_image(tmp_path: Path) -> None:
 
     env = local_environment(
         allowed_roots=[tmp_path],
-        confinement="srt",
+        confinement=exec_confinement(),
         env={"MPLCONFIGDIR": str(tmp_path / ".mpl")},
     )
     ctx = SessionContext[None](state=None, environment=env)
@@ -115,7 +116,7 @@ async def test_runpython_inside_textual_event_loop(tmp_path: Path) -> None:
 
     env = local_environment(
         allowed_roots=[tmp_path],
-        confinement="srt",
+        confinement=exec_confinement(),
         env={"MPLCONFIGDIR": str(tmp_path / ".mpl")},
     )
     ctx = SessionContext[None](state=None, environment=env)
@@ -148,7 +149,7 @@ async def test_interactive_data_copilot_end_to_end(tmp_path: Path) -> None:
 
     from grasp_agents.ui.app import GraspAgentsApp, PromptArea
 
-    analyst, _ = build_copilot(tmp_path, confinement="srt")
+    analyst, _ = build_copilot(tmp_path, confinement=exec_confinement())
     app = GraspAgentsApp(on_submit=analyst.run_stream, main_agent=analyst.name)
 
     def titles(source: str) -> list[str]:

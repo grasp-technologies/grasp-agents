@@ -50,7 +50,7 @@ from grasp_agents.tools.bash import bash_tools
 from grasp_agents.tools.file_toolkit import FileToolkit
 from grasp_agents.tools.notebook_exec import RunCell
 
-DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_MODEL = "gpt-6.1-sol"
 
 TITANIC_URL = (
     "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv"

@@ -10,6 +10,7 @@ from grasp_agents.llm_providers.litellm.error_mapping import map_api_error
 from grasp_agents.types.llm_errors import (
     LlmApiError,
     LlmApiStatusError,
+    LlmBadRequestError,
     LlmQuotaExceededError,
     LlmRateLimitError,
 )
@@ -36,6 +37,17 @@ class TestLiteLLMErrorsWithoutStatus:
 
     def test_non_openai_error_returns_none(self) -> None:
         assert map_api_error(ValueError("nope")) is None
+
+    def test_unsupported_params_maps_to_bad_request(self) -> None:
+        # Raised before any request, without the SDK error's ``type`` / ``body``.
+        err = litellm.UnsupportedParamsError(
+            message="openai does not support parameters: ['reasoning_effort']",
+            llm_provider="openai",
+            model="gpt-6-luna",
+        )
+        mapped = map_api_error(err)
+        assert isinstance(mapped, LlmBadRequestError)
+        assert "reasoning_effort" in str(mapped)
 
 
 class TestLiteLLMQuotaDetection:

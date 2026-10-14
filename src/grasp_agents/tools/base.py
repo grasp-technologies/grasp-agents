@@ -25,6 +25,7 @@ from grasp_agents.types.events import (
     Event,
     ToolErrorEvent,
     ToolErrorInfo,
+    ToolOutputEvent,
     ToolStreamEvent,
 )
 from grasp_agents.utils.errors import format_error_chain
@@ -51,6 +52,36 @@ class ToolProgressCallback(Protocol):
     async def __call__(
         self, progress: float, total: float | None, message: str | None
     ) -> None: ...
+
+
+def claim_call_event(event: Event[Any], tool_call_id: str | None) -> Event[Any]:
+    """
+    Stamp ``tool_call_id`` on a tool event — stream delta, result or error —
+    that no call has claimed yet. A nested tool's events (a sub-agent's) were
+    claimed by its own call, so an unclaimed one reaching a call's consumer is
+    that call's own.
+    """
+    if (
+        tool_call_id is not None
+        and isinstance(event, (ToolStreamEvent, ToolOutputEvent, ToolErrorEvent))
+        and event.tool_call_id is None
+    ):
+        return event.model_copy(update={"tool_call_id": tool_call_id})
+    return event
+
+
+async def _attribute_events(
+    stream: AsyncIterator[Event[Any]], *, agent_ctx: "AgentContext | None"
+) -> AsyncIterator[Event[Any]]:
+    # A call's stream events are routed to the calling agent, and all its tool
+    # events claimed with its call id.
+    dest = agent_ctx.agent_name if agent_ctx else None
+    call_id = agent_ctx.tool_call_id if agent_ctx else None
+    async for event in stream:
+        routed = event
+        if dest and isinstance(event, ToolStreamEvent) and event.destination is None:
+            routed = event.model_copy(update={"destination": dest})
+        yield claim_call_event(routed, call_id)
 
 
 class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
@@ -135,13 +166,13 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         # Cap on how many characters of this tool's result are inlined into the
         # agent's context. ``None`` (default): inline the whole result. When set
         # and a call's result is larger, the agent sees a head+tail excerpt plus
-        # a pointer to an on-disk ``.grasp`` file holding the full output for
-        # ``Read`` / ``Grep`` — a foreground call spills to a ``.result`` file, a
-        # backgrounded one points at its task log. Spilling needs a
-        # ``file_backend``; with none, the result is inlined whole (truncating
-        # with no recovery path would hide output unrecoverably). Cap tools with
-        # large mechanical output (shell logs); leave ``None`` where the result
-        # *is* the answer (a sub-agent).
+        # a pointer to an on-disk ``.grasp/tasks/<call_id>.result`` file holding
+        # the full output for ``Read`` / ``Grep`` (a backgrounded call's
+        # completion note also names it). Spilling needs a ``file_backend``;
+        # with none, or if the write fails, the result is inlined whole
+        # (truncating with no recovery path would hide output unrecoverably).
+        # Cap tools with large mechanical output (shell logs); leave ``None``
+        # where the result *is* the answer (a sub-agent).
         self.max_inline_result_chars = max_inline_result_chars
         # Whether a backgrounded call of this tool mirrors its *incremental*
         # output to an agent-readable ``.grasp`` progress log (it emits
@@ -419,23 +450,16 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        dest = agent_ctx.agent_name if agent_ctx else None
-        async for event in self._run_stream_with_timeout(
+        stream = self._run_stream_with_timeout(
             inp,
             ctx=ctx,
             exec_id=exec_id,
             progress_callback=progress_callback,
             path=path,
             agent_ctx=agent_ctx,
-        ):
-            if (
-                dest
-                and isinstance(event, ToolStreamEvent)
-                and event.destination is None
-            ):
-                yield event.model_copy(update={"destination": dest})
-            else:
-                yield event
+        )
+        async for event in _attribute_events(stream, agent_ctx=agent_ctx):
+            yield event
 
     def concurrency_conflict_keys(self, inp: InT) -> list[str] | None:
         """
@@ -483,6 +507,29 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         return None
 
     async def resume_stream(
+        self,
+        *,
+        ctx: SessionContext[CtxT] | None = None,
+        exec_id: str | None = None,
+        path: list[str] | None = None,
+        agent_ctx: "AgentContext | None" = None,
+        tool_call_arguments: str | None = None,
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        Resume from a session checkpoint (see :meth:`_resume_stream`). Events
+        are attributed to the call the same way :meth:`run_stream` does.
+        """
+        stream = self._resume_stream(
+            ctx=ctx,
+            exec_id=exec_id,
+            path=path,
+            agent_ctx=agent_ctx,
+            tool_call_arguments=tool_call_arguments,
+        )
+        async for event in _attribute_events(stream, agent_ctx=agent_ctx):
+            yield event
+
+    async def _resume_stream(
         self,
         *,
         ctx: SessionContext[CtxT] | None = None,

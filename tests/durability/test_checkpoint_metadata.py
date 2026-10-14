@@ -64,10 +64,10 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v15: AgentCheckpoint.stop_reason + AFTER_FORCED_FINAL_ANSWER
-        # collapsed into AFTER_FINAL_ANSWER — additive over the v13 floor
-        # (items dropped the *_parts mirror fields; older logs unreadable).
-        assert CURRENT_SCHEMA_VERSION == 15
+        # v16: TaskRecord.output_path renamed to log_path — readable over the
+        # v13 floor (items dropped the *_parts mirror fields; older logs
+        # unreadable).
+        assert CURRENT_SCHEMA_VERSION == 16
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:

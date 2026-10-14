@@ -203,11 +203,11 @@ class SessionRestoreMixin:
             task_id=record.task_id,
             tool_name=record.tool_name,
             tool_call_id=record.tool_call_id,
-            output_name=Path(record.output_path).name if record.output_path else None,
+            log_name=Path(record.log_path).name if record.log_path else None,
         )
         await self._open_task_pane(BackgroundTaskLaunchedEvent(source=agent, data=info))
-        key = self._ga_task_panes[agent, record.task_id]
-        log_text = await self._read_task_log(record.output_path)
+        key = self._ga_task_panes[agent, record.tool_call_id]
+        log_text = await self._read_task_log(record.log_path)
         if log_text:
             await self._stream_task_log(
                 key, self._ga_panes[key], log_text, at_bottom=True

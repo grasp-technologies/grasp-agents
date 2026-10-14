@@ -80,19 +80,18 @@ def _message_item(text: str) -> OutputMessageItem:
 def _make_loop(
     events: list[LlmEvent],
 ) -> tuple[AgentLoop[None], LLMAgentTranscript]:
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
-    transcript.update([InputMessageItem.from_text("go", role="user")])
-
     loop = _make_agent_loop(
         agent_name="test",
         llm=ScriptedStreamLLM(events=events),
-        transcript=transcript,
+        messages=[
+            InputMessageItem.from_text("sys", role="system"),
+            InputMessageItem.from_text("go", role="user"),
+        ],
         ctx=SessionContext[None](state=None),
         max_turns=10,
         stream_llm=True,
     )
-    return loop, transcript
+    return loop, loop.cw.transcript
 
 
 async def _drain(loop: AgentLoop[None]) -> list[Event[Any]]:

@@ -32,7 +32,7 @@ from grasp_agents.llm_providers.openai_responses import (
 )
 from grasp_agents.skills import SkillRegistry
 
-DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_MODEL = "gpt-6-luna"
 
 _SKILLS_ROOT = Path(__file__).parent / "skills"
 

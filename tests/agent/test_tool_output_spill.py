@@ -5,7 +5,7 @@ When a foreground tool call's serialized result exceeds the tool's
 ``max_inline_result_chars``, the loop spills the full text to a ``.grasp`` file
 and inlines only a head+tail excerpt that points at it (``Read`` / ``Grep``
 recovers the rest) — bounding transcript growth from one large output without
-hiding it unrecoverably. Mirrors the backgrounded-task cap-and-defer path.
+hiding it unrecoverably. A backgrounded task's outcome is spilled the same way.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
+from grasp_agents.agent import task_progress
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.agent.task_progress import excerpt_for_inline, spill_if_large
 from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
@@ -49,12 +49,10 @@ async def capped_untrusted(n: int = 0) -> str:
 def _loop(
     tools: list[BaseTool[Any, Any, Any]], *, ctx: SessionContext[None]
 ) -> AgentLoop[None]:
-    transcript = LLMAgentTranscript()
-    transcript.messages = [InputMessageItem.from_text("sys", role="system")]
     return _make_agent_loop(
         agent_name="test",
         llm=MockLLM(model_name="mock", responses_queue=[]),
-        transcript=transcript,
+        messages=[InputMessageItem.from_text("sys", role="system")],
         ctx=ctx,
         tools=tools,
         max_turns=10,
@@ -78,7 +76,7 @@ class TestExcerptForInline:
 
     def test_over_cap_keeps_head_and_tail_with_pointer(self) -> None:
         text, truncated = excerpt_for_inline(
-            "A" * 1000, 100, log_file="/root/.grasp/tasks/c1.result"
+            "A" * 1000, 100, file="/root/.grasp/tasks/c1.result"
         )
         assert truncated is True
         # Head + tail total the cap; the dropped middle is reported.
@@ -103,7 +101,7 @@ class TestSpillIfLarge:
     ) -> None:
         ctx = _backed_ctx(tmp_path)
         out = await spill_if_large(ctx.file_backend, name="c1", text="small", cap=100)
-        assert out == "small"
+        assert out == ("small", None)
         assert not (tmp_path / ".grasp" / "tasks").exists()
 
     @pytest.mark.asyncio
@@ -112,7 +110,7 @@ class TestSpillIfLarge:
         out = await spill_if_large(
             ctx.file_backend, name="c1", text="X" * 5000, cap=None
         )
-        assert out == "X" * 5000
+        assert out == ("X" * 5000, None)
         assert not (tmp_path / ".grasp" / "tasks").exists()
 
     @pytest.mark.asyncio
@@ -120,18 +118,34 @@ class TestSpillIfLarge:
         self, tmp_path: Path
     ) -> None:
         ctx = _backed_ctx(tmp_path)
-        out = await spill_if_large(
-            ctx.file_backend, name="c1", text="Z" * 5000, cap=100
+        out, result_path = await spill_if_large(
+            ctx.file_backend, name="c1", text="Z" * 5000, cap=100, file_kind="full log"
         )
         spilled = tmp_path / ".grasp" / "tasks" / "c1.result"
         assert spilled.read_text() == "Z" * 5000
+        assert result_path == str(spilled)
         assert "chars omitted" in out
-        assert str(spilled) in out
+        assert f"full log in {spilled}" in out
 
     @pytest.mark.asyncio
     async def test_no_backend_returns_whole_text(self) -> None:
         out = await spill_if_large(None, name="c1", text="X" * 5000, cap=100)
-        assert out == "X" * 5000
+        assert out == ("X" * 5000, None)
+
+    @pytest.mark.asyncio
+    async def test_failed_write_returns_whole_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def unwritable(*args: Any, **kwargs: Any) -> str | None:
+            del args, kwargs
+            return None
+
+        monkeypatch.setattr(task_progress, "write_result_file", unwritable)
+        ctx = _backed_ctx(tmp_path)
+        out = await spill_if_large(
+            ctx.file_backend, name="c1", text="X" * 5000, cap=100
+        )
+        assert out == ("X" * 5000, None)
 
 
 # ---------- _convert_tool_output spilling ----------

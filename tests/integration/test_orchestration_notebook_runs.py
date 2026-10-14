@@ -14,10 +14,11 @@ analysis — we assert the on-disk traces each section leaves behind.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import pytest
+
+from tests._helpers import confine_notebook
 
 _NB = (
     Path(__file__).resolve().parents[2]
@@ -27,7 +28,6 @@ _NB = (
 
 @pytest.mark.integration
 @pytest.mark.skipif(not os.environ.get("OPENAI_API_KEY"), reason="needs OPENAI_API_KEY")
-@pytest.mark.skipif(shutil.which("srt") is None, reason="needs srt")
 def test_orchestration_demo_notebook_executes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -40,6 +40,7 @@ def test_orchestration_demo_notebook_executes(
     monkeypatch.delenv("CLAUDE_TMPDIR", raising=False)
 
     nb = nbformat.read(str(_NB), as_version=4)
+    confine_notebook(nb.cells)
     client = nbclient.NotebookClient(
         nb,
         timeout=420,  # per cell; the slowest is the sandboxed analyst run
@@ -73,7 +74,11 @@ def test_orchestration_demo_notebook_executes(
     checkpoints = ws / "checkpoints"
     sessions = {p.name for p in checkpoints.iterdir() if p.is_dir()}
     assert {
-        "solo-agent", "workflow-demo", "team-demo", "bg-demo", "team-research"
+        "solo-agent",
+        "workflow-demo",
+        "team-demo",
+        "bg-demo",
+        "team-research",
     } <= sessions
 
     # Section 3.4: a Bash bg task isn't resurrected, but its streamed output is
