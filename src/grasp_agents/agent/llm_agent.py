@@ -915,11 +915,20 @@ class LLMAgent[InT, OutT, CtxT](
 
         # One unit of work on the store (atomic where the store has
         # transactions): deferred tool effects, the session record, the log +
-        # head, then the task-record flips.
+        # head, then the task-record flips — and a resident's inbox acks when
+        # its mailbox lives in that same store.
         store = self._ctx.checkpoint_store
         transaction: AbstractAsyncContextManager[None] = (
             store.transaction() if store is not None else nullcontext()
         )
+        inbox = self._agent_ctx.inbox
+        acks_in_unit = (
+            inbox is not None
+            and store is not None
+            and store.transactional
+            and inbox.acks_through(store)
+        )
+        acked: list[str] = []
         bg_tasks = self._agent_ctx.bg_tasks
         log_state = self._log_state()
         flips = (
@@ -936,6 +945,8 @@ class LLMAgent[InT, OutT, CtxT](
                     stop_reason=stop_reason,
                     fs_snapshot_ref=fs_snapshot_ref,
                 )
+                if acks_in_unit and inbox is not None:
+                    acked = await inbox.ack_leases()
         except BaseException:
             # The unit rolled back, or landed only partly on a store without
             # transactions: keep the flips for the next checkpoint and make it
@@ -951,11 +962,15 @@ class LLMAgent[InT, OutT, CtxT](
         self._committed = current
         self._agent_ctx.effects.commit(effects_ran)
 
-        # Same persist covers a resident's drained inbox message: ack it now
-        # (the inbox analog of the bg-task flush) so a crash before the
-        # persist re-delivers it instead of stranding it.
-        if self._agent_ctx.inbox is not None:
-            await self._agent_ctx.inbox.flush_acks()
+        # The same persist covers a resident's drained inbox messages. Acked
+        # in the unit, their leases are released only now; otherwise ack them
+        # now, after the persist, so a crash in between re-delivers a message
+        # instead of stranding it.
+        if inbox is not None:
+            if acks_in_unit:
+                inbox.release(acked)
+            else:
+                await inbox.flush_acks()
 
     async def _run_checkpoint_unit(
         self,

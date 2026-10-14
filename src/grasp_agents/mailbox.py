@@ -223,6 +223,9 @@ class CheckpointMailboxTransport(Transport[TeamMessage]):
         # Mailboxes are keyed in the store; nothing to pre-allocate.
         del recipient
 
+    def writes_through(self, store: object) -> bool:
+        return store is self._store
+
     @staticmethod
     def _lane(priority: int) -> str:
         # Inverted, fixed-width: a higher priority yields a smaller string, so
